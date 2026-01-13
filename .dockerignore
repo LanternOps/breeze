@@ -1,0 +1,66 @@
+# Git
+.git
+.gitignore
+
+# Dependencies (rebuilt in container)
+node_modules
+**/node_modules
+
+# Build outputs (rebuilt in container)
+dist
+**/dist
+.astro
+**/.astro
+
+# Development files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage
+.nyc_output
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.docker
+
+# Documentation
+docs
+*.md
+!README.md
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.circleci
+
+# Turbo cache
+.turbo
+
+# Claude/AI
+.claude
+
+# Misc
+*.tgz
+*.tar.gz

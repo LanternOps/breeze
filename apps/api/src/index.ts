@@ -14,6 +14,8 @@ import { alertRoutes } from './routes/alerts';
 import { orgRoutes } from './routes/orgs';
 import { userRoutes } from './routes/users';
 import { auditRoutes } from './routes/audit';
+import { reportRoutes } from './routes/reports';
+import { remoteRoutes } from './routes/remote';
 
 const app = new Hono();
 
@@ -50,6 +52,8 @@ api.route('/alerts', alertRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
 api.route('/audit', auditRoutes);
+api.route('/reports', reportRoutes);
+api.route('/remote', remoteRoutes);
 
 app.route('/api/v1', api);
 

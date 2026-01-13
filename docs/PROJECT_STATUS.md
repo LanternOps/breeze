@@ -210,7 +210,9 @@ cd agent && make run
 
 ## Implementation Status
 
-### ✅ Completed (Scaffolding)
+> **See [ROADMAP.md](./ROADMAP.md) for detailed progress tracking**
+
+### ✅ Completed
 - [x] Monorepo structure (Turborepo + pnpm workspaces)
 - [x] Astro web app with React islands
 - [x] Hono API server structure
@@ -219,16 +221,23 @@ cd agent && make run
 - [x] Docker Compose configuration
 - [x] Go agent structure (CLI, heartbeat, collectors)
 - [x] Architecture documentation
+- [x] **Authentication system** (login, register, MFA, password reset)
+- [x] **Auth middleware** (JWT verification, scope checking)
+- [x] **Auth UI** (all forms, pages, state management)
 
-### 🔲 Next Steps
-- [ ] Implement authentication (login, sessions, MFA)
-- [ ] Connect frontend to API
-- [ ] Implement agent enrollment flow
-- [ ] Add real-time metrics dashboard
-- [ ] Build script execution pipeline
-- [ ] Create alert processing jobs
-- [ ] Implement WebRTC remote access
-- [ ] Add notification channel integrations
+### 🟡 In Progress (Phase 1)
+- [ ] Complete RBAC (permission middleware, role UI)
+- [ ] Organization management (Partner/Org/Site CRUD)
+- [ ] User management (profiles, invitations)
+
+### 🔲 Next Phases
+- Phase 2: Agent Core (enrollment, heartbeat, collectors)
+- Phase 3: Device Management (list, groups, inventory)
+- Phase 4: Scripting (library, editor, execution)
+- Phase 5: Alerting (rules, notifications)
+- Phase 6: Remote Access (WebRTC, terminal, file transfer)
+- Phase 7: Automation (workflows, policies)
+- Phase 8: Enterprise (SSO, advanced RBAC, audit)
 
 ## Key Files Reference
 

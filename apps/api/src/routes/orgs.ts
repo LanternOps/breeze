@@ -1,126 +1,476 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { db } from '../db';
+import { partners, organizations, sites } from '../db/schema';
+import { authMiddleware, requireScope, requirePartner } from '../middleware/auth';
 
 export const orgRoutes = new Hono();
 
-const createOrgSchema = z.object({
+const paginationSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional()
+});
+
+const createPartnerSchema = z.object({
   name: z.string().min(1),
-  type: z.enum(['customer', 'internal']).default('customer'),
-  maxDevices: z.number().optional(),
-  contractStart: z.string().optional(),
-  contractEnd: z.string().optional(),
+  slug: z.string().min(1).max(100),
+  type: z.enum(['msp', 'enterprise', 'internal']).optional(),
+  plan: z.enum(['free', 'pro', 'enterprise', 'unlimited']).optional(),
+  maxOrganizations: z.number().int().nullable().optional(),
+  maxDevices: z.number().int().nullable().optional(),
+  settings: z.any().optional(),
+  ssoConfig: z.any().optional(),
+  billingEmail: z.string().email().optional()
+});
+
+const updatePartnerSchema = createPartnerSchema.partial();
+
+const createOrganizationSchema = z.object({
+  name: z.string().min(1),
+  slug: z.string().min(1).max(100),
+  type: z.enum(['customer', 'internal']).optional(),
+  status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
+  maxDevices: z.number().int().nullable().optional(),
+  settings: z.any().optional(),
+  ssoConfig: z.any().optional(),
+  contractStart: z.string().nullable().optional(),
+  contractEnd: z.string().nullable().optional(),
   billingContact: z.any().optional()
 });
 
-const createSiteSchema = z.object({
+const updateOrganizationSchema = createOrganizationSchema.partial();
+
+const listSitesSchema = z.object({
+  orgId: z.string().uuid(),
+  page: z.string().optional(),
+  limit: z.string().optional()
+});
+
+const siteBaseSchema = z.object({
+  orgId: z.string().uuid(),
   name: z.string().min(1),
   address: z.any().optional(),
-  timezone: z.string().default('UTC'),
-  contact: z.any().optional()
+  timezone: z.string().optional(),
+  contact: z.any().optional(),
+  settings: z.any().optional()
 });
 
-// --- Partner (MSP) ---
+const createSiteSchema = siteBaseSchema.extend({
+  timezone: z.string().default('UTC')
+});
 
-orgRoutes.get('/partner', async (c) => {
+const updateSiteSchema = siteBaseSchema.partial().omit({ orgId: true });
+
+function getPagination(query: { page?: string; limit?: string }) {
+  const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
+  return { page, limit, offset: (page - 1) * limit };
+}
+
+async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+  if (auth.scope === 'organization') {
+    return auth.orgId === orgId;
+  }
+
+  if (auth.scope === 'partner') {
+    const [org] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(
+        and(
+          eq(organizations.id, orgId),
+          eq(organizations.partnerId, auth.partnerId as string),
+          isNull(organizations.deletedAt)
+        )
+      )
+      .limit(1);
+
+    return Boolean(org);
+  }
+
+  return true;
+}
+
+orgRoutes.use('*', authMiddleware);
+
+// --- Partners (system admins) ---
+
+orgRoutes.get('/partners', requireScope('system'), zValidator('query', paginationSchema), async (c) => {
+  const { page, limit, offset } = getPagination(c.req.valid('query'));
+
+  const conditions = isNull(partners.deletedAt);
+  const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(partners)
+    .where(conditions);
+  const count = countResult[0]?.count ?? 0;
+
+  const data = await db
+    .select()
+    .from(partners)
+    .where(conditions)
+    .limit(limit)
+    .offset(offset)
+    .orderBy(partners.createdAt);
+
   return c.json({
-    id: 'partner-uuid',
-    name: 'Acme IT Solutions',
-    type: 'msp',
-    plan: 'enterprise',
-    maxOrganizations: null,
-    maxDevices: null
+    data,
+    pagination: { page, limit, total: Number(count) }
   });
 });
 
-orgRoutes.patch('/partner', async (c) => {
-  const data = await c.req.json();
-  return c.json({ id: 'partner-uuid', ...data });
-});
-
-// --- Organizations (Customers) ---
-
-orgRoutes.get('/', async (c) => {
-  const { page = '1', limit = '50', status, search } = c.req.query();
-  return c.json({
-    data: [],
-    pagination: { page: parseInt(page), limit: parseInt(limit), total: 0 }
-  });
-});
-
-orgRoutes.post('/', zValidator('json', createOrgSchema), async (c) => {
+orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPartnerSchema), async (c) => {
   const data = c.req.valid('json');
-  return c.json({ id: 'org-uuid', partnerId: 'partner-uuid', status: 'active', ...data }, 201);
+
+  const [partner] = await db
+    .insert(partners)
+    .values({
+      name: data.name,
+      slug: data.slug,
+      type: data.type,
+      plan: data.plan,
+      maxOrganizations: data.maxOrganizations,
+      maxDevices: data.maxDevices,
+      settings: data.settings,
+      ssoConfig: data.ssoConfig,
+      billingEmail: data.billingEmail
+    })
+    .returning();
+
+  return c.json(partner, 201);
 });
 
-orgRoutes.get('/:id', async (c) => {
+orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
   const id = c.req.param('id');
-  return c.json({
-    id,
-    partnerId: 'partner-uuid',
-    name: 'Sample Customer',
-    type: 'customer',
-    status: 'active'
-  });
+
+  const [partner] = await db
+    .select()
+    .from(partners)
+    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+    .limit(1);
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  return c.json(partner);
 });
 
-orgRoutes.patch('/:id', async (c) => {
+orgRoutes.patch('/partners/:id', requireScope('system'), zValidator('json', updatePartnerSchema), async (c) => {
   const id = c.req.param('id');
-  const data = await c.req.json();
-  return c.json({ id, ...data });
+  const data = c.req.valid('json');
+  const updates = { ...data, updatedAt: new Date() };
+
+  if (Object.keys(data).length === 0) {
+    return c.json({ error: 'No updates provided' }, 400);
+  }
+
+  const [partner] = await db
+    .update(partners)
+    .set(updates)
+    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+    .returning();
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  return c.json(partner);
 });
 
-orgRoutes.delete('/:id', async (c) => {
+orgRoutes.delete('/partners/:id', requireScope('system'), async (c) => {
+  const id = c.req.param('id');
+
+  const [partner] = await db
+    .update(partners)
+    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+    .returning();
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
   return c.json({ success: true });
 });
 
-// --- Sites ---
+// --- Organizations (partner-scoped) ---
 
-orgRoutes.get('/:orgId/sites', async (c) => {
-  const orgId = c.req.param('orgId');
-  return c.json({ data: [] });
+orgRoutes.get('/organizations', requireScope('partner'), requirePartner, zValidator('query', paginationSchema), async (c) => {
+  const auth = c.get('auth');
+  const { page, limit, offset } = getPagination(c.req.valid('query'));
+  const conditions = and(eq(organizations.partnerId, auth.partnerId as string), isNull(organizations.deletedAt));
+
+  const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(organizations)
+    .where(conditions);
+  const count = countResult[0]?.count ?? 0;
+
+  const data = await db
+    .select()
+    .from(organizations)
+    .where(conditions)
+    .limit(limit)
+    .offset(offset)
+    .orderBy(organizations.createdAt);
+
+  return c.json({
+    data,
+    pagination: { page, limit, total: Number(count) }
+  });
 });
 
-orgRoutes.post('/:orgId/sites', zValidator('json', createSiteSchema), async (c) => {
-  const orgId = c.req.param('orgId');
+orgRoutes.post('/organizations', requireScope('partner'), requirePartner, zValidator('json', createOrganizationSchema), async (c) => {
+  const auth = c.get('auth');
   const data = c.req.valid('json');
-  return c.json({ id: 'site-uuid', orgId, ...data }, 201);
+
+  const insertValues = {
+    partnerId: auth.partnerId as string,
+    name: data.name,
+    slug: data.slug,
+    type: data.type,
+    status: data.status,
+    maxDevices: data.maxDevices,
+    settings: data.settings,
+    ssoConfig: data.ssoConfig,
+    contractStart: data.contractStart ? new Date(data.contractStart) : null,
+    contractEnd: data.contractEnd ? new Date(data.contractEnd) : null,
+    billingContact: data.billingContact
+  };
+  const [organization] = await db
+    .insert(organizations)
+    .values(insertValues)
+    .returning();
+
+  return c.json(organization, 201);
 });
 
-orgRoutes.get('/:orgId/sites/:siteId', async (c) => {
-  const { orgId, siteId } = c.req.param();
-  return c.json({ id: siteId, orgId, name: 'HQ Office', timezone: 'America/New_York' });
+orgRoutes.get('/organizations/:id', requireScope('partner'), requirePartner, async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+
+  const [organization] = await db
+    .select()
+    .from(organizations)
+    .where(
+      and(
+        eq(organizations.id, id),
+        eq(organizations.partnerId, auth.partnerId as string),
+        isNull(organizations.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!organization) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
+
+  return c.json(organization);
 });
 
-orgRoutes.patch('/:orgId/sites/:siteId', async (c) => {
-  const { orgId, siteId } = c.req.param();
-  const data = await c.req.json();
-  return c.json({ id: siteId, orgId, ...data });
+orgRoutes.patch('/organizations/:id', requireScope('partner'), requirePartner, zValidator('json', updateOrganizationSchema), async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+  const data = c.req.valid('json');
+
+  if (Object.keys(data).length === 0) {
+    return c.json({ error: 'No updates provided' }, 400);
+  }
+
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (data.name !== undefined) updates.name = data.name;
+  if (data.slug !== undefined) updates.slug = data.slug;
+  if (data.type !== undefined) updates.type = data.type;
+  if (data.status !== undefined) updates.status = data.status;
+  if (data.maxDevices !== undefined) updates.maxDevices = data.maxDevices;
+  if (data.settings !== undefined) updates.settings = data.settings;
+  if (data.ssoConfig !== undefined) updates.ssoConfig = data.ssoConfig;
+  if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
+  if (data.contractStart !== undefined) {
+    updates.contractStart = data.contractStart ? new Date(data.contractStart) : null;
+  }
+  if (data.contractEnd !== undefined) {
+    updates.contractEnd = data.contractEnd ? new Date(data.contractEnd) : null;
+  }
+
+  const [organization] = await db
+    .update(organizations)
+    .set(updates)
+    .where(
+      and(
+        eq(organizations.id, id),
+        eq(organizations.partnerId, auth.partnerId as string),
+        isNull(organizations.deletedAt)
+      )
+    )
+    .returning();
+
+  if (!organization) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
+
+  return c.json(organization);
 });
 
-orgRoutes.delete('/:orgId/sites/:siteId', async (c) => {
+orgRoutes.delete('/organizations/:id', requireScope('partner'), requirePartner, async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+
+  const [organization] = await db
+    .update(organizations)
+    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(organizations.id, id),
+        eq(organizations.partnerId, auth.partnerId as string),
+        isNull(organizations.deletedAt)
+      )
+    )
+    .returning();
+
+  if (!organization) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
+
   return c.json({ success: true });
 });
 
-// --- Enrollment Keys ---
+// --- Sites (organization-scoped) ---
 
-orgRoutes.get('/:orgId/enrollment-keys', async (c) => {
-  return c.json({ data: [] });
-});
+orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), zValidator('query', listSitesSchema), async (c) => {
+  const auth = c.get('auth');
+  const { orgId, ...pagination } = c.req.valid('query');
 
-orgRoutes.post('/:orgId/enrollment-keys', async (c) => {
-  const orgId = c.req.param('orgId');
-  const { name, siteId, expiresAt } = await c.req.json();
+  const allowed = await ensureOrgAccess(orgId, auth);
+  if (!allowed) {
+    return c.json({ error: 'Access to this organization denied' }, 403);
+  }
+
+  const { page, limit, offset } = getPagination(pagination);
+  const conditions = eq(sites.orgId, orgId);
+
+  const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(sites)
+    .where(conditions);
+  const count = countResult[0]?.count ?? 0;
+
+  const data = await db
+    .select()
+    .from(sites)
+    .where(conditions)
+    .limit(limit)
+    .offset(offset)
+    .orderBy(sites.createdAt);
+
   return c.json({
-    id: 'key-uuid',
-    orgId,
-    key: 'BREEZE-XXXX-XXXX-XXXX',
-    name,
-    siteId,
-    expiresAt
-  }, 201);
+    data,
+    pagination: { page, limit, total: Number(count) }
+  });
 });
 
-orgRoutes.delete('/:orgId/enrollment-keys/:keyId', async (c) => {
+orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), zValidator('json', createSiteSchema), async (c) => {
+  const auth = c.get('auth');
+  const data = c.req.valid('json');
+
+  const allowed = await ensureOrgAccess(data.orgId, auth);
+  if (!allowed) {
+    return c.json({ error: 'Access to this organization denied' }, 403);
+  }
+
+  const [site] = await db
+    .insert(sites)
+    .values({
+      orgId: data.orgId,
+      name: data.name,
+      address: data.address,
+      timezone: data.timezone,
+      contact: data.contact,
+      settings: data.settings
+    })
+    .returning();
+
+  return c.json(site, 201);
+});
+
+orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+
+  const [site] = await db
+    .select()
+    .from(sites)
+    .where(eq(sites.id, id))
+    .limit(1);
+
+  if (!site) {
+    return c.json({ error: 'Site not found' }, 404);
+  }
+
+  const allowed = await ensureOrgAccess(site.orgId, auth);
+  if (!allowed) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  return c.json(site);
+});
+
+orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), zValidator('json', updateSiteSchema), async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+  const data = c.req.valid('json');
+
+  if (Object.keys(data).length === 0) {
+    return c.json({ error: 'No updates provided' }, 400);
+  }
+
+  const [site] = await db
+    .select()
+    .from(sites)
+    .where(eq(sites.id, id))
+    .limit(1);
+
+  if (!site) {
+    return c.json({ error: 'Site not found' }, 404);
+  }
+
+  const allowed = await ensureOrgAccess(site.orgId, auth);
+  if (!allowed) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  const [updated] = await db
+    .update(sites)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(sites.id, id))
+    .returning();
+
+  return c.json(updated);
+});
+
+orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+
+  const [site] = await db
+    .select()
+    .from(sites)
+    .where(eq(sites.id, id))
+    .limit(1);
+
+  if (!site) {
+    return c.json({ error: 'Site not found' }, 404);
+  }
+
+  const allowed = await ensureOrgAccess(site.orgId, auth);
+  if (!allowed) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  await db.delete(sites).where(eq(sites.id, id));
+
   return c.json({ success: true });
 });

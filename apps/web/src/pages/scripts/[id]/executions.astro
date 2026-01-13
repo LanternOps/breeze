@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import ScriptExecutionsPage from '../../../components/scripts/ScriptExecutionsPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Execution History">
+  <ScriptExecutionsPage scriptId={id!} client:load />
+</DashboardLayout>

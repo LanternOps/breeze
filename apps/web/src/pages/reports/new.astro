@@ -1,0 +1,38 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import ReportBuilder from '../../components/reports/ReportBuilder';
+---
+
+<DashboardLayout title="Create Report">
+  <div class="max-w-4xl mx-auto space-y-6">
+    <div>
+      <h1 class="text-2xl font-bold">Create Report</h1>
+      <p class="text-muted-foreground">
+        Configure a new report to track and analyze your infrastructure.
+      </p>
+    </div>
+
+    <ReportBuilder
+      client:load
+      mode="create"
+      onSubmit={() => {
+        window.location.href = '/reports';
+      }}
+      onCancel={() => {
+        window.location.href = '/reports';
+      }}
+    />
+  </div>
+</DashboardLayout>
+
+<script>
+  // Handle form submission navigation
+  document.addEventListener('DOMContentLoaded', () => {
+    const form = document.querySelector('form');
+    if (form) {
+      form.addEventListener('submit', () => {
+        // Navigation will be handled by React component
+      });
+    }
+  });
+</script>

@@ -6,3 +6,4 @@ export * from './automations';
 export * from './alerts';
 export * from './remote';
 export * from './audit';
+export * from './reports';

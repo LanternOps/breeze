@@ -36,6 +36,20 @@ export const loginSchema = z.object({
   password: z.string().min(8)
 });
 
+export const registerSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  name: z.string().min(1).max(255)
+});
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().email()
+});
+
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string()
+});
+
 export const mfaVerifySchema = z.object({
   code: z.string().length(6)
 });

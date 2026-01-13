@@ -1,0 +1,50 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+---
+
+<DashboardLayout title="Settings">
+  <div class="space-y-6">
+    <div>
+      <h1 class="text-2xl font-bold">Settings</h1>
+      <p class="text-muted-foreground">Manage your organization settings, users, and sites.</p>
+    </div>
+
+    <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+      <a
+        href="/settings/organizations"
+        class="rounded-lg border bg-card p-6 shadow-sm transition hover:border-primary hover:shadow-md"
+      >
+        <div class="space-y-2">
+          <h2 class="text-lg font-semibold">Organizations</h2>
+          <p class="text-sm text-muted-foreground">
+            Manage organizations, contracts, and account settings.
+          </p>
+        </div>
+      </a>
+
+      <a
+        href="/settings/users"
+        class="rounded-lg border bg-card p-6 shadow-sm transition hover:border-primary hover:shadow-md"
+      >
+        <div class="space-y-2">
+          <h2 class="text-lg font-semibold">Users</h2>
+          <p class="text-sm text-muted-foreground">
+            Invite users, manage roles, and control access permissions.
+          </p>
+        </div>
+      </a>
+
+      <a
+        href="/settings/sites"
+        class="rounded-lg border bg-card p-6 shadow-sm transition hover:border-primary hover:shadow-md"
+      >
+        <div class="space-y-2">
+          <h2 class="text-lg font-semibold">Sites</h2>
+          <p class="text-sm text-muted-foreground">
+            Configure locations, timezones, and site-specific settings.
+          </p>
+        </div>
+      </a>
+    </div>
+  </div>
+</DashboardLayout>

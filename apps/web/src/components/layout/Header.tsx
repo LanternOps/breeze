@@ -6,15 +6,13 @@ import {
   Sun,
   ChevronDown,
   LogOut,
-  User,
-  Building2
+  User
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import OrgSwitcher from './OrgSwitcher';
 
 export default function Header() {
   const [darkMode, setDarkMode] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [showOrgSwitcher, setShowOrgSwitcher] = useState(false);
 
   const toggleDarkMode = () => {
     setDarkMode(!darkMode);
@@ -25,31 +23,7 @@ export default function Header() {
     <header className="flex h-16 items-center justify-between border-b bg-card px-6">
       <div className="flex items-center gap-4">
         {/* Organization Switcher */}
-        <div className="relative">
-          <button
-            onClick={() => setShowOrgSwitcher(!showOrgSwitcher)}
-            className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
-          >
-            <Building2 className="h-4 w-4" />
-            <span>Acme Corp</span>
-            <ChevronDown className="h-4 w-4" />
-          </button>
-          {showOrgSwitcher && (
-            <div className="absolute left-0 top-full mt-1 w-64 rounded-md border bg-popover p-1 shadow-lg">
-              <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                Organizations
-              </div>
-              <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted">
-                <Building2 className="h-4 w-4" />
-                Acme Corp
-              </button>
-              <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted">
-                <Building2 className="h-4 w-4" />
-                Beta Industries
-              </button>
-            </div>
-          )}
-        </div>
+        <OrgSwitcher />
 
         {/* Search */}
         <div className="relative">

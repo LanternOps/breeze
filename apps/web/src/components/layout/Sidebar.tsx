@@ -6,11 +6,13 @@ import {
   Zap,
   Bell,
   Terminal,
+  FileText,
   Settings,
   Building2,
   Users,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Shield
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -19,7 +21,9 @@ const navigation = [
   { name: 'Devices', href: '/devices', icon: Monitor },
   { name: 'Scripts', href: '/scripts', icon: FileCode },
   { name: 'Automations', href: '/automations', icon: Zap },
+  { name: 'Policies', href: '/policies', icon: Shield },
   { name: 'Alerts', href: '/alerts', icon: Bell },
+  { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Remote Access', href: '/remote', icon: Terminal }
 ];
 
@@ -58,7 +62,9 @@ export default function Sidebar() {
 
       <nav className="flex-1 space-y-1 p-2">
         {navigation.map((item) => {
-          const isActive = currentPath === item.href;
+          const isActive = item.href === '/'
+            ? currentPath === '/'
+            : currentPath.startsWith(item.href);
           return (
             <a
               key={item.name}
@@ -79,7 +85,7 @@ export default function Sidebar() {
         <div className="my-4 border-t" />
 
         {managementNav.map((item) => {
-          const isActive = currentPath === item.href;
+          const isActive = currentPath.startsWith(item.href);
           return (
             <a
               key={item.name}

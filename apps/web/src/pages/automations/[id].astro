@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import AutomationEditPage from '../../components/automations/AutomationEditPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Edit Automation">
+  <AutomationEditPage automationId={id} client:load />
+</DashboardLayout>
