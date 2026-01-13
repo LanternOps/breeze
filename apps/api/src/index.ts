@@ -13,9 +13,22 @@ import { automationRoutes } from './routes/automations';
 import { alertRoutes } from './routes/alerts';
 import { orgRoutes } from './routes/orgs';
 import { userRoutes } from './routes/users';
+import { roleRoutes } from './routes/roles';
 import { auditRoutes } from './routes/audit';
 import { reportRoutes } from './routes/reports';
 import { remoteRoutes } from './routes/remote';
+import { apiKeyRoutes } from './routes/apiKeys';
+import { ssoRoutes } from './routes/sso';
+import { docsRoutes } from './routes/docs';
+import { accessReviewRoutes } from './routes/accessReviews';
+import { webhookRoutes } from './routes/webhooks';
+import { psaRoutes } from './routes/psa';
+import { patchRoutes } from './routes/patches';
+import { patchPolicyRoutes } from './routes/patchPolicies';
+import { mobileRoutes } from './routes/mobile';
+import { analyticsRoutes } from './routes/analytics';
+import { discoveryRoutes } from './routes/discovery';
+import { portalRoutes } from './routes/portal';
 
 const app = new Hono();
 
@@ -51,9 +64,22 @@ api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
+api.route('/roles', roleRoutes);
 api.route('/audit', auditRoutes);
 api.route('/reports', reportRoutes);
 api.route('/remote', remoteRoutes);
+api.route('/api-keys', apiKeyRoutes);
+api.route('/sso', ssoRoutes);
+api.route('/docs', docsRoutes);
+api.route('/access-reviews', accessReviewRoutes);
+api.route('/webhooks', webhookRoutes);
+api.route('/psa', psaRoutes);
+api.route('/patches', patchRoutes);
+api.route('/patch-policies', patchPolicyRoutes);
+api.route('/mobile', mobileRoutes);
+api.route('/analytics', analyticsRoutes);
+api.route('/discovery', discoveryRoutes);
+api.route('/portal', portalRoutes);
 
 app.route('/api/v1', api);
 

@@ -1,0 +1,283 @@
+# Breeze RMM - Prometheus Configuration
+# Documentation: https://prometheus.io/docs/prometheus/latest/configuration/configuration/
+
+global:
+  scrape_interval: 15s          # How often to scrape targets
+  evaluation_interval: 15s      # How often to evaluate rules
+  scrape_timeout: 10s           # Timeout for scraping
+
+  # Attach labels to all time series and alerts
+  external_labels:
+    monitor: 'breeze-rmm'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load and evaluate rules files
+rule_files:
+  - '/etc/prometheus/rules/*.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: /metrics
+    scheme: http
+
+  # Breeze API Server
+  - job_name: 'breeze-api'
+    static_configs:
+      - targets: ['api:3001']
+    metrics_path: /metrics
+    scheme: http
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(:\d+)?'
+        replacement: '${1}'
+
+  # Redis Exporter (optional - requires redis_exporter container)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    metrics_path: /metrics
+    scheme: http
+
+  # PostgreSQL Exporter (optional - requires postgres_exporter container)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    metrics_path: /metrics
+    scheme: http
+
+  # Node Exporter for host metrics (optional)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    metrics_path: /metrics
+    scheme: http
+
+---
+# Alert Rules - Save as /etc/prometheus/rules/breeze.yml
+# These rules define alerting conditions for the Breeze RMM platform
+
+groups:
+  - name: breeze-api-alerts
+    interval: 30s
+    rules:
+      # High error rate alert
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="breeze-api", status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="breeze-api"}[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP error rate on Breeze API"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+          runbook_url: "https://docs.breeze.local/runbooks/high-error-rate"
+
+      # Slow response times
+      - alert: SlowResponseTime
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="breeze-api"}[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow response times on Breeze API"
+          description: "95th percentile response time is {{ $value | humanizeDuration }}"
+          runbook_url: "https://docs.breeze.local/runbooks/slow-response"
+
+      # API service down
+      - alert: APIServiceDown
+        expr: up{job="breeze-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Breeze API service is down"
+          description: "The API service has been unreachable for more than 1 minute"
+          runbook_url: "https://docs.breeze.local/runbooks/api-down"
+
+      # High request latency per endpoint
+      - alert: EndpointLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="breeze-api"}[5m])) by (le, route)
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency on endpoint {{ $labels.route }}"
+          description: "99th percentile latency is {{ $value | humanizeDuration }}"
+
+      # Too many 4xx errors (potential abuse or misconfiguration)
+      - alert: High4xxRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="breeze-api", status=~"4.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="breeze-api"}[5m]))
+          ) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of 4xx errors"
+          description: "4xx error rate is {{ $value | humanizePercentage }}"
+
+  - name: breeze-infrastructure-alerts
+    interval: 30s
+    rules:
+      # Redis connection issues
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Redis has been unreachable for more than 1 minute"
+
+      # Redis memory usage high
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis is using {{ $value | humanizePercentage }} of available memory"
+
+      # PostgreSQL connection issues
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL has been unreachable for more than 1 minute"
+
+      # PostgreSQL connection pool saturation
+      - alert: PostgresConnectionPoolSaturated
+        expr: pg_stat_activity_count / pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connection pool is saturated"
+          description: "{{ $value | humanizePercentage }} of connections are in use"
+
+      # Disk space low (host metrics from node exporter)
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+           / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.mountpoint }}"
+          description: "Only {{ $value | humanizePercentage }} of disk space remaining"
+
+  - name: breeze-business-alerts
+    interval: 1m
+    rules:
+      # No agents checking in
+      - alert: NoAgentHeartbeats
+        expr: |
+          sum(rate(agent_heartbeat_total{job="breeze-api"}[5m])) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No agent heartbeats received"
+          description: "No agents have checked in for the last 10 minutes"
+
+      # Alert processing backlog
+      - alert: AlertProcessingBacklog
+        expr: |
+          breeze_alert_queue_length > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alert processing backlog detected"
+          description: "{{ $value }} alerts waiting to be processed"
+
+---
+# Recording Rules - Save as /etc/prometheus/rules/recordings.yml
+# Pre-computed metrics for dashboard performance
+
+groups:
+  - name: breeze-recording-rules
+    interval: 30s
+    rules:
+      # Request rate by status code
+      - record: breeze:http_requests:rate5m
+        expr: sum(rate(http_requests_total{job="breeze-api"}[5m])) by (status, method, route)
+
+      # Error rate percentage
+      - record: breeze:http_error_rate:ratio5m
+        expr: |
+          sum(rate(http_requests_total{job="breeze-api", status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="breeze-api"}[5m]))
+
+      # Average response time by endpoint
+      - record: breeze:http_request_duration:avg5m
+        expr: |
+          sum(rate(http_request_duration_seconds_sum{job="breeze-api"}[5m])) by (route)
+          /
+          sum(rate(http_request_duration_seconds_count{job="breeze-api"}[5m])) by (route)
+
+      # 95th percentile response time
+      - record: breeze:http_request_duration:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="breeze-api"}[5m])) by (le)
+          )
+
+      # 99th percentile response time
+      - record: breeze:http_request_duration:p99_5m
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="breeze-api"}[5m])) by (le)
+          )
+
+      # Active device count (if exported)
+      - record: breeze:devices:active_count
+        expr: sum(breeze_devices_active)
+
+      # Request rate by tenant (for multi-tenant monitoring)
+      - record: breeze:http_requests:rate5m_by_org
+        expr: sum(rate(http_requests_total{job="breeze-api"}[5m])) by (org_id)
+
+      # Redis operations per second
+      - record: breeze:redis_ops:rate5m
+        expr: sum(rate(redis_commands_processed_total[5m]))
+
+      # PostgreSQL query time
+      - record: breeze:postgres_query_duration:avg5m
+        expr: |
+          rate(pg_stat_statements_seconds_total[5m])
+          /
+          rate(pg_stat_statements_calls_total[5m])

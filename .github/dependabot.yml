@@ -1,0 +1,177 @@
+version: 2
+
+updates:
+  # Node.js / pnpm dependencies for the root and all workspaces
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 10
+    groups:
+      # Group minor and patch updates together
+      typescript-tooling:
+        patterns:
+          - "typescript"
+          - "@types/*"
+          - "tsup"
+          - "tsx"
+        update-types:
+          - "minor"
+          - "patch"
+      astro:
+        patterns:
+          - "astro"
+          - "@astrojs/*"
+        update-types:
+          - "minor"
+          - "patch"
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react*"
+        update-types:
+          - "minor"
+          - "patch"
+      tanstack:
+        patterns:
+          - "@tanstack/*"
+        update-types:
+          - "minor"
+          - "patch"
+      tailwind:
+        patterns:
+          - "tailwindcss"
+          - "@tailwindcss/*"
+          - "autoprefixer"
+          - "postcss"
+        update-types:
+          - "minor"
+          - "patch"
+      hono:
+        patterns:
+          - "hono"
+          - "@hono/*"
+        update-types:
+          - "minor"
+          - "patch"
+      drizzle:
+        patterns:
+          - "drizzle-orm"
+          - "drizzle-kit"
+        update-types:
+          - "minor"
+          - "patch"
+      testing:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "@testing-library/*"
+        update-types:
+          - "minor"
+          - "patch"
+      linting:
+        patterns:
+          - "eslint"
+          - "@eslint/*"
+          - "prettier"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # Go dependencies for the agent
+  - package-ecosystem: "gomod"
+    directory: "/apps/agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    groups:
+      # Group related Go dependencies
+      cobra-viper:
+        patterns:
+          - "github.com/spf13/*"
+        update-types:
+          - "minor"
+          - "patch"
+      gopsutil:
+        patterns:
+          - "github.com/shirou/gopsutil/*"
+        update-types:
+          - "minor"
+          - "patch"
+      logging:
+        patterns:
+          - "go.uber.org/zap"
+          - "go.uber.org/multierr"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # Docker images (for when Dockerfiles are added)
+  - package-ecosystem: "docker"
+    directory: "/apps/api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps):"
+    # Will be enabled once Dockerfile is created
+
+  - package-ecosystem: "docker"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps):"
+    # Will be enabled once Dockerfile is created

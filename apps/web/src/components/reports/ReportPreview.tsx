@@ -81,8 +81,9 @@ export default function ReportPreview({
 
   // Get columns from first row
   const columns = useMemo(() => {
-    if (rows.length === 0) return [];
-    return Object.keys(rows[0]);
+    const firstRow = rows[0];
+    if (!firstRow) return [];
+    return Object.keys(firstRow);
   }, [rows]);
 
   // Paginated rows

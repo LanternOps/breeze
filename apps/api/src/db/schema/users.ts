@@ -24,6 +24,7 @@ export const roles = pgTable('roles', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').references(() => partners.id),
   orgId: uuid('org_id').references(() => organizations.id),
+  parentRoleId: uuid('parent_role_id'),
   scope: roleScopeEnum('scope').notNull(),
   name: varchar('name', { length: 100 }).notNull(),
   description: text('description'),
@@ -75,16 +76,3 @@ export const sessions = pgTable('sessions', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 
-export const apiKeys = pgTable('api_keys', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').references(() => organizations.id),
-  partnerId: uuid('partner_id').references(() => partners.id),
-  userId: uuid('user_id').notNull().references(() => users.id),
-  name: varchar('name', { length: 255 }).notNull(),
-  keyHash: text('key_hash').notNull(),
-  keyPrefix: varchar('key_prefix', { length: 12 }).notNull(),
-  permissions: jsonb('permissions'),
-  lastUsedAt: timestamp('last_used_at'),
-  expiresAt: timestamp('expires_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull()
-});

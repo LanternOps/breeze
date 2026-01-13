@@ -48,7 +48,8 @@ type AutomationRunHistoryProps = {
   automationName?: string;
 };
 
-const statusConfig: Record<string, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
+type StatusKey = 'running' | 'success' | 'failed' | 'partial' | 'skipped';
+const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
   running: {
     label: 'Running',
     color: 'text-blue-600',

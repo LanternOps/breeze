@@ -82,7 +82,8 @@ const triggerConfig: Record<TriggerType, { label: string; icon: typeof Clock; co
   }
 };
 
-const statusConfig: Record<string, { label: string; color: string; icon: typeof CheckCircle }> = {
+type StatusKey = 'idle' | 'running' | 'success' | 'failed' | 'partial';
+const statusConfig: Record<StatusKey, { label: string; color: string; icon: typeof CheckCircle }> = {
   idle: { label: 'Idle', color: 'text-gray-500', icon: Clock },
   running: { label: 'Running', color: 'text-blue-500', icon: Clock },
   success: { label: 'Success', color: 'text-green-500', icon: CheckCircle },
@@ -221,7 +222,7 @@ export default function AutomationList({
             ) : (
               paginatedAutomations.map(automation => {
                 const TriggerIcon = triggerConfig[automation.triggerType].icon;
-                const lastStatus = automation.lastRunStatus ?? 'idle';
+                const lastStatus = (automation.lastRunStatus ?? 'idle') as StatusKey;
                 const StatusIcon = statusConfig[lastStatus].icon;
 
                 return (

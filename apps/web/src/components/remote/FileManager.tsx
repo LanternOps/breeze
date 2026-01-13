@@ -189,7 +189,10 @@ export default function FileManager({
 
         const newSelection = new Set<string>();
         for (let i = start; i <= end; i++) {
-          newSelection.add(fileEntries[i].path);
+          const entry = fileEntries[i];
+          if (entry) {
+            newSelection.add(entry.path);
+          }
         }
         setSelectedItems(newSelection);
       } else {

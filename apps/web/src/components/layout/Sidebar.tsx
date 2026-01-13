@@ -12,24 +12,39 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
-  Shield
+  Shield,
+  KeyRound,
+  Package,
+  Webhook,
+  Plug,
+  Network,
+  BarChart3
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', href: '/devices', icon: Monitor },
+  { name: 'Discovery', href: '/discovery', icon: Network },
   { name: 'Scripts', href: '/scripts', icon: FileCode },
   { name: 'Automations', href: '/automations', icon: Zap },
   { name: 'Policies', href: '/policies', icon: Shield },
+  { name: 'Patches', href: '/patches', icon: Package },
   { name: 'Alerts', href: '/alerts', icon: Bell },
   { name: 'Reports', href: '/reports', icon: FileText },
+  { name: 'Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Remote Access', href: '/remote', icon: Terminal }
+];
+
+const integrationsNav = [
+  { name: 'Webhooks', href: '/integrations/webhooks', icon: Webhook },
+  { name: 'PSA Connections', href: '/integrations/psa', icon: Plug }
 ];
 
 const managementNav = [
   { name: 'Organizations', href: '/organizations', icon: Building2 },
   { name: 'Users', href: '/users', icon: Users },
+  { name: 'Roles', href: '/settings/roles', icon: KeyRound },
   { name: 'Settings', href: '/settings', icon: Settings }
 ];
 
@@ -65,6 +80,32 @@ export default function Sidebar() {
           const isActive = item.href === '/'
             ? currentPath === '/'
             : currentPath.startsWith(item.href);
+          return (
+            <a
+              key={item.name}
+              href={item.href}
+              className={cn(
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              <item.icon className="h-5 w-5 flex-shrink-0" />
+              {!collapsed && <span>{item.name}</span>}
+            </a>
+          );
+        })}
+
+        <div className="my-4 border-t" />
+
+        {!collapsed && (
+          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Integrations
+          </span>
+        )}
+        {integrationsNav.map((item) => {
+          const isActive = currentPath.startsWith(item.href);
           return (
             <a
               key={item.name}

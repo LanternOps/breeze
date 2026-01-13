@@ -38,7 +38,7 @@ function describeCron(cron: string): string {
 
   // Simple descriptions
   if (minute === '*' && hour === '*') return 'Every minute';
-  if (minute.startsWith('*/') && hour === '*') return `Every ${minute.slice(2)} minutes`;
+  if (minute?.startsWith('*/') && hour === '*') return `Every ${minute.slice(2)} minutes`;
   if (hour === '*' && minute !== '*') return `Every hour at minute ${minute}`;
 
   return `${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek}`;

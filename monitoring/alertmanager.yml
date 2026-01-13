@@ -1,0 +1,128 @@
+# Alertmanager Configuration
+# Documentation: https://prometheus.io/docs/alerting/latest/configuration/
+
+global:
+  # How long to wait before declaring an alert as resolved if it has not been updated
+  resolve_timeout: 5m
+
+  # SMTP settings for email notifications (configure as needed)
+  # smtp_smarthost: 'smtp.example.com:587'
+  # smtp_from: 'alertmanager@breeze.local'
+  # smtp_auth_username: 'alertmanager'
+  # smtp_auth_password: 'password'
+  # smtp_require_tls: true
+
+  # Slack webhook URL (configure as needed)
+  # slack_api_url: 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
+
+  # PagerDuty integration key (configure as needed)
+  # pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# The root route - all alerts enter here
+route:
+  # Default receiver
+  receiver: 'default'
+
+  # Group alerts by these labels
+  group_by: ['alertname', 'severity', 'job']
+
+  # Wait this long to buffer alerts of the same group before sending notification
+  group_wait: 30s
+
+  # Wait this long before sending notification about new alerts added to a group
+  group_interval: 5m
+
+  # Wait this long before re-sending a notification about an alert that's still firing
+  repeat_interval: 4h
+
+  # Child routes for specific alert handling
+  routes:
+    # Critical alerts get sent immediately
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Warning alerts use default timing
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+
+    # Infrastructure alerts go to ops team
+    - match_re:
+        alertname: '^(Redis|Postgres|DiskSpace).*'
+      receiver: 'infrastructure-alerts'
+
+# Inhibition rules - prevent certain alerts when others are firing
+inhibit_rules:
+  # If critical alert is firing, suppress warning for same alertname
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'job']
+
+  # If API is down, suppress individual endpoint alerts
+  - source_match:
+      alertname: 'APIServiceDown'
+    target_match_re:
+      alertname: '^(High|Slow|Endpoint).*'
+    equal: ['job']
+
+# Receiver configurations
+receivers:
+  # Default receiver - logs to console in development
+  - name: 'default'
+    webhook_configs:
+      - url: 'http://api:3001/webhooks/alerts'
+        send_resolved: true
+
+  # Critical alerts - multiple notification channels
+  - name: 'critical-alerts'
+    webhook_configs:
+      - url: 'http://api:3001/webhooks/alerts'
+        send_resolved: true
+    # Uncomment and configure for production:
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
+    #     channel: '#alerts-critical'
+    #     send_resolved: true
+    #     title: '{{ .Status | toUpper }}: {{ .GroupLabels.alertname }}'
+    #     text: >-
+    #       {{ range .Alerts }}
+    #         *Alert:* {{ .Annotations.summary }}
+    #         *Description:* {{ .Annotations.description }}
+    #         *Severity:* {{ .Labels.severity }}
+    #       {{ end }}
+    # pagerduty_configs:
+    #   - service_key: 'your-pagerduty-service-key'
+    #     severity: 'critical'
+    #     description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+    # email_configs:
+    #   - to: 'oncall@breeze.local'
+    #     send_resolved: true
+
+  # Warning alerts
+  - name: 'warning-alerts'
+    webhook_configs:
+      - url: 'http://api:3001/webhooks/alerts'
+        send_resolved: true
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
+    #     channel: '#alerts-warning'
+    #     send_resolved: true
+
+  # Infrastructure alerts
+  - name: 'infrastructure-alerts'
+    webhook_configs:
+      - url: 'http://api:3001/webhooks/alerts'
+        send_resolved: true
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
+    #     channel: '#infrastructure'
+    #     send_resolved: true
+
+# Templates for notification messages (optional)
+# templates:
+#   - '/etc/alertmanager/templates/*.tmpl'

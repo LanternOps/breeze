@@ -140,6 +140,161 @@ services:
     profiles:
       - storage
 
+  # ============================================
+  # Monitoring Stack (Optional)
+  # Enable with: docker compose --profile monitoring up -d
+  # ============================================
+
+  # Prometheus - Metrics collection and alerting
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: breeze-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - breeze-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    profiles:
+      - monitoring
+
+  # Grafana - Metrics visualization and dashboards
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: breeze-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_INSTALL_PLUGINS: redis-datasource
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./monitoring/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards/breeze:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - breeze-network
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - monitoring
+
+  # Alertmanager - Alert routing and notifications
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: breeze-alertmanager
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    networks:
+      - breeze-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    profiles:
+      - monitoring
+
+  # Redis Exporter - Redis metrics for Prometheus
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.55.0
+    container_name: breeze-redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "${REDIS_EXPORTER_PORT:-9121}:9121"
+    networks:
+      - breeze-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - monitoring
+
+  # PostgreSQL Exporter - PostgreSQL metrics for Prometheus
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: breeze-postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:-breeze}@postgres:5432/${POSTGRES_DB:-breeze}?sslmode=disable
+    ports:
+      - "${POSTGRES_EXPORTER_PORT:-9187}:9187"
+    networks:
+      - breeze-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - monitoring
+
+  # Node Exporter - Host system metrics (optional, for bare-metal deployments)
+  # Uncomment if running on Linux host and want system metrics
+  # node-exporter:
+  #   image: prom/node-exporter:v1.7.0
+  #   container_name: breeze-node-exporter
+  #   restart: unless-stopped
+  #   command:
+  #     - '--path.rootfs=/host'
+  #     - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+  #   ports:
+  #     - "${NODE_EXPORTER_PORT:-9100}:9100"
+  #   volumes:
+  #     - /:/host:ro,rslave
+  #   networks:
+  #     - breeze-network
+  #   profiles:
+  #     - monitoring
+
+  # Loki - Log aggregation (optional)
+  # Uncomment to enable centralized logging
+  # loki:
+  #   image: grafana/loki:2.9.0
+  #   container_name: breeze-loki
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${LOKI_PORT:-3100}:3100"
+  #   volumes:
+  #     - loki_data:/loki
+  #   command: -config.file=/etc/loki/local-config.yaml
+  #   networks:
+  #     - breeze-network
+  #   profiles:
+  #     - monitoring
+
 networks:
   breeze-network:
     driver: bridge
@@ -152,3 +307,12 @@ volumes:
     name: breeze-redis-data
   minio_data:
     name: breeze-minio-data
+  # Monitoring volumes
+  prometheus_data:
+    name: breeze-prometheus-data
+  grafana_data:
+    name: breeze-grafana-data
+  alertmanager_data:
+    name: breeze-alertmanager-data
+  # loki_data:
+  #   name: breeze-loki-data

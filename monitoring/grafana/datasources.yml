@@ -1,0 +1,90 @@
+# Grafana Datasources Configuration
+# Documentation: https://grafana.com/docs/grafana/latest/administration/provisioning/
+# Place this file in: /etc/grafana/provisioning/datasources/
+
+apiVersion: 1
+
+# List of datasources to configure
+datasources:
+  # Primary Prometheus datasource
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Time interval for scraping (should match Prometheus scrape_interval)
+      timeInterval: "15s"
+      # HTTP method for querying Prometheus
+      httpMethod: POST
+      # Enable exemplar support for traces correlation
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+    uid: prometheus
+
+  # Loki for log aggregation (optional)
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        # Extract trace ID from logs and link to Tempo
+        - datasourceUid: tempo
+          matcherRegex: '"trace_id":"(\w+)"'
+          name: TraceID
+          url: "$${__value.raw}"
+    uid: loki
+
+  # Tempo for distributed tracing (optional)
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      httpMethod: GET
+      tracesToLogs:
+        datasourceUid: loki
+        filterByTraceID: true
+        filterBySpanID: false
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      lokiSearch:
+        datasourceUid: loki
+    uid: tempo
+
+  # PostgreSQL for direct database queries (optional)
+  - name: PostgreSQL
+    type: postgres
+    url: postgres:5432
+    user: ${POSTGRES_USER:-breeze}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD:-breeze}
+    jsonData:
+      database: ${POSTGRES_DB:-breeze}
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    editable: false
+    uid: postgres
+
+  # Redis for cache metrics (optional - requires redis-datasource plugin)
+  - name: Redis
+    type: redis-datasource
+    access: proxy
+    url: redis://redis:6379
+    editable: false
+    uid: redis
+
+# Delete datasources that are no longer needed
+deleteDatasources:
+  - name: Old-Prometheus
+    orgId: 1

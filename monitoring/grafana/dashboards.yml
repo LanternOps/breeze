@@ -1,0 +1,19 @@
+# Grafana Dashboard Provisioning Configuration
+# Documentation: https://grafana.com/docs/grafana/latest/administration/provisioning/#dashboards
+# Place this file in: /etc/grafana/provisioning/dashboards/
+
+apiVersion: 1
+
+providers:
+  # Breeze RMM dashboards
+  - name: 'breeze'
+    orgId: 1
+    folder: 'Breeze RMM'
+    folderUid: 'breeze-folder'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/breeze
+      foldersFromFilesStructure: false

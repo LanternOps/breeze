@@ -1,0 +1,293 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9.15.0'
+  GO_VERSION: '1.22'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm lint
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run TypeScript type check
+        run: pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+
+      - name: Run Astro check
+        run: pnpm exec astro check --root apps/web
+
+  test-api:
+    name: Test API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run API tests
+        run: pnpm test --filter=@breeze/api
+        # TODO: Add vitest to API package and uncomment
+        continue-on-error: true
+
+  test-web:
+    name: Test Web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Web tests
+        run: pnpm test --filter=@breeze/web
+        # TODO: Add vitest to Web package and uncomment
+        continue-on-error: true
+
+  build-api:
+    name: Build API
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build API
+        run: pnpm build --filter=@breeze/api
+
+      - name: Upload API artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-dist
+          path: apps/api/dist
+          retention-days: 7
+
+  build-web:
+    name: Build Web
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Web
+        run: pnpm build --filter=@breeze/web
+
+      - name: Upload Web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+          retention-days: 7
+
+  build-agent:
+    name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: ''
+          - goos: darwin
+            goarch: amd64
+            suffix: ''
+          - goos: darwin
+            goarch: arm64
+            suffix: ''
+          - goos: windows
+            goarch: amd64
+            suffix: '.exe'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/agent/go.sum
+
+      - name: Download Go dependencies
+        working-directory: apps/agent
+        run: go mod download
+
+      - name: Build Agent
+        working-directory: apps/agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          BUILD_VERSION: ${{ github.sha }}
+        run: |
+          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
+            -o "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
+            ./cmd/breeze-agent
+
+      - name: Upload Agent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: apps/agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          retention-days: 7
+
+  test-agent:
+    name: Test Agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/agent/go.sum
+
+      - name: Download Go dependencies
+        working-directory: apps/agent
+        run: go mod download
+
+      - name: Run Go tests
+        working-directory: apps/agent
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-coverage
+          path: apps/agent/coverage.out
+          retention-days: 7
+
+  # Summary job that depends on all other jobs for branch protection
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test-api, test-web, build-api, build-web, build-agent, test-agent]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+          BUILD_API_RESULT: ${{ needs.build-api.result }}
+          BUILD_WEB_RESULT: ${{ needs.build-web.result }}
+          BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
+          TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
+        run: |
+          if [[ "${LINT_RESULT}" != "success" ]] || \
+             [[ "${TYPECHECK_RESULT}" != "success" ]] || \
+             [[ "${BUILD_API_RESULT}" != "success" ]] || \
+             [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
+             [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
+             [[ "${TEST_AGENT_RESULT}" != "success" ]]; then
+            echo "One or more required jobs failed"
+            exit 1
+          fi
+          echo "All required jobs passed!"
