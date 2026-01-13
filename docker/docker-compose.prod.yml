@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: breeze-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://breeze:${DB_PASSWORD}@postgres:5432/breeze
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      API_PORT: 3001
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    container_name: breeze-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_URL: http://api:3001
+    ports:
+      - "4321:4321"
+    depends_on:
+      - api
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: breeze-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: breeze
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: breeze
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U breeze"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: breeze-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

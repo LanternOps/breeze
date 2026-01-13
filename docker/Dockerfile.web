@@ -1,0 +1,32 @@
+FROM node:20-alpine AS base
+RUN npm install -g pnpm
+
+FROM base AS deps
+WORKDIR /app
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY apps/web/package.json ./apps/web/
+COPY packages/shared/package.json ./packages/shared/
+RUN pnpm install --frozen-lockfile
+
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY . .
+RUN pnpm --filter @breeze/web build
+
+FROM base AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 astro
+USER astro
+
+COPY --from=builder --chown=astro:nodejs /app/apps/web/dist ./dist
+COPY --from=builder --chown=astro:nodejs /app/apps/web/package.json ./
+
+EXPOSE 4321
+CMD ["node", "./dist/server/entry.mjs"]
