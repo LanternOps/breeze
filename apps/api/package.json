@@ -17,8 +17,8 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.7",
-    "@hono/zod-validator": "^0.4.2",
+    "@hono/node-server": "^1.19.9",
+    "@hono/zod-validator": "^0.7.6",
     "@types/qrcode": "^1.5.6",
     "argon2": "^0.44.0",
     "bullmq": "^5.30.1",
