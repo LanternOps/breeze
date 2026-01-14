@@ -9,3 +9,5 @@ export * from './sso';
 export * from './eventBus';
 export * from './psa';
 export * from './notifications';
+export * from './plugins';
+export * from './commandQueue';
