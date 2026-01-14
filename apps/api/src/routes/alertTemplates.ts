@@ -491,6 +491,11 @@ const correlationLinks: CorrelationLink[] = [
   }
 ];
 
+const getCorrelationAlertsByIndex = (indices: number[]): CorrelationAlert[] =>
+  indices
+    .map((index) => correlationAlerts[index])
+    .filter((alert): alert is CorrelationAlert => Boolean(alert));
+
 const correlationGroups: CorrelationGroup[] = [
   {
     id: randomUUID(),
@@ -498,7 +503,7 @@ const correlationGroups: CorrelationGroup[] = [
     summary: 'CPU, memory, and disk alerts clustered around db-01 performance.',
     correlationScore: 0.84,
     rootCauseHint: 'Burst workload on db-01 during reporting window',
-    alerts: [correlationAlerts[0], correlationAlerts[1], correlationAlerts[2]],
+    alerts: getCorrelationAlertsByIndex([0, 1, 2]),
     createdAt: lastHour
   },
   {
@@ -507,7 +512,7 @@ const correlationGroups: CorrelationGroup[] = [
     summary: 'Latency spike followed by nginx service stop on web-02.',
     correlationScore: 0.78,
     rootCauseHint: 'Possible upstream network degradation in EU region',
-    alerts: [correlationAlerts[3], correlationAlerts[4]],
+    alerts: getCorrelationAlertsByIndex([3, 4]),
     createdAt: yesterday
   },
   {
@@ -516,7 +521,7 @@ const correlationGroups: CorrelationGroup[] = [
     summary: 'Backup failure correlated with low disk capacity.',
     correlationScore: 0.62,
     rootCauseHint: 'Backup target volume nearly full',
-    alerts: [correlationAlerts[5], correlationAlerts[2]],
+    alerts: getCorrelationAlertsByIndex([5, 2]),
     createdAt: yesterday
   }
 ];
@@ -767,7 +772,7 @@ alertTemplateRoutes.post(
   async (c) => {
     try {
       const data = c.req.valid('json');
-      const targets = data.targets && Object.keys(data.targets).length > 0
+      const targets: AlertTemplateTarget = data.targets && Object.keys(data.targets).length > 0
         ? data.targets as AlertTemplateTarget
         : { scope: 'organization' };
       const template: AlertTemplate = {

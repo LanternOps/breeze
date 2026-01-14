@@ -1,0 +1,30 @@
+---
+import Layout from '../../layouts/Layout.astro';
+---
+
+<Layout title="Network Monitoring | Breeze RMM">
+  <div class="h-[calc(100vh-4rem)]" id="snmp-root">
+    <div class="flex h-full items-center justify-center">
+      <div class="text-center">
+        <p class="text-muted-foreground">Loading Network Monitoring...</p>
+        <p class="mt-2 text-sm text-muted-foreground">
+          Loading SNMP devices and health metrics
+        </p>
+      </div>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  import { createElement } from 'react';
+  import { createRoot } from 'react-dom/client';
+  import SNMPDashboard from '../../components/snmp/SNMPDashboard';
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const container = document.getElementById('snmp-root');
+    if (container) {
+      const root = createRoot(container);
+      root.render(createElement(SNMPDashboard));
+    }
+  });
+</script>

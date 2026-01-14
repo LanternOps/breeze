@@ -1,0 +1,30 @@
+---
+import Layout from '../../layouts/Layout.astro';
+---
+
+<Layout title="Software Management | Breeze RMM">
+  <div class="h-[calc(100vh-4rem)]" id="software-root">
+    <div class="flex h-full items-center justify-center">
+      <div class="text-center">
+        <p class="text-muted-foreground">Loading Software Catalog...</p>
+        <p class="mt-2 text-sm text-muted-foreground">
+          Review catalog items and deployment status
+        </p>
+      </div>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  import { createElement } from 'react';
+  import { createRoot } from 'react-dom/client';
+  import SoftwareCatalog from '../../components/software/SoftwareCatalog';
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const container = document.getElementById('software-root');
+    if (container) {
+      const root = createRoot(container);
+      root.render(createElement(SoftwareCatalog));
+    }
+  });
+</script>

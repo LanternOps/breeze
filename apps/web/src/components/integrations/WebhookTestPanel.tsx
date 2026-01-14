@@ -8,6 +8,15 @@ type TestHistoryItem = {
   timestamp: string;
 };
 
+type WebhookResponse = {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body:
+    | { received: true; deliveredAt: string }
+    | { received: false; error: string };
+};
+
 const eventTypes = [
   'device.offline',
   'ticket.created',
@@ -58,7 +67,7 @@ const initialHistory: TestHistoryItem[] = [
 export default function WebhookTestPanel() {
   const [eventType, setEventType] = useState(eventTypes[0]);
   const [history, setHistory] = useState<TestHistoryItem[]>(initialHistory);
-  const [response, setResponse] = useState({
+  const [response, setResponse] = useState<WebhookResponse>({
     status: 200,
     statusText: 'OK',
     headers: {

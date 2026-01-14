@@ -359,14 +359,20 @@ function applySearch(logs: AuditLogEntry[], term: string) {
 
 function resolveResource(resourceType: ActionTemplate['resourceType'], user: AuditLogEntry['user'], index: number) {
   if (resourceType === 'user') {
-    return { type: 'user', id: user.id, name: user.name };
+    return {
+      type: 'user',
+      id: user?.id ?? 'user-unknown',
+      name: user?.name ?? 'Unknown User'
+    };
   }
 
-  const names = resourceNames[resourceType];
-  const name = names[index % names.length];
+  const names = resourceNames[resourceType]?.filter((value): value is string => value != null) ?? [];
+  const nameIndex = names.length > 0 ? index % names.length : 0;
+  const resourceIndex = names.length > 0 ? nameIndex + 1 : index + 1;
+  const name = names[nameIndex] ?? `${resourceType}-${resourceIndex}`;
   return {
     type: resourceType,
-    id: `${resourceType}-${(index % names.length) + 1}`,
+    id: `${resourceType}-${resourceIndex}`,
     name
   };
 }
@@ -376,14 +382,23 @@ function createMockAuditLogs(count: number): AuditLogEntry[] {
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   const minuteMs = 60 * 1000;
+  const fallbackUser: AuditLogEntry['user'] = users[0] ?? {
+    id: 'user-unknown',
+    name: 'Unknown User',
+    email: 'unknown@breeze.example',
+    role: 'unknown'
+  };
+  const fallbackIpAddress = ipAddresses[0] ?? '0.0.0.0';
+  const fallbackUserAgent = userAgents[0] ?? 'Unknown';
+  const fallbackLocation = locations[0] ?? { city: 'Unknown', region: 'Unknown', country: 'Unknown' };
 
   for (let i = 0; i < count; i += 1) {
-    const template = actionTemplates[i % actionTemplates.length];
-    const user = users[(i * 3) % users.length];
-    const ipAddress = ipAddresses[(i * 5) % ipAddresses.length];
-    const userAgent = userAgents[(i * 7) % userAgents.length];
-    const location = locations[(i * 11) % locations.length];
-    const resource = resolveResource(template.resourceType, user, i);
+    const template = actionTemplates.length > 0 ? actionTemplates[i % actionTemplates.length] : undefined;
+    const user = users[(i * 3) % users.length] ?? fallbackUser;
+    const ipAddress = ipAddresses[(i * 5) % ipAddresses.length] ?? fallbackIpAddress;
+    const userAgent = userAgents[(i * 7) % userAgents.length] ?? fallbackUserAgent;
+    const location = locations[(i * 11) % locations.length] ?? fallbackLocation;
+    const resource = resolveResource(template?.resourceType ?? 'organization', user, i);
     const dayOffset = (i * 2) % 30;
     const minuteOffset = (i * 37) % (24 * 60);
     const timestamp = new Date(now - dayOffset * dayMs - minuteOffset * minuteMs);
@@ -391,18 +406,23 @@ function createMockAuditLogs(count: number): AuditLogEntry[] {
     logs.push({
       id: `audit-${String(i + 1).padStart(4, '0')}`,
       timestamp: timestamp.toISOString(),
-      user,
-      action: template.action,
+      user: {
+        id: user?.id ?? fallbackUser.id,
+        name: user?.name ?? fallbackUser.name,
+        email: user?.email ?? fallbackUser.email,
+        role: user?.role ?? fallbackUser.role
+      },
+      action: template?.action ?? 'system.unknown',
       resource,
-      category: template.category,
-      result: template.result,
-      ipAddress,
-      userAgent,
+      category: template?.category ?? 'system',
+      result: template?.result ?? 'success',
+      ipAddress: ipAddress ?? fallbackIpAddress,
+      userAgent: userAgent ?? fallbackUserAgent,
       details: {
-        ...template.details,
+        ...(template?.details ?? {}),
         requestId: `req-${1000 + i}`,
         sessionId: `sess-${(i % 12) + 1}`,
-        location
+        location: location ?? fallbackLocation
       }
     });
   }

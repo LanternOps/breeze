@@ -8,16 +8,19 @@ import {
   Terminal,
   FileText,
   Settings,
+  Building,
   Building2,
   Users,
   ChevronLeft,
   ChevronRight,
   Shield,
+  ShieldCheck,
   KeyRound,
   Package,
   Webhook,
   Plug,
   Network,
+  HardDrive,
   BarChart3
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -41,11 +44,28 @@ const integrationsNav = [
   { name: 'PSA Connections', href: '/integrations/psa', icon: Plug }
 ];
 
+const monitoringNav = [
+  { name: 'Security', href: '/security', icon: ShieldCheck },
+  { name: 'Network/SNMP', href: '/snmp', icon: Network }
+];
+
+const operationsNav = [
+  { name: 'Backup', href: '/backup', icon: HardDrive },
+  { name: 'Audit Logs', href: '/audit', icon: FileText }
+];
+
 const managementNav = [
+  { name: 'Software', href: '/software', icon: Package },
+  { name: 'Policies', href: '/policies', icon: Shield },
   { name: 'Organizations', href: '/organizations', icon: Building2 },
   { name: 'Users', href: '/users', icon: Users },
   { name: 'Roles', href: '/settings/roles', icon: KeyRound },
   { name: 'Settings', href: '/settings', icon: Settings }
+];
+
+const settingsNav = [
+  { name: 'Organization', href: '/settings/organization', icon: Building },
+  { name: 'Integrations', href: '/integrations', icon: Plug }
 ];
 
 export default function Sidebar() {
@@ -101,6 +121,58 @@ export default function Sidebar() {
 
         {!collapsed && (
           <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Monitoring
+          </span>
+        )}
+        {monitoringNav.map((item) => {
+          const isActive = currentPath.startsWith(item.href);
+          return (
+            <a
+              key={item.name}
+              href={item.href}
+              className={cn(
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              <item.icon className="h-5 w-5 flex-shrink-0" />
+              {!collapsed && <span>{item.name}</span>}
+            </a>
+          );
+        })}
+
+        <div className="my-4 border-t" />
+
+        {!collapsed && (
+          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Operations
+          </span>
+        )}
+        {operationsNav.map((item) => {
+          const isActive = currentPath.startsWith(item.href);
+          return (
+            <a
+              key={item.name}
+              href={item.href}
+              className={cn(
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              <item.icon className="h-5 w-5 flex-shrink-0" />
+              {!collapsed && <span>{item.name}</span>}
+            </a>
+          );
+        })}
+
+        <div className="my-4 border-t" />
+
+        {!collapsed && (
+          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Integrations
           </span>
         )}
@@ -125,7 +197,38 @@ export default function Sidebar() {
 
         <div className="my-4 border-t" />
 
+        {!collapsed && (
+          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Management
+          </span>
+        )}
         {managementNav.map((item) => {
+          const isActive = currentPath.startsWith(item.href);
+          return (
+            <a
+              key={item.name}
+              href={item.href}
+              className={cn(
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              <item.icon className="h-5 w-5 flex-shrink-0" />
+              {!collapsed && <span>{item.name}</span>}
+            </a>
+          );
+        })}
+
+        <div className="my-4 border-t" />
+
+        {!collapsed && (
+          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Settings
+          </span>
+        )}
+        {settingsNav.map((item) => {
           const isActive = currentPath.startsWith(item.href);
           return (
             <a

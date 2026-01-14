@@ -465,22 +465,23 @@ const listTemplatesSchema = z.object({
   search: z.string().optional()
 });
 
+const oidSchema = z.object({
+  id: z.string().optional(),
+  oid: z.string().min(1),
+  name: z.string().min(1),
+  label: z.string().optional(),
+  unit: z.string().optional(),
+  type: z.string().optional(),
+  description: z.string().optional()
+});
+
 const createTemplateSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   vendor: z.string().optional(),
   deviceClass: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  oids: z.array(
-    z.object({
-      oid: z.string().min(1),
-      name: z.string().min(1),
-      label: z.string().optional(),
-      unit: z.string().optional(),
-      type: z.string().optional(),
-      description: z.string().optional()
-    })
-  )
+  oids: z.array(oidSchema)
 });
 
 const updateTemplateSchema = createTemplateSchema.partial();
@@ -811,7 +812,7 @@ snmpRoutes.post(
     const payload = c.req.valid('json');
     const createdAt = nowIso();
     const oids: SnmpOid[] = payload.oids.map((oid) => ({
-      id: `oid-custom-${randomUUID()}`,
+      id: oid.id ?? `oid-custom-${randomUUID()}`,
       oid: oid.oid,
       name: oid.name,
       label: oid.label ?? oid.name,
@@ -865,10 +866,11 @@ snmpRoutes.patch(
     }
 
     const payload = c.req.valid('json');
-    const nextTemplate: Partial<SnmpTemplate> = { ...payload };
-    if (payload.oids) {
-      template.oids = payload.oids.map((oid) => ({
-        id: `oid-custom-${randomUUID()}`,
+    const { oids: payloadOids, ...templateUpdates } = payload;
+    const nextTemplate: Partial<SnmpTemplate> = { ...templateUpdates };
+    if (payloadOids) {
+      template.oids = payloadOids.map((oid) => ({
+        id: oid.id ?? `oid-custom-${randomUUID()}`,
         oid: oid.oid,
         name: oid.name,
         label: oid.label ?? oid.name,
@@ -876,7 +878,6 @@ snmpRoutes.patch(
         type: oid.type ?? 'Gauge32',
         description: oid.description
       }));
-      delete nextTemplate.oids;
     }
 
     Object.assign(template, nextTemplate, {
@@ -944,7 +945,7 @@ snmpRoutes.get(
     const end = normalizeDate(query.end, new Date());
     const start = normalizeDate(query.start, new Date(end.getTime() - 24 * 60 * 60 * 1000));
     const interval = query.interval ?? '1h';
-    const intervalMs = intervalMsMap[interval];
+    const intervalMs = intervalMsMap[interval] ?? 0;
     const metrics = metricsByDevice[deviceId]?.metrics ?? [];
 
     return c.json({
@@ -975,7 +976,7 @@ snmpRoutes.get(
     const end = normalizeDate(query.end, new Date());
     const start = normalizeDate(query.start, new Date(end.getTime() - 24 * 60 * 60 * 1000));
     const interval = query.interval ?? '1h';
-    const intervalMs = intervalMsMap[interval];
+    const intervalMs = intervalMsMap[interval] ?? 0;
     const metrics = metricsByDevice[deviceId]?.metrics ?? [];
     const metric = metrics.find((entry) => entry.oid === oid || entry.name === oid);
 

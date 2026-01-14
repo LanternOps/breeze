@@ -13,7 +13,7 @@ import {
 // Import actual components
 import ProcessManager, { type Process } from './ProcessManager';
 import ServicesManager, { type WindowsService } from './ServicesManager';
-import EventViewer, { type EventLog, type EventLogEntry } from './EventViewer';
+import EventViewer, { type EventFilter, type EventLog, type EventLogEntry } from './EventViewer';
 import ScheduledTasks, { type ScheduledTask } from './ScheduledTasks';
 import RegistryEditor from './RegistryEditor';
 import RemoteTerminal from './RemoteTerminal';
@@ -155,10 +155,14 @@ export default function RemoteToolsPage({
     }
   }, [deviceId]);
 
-  const handleQueryEvents = useCallback(async (logName: string, filter: { level?: string; source?: string }) => {
+  const handleQueryEvents = useCallback(async (logName: string, filter: EventFilter) => {
     const params = new URLSearchParams();
-    if (filter.level) params.set('level', filter.level);
-    if (filter.source) params.set('source', filter.source);
+    if (filter.levels?.length) params.set('level', filter.levels.join(','));
+    if (filter.sources?.length) params.set('source', filter.sources.join(','));
+    if (filter.startDate) params.set('startDate', filter.startDate);
+    if (filter.endDate) params.set('endDate', filter.endDate);
+    if (filter.eventId !== undefined) params.set('eventId', String(filter.eventId));
+    if (filter.keywords) params.set('keywords', filter.keywords);
 
     const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/eventlogs/${encodeURIComponent(logName)}/events?${params}`);
     if (!res.ok) {
@@ -336,13 +340,13 @@ export default function RemoteToolsPage({
         {activeTab === 'terminal' && (
           <RemoteTerminal
             deviceId={deviceId}
-            deviceName={deviceName}
+            deviceHostname={deviceName}
           />
         )}
         {activeTab === 'files' && (
           <FileManager
             deviceId={deviceId}
-            deviceName={deviceName}
+            deviceHostname={deviceName}
           />
         )}
       </div>

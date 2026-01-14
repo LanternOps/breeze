@@ -1,0 +1,30 @@
+---
+import Layout from '../../layouts/Layout.astro';
+---
+
+<Layout title="Organization Settings | Breeze RMM">
+  <div class="h-[calc(100vh-4rem)]" id="organization-settings-root">
+    <div class="flex h-full items-center justify-center">
+      <div class="text-center">
+        <p class="text-muted-foreground">Loading Organization Settings...</p>
+        <p class="mt-2 text-sm text-muted-foreground">
+          Configuring org profile, branding, and preferences
+        </p>
+      </div>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  import { createElement } from 'react';
+  import { createRoot } from 'react-dom/client';
+  import OrgSettingsPage from '../../components/settings/OrgSettingsPage';
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const container = document.getElementById('organization-settings-root');
+    if (container) {
+      const root = createRoot(container);
+      root.render(createElement(OrgSettingsPage));
+    }
+  });
+</script>

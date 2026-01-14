@@ -19,6 +19,12 @@ type LicenseType = 'free' | 'commercial' | 'open-source';
 type DeploymentAction = 'install' | 'uninstall' | 'update';
 type DeploymentStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+interface Device {
+  id: string;
+  name: string;
+  os: Platform;
+}
+
 interface SoftwareCatalogItem {
   id: string;
   name: string;
@@ -89,21 +95,21 @@ interface DeviceInventory {
   items: DeviceInventoryItem[];
 }
 
-const devices = [
+const devices: [Device, Device, Device] = [
   {
     id: 'a3f1c7d2-5b3c-4fa8-b7e9-1b2a3c4d5e6f',
     name: 'WIN-SEA-01',
-    os: 'windows' as Platform
+    os: 'windows'
   },
   {
     id: 'b4e2d8f3-6c4d-4b9e-9f10-2a3b4c5d6e7f',
     name: 'MAC-NYC-14',
-    os: 'macos' as Platform
+    os: 'macos'
   },
   {
     id: 'c5f3e9a4-7d5e-4c10-a111-3b4c5d6e7f80',
     name: 'UBU-LON-22',
-    os: 'linux' as Platform
+    os: 'linux'
   }
 ];
 
@@ -763,7 +769,7 @@ softwareRoutes.delete(
 
     softwareCatalog.splice(index, 1);
     for (let i = softwareVersions.length - 1; i >= 0; i -= 1) {
-      if (softwareVersions[i].softwareId === id) {
+      if ((softwareVersions[i]?.softwareId ?? '') === id) {
         softwareVersions.splice(i, 1);
       }
     }

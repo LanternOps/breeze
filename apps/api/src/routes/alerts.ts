@@ -5,6 +5,7 @@ import { and, eq, sql, desc, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
   alertRules,
+  alertTemplates,
   alerts,
   notificationChannels,
   escalationPolicies,
@@ -130,35 +131,26 @@ const listAlertRulesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
-  enabled: z.enum(['true', 'false']).optional(),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional()
+  isActive: z.enum(['true', 'false']).optional()
 });
 
 const createAlertRuleSchema = z.object({
   orgId: z.string().uuid().optional(),
-  name: z.string().min(1).max(255),
-  description: z.string().optional(),
-  enabled: z.boolean().default(true),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
-  targets: z.any(), // JSONB for flexible targeting
-  conditions: z.any(), // JSONB for flexible conditions
-  cooldownMinutes: z.number().int().min(0).max(10080).default(15), // Max 1 week
-  escalationPolicyId: z.string().uuid().optional(),
-  notificationChannels: z.array(z.string().uuid()).optional(),
-  autoResolve: z.boolean().default(true)
+  templateId: z.string().uuid(),
+  name: z.string().min(1).max(200),
+  targetType: z.string().min(1).max(50),
+  targetId: z.string().uuid(),
+  overrideSettings: z.any().optional(),
+  isActive: z.boolean().default(true)
 });
 
 const updateAlertRuleSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  description: z.string().optional(),
-  enabled: z.boolean().optional(),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-  targets: z.any().optional(),
-  conditions: z.any().optional(),
-  cooldownMinutes: z.number().int().min(0).max(10080).optional(),
-  escalationPolicyId: z.string().uuid().nullable().optional(),
-  notificationChannels: z.array(z.string().uuid()).optional(),
-  autoResolve: z.boolean().optional()
+  templateId: z.string().uuid().optional(),
+  name: z.string().min(1).max(200).optional(),
+  targetType: z.string().min(1).max(50).optional(),
+  targetId: z.string().uuid().optional(),
+  overrideSettings: z.any().optional(),
+  isActive: z.boolean().optional()
 });
 
 const testAlertRuleSchema = z.object({
@@ -280,12 +272,8 @@ alertRoutes.get(
     }
 
     // Additional filters
-    if (query.enabled !== undefined) {
-      conditions.push(eq(alertRules.enabled, query.enabled === 'true'));
-    }
-
-    if (query.severity) {
-      conditions.push(eq(alertRules.severity, query.severity));
+    if (query.isActive !== undefined) {
+      conditions.push(eq(alertRules.isActive, query.isActive === 'true'));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -302,7 +290,7 @@ alertRoutes.get(
       .select()
       .from(alertRules)
       .where(whereCondition)
-      .orderBy(desc(alertRules.updatedAt))
+      .orderBy(desc(alertRules.createdAt))
       .limit(limit)
       .offset(offset);
 
@@ -359,56 +347,16 @@ alertRoutes.post(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    // Verify escalation policy belongs to org if provided
-    if (data.escalationPolicyId) {
-      const [policy] = await db
-        .select()
-        .from(escalationPolicies)
-        .where(
-          and(
-            eq(escalationPolicies.id, data.escalationPolicyId),
-            eq(escalationPolicies.orgId, orgId!)
-          )
-        )
-        .limit(1);
-
-      if (!policy) {
-        return c.json({ error: 'Escalation policy not found or belongs to different organization' }, 400);
-      }
-    }
-
-    // Verify notification channels belong to org if provided
-    if (data.notificationChannels && data.notificationChannels.length > 0) {
-      const validChannels = await db
-        .select({ id: notificationChannels.id })
-        .from(notificationChannels)
-        .where(
-          and(
-            inArray(notificationChannels.id, data.notificationChannels),
-            eq(notificationChannels.orgId, orgId!)
-          )
-        );
-
-      if (validChannels.length !== data.notificationChannels.length) {
-        return c.json({ error: 'One or more notification channels not found or belong to different organization' }, 400);
-      }
-    }
-
     const [rule] = await db
       .insert(alertRules)
       .values({
         orgId: orgId!,
+        templateId: data.templateId,
         name: data.name,
-        description: data.description,
-        enabled: data.enabled,
-        severity: data.severity,
-        targets: data.targets,
-        conditions: data.conditions,
-        cooldownMinutes: data.cooldownMinutes,
-        escalationPolicyId: data.escalationPolicyId,
-        notificationChannels: data.notificationChannels || [],
-        autoResolve: data.autoResolve,
-        createdBy: auth.user.id
+        targetType: data.targetType,
+        targetId: data.targetId,
+        overrideSettings: data.overrideSettings,
+        isActive: data.isActive
       })
       .returning();
 
@@ -435,54 +383,15 @@ alertRoutes.put(
       return c.json({ error: 'Alert rule not found' }, 404);
     }
 
-    // Verify escalation policy if being updated
-    if (data.escalationPolicyId !== undefined && data.escalationPolicyId !== null) {
-      const [policy] = await db
-        .select()
-        .from(escalationPolicies)
-        .where(
-          and(
-            eq(escalationPolicies.id, data.escalationPolicyId),
-            eq(escalationPolicies.orgId, rule.orgId)
-          )
-        )
-        .limit(1);
-
-      if (!policy) {
-        return c.json({ error: 'Escalation policy not found or belongs to different organization' }, 400);
-      }
-    }
-
-    // Verify notification channels if being updated
-    if (data.notificationChannels && data.notificationChannels.length > 0) {
-      const validChannels = await db
-        .select({ id: notificationChannels.id })
-        .from(notificationChannels)
-        .where(
-          and(
-            inArray(notificationChannels.id, data.notificationChannels),
-            eq(notificationChannels.orgId, rule.orgId)
-          )
-        );
-
-      if (validChannels.length !== data.notificationChannels.length) {
-        return c.json({ error: 'One or more notification channels not found or belong to different organization' }, 400);
-      }
-    }
-
     // Build updates object
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    const updates: Record<string, unknown> = {};
 
+    if (data.templateId !== undefined) updates.templateId = data.templateId;
     if (data.name !== undefined) updates.name = data.name;
-    if (data.description !== undefined) updates.description = data.description;
-    if (data.enabled !== undefined) updates.enabled = data.enabled;
-    if (data.severity !== undefined) updates.severity = data.severity;
-    if (data.targets !== undefined) updates.targets = data.targets;
-    if (data.conditions !== undefined) updates.conditions = data.conditions;
-    if (data.cooldownMinutes !== undefined) updates.cooldownMinutes = data.cooldownMinutes;
-    if (data.escalationPolicyId !== undefined) updates.escalationPolicyId = data.escalationPolicyId;
-    if (data.notificationChannels !== undefined) updates.notificationChannels = data.notificationChannels;
-    if (data.autoResolve !== undefined) updates.autoResolve = data.autoResolve;
+    if (data.targetType !== undefined) updates.targetType = data.targetType;
+    if (data.targetId !== undefined) updates.targetId = data.targetId;
+    if (data.overrideSettings !== undefined) updates.overrideSettings = data.overrideSettings;
+    if (data.isActive !== undefined) updates.isActive = data.isActive;
 
     const [updated] = await db
       .update(alertRules)
@@ -565,25 +474,24 @@ alertRoutes.post(
       return c.json({ error: 'Device not found or belongs to different organization' }, 404);
     }
 
+    const [template] = await db
+      .select()
+      .from(alertTemplates)
+      .where(eq(alertTemplates.id, rule.templateId))
+      .limit(1);
+
+    if (!template) {
+      return c.json({ error: 'Alert template not found' }, 404);
+    }
+
     // Evaluate conditions against device
     // This is a simplified simulation - real implementation would evaluate all conditions
-    const conditions = rule.conditions as Record<string, unknown>;
-    const targets = rule.targets as Record<string, unknown>;
+    const conditions = template.conditions as Record<string, unknown>;
 
     // Check if device matches targets
     let targetMatch = true;
-    if (targets) {
-      // Example target matching - can be extended based on schema
-      if (targets.osType && targets.osType !== device.osType) {
-        targetMatch = false;
-      }
-      if (targets.tags && Array.isArray(targets.tags)) {
-        const deviceTags = device.tags || [];
-        const hasMatchingTag = (targets.tags as string[]).some(t => deviceTags.includes(t));
-        if (!hasMatchingTag && targets.tags.length > 0) {
-          targetMatch = false;
-        }
-      }
+    if (rule.targetType === 'device') {
+      targetMatch = rule.targetId === device.id;
     }
 
     // Simulate condition evaluation
@@ -591,7 +499,7 @@ alertRoutes.post(
 
     // Example condition evaluation - would be more complex in production
     if (conditions && typeof conditions === 'object') {
-      for (const [key, value] of Object.entries(conditions)) {
+      for (const key of Object.keys(conditions)) {
         // Simulate evaluation based on condition type
         conditionResults.push({
           condition: key,
@@ -605,7 +513,7 @@ alertRoutes.post(
       rule: {
         id: rule.id,
         name: rule.name,
-        severity: rule.severity
+        severity: template.severity
       },
       device: {
         id: device.id,
@@ -903,7 +811,10 @@ alertRoutes.get(
       rule: rule ? {
         id: rule.id,
         name: rule.name,
-        severity: rule.severity
+        templateId: rule.templateId,
+        targetType: rule.targetType,
+        targetId: rule.targetId,
+        isActive: rule.isActive
       } : null,
       notifications
     });
@@ -1189,20 +1100,6 @@ alertRoutes.delete(
       return c.json({ error: 'Notification channel not found' }, 404);
     }
 
-    // Check if channel is used by any rules
-    const rulesUsingChannel = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(alertRules)
-      .where(sql`${channelId} = ANY(${alertRules.notificationChannels})`);
-
-    const usageCount = Number(rulesUsingChannel[0]?.count ?? 0);
-    if (usageCount > 0) {
-      return c.json({
-        error: 'Cannot delete channel that is used by alert rules',
-        rulesUsingChannel: usageCount
-      }, 409);
-    }
-
     await db
       .delete(notificationChannels)
       .where(eq(notificationChannels.id, channelId));
@@ -1479,20 +1376,6 @@ alertRoutes.delete(
     const policy = await getEscalationPolicyWithOrgCheck(policyId, auth);
     if (!policy) {
       return c.json({ error: 'Escalation policy not found' }, 404);
-    }
-
-    // Check if policy is used by any rules
-    const rulesUsingPolicy = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(alertRules)
-      .where(eq(alertRules.escalationPolicyId, policyId));
-
-    const usageCount = Number(rulesUsingPolicy[0]?.count ?? 0);
-    if (usageCount > 0) {
-      return c.json({
-        error: 'Cannot delete policy that is used by alert rules',
-        rulesUsingPolicy: usageCount
-      }, 409);
     }
 
     await db

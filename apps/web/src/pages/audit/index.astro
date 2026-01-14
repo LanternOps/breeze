@@ -1,0 +1,30 @@
+---
+import Layout from '../../layouts/Layout.astro';
+---
+
+<Layout title="Audit Logs | Breeze RMM">
+  <div class="h-[calc(100vh-4rem)]" id="audit-root">
+    <div class="flex h-full items-center justify-center">
+      <div class="text-center">
+        <p class="text-muted-foreground">Loading Audit Logs...</p>
+        <p class="mt-2 text-sm text-muted-foreground">
+          Fetching recent activity and change history
+        </p>
+      </div>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  import { createElement } from 'react';
+  import { createRoot } from 'react-dom/client';
+  import AuditLogViewer from '../../components/audit/AuditLogViewer';
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const container = document.getElementById('audit-root');
+    if (container) {
+      const root = createRoot(container);
+      root.render(createElement(AuditLogViewer));
+    }
+  });
+</script>

@@ -7,6 +7,20 @@ type AuditExportProps = {
   onExport?: (format: 'csv' | 'json') => void;
 };
 
+type AuditExportRow = {
+  timestamp: string;
+  user: string;
+  action: string;
+  resource: string;
+  details: string;
+  ipAddress: string;
+  changes: {
+    before: Record<string, unknown>;
+    after: Record<string, unknown>;
+  };
+  [key: string]: unknown;
+};
+
 const columnOptions = [
   { id: 'timestamp', label: 'Timestamp' },
   { id: 'user', label: 'User' },
@@ -16,7 +30,7 @@ const columnOptions = [
   { id: 'ipAddress', label: 'IP Address' }
 ];
 
-const mockExportRows = [
+const mockExportRows: AuditExportRow[] = [
   {
     timestamp: '2024-05-28 14:12',
     user: 'Ariana Fields',
