@@ -10,6 +10,7 @@ export type { NotificationHistory, StatusChange } from './AlertDetails';
 export { default as AlertRuleList } from './AlertRuleList';
 export type {
   AlertRule,
+  AlertRuleStatus,
   AlertRuleTarget,
   AlertRuleTargetType,
   AlertRuleCondition,
@@ -20,6 +21,17 @@ export type {
 
 export { default as AlertRuleForm } from './AlertRuleForm';
 export type { AlertRuleFormValues, AlertRuleConditionFormValues } from './AlertRuleForm';
+
+// Alert Templates
+export { default as AlertTemplateList } from './AlertTemplateList';
+export { default as AlertTemplateEditor } from './AlertTemplateEditor';
+
+// Alert Rule Editor
+export { default as AlertRuleEditor } from './AlertRuleEditor';
+
+// Alert Correlation
+export { default as AlertCorrelationView } from './AlertCorrelationView';
+export { default as CorrelatedAlertGroups } from './CorrelatedAlertGroups';
 
 // Notification Channels
 export { default as NotificationChannelList } from './NotificationChannelList';

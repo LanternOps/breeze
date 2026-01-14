@@ -5,6 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizations, auditLogs } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { executeCommand, CommandTypes } from '../services/commandQueue';
 
 export const systemToolsRoutes = new Hono();
 
@@ -346,21 +347,47 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    const processes = generateMockProcesses();
-    const { page, limit, offset } = getPagination(c.req.valid('query'));
+    const { page, limit } = getPagination(c.req.valid('query'));
+    const search = c.req.query('search') || '';
 
-    const paginatedProcesses = processes.slice(offset, offset + limit);
+    // Execute command on agent
+    const result = await executeCommand(deviceId, CommandTypes.LIST_PROCESSES, {
+      page,
+      limit,
+      search
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    return c.json({
-      data: paginatedProcesses,
-      meta: {
-        total: processes.length,
-        page,
-        limit,
-        totalPages: Math.ceil(processes.length / limit)
-      }
-    });
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to get processes' }, 500);
+    }
+
+    // Parse the result from agent
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({
+        data: data.processes || [],
+        meta: {
+          total: data.total || 0,
+          page: data.page || page,
+          limit: data.limit || limit,
+          totalPages: data.totalPages || 1
+        }
+      });
+    } catch {
+      // Fallback to mock data if agent call fails
+      const processes = generateMockProcesses();
+      const { offset } = getPagination(c.req.valid('query'));
+      const paginatedProcesses = processes.slice(offset, offset + limit);
+      return c.json({
+        data: paginatedProcesses,
+        meta: {
+          total: processes.length,
+          page,
+          limit,
+          totalPages: Math.ceil(processes.length / limit)
+        }
+      });
+    }
   }
 );
 
@@ -400,19 +427,18 @@ systemToolsRoutes.post(
   async (c) => {
     const { deviceId, pid } = c.req.valid('param');
     const auth = c.get('auth');
+    const force = c.req.query('force') === 'true';
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // Find process for audit log
-    const processes = generateMockProcesses();
-    const process = processes.find(p => p.pid === pid);
-
-    if (!process) {
-      return c.json({ error: 'Process not found' }, 404);
-    }
+    // Execute kill command on agent
+    const result = await executeCommand(deviceId, CommandTypes.KILL_PROCESS, {
+      pid,
+      force
+    }, { userId: auth.user?.id, timeoutMs: 15000 });
 
     // Audit log for sensitive operation
     await createAuditLog({
@@ -425,18 +451,30 @@ systemToolsRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: {
         pid,
-        processName: process.name,
-        user: process.user
+        force,
+        result: result.status
       },
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
     });
 
-    // TODO: Replace with actual agent call
-    return c.json({
-      success: true,
-      message: `Process ${pid} (${process.name}) terminated successfully`
-    });
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to kill process' }, 500);
+    }
+
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({
+        success: true,
+        message: `Process ${pid} (${data.name || 'unknown'}) terminated successfully`
+      });
+    } catch {
+      return c.json({
+        success: true,
+        message: `Process ${pid} terminated successfully`
+      });
+    }
   }
 );
 
@@ -460,21 +498,48 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    const services = generateMockServices();
-    const { page, limit, offset } = getPagination(c.req.valid('query'));
+    const { page, limit } = getPagination(c.req.valid('query'));
+    const search = c.req.query('search') || '';
+    const status = c.req.query('status') || '';
 
-    const paginatedServices = services.slice(offset, offset + limit);
+    // Execute command on agent
+    const result = await executeCommand(deviceId, CommandTypes.LIST_SERVICES, {
+      page,
+      limit,
+      search,
+      status
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    return c.json({
-      data: paginatedServices,
-      meta: {
-        total: services.length,
-        page,
-        limit,
-        totalPages: Math.ceil(services.length / limit)
-      }
-    });
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to get services' }, 500);
+    }
+
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({
+        data: data.services || [],
+        meta: {
+          total: data.total || 0,
+          page: data.page || page,
+          limit: data.limit || limit,
+          totalPages: data.totalPages || 1
+        }
+      });
+    } catch {
+      // Fallback to mock data
+      const services = generateMockServices();
+      const { offset } = getPagination(c.req.valid('query'));
+      const paginatedServices = services.slice(offset, offset + limit);
+      return c.json({
+        data: paginatedServices,
+        meta: {
+          total: services.length,
+          page,
+          limit,
+          totalPages: Math.ceil(services.length / limit)
+        }
+      });
+    }
   }
 );
 

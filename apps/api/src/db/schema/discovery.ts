@@ -147,16 +147,3 @@ export const networkTopology = pgTable('network_topology', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
-
-export const snmpTemplates = pgTable('snmp_templates', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  name: varchar('name', { length: 255 }).notNull(),
-  manufacturer: varchar('manufacturer', { length: 255 }),
-  model: varchar('model', { length: 255 }),
-  deviceType: varchar('device_type', { length: 100 }),
-  sysObjectId: varchar('sys_object_id', { length: 255 }),
-  oidMappings: jsonb('oid_mappings'),
-  isBuiltin: boolean('is_builtin').notNull().default(false),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
-});

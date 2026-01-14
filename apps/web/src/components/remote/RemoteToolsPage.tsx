@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   Activity,
   Settings2,
@@ -9,6 +9,15 @@ import {
   FolderOpen,
   Monitor
 } from 'lucide-react';
+
+// Import actual components
+import ProcessManager, { type Process } from './ProcessManager';
+import ServicesManager, { type WindowsService } from './ServicesManager';
+import EventViewer, { type EventLog, type EventLogEntry } from './EventViewer';
+import ScheduledTasks, { type ScheduledTask } from './ScheduledTasks';
+import RegistryEditor from './RegistryEditor';
+import RemoteTerminal from './RemoteTerminal';
+import FileManager from './FileManager';
 
 type RemoteToolsPageProps = {
   deviceId: string;
@@ -37,9 +46,194 @@ export default function RemoteToolsPage({
 }: RemoteToolsPageProps) {
   const [activeTab, setActiveTab] = useState<ToolTab>('processes');
 
-  const isWindows = deviceOs === 'windows';
+  // Process state
+  const [processes, setProcesses] = useState<Process[]>([]);
+  const [processLoading, setProcessLoading] = useState(false);
 
+  // Services state
+  const [services, setServices] = useState<WindowsService[]>([]);
+  const [serviceLoading, setServiceLoading] = useState(false);
+
+  // Event logs state
+  const [eventLogs, setEventLogs] = useState<EventLog[]>([]);
+  const [events, setEvents] = useState<EventLogEntry[]>([]);
+  const [eventLoading, setEventLoading] = useState(false);
+
+  // Scheduled tasks state
+  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const [taskLoading, setTaskLoading] = useState(false);
+
+  const isWindows = deviceOs === 'windows';
   const availableTabs = tabs.filter(tab => !tab.windowsOnly || isWindows);
+
+  // Process API calls
+  const fetchProcesses = useCallback(async () => {
+    setProcessLoading(true);
+    try {
+      const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/processes`);
+      if (!res.ok) throw new Error('Failed to fetch processes');
+      const json = await res.json();
+      setProcesses(json.data || []);
+    } catch (err) {
+      console.error('Failed to fetch processes:', err);
+    } finally {
+      setProcessLoading(false);
+    }
+  }, [deviceId]);
+
+  const handleKillProcess = useCallback(async (pid: number) => {
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/processes/${pid}/kill`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to kill process');
+    }
+    await fetchProcesses();
+  }, [deviceId, fetchProcesses]);
+
+  // Services API calls
+  const fetchServices = useCallback(async () => {
+    setServiceLoading(true);
+    try {
+      const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/services`);
+      if (!res.ok) throw new Error('Failed to fetch services');
+      const json = await res.json();
+      setServices(json.data || []);
+    } catch (err) {
+      console.error('Failed to fetch services:', err);
+    } finally {
+      setServiceLoading(false);
+    }
+  }, [deviceId]);
+
+  const handleStartService = useCallback(async (name: string) => {
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/start`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to start service');
+    }
+    await fetchServices();
+  }, [deviceId, fetchServices]);
+
+  const handleStopService = useCallback(async (name: string) => {
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/stop`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to stop service');
+    }
+    await fetchServices();
+  }, [deviceId, fetchServices]);
+
+  const handleRestartService = useCallback(async (name: string) => {
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/restart`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to restart service');
+    }
+    await fetchServices();
+  }, [deviceId, fetchServices]);
+
+  // Event logs API calls
+  const fetchEventLogs = useCallback(async () => {
+    setEventLoading(true);
+    try {
+      const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/eventlogs`);
+      if (!res.ok) throw new Error('Failed to fetch event logs');
+      const json = await res.json();
+      setEventLogs(json.data || []);
+    } catch (err) {
+      console.error('Failed to fetch event logs:', err);
+    } finally {
+      setEventLoading(false);
+    }
+  }, [deviceId]);
+
+  const handleQueryEvents = useCallback(async (logName: string, filter: { level?: string; source?: string }) => {
+    const params = new URLSearchParams();
+    if (filter.level) params.set('level', filter.level);
+    if (filter.source) params.set('source', filter.source);
+
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/eventlogs/${encodeURIComponent(logName)}/events?${params}`);
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to query events');
+    }
+    const json = await res.json();
+    return json.data || [];
+  }, [deviceId]);
+
+  // Scheduled tasks API calls
+  const fetchTasks = useCallback(async () => {
+    setTaskLoading(true);
+    try {
+      const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/tasks`);
+      if (!res.ok) throw new Error('Failed to fetch tasks');
+      const json = await res.json();
+      setTasks(json.data || []);
+    } catch (err) {
+      console.error('Failed to fetch tasks:', err);
+    } finally {
+      setTaskLoading(false);
+    }
+  }, [deviceId]);
+
+  const handleRunTask = useCallback(async (path: string) => {
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/run`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to run task');
+    }
+    await fetchTasks();
+  }, [deviceId, fetchTasks]);
+
+  const handleEnableTask = useCallback(async (path: string) => {
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/enable`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to enable task');
+    }
+    await fetchTasks();
+  }, [deviceId, fetchTasks]);
+
+  const handleDisableTask = useCallback(async (path: string) => {
+    const res = await fetch(`/api/v1/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/disable`, {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to disable task');
+    }
+    await fetchTasks();
+  }, [deviceId, fetchTasks]);
+
+  // Load data on tab change
+  useEffect(() => {
+    switch (activeTab) {
+      case 'processes':
+        fetchProcesses();
+        break;
+      case 'services':
+        if (isWindows) fetchServices();
+        break;
+      case 'eventlog':
+        if (isWindows) fetchEventLogs();
+        break;
+      case 'tasks':
+        if (isWindows) fetchTasks();
+        break;
+    }
+  }, [activeTab, isWindows, fetchProcesses, fetchServices, fetchEventLogs, fetchTasks]);
 
   return (
     <div className="flex h-full flex-col">
@@ -89,132 +283,68 @@ export default function RemoteToolsPage({
       {/* Tool Content */}
       <div className="flex-1 overflow-auto p-6">
         {activeTab === 'processes' && (
-          <ProcessManagerPlaceholder deviceId={deviceId} deviceName={deviceName} />
+          <ProcessManager
+            deviceId={deviceId}
+            deviceName={deviceName}
+            processes={processes}
+            loading={processLoading}
+            onRefresh={fetchProcesses}
+            onKillProcess={handleKillProcess}
+          />
         )}
         {activeTab === 'services' && isWindows && (
-          <ServicesManagerPlaceholder deviceId={deviceId} deviceName={deviceName} />
+          <ServicesManager
+            deviceId={deviceId}
+            deviceName={deviceName}
+            deviceOs={deviceOs}
+            services={services}
+            loading={serviceLoading}
+            onRefresh={fetchServices}
+            onStartService={handleStartService}
+            onStopService={handleStopService}
+            onRestartService={handleRestartService}
+          />
         )}
         {activeTab === 'registry' && isWindows && (
-          <RegistryEditorPlaceholder deviceId={deviceId} deviceName={deviceName} />
+          <RegistryEditor
+            deviceId={deviceId}
+            deviceName={deviceName}
+          />
         )}
         {activeTab === 'eventlog' && isWindows && (
-          <EventViewerPlaceholder deviceId={deviceId} deviceName={deviceName} />
+          <EventViewer
+            deviceId={deviceId}
+            deviceName={deviceName}
+            logs={eventLogs}
+            events={events}
+            loading={eventLoading}
+            onQueryEvents={handleQueryEvents}
+          />
         )}
         {activeTab === 'tasks' && isWindows && (
-          <ScheduledTasksPlaceholder deviceId={deviceId} deviceName={deviceName} />
+          <ScheduledTasks
+            deviceId={deviceId}
+            deviceName={deviceName}
+            tasks={tasks}
+            loading={taskLoading}
+            onRefresh={fetchTasks}
+            onRunTask={handleRunTask}
+            onEnableTask={handleEnableTask}
+            onDisableTask={handleDisableTask}
+          />
         )}
         {activeTab === 'terminal' && (
-          <TerminalPlaceholder deviceId={deviceId} deviceName={deviceName} />
+          <RemoteTerminal
+            deviceId={deviceId}
+            deviceName={deviceName}
+          />
         )}
         {activeTab === 'files' && (
-          <FileManagerPlaceholder deviceId={deviceId} deviceName={deviceName} />
+          <FileManager
+            deviceId={deviceId}
+            deviceName={deviceName}
+          />
         )}
-      </div>
-    </div>
-  );
-}
-
-// Placeholder components - will be replaced with actual imports once created
-function ProcessManagerPlaceholder({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <h2 className="mb-4 text-lg font-semibold">Process Manager</h2>
-      <p className="text-sm text-muted-foreground">
-        View and manage running processes on {deviceName}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">Device ID: {deviceId}</p>
-      <div className="mt-4 rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-        ProcessManager component will be loaded here
-      </div>
-    </div>
-  );
-}
-
-function ServicesManagerPlaceholder({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <h2 className="mb-4 text-lg font-semibold">Services Manager</h2>
-      <p className="text-sm text-muted-foreground">
-        Manage Windows services on {deviceName}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">Device ID: {deviceId}</p>
-      <div className="mt-4 rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-        ServicesManager component will be loaded here
-      </div>
-    </div>
-  );
-}
-
-function RegistryEditorPlaceholder({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <h2 className="mb-4 text-lg font-semibold">Registry Editor</h2>
-      <p className="text-sm text-muted-foreground">
-        Browse and edit Windows Registry on {deviceName}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">Device ID: {deviceId}</p>
-      <div className="mt-4 rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-        RegistryEditor component will be loaded here
-      </div>
-    </div>
-  );
-}
-
-function EventViewerPlaceholder({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <h2 className="mb-4 text-lg font-semibold">Event Viewer</h2>
-      <p className="text-sm text-muted-foreground">
-        Browse Windows Event Logs on {deviceName}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">Device ID: {deviceId}</p>
-      <div className="mt-4 rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-        EventViewer component will be loaded here
-      </div>
-    </div>
-  );
-}
-
-function ScheduledTasksPlaceholder({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <h2 className="mb-4 text-lg font-semibold">Scheduled Tasks</h2>
-      <p className="text-sm text-muted-foreground">
-        Manage Windows Task Scheduler on {deviceName}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">Device ID: {deviceId}</p>
-      <div className="mt-4 rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-        ScheduledTasks component will be loaded here
-      </div>
-    </div>
-  );
-}
-
-function TerminalPlaceholder({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <h2 className="mb-4 text-lg font-semibold">Remote Terminal</h2>
-      <p className="text-sm text-muted-foreground">
-        Execute commands on {deviceName}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">Device ID: {deviceId}</p>
-      <div className="mt-4 rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-        RemoteTerminal component will be loaded here
-      </div>
-    </div>
-  );
-}
-
-function FileManagerPlaceholder({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <h2 className="mb-4 text-lg font-semibold">File Browser</h2>
-      <p className="text-sm text-muted-foreground">
-        Browse and transfer files on {deviceName}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">Device ID: {deviceId}</p>
-      <div className="mt-4 rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-        FileManager component will be loaded here
       </div>
     </div>
   );

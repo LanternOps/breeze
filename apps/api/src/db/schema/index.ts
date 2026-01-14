@@ -18,3 +18,7 @@ export * from './plugins';
 export * from './discovery';
 export * from './mobile';
 export * from './maintenance';
+export * from './security';
+export * from './software';
+export * from './backup';
+export * from './snmp';

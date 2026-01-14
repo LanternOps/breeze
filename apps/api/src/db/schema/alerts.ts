@@ -1,4 +1,16 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  uuid,
+  varchar,
+  text,
+  timestamp,
+  boolean,
+  jsonb,
+  pgEnum,
+  integer,
+  index,
+  numeric
+} from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -7,23 +19,36 @@ export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', '
 export const alertStatusEnum = pgEnum('alert_status', ['active', 'acknowledged', 'resolved', 'suppressed']);
 export const notificationChannelTypeEnum = pgEnum('notification_channel_type', ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms']);
 
+export const alertTemplates = pgTable('alert_templates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').references(() => organizations.id),
+  name: varchar('name', { length: 200 }).notNull(),
+  description: text('description'),
+  conditions: jsonb('conditions').notNull(),
+  severity: alertSeverityEnum('severity').notNull(),
+  titleTemplate: text('title_template').notNull(),
+  messageTemplate: text('message_template').notNull(),
+  autoResolve: boolean('auto_resolve').notNull().default(false),
+  autoResolveConditions: jsonb('auto_resolve_conditions'),
+  cooldownMinutes: integer('cooldown_minutes').notNull().default(5),
+  isBuiltIn: boolean('is_built_in').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
+
 export const alertRules = pgTable('alert_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  name: varchar('name', { length: 255 }).notNull(),
-  description: text('description'),
-  enabled: boolean('enabled').notNull().default(true),
-  severity: alertSeverityEnum('severity').notNull(),
-  targets: jsonb('targets').notNull(),
-  conditions: jsonb('conditions').notNull(),
-  cooldownMinutes: integer('cooldown_minutes').notNull().default(15),
-  escalationPolicyId: uuid('escalation_policy_id'),
-  notificationChannels: jsonb('notification_channels').default([]),
-  autoResolve: boolean('auto_resolve').notNull().default(true),
-  createdBy: uuid('created_by').references(() => users.id),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+  templateId: uuid('template_id').notNull().references(() => alertTemplates.id),
+  name: varchar('name', { length: 200 }).notNull(),
+  targetType: varchar('target_type', { length: 50 }).notNull(),
+  targetId: uuid('target_id').notNull(),
+  overrideSettings: jsonb('override_settings'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+}, (table) => ({
+  orgIdIdx: index('alert_rules_org_id_idx').on(table.orgId),
+  templateIdIdx: index('alert_rules_template_id_idx').on(table.templateId)
+}));
 
 export const alerts = pgTable('alerts', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -44,6 +69,19 @@ export const alerts = pgTable('alerts', {
   suppressedUntil: timestamp('suppressed_until'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
+
+export const alertCorrelations = pgTable('alert_correlations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  parentAlertId: uuid('parent_alert_id').notNull().references(() => alerts.id),
+  childAlertId: uuid('child_alert_id').notNull().references(() => alerts.id),
+  correlationType: varchar('correlation_type', { length: 50 }).notNull(),
+  confidence: numeric('confidence', { precision: 3, scale: 2 }),
+  metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+}, (table) => ({
+  parentAlertIdIdx: index('alert_correlations_parent_alert_id_idx').on(table.parentAlertId),
+  childAlertIdIdx: index('alert_correlations_child_alert_id_idx').on(table.childAlertId)
+}));
 
 export const notificationChannels = pgTable('notification_channels', {
   id: uuid('id').primaryKey().defaultRandom(),

@@ -1,18 +1,9 @@
 import { useMemo, useState } from 'react';
-import {
-  Search,
-  ChevronLeft,
-  ChevronRight,
-  Pencil,
-  Trash2,
-  Play,
-  ToggleLeft,
-  ToggleRight
-} from 'lucide-react';
+import { Pencil, Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AlertSeverity } from './AlertList';
 
-export type AlertRuleTargetType = 'all' | 'site' | 'group' | 'device';
+export type AlertRuleTargetType = 'org' | 'site' | 'group' | 'device' | 'all';
 
 export type AlertRuleTarget = {
   type: AlertRuleTargetType;
@@ -29,120 +20,213 @@ export type AlertRuleCondition = {
   metric?: MetricType;
   operator?: ComparisonOperator;
   value?: number;
-  duration?: number; // in minutes
+  duration?: number;
   field?: string;
   customCondition?: string;
 };
+
+export type AlertRuleStatus = 'active' | 'paused';
 
 export type AlertRule = {
   id: string;
   name: string;
   description?: string;
-  severity: AlertSeverity;
-  enabled: boolean;
-  targets: AlertRuleTarget;
-  conditions: AlertRuleCondition[];
-  notificationChannelIds: string[];
-  cooldownMinutes: number;
-  autoResolve: boolean;
-  createdAt: string;
-  updatedAt: string;
+  severity?: AlertSeverity;
+  enabled?: boolean;
+  targets?: AlertRuleTarget;
+  conditions?: AlertRuleCondition[];
+  notificationChannelIds?: string[];
+  cooldownMinutes?: number;
+  autoResolve?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  templateId?: string;
+  templateName?: string;
+  targetType?: AlertRuleTargetType;
+  targetName?: string;
+  status?: AlertRuleStatus;
+  alertsTriggered?: number;
+  lastTriggered?: string;
 };
 
 type AlertRuleListProps = {
-  rules: AlertRule[];
+  rules?: AlertRule[];
   onEdit?: (rule: AlertRule) => void;
   onDelete?: (rule: AlertRule) => void;
-  onTest?: (rule: AlertRule) => void;
   onToggle?: (rule: AlertRule, enabled: boolean) => void;
-  pageSize?: number;
+  onCreate?: () => void;
+  onTest?: (rule: AlertRule) => void;
 };
 
-const severityConfig: Record<AlertSeverity, { label: string; color: string }> = {
-  critical: { label: 'Critical', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  high: { label: 'High', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
-  medium: { label: 'Medium', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  low: { label: 'Low', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  info: { label: 'Info', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+const statusConfig: Record<AlertRuleStatus, { label: string; className: string }> = {
+  active: { label: 'Active', className: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40' },
+  paused: { label: 'Paused', className: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
 };
+
+const mockRules: AlertRule[] = [
+  {
+    id: 'rule-1001',
+    name: 'Critical CPU Escalation',
+    templateId: 'tmpl-001',
+    templateName: 'CPU Saturation',
+    targetType: 'org',
+    targetName: 'All sites',
+    status: 'active',
+    alertsTriggered: 32,
+    lastTriggered: '2h ago'
+  },
+  {
+    id: 'rule-1002',
+    name: 'Memory Pressure - Servers',
+    templateId: 'tmpl-002',
+    templateName: 'Memory Pressure',
+    targetType: 'group',
+    targetName: 'Core Servers',
+    status: 'active',
+    alertsTriggered: 11,
+    lastTriggered: '45m ago'
+  },
+  {
+    id: 'rule-1003',
+    name: 'Disk Risk - Finance',
+    templateId: 'tmpl-003',
+    templateName: 'Disk Space Risk',
+    targetType: 'site',
+    targetName: 'Finance Campus',
+    status: 'paused',
+    alertsTriggered: 4,
+    lastTriggered: '3d ago'
+  },
+  {
+    id: 'rule-1004',
+    name: 'Patch Drift - Linux Fleet',
+    templateId: 'tmpl-004',
+    templateName: 'Patch Compliance Drift',
+    targetType: 'group',
+    targetName: 'Linux Fleet',
+    status: 'active',
+    alertsTriggered: 19,
+    lastTriggered: '1d ago'
+  },
+  {
+    id: 'rule-1005',
+    name: 'Latency Watch - West',
+    templateId: 'tmpl-005',
+    templateName: 'Network Latency Spike',
+    targetType: 'device',
+    targetName: 'WAN-Gateway-07',
+    status: 'paused',
+    alertsTriggered: 2,
+    lastTriggered: '6d ago'
+  }
+];
 
 function formatTargets(targets: AlertRuleTarget): string {
   switch (targets.type) {
+    case 'org':
     case 'all':
       return 'All Devices';
     case 'site':
       return targets.names?.length
-        ? `Sites: ${targets.names.slice(0, 2).join(', ')}${targets.names.length > 2 ? ` +${targets.names.length - 2}` : ''}`
+        ? `Sites: ${targets.names.slice(0, 2).join(', ')}${
+            targets.names.length > 2 ? ` +${targets.names.length - 2}` : ''
+          }`
         : 'Selected Sites';
     case 'group':
       return targets.names?.length
-        ? `Groups: ${targets.names.slice(0, 2).join(', ')}${targets.names.length > 2 ? ` +${targets.names.length - 2}` : ''}`
+        ? `Groups: ${targets.names.slice(0, 2).join(', ')}${
+            targets.names.length > 2 ? ` +${targets.names.length - 2}` : ''
+          }`
         : 'Selected Groups';
     case 'device':
       return targets.names?.length
-        ? `Devices: ${targets.names.slice(0, 2).join(', ')}${targets.names.length > 2 ? ` +${targets.names.length - 2}` : ''}`
+        ? `Devices: ${targets.names.slice(0, 2).join(', ')}${
+            targets.names.length > 2 ? ` +${targets.names.length - 2}` : ''
+          }`
         : 'Selected Devices';
     default:
       return 'Unknown';
   }
 }
 
-function formatConditions(conditions: AlertRuleCondition[]): string {
-  return conditions
-    .map(c => {
-      if (c.type === 'metric' && c.metric) {
-        const metricLabel = c.metric.toUpperCase();
-        const op = c.operator === 'gt' ? '>' : c.operator === 'lt' ? '<' : c.operator === 'gte' ? '>=' : c.operator === 'lte' ? '<=' : '=';
-        return `${metricLabel} ${op} ${c.value}%`;
-      }
-      if (c.type === 'status') {
-        return `Offline for ${c.duration}m`;
-      }
-      if (c.type === 'custom' && c.field) {
-        return `${c.field} condition`;
-      }
-      return 'Custom condition';
-    })
-    .join(', ');
+function getTargetType(rule: AlertRule): AlertRuleTargetType {
+  const targetType = rule.targetType ?? rule.targets?.type ?? 'org';
+  return targetType === 'all' ? 'org' : targetType;
+}
+
+function getTargetLabel(rule: AlertRule): string {
+  if (rule.targetName && rule.targetType) {
+    const label = rule.targetType === 'org' ? 'Org' : rule.targetType[0].toUpperCase() + rule.targetType.slice(1);
+    return `${label}: ${rule.targetName}`;
+  }
+
+  if (rule.targets) {
+    return formatTargets(rule.targets);
+  }
+
+  return 'All Devices';
+}
+
+function getStatus(rule: AlertRule): AlertRuleStatus {
+  if (rule.status) return rule.status;
+  return rule.enabled ? 'active' : 'paused';
 }
 
 export default function AlertRuleList({
   rules,
   onEdit,
   onDelete,
-  onTest,
   onToggle,
-  pageSize = 10
+  onCreate
 }: AlertRuleListProps) {
-  const [query, setQuery] = useState('');
-  const [severityFilter, setSeverityFilter] = useState<string>('all');
-  const [enabledFilter, setEnabledFilter] = useState<string>('all');
-  const [currentPage, setCurrentPage] = useState(1);
+  const [localRules, setLocalRules] = useState<AlertRule[]>(mockRules);
+  const [templateFilter, setTemplateFilter] = useState('all');
+  const [targetFilter, setTargetFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  const data = rules ?? localRules;
+
+  const templateOptions = useMemo(() => {
+    const set = new Set<string>();
+    data.forEach(rule => {
+      if (rule.templateName) set.add(rule.templateName);
+    });
+    return Array.from(set);
+  }, [data]);
 
   const filteredRules = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+    return data.filter(rule => {
+      const ruleStatus = getStatus(rule);
+      const ruleTargetType = getTargetType(rule);
+      const ruleTemplate = rule.templateName ?? 'Custom Template';
 
-    return rules.filter(rule => {
-      const matchesQuery =
-        normalizedQuery.length === 0
-          ? true
-          : rule.name.toLowerCase().includes(normalizedQuery) ||
-            rule.description?.toLowerCase().includes(normalizedQuery);
-      const matchesSeverity = severityFilter === 'all' ? true : rule.severity === severityFilter;
-      const matchesEnabled =
-        enabledFilter === 'all'
-          ? true
-          : enabledFilter === 'enabled'
-            ? rule.enabled
-            : !rule.enabled;
+      const matchesTemplate = templateFilter === 'all' ? true : ruleTemplate === templateFilter;
+      const matchesTarget = targetFilter === 'all' ? true : ruleTargetType === targetFilter;
+      const matchesStatus = statusFilter === 'all' ? true : ruleStatus === statusFilter;
 
-      return matchesQuery && matchesSeverity && matchesEnabled;
+      return matchesTemplate && matchesTarget && matchesStatus;
     });
-  }, [rules, query, severityFilter, enabledFilter]);
+  }, [data, statusFilter, targetFilter, templateFilter]);
 
-  const totalPages = Math.ceil(filteredRules.length / pageSize);
-  const startIndex = (currentPage - 1) * pageSize;
-  const paginatedRules = filteredRules.slice(startIndex, startIndex + pageSize);
+  const handleToggle = (rule: AlertRule) => {
+    const nextStatus: AlertRuleStatus = getStatus(rule) === 'active' ? 'paused' : 'active';
+    onToggle?.(rule, nextStatus === 'active');
+
+    if (!rules) {
+      setLocalRules(prev =>
+        prev.map(item =>
+          item.id === rule.id ? { ...item, status: nextStatus, enabled: nextStatus === 'active' } : item
+        )
+      );
+    }
+  };
+
+  const handleDelete = (rule: AlertRule) => {
+    onDelete?.(rule);
+    if (!rules) {
+      setLocalRules(prev => prev.filter(item => item.id !== rule.id));
+    }
+  };
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -150,51 +234,52 @@ export default function AlertRuleList({
         <div>
           <h2 className="text-lg font-semibold">Alert Rules</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredRules.length} of {rules.length} rules
+            {filteredRules.length} of {data.length} rules
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              placeholder="Search rules..."
-              value={query}
-              onChange={event => {
-                setQuery(event.target.value);
-                setCurrentPage(1);
-              }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
-            />
-          </div>
-          <select
-            value={severityFilter}
-            onChange={event => {
-              setSeverityFilter(event.target.value);
-              setCurrentPage(1);
-            }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
-          >
-            <option value="all">All Severity</option>
-            <option value="critical">Critical</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-            <option value="info">Info</option>
-          </select>
-          <select
-            value={enabledFilter}
-            onChange={event => {
-              setEnabledFilter(event.target.value);
-              setCurrentPage(1);
-            }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
-          >
-            <option value="all">All Status</option>
-            <option value="enabled">Enabled</option>
-            <option value="disabled">Disabled</option>
-          </select>
-        </div>
+        <button
+          type="button"
+          onClick={onCreate}
+          className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+        >
+          <Plus className="h-4 w-4" />
+          Add rule
+        </button>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <select
+          value={templateFilter}
+          onChange={event => setTemplateFilter(event.target.value)}
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+        >
+          <option value="all">All templates</option>
+          {templateOptions.map(template => (
+            <option key={template} value={template}>
+              {template}
+            </option>
+          ))}
+        </select>
+        <select
+          value={targetFilter}
+          onChange={event => setTargetFilter(event.target.value)}
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+        >
+          <option value="all">All targets</option>
+          <option value="org">Org</option>
+          <option value="site">Site</option>
+          <option value="group">Group</option>
+          <option value="device">Device</option>
+        </select>
+        <select
+          value={statusFilter}
+          onChange={event => setStatusFilter(event.target.value)}
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+        >
+          <option value="all">All status</option>
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+        </select>
       </div>
 
       <div className="mt-6 overflow-hidden rounded-md border">
@@ -202,137 +287,95 @@ export default function AlertRuleList({
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Severity</th>
-              <th className="px-4 py-3">Targets</th>
-              <th className="px-4 py-3">Conditions</th>
-              <th className="px-4 py-3">Enabled</th>
+              <th className="px-4 py-3">Template</th>
+              <th className="px-4 py-3">Target</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Alerts Triggered</th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
-            {paginatedRules.length === 0 ? (
+            {filteredRules.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No alert rules found. Try adjusting your search or filters.
+                  No alert rules found. Adjust your filters to see results.
                 </td>
               </tr>
             ) : (
-              paginatedRules.map(rule => (
-                <tr key={rule.id} className="transition hover:bg-muted/40">
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium">{rule.name}</p>
-                      {rule.description && (
-                        <p className="text-xs text-muted-foreground truncate max-w-xs">
-                          {rule.description}
-                        </p>
+              filteredRules.map(rule => {
+                const status = getStatus(rule);
+                const templateName = rule.templateName ?? 'Custom Template';
+
+                return (
+                  <tr key={rule.id} className="transition hover:bg-muted/40">
+                    <td className="px-4 py-3">
+                      <div>
+                        <p className="text-sm font-medium">{rule.name}</p>
+                        {rule.description && (
+                          <p className="text-xs text-muted-foreground truncate max-w-xs">{rule.description}</p>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium">{templateName}</p>
+                      {rule.templateId && (
+                        <p className="text-xs text-muted-foreground">Template ID: {rule.templateId}</p>
                       )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                        severityConfig[rule.severity].color
-                      )}
-                    >
-                      {severityConfig[rule.severity].label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm">{formatTargets(rule.targets)}</td>
-                  <td className="px-4 py-3">
-                    <p className="text-sm text-muted-foreground truncate max-w-xs">
-                      {formatConditions(rule.conditions)}
-                    </p>
-                  </td>
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => onToggle?.(rule, !rule.enabled)}
-                      className={cn(
-                        'flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition',
-                        rule.enabled
-                          ? 'bg-green-500/20 text-green-700 hover:bg-green-500/30'
-                          : 'bg-gray-500/20 text-gray-700 hover:bg-gray-500/30'
-                      )}
-                    >
-                      {rule.enabled ? (
-                        <>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm">{getTargetLabel(rule)}</p>
+                      <p className="text-xs text-muted-foreground">Type: {getTargetType(rule)}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => handleToggle(rule)}
+                        className={cn(
+                          'flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-medium transition',
+                          statusConfig[status].className
+                        )}
+                      >
+                        {status === 'active' ? (
                           <ToggleRight className="h-4 w-4" />
-                          On
-                        </>
-                      ) : (
-                        <>
+                        ) : (
                           <ToggleLeft className="h-4 w-4" />
-                          Off
-                        </>
+                        )}
+                        {statusConfig[status].label}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium">{rule.alertsTriggered ?? 0}</p>
+                      {rule.lastTriggered && (
+                        <p className="text-xs text-muted-foreground">Last: {rule.lastTriggered}</p>
                       )}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        type="button"
-                        onClick={() => onTest?.(rule)}
-                        className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                        title="Test rule"
-                      >
-                        <Play className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onEdit?.(rule)}
-                        className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                        title="Edit rule"
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDelete?.(rule)}
-                        className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive"
-                        title="Delete rule"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onEdit?.(rule)}
+                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                          title="Edit rule"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(rule)}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
+                          title="Delete rule"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
-
-      {totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredRules.length)} of{' '}
-            {filteredRules.length}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="text-sm">
-              Page {currentPage} of {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
