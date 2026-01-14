@@ -1,0 +1,10 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import TicketDetails from '../../components/portal/TicketDetails';
+
+const { id } = Astro.params;
+---
+
+<PortalLayout title="Ticket Details">
+  <TicketDetails client:load ticketId={id!} />
+</PortalLayout>

@@ -29,6 +29,9 @@ import { mobileRoutes } from './routes/mobile';
 import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
 import { portalRoutes } from './routes/portal';
+import { pluginRoutes } from './routes/plugins';
+import { maintenanceRoutes } from './routes/maintenance';
+import { systemToolsRoutes } from './routes/systemTools';
 
 const app = new Hono();
 
@@ -80,6 +83,9 @@ api.route('/mobile', mobileRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/discovery', discoveryRoutes);
 api.route('/portal', portalRoutes);
+api.route('/plugins', pluginRoutes);
+api.route('/maintenance', maintenanceRoutes);
+api.route('/system-tools', systemToolsRoutes);
 
 app.route('/api/v1', api);
 

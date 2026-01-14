@@ -1,0 +1,36 @@
+---
+import '../styles/globals.css';
+import PortalHeader from '../components/portal/PortalHeader';
+import PortalSidebar from '../components/portal/PortalSidebar';
+import { BrandingProvider } from '../components/portal/BrandingProvider';
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Customer Portal" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title} | Customer Portal</title>
+  </head>
+  <body class="min-h-screen bg-background antialiased">
+    <BrandingProvider client:load>
+      <div class="flex h-screen overflow-hidden">
+        <PortalSidebar client:load />
+        <div class="flex flex-1 flex-col overflow-hidden">
+          <PortalHeader client:load />
+          <main class="flex-1 overflow-y-auto p-6">
+            <slot />
+          </main>
+        </div>
+      </div>
+    </BrandingProvider>
+  </body>
+</html>

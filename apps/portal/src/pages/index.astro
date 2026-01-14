@@ -1,0 +1,36 @@
+---
+// Redirect to devices or login based on auth state
+// This is handled client-side since auth state is in localStorage
+---
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Customer Portal</title>
+    <script>
+      // Check auth state and redirect
+      const stored = localStorage.getItem('portal-auth');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (parsed.state?.isAuthenticated) {
+            window.location.replace('/devices');
+          } else {
+            window.location.replace('/login');
+          }
+        } catch {
+          window.location.replace('/login');
+        }
+      } else {
+        window.location.replace('/login');
+      }
+    </script>
+  </head>
+  <body>
+    <div style="display: flex; justify-content: center; align-items: center; height: 100vh;">
+      <p>Redirecting...</p>
+    </div>
+  </body>
+</html>
