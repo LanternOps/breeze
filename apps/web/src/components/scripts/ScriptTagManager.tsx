@@ -34,6 +34,12 @@ const mockScripts: ScriptItem[] = [
   { id: 'script-105', name: 'Update Wi-Fi Profiles', tags: ['tag-network'] }
 ];
 
+let tagIdCounter = 0;
+const createTagId = (prefix: string = 'tag') => {
+  tagIdCounter += 1;
+  return `${prefix}-${tagIdCounter}`;
+};
+
 export default function ScriptTagManager({ tags: externalTags, scripts: externalScripts }: ScriptTagManagerProps) {
   const [tags, setTags] = useState<ScriptTag[]>(externalTags ?? mockTags);
   const [scripts, setScripts] = useState<ScriptItem[]>(externalScripts ?? mockScripts);
@@ -84,7 +90,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
     if (duplicate) return;
 
     const newTag: ScriptTag = {
-      id: `tag-${Math.random().toString(36).slice(2, 8)}`,
+      id: createTagId(),
       name: trimmed,
       color: newTagColor
     };

@@ -40,6 +40,7 @@ import { securityRoutes } from './routes/security';
 import { snmpRoutes } from './routes/snmp';
 import { softwareRoutes } from './routes/software';
 import { systemToolsRoutes } from './routes/systemTools';
+import { notificationRoutes } from './routes/notifications';
 
 const app = new Hono();
 
@@ -102,6 +103,7 @@ api.route('/security', securityRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/software', softwareRoutes);
 api.route('/system-tools', systemToolsRoutes);
+api.route('/notifications', notificationRoutes);
 
 app.route('/api/v1', api);
 

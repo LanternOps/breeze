@@ -3,6 +3,7 @@ export { default as BackupConfigList } from './BackupConfigList';
 export { default as BackupDashboard } from './BackupDashboard';
 export { default as BackupJobList } from './BackupJobList';
 export { default as BackupJobProgress } from './BackupJobProgress';
+export { default as BackupPolicyList } from './BackupPolicyList';
 export { default as BackupPolicyAssignment } from './BackupPolicyAssignment';
 export { default as DeviceBackupStatus } from './DeviceBackupStatus';
 export { default as RestoreWizard } from './RestoreWizard';

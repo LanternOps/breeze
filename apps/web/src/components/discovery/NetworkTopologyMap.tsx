@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 
-export type TopologyNodeType = 'router' | 'switch' | 'server' | 'workstation' | 'printer' | 'unknown';
+export type TopologyNodeType =
+  | 'router'
+  | 'switch'
+  | 'server'
+  | 'workstation'
+  | 'printer'
+  | 'device'
+  | 'unknown';
 export type TopologyNodeStatus = 'online' | 'offline' | 'warning';
 
 export type TopologyNode = {
@@ -19,9 +26,20 @@ export type TopologyLink = {
   type: 'wired' | 'wireless';
 };
 
+type ApiTopologyNode = {
+  id: string;
+  label?: string | null;
+  type?: string | null;
+  status?: string | null;
+};
+
+type ApiTopologyLink = {
+  source: string;
+  target: string;
+  type?: string | null;
+};
+
 type NetworkTopologyMapProps = {
-  nodes: TopologyNode[];
-  links: TopologyLink[];
   height?: number;
 };
 
@@ -31,6 +49,7 @@ const typeColors: Record<TopologyNodeType, string> = {
   server: '#7c3aed',
   workstation: '#0f172a',
   printer: '#f97316',
+  device: '#1e293b',
   unknown: '#6b7280'
 };
 
@@ -40,8 +59,67 @@ const statusStroke: Record<TopologyNodeStatus, string> = {
   warning: '#eab308'
 };
 
-export default function NetworkTopologyMap({ nodes, links, height = 420 }: NetworkTopologyMapProps) {
+const typeMap: Record<string, TopologyNodeType> = {
+  router: 'router',
+  switch: 'switch',
+  server: 'server',
+  workstation: 'workstation',
+  printer: 'printer',
+  device: 'device',
+  unknown: 'unknown'
+};
+
+function mapNode(node: ApiTopologyNode): TopologyNode {
+  const normalizedType = (node.type ?? 'unknown').toLowerCase();
+  const normalizedStatus = (node.status ?? 'online').toLowerCase();
+
+  return {
+    id: node.id,
+    label: node.label ?? node.id,
+    type: typeMap[normalizedType] ?? 'unknown',
+    status: normalizedStatus === 'offline' || normalizedStatus === 'warning' ? normalizedStatus : 'online'
+  };
+}
+
+function mapLink(link: ApiTopologyLink): TopologyLink {
+  const linkType = (link.type ?? 'wired').toLowerCase();
+  return {
+    source: link.source,
+    target: link.target,
+    type: linkType === 'wireless' ? 'wireless' : 'wired'
+  };
+}
+
+export default function NetworkTopologyMap({ height = 420 }: NetworkTopologyMapProps) {
+  const [nodes, setNodes] = useState<TopologyNode[]>([]);
+  const [links, setLinks] = useState<TopologyLink[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
   const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const fetchTopology = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetch('/api/discovery/topology');
+      if (!response.ok) {
+        throw new Error('Failed to fetch topology');
+      }
+      const data = await response.json();
+      const rawNodes = data.nodes ?? data.data?.nodes ?? [];
+      const rawLinks = data.edges ?? data.links ?? data.data?.edges ?? [];
+      setNodes(rawNodes.map(mapNode));
+      setLinks(rawLinks.map(mapLink));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTopology();
+  }, [fetchTopology]);
 
   const nodesMemo = useMemo(() => nodes.map(node => ({ ...node })), [nodes]);
   const linksMemo = useMemo(() => links.map(link => ({ ...link })), [links]);
@@ -114,6 +192,32 @@ export default function NetworkTopologyMap({ nodes, links, height = 420 }: Netwo
     };
   }, [height, linksMemo, nodesMemo]);
 
+  if (loading && nodes.length === 0) {
+    return (
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading topology...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && nodes.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchTopology}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center justify-between">
@@ -136,6 +240,13 @@ export default function NetworkTopologyMap({ nodes, links, height = 420 }: Netwo
           </span>
         </div>
       </div>
+
+      {error && nodes.length > 0 && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
       <div className="mt-6 overflow-hidden rounded-md border bg-muted/30">
         <svg ref={svgRef} className="h-full w-full" style={{ height }} />
       </div>

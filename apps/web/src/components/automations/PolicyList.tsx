@@ -15,6 +15,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 export type EnforcementLevel = 'monitor' | 'warn' | 'enforce';
 
 export type Policy = {
@@ -72,7 +74,7 @@ function formatDate(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = new Date();
+  const now = REFERENCE_DATE;
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));

@@ -24,10 +24,27 @@ type MetricDataPoint = {
   disk: number;
 };
 
+// Fixed base timestamp for deterministic data generation (avoids hydration mismatch)
+const FIXED_BASE_TIMESTAMP = new Date('2024-01-15T12:00:00.000Z').getTime();
+
+// Seeded random number generator for deterministic mock data
+function createSeededRandom(seed: number) {
+  let value = seed % 2147483647;
+  if (value <= 0) value += 2147483646;
+  return () => {
+    value = (value * 48271) % 2147483647;
+    return value / 2147483647;
+  };
+}
+
+function hashSeed(input: string): number {
+  return input.split('').reduce((acc, char) => acc + char.charCodeAt(0) * 37, 0);
+}
+
 // Generate mock data for the chart
 function generateMockData(range: TimeRange): MetricDataPoint[] {
   const points: MetricDataPoint[] = [];
-  const now = new Date();
+  const random = createSeededRandom(hashSeed(range));
   let count: number;
   let intervalMs: number;
 
@@ -62,16 +79,16 @@ function generateMockData(range: TimeRange): MetricDataPoint[] {
   let diskBase = 45;
 
   for (let i = count - 1; i >= 0; i--) {
-    const timestamp = new Date(now.getTime() - i * intervalMs);
+    const timestamp = new Date(FIXED_BASE_TIMESTAMP - i * intervalMs);
 
-    // Add some variation to the data
-    cpuBase += (Math.random() - 0.5) * 10;
+    // Add some variation to the data using seeded random
+    cpuBase += (random() - 0.5) * 10;
     cpuBase = Math.max(10, Math.min(95, cpuBase));
 
-    ramBase += (Math.random() - 0.5) * 5;
+    ramBase += (random() - 0.5) * 5;
     ramBase = Math.max(30, Math.min(90, ramBase));
 
-    diskBase += (Math.random() - 0.5) * 0.5;
+    diskBase += (random() - 0.5) * 0.5;
     diskBase = Math.max(40, Math.min(70, diskBase));
 
     points.push({

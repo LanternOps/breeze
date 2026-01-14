@@ -21,6 +21,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 // Types
 export type EventLevel = 'Information' | 'Warning' | 'Error' | 'Critical';
 
@@ -83,7 +85,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1001',
     logName: 'System',
     level: 'Information',
-    timeCreated: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:55:00.000Z',
     source: 'Microsoft-Windows-Kernel-General',
     eventId: 1,
     message: 'The system time has changed to 2024-01-15T10:30:00.000Z from 2024-01-15T10:29:58.000Z.',
@@ -95,7 +97,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1002',
     logName: 'System',
     level: 'Warning',
-    timeCreated: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:45:00.000Z',
     source: 'Microsoft-Windows-WindowsUpdateClient',
     eventId: 20,
     message: 'Installation Started: Windows has started installing the following update: 2024-01 Cumulative Update for Windows 11 (KB5034123)',
@@ -107,7 +109,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1003',
     logName: 'System',
     level: 'Error',
-    timeCreated: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:30:00.000Z',
     source: 'Service Control Manager',
     eventId: 7034,
     message: 'The Windows Update service terminated unexpectedly. It has done this 1 time(s).',
@@ -119,7 +121,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1004',
     logName: 'System',
     level: 'Information',
-    timeCreated: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:15:00.000Z',
     source: 'Service Control Manager',
     eventId: 7036,
     message: 'The Background Intelligent Transfer Service service entered the running state.',
@@ -131,7 +133,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1005',
     logName: 'System',
     level: 'Critical',
-    timeCreated: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T10:00:00.000Z',
     source: 'Microsoft-Windows-Kernel-Power',
     eventId: 41,
     message: 'The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly.',
@@ -143,7 +145,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1006',
     logName: 'System',
     level: 'Information',
-    timeCreated: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T09:00:00.000Z',
     source: 'Microsoft-Windows-Winlogon',
     eventId: 7001,
     message: 'User Logon Notification for Customer Experience Improvement Program',
@@ -155,7 +157,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1007',
     logName: 'System',
     level: 'Warning',
-    timeCreated: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T08:00:00.000Z',
     source: 'disk',
     eventId: 11,
     message: 'The driver detected a controller error on \\Device\\Harddisk1\\DR1.',
@@ -167,7 +169,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1008',
     logName: 'System',
     level: 'Information',
-    timeCreated: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T07:00:00.000Z',
     source: 'Microsoft-Windows-WindowsUpdateClient',
     eventId: 19,
     message: 'Installation Successful: Windows successfully installed the following update: 2024-01 Cumulative Update for Windows 11 (KB5034123)',
@@ -179,7 +181,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1009',
     logName: 'Application',
     level: 'Error',
-    timeCreated: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:40:00.000Z',
     source: 'Application Error',
     eventId: 1000,
     message: 'Faulting application name: chrome.exe, version: 120.0.6099.130, time stamp: 0x65789abc. Faulting module name: chrome.dll, version: 120.0.6099.130',
@@ -191,7 +193,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1010',
     logName: 'Application',
     level: 'Information',
-    timeCreated: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:00:00.000Z',
     source: 'Windows Error Reporting',
     eventId: 1001,
     message: 'Fault bucket type: 0. Event Name: APPCRASH. Response: Not available.',
@@ -203,7 +205,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1011',
     logName: 'Security',
     level: 'Information',
-    timeCreated: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:50:00.000Z',
     source: 'Microsoft-Windows-Security-Auditing',
     eventId: 4624,
     message: 'An account was successfully logged on. Subject: Security ID: SYSTEM. Account Name: WORKSTATION-01$.',
@@ -215,7 +217,7 @@ const mockEvents: EventLogEntry[] = [
     recordId: '1012',
     logName: 'Security',
     level: 'Warning',
-    timeCreated: new Date(Date.now() - 25 * 60 * 1000).toISOString(),
+    timeCreated: '2024-01-15T11:35:00.000Z',
     source: 'Microsoft-Windows-Security-Auditing',
     eventId: 4625,
     message: 'An account failed to log on. Subject: Security ID: NULL SID. Failure Reason: Unknown user name or bad password.',
@@ -277,8 +279,8 @@ function formatDateTime(dateString?: string): string {
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  
-  const now = new Date();
+
+  const now = REFERENCE_DATE;
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
@@ -449,7 +451,7 @@ export default function EventViewer({
   // Filter events
   const filteredEvents = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const now = new Date();
+    const now = REFERENCE_DATE;
     
     return events.filter(event => {
       // Text search

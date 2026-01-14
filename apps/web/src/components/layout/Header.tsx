@@ -1,7 +1,5 @@
 import { useState } from 'react';
 import {
-  Bell,
-  Search,
   Moon,
   Sun,
   ChevronDown,
@@ -9,6 +7,8 @@ import {
   User
 } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher';
+import NotificationCenter from './NotificationCenter';
+import CommandPalette from './CommandPalette';
 
 export default function Header() {
   const [darkMode, setDarkMode] = useState(false);
@@ -25,23 +25,13 @@ export default function Header() {
         {/* Organization Switcher */}
         <OrgSwitcher />
 
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Search devices, scripts..."
-            className="h-9 w-80 rounded-md border bg-background pl-9 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
+        {/* Global Search */}
+        <CommandPalette />
       </div>
 
       <div className="flex items-center gap-2">
         {/* Notifications */}
-        <button className="relative rounded-md p-2 hover:bg-muted">
-          <Bell className="h-5 w-5" />
-          <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-destructive" />
-        </button>
+        <NotificationCenter />
 
         {/* Dark Mode Toggle */}
         <button onClick={toggleDarkMode} className="rounded-md p-2 hover:bg-muted">

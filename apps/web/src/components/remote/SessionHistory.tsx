@@ -16,6 +16,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 export type SessionType = 'terminal' | 'desktop' | 'file_transfer';
 export type SessionStatus = 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed';
 
@@ -87,7 +89,7 @@ function formatDateTime(dateString?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = new Date();
+  const now = REFERENCE_DATE;
   const isToday = date.toDateString() === now.toDateString();
 
   if (isToday) {
@@ -224,7 +226,7 @@ export default function SessionHistory({
   // Filter sessions
   const filteredSessions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const now = new Date();
+    const now = REFERENCE_DATE;
 
     return sessions.filter(session => {
       const matchesQuery = normalizedQuery.length === 0

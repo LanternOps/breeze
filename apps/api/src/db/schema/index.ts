@@ -22,3 +22,4 @@ export * from './security';
 export * from './software';
 export * from './backup';
 export * from './snmp';
+export * from './notifications';

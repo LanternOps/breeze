@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import AlertTemplateEditor from '../../../components/alerts/AlertTemplateEditor';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Alert Template">
+  <AlertTemplateEditor templateId={id} client:load />
+</DashboardLayout>

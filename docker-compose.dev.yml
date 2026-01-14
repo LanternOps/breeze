@@ -100,6 +100,7 @@ services:
       NODE_ENV: development
       HOST: 0.0.0.0
       PORT: 4321
+      API_URL: http://api:3001
       PUBLIC_API_URL: http://localhost:3001
     ports:
       - "4321:4321"

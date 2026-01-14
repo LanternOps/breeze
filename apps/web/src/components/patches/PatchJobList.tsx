@@ -1,5 +1,14 @@
-import { useMemo, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight, PlayCircle, AlertTriangle, CheckCircle, PauseCircle } from 'lucide-react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
+import {
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  PlayCircle,
+  AlertTriangle,
+  CheckCircle,
+  PauseCircle,
+  Loader2
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type PatchJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'paused';
@@ -16,10 +25,11 @@ export type PatchJob = {
 };
 
 type PatchJobListProps = {
-  jobs: PatchJob[];
   pageSize?: number;
   onSelect?: (job: PatchJob) => void;
 };
+
+const POLL_INTERVAL_MS = 15000;
 
 const statusConfig: Record<PatchJobStatus, { label: string; color: string; icon: typeof PlayCircle }> = {
   queued: { label: 'Queued', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: PlayCircle },
@@ -29,6 +39,16 @@ const statusConfig: Record<PatchJobStatus, { label: string; color: string; icon:
   paused: { label: 'Paused', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40', icon: PauseCircle }
 };
 
+const statusMap: Record<string, PatchJobStatus> = {
+  queued: 'queued',
+  pending: 'queued',
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+  paused: 'paused',
+  cancelled: 'paused'
+};
+
 function formatDate(dateString?: string): string {
   if (!dateString) return '—';
   const date = new Date(dateString);
@@ -36,10 +56,80 @@ function formatDate(dateString?: string): string {
   return date.toLocaleDateString();
 }
 
-export default function PatchJobList({ jobs, pageSize = 8, onSelect }: PatchJobListProps) {
+function toNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeStatus(value?: string): PatchJobStatus {
+  if (!value) return 'queued';
+  return statusMap[value.toLowerCase()] ?? 'queued';
+}
+
+function normalizeJob(raw: Record<string, unknown>, index: number): PatchJob {
+  const id = raw.id ?? raw.jobId ?? raw.job_id ?? `job-${index}`;
+  const name = raw.name ?? raw.title ?? raw.label ?? 'Patch deployment';
+  const status = normalizeStatus(raw.status ? String(raw.status) : undefined);
+  const startedAt = raw.startedAt ?? raw.started_at ?? raw.createdAt ?? raw.created_at ?? '';
+  const completedAt = raw.completedAt ?? raw.completed_at ?? raw.finishedAt ?? raw.finished_at;
+
+  return {
+    id: String(id),
+    name: String(name),
+    status,
+    startedAt: String(startedAt),
+    completedAt: completedAt ? String(completedAt) : undefined,
+    devicesTotal: toNumber(raw.devicesTotal ?? raw.deviceTotal ?? raw.totalDevices ?? raw.devices_total),
+    devicesPatched: toNumber(raw.devicesPatched ?? raw.devicesCompleted ?? raw.completedDevices ?? raw.devices_patched),
+    devicesFailed: toNumber(raw.devicesFailed ?? raw.failedDevices ?? raw.devices_failed)
+  };
+}
+
+export default function PatchJobList({ pageSize = 8, onSelect }: PatchJobListProps) {
+  const [jobs, setJobs] = useState<PatchJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
+
+  const fetchJobs = useCallback(async (showLoading = true) => {
+    try {
+      if (showLoading) {
+        setLoading(true);
+        setError(undefined);
+      }
+
+      const response = await fetch('/api/patches/jobs');
+      if (!response.ok) {
+        throw new Error('Failed to fetch patch jobs');
+      }
+
+      const data = await response.json();
+      const jobData = data.data ?? data.jobs ?? data.items ?? data ?? [];
+      const normalized = Array.isArray(jobData)
+        ? jobData.map((job: Record<string, unknown>, index: number) => normalizeJob(job, index))
+        : [];
+      setJobs(normalized);
+      setError(undefined);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch patch jobs');
+    } finally {
+      if (showLoading) {
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchJobs();
+    const interval = setInterval(() => {
+      fetchJobs(false);
+    }, POLL_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [fetchJobs]);
 
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -56,6 +146,32 @@ export default function PatchJobList({ jobs, pageSize = 8, onSelect }: PatchJobL
   const totalPages = Math.ceil(filteredJobs.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedJobs = filteredJobs.slice(startIndex, startIndex + pageSize);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading patch jobs...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && jobs.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={() => fetchJobs()}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">

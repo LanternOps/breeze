@@ -1,4 +1,5 @@
-import { AlertTriangle, CheckCircle, Monitor, Shield } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { AlertTriangle, CheckCircle, Monitor, Shield, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type PatchSeveritySummary = {
@@ -17,7 +18,7 @@ export type DevicePatchNeed = {
   lastSeen?: string;
 };
 
-type PatchComplianceDashboardProps = {
+type PatchComplianceData = {
   totalDevices: number;
   compliantDevices: number;
   criticalSummary: PatchSeveritySummary;
@@ -28,6 +29,75 @@ type PatchComplianceDashboardProps = {
 function formatPercent(value: number, total: number) {
   if (total === 0) return '0%';
   return `${Math.round((value / total) * 100)}%`;
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeSummary(raw?: Record<string, unknown>): PatchSeveritySummary {
+  if (!raw) {
+    return { total: 0, patched: 0, pending: 0 };
+  }
+
+  return {
+    total: toNumber(raw.total ?? raw.totalCount ?? raw.count),
+    patched: toNumber(raw.patched ?? raw.approved ?? raw.installed),
+    pending: toNumber(raw.pending ?? raw.awaiting)
+  };
+}
+
+function normalizeDeviceNeed(raw: Record<string, unknown>, index: number): DevicePatchNeed {
+  const id = raw.id ?? raw.deviceId ?? raw.device_id ?? `device-${index}`;
+  const name = raw.name ?? raw.hostname ?? raw.deviceName ?? 'Unknown device';
+  const os = raw.os ?? raw.osName ?? raw.osType ?? raw.platform ?? 'Unknown OS';
+
+  return {
+    id: String(id),
+    name: String(name),
+    os: String(os),
+    missingCount: toNumber(raw.missingCount ?? raw.missing ?? raw.patchesMissing),
+    criticalCount: toNumber(raw.criticalCount ?? raw.critical ?? raw.criticalMissing),
+    importantCount: toNumber(raw.importantCount ?? raw.important ?? raw.importantMissing),
+    lastSeen: raw.lastSeen ? String(raw.lastSeen) : raw.last_seen ? String(raw.last_seen) : undefined
+  };
+}
+
+function normalizeCompliance(raw: Record<string, unknown>): PatchComplianceData {
+  const summary = raw.summary && typeof raw.summary === 'object' ? (raw.summary as Record<string, unknown>) : undefined;
+  const severitySummary = raw.severitySummary && typeof raw.severitySummary === 'object'
+    ? (raw.severitySummary as Record<string, unknown>)
+    : undefined;
+  const severity = raw.severity && typeof raw.severity === 'object'
+    ? (raw.severity as Record<string, unknown>)
+    : undefined;
+  const totalDevices = toNumber(raw.totalDevices ?? raw.total_devices ?? raw.total ?? summary?.total);
+  const compliantDevices = toNumber(raw.compliantDevices ?? raw.compliant_devices ?? raw.compliant ?? summary?.approved);
+  const criticalSummary = normalizeSummary(
+    (raw.criticalSummary ?? raw.critical_summary ?? severitySummary?.critical ?? severity?.critical) as
+      | Record<string, unknown>
+      | undefined
+  );
+  const importantSummary = normalizeSummary(
+    (raw.importantSummary ?? raw.important_summary ?? severitySummary?.important ?? severity?.important) as
+      | Record<string, unknown>
+      | undefined
+  );
+
+  const deviceList = raw.devicesNeedingPatches ?? raw.devices_needing_patches ?? raw.devices ?? [];
+  const devicesNeedingPatches = Array.isArray(deviceList)
+    ? deviceList.map((device: Record<string, unknown>, index: number) => normalizeDeviceNeed(device, index))
+    : [];
+
+  return {
+    totalDevices,
+    compliantDevices,
+    criticalSummary,
+    importantSummary,
+    devicesNeedingPatches
+  };
 }
 
 function SeveritySummaryCard({
@@ -67,15 +137,71 @@ function SeveritySummaryCard({
   );
 }
 
-export default function PatchComplianceDashboard({
-  totalDevices,
-  compliantDevices,
-  criticalSummary,
-  importantSummary,
-  devicesNeedingPatches
-}: PatchComplianceDashboardProps) {
-  const compliancePercent = totalDevices > 0 ? Math.round((compliantDevices / totalDevices) * 100) : 0;
-  const needsPatches = totalDevices - compliantDevices;
+export default function PatchComplianceDashboard() {
+  const [data, setData] = useState<PatchComplianceData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+
+  const fetchCompliance = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetch('/api/patches/compliance');
+      if (!response.ok) {
+        throw new Error('Failed to fetch compliance data');
+      }
+      const payload = await response.json();
+      const normalized = normalizeCompliance((payload.data ?? payload) as Record<string, unknown>);
+      setData(normalized);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch compliance data');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCompliance();
+  }, [fetchCompliance]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading compliance data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchCompliance}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  const complianceData: PatchComplianceData = data ?? {
+    totalDevices: 0,
+    compliantDevices: 0,
+    criticalSummary: { total: 0, patched: 0, pending: 0 },
+    importantSummary: { total: 0, patched: 0, pending: 0 },
+    devicesNeedingPatches: []
+  };
+
+  const compliancePercent = complianceData.totalDevices > 0
+    ? Math.round((complianceData.compliantDevices / complianceData.totalDevices) * 100)
+    : 0;
+  const needsPatches = complianceData.totalDevices - complianceData.compliantDevices;
 
   return (
     <div className="space-y-6">
@@ -87,7 +213,7 @@ export default function PatchComplianceDashboard({
           </div>
           <p className="mt-3 text-3xl font-bold">{compliancePercent}%</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            {compliantDevices} of {totalDevices} devices compliant
+            {complianceData.compliantDevices} of {complianceData.totalDevices} devices compliant
           </p>
         </div>
         <div className="rounded-lg border bg-card p-4">
@@ -95,8 +221,10 @@ export default function PatchComplianceDashboard({
             <CheckCircle className="h-4 w-4" />
             Patched Devices
           </div>
-          <p className="mt-3 text-3xl font-bold">{compliantDevices}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{formatPercent(compliantDevices, totalDevices)} of fleet</p>
+          <p className="mt-3 text-3xl font-bold">{complianceData.compliantDevices}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {formatPercent(complianceData.compliantDevices, complianceData.totalDevices)} of fleet
+          </p>
         </div>
         <div className="rounded-lg border bg-card p-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -104,20 +232,20 @@ export default function PatchComplianceDashboard({
             Needs Patches
           </div>
           <p className="mt-3 text-3xl font-bold">{needsPatches}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{formatPercent(needsPatches, totalDevices)} of fleet</p>
+          <p className="mt-1 text-sm text-muted-foreground">{formatPercent(needsPatches, complianceData.totalDevices)} of fleet</p>
         </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <SeveritySummaryCard
           title="Critical Patches"
-          summary={criticalSummary}
+          summary={complianceData.criticalSummary}
           colorClass="bg-red-500/20 text-red-700 border-red-500/40"
           barClass="bg-red-500"
         />
         <SeveritySummaryCard
           title="Important Patches"
-          summary={importantSummary}
+          summary={complianceData.importantSummary}
           colorClass="bg-orange-500/20 text-orange-700 border-orange-500/40"
           barClass="bg-orange-500"
         />
@@ -128,7 +256,7 @@ export default function PatchComplianceDashboard({
           <div>
             <h2 className="text-lg font-semibold">Devices needing patches</h2>
             <p className="text-sm text-muted-foreground">
-              {devicesNeedingPatches.length} devices require updates
+              {complianceData.devicesNeedingPatches.length} devices require updates
             </p>
           </div>
         </div>
@@ -144,14 +272,14 @@ export default function PatchComplianceDashboard({
               </tr>
             </thead>
             <tbody className="divide-y">
-              {devicesNeedingPatches.length === 0 ? (
+              {complianceData.devicesNeedingPatches.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     All devices are compliant.
                   </td>
                 </tr>
               ) : (
-                devicesNeedingPatches.map(device => (
+                complianceData.devicesNeedingPatches.map(device => (
                   <tr key={device.id} className="text-sm">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">

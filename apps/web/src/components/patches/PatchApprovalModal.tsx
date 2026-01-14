@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle, XCircle, Clock } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Patch } from './PatchList';
 
@@ -43,20 +43,48 @@ export default function PatchApprovalModal({
 }: PatchApprovalModalProps) {
   const [action, setAction] = useState<PatchApprovalAction>('approve');
   const [notes, setNotes] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string>();
 
   useEffect(() => {
     if (open) {
       setAction('approve');
       setNotes('');
+      setSubmitting(false);
+      setSubmitError(undefined);
     }
   }, [open, patch?.id]);
 
-  const isSubmitting = useMemo(() => loading ?? false, [loading]);
+  const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
 
   if (!open || !patch) return null;
 
   const handleSubmit = async () => {
-    await onSubmit?.(patch.id, action, notes);
+    if (isSubmitting) return;
+    setSubmitting(true);
+    setSubmitError(undefined);
+
+    try {
+      const endpoint = action === 'approve' ? 'approve' : 'reject';
+      const response = await fetch(`/api/patches/${patch.id}/${endpoint}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          note: notes,
+          action: action === 'defer' ? 'defer' : undefined
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update patch approval');
+      }
+
+      await onSubmit?.(patch.id, action, notes);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to update patch approval');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -71,6 +99,7 @@ export default function PatchApprovalModal({
             type="button"
             onClick={onClose}
             className="rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            disabled={isSubmitting}
           >
             Close
           </button>
@@ -85,9 +114,11 @@ export default function PatchApprovalModal({
                 key={option}
                 type="button"
                 onClick={() => setAction(option)}
+                disabled={isSubmitting}
                 className={cn(
                   'flex w-full items-start gap-3 rounded-md border px-4 py-3 text-left transition',
-                  action === option ? config.color : 'border-muted text-muted-foreground hover:text-foreground'
+                  action === option ? config.color : 'border-muted text-muted-foreground hover:text-foreground',
+                  isSubmitting && 'cursor-not-allowed opacity-70'
                 )}
               >
                 <Icon className="mt-0.5 h-4 w-4" />
@@ -107,8 +138,15 @@ export default function PatchApprovalModal({
             onChange={event => setNotes(event.target.value)}
             placeholder="Add context or a reason for the decision..."
             className="mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            disabled={isSubmitting}
           />
         </div>
+
+        {submitError && (
+          <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {submitError}
+          </div>
+        )}
 
         <div className="mt-6 flex items-center justify-end gap-3">
           <button
@@ -125,7 +163,10 @@ export default function PatchApprovalModal({
             disabled={isSubmitting}
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
-            {actionConfig[action].label}
+            <span className="inline-flex items-center gap-2">
+              {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              {actionConfig[action].label}
+            </span>
           </button>
         </div>
       </div>

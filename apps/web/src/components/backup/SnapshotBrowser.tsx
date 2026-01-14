@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -21,74 +21,77 @@ type TreeNode = {
   children?: TreeNode[];
 };
 
-const snapshots = [
-  '2024-03-28 02:00 AM',
-  '2024-03-27 02:00 AM',
-  '2024-03-26 02:00 AM',
-  '2024-03-25 02:00 AM'
-];
-
-const tree: TreeNode = {
-  id: 'root',
-  name: 'root',
-  type: 'folder',
-  children: [
-    {
-      id: 'finance',
-      name: 'finance',
-      type: 'folder',
-      children: [
-        { id: 'q1', name: 'Q1-report.xlsx', type: 'file', size: '4.2 MB', modified: 'Mar 24' },
-        { id: 'tax', name: 'tax-forms', type: 'folder', children: [
-          { id: 'tax1', name: '1099.pdf', type: 'file', size: '320 KB', modified: 'Mar 12' },
-          { id: 'tax2', name: 'w2.pdf', type: 'file', size: '280 KB', modified: 'Mar 12' }
-        ] }
-      ]
-    },
-    {
-      id: 'projects',
-      name: 'projects',
-      type: 'folder',
-      children: [
-        { id: 'apollo', name: 'apollo', type: 'folder', children: [
-          { id: 'ap1', name: 'notes.md', type: 'file', size: '12 KB', modified: 'Mar 27' },
-          { id: 'ap2', name: 'specs', type: 'folder', children: [
-            { id: 'ap3', name: 'architecture.pdf', type: 'file', size: '1.4 MB', modified: 'Mar 26' }
-          ] }
-        ] }
-      ]
-    },
-    {
-      id: 'system',
-      name: 'system',
-      type: 'folder',
-      children: [
-        { id: 'sys1', name: 'logs', type: 'folder', children: [
-          { id: 'sys2', name: 'backup.log', type: 'file', size: '2.1 MB', modified: 'Mar 28' }
-        ] }
-      ]
-    }
-  ]
+type SnapshotFile = {
+  id: string;
+  name: string;
+  size?: string;
+  modified?: string;
+  path?: string;
 };
 
-const flatFileList = [
-  { id: 'file-1', name: 'Q1-report.xlsx', size: '4.2 MB', modified: 'Mar 24', path: '/finance' },
-  { id: 'file-2', name: '1099.pdf', size: '320 KB', modified: 'Mar 12', path: '/finance/tax-forms' },
-  { id: 'file-3', name: 'w2.pdf', size: '280 KB', modified: 'Mar 12', path: '/finance/tax-forms' },
-  { id: 'file-4', name: 'notes.md', size: '12 KB', modified: 'Mar 27', path: '/projects/apollo' },
-  { id: 'file-5', name: 'architecture.pdf', size: '1.4 MB', modified: 'Mar 26', path: '/projects/apollo/specs' },
-  { id: 'file-6', name: 'backup.log', size: '2.1 MB', modified: 'Mar 28', path: '/system/logs' }
-];
+type Snapshot = {
+  id: string;
+  label: string;
+  tree?: TreeNode;
+  files?: SnapshotFile[];
+};
 
 export default function SnapshotBrowser() {
-  const [selectedSnapshot, setSelectedSnapshot] = useState(snapshots[0]);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['root', 'finance', 'projects']));
-  const [selectedFolder, setSelectedFolder] = useState('/finance');
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set(['file-1']));
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selectedFolder, setSelectedFolder] = useState('/');
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+
+  const fetchSnapshots = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetch('/api/backup/snapshots');
+      if (!response.ok) {
+        throw new Error('Failed to fetch snapshots');
+      }
+      const payload = await response.json();
+      const data = payload?.data ?? payload ?? {};
+      const snapshotList = Array.isArray(data) ? data : data.snapshots ?? [];
+      setSnapshots(Array.isArray(snapshotList) ? snapshotList : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSnapshots();
+  }, [fetchSnapshots]);
+
+  useEffect(() => {
+    if (!selectedSnapshotId && snapshots.length > 0) {
+      setSelectedSnapshotId(snapshots[0].id);
+    }
+  }, [selectedSnapshotId, snapshots]);
+
+  const selectedSnapshot = useMemo(
+    () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId),
+    [selectedSnapshotId, snapshots]
+  );
+
+  useEffect(() => {
+    if (selectedSnapshot?.tree?.id) {
+      setExpanded(new Set([selectedSnapshot.tree.id]));
+    } else {
+      setExpanded(new Set());
+    }
+    setSelectedFolder('/');
+    setSelectedFiles(new Set());
+  }, [selectedSnapshotId, selectedSnapshot?.tree?.id]);
 
   const visibleFiles = useMemo(() => {
-    return flatFileList.filter((file) => file.path === selectedFolder);
-  }, [selectedFolder]);
+    return (selectedSnapshot?.files ?? []).filter((file) => (file.path ?? '/') === selectedFolder);
+  }, [selectedFolder, selectedSnapshot?.files]);
 
   const toggleExpanded = (id: string) => {
     setExpanded((prev) => {
@@ -116,7 +119,7 @@ export default function SnapshotBrowser() {
 
   const renderTree = (node: TreeNode, depth = 0, path = '') => {
     const isFolder = node.type === 'folder';
-    const nodePath = node.id === 'root' ? '/' : `${path}/${node.name}`.replace('//', '/');
+    const nodePath = depth === 0 ? '/' : `${path}/${node.name}`.replace('//', '/');
     const isExpanded = expanded.has(node.id);
 
     return (
@@ -169,6 +172,32 @@ export default function SnapshotBrowser() {
 
   const breadcrumbs = selectedFolder.split('/').filter(Boolean);
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading snapshots...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && snapshots.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchSnapshots}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -179,6 +208,11 @@ export default function SnapshotBrowser() {
       </div>
 
       <div className="rounded-lg border bg-card p-5 shadow-sm space-y-4">
+        {error && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <History className="h-4 w-4" />
@@ -187,14 +221,19 @@ export default function SnapshotBrowser() {
           <div className="flex flex-wrap items-center gap-2">
             <select
               className="rounded-md border bg-background px-3 py-2 text-sm"
-              value={selectedSnapshot}
-              onChange={(event) => setSelectedSnapshot(event.target.value)}
+              value={selectedSnapshotId}
+              onChange={(event) => setSelectedSnapshotId(event.target.value)}
             >
               {snapshots.map((snapshot) => (
-                <option key={snapshot}>{snapshot}</option>
+                <option key={snapshot.id} value={snapshot.id}>
+                  {snapshot.label}
+                </option>
               ))}
             </select>
-            <button className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent">
+            <button
+              onClick={fetchSnapshots}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
+            >
               <RefreshCw className="h-4 w-4" />
               Refresh
             </button>
@@ -204,7 +243,15 @@ export default function SnapshotBrowser() {
         <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
           <div className="rounded-md border bg-muted/10 p-3">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">File Tree</h3>
-            <div className="mt-3 space-y-1 text-sm">{renderTree(tree)}</div>
+            <div className="mt-3 space-y-1 text-sm">
+              {selectedSnapshot?.tree ? (
+                renderTree(selectedSnapshot.tree)
+              ) : (
+                <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+                  No file tree available.
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="space-y-4">
@@ -268,7 +315,9 @@ export default function SnapshotBrowser() {
 
             {visibleFiles.length === 0 && (
               <div className="rounded-md border border-dashed bg-muted/30 p-6 text-center text-sm text-muted-foreground">
-                Select a folder in the tree to view files.
+                {selectedSnapshot?.files?.length
+                  ? 'Select a folder in the tree to view files.'
+                  : 'No files available for this snapshot.'}
               </div>
             )}
           </div>

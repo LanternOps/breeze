@@ -32,12 +32,11 @@ const defaultItems: PortalNavItem[] = [
 
 export default function PortalSidebar({
   items = defaultItems,
-  currentPath,
+  currentPath = '/',
   className
 }: PortalSidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const resolvedPath =
-    currentPath ?? (typeof window !== 'undefined' ? window.location.pathname : '/');
+  const resolvedPath = currentPath;
 
   return (
     <aside

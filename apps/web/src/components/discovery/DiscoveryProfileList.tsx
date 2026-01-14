@@ -15,6 +15,9 @@ export type DiscoveryProfile = {
 
 type DiscoveryProfileListProps = {
   profiles: DiscoveryProfile[];
+  loading?: boolean;
+  error?: string;
+  onRetry?: () => void;
   onEdit?: (profile: DiscoveryProfile) => void;
   onDelete?: (profile: DiscoveryProfile) => void;
   onRun?: (profile: DiscoveryProfile) => void;
@@ -29,10 +32,41 @@ const statusConfig: Record<DiscoveryProfileStatus, { label: string; color: strin
 
 export default function DiscoveryProfileList({
   profiles,
+  loading = false,
+  error,
+  onRetry,
   onEdit,
   onDelete,
   onRun
 }: DiscoveryProfileListProps) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading discovery profiles...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && profiles.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Try again
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center justify-between">
@@ -46,6 +80,12 @@ export default function DiscoveryProfileList({
           Schedules run automatically or on demand
         </div>
       </div>
+
+      {error && profiles.length > 0 && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="mt-6 overflow-hidden rounded-md border">
         <table className="min-w-full divide-y">

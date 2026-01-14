@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -15,42 +15,69 @@ type RestoreType = 'full' | 'selective';
 
 type DestinationType = 'original' | 'alternate';
 
-const snapshots = [
-  {
-    id: 'snap-0328',
-    label: 'Mar 28, 2024 - 02:00 AM',
-    size: '28.4 GB',
-    status: 'Healthy'
-  },
-  {
-    id: 'snap-0327',
-    label: 'Mar 27, 2024 - 02:00 AM',
-    size: '27.9 GB',
-    status: 'Healthy'
-  },
-  {
-    id: 'snap-0326',
-    label: 'Mar 26, 2024 - 02:00 AM',
-    size: '29.1 GB',
-    status: 'Warnings'
-  }
-];
+type SnapshotFile = {
+  id: string;
+  name: string;
+  size?: string;
+};
 
-const selectableFiles = [
-  { id: 'file-1', name: '/finance/Q1-report.xlsx', size: '4.2 MB' },
-  { id: 'file-2', name: '/projects/apollo/specs/architecture.pdf', size: '1.4 MB' },
-  { id: 'file-3', name: '/system/logs/backup.log', size: '2.1 MB' }
-];
+type Snapshot = {
+  id: string;
+  label: string;
+  size?: string;
+  status?: string;
+  files?: SnapshotFile[];
+};
 
 export default function RestoreWizard() {
   const [step, setStep] = useState(0);
-  const [snapshotId, setSnapshotId] = useState('snap-0328');
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [snapshotId, setSnapshotId] = useState('');
   const [restoreType, setRestoreType] = useState<RestoreType>('full');
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set(['file-1']));
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [destination, setDestination] = useState<DestinationType>('original');
+  const [alternatePath, setAlternatePath] = useState('/restore/nyc-db-14');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [restoreError, setRestoreError] = useState<string>();
+  const [restoreSuccess, setRestoreSuccess] = useState<string>();
+  const [restoring, setRestoring] = useState(false);
 
   const nextStep = () => setStep((prev) => Math.min(prev + 1, 4));
   const prevStep = () => setStep((prev) => Math.max(prev - 1, 0));
+
+  const fetchSnapshots = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetch('/api/backup/snapshots');
+      if (!response.ok) {
+        throw new Error('Failed to fetch snapshots');
+      }
+      const payload = await response.json();
+      const data = payload?.data ?? payload ?? {};
+      const snapshotList = Array.isArray(data) ? data : data.snapshots ?? [];
+      setSnapshots(Array.isArray(snapshotList) ? snapshotList : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSnapshots();
+  }, [fetchSnapshots]);
+
+  useEffect(() => {
+    if (!snapshotId && snapshots.length > 0) {
+      setSnapshotId(snapshots[0].id);
+    }
+  }, [snapshotId, snapshots]);
+
+  useEffect(() => {
+    setSelectedFiles(new Set());
+  }, [snapshotId]);
 
   const toggleFile = (id: string) => {
     setSelectedFiles((prev) => {
@@ -64,7 +91,68 @@ export default function RestoreWizard() {
     });
   };
 
-  const selectedSnapshot = snapshots.find((snap) => snap.id === snapshotId);
+  const selectedSnapshot = useMemo(
+    () => snapshots.find((snap) => snap.id === snapshotId),
+    [snapshotId, snapshots]
+  );
+  const selectableFiles = selectedSnapshot?.files ?? [];
+
+  const handleRestore = useCallback(async () => {
+    try {
+      setRestoring(true);
+      setRestoreError(undefined);
+      setRestoreSuccess(undefined);
+      const payload = {
+        snapshotId,
+        restoreType,
+        files: restoreType === 'selective' ? Array.from(selectedFiles) : [],
+        destination,
+        alternatePath: destination === 'alternate' ? alternatePath : undefined
+      };
+
+      const response = await fetch('/api/backup/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start restore');
+      }
+
+      setRestoreSuccess('Restore started successfully.');
+    } catch (err) {
+      setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
+    } finally {
+      setRestoring(false);
+    }
+  }, [alternatePath, destination, restoreType, selectedFiles, snapshotId]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading restore options...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && snapshots.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchSnapshots}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -74,6 +162,22 @@ export default function RestoreWizard() {
           Guided restore flow for snapshots and targeted files.
         </p>
       </div>
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      {restoreError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {restoreError}
+        </div>
+      )}
+      {restoreSuccess && (
+        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+          {restoreSuccess}
+        </div>
+      )}
 
       <div className="rounded-lg border bg-card p-5 shadow-sm">
         <div className="flex flex-wrap gap-2">
@@ -103,26 +207,34 @@ export default function RestoreWizard() {
                   Choose the recovery point you want to restore from.
                 </p>
               </div>
-              <div className="grid gap-4 md:grid-cols-3">
-                {snapshots.map((snapshot) => (
-                  <button
-                    key={snapshot.id}
-                    onClick={() => setSnapshotId(snapshot.id)}
-                    className={cn(
-                      'rounded-lg border p-4 text-left',
-                      snapshotId === snapshot.id
-                        ? 'border-primary bg-primary/5'
-                        : 'border-muted bg-muted/20'
-                    )}
-                  >
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>{snapshot.size}</span>
-                      <span>{snapshot.status}</span>
-                    </div>
-                    <div className="mt-2 text-sm font-semibold text-foreground">{snapshot.label}</div>
-                  </button>
-                ))}
-              </div>
+              {snapshots.length === 0 ? (
+                <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
+                  No snapshots available.
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-3">
+                  {snapshots.map((snapshot) => (
+                    <button
+                      key={snapshot.id}
+                      onClick={() => setSnapshotId(snapshot.id)}
+                      className={cn(
+                        'rounded-lg border p-4 text-left',
+                        snapshotId === snapshot.id
+                          ? 'border-primary bg-primary/5'
+                          : 'border-muted bg-muted/20'
+                      )}
+                    >
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{snapshot.size ?? '--'}</span>
+                        <span>{snapshot.status ?? 'Ready'}</span>
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-foreground">
+                        {snapshot.label}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -183,23 +295,29 @@ export default function RestoreWizard() {
               </div>
               {restoreType === 'selective' ? (
                 <div className="space-y-3">
-                  {selectableFiles.map((file) => (
-                    <label
-                      key={file.id}
-                      className="flex items-center justify-between rounded-md border bg-muted/20 px-4 py-3 text-sm"
-                    >
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedFiles.has(file.id)}
-                          onChange={() => toggleFile(file.id)}
-                          className="h-4 w-4"
-                        />
-                        <span className="font-medium text-foreground">{file.name}</span>
-                      </div>
-                      <span className="text-xs text-muted-foreground">{file.size}</span>
-                    </label>
-                  ))}
+                  {selectableFiles.length === 0 ? (
+                    <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
+                      No files available for this snapshot.
+                    </div>
+                  ) : (
+                    selectableFiles.map((file) => (
+                      <label
+                        key={file.id}
+                        className="flex items-center justify-between rounded-md border bg-muted/20 px-4 py-3 text-sm"
+                      >
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedFiles.has(file.id)}
+                            onChange={() => toggleFile(file.id)}
+                            className="h-4 w-4"
+                          />
+                          <span className="font-medium text-foreground">{file.name}</span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">{file.size ?? '--'}</span>
+                      </label>
+                    ))
+                  )}
                 </div>
               ) : (
                 <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
@@ -254,7 +372,8 @@ export default function RestoreWizard() {
                   <label className="text-xs font-medium text-muted-foreground">Alternate path</label>
                   <input
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    defaultValue="/restore/nyc-db-14"
+                    value={alternatePath}
+                    onChange={(event) => setAlternatePath(event.target.value)}
                   />
                 </div>
               )}
@@ -273,7 +392,9 @@ export default function RestoreWizard() {
                     <CheckCircle2 className="h-4 w-4 text-success" />
                     Snapshot
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">{selectedSnapshot?.label}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {selectedSnapshot?.label ?? 'No snapshot selected'}
+                  </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -328,8 +449,16 @@ export default function RestoreWizard() {
                 <ArrowRight className="h-4 w-4" />
               </button>
             ) : (
-              <button className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-                Start restore
+              <button
+                onClick={handleRestore}
+                disabled={
+                  restoring ||
+                  !snapshotId ||
+                  (restoreType === 'selective' && selectedFiles.size === 0)
+                }
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {restoring ? 'Starting...' : 'Start restore'}
                 <ArrowRight className="h-4 w-4" />
               </button>
             )}

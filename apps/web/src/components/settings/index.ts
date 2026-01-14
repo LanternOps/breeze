@@ -4,6 +4,7 @@ export { default as AccessReviewPage } from './AccessReviewPage';
 export { default as ApiKeyForm } from './ApiKeyForm';
 export { default as ApiKeyList } from './ApiKeyList';
 export { default as ApiKeysPage } from './ApiKeysPage';
+export { default as BrandingEditor } from './BrandingEditor';
 export { default as ChangePasswordForm } from './ChangePasswordForm';
 export { default as MFASettings } from './MFASettings';
 export { default as OrgBillingInfo } from './OrgBillingInfo';

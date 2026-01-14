@@ -8,11 +8,12 @@ interface Props {
 }
 
 const { title } = Astro.props;
+const currentPath = Astro.url.pathname;
 ---
 
 <Layout title={title}>
   <div class="flex h-screen overflow-hidden">
-    <Sidebar client:load />
+    <Sidebar currentPath={currentPath} client:load />
     <div class="flex flex-1 flex-col overflow-hidden">
       <Header client:load />
       <main class="flex-1 overflow-y-auto p-6">

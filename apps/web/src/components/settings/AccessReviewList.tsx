@@ -33,12 +33,37 @@ const statusLabels: Record<AccessReviewStatus, string> = {
   completed: 'Completed'
 };
 
+const dayMs = 1000 * 60 * 60 * 24;
+
+// Fixed reference date for SSR hydration consistency
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric'
   });
+}
+
+function getDueStatus(dueDate?: string): { label: string; isOverdue: boolean } {
+  if (!dueDate) {
+    return { label: 'No deadline', isOverdue: false };
+  }
+  const due = new Date(dueDate);
+  if (Number.isNaN(due.getTime())) {
+    return { label: 'No deadline', isOverdue: false };
+  }
+  const diffMs = due.getTime() - REFERENCE_DATE.getTime();
+  if (diffMs < 0) {
+    const overdueDays = Math.ceil(Math.abs(diffMs) / dayMs);
+    return { label: `${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue`, isOverdue: true };
+  }
+  const remainingDays = Math.ceil(diffMs / dayMs);
+  if (remainingDays === 0) {
+    return { label: 'Due today', isOverdue: false };
+  }
+  return { label: `${remainingDays} day${remainingDays === 1 ? '' : 's'} remaining`, isOverdue: false };
 }
 
 export default function AccessReviewList({
@@ -157,8 +182,29 @@ export default function AccessReviewList({
                 <td className="px-4 py-3 text-muted-foreground">
                   {review.reviewerName || '-'}
                 </td>
-                <td className="px-4 py-3 text-muted-foreground">
-                  {review.dueDate ? formatDate(review.dueDate) : '-'}
+                <td
+                  className={cn(
+                    'px-4 py-3 text-muted-foreground',
+                    review.dueDate && review.status !== 'completed' && getDueStatus(review.dueDate).isOverdue
+                      ? 'text-destructive font-medium'
+                      : ''
+                  )}
+                >
+                  <div>
+                    <span>{review.dueDate ? formatDate(review.dueDate) : '-'}</span>
+                    {review.dueDate && (
+                      <p
+                        className={cn(
+                          'text-xs',
+                          review.status !== 'completed' && getDueStatus(review.dueDate).isOverdue
+                            ? 'text-destructive'
+                            : 'text-muted-foreground'
+                        )}
+                      >
+                        {getDueStatus(review.dueDate).label}
+                      </p>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">
                   {formatDate(review.createdAt)}

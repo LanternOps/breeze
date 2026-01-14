@@ -84,12 +84,14 @@ function formatDate(dateString: string): string {
   });
 }
 
+// Fixed reference date for SSR hydration consistency
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
+  const diffMs = REFERENCE_DATE.getTime() - date.getTime();
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
   const diffHour = Math.floor(diffMin / 60);

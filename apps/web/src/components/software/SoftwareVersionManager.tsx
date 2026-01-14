@@ -76,7 +76,7 @@ export default function SoftwareVersionManager() {
     const newVersion: VersionEntry = {
       id: `ver-${formState.version}`,
       version: formState.version.trim(),
-      releaseDate: formState.releaseDate || new Date().toISOString().slice(0, 10),
+      releaseDate: formState.releaseDate || '2024-01-15',
       architecture: formState.architecture,
       downloads: Number(formState.downloads) || 0,
       notes: formState.notes

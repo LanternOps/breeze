@@ -9,7 +9,7 @@ WORKDIR /app
 
 # Copy workspace configuration
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
-COPY turbo.json ./
+COPY turbo.json tsconfig.json ./
 
 # Copy package.json files for dependency installation
 COPY apps/api/package.json ./apps/api/

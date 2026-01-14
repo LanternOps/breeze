@@ -1,8 +1,16 @@
-import { useMemo, useState } from 'react';
-import { Pencil, Trash2, Play } from 'lucide-react';
+import { useMemo, useState, type MouseEvent } from 'react';
+import { Pencil, Trash2, Play, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type WebhookStatus = 'active' | 'disabled';
+
+export type WebhookAuthType = 'hmac' | 'bearer';
+
+export type WebhookAuth = {
+  type: WebhookAuthType;
+  secret?: string;
+  token?: string;
+};
 
 export type WebhookHeader = {
   key: string;
@@ -14,11 +22,17 @@ export type Webhook = {
   name: string;
   url: string;
   events: string[];
-  status: WebhookStatus;
-  successCount: number;
-  failureCount: number;
+  status?: WebhookStatus;
+  enabled?: boolean;
+  lastTriggeredAt?: string | null;
+  lastTriggered?: string;
+  successCount?: number;
+  failureCount?: number;
   secret?: string;
+  bearerToken?: string;
+  auth?: WebhookAuth;
   headers?: WebhookHeader[];
+  payloadTemplate?: string;
 };
 
 type WebhookListProps = {
@@ -26,6 +40,9 @@ type WebhookListProps = {
   onEdit?: (webhook: Webhook) => void;
   onDelete?: (webhook: Webhook) => void;
   onTest?: (webhook: Webhook) => void | Promise<void>;
+  onToggle?: (webhook: Webhook, enabled: boolean) => void | Promise<void>;
+  onSelect?: (webhook: Webhook) => void;
+  selectedWebhookId?: string | null;
 };
 
 const statusStyles: Record<WebhookStatus, string> = {
@@ -38,10 +55,31 @@ const statusLabels: Record<WebhookStatus, string> = {
   disabled: 'Disabled'
 };
 
-export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: WebhookListProps) {
+const getStatus = (webhook: Webhook): WebhookStatus => {
+  if (webhook.status) return webhook.status;
+  return webhook.enabled === false ? 'disabled' : 'active';
+};
+
+const formatTimestamp = (value?: string | null) => {
+  if (!value) return 'N/A';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+};
+
+export default function WebhookList({
+  webhooks,
+  onEdit,
+  onDelete,
+  onTest,
+  onToggle,
+  onSelect,
+  selectedWebhookId
+}: WebhookListProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<WebhookStatus | 'all'>('all');
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   const filteredWebhooks = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -52,7 +90,7 @@ export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: Webh
           ? true
           : webhook.name.toLowerCase().includes(normalizedQuery) ||
             webhook.url.toLowerCase().includes(normalizedQuery);
-      const matchesStatus = statusFilter === 'all' ? true : webhook.status === statusFilter;
+      const matchesStatus = statusFilter === 'all' ? true : getStatus(webhook) === statusFilter;
 
       return matchesQuery && matchesStatus;
     });
@@ -65,6 +103,18 @@ export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: Webh
       await onTest(webhook);
     } finally {
       setTestingId(null);
+    }
+  };
+
+  const handleToggle = async (webhook: Webhook, event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!onToggle) return;
+    const nextEnabled = getStatus(webhook) !== 'active';
+    setTogglingId(webhook.id);
+    try {
+      await onToggle(webhook, nextEnabled);
+    } finally {
+      setTogglingId(null);
     }
   };
 
@@ -105,7 +155,7 @@ export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: Webh
               <th className="px-4 py-3">URL</th>
               <th className="px-4 py-3">Events</th>
               <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Deliveries</th>
+              <th className="px-4 py-3">Last Triggered</th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
@@ -119,11 +169,21 @@ export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: Webh
             ) : (
               filteredWebhooks.map(webhook => {
                 const isTesting = testingId === webhook.id;
+                const isToggling = togglingId === webhook.id;
                 const eventsToShow = webhook.events.slice(0, 2);
                 const remainingEvents = webhook.events.length - eventsToShow.length;
+                const status = getStatus(webhook);
+                const lastTriggered = webhook.lastTriggeredAt ?? webhook.lastTriggered;
 
                 return (
-                  <tr key={webhook.id} className="transition hover:bg-muted/40">
+                  <tr
+                    key={webhook.id}
+                    onClick={() => onSelect?.(webhook)}
+                    className={cn(
+                      'transition hover:bg-muted/40',
+                      selectedWebhookId === webhook.id && 'bg-muted/30'
+                    )}
+                  >
                     <td className="px-4 py-3 text-sm font-medium">{webhook.name}</td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       <span className="truncate block max-w-[260px]" title={webhook.url}>
@@ -150,30 +210,47 @@ export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: Webh
                       )}
                     </td>
                     <td className="px-4 py-3 text-sm">
-                      <span
+                      <button
+                        type="button"
+                        onClick={event => handleToggle(webhook, event)}
+                        disabled={!onToggle || isToggling}
                         className={cn(
-                          'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium',
-                          statusStyles[webhook.status]
+                          'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium transition',
+                          statusStyles[status],
+                          isToggling && 'cursor-not-allowed opacity-60'
                         )}
                       >
-                        {statusLabels[webhook.status]}
-                      </span>
+                        {status === 'active' ? (
+                          <ToggleRight className="h-4 w-4" />
+                        ) : (
+                          <ToggleLeft className="h-4 w-4" />
+                        )}
+                        {statusLabels[status]}
+                      </button>
                     </td>
                     <td className="px-4 py-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                          {webhook.successCount} success
-                        </span>
-                        <span className="inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
-                          {webhook.failureCount} failed
-                        </span>
+                      <div className="space-y-2">
+                        <p className="text-sm text-muted-foreground">{formatTimestamp(lastTriggered)}</p>
+                        {(webhook.successCount != null || webhook.failureCount != null) && (
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                              {webhook.successCount ?? 0} success
+                            </span>
+                            <span className="inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
+                              {webhook.failureCount ?? 0} failed
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => handleTest(webhook)}
+                          onClick={event => {
+                            event.stopPropagation();
+                            handleTest(webhook);
+                          }}
                           disabled={!onTest || isTesting}
                           className="inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                         >
@@ -186,7 +263,10 @@ export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: Webh
                         </button>
                         <button
                           type="button"
-                          onClick={() => onEdit?.(webhook)}
+                          onClick={event => {
+                            event.stopPropagation();
+                            onEdit?.(webhook);
+                          }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
                           title="Edit webhook"
                         >
@@ -194,7 +274,10 @@ export default function WebhookList({ webhooks, onEdit, onDelete, onTest }: Webh
                         </button>
                         <button
                           type="button"
-                          onClick={() => onDelete?.(webhook)}
+                          onClick={event => {
+                            event.stopPropagation();
+                            onDelete?.(webhook);
+                          }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive"
                           title="Delete webhook"
                         >

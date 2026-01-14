@@ -150,10 +150,11 @@ function getMockKeys(hive: string, path: string): RegistryKey[] {
     ];
   }
 
-  // Generic mock children
+  // Generic mock children - use deterministic hasChildren based on path hash
+  const pathHash = path.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return [
-    { name: 'SubKey1', path: path + '\\SubKey1', hasChildren: Math.random() > 0.5 },
-    { name: 'SubKey2', path: path + '\\SubKey2', hasChildren: Math.random() > 0.5 },
+    { name: 'SubKey1', path: path + '\\SubKey1', hasChildren: pathHash % 2 === 0 },
+    { name: 'SubKey2', path: path + '\\SubKey2', hasChildren: pathHash % 3 === 0 },
   ];
 }
 

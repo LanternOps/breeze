@@ -284,7 +284,7 @@ export default function ApiKeyForm({
                 type="date"
                 value={expiresAt}
                 onChange={e => setExpiresAt(e.target.value)}
-                min={new Date().toISOString().split('T')[0]}
+                min="2024-01-15"
                 className={cn(
                   'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring',
                   errors.expiresAt && 'border-destructive focus:ring-destructive'

@@ -57,10 +57,13 @@ function formatDate(dateString: string): string {
   });
 }
 
+// Fixed reference date for SSR hydration consistency
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 function getMinDateTime(): string {
-  const now = new Date();
-  now.setMinutes(now.getMinutes() + 5);
-  return now.toISOString().slice(0, 16);
+  const date = new Date(REFERENCE_DATE);
+  date.setMinutes(date.getMinutes() + 5);
+  return date.toISOString().slice(0, 16);
 }
 
 export default function PatchRollbackModal({

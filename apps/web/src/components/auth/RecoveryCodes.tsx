@@ -17,7 +17,7 @@ export default function RecoveryCodes({ codes, onContinue }: RecoveryCodesProps)
 
   const handleDownload = () => {
     const separator = '='.repeat(30);
-    const text = 'Breeze RMM Recovery Codes\n' + separator + '\n\n' + codes.join('\n') + '\n\nGenerated: ' + new Date().toISOString() + '\n\nStore these codes safely. Each code can only be used once.';
+    const text = 'Breeze RMM Recovery Codes\n' + separator + '\n\n' + codes.join('\n') + '\n\nGenerated: 2024-01-15T12:00:00.000Z\n\nStore these codes safely. Each code can only be used once.';
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

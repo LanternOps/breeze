@@ -65,6 +65,9 @@ const mockOrganization = {
   sites: 8
 };
 
+// Fixed reference time for SSR hydration consistency
+const REFERENCE_TIME = '12:00 PM';
+
 const formatTime = (date: Date) =>
   date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
@@ -72,7 +75,7 @@ export default function OrgSettingsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('general');
   const [saveState, setSaveState] = useState<SaveState>({
     hasUnsavedChanges: false,
-    lastSavedAt: formatTime(new Date())
+    lastSavedAt: REFERENCE_TIME
   });
 
   const statusLabel = useMemo(() => {

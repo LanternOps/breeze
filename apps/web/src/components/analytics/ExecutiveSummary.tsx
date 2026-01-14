@@ -13,18 +13,13 @@ type ExecutiveSummaryProps = {
   trendLabel?: string;
 };
 
-const defaultTrend = Array.from({ length: 12 }).map((_, index) => ({
-  timestamp: `W${index + 1}`,
-  value: 70 + Math.round(Math.random() * 20)
-}));
-
 export default function ExecutiveSummary({
-  totalDevices = 1240,
-  onlineDevices = 1184,
-  offlineDevices = 56,
-  criticalAlerts = 4,
-  warningAlerts = 18,
-  trendData,
+  totalDevices = 0,
+  onlineDevices = 0,
+  offlineDevices = 0,
+  criticalAlerts = 0,
+  warningAlerts = 0,
+  trendData = [],
   trendLabel = 'Operational health'
 }: ExecutiveSummaryProps) {
   const uptimeRate = totalDevices === 0 ? 0 : (onlineDevices / totalDevices) * 100;
@@ -107,7 +102,7 @@ export default function ExecutiveSummary({
           </div>
           <div className="h-24">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={trendData ?? defaultTrend}>
+              <LineChart data={trendData}>
                 <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>

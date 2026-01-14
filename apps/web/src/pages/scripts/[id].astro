@@ -1,10 +1,10 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import ScriptEditPage from '../../components/scripts/ScriptEditPage';
+import ScriptEditor from '../../components/scripts/ScriptEditor';
 
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Edit Script">
-  <ScriptEditPage scriptId={id} client:load />
+<DashboardLayout title="Script Editor">
+  <ScriptEditor scriptId={id} client:load />
 </DashboardLayout>

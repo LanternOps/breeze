@@ -1,6 +1,18 @@
 import { useMemo, useState } from 'react';
 import { Send } from 'lucide-react';
 
+let historyIdCounter = 0;
+const createHistoryId = () => {
+  historyIdCounter += 1;
+  return `hst-${historyIdCounter}`;
+};
+
+let requestIdCounter = 0;
+const createRequestId = () => {
+  requestIdCounter += 1;
+  return `req_${requestIdCounter.toString(36).padStart(4, '0')}`;
+};
+
 type TestHistoryItem = {
   id: string;
   event: string;
@@ -88,7 +100,7 @@ export default function WebhookTestPanel() {
     const statusText = isFailure ? 'Internal Server Error' : 'OK';
     const nextHistory = [
       {
-        id: `hst-${Date.now()}`,
+        id: createHistoryId(),
         event: eventType,
         status,
         timestamp: 'Just now'
@@ -102,11 +114,11 @@ export default function WebhookTestPanel() {
       statusText,
       headers: {
         'content-type': 'application/json',
-        'x-request-id': `req_${Math.random().toString(36).slice(2, 8)}`
+        'x-request-id': createRequestId()
       },
       body: isFailure
         ? { received: false, error: 'Destination failed to process payload.' }
-        : { received: true, deliveredAt: new Date().toISOString() }
+        : { received: true, deliveredAt: '2024-01-15T12:00:00.000Z' }
     });
   };
 

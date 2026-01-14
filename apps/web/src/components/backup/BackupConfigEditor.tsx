@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -6,6 +6,7 @@ import {
   Database,
   HardDrive,
   KeyRound,
+  Loader2,
   Lock,
   Plug,
   RefreshCw,
@@ -72,15 +73,162 @@ const retentionPresets = [
   }
 ];
 
+type ConfigValues = {
+  name: string;
+  region: string;
+  bucketName: string;
+  basePath: string;
+  storageAccount: string;
+  container: string;
+  localPath: string;
+  retentionTier: string;
+  accessKey: string;
+  secretKey: string;
+  scheduleStartTime: string;
+  scheduleWindow: string;
+  weeklyStartTime: string;
+  weeklyTimezone: string;
+  cronExpression: string;
+  retentionDays: number;
+  retentionVersions: number;
+  encryptionKey: string;
+  keyRotation: string;
+};
+
+const defaultConfigValues: ConfigValues = {
+  name: 'Production Backups',
+  region: 'us-east-1',
+  bucketName: 'backup-prod-primary',
+  basePath: '/daily',
+  storageAccount: 'acmebackups',
+  container: 'protected-assets',
+  localPath: '/vault/backups',
+  retentionTier: 'Warm storage',
+  accessKey: 'AKIA-****-9822',
+  secretKey: 'hidden-secret',
+  scheduleStartTime: '02:00',
+  scheduleWindow: '2 hours',
+  weeklyStartTime: '01:30',
+  weeklyTimezone: 'UTC-05:00 (EST)',
+  cronExpression: '0 2 * * *',
+  retentionDays: 90,
+  retentionVersions: 36,
+  encryptionKey: 'kms/prod/backup-key',
+  keyRotation: 'Every 90 days'
+};
+
 export default function BackupConfigEditor() {
   const [activeStep, setActiveStep] = useState(0);
   const [provider, setProvider] = useState<ProviderId>('s3');
   const [scheduleType, setScheduleType] = useState<ScheduleType>('daily');
   const [retentionPreset, setRetentionPreset] = useState<RetentionPreset>('standard');
   const [encryptionEnabled, setEncryptionEnabled] = useState(true);
+  const [configValues, setConfigValues] = useState<ConfigValues>(defaultConfigValues);
+  const [weeklyDays, setWeeklyDays] = useState<string[]>(['Mon', 'Wed', 'Fri']);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
+  const [saveSuccess, setSaveSuccess] = useState<string>();
 
   const nextStep = () => setActiveStep((prev) => Math.min(prev + 1, steps.length - 1));
   const prevStep = () => setActiveStep((prev) => Math.max(prev - 1, 0));
+
+  const updateValue = useCallback(
+    (key: keyof ConfigValues, value: ConfigValues[keyof ConfigValues]) => {
+      setConfigValues((prev) => ({ ...prev, [key]: value }));
+    },
+    []
+  );
+
+  const toggleWeekday = (day: string) => {
+    setWeeklyDays((prev) =>
+      prev.includes(day) ? prev.filter((item) => item !== day) : [...prev, day]
+    );
+  };
+
+  const handleSave = useCallback(
+    async (mode: 'draft' | 'publish') => {
+      try {
+        setSaving(true);
+        setSaveError(undefined);
+        setSaveSuccess(undefined);
+
+        const providerSettings: Record<string, unknown> = {
+          region: configValues.region,
+          accessKey: configValues.accessKey,
+          secretKey: configValues.secretKey
+        };
+
+        if (provider === 's3' || provider === 'gcs') {
+          providerSettings.bucketName = configValues.bucketName;
+          providerSettings.basePath = configValues.basePath;
+        }
+
+        if (provider === 'azure') {
+          providerSettings.storageAccount = configValues.storageAccount;
+          providerSettings.container = configValues.container;
+        }
+
+        if (provider === 'local') {
+          providerSettings.localPath = configValues.localPath;
+          providerSettings.retentionTier = configValues.retentionTier;
+        }
+
+        const schedule =
+          scheduleType === 'daily'
+            ? {
+                type: 'daily',
+                startTime: configValues.scheduleStartTime,
+                window: configValues.scheduleWindow
+              }
+            : scheduleType === 'weekly'
+              ? {
+                  type: 'weekly',
+                  startTime: configValues.weeklyStartTime,
+                  days: weeklyDays,
+                  timezone: configValues.weeklyTimezone
+                }
+              : {
+                  type: 'cron',
+                  expression: configValues.cronExpression
+                };
+
+        const payload = {
+          name: configValues.name,
+          provider,
+          schedule,
+          retention: {
+            preset: retentionPreset,
+            days: configValues.retentionDays,
+            versions: configValues.retentionVersions
+          },
+          encryption: {
+            enabled: encryptionEnabled,
+            key: configValues.encryptionKey,
+            rotation: configValues.keyRotation
+          },
+          providerSettings,
+          status: mode === 'publish' ? 'active' : 'draft'
+        };
+
+        const response = await fetch('/api/backup/configs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to save backup configuration');
+        }
+
+        setSaveSuccess(mode === 'publish' ? 'Configuration published.' : 'Draft saved.');
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : 'Failed to save configuration');
+      } finally {
+        setSaving(false);
+      }
+    },
+    [configValues, encryptionEnabled, provider, retentionPreset, scheduleType, weeklyDays]
+  );
 
   return (
     <div className="space-y-6">
@@ -90,6 +238,17 @@ export default function BackupConfigEditor() {
           Build a reusable backup config with provider, schedule, and retention rules.
         </p>
       </div>
+
+      {saveError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {saveError}
+        </div>
+      )}
+      {saveSuccess && (
+        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+          {saveSuccess}
+        </div>
+      )}
 
       <div className="rounded-lg border bg-card p-5 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -169,14 +328,16 @@ export default function BackupConfigEditor() {
                   <label className="text-xs font-medium text-muted-foreground">Display name</label>
                   <input
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    defaultValue="Production Backups"
+                    value={configValues.name}
+                    onChange={(event) => updateValue('name', event.target.value)}
                   />
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-muted-foreground">Region / Endpoint</label>
                   <input
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    defaultValue={provider === 'azure' ? 'eastus2' : 'us-east-1'}
+                    value={configValues.region}
+                    onChange={(event) => updateValue('region', event.target.value)}
                   />
                 </div>
               </div>
@@ -187,14 +348,16 @@ export default function BackupConfigEditor() {
                     <label className="text-xs font-medium text-muted-foreground">Bucket name</label>
                     <input
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="backup-prod-primary"
+                      value={configValues.bucketName}
+                      onChange={(event) => updateValue('bucketName', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-medium text-muted-foreground">Base path</label>
                     <input
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="/daily"
+                      value={configValues.basePath}
+                      onChange={(event) => updateValue('basePath', event.target.value)}
                     />
                   </div>
                 </div>
@@ -206,14 +369,16 @@ export default function BackupConfigEditor() {
                     <label className="text-xs font-medium text-muted-foreground">Storage account</label>
                     <input
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="acmebackups"
+                      value={configValues.storageAccount}
+                      onChange={(event) => updateValue('storageAccount', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-medium text-muted-foreground">Container</label>
                     <input
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="protected-assets"
+                      value={configValues.container}
+                      onChange={(event) => updateValue('container', event.target.value)}
                     />
                   </div>
                 </div>
@@ -225,15 +390,20 @@ export default function BackupConfigEditor() {
                     <label className="text-xs font-medium text-muted-foreground">Local path</label>
                     <input
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="/vault/backups"
+                      value={configValues.localPath}
+                      onChange={(event) => updateValue('localPath', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-medium text-muted-foreground">Retention tier</label>
-                    <select className="w-full rounded-md border bg-background px-3 py-2 text-sm">
-                      <option>Warm storage</option>
-                      <option>Cold storage</option>
-                      <option>Archive only</option>
+                    <select
+                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      value={configValues.retentionTier}
+                      onChange={(event) => updateValue('retentionTier', event.target.value)}
+                    >
+                      <option value="Warm storage">Warm storage</option>
+                      <option value="Cold storage">Cold storage</option>
+                      <option value="Archive only">Archive only</option>
                     </select>
                   </div>
                 </div>
@@ -244,7 +414,8 @@ export default function BackupConfigEditor() {
                   <label className="text-xs font-medium text-muted-foreground">Access key</label>
                   <input
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    defaultValue="AKIA-****-9822"
+                    value={configValues.accessKey}
+                    onChange={(event) => updateValue('accessKey', event.target.value)}
                   />
                 </div>
                 <div className="space-y-2">
@@ -252,7 +423,8 @@ export default function BackupConfigEditor() {
                   <input
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     type="password"
-                    defaultValue="hidden-secret"
+                    value={configValues.secretKey}
+                    onChange={(event) => updateValue('secretKey', event.target.value)}
                   />
                 </div>
               </div>
@@ -314,15 +486,20 @@ export default function BackupConfigEditor() {
                     <input
                       type="time"
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="02:00"
+                      value={configValues.scheduleStartTime}
+                      onChange={(event) => updateValue('scheduleStartTime', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-medium text-muted-foreground">Window length</label>
-                    <select className="w-full rounded-md border bg-background px-3 py-2 text-sm">
-                      <option>2 hours</option>
-                      <option>4 hours</option>
-                      <option>6 hours</option>
+                    <select
+                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      value={configValues.scheduleWindow}
+                      onChange={(event) => updateValue('scheduleWindow', event.target.value)}
+                    >
+                      <option value="2 hours">2 hours</option>
+                      <option value="4 hours">4 hours</option>
+                      <option value="6 hours">6 hours</option>
                     </select>
                   </div>
                 </div>
@@ -334,9 +511,10 @@ export default function BackupConfigEditor() {
                     {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => (
                       <button
                         key={day}
+                        onClick={() => toggleWeekday(day)}
                         className={cn(
                           'rounded-full border px-3 py-1 text-xs font-medium',
-                          ['Mon', 'Wed', 'Fri'].includes(day)
+                          weeklyDays.includes(day)
                             ? 'border-primary bg-primary/10 text-primary'
                             : 'border-muted bg-muted/20 text-muted-foreground'
                         )}
@@ -351,15 +529,20 @@ export default function BackupConfigEditor() {
                       <input
                         type="time"
                         className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                        defaultValue="01:30"
+                        value={configValues.weeklyStartTime}
+                        onChange={(event) => updateValue('weeklyStartTime', event.target.value)}
                       />
                     </div>
                     <div className="space-y-2">
                       <label className="text-xs font-medium text-muted-foreground">Timezone</label>
-                      <select className="w-full rounded-md border bg-background px-3 py-2 text-sm">
-                        <option>UTC-05:00 (EST)</option>
-                        <option>UTC-08:00 (PST)</option>
-                        <option>UTC+01:00 (CET)</option>
+                      <select
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                        value={configValues.weeklyTimezone}
+                        onChange={(event) => updateValue('weeklyTimezone', event.target.value)}
+                      >
+                        <option value="UTC-05:00 (EST)">UTC-05:00 (EST)</option>
+                        <option value="UTC-08:00 (PST)">UTC-08:00 (PST)</option>
+                        <option value="UTC+01:00 (CET)">UTC+01:00 (CET)</option>
                       </select>
                     </div>
                   </div>
@@ -372,7 +555,8 @@ export default function BackupConfigEditor() {
                     <label className="text-xs font-medium text-muted-foreground">Cron expression</label>
                     <input
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="0 2 * * *"
+                      value={configValues.cronExpression}
+                      onChange={(event) => updateValue('cronExpression', event.target.value)}
                     />
                   </div>
                   <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -426,7 +610,8 @@ export default function BackupConfigEditor() {
                   <input
                     type="number"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    defaultValue={90}
+                    value={configValues.retentionDays}
+                    onChange={(event) => updateValue('retentionDays', Number(event.target.value))}
                   />
                 </div>
                 <div className="space-y-2">
@@ -434,7 +619,8 @@ export default function BackupConfigEditor() {
                   <input
                     type="number"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    defaultValue={36}
+                    value={configValues.retentionVersions}
+                    onChange={(event) => updateValue('retentionVersions', Number(event.target.value))}
                   />
                 </div>
               </div>
@@ -463,15 +649,20 @@ export default function BackupConfigEditor() {
                     <label className="text-xs font-medium text-muted-foreground">Encryption key</label>
                     <input
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      defaultValue="kms/prod/backup-key"
+                      value={configValues.encryptionKey}
+                      onChange={(event) => updateValue('encryptionKey', event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-medium text-muted-foreground">Key rotation</label>
-                    <select className="w-full rounded-md border bg-background px-3 py-2 text-sm">
-                      <option>Every 90 days</option>
-                      <option>Every 180 days</option>
-                      <option>Manual only</option>
+                    <select
+                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      value={configValues.keyRotation}
+                      onChange={(event) => updateValue('keyRotation', event.target.value)}
+                    >
+                      <option value="Every 90 days">Every 90 days</option>
+                      <option value="Every 180 days">Every 180 days</option>
+                      <option value="Manual only">Manual only</option>
                     </select>
                   </div>
                 </div>
@@ -494,13 +685,26 @@ export default function BackupConfigEditor() {
             Back
           </button>
           <div className="flex items-center gap-2">
-            <button className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent">
+            <button
+              onClick={() => handleSave('draft')}
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Save draft
             </button>
             <button
-              onClick={nextStep}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              onClick={() => {
+                if (activeStep === steps.length - 1) {
+                  handleSave('publish');
+                } else {
+                  nextStep();
+                }
+              }}
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {activeStep === steps.length - 1 ? 'Publish config' : 'Continue'}
               <ArrowRight className="h-4 w-4" />
             </button>

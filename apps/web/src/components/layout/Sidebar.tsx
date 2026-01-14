@@ -25,6 +25,10 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+interface SidebarProps {
+  currentPath?: string;
+}
+
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', href: '/devices', icon: Monitor },
@@ -68,9 +72,9 @@ const settingsNav = [
   { name: 'Integrations', href: '/integrations', icon: Plug }
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+  const currentPath = initialPath;
 
   return (
     <aside

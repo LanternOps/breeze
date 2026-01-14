@@ -98,12 +98,14 @@ function formatDateTime(dateString: string): string {
   return date.toLocaleString();
 }
 
+// Fixed reference date to avoid hydration mismatches
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
+  const diffMs = REFERENCE_DATE.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));

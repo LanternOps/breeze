@@ -3,6 +3,12 @@ import { Check, Plus, Trash2, TriangleAlert } from 'lucide-react';
 
 type HeaderRow = { id: string; key: string; value: string };
 
+let headerIdCounter = 0;
+const createHeaderId = () => {
+  headerIdCounter += 1;
+  return `hdr-${headerIdCounter}`;
+};
+
 const availableEvents = [
   'device.offline',
   'device.online',
@@ -61,7 +67,7 @@ export default function WebhookEditor({ onSave, onTest }: WebhookEditorProps) {
   };
 
   const addHeader = () => {
-    setHeaders(prev => [...prev, { id: `hdr-${Date.now()}`, key: '', value: '' }]);
+    setHeaders(prev => [...prev, { id: createHeaderId(), key: '', value: '' }]);
   };
 
   const removeHeader = (id: string) => {

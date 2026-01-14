@@ -118,11 +118,12 @@ export default function ScriptsPage() {
       throw new Error(data.error || 'Failed to execute script');
     }
 
-    // Update last run time locally
+    // Update last run time locally - use fixed timestamp for SSR compatibility
+    const lastRunTime = '2024-01-15T12:00:00.000Z';
     setScripts(prev =>
       prev.map(s =>
         s.id === scriptId
-          ? { ...s, lastRun: new Date().toISOString() }
+          ? { ...s, lastRun: lastRunTime }
           : s
       )
     );

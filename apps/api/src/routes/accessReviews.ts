@@ -9,6 +9,8 @@ import {
   accessReviewItems,
   users,
   roles,
+  permissions,
+  rolePermissions,
   partnerUsers,
   organizationUsers
 } from '../db/schema';
@@ -210,6 +212,7 @@ accessReviewRoutes.get(
         userId: accessReviewItems.userId,
         userName: users.name,
         userEmail: users.email,
+        lastActiveAt: users.lastLoginAt,
         roleId: accessReviewItems.roleId,
         roleName: roles.name,
         decision: accessReviewItems.decision,
@@ -221,9 +224,35 @@ accessReviewRoutes.get(
       .innerJoin(roles, eq(accessReviewItems.roleId, roles.id))
       .where(eq(accessReviewItems.reviewId, reviewId));
 
+    const roleIds = Array.from(new Set(items.map((item) => item.roleId)));
+    const permissionsByRole = new Map<string, string[]>();
+
+    if (roleIds.length > 0) {
+      const rolePermissionRows = await db
+        .select({
+          roleId: rolePermissions.roleId,
+          resource: permissions.resource,
+          action: permissions.action
+        })
+        .from(rolePermissions)
+        .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+        .where(inArray(rolePermissions.roleId, roleIds));
+
+      rolePermissionRows.forEach((row) => {
+        const list = permissionsByRole.get(row.roleId) ?? [];
+        list.push(`${row.resource}:${row.action}`);
+        permissionsByRole.set(row.roleId, list);
+      });
+    }
+
+    const itemsWithPermissions = items.map((item) => ({
+      ...item,
+      permissions: permissionsByRole.get(item.roleId) ?? []
+    }));
+
     return c.json({
       ...review,
-      items
+      items: itemsWithPermissions
     });
   }
 );

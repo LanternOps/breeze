@@ -11,10 +11,15 @@ export type { EffectiveSetting, EffectivePolicyChainItem, EffectivePolicyDevice 
 export type { AssignmentTargetType, AssignmentTarget } from './PolicyAssignmentPanel';
 export type { ComplianceStatus, ComplianceDevice } from './PolicyComplianceView';
 export type {
-  PolicyDraft,
+  ConditionType,
   PolicyCondition,
   PolicyConditionGroup,
-  PolicyType as PolicyEditorPolicyType
+  PolicyEditorState,
+  PolicyStatus as PolicyEditorStatus,
+  RemediationAction,
+  ScheduleConfig,
+  SeverityLevel,
+  TargetScope
 } from './PolicyEditor';
 export type { PolicyStatus, PolicyType, Policy } from './PolicyList';
 export type { PolicyTemplateType, PolicyTemplate } from './PolicyTemplateGallery';

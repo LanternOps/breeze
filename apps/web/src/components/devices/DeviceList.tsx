@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Search, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
 
+const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+
 export type DeviceStatus = 'online' | 'offline' | 'maintenance';
 export type OSType = 'windows' | 'macos' | 'linux';
 
@@ -49,7 +51,7 @@ function formatLastSeen(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = new Date();
+  const now = REFERENCE_DATE;
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));

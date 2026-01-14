@@ -77,7 +77,11 @@ const statusStyles: Record<ScriptItem['status'], string> = {
   archived: 'bg-gray-500/15 text-gray-700'
 };
 
-const createId = () => `cat-${Math.random().toString(36).slice(2, 9)}`;
+let idCounter = 0;
+const createId = (prefix: string = 'cat') => {
+  idCounter += 1;
+  return `${prefix}-${idCounter}`;
+};
 
 const findCategoryName = (nodes: ScriptCategory[], id: string): string | undefined => {
   for (const node of nodes) {
