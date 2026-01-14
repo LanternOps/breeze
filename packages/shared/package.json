@@ -12,6 +12,7 @@
     "./constants": "./src/constants/index.ts"
   },
   "scripts": {
+    "test": "vitest",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit"
   },
@@ -19,6 +20,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.0.17"
   }
 }

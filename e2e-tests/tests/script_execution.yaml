@@ -1,0 +1,269 @@
+# Script Execution E2E Tests
+# Tests remote script execution across platforms
+
+tests:
+  - id: script_execution_single
+    name: "Single Device Script Execution"
+    description: "Create and execute a script on a single device"
+    tags: [scripts, execution, basic]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: create_script
+        action: ui
+        description: "Create a test script"
+        playwright:
+          - goto: "/scripts"
+          - click: "button:has-text('New Script')"
+          - waitFor: "[data-testid='script-editor']"
+          - fill:
+              "[name='name']": "E2E Test Script - Hostname"
+              "[name='description']": "Test script that returns hostname"
+          - click: "[data-testid='language-select']"
+          - click: "li:has-text('Bash')"
+          - fill:
+              "[data-testid='script-content']": |
+                #!/bin/bash
+                echo "Hostname: $(hostname)"
+                echo "Date: $(date)"
+                echo "User: $(whoami)"
+                exit 0
+          - click: "button:has-text('Save')"
+          - waitFor: "text=Script saved"
+
+      - id: execute_script
+        action: ui
+        description: "Execute script on Linux device"
+        playwright:
+          - click: "button:has-text('Run')"
+          - waitFor: "[data-testid='device-selector']"
+          - click: "[data-testid='device-linux']"
+          - click: "button:has-text('Execute')"
+          - waitFor: "[data-testid='execution-progress']"
+          - waitFor: "text=Completed"
+            timeout: 60000
+
+      - id: verify_execution_result
+        action: ui
+        description: "Verify script execution results"
+        playwright:
+          - click: "[data-testid='view-results']"
+          - waitFor: "[data-testid='execution-output']"
+          - assert:
+              selector: "[data-testid='execution-output']"
+              contains: "Hostname:"
+          - assert:
+              selector: "[data-testid='execution-status']"
+              text: "Success"
+
+      - id: verify_on_remote
+        action: remote
+        node: linux
+        description: "Verify script was actually executed"
+        tool: claude_code
+        args:
+          prompt: |
+            Check the Breeze agent script execution logs:
+            1. Look at /var/log/breeze/scripts.log for recent executions
+            2. Find the "E2E Test Script - Hostname" execution
+            3. Return JSON: {executed: boolean, output: string, exitCode: number}
+        expect:
+          executed: true
+          exitCode: 0
+
+  - id: script_execution_cross_platform
+    name: "Cross-Platform Script Execution"
+    description: "Execute platform-specific scripts on all devices"
+    tags: [scripts, execution, cross-platform, advanced]
+    nodes: [windows, linux, macos]
+    timeout: 300000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: create_cross_platform_script
+        action: ui
+        description: "Create cross-platform script"
+        playwright:
+          - goto: "/scripts"
+          - click: "button:has-text('New Script')"
+          - fill:
+              "[name='name']": "E2E Cross-Platform Test"
+              "[name='description']": "Tests execution across all platforms"
+          - click: "[data-testid='cross-platform-toggle']"
+          # Windows script
+          - click: "[data-testid='tab-windows']"
+          - fill:
+              "[data-testid='script-content-windows']": |
+                Write-Host "Platform: Windows"
+                Write-Host "Hostname: $env:COMPUTERNAME"
+                Write-Host "OS: $([System.Environment]::OSVersion.VersionString)"
+          # Linux script
+          - click: "[data-testid='tab-linux']"
+          - fill:
+              "[data-testid='script-content-linux']": |
+                #!/bin/bash
+                echo "Platform: Linux"
+                echo "Hostname: $(hostname)"
+                echo "OS: $(cat /etc/os-release | grep PRETTY_NAME)"
+          # macOS script
+          - click: "[data-testid='tab-macos']"
+          - fill:
+              "[data-testid='script-content-macos']": |
+                #!/bin/bash
+                echo "Platform: macOS"
+                echo "Hostname: $(hostname)"
+                echo "OS: $(sw_vers -productVersion)"
+          - click: "button:has-text('Save')"
+          - waitFor: "text=Script saved"
+
+      - id: execute_on_all
+        action: ui
+        description: "Execute on all devices"
+        playwright:
+          - click: "button:has-text('Run')"
+          - click: "[data-testid='select-all-devices']"
+          - click: "button:has-text('Execute')"
+          - waitFor: "[data-testid='execution-progress']"
+          - waitFor: "text=3 of 3 completed"
+            timeout: 120000
+
+      - id: verify_windows_result
+        action: remote
+        node: windows
+        description: "Verify Windows execution"
+        tool: claude_code
+        args:
+          prompt: |
+            Check the most recent script execution on Windows:
+            1. Look at C:\ProgramData\Breeze\logs\scripts.log
+            2. Find the "E2E Cross-Platform Test" execution
+            3. Return JSON: {platform: "Windows", success: boolean, output: string}
+        expect:
+          platform: "Windows"
+          success: true
+
+      - id: verify_linux_result
+        action: remote
+        node: linux
+        description: "Verify Linux execution"
+        tool: claude_code
+        args:
+          prompt: |
+            Check the most recent script execution on Linux:
+            1. Look at /var/log/breeze/scripts.log
+            2. Find the "E2E Cross-Platform Test" execution
+            3. Return JSON: {platform: "Linux", success: boolean, output: string}
+        expect:
+          platform: "Linux"
+          success: true
+
+      - id: verify_macos_result
+        action: remote
+        node: macos
+        description: "Verify macOS execution"
+        tool: claude_code
+        args:
+          prompt: |
+            Check the most recent script execution on macOS:
+            1. Look at /var/log/breeze/scripts.log
+            2. Find the "E2E Cross-Platform Test" execution
+            3. Return JSON: {platform: "macOS", success: boolean, output: string}
+        expect:
+          platform: "macOS"
+          success: true
+
+  - id: script_execution_failure_handling
+    name: "Script Failure Handling"
+    description: "Verify proper handling of script failures"
+    tags: [scripts, execution, error-handling]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: create_failing_script
+        action: ui
+        description: "Create a script that fails"
+        playwright:
+          - goto: "/scripts"
+          - click: "button:has-text('New Script')"
+          - fill:
+              "[name='name']": "E2E Failure Test Script"
+          - click: "[data-testid='language-select']"
+          - click: "li:has-text('Bash')"
+          - fill:
+              "[data-testid='script-content']": |
+                #!/bin/bash
+                echo "This script will fail"
+                exit 1
+          - click: "button:has-text('Save')"
+
+      - id: execute_failing_script
+        action: ui
+        description: "Execute failing script"
+        playwright:
+          - click: "button:has-text('Run')"
+          - click: "[data-testid='device-linux']"
+          - click: "button:has-text('Execute')"
+          - waitFor: "text=Failed"
+            timeout: 60000
+
+      - id: verify_failure_details
+        action: ui
+        description: "Verify failure is properly reported"
+        playwright:
+          - click: "[data-testid='view-results']"
+          - assert:
+              selector: "[data-testid='execution-status']"
+              text: "Failed"
+          - assert:
+              selector: "[data-testid='exit-code']"
+              text: "1"
+
+      - id: investigate_failure
+        action: remote
+        node: linux
+        description: "Use Claude to investigate the failure"
+        tool: claude_code
+        args:
+          prompt: |
+            A script execution failed. Investigate:
+            1. Check /var/log/breeze/scripts.log for the failure
+            2. Identify why exit code was 1
+            3. Return JSON: {
+              scriptName: string,
+              exitCode: number,
+              stderr: string,
+              explanation: string
+            }
+        expect:
+          exitCode: 1
