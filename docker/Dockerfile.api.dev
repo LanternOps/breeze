@@ -1,0 +1,32 @@
+# Development Dockerfile for API with hot-reloading
+FROM node:20-alpine
+
+# Install pnpm
+RUN npm install -g pnpm
+
+# Set working directory
+WORKDIR /app
+
+# Copy workspace configuration
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY turbo.json ./
+
+# Copy package.json files for dependency installation
+COPY apps/api/package.json ./apps/api/
+COPY packages/shared/package.json ./packages/shared/
+
+# Install all dependencies (including devDependencies for development)
+RUN pnpm install
+
+# Copy source code (will be overridden by volume mounts in dev)
+COPY apps/api ./apps/api
+COPY packages/shared ./packages/shared
+
+# Set working directory to api
+WORKDIR /app/apps/api
+
+# Expose port
+EXPOSE 3001
+
+# Run in development mode with hot-reloading (tsx watch)
+CMD ["pnpm", "dev"]

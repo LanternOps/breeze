@@ -1,0 +1,162 @@
+# Development Docker Compose with mounted code for hot-reloading
+# Usage: docker compose -f docker-compose.dev.yml up
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: breeze-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: breeze
+      POSTGRES_PASSWORD: breeze
+      POSTGRES_DB: breeze
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    networks:
+      - breeze-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U breeze -d breeze"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # Redis for BullMQ job queue
+  redis:
+    image: redis:7-alpine
+    container_name: breeze-redis-dev
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - breeze-dev-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 3s
+
+  # Hono API Service (Development with hot-reload)
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api.dev
+    container_name: breeze-api-dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://breeze:breeze@postgres:5432/breeze
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev-jwt-secret-not-for-production-12345678
+      JWT_EXPIRES_IN: 15m
+      REFRESH_TOKEN_EXPIRES_IN: 7d
+      API_PORT: 3001
+      AGENT_ENROLLMENT_SECRET: dev-enrollment-secret-12345678
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: breeze
+      LOG_LEVEL: debug
+      ENABLE_API_DOCS: "true"
+    ports:
+      - "3001:3001"
+    volumes:
+      # Mount source code for hot-reloading
+      - ./apps/api/src:/app/apps/api/src:cached
+      - ./packages/shared/src:/app/packages/shared/src:cached
+      # Mount config files
+      - ./apps/api/package.json:/app/apps/api/package.json:ro
+      - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
+      - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
+      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
+      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
+      # Exclude node_modules (use container's)
+      - /app/node_modules
+      - /app/apps/api/node_modules
+      - /app/packages/shared/node_modules
+    networks:
+      - breeze-dev-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Astro Web Frontend (Development with hot-reload)
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web.dev
+    container_name: breeze-web-dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 4321
+      PUBLIC_API_URL: http://localhost:3001
+    ports:
+      - "4321:4321"
+    volumes:
+      # Mount source code for hot-reloading
+      - ./apps/web/src:/app/apps/web/src:cached
+      - ./apps/web/public:/app/apps/web/public:cached
+      - ./packages/shared/src:/app/packages/shared/src:cached
+      # Mount config files
+      - ./apps/web/package.json:/app/apps/web/package.json:ro
+      - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
+      - ./apps/web/astro.config.mjs:/app/apps/web/astro.config.mjs:ro
+      - ./apps/web/tailwind.config.mjs:/app/apps/web/tailwind.config.mjs:ro
+      - ./apps/web/postcss.config.mjs:/app/apps/web/postcss.config.mjs:ro
+      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
+      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
+      # Exclude node_modules (use container's)
+      - /app/node_modules
+      - /app/apps/web/node_modules
+      - /app/packages/shared/node_modules
+    networks:
+      - breeze-dev-network
+    depends_on:
+      - api
+
+  # MinIO for S3-compatible object storage
+  minio:
+    image: minio/minio:latest
+    container_name: breeze-minio-dev
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_dev_data:/data
+    networks:
+      - breeze-dev-network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+
+networks:
+  breeze-dev-network:
+    driver: bridge
+    name: breeze-dev-network
+
+volumes:
+  postgres_dev_data:
+    name: breeze-postgres-dev-data
+  redis_dev_data:
+    name: breeze-redis-dev-data
+  minio_dev_data:
+    name: breeze-minio-dev-data

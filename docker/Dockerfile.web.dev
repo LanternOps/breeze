@@ -1,0 +1,32 @@
+# Development Dockerfile for Web with hot-reloading
+FROM node:20-alpine
+
+# Install pnpm
+RUN npm install -g pnpm
+
+# Set working directory
+WORKDIR /app
+
+# Copy workspace configuration
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY turbo.json ./
+
+# Copy package.json files for dependency installation
+COPY apps/web/package.json ./apps/web/
+COPY packages/shared/package.json ./packages/shared/
+
+# Install all dependencies (including devDependencies for development)
+RUN pnpm install
+
+# Copy source code (will be overridden by volume mounts in dev)
+COPY apps/web ./apps/web
+COPY packages/shared ./packages/shared
+
+# Set working directory to web
+WORKDIR /app/apps/web
+
+# Expose port
+EXPOSE 4321
+
+# Run in development mode with hot-reloading (astro dev)
+CMD ["pnpm", "dev", "--host", "0.0.0.0"]

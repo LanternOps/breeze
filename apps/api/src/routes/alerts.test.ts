@@ -1,0 +1,299 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Hono } from 'hono';
+import { alertRoutes } from './alerts';
+
+vi.mock('../services', () => ({}));
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    })),
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([]))
+      }))
+    })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    })),
+    delete: vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve())
+    }))
+  }
+}));
+
+vi.mock('../db/schema', () => ({
+  alertRules: {},
+  alertTemplates: {},
+  alerts: {},
+  notificationChannels: {},
+  escalationPolicies: {},
+  alertNotifications: {},
+  devices: {},
+  organizations: {}
+}));
+
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: vi.fn((c, next) => {
+    c.set('auth', {
+      scope: 'organization',
+      orgId: '11111111-1111-1111-1111-111111111111',
+      partnerId: null,
+      user: { id: 'user-123', email: 'test@example.com' }
+    });
+    return next();
+  }),
+  requireScope: vi.fn(() => (c, next) => next())
+}));
+
+import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
+
+describe('alert routes', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: '11111111-1111-1111-1111-111111111111',
+        partnerId: null,
+        user: { id: 'user-123', email: 'test@example.com' }
+      });
+      return next();
+    });
+    app = new Hono();
+    app.route('/alerts', alertRoutes);
+  });
+
+  describe('GET /alerts', () => {
+    it('should list alerts with pagination', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'alert-1',
+                          status: 'active',
+                          severity: 'high',
+                          title: 'CPU usage high',
+                          message: 'CPU over threshold',
+                          deviceHostname: 'device-1',
+                          ruleName: 'CPU Alert'
+                        }
+                      ])
+                    })
+                  })
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].severity).toBe('high');
+      expect(body.pagination.total).toBe(1);
+    });
+
+    it('should filter alerts by status and severity', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'alert-2',
+                          status: 'acknowledged',
+                          severity: 'critical',
+                          title: 'Disk failure',
+                          message: 'Disk error',
+                          deviceHostname: 'device-2',
+                          ruleName: 'Disk Alert'
+                        }
+                      ])
+                    })
+                  })
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts?status=acknowledged&severity=critical', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].status).toBe('acknowledged');
+      expect(body.data[0].severity).toBe('critical');
+    });
+  });
+
+  describe('POST /alerts/:id/acknowledge', () => {
+    it('should acknowledge an active alert', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: 'alert-123',
+                orgId: '11111111-1111-1111-1111-111111111111',
+                status: 'active'
+              }
+            ])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: 'alert-123',
+                status: 'acknowledged',
+                acknowledgedBy: 'user-123'
+              }
+            ])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/alerts/alert-123/acknowledge', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('acknowledged');
+      expect(body.acknowledgedBy).toBe('user-123');
+    });
+  });
+
+  describe('POST /alerts/:id/resolve', () => {
+    it('should resolve an alert with a note', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: 'alert-456',
+                orgId: '11111111-1111-1111-1111-111111111111',
+                status: 'active'
+              }
+            ])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: 'alert-456',
+                status: 'resolved',
+                resolvedBy: 'user-123',
+                resolutionNote: 'Issue fixed'
+              }
+            ])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/alerts/alert-456/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ note: 'Issue fixed' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('resolved');
+      expect(body.resolutionNote).toBe('Issue fixed');
+    });
+  });
+
+  describe('GET /alerts/summary', () => {
+    it('should return severity and status breakdowns', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([
+                { severity: 'critical', count: 2 },
+                { severity: 'high', count: 1 }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([
+                { status: 'active', count: 2 },
+                { status: 'resolved', count: 1 }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 3 }])
+          })
+        } as any);
+
+      const res = await app.request('/alerts/summary', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.bySeverity.critical).toBe(2);
+      expect(body.bySeverity.high).toBe(1);
+      expect(body.bySeverity.medium).toBe(0);
+      expect(body.byStatus.active).toBe(2);
+      expect(body.byStatus.resolved).toBe(1);
+      expect(body.byStatus.acknowledged).toBe(0);
+      expect(body.total).toBe(3);
+    });
+  });
+});
