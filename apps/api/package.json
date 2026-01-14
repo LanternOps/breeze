@@ -7,6 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsup src/index.ts --format esm --dts",
     "start": "node dist/index.js",
+    "test": "vitest",
+    "test:coverage": "vitest run --coverage",
     "lint": "eslint src",
     "clean": "rm -rf dist",
     "db:generate": "drizzle-kit generate",
@@ -35,9 +37,11 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
+    "@vitest/coverage-v8": "^4.0.17",
     "drizzle-kit": "^0.30.1",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.0.17"
   }
 }

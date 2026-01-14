@@ -1,0 +1,256 @@
+# Alert Lifecycle E2E Tests
+# Tests alert creation, triggering, and acknowledgment
+
+tests:
+  - id: alert_cpu_threshold
+    name: "CPU Alert Threshold"
+    description: "Trigger high CPU alert and verify lifecycle"
+    tags: [alerts, monitoring, critical]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: create_alert_rule
+        action: ui
+        description: "Create CPU threshold alert rule"
+        playwright:
+          - goto: "/alerts/rules"
+          - click: "button:has-text('New Rule')"
+          - fill:
+              "[name='name']": "E2E High CPU Alert"
+              "[name='description']": "Alert when CPU exceeds 80%"
+          - click: "[data-testid='metric-select']"
+          - click: "li:has-text('CPU Usage')"
+          - click: "[data-testid='condition-select']"
+          - click: "li:has-text('Greater than')"
+          - fill:
+              "[name='threshold']": "80"
+          - click: "[data-testid='severity-select']"
+          - click: "li:has-text('Warning')"
+          - click: "button:has-text('Save')"
+          - waitFor: "text=Rule created"
+
+      - id: trigger_high_cpu
+        action: remote
+        node: linux
+        description: "Trigger high CPU usage"
+        tool: claude_code
+        args:
+          prompt: |
+            Trigger high CPU usage on this Linux machine:
+            1. Install stress if not present: apt-get install -y stress || yum install -y stress
+            2. Run: stress --cpu 4 --timeout 45 &
+            3. Wait 5 seconds, then check CPU usage with: top -bn1 | grep "Cpu(s)"
+            4. Return JSON: {started: boolean, cpuPercent: number}
+        timeout: 60000
+        expect:
+          started: true
+
+      - id: wait_for_alert
+        action: ui
+        description: "Wait for alert to appear"
+        playwright:
+          - goto: "/alerts"
+          - waitFor: "tr:has-text('E2E High CPU Alert')"
+            timeout: 60000
+          - assert:
+              selector: "[data-testid='alert-severity']"
+              contains: "Warning"
+
+      - id: acknowledge_alert
+        action: ui
+        description: "Acknowledge the alert"
+        playwright:
+          - click: "tr:has-text('E2E High CPU Alert')"
+          - waitFor: "[data-testid='alert-details']"
+          - click: "button:has-text('Acknowledge')"
+          - fill:
+              "[name='ackNote']": "Acknowledged by E2E test"
+          - click: "button:has-text('Confirm')"
+          - waitFor: "text=Alert acknowledged"
+
+      - id: verify_cpu_normalized
+        action: remote
+        node: linux
+        description: "Verify CPU is back to normal"
+        tool: claude_code
+        args:
+          prompt: |
+            The stress test should have ended. Verify:
+            1. Check if stress process is still running: pgrep stress
+            2. Get current CPU usage: top -bn1 | grep "Cpu(s)" | awk '{print $2}'
+            3. Return JSON: {stressRunning: boolean, currentCpuPercent: number}
+        expect:
+          stressRunning: false
+
+      - id: verify_alert_resolved
+        action: ui
+        description: "Verify alert is resolved"
+        playwright:
+          - goto: "/alerts"
+          - click: "[data-testid='filter-resolved']"
+          - waitFor: "tr:has-text('E2E High CPU Alert')"
+          - assert:
+              selector: "[data-testid='alert-status']"
+              contains: "Resolved"
+
+      - id: cleanup_rule
+        action: ui
+        description: "Delete test alert rule"
+        playwright:
+          - goto: "/alerts/rules"
+          - click: "tr:has-text('E2E High CPU Alert') [data-testid='delete-rule']"
+          - click: "button:has-text('Confirm Delete')"
+          - waitFor: "text=Rule deleted"
+        optional: true
+
+  - id: alert_disk_space
+    name: "Disk Space Alert"
+    description: "Test disk space monitoring and alerting"
+    tags: [alerts, monitoring, disk]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: check_current_disk
+        action: remote
+        node: linux
+        description: "Check current disk usage"
+        tool: claude_code
+        args:
+          prompt: |
+            Check disk space on this Linux machine:
+            1. Run: df -h /
+            2. Parse the output to get usage percentage
+            3. Return JSON: {
+              device: string,
+              size: string,
+              used: string,
+              available: string,
+              usePercent: number
+            }
+
+      - id: create_disk_rule
+        action: ui
+        description: "Create disk space alert rule"
+        playwright:
+          - goto: "/alerts/rules"
+          - click: "button:has-text('New Rule')"
+          - fill:
+              "[name='name']": "E2E Disk Space Alert"
+          - click: "[data-testid='metric-select']"
+          - click: "li:has-text('Disk Usage')"
+          - click: "[data-testid='condition-select']"
+          - click: "li:has-text('Greater than')"
+          - fill:
+              "[name='threshold']": "90"
+          - click: "button:has-text('Save')"
+
+      - id: verify_no_alert
+        action: ui
+        description: "Verify no alert triggered (assuming <90% usage)"
+        playwright:
+          - goto: "/alerts"
+          - waitFor: "[data-testid='alerts-list']"
+          # Should not see the disk alert if usage is under 90%
+          - assertNotExists: "tr:has-text('E2E Disk Space Alert')"
+
+  - id: alert_agent_offline
+    name: "Agent Offline Alert"
+    description: "Test agent offline detection and alerting"
+    tags: [alerts, monitoring, agent, critical]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: verify_agent_online
+        action: ui
+        description: "Verify agent is currently online"
+        playwright:
+          - goto: "/devices"
+          - assert:
+              selector: "tr:has-text('linux') [data-testid='device-status']"
+              contains: "Online"
+
+      - id: stop_agent
+        action: remote
+        node: linux
+        description: "Stop the Breeze agent"
+        tool: claude_code
+        args:
+          prompt: |
+            Stop the Breeze agent service:
+            1. Run: sudo systemctl stop breeze-agent
+            2. Verify it's stopped: systemctl status breeze-agent
+            3. Return JSON: {stopped: boolean, status: string}
+        expect:
+          stopped: true
+
+      - id: wait_for_offline_detection
+        action: ui
+        description: "Wait for device to show as offline"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "tr:has-text('linux') [data-testid='device-status']:has-text('Offline')"
+            timeout: 90000
+
+      - id: check_offline_alert
+        action: ui
+        description: "Check for agent offline alert"
+        playwright:
+          - goto: "/alerts"
+          - waitFor: "tr:has-text('Agent Offline')"
+          - assert:
+              selector: "[data-testid='alert-severity']"
+              contains: "Critical"
+
+      - id: restart_agent
+        action: remote
+        node: linux
+        description: "Restart the Breeze agent"
+        tool: claude_code
+        args:
+          prompt: |
+            Start the Breeze agent service:
+            1. Run: sudo systemctl start breeze-agent
+            2. Wait 5 seconds
+            3. Verify it's running: systemctl status breeze-agent
+            4. Return JSON: {started: boolean, status: string}
+        expect:
+          started: true
+
+      - id: verify_back_online
+        action: ui
+        description: "Verify device is back online"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "tr:has-text('linux') [data-testid='device-status']:has-text('Online')"
+            timeout: 60000

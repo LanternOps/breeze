@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/schemas/settings.json",
+  "mcpServers": {
+    "windows-node": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://windows.tailnet:3100/mcp"],
+      "env": {
+        "MCP_AUTH_TOKEN": "${WINDOWS_NODE_TOKEN}"
+      }
+    },
+    "linux-node": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://linux.tailnet:3100/mcp"],
+      "env": {
+        "MCP_AUTH_TOKEN": "${LINUX_NODE_TOKEN}"
+      }
+    },
+    "macos-node": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://macos.tailnet:3100/mcp"],
+      "env": {
+        "MCP_AUTH_TOKEN": "${MACOS_NODE_TOKEN}"
+      }
+    }
+  }
+}

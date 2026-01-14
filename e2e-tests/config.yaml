@@ -1,0 +1,91 @@
+# Breeze E2E Test Configuration
+# This file defines the test environment and node configuration
+
+environment:
+  # Base URL for Breeze UI
+  baseUrl: "http://localhost:3000"
+
+  # API URL for direct API calls
+  apiUrl: "http://localhost:4000"
+
+  # Timeout for individual test steps (ms)
+  defaultTimeout: 30000
+
+  # Timeout for entire test (ms)
+  testTimeout: 300000
+
+  # Screenshots directory
+  screenshotsDir: "./reports/screenshots"
+
+  # Reports directory
+  reportsDir: "./reports"
+
+# Test node definitions
+nodes:
+  windows:
+    name: "Windows Test Node"
+    host: "${WINDOWS_NODE_HOST:-windows.tailnet}"
+    port: 3100
+    auth:
+      type: bearer
+      token: "${WINDOWS_NODE_TOKEN}"
+    platform: windows
+    breeze:
+      installPath: "C:\\Program Files\\Breeze"
+      configPath: "C:\\ProgramData\\Breeze\\config.yaml"
+      logsPath: "C:\\ProgramData\\Breeze\\logs"
+      serviceName: "BreezeAgent"
+
+  linux:
+    name: "Linux Test Node"
+    host: "${LINUX_NODE_HOST:-linux.tailnet}"
+    port: 3100
+    auth:
+      type: bearer
+      token: "${LINUX_NODE_TOKEN}"
+    platform: linux
+    breeze:
+      installPath: "/opt/breeze"
+      configPath: "/etc/breeze/config.yaml"
+      logsPath: "/var/log/breeze"
+      serviceName: "breeze-agent"
+
+  macos:
+    name: "macOS Test Node"
+    host: "${MACOS_NODE_HOST:-macos.tailnet}"
+    port: 3100
+    auth:
+      type: bearer
+      token: "${MACOS_NODE_TOKEN}"
+    platform: darwin
+    breeze:
+      installPath: "/usr/local/breeze"
+      configPath: "/etc/breeze/config.yaml"
+      logsPath: "/var/log/breeze"
+      serviceName: "com.breeze.agent"
+
+# Test execution settings
+execution:
+  # Run tests in parallel where possible
+  parallel: false
+
+  # Retry failed tests
+  retries: 1
+
+  # Stop on first failure
+  failFast: false
+
+  # Reporter format: console, json, html
+  reporter: console
+
+  # Take screenshots on failure
+  screenshotOnFailure: true
+
+# Playwright browser settings
+playwright:
+  browser: chromium
+  headless: false
+  slowMo: 100
+  viewport:
+    width: 1920
+    height: 1080

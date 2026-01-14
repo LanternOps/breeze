@@ -1,0 +1,282 @@
+# Agent Installation E2E Tests
+# Tests the full agent installation flow across platforms
+
+tests:
+  - id: agent_install_windows
+    name: "Windows Agent Installation"
+    description: "Install Breeze agent on Windows and verify enrollment"
+    tags: [agent, install, windows, critical]
+    nodes: [windows]
+    timeout: 300000
+    steps:
+      # Step 1: Login to Breeze UI
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      # Step 2: Navigate to device enrollment
+      - id: navigate_to_enrollment
+        action: ui
+        description: "Navigate to Devices and start enrollment"
+        playwright:
+          - goto: "/devices"
+          - click: "button:has-text('Add Device')"
+          - waitFor: "[data-testid='enrollment-dialog']"
+
+      # Step 3: Get enrollment key
+      - id: get_enrollment_key
+        action: ui
+        description: "Extract enrollment key from UI"
+        playwright:
+          - waitFor: "[data-testid='enrollment-key']"
+          - extract:
+              enrollmentKey: "[data-testid='enrollment-key']"
+              installScript: "[data-testid='install-script-windows']"
+
+      # Step 4: Install agent on Windows
+      - id: install_agent
+        action: remote
+        node: windows
+        description: "Run agent installer on Windows"
+        tool: claude_code
+        args:
+          prompt: |
+            Install the Breeze agent using the enrollment key: {{enrollmentKey}}
+
+            1. Download the installer from {{apiUrl}}/downloads/breeze-agent-windows.exe
+            2. Run the installer silently: breeze-agent-windows.exe /S
+            3. Enroll the agent: breeze-agent enroll {{enrollmentKey}}
+            4. Return JSON with: {installed: boolean, enrolled: boolean, error?: string}
+        timeout: 120000
+        expect:
+          installed: true
+          enrolled: true
+
+      # Step 5: Verify agent is running
+      - id: verify_agent_running
+        action: remote
+        node: windows
+        description: "Verify agent service is running"
+        tool: claude_code
+        args:
+          prompt: |
+            Check if the Breeze agent is running on Windows:
+            1. Check if the BreezeAgent service exists and is running
+            2. Check the agent logs at C:\ProgramData\Breeze\logs for any errors
+            3. Return JSON: {running: boolean, status: string, errors: string[]}
+        expect:
+          running: true
+          status: "Running"
+
+      # Step 6: Verify device appears in UI
+      - id: verify_device_in_ui
+        action: ui
+        description: "Verify device appears in device list"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "tr:has-text('windows')"
+          - assert:
+              selector: "[data-testid='device-status']:has-text('windows')"
+              contains: "Online"
+
+      # Step 7: Cleanup - uninstall agent
+      - id: cleanup
+        action: remote
+        node: windows
+        description: "Uninstall agent for test cleanup"
+        tool: claude_code
+        args:
+          prompt: |
+            Uninstall the Breeze agent:
+            1. Stop the BreezeAgent service
+            2. Run the uninstaller or remove files from C:\Program Files\Breeze
+            3. Clean up C:\ProgramData\Breeze
+            4. Return JSON: {uninstalled: boolean}
+        optional: true
+
+  - id: agent_install_linux
+    name: "Linux Agent Installation"
+    description: "Install Breeze agent on Linux and verify enrollment"
+    tags: [agent, install, linux, critical]
+    nodes: [linux]
+    timeout: 300000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: navigate_to_enrollment
+        action: ui
+        description: "Navigate to Devices and start enrollment"
+        playwright:
+          - goto: "/devices"
+          - click: "button:has-text('Add Device')"
+          - waitFor: "[data-testid='enrollment-dialog']"
+
+      - id: get_enrollment_key
+        action: ui
+        description: "Extract enrollment key from UI"
+        playwright:
+          - waitFor: "[data-testid='enrollment-key']"
+          - extract:
+              enrollmentKey: "[data-testid='enrollment-key']"
+
+      - id: install_agent
+        action: remote
+        node: linux
+        description: "Run agent installer on Linux"
+        tool: claude_code
+        args:
+          prompt: |
+            Install the Breeze agent on Linux using enrollment key: {{enrollmentKey}}
+
+            1. Download: curl -sL {{apiUrl}}/downloads/install.sh | sudo bash
+            2. Enroll: sudo breeze-agent enroll {{enrollmentKey}}
+            3. Start service: sudo systemctl start breeze-agent
+            4. Return JSON: {installed: boolean, enrolled: boolean, error?: string}
+        timeout: 120000
+        expect:
+          installed: true
+          enrolled: true
+
+      - id: verify_agent_running
+        action: remote
+        node: linux
+        description: "Verify agent service is running"
+        tool: claude_code
+        args:
+          prompt: |
+            Check Breeze agent status on Linux:
+            1. Run: systemctl status breeze-agent
+            2. Check logs: journalctl -u breeze-agent --since "5 minutes ago"
+            3. Return JSON: {running: boolean, status: string, errors: string[]}
+        expect:
+          running: true
+
+      - id: verify_device_in_ui
+        action: ui
+        description: "Verify device appears in device list"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "tr:has-text('linux')"
+          - assert:
+              selector: "[data-testid='device-status']:has-text('linux')"
+              contains: "Online"
+
+      - id: cleanup
+        action: remote
+        node: linux
+        description: "Uninstall agent for test cleanup"
+        tool: claude_code
+        args:
+          prompt: |
+            Uninstall Breeze agent:
+            1. sudo systemctl stop breeze-agent
+            2. sudo systemctl disable breeze-agent
+            3. sudo rm -rf /opt/breeze /etc/breeze /var/log/breeze
+            4. Return JSON: {uninstalled: boolean}
+        optional: true
+
+  - id: agent_install_macos
+    name: "macOS Agent Installation"
+    description: "Install Breeze agent on macOS and verify enrollment"
+    tags: [agent, install, macos, critical]
+    nodes: [macos]
+    timeout: 300000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: navigate_to_enrollment
+        action: ui
+        description: "Navigate to Devices and start enrollment"
+        playwright:
+          - goto: "/devices"
+          - click: "button:has-text('Add Device')"
+          - waitFor: "[data-testid='enrollment-dialog']"
+
+      - id: get_enrollment_key
+        action: ui
+        description: "Extract enrollment key from UI"
+        playwright:
+          - waitFor: "[data-testid='enrollment-key']"
+          - extract:
+              enrollmentKey: "[data-testid='enrollment-key']"
+
+      - id: install_agent
+        action: remote
+        node: macos
+        description: "Run agent installer on macOS"
+        tool: claude_code
+        args:
+          prompt: |
+            Install Breeze agent on macOS using enrollment key: {{enrollmentKey}}
+
+            1. Download: curl -sL {{apiUrl}}/downloads/install-macos.sh | bash
+            2. Enroll: breeze-agent enroll {{enrollmentKey}}
+            3. Load launchd: launchctl load ~/Library/LaunchAgents/com.breeze.agent.plist
+            4. Return JSON: {installed: boolean, enrolled: boolean, error?: string}
+        timeout: 120000
+        expect:
+          installed: true
+          enrolled: true
+
+      - id: verify_agent_running
+        action: remote
+        node: macos
+        description: "Verify agent is running"
+        tool: claude_code
+        args:
+          prompt: |
+            Check Breeze agent status on macOS:
+            1. Run: launchctl list | grep breeze
+            2. Check logs: cat /var/log/breeze/agent.log | tail -50
+            3. Return JSON: {running: boolean, status: string, errors: string[]}
+        expect:
+          running: true
+
+      - id: verify_device_in_ui
+        action: ui
+        description: "Verify device appears in device list"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "tr:has-text('macos')"
+          - assert:
+              selector: "[data-testid='device-status']:has-text('macos')"
+              contains: "Online"
+
+      - id: cleanup
+        action: remote
+        node: macos
+        description: "Uninstall agent for test cleanup"
+        tool: claude_code
+        args:
+          prompt: |
+            Uninstall Breeze agent:
+            1. launchctl unload ~/Library/LaunchAgents/com.breeze.agent.plist
+            2. rm -rf /usr/local/breeze /etc/breeze /var/log/breeze
+            3. rm ~/Library/LaunchAgents/com.breeze.agent.plist
+            4. Return JSON: {uninstalled: boolean}
+        optional: true
