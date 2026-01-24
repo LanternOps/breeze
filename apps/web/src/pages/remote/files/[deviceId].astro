@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import RemoteFilesPage from '../../../components/remote/RemoteFilesPage';
+
+const { deviceId } = Astro.params;
+---
+
+<DashboardLayout title="Remote File Manager">
+  <RemoteFilesPage deviceId={deviceId!} client:load />
+</DashboardLayout>
