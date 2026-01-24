@@ -86,13 +86,14 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
   const { email, password, name } = c.req.valid('json');
   const ip = getClientIP(c);
 
-  // Rate limit registration
+  // Rate limit registration - fail closed for security
   const redis = getRedis();
-  if (redis) {
-    const rateCheck = await rateLimiter(redis, `register:${ip}`, 5, 3600);
-    if (!rateCheck.allowed) {
-      return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
-    }
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const rateCheck = await rateLimiter(redis, `register:${ip}`, 5, 3600);
+  if (!rateCheck.allowed) {
+    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
   }
 
   // Validate password strength
@@ -165,18 +166,19 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   const ip = getClientIP(c);
   const normalizedEmail = email.toLowerCase();
 
-  // Rate limit by IP + email combination
+  // Rate limit by IP + email combination - fail closed for security
   const redis = getRedis();
-  if (redis) {
-    const rateKey = `login:${ip}:${normalizedEmail}`;
-    const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const rateKey = `login:${ip}:${normalizedEmail}`;
+  const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
 
-    if (!rateCheck.allowed) {
-      return c.json({
-        error: 'Too many login attempts. Please try again later.',
-        retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
-      }, 429);
-    }
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many login attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
   }
 
   // Find user
@@ -254,9 +256,10 @@ authRoutes.post('/logout', authMiddleware, async (c) => {
   // Invalidate all sessions for this user (optional: could invalidate just current session)
   // For now, we're using JWTs which are stateless, but we can add to a blacklist
   const redis = getRedis();
-  if (redis) {
-    await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1'); // Revoke for access token lifetime
+  if (!redis) {
+    return c.json({ success: true, warning: 'Session logged out but token may remain valid briefly' }, 200);
   }
+  await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1'); // Revoke for access token lifetime
 
   return c.json({ success: true });
 });
@@ -420,7 +423,15 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     return c.json({ error: 'No pending MFA setup' }, 400);
   }
 
-  const { secret, recoveryCodes } = JSON.parse(setupData);
+  let secret: string;
+  let recoveryCodes: string[];
+  try {
+    const parsed = JSON.parse(setupData);
+    secret = parsed.secret;
+    recoveryCodes = parsed.recoveryCodes;
+  } catch {
+    return c.json({ error: 'Invalid MFA setup data' }, 500);
+  }
   const valid = await verifyMFAToken(secret, code);
 
   if (!valid) {
@@ -483,20 +494,21 @@ authRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), as
   const ip = getClientIP(c);
   const normalizedEmail = email.toLowerCase();
 
-  // Rate limit
+  // Rate limit - fail closed for security
   const redis = getRedis();
-  if (redis) {
-    const rateCheck = await rateLimiter(
-      redis,
-      `forgot:${ip}`,
-      forgotPasswordLimiter.limit,
-      forgotPasswordLimiter.windowSeconds
-    );
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const rateCheck = await rateLimiter(
+    redis,
+    `forgot:${ip}`,
+    forgotPasswordLimiter.limit,
+    forgotPasswordLimiter.windowSeconds
+  );
 
-    if (!rateCheck.allowed) {
-      // Still return success to prevent enumeration
-      return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
-    }
+  if (!rateCheck.allowed) {
+    // Still return success to prevent enumeration
+    return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
   }
 
   // Find user (don't reveal if exists)
@@ -506,7 +518,7 @@ authRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), as
     .where(eq(users.email, normalizedEmail))
     .limit(1);
 
-  if (user && redis) {
+  if (user) {
     // Generate reset token
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
@@ -515,8 +527,13 @@ authRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), as
     await redis.setex(`reset:${tokenHash}`, 3600, user.id);
 
     // TODO: Send email with reset link
-    // For now, log it (remove in production)
-    console.log(`Password reset token for ${email}: ${resetToken}`);
+    // Log token only in non-production environments
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`Password reset token for ${email}: ${resetToken}`);
+    }
+  } else {
+    // Log when password reset cannot be processed (user not found is expected, but Redis unavailability would be caught above)
+    console.warn(`Password reset requested for non-existent email: ${normalizedEmail}`);
   }
 
   // Always return success

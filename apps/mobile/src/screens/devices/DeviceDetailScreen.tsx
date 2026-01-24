@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, ScrollView, StyleSheet } from 'react-native';
+import { View, ScrollView, StyleSheet, Alert } from 'react-native';
 import { Text, useTheme, Surface, Button, ActivityIndicator, Chip } from 'react-native-paper';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
@@ -14,30 +14,41 @@ export function DeviceDetailScreen({ route }: Props) {
   const { device } = route.params;
   const [metrics, setMetrics] = useState<Device['metrics']>(device.metrics);
   const [isLoadingMetrics, setIsLoadingMetrics] = useState(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<DeviceAction | null>(null);
 
   useEffect(() => {
+    let isMounted = true;
+
     const fetchMetrics = async () => {
       try {
         setIsLoadingMetrics(true);
+        setMetricsError(null);
         const data = await getDeviceMetrics(device.id);
-        setMetrics(data);
-      } catch {
-        // Keep existing metrics on error
+        if (isMounted) setMetrics(data);
+      } catch (err) {
+        // Keep existing metrics on error but show indicator
+        if (isMounted) {
+          const message = err instanceof Error ? err.message : 'Failed to load metrics';
+          setMetricsError(message);
+        }
       } finally {
-        setIsLoadingMetrics(false);
+        if (isMounted) setIsLoadingMetrics(false);
       }
     };
 
     fetchMetrics();
+    return () => { isMounted = false; };
   }, [device.id]);
 
   const handleAction = async (action: DeviceAction) => {
     try {
       setActionLoading(action);
       await sendDeviceAction(device.id, action);
+      Alert.alert('Success', `${action} command sent successfully`);
     } catch (err) {
-      // Handle error silently or show toast
+      const message = err instanceof Error ? err.message : 'Action failed';
+      Alert.alert('Error', message);
     } finally {
       setActionLoading(null);
     }
@@ -123,9 +134,16 @@ export function DeviceDetailScreen({ route }: Props) {
       </Surface>
 
       <Surface style={styles.card} elevation={1}>
-        <Text variant="titleMedium" style={styles.sectionTitle}>
-          Metrics
-        </Text>
+        <View style={styles.metricsHeader}>
+          <Text variant="titleMedium" style={styles.sectionTitle}>
+            Metrics
+          </Text>
+          {metricsError && (
+            <Text variant="labelSmall" style={{ color: theme.colors.error }}>
+              Failed to refresh
+            </Text>
+          )}
+        </View>
         {isLoadingMetrics ? (
           <ActivityIndicator size="small" />
         ) : metrics ? (
@@ -229,6 +247,11 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     marginBottom: 12,
+  },
+  metricsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   metricsContainer: {
     flexDirection: 'row',

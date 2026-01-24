@@ -6,6 +6,7 @@ import {
   Alert,
   Linking,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Text,
   useTheme,
@@ -38,6 +39,7 @@ export function SettingsScreen() {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricEnabled, setBiometricEnabledState] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [criticalOnly, setCriticalOnly] = useState(false);
 
   // Password change state
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
@@ -51,7 +53,29 @@ export function SettingsScreen() {
 
   useEffect(() => {
     checkBiometrics();
+    loadNotificationSettings();
   }, []);
+
+  async function loadNotificationSettings() {
+    const notificationsValue = await AsyncStorage.getItem('notificationsEnabled');
+    if (notificationsValue !== null) {
+      setNotificationsEnabled(notificationsValue === 'true');
+    }
+    const criticalOnlyValue = await AsyncStorage.getItem('criticalAlertsOnly');
+    if (criticalOnlyValue !== null) {
+      setCriticalOnly(criticalOnlyValue === 'true');
+    }
+  }
+
+  async function handleNotificationsToggle(value: boolean) {
+    setNotificationsEnabled(value);
+    await AsyncStorage.setItem('notificationsEnabled', String(value));
+  }
+
+  async function handleCriticalOnlyToggle(value: boolean) {
+    setCriticalOnly(value);
+    await AsyncStorage.setItem('criticalAlertsOnly', String(value));
+  }
 
   async function checkBiometrics() {
     const available = await checkBiometricAvailability();
@@ -64,8 +88,13 @@ export function SettingsScreen() {
   }
 
   async function handleBiometricToggle(value: boolean) {
-    await setBiometricEnabled(value);
-    setBiometricEnabledState(value);
+    try {
+      await setBiometricEnabled(value);
+      setBiometricEnabledState(value);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update biometric settings';
+      Alert.alert('Error', message);
+    }
   }
 
   function handleLogout() {
@@ -253,7 +282,7 @@ export function SettingsScreen() {
             right={() => (
               <Switch
                 value={notificationsEnabled}
-                onValueChange={setNotificationsEnabled}
+                onValueChange={handleNotificationsToggle}
               />
             )}
           />
@@ -265,8 +294,8 @@ export function SettingsScreen() {
             left={(props) => <List.Icon {...props} icon="bell-alert" />}
             right={() => (
               <Switch
-                value={false}
-                onValueChange={() => {}}
+                value={criticalOnly}
+                onValueChange={handleCriticalOnlyToggle}
               />
             )}
           />

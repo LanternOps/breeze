@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, ScrollView, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, ScrollView, StyleSheet, Alert } from 'react-native';
 import { Text, useTheme, Button, Surface, Chip } from 'react-native-paper';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
@@ -20,9 +20,19 @@ export function AlertDetailScreen({ route }: Props) {
   const theme = useTheme();
   const dispatch = useAppDispatch();
   const { alert } = route.params;
+  const [isAcknowledging, setIsAcknowledging] = useState(false);
 
-  const handleAcknowledge = () => {
-    dispatch(acknowledgeAlertAsync(alert.id));
+  const handleAcknowledge = async () => {
+    try {
+      setIsAcknowledging(true);
+      await dispatch(acknowledgeAlertAsync(alert.id)).unwrap();
+      Alert.alert('Success', 'Alert acknowledged');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to acknowledge alert';
+      Alert.alert('Error', message);
+    } finally {
+      setIsAcknowledging(false);
+    }
   };
 
   return (
@@ -95,6 +105,8 @@ export function AlertDetailScreen({ route }: Props) {
           <Button
             mode="contained"
             onPress={handleAcknowledge}
+            loading={isAcknowledging}
+            disabled={isAcknowledging}
             style={styles.acknowledgeButton}
           >
             Acknowledge Alert

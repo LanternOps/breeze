@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, FlatList, RefreshControl, StyleSheet } from 'react-native';
 import { Text, useTheme, ActivityIndicator, Searchbar } from 'react-native-paper';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -16,25 +16,32 @@ export function DeviceListScreen({ navigation }: Props) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const isMountedRef = useRef(true);
 
-  const fetchDeviceList = async () => {
+  const fetchDeviceList = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
       const data = await getDevices();
-      setDevices(data);
-      setFilteredDevices(data);
+      if (isMountedRef.current) {
+        setDevices(data);
+        setFilteredDevices(data);
+      }
     } catch (err) {
-      const apiError = err as { message?: string };
-      setError(apiError.message || 'Failed to fetch devices');
+      if (isMountedRef.current) {
+        const apiError = err as { message?: string };
+        setError(apiError.message || 'Failed to fetch devices');
+      }
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current) setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchDeviceList();
-  }, []);
+    return () => { isMountedRef.current = false; };
+  }, [fetchDeviceList]);
 
   useEffect(() => {
     if (searchQuery.trim() === '') {

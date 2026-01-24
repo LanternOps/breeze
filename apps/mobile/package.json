@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@react-native-async-storage/async-storage": "1.21.0",
     "expo": "~50.0.0",
     "expo-device": "~5.9.0",
     "expo-local-authentication": "~13.0.0",
