@@ -10,126 +10,30 @@ type Site = {
   name: string;
 };
 
-// Mock data for development
-const mockDevices: Device[] = [
-  {
-    id: '1',
-    hostname: 'WORKSTATION-001',
-    os: 'windows',
-    osVersion: '11 Pro 23H2',
-    status: 'online',
-    cpuPercent: 45,
-    ramPercent: 62,
-    lastSeen: '2024-01-15T12:00:00.000Z',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['production', 'engineering']
-  },
-  {
-    id: '2',
-    hostname: 'SERVER-DB-01',
-    os: 'linux',
-    osVersion: 'Ubuntu 22.04 LTS',
-    status: 'online',
-    cpuPercent: 78,
-    ramPercent: 85,
-    lastSeen: '2024-01-15T11:58:00.000Z',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['production', 'database']
-  },
-  {
-    id: '3',
-    hostname: 'MACBOOK-DESIGN-01',
-    os: 'macos',
-    osVersion: 'Sonoma 14.2',
-    status: 'online',
-    cpuPercent: 32,
-    ramPercent: 48,
-    lastSeen: '2024-01-15T11:55:00.000Z',
-    siteId: 'site-2',
-    siteName: 'Remote Office',
-    agentVersion: '2.5.0',
-    tags: ['design']
-  },
-  {
-    id: '4',
-    hostname: 'LAPTOP-SALES-02',
-    os: 'windows',
-    osVersion: '11 Pro 23H2',
-    status: 'offline',
-    cpuPercent: 0,
-    ramPercent: 0,
-    lastSeen: '2024-01-15T10:00:00.000Z',
-    siteId: 'site-2',
-    siteName: 'Remote Office',
-    agentVersion: '2.4.3',
-    tags: ['sales']
-  },
-  {
-    id: '5',
-    hostname: 'SERVER-WEB-01',
-    os: 'linux',
-    osVersion: 'Ubuntu 22.04 LTS',
-    status: 'maintenance',
-    cpuPercent: 12,
-    ramPercent: 35,
-    lastSeen: '2024-01-15T11:59:00.000Z',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['production', 'web']
-  },
-  {
-    id: '6',
-    hostname: 'WORKSTATION-002',
-    os: 'windows',
-    osVersion: '10 Pro 22H2',
-    status: 'online',
-    cpuPercent: 55,
-    ramPercent: 72,
-    lastSeen: '2024-01-15T11:59:30.000Z',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['production', 'engineering']
-  },
-  {
-    id: '7',
-    hostname: 'MACBOOK-DEV-01',
-    os: 'macos',
-    osVersion: 'Ventura 13.6',
-    status: 'online',
-    cpuPercent: 67,
-    ramPercent: 58,
-    lastSeen: '2024-01-15T11:59:15.000Z',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['development']
-  },
-  {
-    id: '8',
-    hostname: 'SERVER-BACKUP-01',
-    os: 'linux',
-    osVersion: 'Debian 12',
-    status: 'online',
-    cpuPercent: 8,
-    ramPercent: 22,
-    lastSeen: '2024-01-15T11:59:45.000Z',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['infrastructure', 'backup']
-  }
-];
+// Map API response to Device type
+function mapApiDevice(apiDevice: Record<string, unknown>): Device {
+  const osTypeMap: Record<string, OSType> = {
+    windows: 'windows',
+    linux: 'linux',
+    macos: 'macos',
+    darwin: 'macos',
+  };
 
-const mockSites: Site[] = [
-  { id: 'site-1', name: 'Headquarters' },
-  { id: 'site-2', name: 'Remote Office' }
-];
+  return {
+    id: String(apiDevice.id ?? ''),
+    hostname: String(apiDevice.hostname ?? apiDevice.display_name ?? 'Unknown'),
+    os: osTypeMap[String(apiDevice.os_type ?? '').toLowerCase()] ?? 'linux',
+    osVersion: String(apiDevice.os_version ?? ''),
+    status: (apiDevice.status as DeviceStatus) ?? 'offline',
+    cpuPercent: Number(apiDevice.cpu_percent ?? 0),
+    ramPercent: Number(apiDevice.ram_percent ?? 0),
+    lastSeen: String(apiDevice.last_seen_at ?? ''),
+    siteId: String(apiDevice.site_id ?? ''),
+    siteName: String(apiDevice.site_name ?? ''),
+    agentVersion: String(apiDevice.agent_version ?? ''),
+    tags: Array.isArray(apiDevice.tags) ? apiDevice.tags.map(String) : [],
+  };
+}
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -143,15 +47,33 @@ export default function DevicesPage() {
       setLoading(true);
       setError(undefined);
 
-      // In production, replace with actual API call
-      // const response = await fetch('/api/devices');
-      // const data = await response.json();
-      // setDevices(data.devices ?? []);
+      // Fetch devices and sites in parallel
+      const [devicesRes, sitesRes] = await Promise.all([
+        fetch('/api/devices'),
+        fetch('/api/sites'),
+      ]);
 
-      // Using mock data for now
-      await new Promise(resolve => setTimeout(resolve, 500));
-      setDevices(mockDevices);
-      setSites(mockSites);
+      if (!devicesRes.ok) {
+        throw new Error(`Failed to fetch devices: ${devicesRes.status}`);
+      }
+
+      const devicesData = await devicesRes.json();
+      const devicesList = Array.isArray(devicesData)
+        ? devicesData
+        : (devicesData.devices ?? devicesData.data ?? []);
+
+      setDevices(devicesList.map(mapApiDevice));
+
+      if (sitesRes.ok) {
+        const sitesData = await sitesRes.json();
+        const sitesList = Array.isArray(sitesData)
+          ? sitesData
+          : (sitesData.sites ?? sitesData.data ?? []);
+        setSites(sitesList.map((s: Record<string, unknown>) => ({
+          id: String(s.id ?? ''),
+          name: String(s.name ?? ''),
+        })));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch devices');
     } finally {

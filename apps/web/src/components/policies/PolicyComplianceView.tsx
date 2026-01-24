@@ -17,51 +17,6 @@ type PolicyComplianceViewProps = {
   onRetryRemediation?: (device: ComplianceDevice) => void;
 };
 
-const mockDevices: ComplianceDevice[] = [
-  {
-    id: 'dev-201',
-    name: 'NYC-LT-112',
-    status: 'compliant',
-    lastChecked: '2024-04-11T09:12:00Z',
-    remediationAttempts: 0
-  },
-  {
-    id: 'dev-202',
-    name: 'NYC-LT-118',
-    status: 'non_compliant',
-    lastChecked: '2024-04-11T08:40:00Z',
-    remediationAttempts: 2
-  },
-  {
-    id: 'dev-203',
-    name: 'LAB-WS-77',
-    status: 'remediating',
-    lastChecked: '2024-04-11T07:30:00Z',
-    remediationAttempts: 1
-  },
-  {
-    id: 'dev-204',
-    name: 'AUS-LT-044',
-    status: 'compliant',
-    lastChecked: '2024-04-11T09:55:00Z',
-    remediationAttempts: 0
-  },
-  {
-    id: 'dev-205',
-    name: 'Remote-MBP-09',
-    status: 'non_compliant',
-    lastChecked: '2024-04-10T19:20:00Z',
-    remediationAttempts: 4
-  },
-  {
-    id: 'dev-206',
-    name: 'Kiosk-12',
-    status: 'exempt',
-    lastChecked: '2024-04-10T16:15:00Z',
-    remediationAttempts: 0
-  }
-];
-
 const statusStyles: Record<ComplianceStatus, string> = {
   compliant: 'bg-emerald-100 text-emerald-700',
   non_compliant: 'bg-red-100 text-red-700',
@@ -76,7 +31,7 @@ function formatDate(dateString: string): string {
 }
 
 export default function PolicyComplianceView({
-  devices = mockDevices,
+  devices = [],
   onRetryRemediation
 }: PolicyComplianceViewProps) {
   const [statusFilter, setStatusFilter] = useState<'all' | ComplianceStatus>('all');

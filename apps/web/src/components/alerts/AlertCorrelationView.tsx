@@ -32,48 +32,23 @@ const severityDot: Record<AlertSeverity, string> = {
   info: 'bg-gray-500'
 };
 
-const mockAlerts: AlertSummary[] = [
-  {
-    id: 'alert-900',
-    title: 'Core switch CPU saturation',
-    severity: 'critical',
-    triggeredAt: '2024-03-21T14:22:00Z'
-  },
-  {
-    id: 'alert-901',
-    title: 'WAN latency spike - West',
-    severity: 'high',
-    triggeredAt: '2024-03-21T14:33:00Z'
-  },
-  {
-    id: 'alert-902',
-    title: 'VPN tunnel packet loss',
-    severity: 'medium',
-    triggeredAt: '2024-03-21T14:37:00Z'
-  }
-];
+type AlertCorrelationViewProps = {
+  alerts?: AlertSummary[];
+  correlations?: CorrelationItem[];
+  timeline?: TimelineEvent[];
+};
 
-const mockCorrelations: CorrelationItem[] = [
-  { id: 'corr-1', title: 'WAN latency spike - West', type: 'symptom', confidence: 78 },
-  { id: 'corr-2', title: 'VPN tunnel packet loss', type: 'symptom', confidence: 64 },
-  { id: 'corr-3', title: 'Edge router overload', type: 'causal', confidence: 91 },
-  { id: 'corr-4', title: 'Monitoring duplicate alert', type: 'duplicate', confidence: 85 }
-];
-
-const mockTimeline: TimelineEvent[] = [
-  { id: 'tl-1', label: 'Root cause detected', time: '14:22', severity: 'critical' },
-  { id: 'tl-2', label: 'Symptoms cascade', time: '14:29', severity: 'high' },
-  { id: 'tl-3', label: 'Ticket created', time: '14:31', severity: 'medium' },
-  { id: 'tl-4', label: 'Escalation', time: '14:37', severity: 'high' }
-];
-
-export default function AlertCorrelationView() {
+export default function AlertCorrelationView({
+  alerts = [],
+  correlations = [],
+  timeline = []
+}: AlertCorrelationViewProps) {
   const [autoLoad, setAutoLoad] = useState(true);
-  const [selectedAlertId, setSelectedAlertId] = useState(mockAlerts[0].id);
+  const [selectedAlertId, setSelectedAlertId] = useState(alerts[0]?.id ?? '');
 
   const selectedAlert = useMemo(
-    () => mockAlerts.find(alert => alert.id === selectedAlertId) ?? mockAlerts[0],
-    [selectedAlertId]
+    () => alerts.find(alert => alert.id === selectedAlertId) ?? alerts[0],
+    [alerts, selectedAlertId]
   );
 
   return (
@@ -120,7 +95,7 @@ export default function AlertCorrelationView() {
                 autoLoad ? 'opacity-60' : ''
               )}
             >
-              {mockAlerts.map(alert => (
+              {alerts.map(alert => (
                 <option key={alert.id} value={alert.id}>
                   {alert.title}
                 </option>
@@ -133,7 +108,7 @@ export default function AlertCorrelationView() {
             <div className="mt-3 space-y-2 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Related alerts</span>
-                <span className="font-medium">{mockCorrelations.length}</span>
+                <span className="font-medium">{correlations.length}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Root cause confidence</span>
@@ -162,7 +137,7 @@ export default function AlertCorrelationView() {
                 </div>
               </div>
               <div className="ml-4 border-l border-dashed pl-6 space-y-4">
-                {mockCorrelations.map(item => (
+                {correlations.map(item => (
                   <div key={item.id} className="flex items-start gap-3">
                     <div className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
                     <div>
@@ -195,7 +170,7 @@ export default function AlertCorrelationView() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {mockCorrelations.map(item => (
+                  {correlations.map(item => (
                     <tr key={item.id} className="transition hover:bg-muted/40">
                       <td className="px-3 py-2 text-sm">{item.title}</td>
                       <td className="px-3 py-2 text-sm capitalize">{item.type}</td>
@@ -215,7 +190,7 @@ export default function AlertCorrelationView() {
           </div>
           <div className="relative mt-4 flex items-center justify-between gap-2">
             <div className="absolute left-4 right-4 top-1/2 h-px bg-border" />
-            {mockTimeline.map(event => (
+            {timeline.map(event => (
               <div key={event.id} className="relative z-10 flex flex-col items-center gap-2">
                 <span className={cn('h-3 w-3 rounded-full', severityDot[event.severity])} />
                 <span className="text-xs font-medium">{event.time}</span>

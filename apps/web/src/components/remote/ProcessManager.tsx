@@ -58,25 +58,6 @@ const statusLabels: Record<ProcessStatus, string> = {
   idle: 'Idle'
 };
 
-// Mock data for development/demo
-const mockProcesses: Process[] = [
-  { pid: 1, name: 'systemd', user: 'root', cpuPercent: 0.1, memoryMb: 12.5, status: 'running', commandLine: '/sbin/init', threads: 1, parentPid: 0, priority: 20 },
-  { pid: 245, name: 'sshd', user: 'root', cpuPercent: 0.0, memoryMb: 8.2, status: 'sleeping', commandLine: '/usr/sbin/sshd -D', threads: 1, parentPid: 1, priority: 20 },
-  { pid: 892, name: 'nginx', user: 'www-data', cpuPercent: 2.5, memoryMb: 45.8, status: 'running', commandLine: 'nginx: master process /usr/sbin/nginx', threads: 4, parentPid: 1, priority: 20 },
-  { pid: 1024, name: 'node', user: 'app', cpuPercent: 15.3, memoryMb: 256.4, status: 'running', commandLine: 'node /app/server.js --port 3000', threads: 12, parentPid: 1, priority: 20 },
-  { pid: 1156, name: 'postgres', user: 'postgres', cpuPercent: 8.2, memoryMb: 128.0, status: 'running', commandLine: '/usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main', threads: 8, parentPid: 1, priority: 20 },
-  { pid: 1398, name: 'redis-server', user: 'redis', cpuPercent: 1.5, memoryMb: 32.6, status: 'running', commandLine: '/usr/bin/redis-server 127.0.0.1:6379', threads: 4, parentPid: 1, priority: 20 },
-  { pid: 2001, name: 'cron', user: 'root', cpuPercent: 0.0, memoryMb: 4.1, status: 'sleeping', commandLine: '/usr/sbin/cron -f', threads: 1, parentPid: 1, priority: 20 },
-  { pid: 2456, name: 'python3', user: 'app', cpuPercent: 45.8, memoryMb: 512.0, status: 'running', commandLine: 'python3 /app/worker.py --workers 4', threads: 5, parentPid: 1, priority: 20 },
-  { pid: 3012, name: 'defunct_proc', user: 'nobody', cpuPercent: 0.0, memoryMb: 0.0, status: 'zombie', commandLine: '[defunct]', threads: 0, parentPid: 2456, priority: 20 },
-  { pid: 3245, name: 'java', user: 'app', cpuPercent: 22.4, memoryMb: 1024.0, status: 'running', commandLine: 'java -Xmx2g -jar /app/service.jar', threads: 45, parentPid: 1, priority: 20 },
-  { pid: 4001, name: 'rsyslogd', user: 'syslog', cpuPercent: 0.1, memoryMb: 6.8, status: 'sleeping', commandLine: '/usr/sbin/rsyslogd -n', threads: 4, parentPid: 1, priority: 20 },
-  { pid: 4512, name: 'dockerd', user: 'root', cpuPercent: 3.2, memoryMb: 89.5, status: 'running', commandLine: '/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock', threads: 18, parentPid: 1, priority: 20 },
-  { pid: 5123, name: 'containerd', user: 'root', cpuPercent: 1.8, memoryMb: 56.2, status: 'running', commandLine: '/usr/bin/containerd', threads: 12, parentPid: 1, priority: 20 },
-  { pid: 6001, name: 'sleep', user: 'app', cpuPercent: 0.0, memoryMb: 1.2, status: 'stopped', commandLine: 'sleep 3600', threads: 1, parentPid: 2456, priority: 20 },
-  { pid: 7890, name: 'top', user: 'admin', cpuPercent: 0.5, memoryMb: 3.4, status: 'running', commandLine: 'top -b -n 1', threads: 1, parentPid: 245, priority: 20 }
-];
-
 function formatMemory(mb: number): string {
   if (mb < 1) return (mb * 1024).toFixed(0) + ' KB';
   if (mb < 1024) return mb.toFixed(1) + ' MB';
@@ -104,7 +85,7 @@ export default function ProcessManager({
   onRefresh,
   onKillProcess
 }: ProcessManagerProps) {
-  const [internalProcesses, setInternalProcesses] = useState<Process[]>(mockProcesses);
+  const [internalProcesses, setInternalProcesses] = useState<Process[]>([]);
   const [internalLoading, setInternalLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('cpuPercent');
