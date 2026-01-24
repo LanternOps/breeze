@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import AutomationList, { type Automation, type AutomationRun } from './AutomationList';
 import AutomationRunHistory, { type AutomationRun as RunHistoryRun } from './AutomationRunHistory';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'delete' | 'history' | 'run';
 
@@ -18,12 +19,12 @@ export default function AutomationsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/automations');
+      const response = await fetchWithAuth('/automations');
       if (!response.ok) {
         throw new Error('Failed to fetch automations');
       }
       const data = await response.json();
-      setAutomations(data.automations ?? data ?? []);
+      setAutomations(data.data ?? data.automations ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -33,10 +34,10 @@ export default function AutomationsPage() {
 
   const fetchRunHistory = useCallback(async (automationId: string) => {
     try {
-      const response = await fetch(`/api/automations/${automationId}/runs`);
+      const response = await fetchWithAuth(`/automations/${automationId}/runs`);
       if (response.ok) {
         const data = await response.json();
-        setRunHistory(data.runs ?? data ?? []);
+        setRunHistory(data.data ?? data.runs ?? []);
       }
     } catch {
       // Silently fail
@@ -59,7 +60,7 @@ export default function AutomationsPage() {
   const handleRun = async (automation: Automation) => {
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/automations/${automation.id}/run`, {
+      const response = await fetchWithAuth(`/automations/${automation.id}/trigger`, {
         method: 'POST'
       });
 
@@ -78,9 +79,8 @@ export default function AutomationsPage() {
 
   const handleToggle = async (automation: Automation, enabled: boolean) => {
     try {
-      const response = await fetch(`/api/automations/${automation.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetchWithAuth(`/automations/${automation.id}`, {
+        method: 'PUT',
         body: JSON.stringify({ enabled })
       });
 
@@ -113,7 +113,7 @@ export default function AutomationsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/automations/${selectedAutomation.id}`, {
+      const response = await fetchWithAuth(`/automations/${selectedAutomation.id}`, {
         method: 'DELETE'
       });
 

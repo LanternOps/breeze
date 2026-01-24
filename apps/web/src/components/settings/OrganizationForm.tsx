@@ -10,8 +10,8 @@ const organizationSchema = z
       .string()
       .min(2, 'Slug is required')
       .regex(/^[a-z0-9-]+$/, 'Use lowercase letters, numbers, and hyphens only'),
-    type: z.enum(['enterprise', 'growth', 'startup', 'nonprofit']),
-    status: z.enum(['active', 'trial', 'suspended', 'inactive']),
+    type: z.enum(['customer', 'internal']),
+    status: z.enum(['active', 'trial', 'suspended', 'churned']),
     maxDevices: z.coerce
       .number({ invalid_type_error: 'Enter a max device limit' })
       .int('Max devices must be a whole number')
@@ -44,17 +44,15 @@ type OrganizationFormProps = {
 };
 
 const typeOptions = [
-  { value: 'enterprise', label: 'Enterprise' },
-  { value: 'growth', label: 'Growth' },
-  { value: 'startup', label: 'Startup' },
-  { value: 'nonprofit', label: 'Nonprofit' }
+  { value: 'customer', label: 'Customer' },
+  { value: 'internal', label: 'Internal' }
 ];
 
 const statusOptions = [
   { value: 'active', label: 'Active' },
   { value: 'trial', label: 'Trial' },
   { value: 'suspended', label: 'Suspended' },
-  { value: 'inactive', label: 'Inactive' }
+  { value: 'churned', label: 'Churned' }
 ];
 
 export default function OrganizationForm({
@@ -73,7 +71,7 @@ export default function OrganizationForm({
     defaultValues: {
       name: '',
       slug: '',
-      type: 'enterprise',
+      type: 'customer',
       status: 'active',
       maxDevices: 50,
       contractStart: '',

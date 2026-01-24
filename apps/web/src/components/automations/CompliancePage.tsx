@@ -5,6 +5,7 @@ import ComplianceDashboard, {
   type PolicyCompliance,
   type ComplianceTrend
 } from './ComplianceDashboard';
+import { fetchWithAuth } from '../../stores/auth';
 
 type CompliancePageProps = {
   policyId?: string;
@@ -30,10 +31,10 @@ export default function CompliancePage({ policyId }: CompliancePageProps) {
       setError(undefined);
 
       const url = policyId
-        ? `/api/policies/${policyId}/compliance`
-        : '/api/policies/compliance';
+        ? `/policies/${policyId}/compliance`
+        : '/policies/compliance/summary';
 
-      const response = await fetch(url);
+      const response = await fetchWithAuth(url);
       if (!response.ok) {
         throw new Error('Failed to fetch compliance data');
       }

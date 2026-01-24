@@ -252,7 +252,10 @@ export default function DashboardCustomizer() {
     if (!dashboards.length) return;
     const exists = dashboards.some((dashboard) => dashboard.id === activeDashboardId);
     if (!exists) {
-      setActiveDashboardId(dashboards[0].id);
+      const firstDashboard = dashboards[0];
+      if (firstDashboard) {
+        setActiveDashboardId(firstDashboard.id);
+      }
     }
   }, [dashboards, activeDashboardId]);
 
@@ -495,7 +498,7 @@ export default function DashboardCustomizer() {
   useEffect(() => {
     if (!resizeState || !gridRef.current) return;
 
-    const handleMouseMove = (event: MouseEvent) => {
+    const handleMouseMove = (event: globalThis.MouseEvent) => {
       const widget = activeWidgets.find((item) => item.id === resizeState.widgetId);
       if (!widget) return;
       const rect = gridRef.current?.getBoundingClientRect();

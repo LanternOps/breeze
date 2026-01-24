@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Download, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type ScriptTemplate = {
   id: string;
@@ -12,76 +13,8 @@ export type ScriptTemplate = {
 };
 
 type ScriptTemplateGalleryProps = {
-  templates?: ScriptTemplate[];
   onUseTemplate?: (template: ScriptTemplate) => void;
 };
-
-const mockTemplates: ScriptTemplate[] = [
-  {
-    id: 'template-1',
-    name: 'Disk Cleanup Starter',
-    description: 'Clear temp files, browser cache, and rotate logs safely.',
-    category: 'Maintenance',
-    language: 'powershell',
-    downloads: 1280
-  },
-  {
-    id: 'template-2',
-    name: 'Patch Compliance Audit',
-    description: 'Check OS patch level across critical services and export a report.',
-    category: 'Security',
-    language: 'bash',
-    downloads: 970
-  },
-  {
-    id: 'template-3',
-    name: 'User Offboarding',
-    description: 'Disable accounts, archive mailboxes, and revoke tokens.',
-    category: 'Automation',
-    language: 'powershell',
-    downloads: 1540
-  },
-  {
-    id: 'template-4',
-    name: 'VPN Rotation Helper',
-    description: 'Rotate VPN credentials and refresh client configs.',
-    category: 'Network',
-    language: 'python',
-    downloads: 820
-  },
-  {
-    id: 'template-5',
-    name: 'Service Health Probe',
-    description: 'Probe services with retries and alert thresholds.',
-    category: 'Monitoring',
-    language: 'bash',
-    downloads: 640
-  },
-  {
-    id: 'template-6',
-    name: 'Software Inventory',
-    description: 'Collect installed software, versions, and licensing.',
-    category: 'Reporting',
-    language: 'python',
-    downloads: 1120
-  },
-  {
-    id: 'template-7',
-    name: 'Endpoint Encryption',
-    description: 'Enable disk encryption and verify escrowed keys.',
-    category: 'Security',
-    language: 'powershell',
-    downloads: 1430
-  },
-  {
-    id: 'template-8',
-    name: 'CLI Bootstrapper',
-    description: 'Install required CLI tools with version pinning.',
-    category: 'Setup',
-    language: 'cmd',
-    downloads: 540
-  }
-];
 
 const languageConfig: Record<ScriptTemplate['language'], { label: string; color: string }> = {
   powershell: { label: 'PowerShell', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
@@ -90,12 +23,55 @@ const languageConfig: Record<ScriptTemplate['language'], { label: string; color:
   cmd: { label: 'CMD', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
 };
 
-export default function ScriptTemplateGallery({ templates: externalTemplates, onUseTemplate }: ScriptTemplateGalleryProps) {
+export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateGalleryProps) {
+  const [templates, setTemplates] = useState<ScriptTemplate[]>([]);
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [languageFilter, setLanguageFilter] = useState('all');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const templates = externalTemplates ?? mockTemplates;
+  const fetchTemplates = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetchWithAuth('/scripts/templates');
+
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch templates');
+      }
+
+      const data = await response.json();
+      setTemplates(data.templates || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load templates');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTemplates();
+  }, [fetchTemplates]);
+
+  const handleUseTemplate = async (template: ScriptTemplate) => {
+    try {
+      // Track template usage
+      await fetchWithAuth(`/scripts/templates/${template.id}/use`, {
+        method: 'POST'
+      });
+    } catch {
+      // Continue even if tracking fails
+    }
+
+    onUseTemplate?.(template);
+  };
 
   const categories = useMemo(() => {
     const unique = Array.from(new Set(templates.map(template => template.category)));
@@ -115,6 +91,45 @@ export default function ScriptTemplateGallery({ templates: externalTemplates, on
       return matchesQuery && matchesCategory && matchesLanguage;
     });
   }, [templates, query, categoryFilter, languageFilter]);
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Template Gallery</h2>
+            <p className="text-sm text-muted-foreground">Browse reusable script templates.</p>
+          </div>
+        </div>
+        <div className="mt-6 flex h-48 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Template Gallery</h2>
+            <p className="text-sm text-muted-foreground">Browse reusable script templates.</p>
+          </div>
+        </div>
+        <div className="mt-6 flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
+          <p>{error}</p>
+          <button
+            type="button"
+            onClick={fetchTemplates}
+            className="text-sm text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -161,38 +176,44 @@ export default function ScriptTemplateGallery({ templates: externalTemplates, on
       </div>
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {filteredTemplates.map(template => (
-          <div key={template.id} className="flex flex-col rounded-lg border bg-background p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-semibold">{template.name}</h3>
-                <p className="mt-1 text-xs text-muted-foreground">{template.category}</p>
-              </div>
-              <span
-                className={cn(
-                  'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
-                  languageConfig[template.language].color
-                )}
-              >
-                {languageConfig[template.language].label}
-              </span>
-            </div>
-            <p className="mt-3 text-sm text-muted-foreground">{template.description}</p>
-            <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <Download className="h-3 w-3" />
-                {template.downloads.toLocaleString()} downloads
-              </span>
-              <button
-                type="button"
-                onClick={() => onUseTemplate?.(template)}
-                className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
-              >
-                Use Template
-              </button>
-            </div>
+        {filteredTemplates.length === 0 ? (
+          <div className="col-span-full py-8 text-center text-muted-foreground">
+            No templates found matching your criteria.
           </div>
-        ))}
+        ) : (
+          filteredTemplates.map(template => (
+            <div key={template.id} className="flex flex-col rounded-lg border bg-background p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold">{template.name}</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">{template.category}</p>
+                </div>
+                <span
+                  className={cn(
+                    'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
+                    languageConfig[template.language]?.color || 'bg-gray-500/20 text-gray-700 border-gray-500/40'
+                  )}
+                >
+                  {languageConfig[template.language]?.label || template.language}
+                </span>
+              </div>
+              <p className="mt-3 text-sm text-muted-foreground">{template.description}</p>
+              <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <Download className="h-3 w-3" />
+                  {template.downloads.toLocaleString()} downloads
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleUseTemplate(template)}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+                >
+                  Use Template
+                </button>
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

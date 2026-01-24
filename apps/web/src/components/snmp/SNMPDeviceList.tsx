@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { Filter, Play, Pencil, Trash2, PlusCircle, Server } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type SnmpStatus = 'up' | 'down' | 'unknown';
 
@@ -19,33 +20,82 @@ const statusStyles: Record<SnmpStatus, string> = {
   unknown: 'bg-muted text-muted-foreground border-muted-foreground/30'
 };
 
-const mockDevices: SnmpDevice[] = [
-  { id: 'd1', name: 'Core-Switch-01', ip: '10.0.0.10', version: 'v2c', template: 'Cisco Core', status: 'up', lastPolled: '1m ago' },
-  { id: 'd2', name: 'Edge-Router-02', ip: '10.0.1.1', version: 'v3', template: 'Juniper Edge', status: 'down', lastPolled: '12m ago' },
-  { id: 'd3', name: 'Access-Switch-22', ip: '10.0.3.22', version: 'v2c', template: 'Cisco Access', status: 'up', lastPolled: '3m ago' },
-  { id: 'd4', name: 'Storage-Array', ip: '10.0.4.15', version: 'v3', template: 'NetApp Storage', status: 'up', lastPolled: '2m ago' },
-  { id: 'd5', name: 'Branch-Router-05', ip: '172.16.4.1', version: 'v1', template: 'Legacy Router', status: 'unknown', lastPolled: '1h ago' },
-  { id: 'd6', name: 'Firewall-HA', ip: '172.16.0.1', version: 'v3', template: 'Fortinet Firewall', status: 'up', lastPolled: '4m ago' }
-];
-
 export default function SNMPDeviceList() {
+  const [devices, setDevices] = useState<SnmpDevice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
   const [statusFilter, setStatusFilter] = useState<SnmpStatus | 'all'>('all');
   const [templateFilter, setTemplateFilter] = useState('all');
   const [versionFilter, setVersionFilter] = useState<'all' | SnmpDevice['version']>('all');
 
-  const templates = useMemo(() => {
-    const unique = new Set(mockDevices.map(device => device.template));
-    return ['all', ...Array.from(unique)];
+  const fetchDevices = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetchWithAuth('/snmp/devices');
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+      if (!response.ok) {
+        throw new Error('Failed to fetch SNMP devices');
+      }
+      const data = await response.json();
+      setDevices(data.data ?? data.devices ?? (Array.isArray(data) ? data : []));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    fetchDevices();
+  }, [fetchDevices]);
+
+  const templates = useMemo(() => {
+    const unique = new Set(devices.map(device => device.template));
+    return ['all', ...Array.from(unique)];
+  }, [devices]);
+
   const filteredDevices = useMemo(() => {
-    return mockDevices.filter(device => {
+    return devices.filter(device => {
       const matchesStatus = statusFilter === 'all' ? true : device.status === statusFilter;
       const matchesTemplate = templateFilter === 'all' ? true : device.template === templateFilter;
       const matchesVersion = versionFilter === 'all' ? true : device.version === versionFilter;
       return matchesStatus && matchesTemplate && matchesVersion;
     });
-  }, [statusFilter, templateFilter, versionFilter]);
+  }, [devices, statusFilter, templateFilter, versionFilter]);
+
+  if (loading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
+            <p className="mt-4 text-sm text-muted-foreground">Loading SNMP devices...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && devices.length === 0) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+          <p className="text-sm text-destructive">{error}</p>
+          <button
+            type="button"
+            onClick={fetchDevices}
+            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -62,6 +112,12 @@ export default function SNMPDeviceList() {
           Add device
         </button>
       </div>
+
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
         <div className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2">
@@ -119,39 +175,47 @@ export default function SNMPDeviceList() {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {filteredDevices.map(device => (
-              <tr key={device.id} className="bg-background">
-                <td className="px-4 py-3">
-                  <div className="font-medium">{device.name}</div>
-                  <div className="text-xs text-muted-foreground">Template: {device.template}</div>
-                </td>
-                <td className="px-4 py-3 text-muted-foreground">{device.ip}</td>
-                <td className="px-4 py-3">{device.version}</td>
-                <td className="px-4 py-3">{device.template}</td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusStyles[device.status]}`}>
-                    {device.status}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-muted-foreground">{device.lastPolled}</td>
-                <td className="px-4 py-3">
-                  <div className="flex justify-end gap-2">
-                    <button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs">
-                      <Play className="h-3 w-3" />
-                      Poll
-                    </button>
-                    <button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs">
-                      <Pencil className="h-3 w-3" />
-                      Edit
-                    </button>
-                    <button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-red-600">
-                      <Trash2 className="h-3 w-3" />
-                      Delete
-                    </button>
-                  </div>
+            {filteredDevices.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  No SNMP devices found.
                 </td>
               </tr>
-            ))}
+            ) : (
+              filteredDevices.map(device => (
+                <tr key={device.id} className="bg-background">
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{device.name}</div>
+                    <div className="text-xs text-muted-foreground">Template: {device.template}</div>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{device.ip}</td>
+                  <td className="px-4 py-3">{device.version}</td>
+                  <td className="px-4 py-3">{device.template}</td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusStyles[device.status]}`}>
+                      {device.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{device.lastPolled}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end gap-2">
+                      <button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs">
+                        <Play className="h-3 w-3" />
+                        Poll
+                      </button>
+                      <button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs">
+                        <Pencil className="h-3 w-3" />
+                        Edit
+                      </button>
+                      <button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-red-600">
+                        <Trash2 className="h-3 w-3" />
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>

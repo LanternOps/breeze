@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -28,7 +29,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/policies/${policyId}`);
+      const response = await fetchWithAuth(`/policies/${policyId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch policy');
       }
@@ -55,10 +56,10 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetch('/api/sites');
+      const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.sites ?? data ?? []);
+        setSites(data.data ?? data.sites ?? []);
       }
     } catch {
       // Silently fail
@@ -67,10 +68,10 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
 
   const fetchGroups = useCallback(async () => {
     try {
-      const response = await fetch('/api/groups');
+      const response = await fetchWithAuth('/groups');
       if (response.ok) {
         const data = await response.json();
-        setGroups(data.groups ?? data ?? []);
+        setGroups(data.data ?? data.groups ?? []);
       }
     } catch {
       // Silently fail
@@ -79,10 +80,10 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
 
   const fetchTags = useCallback(async () => {
     try {
-      const response = await fetch('/api/tags');
+      const response = await fetchWithAuth('/tags');
       if (response.ok) {
         const data = await response.json();
-        setTags(data.tags ?? data ?? []);
+        setTags(data.data ?? data.tags ?? []);
       }
     } catch {
       // Silently fail
@@ -91,10 +92,10 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
 
   const fetchScripts = useCallback(async () => {
     try {
-      const response = await fetch('/api/scripts');
+      const response = await fetchWithAuth('/scripts');
       if (response.ok) {
         const data = await response.json();
-        setScripts(data.scripts ?? data ?? []);
+        setScripts(data.data ?? data.scripts ?? []);
       }
     } catch {
       // Silently fail
@@ -118,6 +119,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
       const payload = {
         name: values.name,
         description: values.description,
+        type: 'compliance', // Default policy type
         targetType: values.targetType,
         targetIds: values.targetType !== 'all' ? values.targetIds : undefined,
         rules: values.rules,
@@ -127,18 +129,29 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
         enabled: true
       };
 
-      const url = isNew ? '/api/policies' : `/api/policies/${policyId}`;
-      const method = isNew ? 'POST' : 'PUT';
+      const url = isNew ? '/policies' : `/policies/${policyId}`;
+      const method = isNew ? 'POST' : 'PATCH';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || 'Failed to save policy');
+        // Handle different error formats - string, object with message, or validation errors
+        let errorMessage = 'Failed to save policy';
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (data.error?.message) {
+          errorMessage = data.error.message;
+        } else if (data.message) {
+          errorMessage = data.message;
+        } else if (Array.isArray(data.issues)) {
+          // Zod validation errors
+          errorMessage = data.issues.map((i: { message: string }) => i.message).join(', ');
+        }
+        throw new Error(errorMessage);
       }
 
       window.location.href = '/policies';

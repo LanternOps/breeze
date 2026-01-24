@@ -10,7 +10,39 @@
  *   AUTH_TOKEN=secret npm start  # Require bearer token auth
  */
 
-import express, { Request, Response, NextFunction } from 'express';
+// Type declarations for express (outside workspace, types loaded at runtime)
+interface ExpressRequest {
+  headers: { authorization?: string };
+  body: unknown;
+  on(event: string, callback: () => void): void;
+}
+
+interface ExpressResponse {
+  status(code: number): ExpressResponse;
+  json(body: unknown): void;
+  setHeader(name: string, value: string): void;
+  write(data: string): void;
+}
+
+type ExpressNextFunction = () => void;
+
+interface ExpressApplication {
+  use(handler: unknown): void;
+  get(path: string, handler: (req: ExpressRequest, res: ExpressResponse) => void): void;
+  post(path: string, handler: (req: ExpressRequest, res: ExpressResponse) => void | Promise<void>): void;
+  listen(port: number, host: string, callback: () => void): void;
+}
+
+interface ExpressStatic {
+  (): ExpressApplication;
+  json(options?: { limit?: string }): unknown;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const express = require('express') as ExpressStatic;
+type Request = ExpressRequest;
+type Response = ExpressResponse;
+type NextFunction = ExpressNextFunction;
 import { spawn, ChildProcess } from 'child_process';
 
 const app = express();

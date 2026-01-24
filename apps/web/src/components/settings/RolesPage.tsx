@@ -7,6 +7,7 @@ import RoleManager, {
   DeleteRoleModal,
   RoleUsersModal
 } from './RoleManager';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'clone' | 'delete' | 'users';
 
@@ -32,8 +33,12 @@ export default function RolesPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/v1/roles');
+      const response = await fetchWithAuth('/roles');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch roles');
       }
       const data = await response.json();
@@ -47,7 +52,7 @@ export default function RolesPage() {
 
   const fetchRoleWithPermissions = useCallback(async (roleId: string): Promise<Role | null> => {
     try {
-      const response = await fetch(`/api/v1/roles/${roleId}`);
+      const response = await fetchWithAuth(`/roles/${roleId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch role details');
       }
@@ -61,7 +66,7 @@ export default function RolesPage() {
   const fetchRoleUsers = useCallback(async (roleId: string) => {
     try {
       setLoadingUsers(true);
-      const response = await fetch(`/api/v1/roles/${roleId}/users`);
+      const response = await fetchWithAuth(`/roles/${roleId}/users`);
       if (!response.ok) {
         throw new Error('Failed to fetch role users');
       }
@@ -77,7 +82,7 @@ export default function RolesPage() {
 
   const fetchEffectivePermissions = useCallback(async (roleId: string): Promise<EffectivePermission[]> => {
     try {
-      const response = await fetch(`/api/v1/roles/${roleId}/effective-permissions`);
+      const response = await fetchWithAuth(`/roles/${roleId}/effective-permissions`);
       if (!response.ok) {
         return [];
       }
@@ -162,9 +167,8 @@ export default function RolesPage() {
   }) => {
     setSubmitting(true);
     try {
-      const response = await fetch('/api/v1/roles', {
+      const response = await fetchWithAuth('/roles', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
 
@@ -192,9 +196,8 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/v1/roles/${selectedRole.id}`, {
+      const response = await fetchWithAuth(`/roles/${selectedRole.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
 
@@ -222,9 +225,8 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/v1/roles/${selectedRole.id}/clone`, {
+      const response = await fetchWithAuth(`/roles/${selectedRole.id}/clone`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: data.name })
       });
 
@@ -250,9 +252,8 @@ export default function RolesPage() {
 
       if (permissionsChanged || data.description !== selectedRole.description || parentRoleChanged) {
         // Update the cloned role with modified permissions/description/parentRoleId
-        await fetch(`/api/v1/roles/${clonedRole.id}`, {
+        await fetchWithAuth(`/roles/${clonedRole.id}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             description: data.description,
             permissions: data.permissions,
@@ -275,7 +276,7 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/v1/roles/${selectedRole.id}`, {
+      const response = await fetchWithAuth(`/roles/${selectedRole.id}`, {
         method: 'DELETE'
       });
 

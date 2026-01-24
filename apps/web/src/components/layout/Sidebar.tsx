@@ -61,15 +61,15 @@ const operationsNav = [
 const managementNav = [
   { name: 'Software', href: '/software', icon: Package },
   { name: 'Policies', href: '/policies', icon: Shield },
-  { name: 'Organizations', href: '/organizations', icon: Building2 },
-  { name: 'Users', href: '/users', icon: Users },
+  { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
+  { name: 'Users', href: '/settings/users', icon: Users },
   { name: 'Roles', href: '/settings/roles', icon: KeyRound },
   { name: 'Settings', href: '/settings', icon: Settings }
 ];
 
 const settingsNav = [
   { name: 'Organization', href: '/settings/organization', icon: Building },
-  { name: 'Integrations', href: '/integrations', icon: Plug }
+  { name: 'Integrations', href: '/integrations/webhooks', icon: Plug }
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {

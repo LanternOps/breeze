@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, lazy, Suspense } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import Editor from '@monaco-editor/react';
 import { Plus, Trash2, GripVertical } from 'lucide-react';
+
+// Dynamic import for Monaco Editor to avoid SSR issues
+const Editor = lazy(() => import('@monaco-editor/react'));
 import { cn } from '@/lib/utils';
 import type { ScriptLanguage, OSType } from './ScriptList';
 
@@ -244,32 +246,33 @@ export default function ScriptForm({
             name="content"
             control={control}
             render={({ field }) => (
-              <Editor
-                height="400px"
-                language={monacoLanguage}
-                value={field.value}
-                onChange={(value) => field.onChange(value || '')}
-                onMount={() => setEditorMounted(true)}
-                theme="vs-dark"
-                options={{
-                  minimap: { enabled: false },
-                  fontSize: 14,
-                  lineNumbers: 'on',
-                  scrollBeyondLastLine: false,
-                  wordWrap: 'on',
-                  automaticLayout: true,
-                  tabSize: 2,
-                  padding: { top: 12, bottom: 12 }
-                }}
-                loading={
-                  <div className="flex items-center justify-center h-[400px] bg-[#1e1e1e]">
-                    <div className="text-center text-white/60">
-                      <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
-                      <p className="mt-2 text-sm">Loading editor...</p>
-                    </div>
+              <Suspense fallback={
+                <div className="flex items-center justify-center h-[400px] bg-[#1e1e1e]">
+                  <div className="text-center text-white/60">
+                    <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
+                    <p className="mt-2 text-sm">Loading editor...</p>
                   </div>
-                }
-              />
+                </div>
+              }>
+                <Editor
+                  height="400px"
+                  language={monacoLanguage}
+                  value={field.value}
+                  onChange={(value) => field.onChange(value || '')}
+                  onMount={() => setEditorMounted(true)}
+                  theme="vs-dark"
+                  options={{
+                    minimap: { enabled: false },
+                    fontSize: 14,
+                    lineNumbers: 'on',
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    tabSize: 2,
+                    padding: { top: 12, bottom: 12 }
+                  }}
+                />
+              </Suspense>
             )}
           />
         </div>

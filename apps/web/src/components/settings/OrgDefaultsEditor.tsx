@@ -1,13 +1,27 @@
 import { useState } from 'react';
 import { Bell, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-react';
 
-type OrgDefaultsEditorProps = {
-  onDirty?: () => void;
-  onSave?: () => void;
+type DefaultsData = {
+  policyDefaults?: Record<string, string>;
+  deviceGroup?: string;
+  alertThreshold?: string;
+  autoEnrollment?: {
+    enabled: boolean;
+    requireApproval: boolean;
+    sendWelcome: boolean;
+  };
+  agentUpdatePolicy?: string;
+  maintenanceWindow?: string;
 };
 
-const mockDefaults = {
-  organizationName: 'Breeze Labs',
+type OrgDefaultsEditorProps = {
+  organizationName: string;
+  defaults?: DefaultsData;
+  onDirty?: () => void;
+  onSave?: (data: DefaultsData) => void;
+};
+
+const defaultValues: DefaultsData = {
   policyDefaults: {
     deviceCompliance: 'balanced',
     dataProtection: 'strict',
@@ -38,20 +52,29 @@ const alertThresholds = [
   { value: 'medium', label: 'Medium and above' }
 ];
 
-export default function OrgDefaultsEditor({ onDirty, onSave }: OrgDefaultsEditorProps) {
-  const [policyDefaults, setPolicyDefaults] = useState(mockDefaults.policyDefaults);
-  const [deviceGroup, setDeviceGroup] = useState(mockDefaults.deviceGroup);
-  const [alertThreshold, setAlertThreshold] = useState(mockDefaults.alertThreshold);
-  const [autoEnrollment, setAutoEnrollment] = useState(mockDefaults.autoEnrollment);
-  const [agentUpdatePolicy, setAgentUpdatePolicy] = useState(mockDefaults.agentUpdatePolicy);
-  const [maintenanceWindow, setMaintenanceWindow] = useState(mockDefaults.maintenanceWindow);
+export default function OrgDefaultsEditor({ organizationName, defaults, onDirty, onSave }: OrgDefaultsEditorProps) {
+  const initialData = { ...defaultValues, ...defaults };
+  const [policyDefaults, setPolicyDefaults] = useState(initialData.policyDefaults || defaultValues.policyDefaults!);
+  const [deviceGroup, setDeviceGroup] = useState(initialData.deviceGroup || defaultValues.deviceGroup!);
+  const [alertThreshold, setAlertThreshold] = useState(initialData.alertThreshold || defaultValues.alertThreshold!);
+  const [autoEnrollment, setAutoEnrollment] = useState(initialData.autoEnrollment || defaultValues.autoEnrollment!);
+  const [agentUpdatePolicy, setAgentUpdatePolicy] = useState(initialData.agentUpdatePolicy || defaultValues.agentUpdatePolicy!);
+  const [maintenanceWindow, setMaintenanceWindow] = useState(initialData.maintenanceWindow || defaultValues.maintenanceWindow!);
 
   const markDirty = () => {
     onDirty?.();
   };
 
   const handleSave = () => {
-    onSave?.();
+    const data: DefaultsData = {
+      policyDefaults,
+      deviceGroup,
+      alertThreshold,
+      autoEnrollment,
+      agentUpdatePolicy,
+      maintenanceWindow
+    };
+    onSave?.(data);
   };
 
   return (
@@ -60,7 +83,7 @@ export default function OrgDefaultsEditor({ onDirty, onSave }: OrgDefaultsEditor
         <div>
           <h2 className="text-lg font-semibold">Default settings</h2>
           <p className="text-sm text-muted-foreground">
-            Tune the default policies and enrollment behavior for {mockDefaults.organizationName}.
+            Tune the default policies and enrollment behavior for {organizationName}.
           </p>
         </div>
         <button

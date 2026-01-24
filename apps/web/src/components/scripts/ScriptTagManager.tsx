@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
-import { Check, Plus, Tag, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Check, Plus, Tag, Trash2, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ScriptTag = {
   id: string;
@@ -19,35 +20,108 @@ type ScriptTagManagerProps = {
   scripts?: ScriptItem[];
 };
 
-const mockTags: ScriptTag[] = [
-  { id: 'tag-maintenance', name: 'Maintenance', color: '#3b82f6' },
-  { id: 'tag-security', name: 'Security', color: '#ef4444' },
-  { id: 'tag-user', name: 'User', color: '#10b981' },
-  { id: 'tag-network', name: 'Network', color: '#f59e0b' }
-];
-
-const mockScripts: ScriptItem[] = [
-  { id: 'script-101', name: 'Clear Temp Files', tags: ['tag-maintenance'] },
-  { id: 'script-102', name: 'Reset Password', tags: ['tag-user', 'tag-security'] },
-  { id: 'script-103', name: 'Rotate VPN Keys', tags: ['tag-security', 'tag-network'] },
-  { id: 'script-104', name: 'Enable BitLocker', tags: ['tag-security'] },
-  { id: 'script-105', name: 'Update Wi-Fi Profiles', tags: ['tag-network'] }
-];
-
-let tagIdCounter = 0;
-const createTagId = (prefix: string = 'tag') => {
-  tagIdCounter += 1;
-  return `${prefix}-${tagIdCounter}`;
-};
-
 export default function ScriptTagManager({ tags: externalTags, scripts: externalScripts }: ScriptTagManagerProps) {
-  const [tags, setTags] = useState<ScriptTag[]>(externalTags ?? mockTags);
-  const [scripts, setScripts] = useState<ScriptItem[]>(externalScripts ?? mockScripts);
+  const [tags, setTags] = useState<ScriptTag[]>(externalTags ?? []);
+  const [scripts, setScripts] = useState<ScriptItem[]>(externalScripts ?? []);
+  const [loading, setLoading] = useState(!externalTags && !externalScripts);
+  const [error, setError] = useState<string>();
   const [selectedScriptIds, setSelectedScriptIds] = useState<Set<string>>(new Set());
   const [bulkTagIds, setBulkTagIds] = useState<Set<string>>(new Set());
   const [newTagName, setNewTagName] = useState('');
   const [newTagColor, setNewTagColor] = useState('#22c55e');
   const [tagToDelete, setTagToDelete] = useState<ScriptTag | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  const fetchData = useCallback(async () => {
+    if (externalTags && externalScripts) return;
+
+    try {
+      setLoading(true);
+      setError(undefined);
+
+      // Fetch scripts - tags would typically be stored on scripts or in a separate endpoint
+      const scriptsResponse = await fetchWithAuth('/scripts?includeSystem=true');
+      if (!scriptsResponse.ok) {
+        if (scriptsResponse.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        throw new Error('Failed to fetch scripts');
+      }
+
+      const scriptsData = await scriptsResponse.json();
+      const scriptList = scriptsData.data ?? scriptsData.scripts ?? (Array.isArray(scriptsData) ? scriptsData : []);
+
+      // Extract unique tags from scripts
+      const tagMap = new Map<string, ScriptTag>();
+      const scriptItems: ScriptItem[] = [];
+
+      scriptList.forEach((script: { id: string; name: string; tags?: string[] | ScriptTag[]; category?: string }) => {
+        const scriptTags: string[] = [];
+
+        if (Array.isArray(script.tags)) {
+          script.tags.forEach((tag: string | ScriptTag) => {
+            if (typeof tag === 'string') {
+              if (!tagMap.has(tag)) {
+                tagMap.set(tag, {
+                  id: `tag-${tag}`,
+                  name: tag,
+                  color: getColorForTag(tag)
+                });
+              }
+              scriptTags.push(`tag-${tag}`);
+            } else if (tag && typeof tag === 'object' && tag.name) {
+              if (!tagMap.has(tag.id)) {
+                tagMap.set(tag.id, tag);
+              }
+              scriptTags.push(tag.id);
+            }
+          });
+        }
+
+        // Use category as a tag if no tags exist
+        if (scriptTags.length === 0 && script.category) {
+          const categoryTag = `tag-${script.category.toLowerCase()}`;
+          if (!tagMap.has(script.category)) {
+            tagMap.set(script.category, {
+              id: categoryTag,
+              name: script.category,
+              color: getColorForTag(script.category)
+            });
+          }
+          scriptTags.push(categoryTag);
+        }
+
+        scriptItems.push({
+          id: script.id,
+          name: script.name,
+          tags: scriptTags
+        });
+      });
+
+      setTags(Array.from(tagMap.values()));
+      setScripts(scriptItems);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, [externalTags, externalScripts]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Generate consistent colors for tags based on name
+  function getColorForTag(name: string): string {
+    const colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return colors[Math.abs(hash) % colors.length] ?? '#3b82f6';
+  }
 
   const tagUsage = useMemo(() => {
     const usage: Record<string, number> = {};
@@ -83,50 +157,138 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
     });
   };
 
-  const handleAddTag = () => {
+  const handleAddTag = async () => {
     const trimmed = newTagName.trim();
     if (!trimmed) return;
     const duplicate = tags.find(tag => tag.name.toLowerCase() === trimmed.toLowerCase());
     if (duplicate) return;
 
-    const newTag: ScriptTag = {
-      id: createTagId(),
-      name: trimmed,
-      color: newTagColor
-    };
-    setTags(prev => [...prev, newTag]);
-    setNewTagName('');
+    setSaving(true);
+    try {
+      // Note: When a tags API endpoint exists, this would POST to /scripts/tags
+      // For now, tags are managed client-side and applied to scripts
+      const newTag: ScriptTag = {
+        id: `tag-${trimmed.toLowerCase().replace(/\s+/g, '-')}`,
+        name: trimmed,
+        color: newTagColor
+      };
+      setTags(prev => [...prev, newTag]);
+      setNewTagName('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add tag');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDeleteTag = () => {
+  const handleDeleteTag = async () => {
     if (!tagToDelete) return;
-    setTags(prev => prev.filter(tag => tag.id !== tagToDelete.id));
-    setScripts(prev =>
-      prev.map(script => ({
-        ...script,
-        tags: script.tags.filter(tagId => tagId !== tagToDelete.id)
-      }))
-    );
-    setBulkTagIds(prev => {
-      const next = new Set(prev);
-      next.delete(tagToDelete.id);
-      return next;
-    });
-    setTagToDelete(null);
+
+    setDeleteLoading(true);
+    try {
+      // Note: When a tags API endpoint exists, this would DELETE /scripts/tags/:id
+      // For now, remove tag from local state and update scripts
+      setTags(prev => prev.filter(tag => tag.id !== tagToDelete.id));
+      setScripts(prev =>
+        prev.map(script => ({
+          ...script,
+          tags: script.tags.filter(tagId => tagId !== tagToDelete.id)
+        }))
+      );
+      setBulkTagIds(prev => {
+        const next = new Set(prev);
+        next.delete(tagToDelete.id);
+        return next;
+      });
+      setTagToDelete(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete tag');
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
-  const handleBulkAssign = () => {
+  const handleBulkAssign = async () => {
     if (selectedScriptIds.size === 0 || bulkTagIds.size === 0) return;
 
-    setScripts(prev =>
-      prev.map(script => {
-        if (!selectedScriptIds.has(script.id)) return script;
-        const combined = new Set([...script.tags, ...Array.from(bulkTagIds)]);
-        return { ...script, tags: Array.from(combined) };
-      })
-    );
-    setBulkTagIds(new Set());
+    setSaving(true);
+    try {
+      // Update each selected script with the new tags
+      // Note: When a proper tags API exists, this would be a batch update
+      const selectedTags = Array.from(bulkTagIds);
+
+      for (const scriptId of selectedScriptIds) {
+        const script = scripts.find(s => s.id === scriptId);
+        if (!script) continue;
+
+        const updatedTags = Array.from(new Set([...script.tags, ...selectedTags]));
+
+        // Convert tag IDs to tag names for API
+        const tagNames = updatedTags
+          .map(tagId => tags.find(t => t.id === tagId)?.name)
+          .filter(Boolean);
+
+        // Update script with new tags
+        const response = await fetchWithAuth(`/scripts/${scriptId}`, {
+          method: 'PUT',
+          body: JSON.stringify({ tags: tagNames })
+        });
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            window.location.href = '/login';
+            return;
+          }
+          // Continue with local update even if API fails
+          console.warn(`Failed to update tags for script ${scriptId}`);
+        }
+      }
+
+      // Update local state
+      setScripts(prev =>
+        prev.map(script => {
+          if (!selectedScriptIds.has(script.id)) return script;
+          const combined = new Set([...script.tags, ...selectedTags]);
+          return { ...script, tags: Array.from(combined) };
+        })
+      );
+      setBulkTagIds(new Set());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to assign tags');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
+            <p className="mt-4 text-sm text-muted-foreground">Loading tags...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && tags.length === 0) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+        <button
+          type="button"
+          onClick={fetchData}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -141,33 +303,45 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
         </div>
       </div>
 
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.1fr_1fr]">
         <div className="space-y-4">
           <div className="rounded-lg border bg-muted/20 p-4">
             <h3 className="text-sm font-semibold">All Tags</h3>
             <div className="mt-3 space-y-2">
-              {tags.map(tag => (
-                <div key={tag.id} className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="h-3 w-3 rounded-full"
-                      style={{ backgroundColor: tag.color }}
-                    />
-                    <div>
-                      <p className="text-sm font-medium">{tag.name}</p>
-                      <p className="text-xs text-muted-foreground">Used on {tagUsage[tag.id] || 0} scripts</p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setTagToDelete(tag)}
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-500/10"
-                    title="Delete tag"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+              {tags.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+                  No tags found. Create one below.
                 </div>
-              ))}
+              ) : (
+                tags.map(tag => (
+                  <div key={tag.id} className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="h-3 w-3 rounded-full"
+                        style={{ backgroundColor: tag.color }}
+                      />
+                      <div>
+                        <p className="text-sm font-medium">{tag.name}</p>
+                        <p className="text-xs text-muted-foreground">Used on {tagUsage[tag.id] || 0} scripts</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTagToDelete(tag)}
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-500/10"
+                      title="Delete tag"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
@@ -190,9 +364,10 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
                 <button
                   type="button"
                   onClick={handleAddTag}
-                  className="flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground"
+                  disabled={saving || !newTagName.trim()}
+                  className="flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
                 >
-                  <Plus className="h-4 w-4" />
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                   Add
                 </button>
               </div>
@@ -204,24 +379,30 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
           <div className="rounded-lg border bg-muted/20 p-4">
             <h3 className="text-sm font-semibold">Bulk Assign Tags</h3>
             <p className="mt-1 text-xs text-muted-foreground">Select scripts, then choose tags to apply.</p>
-            <div className="mt-3 space-y-2">
-              {scripts.map(script => (
-                <label
-                  key={script.id}
-                  className={cn(
-                    'flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm',
-                    selectedScriptIds.has(script.id) && 'border-primary/40 bg-primary/5'
-                  )}
-                >
-                  <span>{script.name}</span>
-                  <input
-                    type="checkbox"
-                    checked={selectedScriptIds.has(script.id)}
-                    onChange={() => toggleScriptSelection(script.id)}
-                    className="h-4 w-4"
-                  />
-                </label>
-              ))}
+            <div className="mt-3 space-y-2 max-h-60 overflow-y-auto">
+              {scripts.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+                  No scripts found.
+                </div>
+              ) : (
+                scripts.map(script => (
+                  <label
+                    key={script.id}
+                    className={cn(
+                      'flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm cursor-pointer',
+                      selectedScriptIds.has(script.id) && 'border-primary/40 bg-primary/5'
+                    )}
+                  >
+                    <span className="truncate">{script.name}</span>
+                    <input
+                      type="checkbox"
+                      checked={selectedScriptIds.has(script.id)}
+                      onChange={() => toggleScriptSelection(script.id)}
+                      className="h-4 w-4"
+                    />
+                  </label>
+                ))
+              )}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               {tags.map(tag => (
@@ -245,9 +426,10 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
             <button
               type="button"
               onClick={handleBulkAssign}
-              disabled={selectedScriptIds.size === 0 || bulkTagIds.size === 0}
-              className="mt-4 w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+              disabled={selectedScriptIds.size === 0 || bulkTagIds.size === 0 || saving}
+              className="mt-4 w-full inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
               Apply tags to selected scripts
             </button>
           </div>
@@ -265,15 +447,18 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
               <button
                 type="button"
                 onClick={() => setTagToDelete(null)}
-                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+                disabled={deleteLoading}
+                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleDeleteTag}
-                className="rounded-md bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600"
+                disabled={deleteLoading}
+                className="inline-flex items-center gap-2 rounded-md bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
               >
+                {deleteLoading && <Loader2 className="h-4 w-4 animate-spin" />}
                 Delete
               </button>
             </div>

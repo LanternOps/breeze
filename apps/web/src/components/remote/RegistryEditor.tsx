@@ -883,9 +883,11 @@ export default function RegistryEditor({
     } else {
       const parts = path.split('\\');
       const hive = parts[0];
-      const keyPath = parts.slice(1).join('\\');
-      await loadKeys(hive, keyPath);
-      setExpandedKeys(prev => new Set([...prev, path]));
+      if (hive) {
+        const keyPath = parts.slice(1).join('\\');
+        await loadKeys(hive, keyPath);
+        setExpandedKeys(prev => new Set([...prev, path]));
+      }
     }
   }, [expandedKeys, loadKeys]);
 
@@ -1143,7 +1145,7 @@ export default function RegistryEditor({
               {currentPath && (
                 <button
                   type="button"
-                  onClick={() => setDeleteTarget({ type: 'key', name: currentPath.split('\\').pop() || '' })}
+                  onClick={() => setDeleteTarget({ type: 'key', name: currentPath.split('\\').pop() ?? '' })}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20"
                   title="Delete Key"
                 >

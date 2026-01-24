@@ -13,6 +13,7 @@ import {
   Rocket
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import DeploymentWizard from './DeploymentWizard';
 
 type SoftwareCategory = 'Browser' | 'Utilities' | 'Developer' | 'Collaboration' | 'Security' | 'Productivity';
 
@@ -141,6 +142,7 @@ export default function SoftwareCatalog() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string>('all');
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareItem | null>(null);
+  const [showDeployWizard, setShowDeployWizard] = useState(false);
 
   const categories = useMemo(() => {
     const unique = new Set(softwareCatalog.map(item => item.category));
@@ -168,6 +170,7 @@ export default function SoftwareCatalog() {
         </div>
         <button
           type="button"
+          onClick={() => setShowDeployWizard(true)}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
         >
           <Rocket className="h-4 w-4" />
@@ -254,6 +257,7 @@ export default function SoftwareCatalog() {
                   type="button"
                   onClick={event => {
                     event.stopPropagation();
+                    setShowDeployWizard(true);
                   }}
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
                 >
@@ -322,12 +326,34 @@ export default function SoftwareCatalog() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => {
+                    setSelectedSoftware(null);
+                    setShowDeployWizard(true);
+                  }}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
                 >
                   Deploy
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showDeployWizard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
+          <div className="w-full max-w-4xl rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Bulk Software Deployment</h2>
+              <button
+                type="button"
+                onClick={() => setShowDeployWizard(false)}
+                className="h-8 w-8 rounded-md hover:bg-muted flex items-center justify-center"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <DeploymentWizard />
           </div>
         </div>
       )}

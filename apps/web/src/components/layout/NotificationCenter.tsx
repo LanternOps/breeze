@@ -7,6 +7,7 @@ import {
   Settings
 } from 'lucide-react';
 import { cn, formatRelativeTime } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 const POLL_INTERVAL_MS = 30000;
 
@@ -153,10 +154,10 @@ export default function NotificationCenter() {
     try {
       setIsLoading(true);
       setError(null);
-      const response = await fetch('/api/notifications');
+      const response = await fetchWithAuth('/notifications');
       if (!response.ok) {
-        // API endpoint may not exist yet - return empty array silently
-        if (response.status === 404) {
+        // Handle auth errors and server errors silently
+        if (response.status === 401 || response.status === 403 || response.status >= 500) {
           setNotifications([]);
           return;
         }
@@ -172,7 +173,7 @@ export default function NotificationCenter() {
         normalizeNotification(item, index)
       );
       normalized.sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        (a: NotificationItem, b: NotificationItem) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
       setNotifications(normalized);
     } catch (err) {

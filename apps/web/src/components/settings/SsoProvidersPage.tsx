@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
 
@@ -33,8 +34,12 @@ export default function SsoProvidersPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/sso/providers');
+      const response = await fetchWithAuth('/sso/providers');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch SSO providers');
       }
       const data = await response.json();
@@ -48,7 +53,7 @@ export default function SsoProvidersPage() {
 
   const fetchPresets = useCallback(async () => {
     try {
-      const response = await fetch('/api/sso/presets');
+      const response = await fetchWithAuth('/sso/presets');
       if (response.ok) {
         const data = await response.json();
         setPresets(data.data ?? []);
@@ -60,7 +65,7 @@ export default function SsoProvidersPage() {
 
   const fetchRoles = useCallback(async () => {
     try {
-      const response = await fetch('/api/roles');
+      const response = await fetchWithAuth('/roles');
       if (response.ok) {
         const data = await response.json();
         setRoles(data.roles ?? data.data ?? []);
@@ -72,7 +77,7 @@ export default function SsoProvidersPage() {
 
   const fetchProviderDetails = useCallback(async (providerId: string) => {
     try {
-      const response = await fetch(`/api/sso/providers/${providerId}`);
+      const response = await fetchWithAuth(`/sso/providers/${providerId}`);
       if (response.ok) {
         const data = await response.json();
         return data.data;
@@ -108,7 +113,7 @@ export default function SsoProvidersPage() {
     setTestingConnection(true);
 
     try {
-      const response = await fetch(`/api/sso/providers/${provider.id}/test`, {
+      const response = await fetchWithAuth(`/sso/providers/${provider.id}/test`, {
         method: 'POST'
       });
       const data = await response.json();
@@ -126,9 +131,8 @@ export default function SsoProvidersPage() {
 
   const handleToggleStatus = async (provider: SsoProvider, newStatus: 'active' | 'inactive') => {
     try {
-      const response = await fetch(`/api/sso/providers/${provider.id}/status`, {
+      const response = await fetchWithAuth(`/sso/providers/${provider.id}/status`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
 
@@ -159,7 +163,7 @@ export default function SsoProvidersPage() {
 
     setTestingConnection(true);
     try {
-      const response = await fetch(`/api/sso/providers/${selectedProvider.id}/test`, {
+      const response = await fetchWithAuth(`/sso/providers/${selectedProvider.id}/test`, {
         method: 'POST'
       });
       const data = await response.json();
@@ -180,8 +184,8 @@ export default function SsoProvidersPage() {
     setSubmitting(true);
     try {
       const url = modalMode === 'edit' && selectedProvider
-        ? `/api/sso/providers/${selectedProvider.id}`
-        : '/api/sso/providers';
+        ? `/sso/providers/${selectedProvider.id}`
+        : '/sso/providers';
       const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
       // Don't send empty client secret on edit
@@ -190,9 +194,8 @@ export default function SsoProvidersPage() {
         delete payload.clientSecret;
       }
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
@@ -215,7 +218,7 @@ export default function SsoProvidersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/sso/providers/${selectedProvider.id}`, {
+      const response = await fetchWithAuth(`/sso/providers/${selectedProvider.id}`, {
         method: 'DELETE'
       });
 

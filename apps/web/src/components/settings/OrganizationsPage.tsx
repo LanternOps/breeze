@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import OrganizationList, { type Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
 type OrganizationFormValues = {
   name: string;
   slug: string;
-  type: 'enterprise' | 'growth' | 'startup' | 'nonprofit';
-  status: 'active' | 'trial' | 'suspended' | 'inactive';
+  type: 'customer' | 'internal';
+  status: 'active' | 'trial' | 'suspended' | 'churned';
   maxDevices: number;
   contractStart?: string;
   contractEnd?: string;
@@ -26,12 +27,23 @@ export default function OrganizationsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/organizations');
+      const response = await fetchWithAuth('/orgs/organizations');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch organizations');
       }
       const data = await response.json();
-      setOrganizations(data.organizations ?? data ?? []);
+      const organizations = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.organizations)
+          ? data.organizations
+          : Array.isArray(data)
+            ? data
+            : [];
+      setOrganizations(organizations);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -67,13 +79,12 @@ export default function OrganizationsPage() {
     setSubmitting(true);
     try {
       const url = modalMode === 'edit' && selectedOrg
-        ? `/api/organizations/${selectedOrg.id}`
-        : '/api/organizations';
+        ? `/orgs/organizations/${selectedOrg.id}`
+        : '/orgs/organizations';
       const method = modalMode === 'edit' ? 'PUT' : 'POST';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(values)
       });
 
@@ -95,7 +106,7 @@ export default function OrganizationsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/organizations/${selectedOrg.id}`, {
+      const response = await fetchWithAuth(`/orgs/organizations/${selectedOrg.id}`, {
         method: 'DELETE'
       });
 

@@ -1,17 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Send } from 'lucide-react';
-
-let historyIdCounter = 0;
-const createHistoryId = () => {
-  historyIdCounter += 1;
-  return `hst-${historyIdCounter}`;
-};
-
-let requestIdCounter = 0;
-const createRequestId = () => {
-  requestIdCounter += 1;
-  return `req_${requestIdCounter.toString(36).padStart(4, '0')}`;
-};
+import { fetchWithAuth } from '../../stores/auth';
 
 type TestHistoryItem = {
   id: string;
@@ -24,9 +13,7 @@ type WebhookResponse = {
   status: number;
   statusText: string;
   headers: Record<string, string>;
-  body:
-    | { received: true; deliveredAt: string }
-    | { received: false; error: string };
+  body: unknown;
 };
 
 const eventTypes = [
@@ -35,9 +22,11 @@ const eventTypes = [
   'patch.completed',
   'backup.failed',
   'security.alert'
-];
+] as const;
 
-const samplePayloads: Record<string, Record<string, unknown>> = {
+type EventType = typeof eventTypes[number];
+
+const samplePayloads: Record<EventType, Record<string, unknown>> = {
   'device.offline': {
     id: 'evt_0123',
     type: 'device.offline',
@@ -70,57 +59,103 @@ const samplePayloads: Record<string, Record<string, unknown>> = {
   }
 };
 
-const initialHistory: TestHistoryItem[] = [
-  { id: 'hst-1', event: 'device.offline', status: 200, timestamp: '6m ago' },
-  { id: 'hst-2', event: 'ticket.created', status: 200, timestamp: '18m ago' },
-  { id: 'hst-3', event: 'backup.failed', status: 500, timestamp: '1h ago' }
-];
+type WebhookTestPanelProps = {
+  webhookId: string;
+};
 
-export default function WebhookTestPanel() {
-  const [eventType, setEventType] = useState(eventTypes[0]);
-  const [history, setHistory] = useState<TestHistoryItem[]>(initialHistory);
-  const [response, setResponse] = useState<WebhookResponse>({
-    status: 200,
-    statusText: 'OK',
-    headers: {
-      'content-type': 'application/json',
-      'x-request-id': 'req_9c21'
-    },
-    body: { received: true, deliveredAt: '2024-01-12T16:22:32Z' }
-  });
+export default function WebhookTestPanel({ webhookId }: WebhookTestPanelProps) {
+  const [eventType, setEventType] = useState<EventType>(eventTypes[0]);
+  const [history, setHistory] = useState<TestHistoryItem[]>([]);
+  const [response, setResponse] = useState<WebhookResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string>();
 
   const payloadPreview = useMemo(
     () => JSON.stringify(samplePayloads[eventType], null, 2),
     [eventType]
   );
 
-  const handleSendTest = () => {
-    const isFailure = eventType === 'backup.failed' || eventType === 'security.alert';
-    const status = isFailure ? 500 : 200;
-    const statusText = isFailure ? 'Internal Server Error' : 'OK';
-    const nextHistory = [
-      {
-        id: createHistoryId(),
-        event: eventType,
-        status,
-        timestamp: 'Just now'
-      },
-      ...history
-    ].slice(0, 5);
+  const fetchHistory = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetchWithAuth(`/webhooks/${webhookId}/deliveries?limit=5`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch test history');
+      }
+      const data = await response.json();
+      const deliveries = data.deliveries ?? data ?? [];
+      setHistory(
+        deliveries.map((delivery: { id: string; event?: string; statusCode?: number; createdAt?: string }) => ({
+          id: delivery.id,
+          event: delivery.event || 'unknown',
+          status: delivery.statusCode || 0,
+          timestamp: delivery.createdAt ? new Date(delivery.createdAt).toLocaleString() : 'Unknown'
+        }))
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load test history');
+    } finally {
+      setLoading(false);
+    }
+  }, [webhookId]);
 
-    setHistory(nextHistory);
-    setResponse({
-      status,
-      statusText,
-      headers: {
-        'content-type': 'application/json',
-        'x-request-id': createRequestId()
-      },
-      body: isFailure
-        ? { received: false, error: 'Destination failed to process payload.' }
-        : { received: true, deliveredAt: '2024-01-15T12:00:00.000Z' }
-    });
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
+
+  const handleSendTest = async () => {
+    setSending(true);
+    setError(undefined);
+
+    try {
+      const apiResponse = await fetchWithAuth(`/webhooks/${webhookId}/test`, {
+        method: 'POST',
+        body: JSON.stringify({
+          event: eventType,
+          payload: samplePayloads[eventType]
+        })
+      });
+
+      const data = await apiResponse.json().catch(() => ({}));
+
+      if (!apiResponse.ok) {
+        throw new Error(data.error || 'Test failed');
+      }
+
+      setResponse({
+        status: data.statusCode || apiResponse.status,
+        statusText: data.statusText || (apiResponse.ok ? 'OK' : 'Error'),
+        headers: data.responseHeaders || {},
+        body: data.responseBody || { received: true }
+      });
+
+      // Refresh history after test
+      await fetchHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Test failed');
+      setResponse({
+        status: 500,
+        statusText: 'Error',
+        headers: {},
+        body: { error: err instanceof Error ? err.message : 'Test failed' }
+      });
+    } finally {
+      setSending(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading test history...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border bg-card p-6 shadow-sm">
@@ -132,12 +167,19 @@ export default function WebhookTestPanel() {
         <button
           type="button"
           onClick={handleSendTest}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+          disabled={sending}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Send className="h-4 w-4" />
-          Send test
+          {sending ? 'Sending...' : 'Send test'}
         </button>
       </div>
+
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-4">
@@ -145,7 +187,7 @@ export default function WebhookTestPanel() {
             <label className="text-sm font-medium">Event type</label>
             <select
               value={eventType}
-              onChange={event => setEventType(event.target.value)}
+              onChange={event => setEventType(event.target.value as EventType)}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               {eventTypes.map(type => (
@@ -167,48 +209,60 @@ export default function WebhookTestPanel() {
           <div className="rounded-lg border bg-background p-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold">Response</h3>
-              <span
-                className={`rounded-full border px-2.5 py-1 text-xs ${
-                  response.status >= 400
-                    ? 'border-rose-200 bg-rose-50 text-rose-700'
-                    : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                }`}
-              >
-                {response.status} {response.statusText}
-              </span>
+              {response && (
+                <span
+                  className={`rounded-full border px-2.5 py-1 text-xs ${
+                    response.status >= 400
+                      ? 'border-rose-200 bg-rose-50 text-rose-700'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  }`}
+                >
+                  {response.status} {response.statusText}
+                </span>
+              )}
             </div>
-            <div className="mt-3 text-xs text-muted-foreground">
-              <p className="font-semibold text-foreground">Headers</p>
-              <pre className="mt-2 rounded-md bg-muted/40 p-3 text-xs">
-                {JSON.stringify(response.headers, null, 2)}
-              </pre>
-              <p className="mt-3 font-semibold text-foreground">Body</p>
-              <pre className="mt-2 rounded-md bg-muted/40 p-3 text-xs">
-                {JSON.stringify(response.body, null, 2)}
-              </pre>
-            </div>
+            {response ? (
+              <div className="mt-3 text-xs text-muted-foreground">
+                <p className="font-semibold text-foreground">Headers</p>
+                <pre className="mt-2 rounded-md bg-muted/40 p-3 text-xs">
+                  {JSON.stringify(response.headers, null, 2)}
+                </pre>
+                <p className="mt-3 font-semibold text-foreground">Body</p>
+                <pre className="mt-2 rounded-md bg-muted/40 p-3 text-xs">
+                  {JSON.stringify(response.body, null, 2)}
+                </pre>
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Send a test to see the response.
+              </p>
+            )}
           </div>
 
           <div className="rounded-lg border bg-background p-4">
             <h3 className="text-sm font-semibold">Recent tests</h3>
             <div className="mt-3 space-y-3 text-sm">
-              {history.map(item => (
-                <div key={item.id} className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">{item.event}</p>
-                    <p className="text-xs text-muted-foreground">{item.timestamp}</p>
+              {history.length > 0 ? (
+                history.map(item => (
+                  <div key={item.id} className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium">{item.event}</p>
+                      <p className="text-xs text-muted-foreground">{item.timestamp}</p>
+                    </div>
+                    <span
+                      className={`rounded-full border px-2.5 py-1 text-xs ${
+                        item.status >= 400
+                          ? 'border-rose-200 bg-rose-50 text-rose-700'
+                          : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      }`}
+                    >
+                      {item.status}
+                    </span>
                   </div>
-                  <span
-                    className={`rounded-full border px-2.5 py-1 text-xs ${
-                      item.status >= 400
-                        ? 'border-rose-200 bg-rose-50 text-rose-700'
-                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                    }`}
-                  >
-                    {item.status}
-                  </span>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-xs text-muted-foreground">No test history yet.</p>
+              )}
             </div>
           </div>
         </div>

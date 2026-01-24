@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
 import { type Organization } from './OrganizationList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
@@ -34,12 +35,22 @@ export default function SitesPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/organizations');
+      const response = await fetchWithAuth('/orgs/organizations');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch organizations');
       }
       const data = await response.json();
-      const orgs = data.organizations ?? data ?? [];
+      const orgs = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.organizations)
+          ? data.organizations
+          : Array.isArray(data)
+            ? data
+            : [];
       setOrganizations(orgs);
       if (orgs.length > 0 && !selectedOrgId) {
         setSelectedOrgId(orgs[0].id);
@@ -60,12 +71,23 @@ export default function SitesPage() {
     try {
       setSitesLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/sites?organizationId=${selectedOrgId}`);
+      const response = await fetchWithAuth(`/orgs/sites?organizationId=${selectedOrgId}`);
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch sites');
       }
       const data = await response.json();
-      setSites(data.sites ?? data ?? []);
+      const sites = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.sites)
+          ? data.sites
+          : Array.isArray(data)
+            ? data
+            : [];
+      setSites(sites);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -109,13 +131,12 @@ export default function SitesPage() {
     setSubmitting(true);
     try {
       const url = modalMode === 'edit' && selectedSite
-        ? `/api/sites/${selectedSite.id}`
-        : '/api/sites';
+        ? `/orgs/sites/${selectedSite.id}`
+        : '/orgs/sites';
       const method = modalMode === 'edit' ? 'PUT' : 'POST';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...values,
           organizationId: selectedOrgId
@@ -140,7 +161,7 @@ export default function SitesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/sites/${selectedSite.id}`, {
+      const response = await fetchWithAuth(`/orgs/sites/${selectedSite.id}`, {
         method: 'DELETE'
       });
 

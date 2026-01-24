@@ -5,6 +5,7 @@ import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySc
 import DiscoveryJobList from './DiscoveryJobList';
 import DiscoveredAssetList from './DiscoveredAssetList';
 import NetworkTopologyMap from './NetworkTopologyMap';
+import { fetchWithAuth } from '../../stores/auth';
 
 type DiscoveryTab = 'profiles' | 'jobs' | 'assets' | 'topology';
 
@@ -69,7 +70,7 @@ function parseCronSchedule(cron?: string) {
   const parts = cron.trim().split(/\s+/);
   if (parts.length < 2) return null;
 
-  const [minute, hour, dayOfMonth = '*', _month = '*', dayOfWeek = '*'] = parts;
+  const [minute = '0', hour = '0', dayOfMonth = '*', _month = '*', dayOfWeek = '*'] = parts;
   const safeHour = hour.padStart(2, '0');
   const safeMinute = minute.padStart(2, '0');
   const time = `${safeHour}:${safeMinute}`;
@@ -181,7 +182,7 @@ export default function DiscoveryPage() {
     try {
       setProfilesLoading(true);
       setProfilesError(undefined);
-      const response = await fetch('/api/discovery/profiles');
+      const response = await fetchWithAuth('/discovery/profiles');
       if (!response.ok) {
         throw new Error('Failed to fetch discovery profiles');
       }
@@ -235,13 +236,12 @@ export default function DiscoveryPage() {
       };
 
       const url = editingProfile
-        ? `/api/discovery/profiles/${editingProfile.id}`
-        : '/api/discovery/profiles';
+        ? `/discovery/profiles/${editingProfile.id}`
+        : '/discovery/profiles';
       const method = editingProfile ? 'PATCH' : 'POST';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
@@ -263,7 +263,7 @@ export default function DiscoveryPage() {
     setProfilesError(undefined);
 
     try {
-      const response = await fetch(`/api/discovery/profiles/${profile.id}`, {
+      const response = await fetchWithAuth(`/discovery/profiles/${profile.id}`, {
         method: 'DELETE'
       });
 
@@ -281,9 +281,8 @@ export default function DiscoveryPage() {
     setProfilesError(undefined);
 
     try {
-      const response = await fetch('/api/discovery/scan', {
+      const response = await fetchWithAuth('/discovery/scan', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profileId: profile.id })
       });
 
@@ -312,7 +311,10 @@ export default function DiscoveryPage() {
         <button
           type="button"
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          onClick={() => setActiveTab('profiles')}
+          onClick={() => {
+            setEditingProfile(null);
+            setActiveTab('profiles');
+          }}
         >
           <Plus className="h-4 w-4" />
           New Profile

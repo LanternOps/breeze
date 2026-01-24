@@ -1,7 +1,9 @@
-import { type ChangeEvent, type DragEvent, useEffect, useState } from 'react';
+import { type ChangeEvent, type DragEvent, useCallback, useEffect, useState } from 'react';
 import { FileCode, Globe, Image, Mail, Palette, RefreshCcw, Save } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type BrandingEditorProps = {
+  organizationId?: string;
   onDirty?: () => void;
   onSave?: () => void;
 };
@@ -12,6 +14,19 @@ type StatusMessage = {
 };
 
 type UploadTarget = 'logoLight' | 'logoDark' | 'favicon';
+
+type BrandingData = {
+  organizationName: string;
+  portalName: string;
+  portalUrl: string;
+  supportEmail: string;
+  primaryColor: string;
+  secondaryColor: string;
+  customCss: string;
+  logoLightUrl: string;
+  logoDarkUrl: string;
+  faviconUrl: string;
+};
 
 type SavedBranding = {
   primaryColor: string;
@@ -25,8 +40,8 @@ type SavedBranding = {
   faviconName: string;
 };
 
-const mockBranding = {
-  organizationName: 'Breeze Labs',
+const defaultBranding: BrandingData = {
+  organizationName: '',
   portalName: 'Breeze Portal',
   portalUrl: 'portal.breeze.app',
   supportEmail: 'support@breeze.io',
@@ -173,33 +188,90 @@ function UploadDropzone({
   );
 }
 
-export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps) {
-  const [logoLightPreview, setLogoLightPreview] = useState(mockBranding.logoLightUrl);
-  const [logoDarkPreview, setLogoDarkPreview] = useState(mockBranding.logoDarkUrl);
-  const [faviconPreview, setFaviconPreview] = useState(mockBranding.faviconUrl);
+export default function BrandingEditor({ organizationId, onDirty, onSave }: BrandingEditorProps) {
+  const [branding, setBranding] = useState<BrandingData>(defaultBranding);
+  const [loading, setLoading] = useState(true);
+  const [logoLightPreview, setLogoLightPreview] = useState('');
+  const [logoDarkPreview, setLogoDarkPreview] = useState('');
+  const [faviconPreview, setFaviconPreview] = useState('');
   const [logoLightName, setLogoLightName] = useState('');
   const [logoDarkName, setLogoDarkName] = useState('');
   const [faviconName, setFaviconName] = useState('');
   const [logoLightFile, setLogoLightFile] = useState<File | null>(null);
   const [logoDarkFile, setLogoDarkFile] = useState<File | null>(null);
   const [faviconFile, setFaviconFile] = useState<File | null>(null);
-  const [primaryColor, setPrimaryColor] = useState(mockBranding.primaryColor);
-  const [secondaryColor, setSecondaryColor] = useState(mockBranding.secondaryColor);
-  const [customCss, setCustomCss] = useState(mockBranding.customCss);
+  const [primaryColor, setPrimaryColor] = useState(defaultBranding.primaryColor);
+  const [secondaryColor, setSecondaryColor] = useState(defaultBranding.secondaryColor);
+  const [customCss, setCustomCss] = useState(defaultBranding.customCss);
   const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [savedBranding, setSavedBranding] = useState<SavedBranding>({
-    primaryColor: mockBranding.primaryColor,
-    secondaryColor: mockBranding.secondaryColor,
-    customCss: mockBranding.customCss,
-    logoLightUrl: mockBranding.logoLightUrl,
-    logoDarkUrl: mockBranding.logoDarkUrl,
-    faviconUrl: mockBranding.faviconUrl,
+    primaryColor: defaultBranding.primaryColor,
+    secondaryColor: defaultBranding.secondaryColor,
+    customCss: defaultBranding.customCss,
+    logoLightUrl: '',
+    logoDarkUrl: '',
+    faviconUrl: '',
     logoLightName: '',
     logoDarkName: '',
     faviconName: ''
   });
+
+  const fetchBranding = useCallback(async () => {
+    if (!organizationId) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const response = await fetchWithAuth(`/orgs/organizations/${organizationId}/branding`);
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        if (response.status === 404) {
+          // No branding set yet, use defaults
+          setLoading(false);
+          return;
+        }
+        throw new Error('Failed to fetch branding');
+      }
+      const data = await response.json();
+      const brandingData = { ...defaultBranding, ...data };
+      setBranding(brandingData);
+      setPrimaryColor(brandingData.primaryColor);
+      setSecondaryColor(brandingData.secondaryColor);
+      setCustomCss(brandingData.customCss);
+      setLogoLightPreview(brandingData.logoLightUrl || '');
+      setLogoDarkPreview(brandingData.logoDarkUrl || '');
+      setFaviconPreview(brandingData.faviconUrl || '');
+      setSavedBranding({
+        primaryColor: brandingData.primaryColor,
+        secondaryColor: brandingData.secondaryColor,
+        customCss: brandingData.customCss,
+        logoLightUrl: brandingData.logoLightUrl || '',
+        logoDarkUrl: brandingData.logoDarkUrl || '',
+        faviconUrl: brandingData.faviconUrl || '',
+        logoLightName: '',
+        logoDarkName: '',
+        faviconName: ''
+      });
+    } catch (error) {
+      setStatusMessage({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Failed to load branding'
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId]);
+
+  useEffect(() => {
+    fetchBranding();
+  }, [fetchBranding]);
 
   useEffect(() => {
     if (!logoLightPreview || !logoLightPreview.startsWith('blob:')) {
@@ -249,32 +321,53 @@ export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps)
   };
 
   const handleSave = async () => {
+    if (!organizationId) {
+      setStatusMessage({ type: 'error', message: 'No organization selected' });
+      return;
+    }
+
     setIsSaving(true);
     setStatusMessage(null);
 
     try {
-      const formData = new FormData();
-      formData.append('primaryColor', primaryColor);
-      formData.append('secondaryColor', secondaryColor);
-      formData.append('customCss', customCss);
+      // First, save the branding settings (colors, CSS)
+      const brandingPayload = {
+        primaryColor,
+        secondaryColor,
+        customCss
+      };
 
-      if (logoLightFile) {
-        formData.append('logoLight', logoLightFile);
-      }
-      if (logoDarkFile) {
-        formData.append('logoDark', logoDarkFile);
-      }
-      if (faviconFile) {
-        formData.append('favicon', faviconFile);
-      }
-
-      const response = await fetch('/api/settings/branding', {
-        method: 'POST',
-        body: formData
+      const response = await fetchWithAuth(`/orgs/organizations/${organizationId}/branding`, {
+        method: 'PUT',
+        body: JSON.stringify(brandingPayload)
       });
 
       if (!response.ok) {
         throw new Error('Failed to save branding');
+      }
+
+      // Handle file uploads if any files were selected
+      if (logoLightFile || logoDarkFile || faviconFile) {
+        const formData = new FormData();
+        if (logoLightFile) {
+          formData.append('logoLight', logoLightFile);
+        }
+        if (logoDarkFile) {
+          formData.append('logoDark', logoDarkFile);
+        }
+        if (faviconFile) {
+          formData.append('favicon', faviconFile);
+        }
+
+        const uploadResponse = await fetchWithAuth(`/orgs/organizations/${organizationId}/branding/upload`, {
+          method: 'POST',
+          body: formData,
+          headers: {} // Let browser set content-type for FormData
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error('Failed to upload branding assets');
+        }
       }
 
       setSavedBranding({
@@ -288,6 +381,9 @@ export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps)
         logoDarkName,
         faviconName
       });
+      setLogoLightFile(null);
+      setLogoDarkFile(null);
+      setFaviconFile(null);
       setHasChanges(false);
       setStatusMessage({ type: 'success', message: 'Branding settings saved.' });
       onSave?.();
@@ -319,13 +415,26 @@ export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps)
     onSave?.();
   };
 
-  const resolvedPrimary = isValidHex(primaryColor) ? primaryColor : mockBranding.primaryColor;
-  const resolvedSecondary = isValidHex(secondaryColor) ? secondaryColor : mockBranding.secondaryColor;
-  const primarySwatch = normalizeHex(resolvedPrimary) ?? mockBranding.primaryColor;
-  const secondarySwatch = normalizeHex(resolvedSecondary) ?? mockBranding.secondaryColor;
+  const resolvedPrimary = isValidHex(primaryColor) ? primaryColor : defaultBranding.primaryColor;
+  const resolvedSecondary = isValidHex(secondaryColor) ? secondaryColor : defaultBranding.secondaryColor;
+  const primarySwatch = normalizeHex(resolvedPrimary) ?? defaultBranding.primaryColor;
+  const secondarySwatch = normalizeHex(resolvedSecondary) ?? defaultBranding.secondaryColor;
   const primaryText = getContrastColor(resolvedPrimary, '#f8fafc');
   const secondaryText = getContrastColor(resolvedSecondary, '#0f172a');
-  const initials = getInitials(mockBranding.organizationName);
+  const initials = getInitials(branding.organizationName || 'Breeze');
+
+  if (loading) {
+    return (
+      <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
+            <p className="mt-4 text-sm text-muted-foreground">Loading branding settings...</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
@@ -333,7 +442,7 @@ export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps)
         <div>
           <h2 className="text-lg font-semibold">Branding editor</h2>
           <p className="text-sm text-muted-foreground">
-            Customize logos, colors, and styling for {mockBranding.organizationName}.
+            Customize logos, colors, and styling for {branding.organizationName}.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -524,7 +633,7 @@ export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps)
                       </div>
                     )}
                     <div>
-                      <p className="text-sm font-semibold">{mockBranding.organizationName}</p>
+                      <p className="text-sm font-semibold">{branding.organizationName}</p>
                       <p className="text-xs opacity-80">Weekly activity summary</p>
                     </div>
                   </div>
@@ -544,7 +653,7 @@ export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps)
                       View dashboard
                     </button>
                     <span className="text-xs text-muted-foreground">
-                      Questions? {mockBranding.supportEmail}
+                      Questions? {branding.supportEmail}
                     </span>
                   </div>
                 </div>
@@ -586,8 +695,8 @@ export default function BrandingEditor({ onDirty, onSave }: BrandingEditorProps)
                         </div>
                       )}
                       <div>
-                        <p className="text-sm font-semibold">{mockBranding.portalName}</p>
-                        <p className="text-xs text-muted-foreground">{mockBranding.portalUrl}</p>
+                        <p className="text-sm font-semibold">{branding.portalName}</p>
+                        <p className="text-xs text-muted-foreground">{branding.portalUrl}</p>
                       </div>
                     </div>
                   </div>

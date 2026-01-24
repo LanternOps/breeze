@@ -6,6 +6,7 @@ import QueryBuilder from './QueryBuilder';
 import CapacityForecast, { type ForecastPoint, type Thresholds } from './CapacityForecast';
 import SLAComplianceCard from './SLAComplianceCard';
 import ExecutiveSummary, { type ExecutiveSummaryProps } from './ExecutiveSummary';
+import { fetchWithAuth } from '../../stores/auth';
 
 const dashboardOptions = [
   { value: 'operations', label: 'Operations Overview' },
@@ -316,7 +317,7 @@ const normalizeSla = (raw: unknown): SlaSummary => {
 };
 
 const fetchJson = async (url: string) => {
-  const response = await fetch(url);
+  const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
@@ -387,9 +388,9 @@ export default function AnalyticsPage() {
       await Promise.all([
         (async () => {
           try {
-            let metricsData = await fetchJson(withQuery('/api/metrics'));
+            let metricsData = await fetchJson(withQuery('/metrics'));
             if (!metricsData) {
-              metricsData = await fetchJson(withQuery('/api/metrics/json'));
+              metricsData = await fetchJson(withQuery('/metrics/json'));
             }
             const metricsPayload = getRecord(metricsData);
             const dataPayload = isRecord(metricsPayload.data) ? metricsPayload.data : metricsPayload;
@@ -420,7 +421,7 @@ export default function AnalyticsPage() {
         })(),
         (async () => {
           try {
-            const analyticsData = await fetchJson(withQuery('/api/analytics/executive-summary'));
+            const analyticsData = await fetchJson(withQuery('/analytics/executive-summary'));
             const analyticsPayload = getRecord(analyticsData);
             const dataPayload = isRecord(analyticsPayload.data) ? analyticsPayload.data : analyticsPayload;
             analyticsRecord = getRecord(dataPayload);
@@ -431,7 +432,7 @@ export default function AnalyticsPage() {
         })(),
         (async () => {
           try {
-            const trendsData = await fetchJson(withQuery('/api/metrics/trends'));
+            const trendsData = await fetchJson(withQuery('/metrics/trends'));
             setPerformanceData(normalizePerformanceData(trendsData));
           } catch (err) {
             errors.push('performance');
@@ -440,8 +441,8 @@ export default function AnalyticsPage() {
         })(),
         (async () => {
           try {
-            const osData = await fetchJson(withQuery('/api/analytics/os-distribution'));
-            const fallback = osData ?? await fetchJson(withQuery('/api/devices/stats'));
+            const osData = await fetchJson(withQuery('/analytics/os-distribution'));
+            const fallback = osData ?? await fetchJson(withQuery('/devices/stats'));
             setOsDistribution(normalizeOsDistribution(fallback));
           } catch (err) {
             errors.push('os');
@@ -450,7 +451,7 @@ export default function AnalyticsPage() {
         })(),
         (async () => {
           try {
-            const alertData = await fetchJson(withQuery('/api/alerts/stats'));
+            const alertData = await fetchJson(withQuery('/alerts/summary'));
             const { rows, summary } = buildAlertStats(alertData);
             setAlertRows(rows);
             alertSummary = summary;
@@ -461,9 +462,9 @@ export default function AnalyticsPage() {
         })(),
         (async () => {
           try {
-            let complianceData = await fetchJson(withQuery('/api/policies/compliance/stats'));
+            let complianceData = await fetchJson(withQuery('/policies/compliance/stats'));
             if (!complianceData) {
-              complianceData = await fetchJson(withQuery('/api/policies/compliance/summary'));
+              complianceData = await fetchJson(withQuery('/policies/compliance/summary'));
             }
             setComplianceStats(normalizeComplianceStats(complianceData));
           } catch (err) {
@@ -473,7 +474,7 @@ export default function AnalyticsPage() {
         })(),
         (async () => {
           try {
-            const capacityData = await fetchJson(withQuery('/api/analytics/capacity'));
+            const capacityData = await fetchJson(withQuery('/analytics/capacity'));
             setCapacityForecast(normalizeCapacity(capacityData));
           } catch (err) {
             errors.push('capacity');
@@ -482,7 +483,7 @@ export default function AnalyticsPage() {
         })(),
         (async () => {
           try {
-            const slaData = await fetchJson(withQuery('/api/analytics/sla'));
+            const slaData = await fetchJson(withQuery('/analytics/sla'));
             setSlaSummary(normalizeSla(slaData));
           } catch (err) {
             errors.push('sla');

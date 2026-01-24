@@ -1,41 +1,61 @@
 import { useState } from 'react';
 import { Lock, Save, ShieldCheck, ShieldOff, Timer } from 'lucide-react';
 
-type OrgSecuritySettingsProps = {
-  onDirty?: () => void;
-  onSave?: () => void;
+type SecurityData = {
+  minLength?: number;
+  complexity?: string;
+  expirationDays?: number;
+  requireMfa?: boolean;
+  allowedMethods?: { totp: boolean; sms: boolean };
+  sessionTimeout?: number;
+  maxSessions?: number;
+  ipAllowlist?: string;
 };
 
-const mockSecuritySettings = {
+type OrgSecuritySettingsProps = {
+  security?: SecurityData;
+  onDirty?: () => void;
+  onSave?: (data: SecurityData) => void;
+};
+
+const defaultSecurity: SecurityData = {
   minLength: 12,
   complexity: 'standard',
   expirationDays: 90,
   requireMfa: true,
-  allowedMethods: {
-    totp: true,
-    sms: false
-  },
+  allowedMethods: { totp: true, sms: false },
   sessionTimeout: 60,
   maxSessions: 3,
-  ipAllowlist: '203.0.113.10\n198.51.100.42'
+  ipAllowlist: ''
 };
 
-export default function OrgSecuritySettings({ onDirty, onSave }: OrgSecuritySettingsProps) {
-  const [minLength, setMinLength] = useState(mockSecuritySettings.minLength);
-  const [complexity, setComplexity] = useState(mockSecuritySettings.complexity);
-  const [expirationDays, setExpirationDays] = useState(mockSecuritySettings.expirationDays);
-  const [requireMfa, setRequireMfa] = useState(mockSecuritySettings.requireMfa);
-  const [allowedMethods, setAllowedMethods] = useState(mockSecuritySettings.allowedMethods);
-  const [sessionTimeout, setSessionTimeout] = useState(mockSecuritySettings.sessionTimeout);
-  const [maxSessions, setMaxSessions] = useState(mockSecuritySettings.maxSessions);
-  const [ipAllowlist, setIpAllowlist] = useState(mockSecuritySettings.ipAllowlist);
+export default function OrgSecuritySettings({ security, onDirty, onSave }: OrgSecuritySettingsProps) {
+  const initialData = { ...defaultSecurity, ...security };
+  const [minLength, setMinLength] = useState(initialData.minLength || 12);
+  const [complexity, setComplexity] = useState(initialData.complexity || 'standard');
+  const [expirationDays, setExpirationDays] = useState(initialData.expirationDays || 90);
+  const [requireMfa, setRequireMfa] = useState(initialData.requireMfa ?? true);
+  const [allowedMethods, setAllowedMethods] = useState(initialData.allowedMethods || { totp: true, sms: false });
+  const [sessionTimeout, setSessionTimeout] = useState(initialData.sessionTimeout || 60);
+  const [maxSessions, setMaxSessions] = useState(initialData.maxSessions || 3);
+  const [ipAllowlist, setIpAllowlist] = useState(initialData.ipAllowlist || '');
 
   const markDirty = () => {
     onDirty?.();
   };
 
   const handleSave = () => {
-    onSave?.();
+    const data: SecurityData = {
+      minLength,
+      complexity,
+      expirationDays,
+      requireMfa,
+      allowedMethods,
+      sessionTimeout,
+      maxSessions,
+      ipAllowlist
+    };
+    onSave?.(data);
   };
 
   return (

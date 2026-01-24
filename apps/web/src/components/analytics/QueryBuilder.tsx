@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Loader2, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type MetricType = 'performance' | 'availability' | 'security' | 'usage';
 
@@ -12,9 +14,16 @@ type QueryState = {
   endDate?: string;
 };
 
+type QueryResult = {
+  query: QueryState;
+  series: Array<Record<string, unknown>>;
+};
+
 type QueryBuilderProps = {
   value?: QueryState;
   onChange?: (value: QueryState) => void;
+  onQueryResult?: (result: QueryResult) => void;
+  deviceIds?: string[];
   className?: string;
 };
 
@@ -55,8 +64,35 @@ const defaultState: QueryState = {
   timeRange: '24h'
 };
 
-export default function QueryBuilder({ value, onChange, className }: QueryBuilderProps) {
+const getDateRange = (timeRange: QueryState['timeRange'], startDate?: string, endDate?: string) => {
+  const now = new Date();
+  if (timeRange === 'custom' && startDate && endDate) {
+    return { startTime: startDate, endTime: endDate };
+  }
+  const end = now.toISOString();
+  let start: Date;
+  switch (timeRange) {
+    case '1h':
+      start = new Date(now.getTime() - 60 * 60 * 1000);
+      break;
+    case '24h':
+      start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      break;
+    case '7d':
+      start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case '30d':
+    default:
+      start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      break;
+  }
+  return { startTime: start.toISOString(), endTime: end };
+};
+
+export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds, className }: QueryBuilderProps) {
   const [state, setState] = useState<QueryState>(value ?? defaultState);
+  const [executing, setExecuting] = useState(false);
+  const [error, setError] = useState<string>();
 
   const metricOptions = useMemo(() => metricNamesByType[state.metricType], [state.metricType]);
 
@@ -66,9 +102,50 @@ export default function QueryBuilder({ value, onChange, className }: QueryBuilde
 
   useEffect(() => {
     if (!metricOptions.includes(state.metricName)) {
-      setState(prev => ({ ...prev, metricName: metricOptions[0] }));
+      const firstMetric = metricOptions[0];
+      if (firstMetric) {
+        setState(prev => ({ ...prev, metricName: firstMetric }));
+      }
     }
   }, [metricOptions, state.metricName]);
+
+  const executeQuery = useCallback(async () => {
+    if (!deviceIds || deviceIds.length === 0) {
+      setError('No devices selected for query');
+      return;
+    }
+
+    setExecuting(true);
+    setError(undefined);
+
+    const { startTime, endTime } = getDateRange(state.timeRange, state.startDate, state.endDate);
+
+    try {
+      const response = await fetchWithAuth('/api/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds,
+          metricTypes: [state.metricName],
+          startTime,
+          endTime,
+          aggregation: state.aggregation,
+          interval: state.timeRange === '1h' ? 'minute' : state.timeRange === '24h' ? 'hour' : 'day'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      onQueryResult?.({ query: state, series: result.series || [] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to execute query');
+    } finally {
+      setExecuting(false);
+    }
+  }, [deviceIds, state, onQueryResult]);
 
   return (
     <div className={cn('rounded-lg border bg-card p-4 shadow-sm', className)}>
@@ -156,8 +233,26 @@ export default function QueryBuilder({ value, onChange, className }: QueryBuilde
           </label>
         </div>
       )}
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      {onQueryResult && (
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={executeQuery}
+            disabled={executing}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            {executing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            {executing ? 'Running...' : 'Run Query'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-export type { QueryBuilderProps, QueryState, MetricType };
+export type { QueryBuilderProps, QueryState, MetricType, QueryResult };

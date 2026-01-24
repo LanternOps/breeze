@@ -4,6 +4,7 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
+  Linking,
 } from 'react-native';
 import {
   Text,
@@ -14,12 +15,20 @@ import {
   Divider,
   Button,
   Avatar,
+  Portal,
+  Modal,
+  TextInput,
+  HelperText,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAppDispatch, useAppSelector } from '../../store';
 import { logoutAsync } from '../../store/authSlice';
 import { checkBiometricAvailability, setBiometricEnabled, isBiometricEnabled } from '../../services/biometrics';
+import { changePassword } from '../../services/api';
+
+const TERMS_URL = 'https://breeze.io/terms';
+const PRIVACY_URL = 'https://breeze.io/privacy';
 
 export function SettingsScreen() {
   const theme = useTheme();
@@ -29,6 +38,16 @@ export function SettingsScreen() {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricEnabled, setBiometricEnabledState] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+
+  // Password change state
+  const [passwordModalVisible, setPasswordModalVisible] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   useEffect(() => {
     checkBiometrics();
@@ -72,6 +91,100 @@ export function SettingsScreen() {
       .join('')
       .toUpperCase()
       .slice(0, 2);
+  };
+
+  // Password change handlers
+  const openPasswordModal = () => {
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordModalVisible(true);
+  };
+
+  const closePasswordModal = () => {
+    setPasswordModalVisible(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const validatePassword = () => {
+    if (!currentPassword) {
+      return 'Current password is required';
+    }
+    if (!newPassword) {
+      return 'New password is required';
+    }
+    if (newPassword.length < 8) {
+      return 'New password must be at least 8 characters';
+    }
+    // Match server-side password strength requirements
+    if (!/[A-Z]/.test(newPassword)) {
+      return 'New password must contain at least one uppercase letter';
+    }
+    if (!/[a-z]/.test(newPassword)) {
+      return 'New password must contain at least one lowercase letter';
+    }
+    if (!/[0-9]/.test(newPassword)) {
+      return 'New password must contain at least one number';
+    }
+    if (newPassword !== confirmPassword) {
+      return 'Passwords do not match';
+    }
+    if (currentPassword === newPassword) {
+      return 'New password must be different from current password';
+    }
+    return null;
+  };
+
+  const handleChangePassword = async () => {
+    const error = validatePassword();
+    if (error) {
+      Alert.alert('Validation Error', error);
+      return;
+    }
+
+    setPasswordLoading(true);
+    try {
+      await changePassword(currentPassword, newPassword);
+      Alert.alert(
+        'Password Changed',
+        'Your password has been updated successfully.',
+        [{ text: 'OK', onPress: closePasswordModal }]
+      );
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to change password';
+      Alert.alert('Error', errorMessage);
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
+  // URL handlers
+  const openTermsOfService = async () => {
+    try {
+      const supported = await Linking.canOpenURL(TERMS_URL);
+      if (supported) {
+        await Linking.openURL(TERMS_URL);
+      } else {
+        Alert.alert('Error', 'Unable to open Terms of Service');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to open Terms of Service');
+    }
+  };
+
+  const openPrivacyPolicy = async () => {
+    try {
+      const supported = await Linking.canOpenURL(PRIVACY_URL);
+      if (supported) {
+        await Linking.openURL(PRIVACY_URL);
+      } else {
+        Alert.alert('Error', 'Unable to open Privacy Policy');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to open Privacy Policy');
+    }
   };
 
   return (
@@ -124,7 +237,7 @@ export function SettingsScreen() {
             description="Update your account password"
             left={(props) => <List.Icon {...props} icon="lock" />}
             right={(props) => <List.Icon {...props} icon="chevron-right" />}
-            onPress={() => {/* TODO: Implement password change */}}
+            onPress={openPasswordModal}
           />
         </Surface>
 
@@ -175,7 +288,7 @@ export function SettingsScreen() {
             title="Terms of Service"
             left={(props) => <List.Icon {...props} icon="file-document" />}
             right={(props) => <List.Icon {...props} icon="chevron-right" />}
-            onPress={() => {/* TODO: Open terms */}}
+            onPress={openTermsOfService}
           />
           <Divider />
 
@@ -183,7 +296,7 @@ export function SettingsScreen() {
             title="Privacy Policy"
             left={(props) => <List.Icon {...props} icon="shield-account" />}
             right={(props) => <List.Icon {...props} icon="chevron-right" />}
-            onPress={() => {/* TODO: Open privacy policy */}}
+            onPress={openPrivacyPolicy}
           />
         </Surface>
 
@@ -205,6 +318,91 @@ export function SettingsScreen() {
           Breeze RMM - Remote Monitoring & Management
         </Text>
       </ScrollView>
+
+      <Portal>
+        <Modal
+          visible={passwordModalVisible}
+          onDismiss={closePasswordModal}
+          contentContainerStyle={[styles.modalContent, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleLarge" style={styles.modalTitle}>
+            Change Password
+          </Text>
+          
+          <TextInput
+            label="Current Password"
+            value={currentPassword}
+            onChangeText={setCurrentPassword}
+            secureTextEntry={!showCurrentPassword}
+            mode="outlined"
+            style={styles.input}
+            right={
+              <TextInput.Icon
+                icon={showCurrentPassword ? 'eye-off' : 'eye'}
+                onPress={() => setShowCurrentPassword(!showCurrentPassword)}
+              />
+            }
+          />
+          
+          <TextInput
+            label="New Password"
+            value={newPassword}
+            onChangeText={setNewPassword}
+            secureTextEntry={!showNewPassword}
+            mode="outlined"
+            style={styles.input}
+            right={
+              <TextInput.Icon
+                icon={showNewPassword ? 'eye-off' : 'eye'}
+                onPress={() => setShowNewPassword(!showNewPassword)}
+              />
+            }
+          />
+          <HelperText type="info" visible={true}>
+            Password must be at least 8 characters
+          </HelperText>
+          
+          <TextInput
+            label="Confirm New Password"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry={!showConfirmPassword}
+            mode="outlined"
+            style={styles.input}
+            right={
+              <TextInput.Icon
+                icon={showConfirmPassword ? 'eye-off' : 'eye'}
+                onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+              />
+            }
+          />
+          {confirmPassword && newPassword !== confirmPassword && (
+            <HelperText type="error" visible={true}>
+              Passwords do not match
+            </HelperText>
+          )}
+          
+          <View style={styles.modalButtons}>
+            <Button
+              mode="outlined"
+              onPress={closePasswordModal}
+              style={styles.modalButton}
+              disabled={passwordLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              mode="contained"
+              onPress={handleChangePassword}
+              style={styles.modalButton}
+              loading={passwordLoading}
+              disabled={passwordLoading}
+            >
+              Change Password
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
     </SafeAreaView>
   );
 }
@@ -251,5 +449,26 @@ const styles = StyleSheet.create({
   footer: {
     textAlign: 'center',
     marginBottom: 16,
+  },
+  modalContent: {
+    margin: 20,
+    borderRadius: 12,
+    padding: 20,
+  },
+  modalTitle: {
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  input: {
+    marginBottom: 8,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+    marginTop: 16,
+  },
+  modalButton: {
+    minWidth: 100,
   },
 });

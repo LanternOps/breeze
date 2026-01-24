@@ -3,11 +3,13 @@ import {
   ChevronRight,
   Folder,
   FolderPlus,
+  Loader2,
   MoreHorizontal,
   Pencil,
   Trash2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ScriptCategory = {
   id: string;
@@ -34,43 +36,6 @@ type ContextMenuState = {
   categoryId: string;
 } | null;
 
-const mockCategories: ScriptCategory[] = [
-  {
-    id: 'cat-maintenance',
-    name: 'Maintenance',
-    children: [
-      { id: 'cat-disk', name: 'Disk Cleanup' },
-      { id: 'cat-updates', name: 'OS Updates' }
-    ]
-  },
-  {
-    id: 'cat-security',
-    name: 'Security',
-    children: [
-      { id: 'cat-av', name: 'Antivirus' },
-      { id: 'cat-firewall', name: 'Firewall' },
-      { id: 'cat-access', name: 'Access Controls' }
-    ]
-  },
-  {
-    id: 'cat-automation',
-    name: 'Automation',
-    children: [
-      { id: 'cat-onboarding', name: 'Onboarding' },
-      { id: 'cat-offboarding', name: 'Offboarding' }
-    ]
-  }
-];
-
-const mockScripts: ScriptItem[] = [
-  { id: 'script-1', name: 'Clear Temp Files', categoryId: 'cat-disk', status: 'active' },
-  { id: 'script-2', name: 'Rotate Logs', categoryId: 'cat-disk', status: 'draft' },
-  { id: 'script-3', name: 'Install Updates', categoryId: 'cat-updates', status: 'active' },
-  { id: 'script-4', name: 'Check Firewall Rules', categoryId: 'cat-firewall', status: 'active' },
-  { id: 'script-5', name: 'Endpoint Scan', categoryId: 'cat-av', status: 'archived' },
-  { id: 'script-6', name: 'Provision Laptop', categoryId: 'cat-onboarding', status: 'active' }
-];
-
 const statusStyles: Record<ScriptItem['status'], string> = {
   active: 'bg-green-500/15 text-green-700',
   draft: 'bg-yellow-500/15 text-yellow-700',
@@ -83,15 +48,19 @@ const createId = (prefix: string = 'cat') => {
   return `${prefix}-${idCounter}`;
 };
 
-const findCategoryName = (nodes: ScriptCategory[], id: string): string | undefined => {
+const findCategory = (nodes: ScriptCategory[], id: string): ScriptCategory | undefined => {
   for (const node of nodes) {
-    if (node.id === id) return node.name;
+    if (node.id === id) return node;
     if (node.children) {
-      const found = findCategoryName(node.children, id);
+      const found = findCategory(node.children, id);
       if (found) return found;
     }
   }
   return undefined;
+};
+
+const findCategoryName = (nodes: ScriptCategory[], id: string): string | undefined => {
+  return findCategory(nodes, id)?.name;
 };
 
 const collectDescendantIds = (nodes: ScriptCategory[], id: string): string[] => {
@@ -152,7 +121,9 @@ const reorderCategories = (nodes: ScriptCategory[], dragId: string, targetId: st
   if (dragIndex !== -1 && targetIndex !== -1) {
     const next = [...nodes];
     const [dragged] = next.splice(dragIndex, 1);
-    next.splice(targetIndex, 0, dragged);
+    if (dragged) {
+      next.splice(targetIndex, 0, dragged);
+    }
     return next;
   }
 
@@ -162,15 +133,33 @@ const reorderCategories = (nodes: ScriptCategory[], dragId: string, targetId: st
   }));
 };
 
+// Build category tree from flat script categories
+function buildCategoryTree(scripts: Array<{ category?: string | null }>): ScriptCategory[] {
+  const categoryMap = new Map<string, ScriptCategory>();
+
+  scripts.forEach(script => {
+    if (script.category && !categoryMap.has(script.category)) {
+      categoryMap.set(script.category, {
+        id: `cat-${script.category.toLowerCase().replace(/\s+/g, '-')}`,
+        name: script.category,
+        children: []
+      });
+    }
+  });
+
+  return Array.from(categoryMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export default function ScriptCategoryTree({
   categories: externalCategories,
   scripts: externalScripts,
   onSelectCategory
 }: ScriptCategoryTreeProps) {
-  const [internalCategories, setInternalCategories] = useState<ScriptCategory[]>(mockCategories);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(
-    new Set(mockCategories.map(category => category.id))
-  );
+  const [internalCategories, setInternalCategories] = useState<ScriptCategory[]>([]);
+  const [scripts, setScripts] = useState<ScriptItem[]>(externalScripts ?? []);
+  const [loading, setLoading] = useState(!externalCategories && !externalScripts);
+  const [error, setError] = useState<string>();
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -180,9 +169,60 @@ export default function ScriptCategoryTree({
   const [newCategoryParentId, setNewCategoryParentId] = useState<string | null>(null);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const categories = externalCategories ?? internalCategories;
-  const scripts = externalScripts ?? mockScripts;
+
+  const fetchData = useCallback(async () => {
+    if (externalCategories && externalScripts) return;
+
+    try {
+      setLoading(true);
+      setError(undefined);
+
+      const response = await fetchWithAuth('/scripts?includeSystem=true');
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        throw new Error('Failed to fetch scripts');
+      }
+
+      const data = await response.json();
+      const scriptList = data.data ?? data.scripts ?? (Array.isArray(data) ? data : []);
+
+      // Build categories from script data
+      const categoryTree = buildCategoryTree(scriptList);
+      setInternalCategories(categoryTree);
+      setExpandedIds(new Set(categoryTree.map(cat => cat.id)));
+
+      // Build script items
+      const scriptItems: ScriptItem[] = scriptList.map((script: {
+        id: string;
+        name: string;
+        category?: string | null;
+        status?: string;
+      }) => ({
+        id: script.id,
+        name: script.name,
+        categoryId: script.category
+          ? `cat-${script.category.toLowerCase().replace(/\s+/g, '-')}`
+          : 'uncategorized',
+        status: (script.status as ScriptItem['status']) || 'active'
+      }));
+
+      setScripts(scriptItems);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, [externalCategories, externalScripts]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -236,15 +276,43 @@ export default function ScriptCategoryTree({
     onSelectCategory?.(id);
   };
 
-  const openRename = (id: string) => {
-    setRenameValue(findCategoryName(categories, id) ?? '');
-    setRenameTargetId(id);
+  const openRename = (category: ScriptCategory) => {
+    setRenameValue(category.name);
+    setRenameTargetId(category.id);
   };
 
-  const handleRename = () => {
+  const handleRename = async () => {
     if (!renameTargetId || renameValue.trim().length === 0) return;
-    setCategories(prev => updateCategoryName(prev, renameTargetId, renameValue.trim()));
-    setRenameTargetId(null);
+
+    setSaving(true);
+    try {
+      // Note: When a categories API exists, this would PUT to /scripts/categories/:id
+      // For now, we update the category name locally
+      setCategories(prev => updateCategoryName(prev, renameTargetId, renameValue.trim()));
+
+      // Update scripts that have this category to use the new name
+      const oldCategoryName = findCategoryName(categories, renameTargetId);
+      if (oldCategoryName) {
+        // Update scripts with the old category to use the new name
+        const scriptsToUpdate = scripts.filter(s => s.categoryId === renameTargetId);
+        for (const script of scriptsToUpdate) {
+          try {
+            await fetchWithAuth(`/scripts/${script.id}`, {
+              method: 'PUT',
+              body: JSON.stringify({ category: renameValue.trim() })
+            });
+          } catch {
+            console.warn(`Failed to update category for script ${script.id}`);
+          }
+        }
+      }
+
+      setRenameTargetId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to rename category');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleAddSubcategory = () => {
@@ -347,7 +415,7 @@ export default function ScriptCategoryTree({
           <button
             type="button"
             onClick={() => {
-              openRename(category.id);
+              openRename(category);
             }}
             className="opacity-0 transition group-hover:opacity-100"
           >
@@ -362,6 +430,36 @@ export default function ScriptCategoryTree({
       </div>
     );
   };
+
+  if (loading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
+            <p className="mt-4 text-sm text-muted-foreground">Loading categories...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && categories.length === 0) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+        <button
+          type="button"
+          onClick={fetchData}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -382,8 +480,20 @@ export default function ScriptCategoryTree({
             </button>
           </div>
 
+          {error && (
+            <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
           <div className="mt-4 space-y-2">
-            {categories.map(category => renderCategory(category))}
+            {categories.length === 0 ? (
+              <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                No categories found. Create one to get started.
+              </div>
+            ) : (
+              categories.map(category => renderCategory(category))
+            )}
           </div>
         </div>
 
@@ -395,29 +505,35 @@ export default function ScriptCategoryTree({
                 ? `Scripts tagged under ${selectedCategoryName} and its subcategories`
                 : 'Select a category to highlight its scripts.'}
             </p>
-            <div className="mt-4 space-y-2">
-              {scripts.map(script => {
-                const isHighlighted = selectedCategoryId
-                  ? highlightedCategoryIds.has(script.categoryId)
-                  : false;
-                return (
-                  <div
-                    key={script.id}
-                    className={cn(
-                      'flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm transition',
-                      isHighlighted && 'border-primary/40 bg-primary/5'
-                    )}
-                  >
-                    <div>
-                      <p className="font-medium">{script.name}</p>
-                      <p className="text-xs text-muted-foreground">ID: {script.id}</p>
+            <div className="mt-4 space-y-2 max-h-80 overflow-y-auto">
+              {scripts.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+                  No scripts found.
+                </div>
+              ) : (
+                scripts.map(script => {
+                  const isHighlighted = selectedCategoryId
+                    ? highlightedCategoryIds.has(script.categoryId)
+                    : false;
+                  return (
+                    <div
+                      key={script.id}
+                      className={cn(
+                        'flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm transition',
+                        isHighlighted && 'border-primary/40 bg-primary/5'
+                      )}
+                    >
+                      <div>
+                        <p className="font-medium">{script.name}</p>
+                        <p className="text-xs text-muted-foreground">ID: {script.id}</p>
+                      </div>
+                      <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', statusStyles[script.status])}>
+                        {script.status}
+                      </span>
                     </div>
-                    <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', statusStyles[script.status])}>
-                      {script.status}
-                    </span>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
@@ -431,7 +547,10 @@ export default function ScriptCategoryTree({
           <button
             type="button"
             onClick={() => {
-              openRename(contextMenu.categoryId);
+              const category = findCategory(categories, contextMenu.categoryId);
+              if (category) {
+                openRename(category);
+              }
               setContextMenu(null);
             }}
             className="flex w-full items-center gap-2 px-3 py-2 hover:bg-muted"
@@ -478,15 +597,18 @@ export default function ScriptCategoryTree({
               <button
                 type="button"
                 onClick={() => setRenameTargetId(null)}
-                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+                disabled={saving}
+                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleRename}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+                disabled={saving}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
               >
+                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
                 Save
               </button>
             </div>

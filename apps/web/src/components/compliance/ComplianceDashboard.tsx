@@ -25,6 +25,7 @@ import {
   YAxis
 } from 'recharts';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type FrameworkOption = {
   id: string;
@@ -425,8 +426,8 @@ export default function ComplianceDashboard() {
       setError(undefined);
       const query = buildQuery(selectedFramework);
       const [statusResponse, controlsResponse] = await Promise.all([
-        fetch(`/api/compliance/status${query}`),
-        fetch(`/api/compliance/controls${query}`)
+        fetchWithAuth(`/policies/compliance/status${query}`),
+        fetchWithAuth(`/policies/compliance/controls${query}`)
       ]);
 
       if (!statusResponse.ok) {
@@ -458,7 +459,8 @@ export default function ComplianceDashboard() {
       return;
     }
 
-    setSelectedControlId(prev => (prev && controls.some(control => control.id === prev) ? prev : controls[0].id));
+    const firstControl = controls[0];
+    setSelectedControlId(prev => (prev && controls.some(control => control.id === prev) ? prev : firstControl?.id ?? null));
   }, [controls]);
 
   const frameworkLabel = useMemo(
@@ -507,15 +509,25 @@ export default function ComplianceDashboard() {
     return map;
   }, [controls]);
 
-  const handleExport = () => {
+  const handleExport = async () => {
     const params = new URLSearchParams({
       framework,
       format: 'pdf',
       includeEvidence: 'true'
     });
-    const url = `/api/compliance/report?${params.toString()}`;
-    if (typeof window !== 'undefined') {
-      window.open(url, '_blank', 'noopener');
+    try {
+      const response = await fetchWithAuth(`/policies/compliance/report?${params.toString()}`);
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `compliance-report-${framework}.pdf`;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      console.error('Failed to export report:', err);
     }
   };
 

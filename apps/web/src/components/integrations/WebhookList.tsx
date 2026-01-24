@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pencil, Play, Power, Plus, Trash2 } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type WebhookStatus = 'active' | 'disabled' | 'failing';
 
@@ -12,36 +13,6 @@ export type WebhookItem = {
   lastTriggered: string;
   successRate: number;
 };
-
-const mockWebhooks: WebhookItem[] = [
-  {
-    id: 'whk-ops',
-    name: 'Ops Pager',
-    url: 'https://hooks.ops-pager.io/breeze/events',
-    events: ['device.offline', 'ticket.created', 'backup.failed'],
-    status: 'active',
-    lastTriggered: '5m ago',
-    successRate: 98
-  },
-  {
-    id: 'whk-audit',
-    name: 'Audit Stream',
-    url: 'https://audit.example.com/hooks/breeze',
-    events: ['user.signed_in', 'policy.updated'],
-    status: 'disabled',
-    lastTriggered: 'Never',
-    successRate: 100
-  },
-  {
-    id: 'whk-siem',
-    name: 'SIEM Bridge',
-    url: 'https://siem.corp.net/breeze',
-    events: ['device.offline', 'security.alert', 'patch.completed'],
-    status: 'failing',
-    lastTriggered: '22m ago',
-    successRate: 72
-  }
-];
 
 const statusStyles: Record<WebhookStatus, { label: string; className: string }> = {
   active: {
@@ -59,11 +30,35 @@ const statusStyles: Record<WebhookStatus, { label: string; className: string }> 
 };
 
 type WebhookListProps = {
-  items?: WebhookItem[];
+  onAdd?: () => void;
+  onEdit?: (webhook: WebhookItem) => void;
 };
 
-export default function WebhookList({ items }: WebhookListProps) {
-  const [webhooks, setWebhooks] = useState<WebhookItem[]>(items ?? mockWebhooks);
+export default function WebhookList({ onAdd, onEdit }: WebhookListProps) {
+  const [webhooks, setWebhooks] = useState<WebhookItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+
+  const fetchWebhooks = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetchWithAuth('/webhooks');
+      if (!response.ok) {
+        throw new Error('Failed to fetch webhooks');
+      }
+      const data = await response.json();
+      setWebhooks(data.webhooks ?? data ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchWebhooks();
+  }, [fetchWebhooks]);
 
   const averageSuccess = useMemo(() => {
     if (webhooks.length === 0) return 0;
@@ -71,27 +66,94 @@ export default function WebhookList({ items }: WebhookListProps) {
     return Math.round(total / webhooks.length);
   }, [webhooks]);
 
-  const handleToggle = (id: string) => {
-    setWebhooks(prev =>
-      prev.map(webhook => {
-        if (webhook.id !== id) return webhook;
-        const nextStatus = webhook.status === 'active' ? 'disabled' : 'active';
-        return { ...webhook, status: nextStatus };
-      })
-    );
+  const handleToggle = async (id: string) => {
+    const webhook = webhooks.find(w => w.id === id);
+    if (!webhook) return;
+
+    const nextStatus = webhook.status === 'active' ? 'disabled' : 'active';
+    const enabled = nextStatus === 'active';
+
+    try {
+      const response = await fetchWithAuth(`/webhooks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to toggle webhook');
+      }
+
+      setWebhooks(prev =>
+        prev.map(w =>
+          w.id === id ? { ...w, status: nextStatus } : w
+        )
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to toggle webhook');
+    }
   };
 
-  const handleTest = (id: string) => {
-    setWebhooks(prev =>
-      prev.map(webhook =>
-        webhook.id === id ? { ...webhook, lastTriggered: 'Just now' } : webhook
-      )
-    );
+  const handleTest = async (id: string) => {
+    try {
+      const response = await fetchWithAuth(`/webhooks/${id}/test`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        throw new Error('Test failed');
+      }
+
+      setWebhooks(prev =>
+        prev.map(webhook =>
+          webhook.id === id ? { ...webhook, lastTriggered: 'Just now' } : webhook
+        )
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Test failed');
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setWebhooks(prev => prev.filter(webhook => webhook.id !== id));
+  const handleDelete = async (id: string) => {
+    try {
+      const response = await fetchWithAuth(`/webhooks/${id}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete webhook');
+      }
+
+      setWebhooks(prev => prev.filter(webhook => webhook.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete webhook');
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading webhooks...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchWebhooks}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -104,6 +166,7 @@ export default function WebhookList({ items }: WebhookListProps) {
         </div>
         <button
           type="button"
+          onClick={onAdd}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
@@ -160,7 +223,11 @@ export default function WebhookList({ items }: WebhookListProps) {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
-                      <button type="button" className="rounded-md border p-2 hover:bg-muted">
+                      <button
+                        type="button"
+                        className="rounded-md border p-2 hover:bg-muted"
+                        onClick={() => onEdit?.(webhook)}
+                      >
                         <Pencil className="h-4 w-4" />
                       </button>
                       <button

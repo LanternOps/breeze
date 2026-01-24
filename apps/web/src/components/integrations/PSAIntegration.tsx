@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type PsaProvider = 'connectwise' | 'autotask' | 'halo';
 type ConnectionStatus = 'connected' | 'needs-auth' | 'disconnected' | 'testing';
@@ -125,7 +126,7 @@ export default function PSAIntegration() {
     const loadConfig = async () => {
       try {
         setLoading(true);
-        const response = await fetch('/api/integrations/psa');
+        const response = await fetchWithAuth('/integrations/psa');
         if (response.status === 404) {
           return;
         }
@@ -231,9 +232,8 @@ export default function PSAIntegration() {
     };
 
     try {
-      const response = await fetch('/api/integrations/psa', {
+      const response = await fetchWithAuth('/integrations/psa', {
         method: hasConfig ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await response.json().catch(() => ({}));
@@ -269,9 +269,8 @@ export default function PSAIntegration() {
     setStatusNote(statusNotes.testing);
 
     try {
-      const response = await fetch('/api/integrations/psa/test', {
+      const response = await fetchWithAuth('/integrations/psa/test', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider: selectedProvider,
           settings: activeProviderConfig

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   PieChart,
   Pie,
@@ -6,14 +7,91 @@ import {
   Legend,
   Tooltip
 } from 'recharts';
+import { Loader2, XCircle } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
-const data = [
-  { name: 'Online', value: 1189, color: 'hsl(142.1, 76.2%, 36.3%)' },
-  { name: 'Offline', value: 35, color: 'hsl(215.4, 16.3%, 46.9%)' },
-  { name: 'Warning', value: 23, color: 'hsl(38, 92%, 50%)' }
-];
+interface DeviceStatusData {
+  name: string;
+  value: number;
+  color: string;
+}
 
 export default function DeviceStatusChart() {
+  const [data, setData] = useState<DeviceStatusData[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchDeviceStatus = async () => {
+      try {
+        setIsLoading(true);
+        setError(null);
+
+        const response = await fetchWithAuth('/devices');
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch devices');
+        }
+
+        const devicesData = await response.json();
+        const devices = devicesData.devices ?? devicesData.data ?? (Array.isArray(devicesData) ? devicesData : []);
+
+        // Count devices by status
+        const onlineCount = devices.filter((d: { status: string }) => d.status === 'online').length;
+        const offlineCount = devices.filter((d: { status: string }) => d.status === 'offline').length;
+        const warningCount = devices.filter((d: { status: string }) => d.status === 'warning').length;
+
+        setData([
+          { name: 'Online', value: onlineCount, color: 'hsl(142.1, 76.2%, 36.3%)' },
+          { name: 'Offline', value: offlineCount, color: 'hsl(215.4, 16.3%, 46.9%)' },
+          { name: 'Warning', value: warningCount, color: 'hsl(38, 92%, 50%)' }
+        ].filter(item => item.value > 0));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load device status');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchDeviceStatus();
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <h3 className="mb-4 font-semibold">Device Status</h3>
+        <div className="flex h-64 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <h3 className="mb-4 font-semibold">Device Status</h3>
+        <div className="flex h-64 items-center justify-center">
+          <div className="flex items-center gap-2 text-destructive">
+            <XCircle className="h-5 w-5" />
+            <span className="text-sm">{error}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (data.length === 0) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <h3 className="mb-4 font-semibold">Device Status</h3>
+        <div className="flex h-64 items-center justify-center">
+          <span className="text-sm text-muted-foreground">No devices found</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <h3 className="mb-4 font-semibold">Device Status</h3>

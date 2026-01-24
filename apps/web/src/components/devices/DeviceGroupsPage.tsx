@@ -1,6 +1,16 @@
 import { useState, useEffect, useMemo, useCallback, type DragEvent, type FormEvent } from 'react';
 import { Plus, Pencil, Trash2, Shield, Play, X } from 'lucide-react';
-import type { Device, OSType } from './DeviceList';
+
+type OSType = 'windows' | 'macos' | 'linux';
+
+type Device = {
+  id: string;
+  hostname: string;
+  os: OSType;
+  siteId?: string;
+  siteName?: string;
+  tags?: string[];
+};
 
 type GroupType = 'static' | 'dynamic';
 type RuleField = 'os' | 'site' | 'tag' | 'hostname';
@@ -205,7 +215,7 @@ export default function DeviceGroupsPage() {
   const tagOptions = useMemo(() => {
     const tags = new Set<string>();
     devices.forEach(device => {
-      device.tags?.forEach(tag => tags.add(tag));
+      device.tags?.forEach((tag: string) => tags.add(tag));
     });
     return Array.from(tags).sort((a, b) => a.localeCompare(b));
   }, [devices]);
@@ -215,7 +225,7 @@ export default function DeviceGroupsPage() {
     if (!query) return devices;
     return devices.filter(device => {
       const matchesHostname = device.hostname.toLowerCase().includes(query);
-      const matchesTag = device.tags?.some(tag => tag.toLowerCase().includes(query));
+      const matchesTag = device.tags?.some((tag: string) => tag.toLowerCase().includes(query));
       return matchesHostname || matchesTag;
     });
   }, [assignmentQuery, devices]);
@@ -307,7 +317,7 @@ export default function DeviceGroupsPage() {
   }, [groups]);
 
   const buildRule = (field: RuleField = 'os'): DeviceGroupRule => {
-    const defaultOperator = ruleOperatorOptions[field][0].value;
+    const defaultOperator = ruleOperatorOptions[field][0]?.value ?? 'is';
     const defaultValue =
       field === 'os'
         ? 'windows'
@@ -392,7 +402,7 @@ export default function DeviceGroupsPage() {
     }
 
     if (rule.field === 'tag') {
-      const hasTag = device.tags?.some(tag => tag.toLowerCase() === normalizedValue) ?? false;
+      const hasTag = device.tags?.some((tag: string) => tag.toLowerCase() === normalizedValue) ?? false;
       return rule.operator === 'contains' ? hasTag : !hasTag;
     }
 

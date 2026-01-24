@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
-import { Calendar, Check, ChevronDown, Search, User, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Calendar, Check, ChevronDown, Loader2, Search, User, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type DatePreset = 'today' | '7d' | '30d' | 'custom';
 
@@ -19,16 +20,14 @@ type AuditFiltersProps = {
   onClear?: () => void;
 };
 
+type UserOption = {
+  id: string;
+  name: string;
+  email: string;
+};
+
 const actionOptions = ['login', 'update', 'delete', 'create', 'export', 'access'];
 const resourceOptions = ['policy', 'report', 'dataset', 'identity', 'automation', 'asset'];
-
-const mockUsers = [
-  { id: 'user_1', name: 'Ariana Fields', email: 'ariana.fields@northwind.dev' },
-  { id: 'user_2', name: 'Miguel Rogers', email: 'miguel.rogers@northwind.dev' },
-  { id: 'user_3', name: 'Priya Nair', email: 'priya.nair@northwind.dev' },
-  { id: 'user_4', name: 'Kai Mendoza', email: 'kai.mendoza@northwind.dev' },
-  { id: 'user_5', name: 'Grace Liu', email: 'grace.liu@northwind.dev' }
-];
 
 const presetLabels: Record<DatePreset, string> = {
   today: 'Today',
@@ -39,21 +38,49 @@ const presetLabels: Record<DatePreset, string> = {
 
 export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
   const [datePreset, setDatePreset] = useState<DatePreset>('7d');
-  const [customStart, setCustomStart] = useState('2024-05-21');
-  const [customEnd, setCustomEnd] = useState('2024-05-28');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<string | undefined>();
-  const [selectedActions, setSelectedActions] = useState<string[]>(['login', 'update']);
-  const [selectedResources, setSelectedResources] = useState<string[]>(['policy', 'report']);
+  const [selectedActions, setSelectedActions] = useState<string[]>([]);
+  const [selectedResources, setSelectedResources] = useState<string[]>([]);
   const [detailsSearch, setDetailsSearch] = useState('');
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+
+  const fetchUsers = useCallback(async () => {
+    setLoadingUsers(true);
+    try {
+      const response = await fetchWithAuth('/api/users');
+      if (response.ok) {
+        const json = await response.json();
+        const data = json.data || json.users || json;
+        if (Array.isArray(data)) {
+          setUsers(data.map((u: Record<string, unknown>) => ({
+            id: String(u.id || ''),
+            name: String(u.name || u.fullName || ''),
+            email: String(u.email || '')
+          })));
+        }
+      }
+    } catch {
+      // Keep empty users array on error
+    } finally {
+      setLoadingUsers(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
 
   const filteredUsers = useMemo(() => {
     const search = userSearch.toLowerCase();
-    return mockUsers.filter(user => user.name.toLowerCase().includes(search));
-  }, [userSearch]);
+    return users.filter(user => user.name.toLowerCase().includes(search));
+  }, [userSearch, users]);
 
-  const selectedUser = mockUsers.find(user => user.id === selectedUserId);
+  const selectedUser = users.find(user => user.id === selectedUserId);
 
   const toggleSelection = (value: string, list: string[], setter: (next: string[]) => void) => {
     if (list.includes(value)) {
@@ -162,7 +189,13 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
             </div>
             {userMenuOpen && (
               <div className="absolute z-10 mt-2 w-full rounded-md border bg-card shadow-lg">
-                {filteredUsers.length === 0 && (
+                {loadingUsers && (
+                  <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading users...
+                  </div>
+                )}
+                {!loadingUsers && filteredUsers.length === 0 && (
                   <div className="px-3 py-2 text-sm text-muted-foreground">No users found</div>
                 )}
                 {filteredUsers.map(user => (

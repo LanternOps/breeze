@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import AutomationForm, { type AutomationFormValues } from './AutomationForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -29,7 +30,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/automations/${automationId}`);
+      const response = await fetchWithAuth(`/automations/${automationId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch automation');
       }
@@ -58,10 +59,10 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetch('/api/sites');
+      const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.sites ?? data ?? []);
+        setSites(data.data ?? data.sites ?? []);
       }
     } catch {
       // Silently fail
@@ -70,10 +71,10 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
   const fetchGroups = useCallback(async () => {
     try {
-      const response = await fetch('/api/groups');
+      const response = await fetchWithAuth('/groups');
       if (response.ok) {
         const data = await response.json();
-        setGroups(data.groups ?? data ?? []);
+        setGroups(data.data ?? data.groups ?? []);
       }
     } catch {
       // Silently fail
@@ -82,10 +83,10 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
   const fetchScripts = useCallback(async () => {
     try {
-      const response = await fetch('/api/scripts');
+      const response = await fetchWithAuth('/scripts');
       if (response.ok) {
         const data = await response.json();
-        setScripts(data.scripts ?? data ?? []);
+        setScripts(data.data ?? data.scripts ?? []);
       }
     } catch {
       // Silently fail
@@ -94,10 +95,10 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
   const fetchChannels = useCallback(async () => {
     try {
-      const response = await fetch('/api/alerts/channels');
+      const response = await fetchWithAuth('/alerts/channels');
       if (response.ok) {
         const data = await response.json();
-        setNotificationChannels(data.channels ?? data ?? []);
+        setNotificationChannels(data.data ?? data.channels ?? []);
       }
     } catch {
       // Silently fail
@@ -133,12 +134,11 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         enabled: true
       };
 
-      const url = isNew ? '/api/automations' : `/api/automations/${automationId}`;
+      const url = isNew ? '/automations' : `/automations/${automationId}`;
       const method = isNew ? 'POST' : 'PUT';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 

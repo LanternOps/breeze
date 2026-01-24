@@ -14,6 +14,7 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'users' | 'settings';
 
@@ -283,36 +284,39 @@ export default function CommandPalette() {
     }
 
     let isActive = true;
-    const controller = new AbortController();
     setIsLoading(true);
     setErrorMessage(null);
 
-    fetch(`/api/search?q=${encodeURIComponent(debouncedQuery)}`, {
-      signal: controller.signal
-    })
-      .then(async (response) => {
+    const performSearch = async () => {
+      try {
+        const response = await fetchWithAuth(`/search?q=${encodeURIComponent(debouncedQuery)}`);
+        if (!isActive) return;
+
         if (!response.ok) {
+          // Handle auth errors silently - user not logged in
+          if (response.status === 401 || response.status === 403) {
+            setResults([]);
+            return;
+          }
           throw new Error('Search failed');
         }
-        return response.json();
-      })
-      .then((data) => {
-        if (!isActive) return;
+
+        const data = await response.json();
         setResults(normalizeResults(data));
-      })
-      .catch((error: Error) => {
-        if (!isActive || error.name === 'AbortError') return;
+      } catch (error: unknown) {
+        if (!isActive) return;
         setResults([]);
         setErrorMessage('Unable to load search results.');
-      })
-      .finally(() => {
+      } finally {
         if (!isActive) return;
         setIsLoading(false);
-      });
+      }
+    };
+
+    performSearch();
 
     return () => {
       isActive = false;
-      controller.abort();
     };
   }, [debouncedQuery, open]);
 

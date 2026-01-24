@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
-import { Download, Search, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Download, Loader2, Search, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type InventoryItem = {
   id: string;
@@ -12,65 +13,80 @@ type InventoryItem = {
   managed: boolean;
 };
 
-const initialInventory: InventoryItem[] = [
-  {
-    id: 'inv-001',
-    device: 'FIN-LT-021',
-    software: 'Google Chrome',
-    version: '122.0.6261.112',
-    vendor: 'Google',
-    installDate: '2024-03-15',
-    managed: true
-  },
-  {
-    id: 'inv-002',
-    device: 'FIN-LT-021',
-    software: '7-Zip',
-    version: '23.01',
-    vendor: 'Igor Pavlov',
-    installDate: '2024-02-14',
-    managed: true
-  },
-  {
-    id: 'inv-003',
-    device: 'HR-MB-011',
-    software: 'Slack',
-    version: '4.37.0',
-    vendor: 'Salesforce',
-    installDate: '2024-03-02',
-    managed: true
-  },
-  {
-    id: 'inv-004',
-    device: 'HR-MB-012',
-    software: 'Zoom',
-    version: '5.16.6',
-    vendor: 'Zoom Video',
-    installDate: '2024-02-22',
-    managed: false
-  },
-  {
-    id: 'inv-005',
-    device: 'SAL-LT-032',
-    software: 'Mozilla Firefox',
-    version: '123.0',
-    vendor: 'Mozilla',
-    installDate: '2024-01-18',
-    managed: true
-  }
-];
-
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   return date.toLocaleDateString();
 }
 
+function normalizeInventoryItem(raw: Record<string, unknown>, index: number): InventoryItem {
+  return {
+    id: String(raw.id ?? raw.softwareId ?? `inv-${index}`),
+    device: String(raw.device ?? raw.deviceName ?? raw.hostname ?? 'Unknown'),
+    software: String(raw.software ?? raw.name ?? raw.softwareName ?? 'Unknown'),
+    version: String(raw.version ?? ''),
+    vendor: String(raw.vendor ?? ''),
+    installDate: String(raw.installDate ?? raw.installedAt ?? raw.installAt ?? ''),
+    managed: Boolean(raw.managed ?? raw.isManaged ?? false)
+  };
+}
+
 export default function SoftwareInventoryView() {
-  const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
   const [query, setQuery] = useState('');
   const [deviceFilter, setDeviceFilter] = useState<string>('all');
   const [managedFilter, setManagedFilter] = useState<string>('all');
+
+  const fetchInventory = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+
+      const response = await fetchWithAuth('/software/inventory');
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch software inventory');
+      }
+
+      const payload = await response.json();
+      const rawList = payload.data ?? payload.inventory ?? payload.items ?? payload ?? [];
+
+      // Handle nested inventory structure (inventory per device)
+      let flatList: Record<string, unknown>[] = [];
+      if (Array.isArray(rawList)) {
+        for (const entry of rawList) {
+          if (entry && typeof entry === 'object') {
+            const record = entry as Record<string, unknown>;
+            // If entry has items array, it's a device inventory wrapper
+            if (Array.isArray(record.items)) {
+              const deviceName = record.deviceName ?? record.device ?? '';
+              flatList.push(
+                ...record.items.map((item: Record<string, unknown>) => ({
+                  ...item,
+                  device: item.device ?? deviceName
+                }))
+              );
+            } else {
+              flatList.push(record);
+            }
+          }
+        }
+      }
+
+      const normalizedList = flatList.map((item, index) => normalizeInventoryItem(item, index));
+      setInventory(normalizedList);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch software inventory');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchInventory();
+  }, [fetchInventory]);
 
   const devices = useMemo(() => {
     const unique = new Set(inventory.map(item => item.device));
@@ -92,9 +108,32 @@ export default function SoftwareInventoryView() {
     });
   }, [inventory, query, deviceFilter, managedFilter]);
 
-  const handleUninstall = (item: InventoryItem) => {
+  const handleUninstall = async (item: InventoryItem) => {
     if (!window.confirm(`Uninstall ${item.software} from ${item.device}?`)) return;
-    setInventory(prev => prev.filter(entry => entry.id !== item.id));
+
+    try {
+      // Find the device ID from the inventory
+      const deviceId = item.id.split('-')[0] ?? item.id;
+      const softwareId = item.id;
+
+      const response = await fetchWithAuth(`/software/inventory/${deviceId}/${softwareId}/uninstall`, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestedBy: 'current-user',
+          reason: 'Manual uninstall request'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to queue uninstall');
+      }
+
+      // Remove from local state
+      setInventory(prev => prev.filter(entry => entry.id !== item.id));
+    } catch (err) {
+      console.error('Uninstall failed:', err);
+      alert('Failed to uninstall software. Please try again.');
+    }
   };
 
   const handleExport = () => {
@@ -117,6 +156,32 @@ export default function SoftwareInventoryView() {
     URL.revokeObjectURL(url);
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading software inventory...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && inventory.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchInventory}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -133,6 +198,12 @@ export default function SoftwareInventoryView() {
           Export CSV
         </button>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-sm lg:grid-cols-[1.5fr_1fr_1fr]">
         <div className="relative">

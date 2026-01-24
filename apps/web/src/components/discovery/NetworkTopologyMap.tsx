@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type TopologyNodeType =
   | 'router'
@@ -101,7 +102,7 @@ export default function NetworkTopologyMap({ height = 420 }: NetworkTopologyMapP
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/discovery/topology');
+      const response = await fetchWithAuth('/discovery/topology');
       if (!response.ok) {
         throw new Error('Failed to fetch topology');
       }

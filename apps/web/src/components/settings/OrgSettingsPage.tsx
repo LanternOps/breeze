@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
@@ -13,6 +13,8 @@ import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgBillingInfo from './OrgBillingInfo';
+import { useOrgStore } from '../../stores/orgStore';
+import { fetchWithAuth } from '../../stores/auth';
 
 const tabs = [
   {
@@ -54,15 +56,67 @@ type SaveState = {
   lastSavedAt: string;
 };
 
-const mockOrganization = {
-  name: 'Breeze Labs',
-  slug: 'breeze-labs',
-  owner: 'ops@breeze.io',
-  region: 'us-east-1',
-  plan: 'Growth',
-  createdAt: 'Apr 12, 2022',
-  members: 42,
-  sites: 8
+type OrgDetails = {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  type?: string;
+  maxDevices?: number;
+  settings?: {
+    branding?: {
+      logoUrl?: string;
+      primaryColor?: string;
+      secondaryColor?: string;
+      theme?: 'light' | 'dark' | 'system';
+      customCss?: string;
+      portalSubdomain?: string;
+    };
+    defaults?: {
+      policyDefaults?: Record<string, string>;
+      deviceGroup?: string;
+      alertThreshold?: string;
+      autoEnrollment?: {
+        enabled: boolean;
+        requireApproval: boolean;
+        sendWelcome: boolean;
+      };
+      agentUpdatePolicy?: string;
+      maintenanceWindow?: string;
+    };
+    notifications?: {
+      fromAddress?: string;
+      replyTo?: string;
+      useCustomSmtp?: boolean;
+      smtpHost?: string;
+      smtpPort?: string;
+      smtpUsername?: string;
+      smtpEncryption?: string;
+      slackWebhookUrl?: string;
+      slackChannel?: string;
+      webhooks?: string[];
+      preferences?: Record<string, Record<string, boolean>>;
+    };
+    security?: {
+      minLength?: number;
+      complexity?: string;
+      expirationDays?: number;
+      requireMfa?: boolean;
+      allowedMethods?: { totp: boolean; sms: boolean };
+      sessionTimeout?: number;
+      maxSessions?: number;
+      ipAllowlist?: string;
+    };
+  };
+  billingContact?: {
+    name?: string;
+    email?: string;
+    phone?: string;
+  };
+  contractStart?: string;
+  contractEnd?: string;
+  createdAt: string;
+  updatedAt?: string;
 };
 
 // Fixed reference time for SSR hydration consistency
@@ -77,6 +131,74 @@ export default function OrgSettingsPage() {
     hasUnsavedChanges: false,
     lastSavedAt: REFERENCE_TIME
   });
+  const [orgDetails, setOrgDetails] = useState<OrgDetails | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+
+  const { currentOrgId, organizations } = useOrgStore();
+  const currentOrg = organizations.find(org => org.id === currentOrgId);
+
+  const fetchOrgDetails = useCallback(async () => {
+    if (!currentOrgId) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetchWithAuth(`/orgs/organizations/${currentOrgId}`);
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        throw new Error('Failed to fetch organization details');
+      }
+      const data = await response.json();
+      setOrgDetails(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentOrgId]);
+
+  useEffect(() => {
+    fetchOrgDetails();
+  }, [fetchOrgDetails]);
+
+  const handleSaveSettings = useCallback(async (section: string, data: Record<string, unknown>) => {
+    if (!currentOrgId) return;
+
+    try {
+      const currentSettings = orgDetails?.settings || {};
+      const updatedSettings = {
+        ...currentSettings,
+        [section]: data
+      };
+
+      const response = await fetchWithAuth(`/orgs/organizations/${currentOrgId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ settings: updatedSettings })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save settings');
+      }
+
+      await fetchOrgDetails();
+      setSaveState({
+        hasUnsavedChanges: false,
+        lastSavedAt: formatTime(new Date())
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save settings');
+    }
+  }, [currentOrgId, orgDetails, fetchOrgDetails]);
+
+  // Fallback display data
+  const displayOrg = orgDetails || currentOrg;
 
   const statusLabel = useMemo(() => {
     if (saveState.hasUnsavedChanges) {
@@ -90,23 +212,92 @@ export default function OrgSettingsPage() {
     setSaveState(prev => ({ ...prev, hasUnsavedChanges: true }));
   };
 
-  const handleSave = () => {
-    setSaveState({
-      hasUnsavedChanges: false,
-      lastSavedAt: formatTime(new Date())
-    });
+  const handleSave = (section?: string, data?: Record<string, unknown>) => {
+    if (section && data) {
+      handleSaveSettings(section, data);
+    } else {
+      setSaveState({
+        hasUnsavedChanges: false,
+        lastSavedAt: formatTime(new Date())
+      });
+    }
   };
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading organization settings...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // No organization selected
+  if (!currentOrgId || !displayOrg) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-950">
+        <Building2 className="mx-auto h-12 w-12 text-amber-500" />
+        <h2 className="mt-4 text-lg font-semibold">No Organization Selected</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Please select an organization from the switcher in the header to view settings.
+        </p>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchOrgDetails}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   const renderContent = () => {
     switch (activeTab) {
       case 'branding':
-        return <OrgBrandingEditor onDirty={handleDirty} onSave={handleSave} />;
+        return (
+          <OrgBrandingEditor
+            organizationName={displayOrg.name}
+            branding={orgDetails?.settings?.branding}
+            onDirty={handleDirty}
+            onSave={(data) => handleSave('branding', data)}
+          />
+        );
       case 'notifications':
-        return <OrgNotificationSettings onDirty={handleDirty} onSave={handleSave} />;
+        return (
+          <OrgNotificationSettings
+            notifications={orgDetails?.settings?.notifications}
+            onDirty={handleDirty}
+            onSave={(data) => handleSave('notifications', data)}
+          />
+        );
       case 'security':
-        return <OrgSecuritySettings onDirty={handleDirty} onSave={handleSave} />;
+        return (
+          <OrgSecuritySettings
+            security={orgDetails?.settings?.security}
+            onDirty={handleDirty}
+            onSave={(data) => handleSave('security', data)}
+          />
+        );
       case 'billing':
-        return <OrgBillingInfo />;
+        return (
+          <OrgBillingInfo
+            organizationName={displayOrg.name}
+            billingContact={orgDetails?.billingContact}
+          />
+        );
       case 'general':
       default:
         return (
@@ -121,33 +312,48 @@ export default function OrgSettingsPage() {
               <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2">
                 <div className="rounded-md border bg-muted/40 p-4">
                   <dt className="text-xs uppercase text-muted-foreground">Organization</dt>
-                  <dd className="mt-2 text-base font-semibold">{mockOrganization.name}</dd>
-                  <p className="mt-1 text-xs text-muted-foreground">{mockOrganization.owner}</p>
-                </div>
-                <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Plan</dt>
-                  <dd className="mt-2 text-base font-semibold">{mockOrganization.plan}</dd>
+                  <dd className="mt-2 text-base font-semibold">{displayOrg.name}</dd>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Active since {mockOrganization.createdAt}
+                    {orgDetails?.slug || displayOrg.id}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Region</dt>
-                  <dd className="mt-2 text-base font-semibold">{mockOrganization.region}</dd>
+                  <dt className="text-xs uppercase text-muted-foreground">Status</dt>
+                  <dd className="mt-2 text-base font-semibold capitalize">{displayOrg.status}</dd>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {mockOrganization.sites} sites connected
+                    Created {new Date(displayOrg.createdAt).toLocaleDateString()}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Members</dt>
-                  <dd className="mt-2 text-base font-semibold">{mockOrganization.members}</dd>
+                  <dt className="text-xs uppercase text-muted-foreground">Type</dt>
+                  <dd className="mt-2 text-base font-semibold capitalize">
+                    {orgDetails?.type || 'Customer'}
+                  </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Default slug {mockOrganization.slug}
+                    {orgDetails?.maxDevices ? `Max ${orgDetails.maxDevices} devices` : 'Unlimited devices'}
+                  </p>
+                </div>
+                <div className="rounded-md border bg-muted/40 p-4">
+                  <dt className="text-xs uppercase text-muted-foreground">Contract</dt>
+                  <dd className="mt-2 text-base font-semibold">
+                    {orgDetails?.contractEnd
+                      ? new Date(orgDetails.contractEnd).toLocaleDateString()
+                      : 'No end date'}
+                  </dd>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {orgDetails?.contractStart
+                      ? `Started ${new Date(orgDetails.contractStart).toLocaleDateString()}`
+                      : 'No contract dates set'}
                   </p>
                 </div>
               </dl>
             </section>
-            <OrgDefaultsEditor onDirty={handleDirty} onSave={handleSave} />
+            <OrgDefaultsEditor
+              organizationName={displayOrg.name}
+              defaults={orgDetails?.settings?.defaults}
+              onDirty={handleDirty}
+              onSave={(data) => handleSave('defaults', data)}
+            />
           </div>
         );
     }
@@ -159,7 +365,7 @@ export default function OrgSettingsPage() {
         <div>
           <h1 className="text-2xl font-bold">Organization settings</h1>
           <p className="text-sm text-muted-foreground">
-            Configure preferences for {mockOrganization.name}.
+            Configure preferences for {displayOrg.name}.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border bg-card px-4 py-2 text-sm">

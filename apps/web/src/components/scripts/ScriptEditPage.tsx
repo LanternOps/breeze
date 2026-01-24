@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, History } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues } from './ScriptForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ScriptEditPageProps = {
   scriptId?: string;
@@ -20,8 +21,12 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/scripts/${scriptId}`);
+      const response = await fetchWithAuth(`/scripts/${scriptId}`);
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch script');
       }
       const data = await response.json();
@@ -53,12 +58,11 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
     setError(undefined);
 
     try {
-      const url = isNew ? '/api/scripts' : `/api/scripts/${scriptId}`;
+      const url = isNew ? '/scripts' : `/scripts/${scriptId}`;
       const method = isNew ? 'POST' : 'PUT';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(values)
       });
 

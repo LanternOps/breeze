@@ -1,156 +1,107 @@
 import React from 'react';
-import {
-  View,
-  StyleSheet,
-  ScrollView,
-} from 'react-native';
-import {
-  Text,
-  useTheme,
-  Surface,
-  Button,
-  Divider,
-  List,
-} from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, ScrollView, StyleSheet } from 'react-native';
+import { Text, useTheme, Button, Surface, Chip } from 'react-native-paper';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
+import type { AlertsStackParamList } from '../../navigation/MainNavigator';
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
-import { StatusBadge } from '../../components/StatusBadge';
-import type { AlertsStackParamList } from '../../navigation/MainNavigator';
 
 type Props = NativeStackScreenProps<AlertsStackParamList, 'AlertDetail'>;
 
-export function AlertDetailScreen({ route, navigation }: Props) {
+const severityColors: Record<string, string> = {
+  critical: '#dc2626',
+  high: '#ea580c',
+  medium: '#ca8a04',
+  low: '#2563eb',
+};
+
+export function AlertDetailScreen({ route }: Props) {
   const theme = useTheme();
   const dispatch = useAppDispatch();
   const { alert } = route.params;
 
-  const handleAcknowledge = async () => {
-    await dispatch(acknowledgeAlertAsync(alert.id));
-    navigation.goBack();
-  };
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString();
+  const handleAcknowledge = () => {
+    dispatch(acknowledgeAlertAsync(alert.id));
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Surface style={[styles.headerCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          <View style={styles.headerRow}>
-            <StatusBadge severity={alert.severity} size="large" />
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {formatDate(alert.createdAt)}
+    <ScrollView
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      contentContainerStyle={styles.content}
+    >
+      <Surface style={styles.card} elevation={1}>
+        <View style={styles.header}>
+          <Chip
+            style={{ backgroundColor: severityColors[alert.severity] || theme.colors.primary }}
+            textStyle={{ color: '#fff' }}
+          >
+            {alert.severity.toUpperCase()}
+          </Chip>
+          {alert.acknowledged && (
+            <Chip icon="check" style={styles.acknowledgedChip}>
+              Acknowledged
+            </Chip>
+          )}
+        </View>
+
+        <Text variant="headlineSmall" style={styles.title}>
+          {alert.title}
+        </Text>
+
+        <Text variant="bodyLarge" style={styles.message}>
+          {alert.message}
+        </Text>
+
+        <View style={styles.details}>
+          <View style={styles.detailRow}>
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+              Type
+            </Text>
+            <Text variant="bodyMedium">{alert.type}</Text>
+          </View>
+
+          {alert.deviceName && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Device
+              </Text>
+              <Text variant="bodyMedium">{alert.deviceName}</Text>
+            </View>
+          )}
+
+          <View style={styles.detailRow}>
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+              Created
+            </Text>
+            <Text variant="bodyMedium">
+              {new Date(alert.createdAt).toLocaleString()}
             </Text>
           </View>
 
-          <Text variant="headlineSmall" style={[styles.title, { color: theme.colors.onSurface }]}>
-            {alert.title}
-          </Text>
-
-          <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>
-            {alert.message}
-          </Text>
-        </Surface>
-
-        <Surface style={[styles.detailsCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          <Text variant="titleMedium" style={styles.sectionTitle}>
-            Alert Details
-          </Text>
-
-          <List.Item
-            title="Alert ID"
-            description={alert.id}
-            left={(props) => <List.Icon {...props} icon="identifier" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Device"
-            description={alert.deviceName || 'Unknown Device'}
-            left={(props) => <List.Icon {...props} icon="laptop" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Type"
-            description={alert.type}
-            left={(props) => <List.Icon {...props} icon="tag" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Status"
-            description={alert.acknowledged ? 'Acknowledged' : 'Pending'}
-            left={(props) => <List.Icon {...props} icon={alert.acknowledged ? 'check-circle' : 'clock-outline'} />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Created"
-            description={formatDate(alert.createdAt)}
-            left={(props) => <List.Icon {...props} icon="calendar" />}
-          />
-
           {alert.acknowledgedAt && (
-            <>
-              <Divider />
-              <List.Item
-                title="Acknowledged"
-                description={formatDate(alert.acknowledgedAt)}
-                left={(props) => <List.Icon {...props} icon="calendar-check" />}
-              />
-            </>
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Acknowledged At
+              </Text>
+              <Text variant="bodyMedium">
+                {new Date(alert.acknowledgedAt).toLocaleString()}
+              </Text>
+            </View>
           )}
-        </Surface>
-
-        {alert.metadata && Object.keys(alert.metadata).length > 0 && (
-          <Surface style={[styles.detailsCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <Text variant="titleMedium" style={styles.sectionTitle}>
-              Additional Information
-            </Text>
-
-            {Object.entries(alert.metadata).map(([key, value]) => (
-              <React.Fragment key={key}>
-                <List.Item
-                  title={key}
-                  description={String(value)}
-                  left={(props) => <List.Icon {...props} icon="information" />}
-                />
-                <Divider />
-              </React.Fragment>
-            ))}
-          </Surface>
-        )}
-
-        <View style={styles.actionsContainer}>
-          {!alert.acknowledged && (
-            <Button
-              mode="contained"
-              onPress={handleAcknowledge}
-              style={styles.actionButton}
-              contentStyle={styles.buttonContent}
-              icon="check"
-            >
-              Acknowledge Alert
-            </Button>
-          )}
-
-          <Button
-            mode="outlined"
-            onPress={() => navigation.goBack()}
-            style={styles.actionButton}
-            contentStyle={styles.buttonContent}
-          >
-            Go Back
-          </Button>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+
+        {!alert.acknowledged && (
+          <Button
+            mode="contained"
+            onPress={handleAcknowledge}
+            style={styles.acknowledgeButton}
+          >
+            Acknowledge Alert
+          </Button>
+        )}
+      </Surface>
+    </ScrollView>
   );
 }
 
@@ -158,40 +109,37 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  scrollContent: {
+  content: {
     padding: 16,
   },
-  headerCard: {
+  card: {
     padding: 16,
-    borderRadius: 12,
+    borderRadius: 8,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginBottom: 16,
   },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
+  acknowledgedChip: {
+    backgroundColor: '#22c55e',
   },
   title: {
     marginBottom: 8,
   },
-  detailsCard: {
-    borderRadius: 12,
+  message: {
     marginBottom: 16,
-    overflow: 'hidden',
   },
-  sectionTitle: {
-    padding: 16,
-    paddingBottom: 8,
-  },
-  actionsContainer: {
-    marginTop: 8,
+  details: {
     gap: 12,
   },
-  actionButton: {
-    borderRadius: 8,
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  buttonContent: {
-    paddingVertical: 8,
+  acknowledgeButton: {
+    marginTop: 24,
   },
 });

@@ -277,7 +277,10 @@ export default function ScriptEditor({ scriptId }: ScriptEditorProps) {
         const deviceList: Device[] = data.devices ?? data ?? [];
         setDevices(deviceList);
         if (deviceList.length > 0) {
-          setSelectedDeviceId(prev => prev || deviceList[0].id);
+          const firstDevice = deviceList[0];
+        if (firstDevice) {
+          setSelectedDeviceId(prev => prev || firstDevice.id);
+        }
         }
       }
     } catch {
@@ -483,23 +486,24 @@ export default function ScriptEditor({ scriptId }: ScriptEditorProps) {
       if (updated.version) {
         setVersionHistory(prev => {
           const last = prev[0];
-          if (last?.version === updated.version) {
-            return [
-              {
-                ...last,
-                updatedAt: updated.updatedAt ?? last.updatedAt
-              },
-              ...prev.slice(1)
-            ];
+          if (last && last.version === updated.version) {
+            const newEntry: VersionEntry = {
+              id: last.id,
+              version: last.version,
+              updatedAt: updated.updatedAt ?? last.updatedAt,
+              label: last.label
+            };
+            return [newEntry, ...prev.slice(1)];
           }
+          const currentEntry: VersionEntry = {
+            id: `version-${updated.version}`,
+            version: updated.version,
+            updatedAt: updated.updatedAt ?? new Date().toISOString(),
+            label: 'Current'
+          };
           return [
-            {
-              id: `version-${updated.version}`,
-              version: updated.version,
-              updatedAt: updated.updatedAt ?? new Date().toISOString(),
-              label: 'Current'
-            },
-            ...prev.map(entry => ({ ...entry, label: undefined }))
+            currentEntry,
+            ...prev.map((entry): VersionEntry => ({ id: entry.id, version: entry.version, updatedAt: entry.updatedAt }))
           ];
         });
       }
@@ -598,8 +602,9 @@ export default function ScriptEditor({ scriptId }: ScriptEditorProps) {
 
   useEffect(() => {
     if (filteredDevices.length === 0) return;
-    if (!selectedDeviceId || !filteredDevices.some(device => device.id === selectedDeviceId)) {
-      setSelectedDeviceId(filteredDevices[0].id);
+    const firstDevice = filteredDevices[0];
+    if (firstDevice && (!selectedDeviceId || !filteredDevices.some(device => device.id === selectedDeviceId))) {
+      setSelectedDeviceId(firstDevice.id);
     }
   }, [filteredDevices, selectedDeviceId]);
 

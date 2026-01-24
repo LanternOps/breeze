@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import UserList, { type User } from './UserList';
 import UserInviteForm from './UserInviteForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
 
@@ -23,8 +24,12 @@ export default function UsersPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/users');
+      const response = await fetchWithAuth('/users');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch users');
       }
       const data = await response.json();
@@ -63,9 +68,8 @@ export default function UsersPage() {
   const handleInviteSubmit = async (values: InviteFormValues) => {
     setSubmitting(true);
     try {
-      const response = await fetch('/api/users/invite', {
+      const response = await fetchWithAuth('/users/invite', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(values)
       });
 
@@ -87,9 +91,8 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/users/${selectedUser.id}`, {
+      const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(values)
       });
 
@@ -111,7 +114,7 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/users/${selectedUser.id}`, {
+      const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
         method: 'DELETE'
       });
 

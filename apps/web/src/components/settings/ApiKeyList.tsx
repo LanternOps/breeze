@@ -49,6 +49,9 @@ export default function ApiKeyList({
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<ApiKeyStatus | 'all'>('all');
 
+  // Ensure apiKeys is always an array
+  const safeApiKeys = Array.isArray(apiKeys) ? apiKeys : [];
+
   const formatDate = (value: string | null) => {
     if (!value) return 'Never';
     const date = new Date(value);
@@ -66,14 +69,14 @@ export default function ApiKeyList({
   };
 
   const statusOptions = useMemo(() => {
-    const uniqueStatuses = Array.from(new Set(apiKeys.map(key => key.status)));
+    const uniqueStatuses = Array.from(new Set(safeApiKeys.map(key => key.status)));
     return ['all', ...uniqueStatuses] as const;
-  }, [apiKeys]);
+  }, [safeApiKeys]);
 
   const filteredApiKeys = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return apiKeys.filter(apiKey => {
+    return safeApiKeys.filter(apiKey => {
       const matchesQuery =
         normalizedQuery.length === 0
           ? true
@@ -83,7 +86,7 @@ export default function ApiKeyList({
 
       return matchesQuery && matchesStatus;
     });
-  }, [apiKeys, query, statusFilter]);
+  }, [safeApiKeys, query, statusFilter]);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -91,7 +94,7 @@ export default function ApiKeyList({
         <div>
           <h2 className="text-lg font-semibold">API Keys</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredApiKeys.length} of {apiKeys.length} keys
+            {filteredApiKeys.length} of {safeApiKeys.length} keys
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -149,7 +152,7 @@ export default function ApiKeyList({
                     </svg>
                     <p className="text-sm font-medium text-muted-foreground">No API keys found</p>
                     <p className="text-xs text-muted-foreground">
-                      {apiKeys.length === 0
+                      {safeApiKeys.length === 0
                         ? 'Create your first API key to get started.'
                         : 'Try adjusting your search or filters.'}
                     </p>

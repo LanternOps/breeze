@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Download, TrendingUp, User, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ActivityEntry = {
   id: string;
@@ -12,93 +13,83 @@ type ActivityEntry = {
   ipAddress: string;
 };
 
-const mockUsers = [
-  { id: 'all', name: 'All users' },
-  { id: 'user_1', name: 'Ariana Fields' },
-  { id: 'user_2', name: 'Miguel Rogers' },
-  { id: 'user_3', name: 'Priya Nair' },
-  { id: 'user_4', name: 'Kai Mendoza' },
-  { id: 'user_5', name: 'Grace Liu' }
-];
-
-const mockActivity: ActivityEntry[] = [
-  {
-    id: 'act_1',
-    userId: 'user_1',
-    userName: 'Ariana Fields',
-    timestamp: '2024-05-28T14:12:45Z',
-    action: 'login',
-    resource: 'Admin Portal',
-    ipAddress: '174.20.31.10'
-  },
-  {
-    id: 'act_2',
-    userId: 'user_1',
-    userName: 'Ariana Fields',
-    timestamp: '2024-05-28T13:46:12Z',
-    action: 'update',
-    resource: 'Endpoint Policy - West Region',
-    ipAddress: '174.20.31.10'
-  },
-  {
-    id: 'act_3',
-    userId: 'user_2',
-    userName: 'Miguel Rogers',
-    timestamp: '2024-05-28T12:05:09Z',
-    action: 'access',
-    resource: 'Customer Records',
-    ipAddress: '10.10.12.44'
-  },
-  {
-    id: 'act_4',
-    userId: 'user_3',
-    userName: 'Priya Nair',
-    timestamp: '2024-05-27T21:28:33Z',
-    action: 'export',
-    resource: 'Alerts Report',
-    ipAddress: '172.16.11.90'
-  },
-  {
-    id: 'act_5',
-    userId: 'user_4',
-    userName: 'Kai Mendoza',
-    timestamp: '2024-05-27T16:44:02Z',
-    action: 'create',
-    resource: 'New Device Group - VIP',
-    ipAddress: '10.10.12.33'
-  },
-  {
-    id: 'act_6',
-    userId: 'user_5',
-    userName: 'Grace Liu',
-    timestamp: '2024-05-27T12:40:18Z',
-    action: 'access',
-    resource: 'Payroll Records',
-    ipAddress: '192.168.1.22'
-  },
-  {
-    id: 'act_7',
-    userId: 'user_5',
-    userName: 'Grace Liu',
-    timestamp: '2024-05-27T09:18:04Z',
-    action: 'export',
-    resource: 'Device Inventory',
-    ipAddress: '192.168.1.22'
-  }
-];
+type UserOption = {
+  id: string;
+  name: string;
+};
 
 const formatTimestamp = (value: string) => new Date(value).toLocaleString();
 
 export default function UserActivityReport() {
+  const [users, setUsers] = useState<UserOption[]>([{ id: 'all', name: 'All users' }]);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('all');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const [usersRes, activityRes] = await Promise.all([
+        fetchWithAuth('/users?limit=100'),
+        fetchWithAuth('/audit-logs?limit=100')
+      ]);
+
+      if (usersRes.status === 401 || activityRes.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (!usersRes.ok) {
+        throw new Error('Failed to fetch users');
+      }
+
+      if (!activityRes.ok) {
+        throw new Error('Failed to fetch activity');
+      }
+
+      const usersData = await usersRes.json();
+      const activityData = await activityRes.json();
+
+      const usersList = [
+        { id: 'all', name: 'All users' },
+        ...(usersData.users || []).map((u: { id: string; name: string }) => ({
+          id: u.id,
+          name: u.name
+        }))
+      ];
+      setUsers(usersList);
+
+      const activityList = (activityData.entries || activityData.logs || []).map((entry: ActivityEntry & { user?: { id: string; name: string } }) => ({
+        id: entry.id,
+        userId: entry.userId || entry.user?.id || '',
+        userName: entry.userName || entry.user?.name || 'Unknown',
+        timestamp: entry.timestamp,
+        action: entry.action,
+        resource: entry.resource,
+        ipAddress: entry.ipAddress
+      }));
+      setActivity(activityList);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load data');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const selectedUserLabel =
-    mockUsers.find(user => user.id === selectedUserId)?.name ?? 'All users';
+    users.find(user => user.id === selectedUserId)?.name ?? 'All users';
 
   const filteredActivity = useMemo(() => {
-    if (selectedUserId === 'all') return mockActivity;
-    return mockActivity.filter(entry => entry.userId === selectedUserId);
-  }, [selectedUserId]);
+    if (selectedUserId === 'all') return activity;
+    return activity.filter(entry => entry.userId === selectedUserId);
+  }, [activity, selectedUserId]);
 
   const stats = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -122,6 +113,69 @@ export default function UserActivityReport() {
     (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
   );
 
+  const handleExportActivity = async () => {
+    try {
+      const params = selectedUserId !== 'all' ? `?userId=${selectedUserId}` : '';
+      const response = await fetchWithAuth(`/audit-logs/export${params}`);
+
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `user-activity-${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+      }
+    } catch {
+      // Handle error silently or show notification
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">User Activity Report</h2>
+            <p className="text-sm text-muted-foreground">Review activity trends and export history.</p>
+          </div>
+        </div>
+        <div className="flex h-48 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">User Activity Report</h2>
+            <p className="text-sm text-muted-foreground">Review activity trends and export history.</p>
+          </div>
+        </div>
+        <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
+          <p>{error}</p>
+          <button
+            type="button"
+            onClick={fetchData}
+            className="text-sm text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -131,6 +185,7 @@ export default function UserActivityReport() {
         </div>
         <button
           type="button"
+          onClick={handleExportActivity}
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <Download className="h-4 w-4" />
@@ -146,7 +201,7 @@ export default function UserActivityReport() {
             onChange={event => setSelectedUserId(event.target.value)}
             className="bg-transparent text-sm font-medium text-foreground outline-none"
           >
-            {mockUsers.map(user => (
+            {users.map(user => (
               <option key={user.id} value={user.id}>
                 {user.name}
               </option>
@@ -191,35 +246,43 @@ export default function UserActivityReport() {
         <div className="rounded-lg border bg-background p-4">
           <h3 className="text-sm font-semibold">Activity Timeline</h3>
           <div className="mt-4 space-y-4">
-            {sortedTimeline.map((entry, index) => (
-              <div key={entry.id} className="flex items-start gap-4">
-                <div
-                  className={cn(
-                    'mt-1 h-3 w-3 rounded-full border-2 border-primary bg-background',
-                    index === 0 && 'bg-primary'
-                  )}
-                />
-                <div className="flex-1 border-l border-dashed border-muted pl-4">
-                  <p className="text-xs text-muted-foreground">{formatTimestamp(entry.timestamp)}</p>
-                  <p className="text-sm font-medium text-foreground capitalize">
-                    {entry.action} - {entry.resource}
-                  </p>
-                  <p className="text-xs text-muted-foreground">{entry.ipAddress}</p>
+            {sortedTimeline.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No activity found.</p>
+            ) : (
+              sortedTimeline.slice(0, 10).map((entry, index) => (
+                <div key={entry.id} className="flex items-start gap-4">
+                  <div
+                    className={cn(
+                      'mt-1 h-3 w-3 rounded-full border-2 border-primary bg-background',
+                      index === 0 && 'bg-primary'
+                    )}
+                  />
+                  <div className="flex-1 border-l border-dashed border-muted pl-4">
+                    <p className="text-xs text-muted-foreground">{formatTimestamp(entry.timestamp)}</p>
+                    <p className="text-sm font-medium text-foreground capitalize">
+                      {entry.action} - {entry.resource}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{entry.ipAddress}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
 
         <div className="rounded-lg border bg-background p-4">
           <h3 className="text-sm font-semibold">Actions by Type</h3>
           <div className="mt-4 space-y-3">
-            {Object.entries(stats).map(([action, count]) => (
-              <div key={action} className="flex items-center justify-between text-sm">
-                <span className="capitalize text-muted-foreground">{action}</span>
-                <span className="font-medium text-foreground">{count}</span>
-              </div>
-            ))}
+            {Object.keys(stats).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No actions recorded.</p>
+            ) : (
+              Object.entries(stats).map(([action, count]) => (
+                <div key={action} className="flex items-center justify-between text-sm">
+                  <span className="capitalize text-muted-foreground">{action}</span>
+                  <span className="font-medium text-foreground">{count}</span>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -237,14 +300,22 @@ export default function UserActivityReport() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {sortedTimeline.slice(0, 5).map(entry => (
-                <tr key={entry.id}>
-                  <td className="px-3 py-2 text-muted-foreground">{formatTimestamp(entry.timestamp)}</td>
-                  <td className="px-3 py-2 capitalize text-foreground">{entry.action}</td>
-                  <td className="px-3 py-2 text-foreground">{entry.resource}</td>
-                  <td className="px-3 py-2 text-muted-foreground">{entry.ipAddress}</td>
+              {sortedTimeline.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-3 py-4 text-center text-muted-foreground">
+                    No recent actions found.
+                  </td>
                 </tr>
-              ))}
+              ) : (
+                sortedTimeline.slice(0, 5).map(entry => (
+                  <tr key={entry.id}>
+                    <td className="px-3 py-2 text-muted-foreground">{formatTimestamp(entry.timestamp)}</td>
+                    <td className="px-3 py-2 capitalize text-foreground">{entry.action}</td>
+                    <td className="px-3 py-2 text-foreground">{entry.resource}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{entry.ipAddress}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

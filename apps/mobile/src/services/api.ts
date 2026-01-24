@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
 const API_PREFIX = '/api/v1/mobile';
+const API_CORE_PREFIX = '/api/v1';
 
 // Types
 export interface Alert {
@@ -77,8 +78,9 @@ async function getToken(): Promise<string | null> {
 }
 
 // Request helper
-async function request<T>(
+async function requestWithPrefix<T>(
   endpoint: string,
+  prefix: string,
   options: RequestInit = {}
 ): Promise<T> {
   const token = await getToken();
@@ -92,7 +94,7 @@ async function request<T>(
     (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}${API_PREFIX}${endpoint}`, {
+  const response = await fetch(`${API_BASE_URL}${prefix}${endpoint}`, {
     ...options,
     headers,
   });
@@ -114,6 +116,15 @@ async function request<T>(
   return JSON.parse(text);
 }
 
+async function request<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  return requestWithPrefix<T>(endpoint, API_PREFIX, options);
+}
+
+export type DeviceAction = 'reboot' | 'shutdown' | 'lock' | 'wake' | 'update';
+
 // Auth API
 export async function login(email: string, password: string): Promise<LoginResponse> {
   return request<LoginResponse>('/auth/login', {
@@ -133,6 +144,13 @@ export async function logout(): Promise<void> {
 export async function refreshToken(): Promise<{ token: string }> {
   return request<{ token: string }>('/auth/refresh', {
     method: 'POST',
+  });
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await requestWithPrefix('/auth/change-password', API_CORE_PREFIX, {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
   });
 }
 
@@ -173,6 +191,16 @@ export async function getDevice(id: string): Promise<Device> {
 
 export async function getDeviceMetrics(id: string): Promise<Device['metrics']> {
   return request<Device['metrics']>(`/devices/${id}/metrics`);
+}
+
+export async function sendDeviceAction(
+  deviceId: string,
+  action: DeviceAction
+): Promise<{ id: string; type: DeviceAction }> {
+  return requestWithPrefix(`/devices/${deviceId}/commands`, API_CORE_PREFIX, {
+    method: 'POST',
+    body: JSON.stringify({ type: action, payload: {} }),
+  });
 }
 
 // Push notification registration

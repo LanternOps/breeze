@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle, Clock, AlertTriangle, PlayCircle } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed';
 
@@ -93,7 +94,7 @@ export default function DiscoveryJobList() {
         setLoading(true);
       }
       setError(undefined);
-      const response = await fetch('/api/discovery/jobs');
+      const response = await fetchWithAuth('/discovery/jobs');
       if (!response.ok) {
         throw new Error('Failed to fetch discovery jobs');
       }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Shield } from 'lucide-react';
 import PolicyList, { type Policy } from './PolicyList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'delete';
 
@@ -16,12 +17,12 @@ export default function PoliciesPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/policies');
+      const response = await fetchWithAuth('/policies');
       if (!response.ok) {
         throw new Error('Failed to fetch policies');
       }
       const data = await response.json();
-      setPolicies(data.policies ?? data ?? []);
+      setPolicies(data.data ?? data.policies ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -48,9 +49,8 @@ export default function PoliciesPage() {
 
   const handleToggle = async (policy: Policy, enabled: boolean) => {
     try {
-      const response = await fetch(`/api/policies/${policy.id}`, {
+      const response = await fetchWithAuth(`/policies/${policy.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled })
       });
 
@@ -76,7 +76,7 @@ export default function PoliciesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/policies/${selectedPolicy.id}`, {
+      const response = await fetchWithAuth(`/policies/${selectedPolicy.id}`, {
         method: 'DELETE'
       });
 
@@ -94,8 +94,8 @@ export default function PoliciesPage() {
   };
 
   // Calculate summary stats
-  const totalCompliant = policies.reduce((sum, p) => sum + p.compliance.compliant, 0);
-  const totalDevices = policies.reduce((sum, p) => sum + p.compliance.total, 0);
+  const totalCompliant = policies.reduce((sum, p) => sum + (p.compliance?.compliant ?? 0), 0);
+  const totalDevices = policies.reduce((sum, p) => sum + (p.compliance?.total ?? 0), 0);
   const overallPercent = totalDevices > 0 ? Math.round((totalCompliant / totalDevices) * 100) : 0;
 
   if (loading) {

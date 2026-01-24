@@ -1,23 +1,37 @@
 import { useMemo, useState } from 'react';
 import { Bell, Mail, MessageSquare, Plus, Save, Send, Trash2, Webhook } from 'lucide-react';
 
-type OrgNotificationSettingsProps = {
-  onDirty?: () => void;
-  onSave?: () => void;
+type NotificationsData = {
+  fromAddress?: string;
+  replyTo?: string;
+  useCustomSmtp?: boolean;
+  smtpHost?: string;
+  smtpPort?: string;
+  smtpUsername?: string;
+  smtpEncryption?: string;
+  slackWebhookUrl?: string;
+  slackChannel?: string;
+  webhooks?: string[];
+  preferences?: Record<string, Record<string, boolean>>;
 };
 
-const mockNotificationSettings = {
+type OrgNotificationSettingsProps = {
+  notifications?: NotificationsData;
+  onDirty?: () => void;
+  onSave?: (data: NotificationsData) => void;
+};
+
+const defaultNotifications: NotificationsData = {
   fromAddress: 'alerts@breeze.io',
   replyTo: 'support@breeze.io',
   useCustomSmtp: false,
   smtpHost: 'smtp.breeze.io',
   smtpPort: '587',
   smtpUsername: 'alerts',
-  smtpPassword: '********',
   smtpEncryption: 'tls',
-  slackWebhookUrl: 'https://hooks.slack.com/services/T000/B000/XXXX',
+  slackWebhookUrl: '',
   slackChannel: '#ops-alerts',
-  webhooks: ['https://breeze.io/hooks/alerts', 'https://breeze.io/hooks/audit']
+  webhooks: []
 };
 
 const slackChannels = ['#ops-alerts', '#security', '#it-helpdesk'];
@@ -36,30 +50,34 @@ const channelOptions = [
   { id: 'webhook', label: 'Webhook' }
 ];
 
+const getDefaultPreferences = () => {
+  const initial: Record<string, Record<string, boolean>> = {};
+  alertTypes.forEach(alert => {
+    initial[alert.id] = { email: true, slack: alert.id !== 'billing', webhook: false };
+  });
+  return initial;
+};
+
 export default function OrgNotificationSettings({
+  notifications,
   onDirty,
   onSave
 }: OrgNotificationSettingsProps) {
-  const [fromAddress, setFromAddress] = useState(mockNotificationSettings.fromAddress);
-  const [replyTo, setReplyTo] = useState(mockNotificationSettings.replyTo);
-  const [useCustomSmtp, setUseCustomSmtp] = useState(mockNotificationSettings.useCustomSmtp);
-  const [smtpHost, setSmtpHost] = useState(mockNotificationSettings.smtpHost);
-  const [smtpPort, setSmtpPort] = useState(mockNotificationSettings.smtpPort);
-  const [smtpUsername, setSmtpUsername] = useState(mockNotificationSettings.smtpUsername);
-  const [smtpPassword, setSmtpPassword] = useState(mockNotificationSettings.smtpPassword);
-  const [smtpEncryption, setSmtpEncryption] = useState(mockNotificationSettings.smtpEncryption);
-  const [slackWebhookUrl, setSlackWebhookUrl] = useState(mockNotificationSettings.slackWebhookUrl);
-  const [slackChannel, setSlackChannel] = useState(mockNotificationSettings.slackChannel);
+  const initialData = { ...defaultNotifications, ...notifications };
+  const [fromAddress, setFromAddress] = useState(initialData.fromAddress || '');
+  const [replyTo, setReplyTo] = useState(initialData.replyTo || '');
+  const [useCustomSmtp, setUseCustomSmtp] = useState(initialData.useCustomSmtp || false);
+  const [smtpHost, setSmtpHost] = useState(initialData.smtpHost || '');
+  const [smtpPort, setSmtpPort] = useState(initialData.smtpPort || '587');
+  const [smtpUsername, setSmtpUsername] = useState(initialData.smtpUsername || '');
+  const [smtpPassword, setSmtpPassword] = useState('');
+  const [smtpEncryption, setSmtpEncryption] = useState(initialData.smtpEncryption || 'tls');
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState(initialData.slackWebhookUrl || '');
+  const [slackChannel, setSlackChannel] = useState(initialData.slackChannel || '#ops-alerts');
   const [slackStatus, setSlackStatus] = useState<string | null>(null);
-  const [webhooks, setWebhooks] = useState(mockNotificationSettings.webhooks);
+  const [webhooks, setWebhooks] = useState(initialData.webhooks || []);
   const [newWebhook, setNewWebhook] = useState('');
-  const [preferences, setPreferences] = useState(() => {
-    const initial: Record<string, Record<string, boolean>> = {};
-    alertTypes.forEach(alert => {
-      initial[alert.id] = { email: true, slack: alert.id !== 'billing', webhook: false };
-    });
-    return initial;
-  });
+  const [preferences, setPreferences] = useState(initialData.preferences || getDefaultPreferences());
 
   const markDirty = () => {
     onDirty?.();
@@ -84,7 +102,20 @@ export default function OrgNotificationSettings({
   };
 
   const handleSave = () => {
-    onSave?.();
+    const data: NotificationsData = {
+      fromAddress,
+      replyTo,
+      useCustomSmtp,
+      smtpHost,
+      smtpPort,
+      smtpUsername,
+      smtpEncryption,
+      slackWebhookUrl,
+      slackChannel,
+      webhooks,
+      preferences
+    };
+    onSave?.(data);
   };
 
   const smtpFields = useMemo(
@@ -322,13 +353,13 @@ export default function OrgNotificationSettings({
                       <td key={channel.id} className="px-2 py-2">
                         <input
                           type="checkbox"
-                          checked={preferences[alert.id][channel.id]}
+                          checked={preferences[alert.id]?.[channel.id] ?? false}
                           onChange={() => {
                             setPreferences(prev => ({
                               ...prev,
                               [alert.id]: {
                                 ...prev[alert.id],
-                                [channel.id]: !prev[alert.id][channel.id]
+                                [channel.id]: !(prev[alert.id]?.[channel.id] ?? false)
                               }
                             }));
                             markDirty();

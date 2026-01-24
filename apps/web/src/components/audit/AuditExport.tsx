@@ -1,24 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Download, FileJson2, FileSpreadsheet, Info } from 'lucide-react';
+import { Download, FileJson2, FileSpreadsheet, Info, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type AuditExportProps = {
   rangeLabel?: string;
+  dateRange?: { from?: string; to?: string };
+  filters?: { user?: string; action?: string; resource?: string };
   onExport?: (format: 'csv' | 'json') => void;
-};
-
-type AuditExportRow = {
-  timestamp: string;
-  user: string;
-  action: string;
-  resource: string;
-  details: string;
-  ipAddress: string;
-  changes: {
-    before: Record<string, unknown>;
-    after: Record<string, unknown>;
-  };
-  [key: string]: unknown;
 };
 
 const columnOptions = [
@@ -28,36 +17,6 @@ const columnOptions = [
   { id: 'resource', label: 'Resource' },
   { id: 'details', label: 'Details' },
   { id: 'ipAddress', label: 'IP Address' }
-];
-
-const mockExportRows: AuditExportRow[] = [
-  {
-    timestamp: '2024-05-28 14:12',
-    user: 'Ariana Fields',
-    action: 'login',
-    resource: 'Admin Portal',
-    details: 'Successful login with MFA challenge passed.',
-    ipAddress: '174.20.31.10',
-    changes: { before: { mfa: false }, after: { mfa: true } }
-  },
-  {
-    timestamp: '2024-05-28 13:46',
-    user: 'Ariana Fields',
-    action: 'update',
-    resource: 'Endpoint Policy - West Region',
-    details: 'Updated USB access policy to read-only.',
-    ipAddress: '174.20.31.10',
-    changes: { before: { usbAccess: 'disabled' }, after: { usbAccess: 'read-only' } }
-  },
-  {
-    timestamp: '2024-05-27 21:28',
-    user: 'Priya Nair',
-    action: 'export',
-    resource: 'Alerts Report',
-    details: 'Exported alert data to CSV.',
-    ipAddress: '172.16.11.90',
-    changes: { before: { format: 'none' }, after: { format: 'csv' } }
-  }
 ];
 
 const formatLabels: Record<'csv' | 'json', string> = {
@@ -70,24 +29,6 @@ const formatIcons: Record<'csv' | 'json', JSX.Element> = {
   json: <FileJson2 className="h-4 w-4" />
 };
 
-const toCsv = (rows: Record<string, unknown>[], columns: string[]) => {
-  const header = columns.join(',');
-  const body = rows
-    .map(row =>
-      columns
-        .map(key => {
-          const value = row[key];
-          if (typeof value === 'string') {
-            return `"${value.replace(/"/g, '""')}"`;
-          }
-          return `${value ?? ''}`;
-        })
-        .join(',')
-    )
-    .join('\n');
-  return `${header}\n${body}`;
-};
-
 const downloadFile = (content: string, filename: string, type: string) => {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -98,12 +39,14 @@ const downloadFile = (content: string, filename: string, type: string) => {
   URL.revokeObjectURL(url);
 };
 
-export default function AuditExport({ rangeLabel = 'Last 30 days', onExport }: AuditExportProps) {
+export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, filters, onExport }: AuditExportProps) {
   const [format, setFormat] = useState<'csv' | 'json'>('csv');
   const [selectedColumns, setSelectedColumns] = useState<string[]>(
     columnOptions.map(option => option.id)
   );
   const [includeDetails, setIncludeDetails] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState<string>();
 
   const effectiveColumns = useMemo(() => {
     if (includeDetails) return selectedColumns;
@@ -119,24 +62,40 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', onExport }: A
     });
   };
 
-  const handleExport = () => {
-    const rows = mockExportRows.map(row => {
-      const base: Record<string, unknown> = {};
-      effectiveColumns.forEach(column => {
-        base[column] = row[column];
-      });
-      if (includeDetails) {
-        base.changes = row.changes;
-      }
-      return base;
-    });
+  const handleExport = async () => {
+    setExporting(true);
+    setError(undefined);
 
-    if (format === 'json') {
-      downloadFile(JSON.stringify(rows, null, 2), 'audit-log-export.json', 'application/json');
-    } else {
-      downloadFile(toCsv(rows, effectiveColumns), 'audit-log-export.csv', 'text/csv');
+    try {
+      const response = await fetchWithAuth('/api/audit-logs/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          format,
+          filters: filters || {},
+          dateRange: dateRange || {}
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+
+      if (format === 'csv') {
+        const csvContent = await response.text();
+        downloadFile(csvContent, 'audit-log-export.csv', 'text/csv');
+      } else {
+        const json = await response.json();
+        const data = json.data || json;
+        downloadFile(JSON.stringify(data, null, 2), 'audit-log-export.json', 'application/json');
+      }
+
+      onExport?.(format);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to export audit logs');
+    } finally {
+      setExporting(false);
     }
-    onExport?.(format);
   };
 
   return (
@@ -213,13 +172,20 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', onExport }: A
         </div>
       </div>
 
+      {error && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-center">
+          <p className="text-sm text-destructive">{error}</p>
+        </div>
+      )}
+
       <button
         type="button"
         onClick={handleExport}
-        className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+        disabled={exporting}
+        className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
       >
-        <Download className="h-4 w-4" />
-        Export {format.toUpperCase()}
+        {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+        {exporting ? 'Exporting...' : `Export ${format.toUpperCase()}`}
       </button>
     </div>
   );

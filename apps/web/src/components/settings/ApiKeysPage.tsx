@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import ApiKeyList, { type ApiKey } from './ApiKeyList';
 import ApiKeyForm, { CreatedKeyModal, type ApiKeyFormValues } from './ApiKeyForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'create' | 'view' | 'rotate' | 'revoke';
 
@@ -20,8 +21,12 @@ export default function ApiKeysPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/api-keys?page=${page}`);
+      const response = await fetchWithAuth(`/api-keys?page=${page}`);
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch API keys');
       }
       const data = await response.json();
@@ -76,9 +81,8 @@ export default function ApiKeysPage() {
   const handleCreateSubmit = async (values: ApiKeyFormValues) => {
     setSubmitting(true);
     try {
-      const response = await fetch('/api/api-keys', {
+      const response = await fetchWithAuth('/api-keys', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(values)
       });
 
@@ -102,7 +106,7 @@ export default function ApiKeysPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/api-keys/${selectedKey.id}/rotate`, {
+      const response = await fetchWithAuth(`/api-keys/${selectedKey.id}/rotate`, {
         method: 'POST'
       });
 
@@ -126,7 +130,7 @@ export default function ApiKeysPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/api-keys/${selectedKey.id}/revoke`, {
+      const response = await fetchWithAuth(`/api-keys/${selectedKey.id}/revoke`, {
         method: 'POST'
       });
 

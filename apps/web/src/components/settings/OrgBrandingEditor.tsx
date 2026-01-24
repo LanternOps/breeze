@@ -1,19 +1,29 @@
 import { type ChangeEvent, useEffect, useState } from 'react';
 import { Eye, Image, Palette, Save, Wand2, Globe } from 'lucide-react';
 
-type OrgBrandingEditorProps = {
-  onDirty?: () => void;
-  onSave?: () => void;
+type BrandingData = {
+  logoUrl?: string;
+  primaryColor?: string;
+  secondaryColor?: string;
+  theme?: 'light' | 'dark' | 'system';
+  customCss?: string;
+  portalSubdomain?: string;
 };
 
-const mockBranding = {
-  organizationName: 'Breeze Labs',
+type OrgBrandingEditorProps = {
+  organizationName: string;
+  branding?: BrandingData;
+  onDirty?: () => void;
+  onSave?: (data: BrandingData) => void;
+};
+
+const defaultBranding: BrandingData = {
   logoUrl: '',
   primaryColor: '#2563eb',
   secondaryColor: '#14b8a6',
-  theme: 'system' as const,
+  theme: 'system',
   customCss: '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}',
-  portalSubdomain: 'breeze'
+  portalSubdomain: ''
 };
 
 const themeOptions = [
@@ -22,14 +32,15 @@ const themeOptions = [
   { value: 'system', label: 'System' }
 ];
 
-export default function OrgBrandingEditor({ onDirty, onSave }: OrgBrandingEditorProps) {
-  const [logoPreview, setLogoPreview] = useState(mockBranding.logoUrl);
+export default function OrgBrandingEditor({ organizationName, branding, onDirty, onSave }: OrgBrandingEditorProps) {
+  const initialData = { ...defaultBranding, ...branding };
+  const [logoPreview, setLogoPreview] = useState(initialData.logoUrl || '');
   const [logoName, setLogoName] = useState('');
-  const [primaryColor, setPrimaryColor] = useState(mockBranding.primaryColor);
-  const [secondaryColor, setSecondaryColor] = useState(mockBranding.secondaryColor);
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(mockBranding.theme);
-  const [customCss, setCustomCss] = useState(mockBranding.customCss);
-  const [portalSubdomain, setPortalSubdomain] = useState(mockBranding.portalSubdomain);
+  const [primaryColor, setPrimaryColor] = useState(initialData.primaryColor || '#2563eb');
+  const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || '#14b8a6');
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(initialData.theme || 'system');
+  const [customCss, setCustomCss] = useState(initialData.customCss || '');
+  const [portalSubdomain, setPortalSubdomain] = useState(initialData.portalSubdomain || '');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -62,8 +73,16 @@ export default function OrgBrandingEditor({ onDirty, onSave }: OrgBrandingEditor
   };
 
   const handleSave = () => {
+    const data: BrandingData = {
+      logoUrl: logoPreview,
+      primaryColor,
+      secondaryColor,
+      theme,
+      customCss,
+      portalSubdomain
+    };
     setStatusMessage('Branding settings saved.');
-    onSave?.();
+    onSave?.(data);
   };
 
   return (
@@ -72,7 +91,7 @@ export default function OrgBrandingEditor({ onDirty, onSave }: OrgBrandingEditor
         <div>
           <h2 className="text-lg font-semibold">Branding</h2>
           <p className="text-sm text-muted-foreground">
-            Customize the portal experience for {mockBranding.organizationName}.
+            Customize the portal experience for {organizationName}.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -117,7 +136,7 @@ export default function OrgBrandingEditor({ onDirty, onSave }: OrgBrandingEditor
                     className="h-16 w-16 rounded-full object-cover"
                   />
                 ) : (
-                  mockBranding.organizationName.slice(0, 2).toUpperCase()
+                  organizationName.slice(0, 2).toUpperCase()
                 )}
               </div>
               <div className="space-y-1">

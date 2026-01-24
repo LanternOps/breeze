@@ -5,6 +5,7 @@ import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionM
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'execute' | 'delete' | 'execution-details';
 
@@ -28,12 +29,16 @@ export default function ScriptsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/scripts');
+      const response = await fetchWithAuth('/scripts');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch scripts');
       }
       const data = await response.json();
-      setScripts(data.scripts ?? data ?? []);
+      setScripts(data.data ?? data.scripts ?? (Array.isArray(data) ? data : []));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -43,10 +48,10 @@ export default function ScriptsPage() {
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        setDevices(data.devices ?? data ?? []);
+        setDevices(data.data ?? data.devices ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail - devices will be empty
@@ -55,10 +60,10 @@ export default function ScriptsPage() {
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetch('/api/sites');
+      const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.sites ?? data ?? []);
+        setSites(data.data ?? data.sites ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail - sites will be empty
@@ -74,7 +79,7 @@ export default function ScriptsPage() {
   const handleRun = async (script: Script) => {
     // Fetch full script details including parameters
     try {
-      const response = await fetch(`/api/scripts/${script.id}`);
+      const response = await fetchWithAuth(`/scripts/${script.id}`);
       if (response.ok) {
         const data = await response.json();
         setSelectedScript(data.script ?? data);
@@ -107,9 +112,8 @@ export default function ScriptsPage() {
     deviceIds: string[],
     parameters: Record<string, string | number | boolean>
   ) => {
-    const response = await fetch('/api/scripts/execute', {
+    const response = await fetchWithAuth('/scripts/execute', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scriptId, deviceIds, parameters })
     });
 
@@ -134,7 +138,7 @@ export default function ScriptsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/scripts/${selectedScript.id}`, {
+      const response = await fetchWithAuth(`/scripts/${selectedScript.id}`, {
         method: 'DELETE'
       });
 

@@ -56,7 +56,7 @@ const steps = [
 
 export default function PSAConnectionWizard() {
   const [step, setStep] = useState<StepId>(1);
-  const [selectedProvider, setSelectedProvider] = useState<Provider>(providers[0]);
+  const [selectedProvider, setSelectedProvider] = useState<Provider>(providers[0]!);
   const [apiUrl, setApiUrl] = useState('https://api.connectwise.com/v1');
   const [apiKey, setApiKey] = useState('cw_key_live_123');
   const [clientId, setClientId] = useState('cw-client-001');

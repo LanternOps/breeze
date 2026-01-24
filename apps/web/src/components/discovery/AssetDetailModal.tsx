@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { DiscoveredAsset } from './DiscoveredAssetList';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type AssetDetail = DiscoveredAsset & {
   openPorts?: number[];
@@ -47,9 +48,8 @@ export default function AssetDetailModal({
     try {
       setLinking(true);
       setLinkError(undefined);
-      const response = await fetch(`/api/discovery/assets/${asset.id}/link`, {
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/link`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceId: selectedDevice })
       });
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { EyeOff, Link2 } from 'lucide-react';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type DiscoveredAssetStatus = 'new' | 'linked' | 'ignored';
 export type DiscoveredAssetType =
@@ -119,7 +120,7 @@ export default function DiscoveredAssetList() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/discovery/assets');
+      const response = await fetchWithAuth('/discovery/assets');
       if (!response.ok) {
         throw new Error('Failed to fetch discovered assets');
       }
@@ -135,7 +136,7 @@ export default function DiscoveredAssetList() {
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (!response.ok) return;
       const data = await response.json();
       setDevices(data.devices ?? data.data ?? data ?? []);
@@ -152,9 +153,8 @@ export default function DiscoveredAssetList() {
   const handleIgnore = async (asset: DiscoveredAsset) => {
     try {
       setError(undefined);
-      const response = await fetch(`/api/discovery/assets/${asset.id}/ignore`, {
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/ignore`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
       });
 

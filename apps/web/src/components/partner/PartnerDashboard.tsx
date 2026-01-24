@@ -11,6 +11,7 @@ import {
   Users
 } from 'lucide-react';
 import { cn, formatNumber, formatRelativeTime } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type Device = {
   id?: string | number;
@@ -299,18 +300,18 @@ export default function PartnerDashboard() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/partner/customers');
+      const response = await fetchWithAuth('/partner/dashboard');
       if (!response.ok) {
-        throw new Error('Failed to fetch customers');
+        throw new Error('Failed to fetch partner dashboard');
       }
       const payload = await response.json();
       const data = payload?.data ?? payload ?? {};
       const list = Array.isArray(data)
         ? data
-        : data.customers ?? data.items ?? data.results ?? [];
+        : data.customers ?? data.organizations ?? data.items ?? data.results ?? [];
       setCustomers(Array.isArray(list) ? list : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch customers');
+      setError(err instanceof Error ? err.message : 'Failed to fetch partner dashboard');
     } finally {
       setLoading(false);
     }

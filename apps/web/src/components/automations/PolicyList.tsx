@@ -87,7 +87,8 @@ function formatDate(dateString: string): string {
   return date.toLocaleDateString();
 }
 
-function ComplianceMiniChart({ compliance }: { compliance: Policy['compliance'] }) {
+function ComplianceMiniChart({ compliance }: { compliance: Policy['compliance'] | undefined }) {
+  if (!compliance) return <span className="text-xs text-muted-foreground">N/A</span>;
   const { total, compliant, nonCompliant, unknown } = compliance;
   if (total === 0) return <span className="text-xs text-muted-foreground">N/A</span>;
 

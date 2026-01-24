@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Check, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type HeaderRow = { id: string; key: string; value: string };
 
@@ -20,12 +21,16 @@ const availableEvents = [
   'user.signed_in'
 ];
 
-const defaultHeaders: HeaderRow[] = [
-  { id: 'hdr-1', key: 'X-Env', value: 'production' },
-  { id: 'hdr-2', key: 'X-Region', value: 'us-east' }
-];
-
 type WebhookEditorProps = {
+  webhookId?: string;
+  initialValues?: {
+    name: string;
+    url: string;
+    events: string[];
+    headers: HeaderRow[];
+    secret: string;
+    active: boolean;
+  };
   onSave?: (payload: {
     name: string;
     url: string;
@@ -37,14 +42,18 @@ type WebhookEditorProps = {
   onTest?: () => void;
 };
 
-export default function WebhookEditor({ onSave, onTest }: WebhookEditorProps) {
-  const [name, setName] = useState('Ops Pager');
-  const [url, setUrl] = useState('https://hooks.ops-pager.io/breeze/events');
-  const [events, setEvents] = useState<string[]>(['device.offline', 'ticket.created']);
-  const [headers, setHeaders] = useState<HeaderRow[]>(defaultHeaders);
-  const [secret, setSecret] = useState('whsec_live_123456');
-  const [active, setActive] = useState(true);
+export default function WebhookEditor({ webhookId, initialValues, onSave, onTest }: WebhookEditorProps) {
+  const [name, setName] = useState(initialValues?.name ?? '');
+  const [url, setUrl] = useState(initialValues?.url ?? '');
+  const [events, setEvents] = useState<string[]>(initialValues?.events ?? []);
+  const [headers, setHeaders] = useState<HeaderRow[]>(initialValues?.headers ?? []);
+  const [secret, setSecret] = useState(initialValues?.secret ?? '');
+  const [active, setActive] = useState(initialValues?.active ?? true);
   const [touchedUrl, setTouchedUrl] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [error, setError] = useState<string>();
+  const [success, setSuccess] = useState<string>();
 
   const urlError = useMemo(() => {
     if (!touchedUrl) return '';
@@ -74,12 +83,72 @@ export default function WebhookEditor({ onSave, onTest }: WebhookEditorProps) {
     setHeaders(prev => prev.filter(header => header.id !== id));
   };
 
-  const handleSave = () => {
-    onSave?.({ name, url, events, headers, secret, active });
+  const handleSave = async () => {
+    setError(undefined);
+    setSuccess(undefined);
+    setSaving(true);
+
+    const payload = { name, url, events, headers, secret, active };
+
+    try {
+      if (onSave) {
+        onSave(payload);
+      } else {
+        const endpoint = webhookId ? `/webhooks/${webhookId}` : '/webhooks';
+        const method = webhookId ? 'PUT' : 'POST';
+
+        const response = await fetchWithAuth(endpoint, {
+          method,
+          body: JSON.stringify({
+            name,
+            url,
+            events,
+            headers: headers.filter(h => h.key),
+            secret,
+            enabled: active
+          })
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to save webhook');
+        }
+
+        setSuccess('Webhook saved successfully.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save webhook');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleTest = () => {
-    onTest?.();
+  const handleTest = async () => {
+    setError(undefined);
+    setSuccess(undefined);
+    setTesting(true);
+
+    try {
+      if (onTest) {
+        onTest();
+      } else if (webhookId) {
+        const response = await fetchWithAuth(`/webhooks/${webhookId}/test`, {
+          method: 'POST',
+          body: JSON.stringify({ event: events[0] || 'device.online' })
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || 'Test failed');
+        }
+
+        setSuccess('Test webhook sent successfully.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Test failed');
+    } finally {
+      setTesting(false);
+    }
   };
 
   return (
@@ -100,6 +169,18 @@ export default function WebhookEditor({ onSave, onTest }: WebhookEditorProps) {
           {active ? 'Active' : 'Disabled'}
         </button>
       </div>
+
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {success}
+        </div>
+      )}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
@@ -211,17 +292,19 @@ export default function WebhookEditor({ onSave, onTest }: WebhookEditorProps) {
         <button
           type="button"
           onClick={handleTest}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+          disabled={testing || !webhookId}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Check className="h-4 w-4" />
-          Test webhook
+          {testing ? 'Testing...' : 'Test webhook'}
         </button>
         <button
           type="button"
           onClick={handleSave}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+          disabled={saving}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Save changes
+          {saving ? 'Saving...' : 'Save changes'}
         </button>
       </div>
     </div>

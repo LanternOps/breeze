@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
   ArrowLeftRight
 } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ProviderId = 'zendesk' | 'freshdesk' | 'servicenow';
 
@@ -219,7 +220,7 @@ export default function TicketingIntegration() {
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<StatusMessage | null>(null);
 
-  const activeProviderOption = providerOptions.find(option => option.id === activeProvider) ?? providerOptions[0];
+  const activeProviderOption = providerOptions.find(option => option.id === activeProvider) ?? providerOptions[0]!;
 
   const configComplete = useMemo(() => {
     if (activeProvider === 'zendesk') {
@@ -251,7 +252,7 @@ export default function TicketingIntegration() {
       try {
         setLoading(true);
         setLoadError(undefined);
-        const response = await fetch('/api/integrations/ticketing');
+        const response = await fetchWithAuth('/integrations/ticketing');
         if (!response.ok) {
           throw new Error('Failed to load ticketing settings');
         }
@@ -337,9 +338,8 @@ export default function TicketingIntegration() {
     setTestStatus(null);
     setSaveStatus(null);
     try {
-      const response = await fetch('/api/integrations/ticketing/test', {
+      const response = await fetchWithAuth('/integrations/ticketing/test', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload())
       });
       if (!response.ok) {
@@ -365,9 +365,8 @@ export default function TicketingIntegration() {
     setSaving(true);
     setSaveStatus(null);
     try {
-      const response = await fetch('/api/integrations/ticketing', {
+      const response = await fetchWithAuth('/integrations/ticketing', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload())
       });
       if (!response.ok) {

@@ -1,211 +1,203 @@
-import React from 'react';
-import {
-  View,
-  StyleSheet,
-  ScrollView,
-} from 'react-native';
-import {
-  Text,
-  useTheme,
-  Surface,
-  Button,
-  Divider,
-  List,
-  ProgressBar,
-} from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React, { useEffect, useState } from 'react';
+import { View, ScrollView, StyleSheet } from 'react-native';
+import { Text, useTheme, Surface, Button, ActivityIndicator, Chip } from 'react-native-paper';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
-import { StatusBadge } from '../../components/StatusBadge';
 import type { DevicesStackParamList } from '../../navigation/MainNavigator';
+import { StatusBadge } from '../../components/StatusBadge';
+import { getDeviceMetrics, sendDeviceAction, type Device, type DeviceAction } from '../../services/api';
 
 type Props = NativeStackScreenProps<DevicesStackParamList, 'DeviceDetail'>;
 
-export function DeviceDetailScreen({ route, navigation }: Props) {
+export function DeviceDetailScreen({ route }: Props) {
   const theme = useTheme();
   const { device } = route.params;
+  const [metrics, setMetrics] = useState<Device['metrics']>(device.metrics);
+  const [isLoadingMetrics, setIsLoadingMetrics] = useState(false);
+  const [actionLoading, setActionLoading] = useState<DeviceAction | null>(null);
 
-  const formatDate = (dateString: string | undefined) => {
-    if (!dateString) return 'Unknown';
-    const date = new Date(dateString);
-    return date.toLocaleString();
-  };
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        setIsLoadingMetrics(true);
+        const data = await getDeviceMetrics(device.id);
+        setMetrics(data);
+      } catch {
+        // Keep existing metrics on error
+      } finally {
+        setIsLoadingMetrics(false);
+      }
+    };
 
-  const formatBytes = (bytes: number | undefined) => {
-    if (bytes === undefined) return 'Unknown';
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    if (bytes === 0) return '0 Bytes';
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${parseFloat((bytes / Math.pow(1024, i)).toFixed(2))} ${sizes[i]}`;
-  };
+    fetchMetrics();
+  }, [device.id]);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'online':
-        return theme.colors.primary;
-      case 'offline':
-        return theme.colors.error;
-      case 'warning':
-        return '#f59e0b';
-      default:
-        return theme.colors.onSurfaceVariant;
+  const handleAction = async (action: DeviceAction) => {
+    try {
+      setActionLoading(action);
+      await sendDeviceAction(device.id, action);
+    } catch (err) {
+      // Handle error silently or show toast
+    } finally {
+      setActionLoading(null);
     }
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Surface style={[styles.headerCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          <View style={styles.headerRow}>
-            <StatusBadge
-              severity={device.status as 'online' | 'offline' | 'warning'}
-              size="large"
-            />
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              Last seen: {formatDate(device.lastSeen)}
-            </Text>
+    <ScrollView
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      contentContainerStyle={styles.content}
+    >
+      <Surface style={styles.card} elevation={1}>
+        <View style={styles.header}>
+          <Text variant="headlineSmall">{device.name}</Text>
+          <StatusBadge severity={device.status} />
+        </View>
+
+        <View style={styles.details}>
+          {device.hostname && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Hostname
+              </Text>
+              <Text variant="bodyMedium">{device.hostname}</Text>
+            </View>
+          )}
+
+          {device.ipAddress && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                IP Address
+              </Text>
+              <Text variant="bodyMedium">{device.ipAddress}</Text>
+            </View>
+          )}
+
+          {device.os && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Operating System
+              </Text>
+              <Text variant="bodyMedium">{device.os}</Text>
+            </View>
+          )}
+
+          {device.agentVersion && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Agent Version
+              </Text>
+              <Text variant="bodyMedium">{device.agentVersion}</Text>
+            </View>
+          )}
+
+          {device.lastSeen && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Last Seen
+              </Text>
+              <Text variant="bodyMedium">
+                {new Date(device.lastSeen).toLocaleString()}
+              </Text>
+            </View>
+          )}
+
+          {device.organizationName && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Organization
+              </Text>
+              <Text variant="bodyMedium">{device.organizationName}</Text>
+            </View>
+          )}
+
+          {device.siteName && (
+            <View style={styles.detailRow}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Site
+              </Text>
+              <Text variant="bodyMedium">{device.siteName}</Text>
+            </View>
+          )}
+        </View>
+      </Surface>
+
+      <Surface style={styles.card} elevation={1}>
+        <Text variant="titleMedium" style={styles.sectionTitle}>
+          Metrics
+        </Text>
+        {isLoadingMetrics ? (
+          <ActivityIndicator size="small" />
+        ) : metrics ? (
+          <View style={styles.metricsContainer}>
+            <View style={styles.metricItem}>
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                CPU
+              </Text>
+              <Chip compact>{metrics.cpuUsage?.toFixed(1) ?? '--'}%</Chip>
+            </View>
+            <View style={styles.metricItem}>
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                Memory
+              </Text>
+              <Chip compact>{metrics.memoryUsage?.toFixed(1) ?? '--'}%</Chip>
+            </View>
+            <View style={styles.metricItem}>
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                Disk
+              </Text>
+              <Chip compact>{metrics.diskUsage?.toFixed(1) ?? '--'}%</Chip>
+            </View>
           </View>
-
-          <Text variant="headlineSmall" style={[styles.title, { color: theme.colors.onSurface }]}>
-            {device.name}
-          </Text>
-
-          <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>
-            {device.hostname || 'No hostname'}
-          </Text>
-        </Surface>
-
-        <Surface style={[styles.detailsCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          <Text variant="titleMedium" style={styles.sectionTitle}>
-            System Information
-          </Text>
-
-          <List.Item
-            title="Operating System"
-            description={device.os || 'Unknown'}
-            left={(props) => <List.Icon {...props} icon="laptop" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="IP Address"
-            description={device.ipAddress || 'Unknown'}
-            left={(props) => <List.Icon {...props} icon="ip-network" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Agent Version"
-            description={device.agentVersion || 'Unknown'}
-            left={(props) => <List.Icon {...props} icon="information" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Serial Number"
-            description={device.serialNumber || 'Unknown'}
-            left={(props) => <List.Icon {...props} icon="barcode" />}
-          />
-        </Surface>
-
-        {device.metrics && (
-          <Surface style={[styles.detailsCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <Text variant="titleMedium" style={styles.sectionTitle}>
-              System Metrics
-            </Text>
-
-            <View style={styles.metricContainer}>
-              <View style={styles.metricHeader}>
-                <Text variant="bodyMedium">CPU Usage</Text>
-                <Text variant="bodyMedium" style={{ color: theme.colors.primary }}>
-                  {device.metrics.cpuUsage?.toFixed(1)}%
-                </Text>
-              </View>
-              <ProgressBar
-                progress={(device.metrics.cpuUsage || 0) / 100}
-                color={theme.colors.primary}
-                style={styles.progressBar}
-              />
-            </View>
-
-            <View style={styles.metricContainer}>
-              <View style={styles.metricHeader}>
-                <Text variant="bodyMedium">Memory Usage</Text>
-                <Text variant="bodyMedium" style={{ color: theme.colors.primary }}>
-                  {device.metrics.memoryUsage?.toFixed(1)}%
-                </Text>
-              </View>
-              <ProgressBar
-                progress={(device.metrics.memoryUsage || 0) / 100}
-                color={theme.colors.secondary}
-                style={styles.progressBar}
-              />
-            </View>
-
-            <View style={styles.metricContainer}>
-              <View style={styles.metricHeader}>
-                <Text variant="bodyMedium">Disk Usage</Text>
-                <Text variant="bodyMedium" style={{ color: theme.colors.primary }}>
-                  {device.metrics.diskUsage?.toFixed(1)}%
-                </Text>
-              </View>
-              <ProgressBar
-                progress={(device.metrics.diskUsage || 0) / 100}
-                color={device.metrics.diskUsage && device.metrics.diskUsage > 90 ? theme.colors.error : theme.colors.tertiary}
-                style={styles.progressBar}
-              />
-            </View>
-          </Surface>
+        ) : (
+          <Text>No metrics available</Text>
         )}
+      </Surface>
 
-        <Surface style={[styles.detailsCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          <Text variant="titleMedium" style={styles.sectionTitle}>
-            Organization
-          </Text>
-
-          <List.Item
-            title="Organization"
-            description={device.organizationName || 'Unknown'}
-            left={(props) => <List.Icon {...props} icon="office-building" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Site"
-            description={device.siteName || 'Unknown'}
-            left={(props) => <List.Icon {...props} icon="map-marker" />}
-          />
-          <Divider />
-
-          <List.Item
-            title="Device Group"
-            description={device.groupName || 'Ungrouped'}
-            left={(props) => <List.Icon {...props} icon="folder" />}
-          />
-        </Surface>
-
+      <Surface style={styles.card} elevation={1}>
+        <Text variant="titleMedium" style={styles.sectionTitle}>
+          Actions
+        </Text>
         <View style={styles.actionsContainer}>
           <Button
-            mode="contained"
-            onPress={() => {/* TODO: Implement remote actions */}}
+            mode="outlined"
+            onPress={() => handleAction('reboot')}
+            loading={actionLoading === 'reboot'}
+            disabled={actionLoading !== null || device.status === 'offline'}
             style={styles.actionButton}
-            contentStyle={styles.buttonContent}
-            icon="console"
           >
-            Remote Shell
+            Reboot
           </Button>
-
           <Button
             mode="outlined"
-            onPress={() => navigation.goBack()}
+            onPress={() => handleAction('shutdown')}
+            loading={actionLoading === 'shutdown'}
+            disabled={actionLoading !== null || device.status === 'offline'}
             style={styles.actionButton}
-            contentStyle={styles.buttonContent}
           >
-            Go Back
+            Shutdown
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => handleAction('lock')}
+            loading={actionLoading === 'lock'}
+            disabled={actionLoading !== null || device.status === 'offline'}
+            style={styles.actionButton}
+          >
+            Lock
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => handleAction('wake')}
+            loading={actionLoading === 'wake'}
+            disabled={actionLoading !== null}
+            style={styles.actionButton}
+          >
+            Wake
           </Button>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </Surface>
+    </ScrollView>
   );
 }
 
@@ -213,53 +205,46 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  scrollContent: {
+  content: {
     padding: 16,
+    gap: 16,
   },
-  headerCard: {
+  card: {
     padding: 16,
-    borderRadius: 12,
-    marginBottom: 16,
+    borderRadius: 8,
   },
-  headerRow: {
+  header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
-  },
-  title: {
-    marginBottom: 4,
-  },
-  detailsCard: {
-    borderRadius: 12,
     marginBottom: 16,
-    overflow: 'hidden',
   },
-  sectionTitle: {
-    padding: 16,
-    paddingBottom: 8,
-  },
-  metricContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  metricHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  progressBar: {
-    height: 8,
-    borderRadius: 4,
-  },
-  actionsContainer: {
-    marginTop: 8,
+  details: {
     gap: 12,
   },
-  actionButton: {
-    borderRadius: 8,
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  buttonContent: {
-    paddingVertical: 8,
+  sectionTitle: {
+    marginBottom: 12,
+  },
+  metricsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  metricItem: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  actionsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  actionButton: {
+    flex: 1,
+    minWidth: 100,
   },
 });

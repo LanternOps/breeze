@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Grip } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Grip, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type GridItem = {
   i: string;
@@ -11,32 +12,93 @@ type GridItem = {
   isDraggable?: boolean;
 };
 
+type Dashboard = {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string;
+  layout: Record<string, unknown>;
+  widgetIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 type DashboardGridProps = {
-  layout: GridItem[];
+  layout?: GridItem[];
+  dashboardId?: string;
   columns?: number;
   rowHeight?: number;
   gap?: number;
   isDraggable?: boolean;
   className?: string;
   onLayoutChange?: (layout: GridItem[]) => void;
+  onDashboardLoad?: (dashboard: Dashboard) => void;
   renderItem: (item: GridItem) => React.ReactNode;
 };
 
 export default function DashboardGrid({
   layout,
+  dashboardId,
   columns = 12,
   rowHeight = 72,
   gap = 16,
   isDraggable = true,
   className,
   onLayoutChange,
+  onDashboardLoad,
   renderItem
 }: DashboardGridProps) {
-  const [internalLayout, setInternalLayout] = useState<GridItem[]>(layout);
+  const [internalLayout, setInternalLayout] = useState<GridItem[]>(layout || []);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const fetchDashboard = useCallback(async () => {
+    if (!dashboardId) return;
+
+    setLoading(true);
+    setError(undefined);
+
+    try {
+      const response = await fetchWithAuth(`/api/analytics/dashboards/${dashboardId}`);
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      const dashboard: Dashboard = await response.json();
+      onDashboardLoad?.(dashboard);
+
+      // Convert dashboard layout to GridItem array if available
+      if (dashboard.layout && typeof dashboard.layout === 'object') {
+        const layoutItems = Object.entries(dashboard.layout).map(([key, value]) => {
+          const item = value as Record<string, unknown>;
+          return {
+            i: key,
+            x: Number(item.x) || 0,
+            y: Number(item.y) || 0,
+            w: Number(item.w) || 1,
+            h: Number(item.h) || 1,
+            isDraggable: item.isDraggable !== false
+          };
+        });
+        setInternalLayout(layoutItems);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+    } finally {
+      setLoading(false);
+    }
+  }, [dashboardId, onDashboardLoad]);
 
   useEffect(() => {
-    setInternalLayout(layout);
+    if (dashboardId) {
+      fetchDashboard();
+    }
+  }, [dashboardId, fetchDashboard]);
+
+  useEffect(() => {
+    if (layout) {
+      setInternalLayout(layout);
+    }
   }, [layout]);
 
   const orderedLayout = useMemo(
@@ -68,6 +130,31 @@ export default function DashboardGrid({
 
     commitLayout(nextLayout);
   };
+
+  if (loading) {
+    return (
+      <div className={cn('flex h-64 items-center justify-center rounded-lg border bg-muted/30', className)}>
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={cn('flex h-64 flex-col items-center justify-center rounded-lg border border-destructive/40 bg-destructive/10', className)}>
+        <p className="text-sm text-destructive">{error}</p>
+        {dashboardId && (
+          <button
+            type="button"
+            onClick={fetchDashboard}
+            className="mt-2 text-sm text-primary hover:underline"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -131,4 +218,4 @@ export default function DashboardGrid({
   );
 }
 
-export type { GridItem, DashboardGridProps };
+export type { GridItem, DashboardGridProps, Dashboard };

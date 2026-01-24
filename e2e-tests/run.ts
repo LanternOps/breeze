@@ -16,7 +16,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as yaml from 'yaml';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const yaml = require('yaml') as { parse: (input: string) => unknown };
 
 interface TestStep {
   id: string;
@@ -76,14 +77,14 @@ for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
     case '--test':
     case '-t':
-      options.test = args[++i];
+      options.test = args[++i] ?? '';
       break;
     case '--tags':
-      options.tags = args[++i].split(',');
+      options.tags = (args[++i] ?? '').split(',');
       break;
     case '--nodes':
     case '-n':
-      options.nodes = args[++i].split(',');
+      options.nodes = (args[++i] ?? '').split(',');
       break;
     case '--dry-run':
     case '-d':
@@ -261,7 +262,7 @@ async function runTest(test: Test): Promise<TestResult> {
       stepResult.status = 'passed';
       console.log(`     ✓ Passed`);
     } catch (error) {
-      stepResult.status = 'failed';
+      (stepResult as { status: 'passed' | 'failed' | 'skipped' }).status = 'failed';
       stepResult.error = error instanceof Error ? error.message : String(error);
       console.log(`     ✗ Failed: ${stepResult.error}`);
 

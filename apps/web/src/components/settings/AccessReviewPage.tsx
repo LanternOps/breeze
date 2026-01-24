@@ -406,6 +406,9 @@ export default function AccessReviewPage() {
           detail = await response.json();
         }
 
+        if (!detail) {
+          throw new Error('Failed to fetch review details for report');
+        }
         const csv = buildReviewCsv(detail);
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);

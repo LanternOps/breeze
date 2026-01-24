@@ -9,8 +9,19 @@ import {
   Users
 } from 'lucide-react';
 
-const mockBilling = {
-  organizationName: 'Breeze Labs',
+type BillingContact = {
+  name?: string;
+  email?: string;
+  phone?: string;
+};
+
+type OrgBillingInfoProps = {
+  organizationName: string;
+  billingContact?: BillingContact;
+};
+
+// Default billing data - in production this would come from billing service
+const defaultBilling = {
   plan: 'Growth',
   price: '$249',
   billingCycle: 'per month',
@@ -22,11 +33,6 @@ const mockBilling = {
     userLimit: 75,
     storage: 2.8,
     storageLimit: 5
-  },
-  billingContact: {
-    name: 'Jordan Lee',
-    email: 'billing@breeze.io',
-    phone: '+1 (555) 013-9981'
   },
   paymentMethod: {
     brand: 'Visa',
@@ -41,14 +47,18 @@ const mockBilling = {
   ]
 };
 
-export default function OrgBillingInfo() {
+export default function OrgBillingInfo({ organizationName, billingContact }: OrgBillingInfoProps) {
+  const billing = {
+    ...defaultBilling,
+    billingContact: billingContact || { name: 'Not set', email: 'Not set', phone: 'Not set' }
+  };
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">Billing</h2>
           <p className="text-sm text-muted-foreground">
-            Plan details and invoices for {mockBilling.organizationName}.
+            Plan details and invoices for {organizationName}.
           </p>
         </div>
         <button
@@ -66,9 +76,9 @@ export default function OrgBillingInfo() {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-xs uppercase text-muted-foreground">Current plan</p>
-                <h3 className="text-xl font-semibold">{mockBilling.plan}</h3>
+                <h3 className="text-xl font-semibold">{billing.plan}</h3>
                 <p className="text-sm text-muted-foreground">
-                  {mockBilling.price} {mockBilling.billingCycle}
+                  {billing.price} {billing.billingCycle}
                 </p>
               </div>
               <div className="flex items-center gap-2 text-sm text-emerald-600">
@@ -78,7 +88,7 @@ export default function OrgBillingInfo() {
             </div>
             <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
               <CalendarDays className="h-3.5 w-3.5" />
-              Next renewal on {mockBilling.renewalDate}
+              Next renewal on {billing.renewalDate}
             </div>
           </div>
 
@@ -89,7 +99,7 @@ export default function OrgBillingInfo() {
                 Devices
               </div>
               <p className="mt-2 text-lg font-semibold">
-                {mockBilling.usage.devices} / {mockBilling.usage.deviceLimit}
+                {billing.usage.devices} / {billing.usage.deviceLimit}
               </p>
               <p className="text-xs text-muted-foreground">Managed endpoints</p>
             </div>
@@ -99,7 +109,7 @@ export default function OrgBillingInfo() {
                 Users
               </div>
               <p className="mt-2 text-lg font-semibold">
-                {mockBilling.usage.users} / {mockBilling.usage.userLimit}
+                {billing.usage.users} / {billing.usage.userLimit}
               </p>
               <p className="text-xs text-muted-foreground">Licensed seats</p>
             </div>
@@ -109,7 +119,7 @@ export default function OrgBillingInfo() {
                 Storage
               </div>
               <p className="mt-2 text-lg font-semibold">
-                {mockBilling.usage.storage}TB / {mockBilling.usage.storageLimit}TB
+                {billing.usage.storage}TB / {billing.usage.storageLimit}TB
               </p>
               <p className="text-xs text-muted-foreground">Retention storage</p>
             </div>
@@ -121,9 +131,9 @@ export default function OrgBillingInfo() {
                 <Receipt className="h-4 w-4" />
                 Billing contact
               </div>
-              <p className="mt-3 text-sm font-semibold">{mockBilling.billingContact.name}</p>
-              <p className="text-xs text-muted-foreground">{mockBilling.billingContact.email}</p>
-              <p className="text-xs text-muted-foreground">{mockBilling.billingContact.phone}</p>
+              <p className="mt-3 text-sm font-semibold">{billing.billingContact.name}</p>
+              <p className="text-xs text-muted-foreground">{billing.billingContact.email}</p>
+              <p className="text-xs text-muted-foreground">{billing.billingContact.phone}</p>
             </div>
             <div className="rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
@@ -131,9 +141,9 @@ export default function OrgBillingInfo() {
                 Payment method
               </div>
               <p className="mt-3 text-sm font-semibold">
-                {mockBilling.paymentMethod.brand} ending in {mockBilling.paymentMethod.last4}
+                {billing.paymentMethod.brand} ending in {billing.paymentMethod.last4}
               </p>
-              <p className="text-xs text-muted-foreground">Expires {mockBilling.paymentMethod.expiry}</p>
+              <p className="text-xs text-muted-foreground">Expires {billing.paymentMethod.expiry}</p>
             </div>
           </div>
         </div>
@@ -154,7 +164,7 @@ export default function OrgBillingInfo() {
                 </tr>
               </thead>
               <tbody>
-                {mockBilling.invoices.map(invoice => (
+                {billing.invoices.map(invoice => (
                   <tr key={invoice.id} className="border-t">
                     <td className="px-2 py-2 font-medium">{invoice.id}</td>
                     <td className="px-2 py-2">{invoice.date}</td>

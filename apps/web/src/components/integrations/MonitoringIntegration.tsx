@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Webhook
 } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type WebhookEndpoint = {
   id: string;
@@ -222,7 +223,7 @@ export default function MonitoringIntegration() {
     try {
       setLoading(true);
       setLoadError(undefined);
-      const response = await fetch('/api/integrations/monitoring');
+      const response = await fetchWithAuth('/integrations/monitoring');
       if (!response.ok) {
         throw new Error('Failed to load monitoring settings');
       }
@@ -314,9 +315,8 @@ export default function MonitoringIntegration() {
   const handleSave = async () => {
     setSaveState({ status: 'saving' });
     try {
-      const response = await fetch('/api/integrations/monitoring', {
+      const response = await fetchWithAuth('/integrations/monitoring', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)
       });
 
@@ -358,9 +358,8 @@ export default function MonitoringIntegration() {
         endpointId
       };
 
-      const response = await fetch('/api/integrations/monitoring/test', {
+      const response = await fetchWithAuth('/integrations/monitoring/test', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await response.json().catch(() => ({}));

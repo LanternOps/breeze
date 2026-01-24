@@ -3,6 +3,8 @@ import { Plus, Send } from 'lucide-react';
 import WebhookList, { type Webhook } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
 import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryHistory';
+import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -31,6 +33,7 @@ const getWebhookEnabled = (webhook: Webhook) => {
 };
 
 export default function WebhooksPage() {
+  const { currentOrgId } = useOrgStore();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -47,12 +50,12 @@ export default function WebhooksPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/webhooks');
+      const response = await fetchWithAuth('/webhooks');
       if (!response.ok) {
         throw new Error('Failed to fetch webhooks');
       }
       const data = await response.json();
-      setWebhooks(data.webhooks ?? data ?? []);
+      setWebhooks(data.data ?? data.webhooks ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -64,12 +67,12 @@ export default function WebhooksPage() {
     try {
       setDeliveriesLoading(true);
       setDeliveriesError(undefined);
-      const response = await fetch(`/api/webhooks/${webhookId}/deliveries`);
+      const response = await fetchWithAuth(`/webhooks/${webhookId}/deliveries`);
       if (!response.ok) {
         throw new Error('Failed to fetch delivery history');
       }
       const data = await response.json();
-      setDeliveries(data.deliveries ?? data ?? []);
+      setDeliveries(data.data ?? data.deliveries ?? []);
     } catch (err) {
       setDeliveriesError(err instanceof Error ? err.message : 'Unable to load delivery history');
       setDeliveries([]);
@@ -144,9 +147,8 @@ export default function WebhooksPage() {
 
   const handleTest = async (webhook: Webhook, eventType?: string) => {
     try {
-      const response = await fetch(`/api/webhooks/${webhook.id}/test`, {
+      const response = await fetchWithAuth(`/webhooks/${webhook.id}/test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           event: eventType ?? webhook.events?.[0] ?? defaultEventType,
           payloadTemplate: webhook.payloadTemplate
@@ -168,9 +170,8 @@ export default function WebhooksPage() {
 
   const handleToggle = async (webhook: Webhook, enabled: boolean) => {
     try {
-      const response = await fetch(`/api/webhooks/${webhook.id}`, {
+      const response = await fetchWithAuth(`/webhooks/${webhook.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled })
       });
 
@@ -236,13 +237,17 @@ export default function WebhooksPage() {
     try {
       const payload = transformFormToPayload(values);
       const url =
-        modalMode === 'create' ? '/api/webhooks' : `/api/webhooks/${selectedWebhook?.id}`;
+        modalMode === 'create' ? '/webhooks' : `/webhooks/${selectedWebhook?.id}`;
       const method = modalMode === 'create' ? 'POST' : 'PUT';
 
-      const response = await fetch(url, {
+      // Include orgId when creating a new webhook
+      const requestPayload = modalMode === 'create' && currentOrgId
+        ? { ...payload, orgId: currentOrgId }
+        : payload;
+
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(requestPayload)
       });
 
       if (!response.ok) {
@@ -264,7 +269,7 @@ export default function WebhooksPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/webhooks/${selectedWebhook.id}`, {
+      const response = await fetchWithAuth(`/webhooks/${selectedWebhook.id}`, {
         method: 'DELETE'
       });
 
@@ -285,8 +290,8 @@ export default function WebhooksPage() {
     if (!activeWebhookId) return;
 
     try {
-      const response = await fetch(
-        `/api/webhooks/${activeWebhookId}/deliveries/${delivery.id}/retry`,
+      const response = await fetchWithAuth(
+        `/webhooks/${activeWebhookId}/deliveries/${delivery.id}/retry`,
         { method: 'POST' }
       );
 

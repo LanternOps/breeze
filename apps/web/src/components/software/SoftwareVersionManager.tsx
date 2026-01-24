@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, Download, Plus, Sparkles, CheckCircle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, Download, Loader2, Plus, Sparkles, CheckCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type Architecture = 'x64' | 'arm64' | 'x86';
 
@@ -13,44 +14,47 @@ type VersionEntry = {
   notes: string[];
 };
 
-const initialVersions: VersionEntry[] = [
-  {
-    id: 'ver-124',
-    version: '124.0',
-    releaseDate: '2024-03-19',
-    architecture: 'x64',
-    downloads: 14230,
-    notes: ['Security hardening', 'WebGPU improvements', 'Policy updates for admins']
-  },
-  {
-    id: 'ver-123',
-    version: '123.0',
-    releaseDate: '2024-02-22',
-    architecture: 'x64',
-    downloads: 11240,
-    notes: ['Performance upgrades', 'Improved tab isolation', 'New extension controls']
-  },
-  {
-    id: 'ver-122',
-    version: '122.0',
-    releaseDate: '2024-01-20',
-    architecture: 'x64',
-    downloads: 9782,
-    notes: ['UI refresh', 'TLS defaults tightened', 'New reporting APIs']
-  }
-];
-
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   return date.toLocaleDateString();
 }
 
+function normalizeVersion(raw: Record<string, unknown>, index: number): VersionEntry {
+  const notesRaw = raw.notes ?? raw.releaseNotes ?? raw.changelog;
+  let notes: string[] = [];
+  if (typeof notesRaw === 'string') {
+    notes = notesRaw.split('\n').map(n => n.trim()).filter(Boolean);
+  } else if (Array.isArray(notesRaw)) {
+    notes = notesRaw.map(n => String(n)).filter(Boolean);
+  }
+
+  const archRaw = raw.architecture ?? raw.arch ?? raw.platform ?? 'x64';
+  let architecture: Architecture = 'x64';
+  if (['arm64', 'arm', 'aarch64'].includes(String(archRaw).toLowerCase())) {
+    architecture = 'arm64';
+  } else if (['x86', 'i386', 'i686', '32bit'].includes(String(archRaw).toLowerCase())) {
+    architecture = 'x86';
+  }
+
+  return {
+    id: String(raw.id ?? raw.versionId ?? `ver-${index}`),
+    version: String(raw.version ?? ''),
+    releaseDate: String(raw.releaseDate ?? raw.releasedAt ?? ''),
+    architecture,
+    downloads: Number(raw.downloads ?? raw.downloadCount ?? 0),
+    notes
+  };
+}
+
 export default function SoftwareVersionManager() {
-  const [versions, setVersions] = useState<VersionEntry[]>(initialVersions);
-  const [latestId, setLatestId] = useState<string>(initialVersions[0].id);
+  const [versions, setVersions] = useState<VersionEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [latestId, setLatestId] = useState<string>('');
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const [selectedVersionId, setSelectedVersionId] = useState<string>(initialVersions[0].id);
+  const [selectedVersionId, setSelectedVersionId] = useState<string>('');
+  const [saving, setSaving] = useState(false);
   const [formState, setFormState] = useState({
     version: '',
     releaseDate: '',
@@ -58,6 +62,58 @@ export default function SoftwareVersionManager() {
     downloads: '0',
     notes: ''
   });
+
+  const fetchVersions = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+
+      const response = await fetchWithAuth('/software/catalog');
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch software versions');
+      }
+
+      const payload = await response.json();
+      const catalogData = payload.data ?? payload ?? [];
+
+      // Get first catalog item and fetch its versions
+      if (Array.isArray(catalogData) && catalogData.length > 0) {
+        const firstItem = catalogData[0] as Record<string, unknown>;
+        const catalogId = firstItem.id;
+
+        if (catalogId) {
+          const versionsResponse = await fetchWithAuth(`/software/catalog/${catalogId}/versions`);
+          if (versionsResponse.ok) {
+            const versionsPayload = await versionsResponse.json();
+            const versionsList = versionsPayload.data ?? versionsPayload.versions ?? versionsPayload ?? [];
+
+            const normalizedVersions = Array.isArray(versionsList)
+              ? versionsList.map((v: Record<string, unknown>, i: number) => normalizeVersion(v, i))
+              : [];
+
+            setVersions(normalizedVersions);
+
+            if (normalizedVersions.length > 0) {
+              const firstVersion = normalizedVersions[0];
+              if (firstVersion) {
+                setLatestId(firstVersion.id);
+                setSelectedVersionId(firstVersion.id);
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch versions');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchVersions();
+  }, [fetchVersions]);
 
   const latestVersion = useMemo(
     () => versions.find(item => item.id === latestId) ?? versions[0],
@@ -69,28 +125,83 @@ export default function SoftwareVersionManager() {
     [versions, selectedVersionId]
   );
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!formState.version.trim()) return;
 
-    const newVersion: VersionEntry = {
-      id: `ver-${formState.version}`,
-      version: formState.version.trim(),
-      releaseDate: formState.releaseDate || '2024-01-15',
-      architecture: formState.architecture,
-      downloads: Number(formState.downloads) || 0,
-      notes: formState.notes
-        .split('\n')
-        .map(note => note.trim())
-        .filter(Boolean)
-    };
+    try {
+      setSaving(true);
 
-    setVersions(prev => [newVersion, ...prev]);
-    setLatestId(newVersion.id);
-    setSelectedVersionId(newVersion.id);
-    setFormState({ version: '', releaseDate: '', architecture: 'x64', downloads: '0', notes: '' });
-    setIsFormOpen(false);
+      // Get the first catalog item ID to add version to
+      const catalogResponse = await fetchWithAuth('/software/catalog');
+      if (!catalogResponse.ok) {
+        throw new Error('Failed to fetch catalog');
+      }
+
+      const catalogPayload = await catalogResponse.json();
+      const catalogData = catalogPayload.data ?? catalogPayload ?? [];
+      if (!Array.isArray(catalogData) || catalogData.length === 0) {
+        throw new Error('No catalog items found');
+      }
+
+      const catalogId = (catalogData[0] as Record<string, unknown>).id;
+
+      const response = await fetchWithAuth(`/software/catalog/${catalogId}/versions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          version: formState.version.trim(),
+          releaseDate: formState.releaseDate || new Date().toISOString(),
+          notes: formState.notes,
+          downloadUrl: 'https://example.com/download',
+          supportedPlatforms: ['windows', 'macos', 'linux']
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create version');
+      }
+
+      const newVersionData = await response.json();
+      const newVersion = normalizeVersion(newVersionData.data ?? newVersionData, versions.length);
+
+      setVersions(prev => [newVersion, ...prev]);
+      setLatestId(newVersion.id);
+      setSelectedVersionId(newVersion.id);
+      setFormState({ version: '', releaseDate: '', architecture: 'x64', downloads: '0', notes: '' });
+      setIsFormOpen(false);
+    } catch (err) {
+      console.error('Failed to create version:', err);
+      alert('Failed to create version. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading software versions...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && versions.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchVersions}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -109,6 +220,12 @@ export default function SoftwareVersionManager() {
           {isFormOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
         </button>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       {isFormOpen && (
         <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-6 shadow-sm">
@@ -173,9 +290,10 @@ export default function SoftwareVersionManager() {
             </button>
             <button
               type="submit"
-              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+              disabled={saving}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              Save Version
+              {saving ? 'Saving...' : 'Save Version'}
             </button>
           </div>
         </form>
@@ -207,98 +325,108 @@ export default function SoftwareVersionManager() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {versions.map(entry => (
-                <tr key={entry.id} className="text-sm">
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedVersionId(entry.id)}
-                      className="text-left text-sm font-medium text-foreground hover:text-primary"
-                    >
-                      v{entry.version}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">{formatDate(entry.releaseDate)}</td>
-                  <td className="px-4 py-3">
-                    <span className="rounded-full border px-2 py-1 text-xs font-medium text-muted-foreground">
-                      {entry.architecture}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">{entry.downloads.toLocaleString()}</td>
-                  <td className="px-4 py-3">
-                    <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                      <input
-                        type="checkbox"
-                        checked={entry.id === latestId}
-                        onChange={() => setLatestId(entry.id)}
-                        className="h-4 w-4 rounded border"
-                      />
-                      Set as latest
-                    </label>
+              {versions.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    No versions found.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                versions.map(entry => (
+                  <tr key={entry.id} className="text-sm">
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedVersionId(entry.id)}
+                        className="text-left text-sm font-medium text-foreground hover:text-primary"
+                      >
+                        v{entry.version}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{formatDate(entry.releaseDate)}</td>
+                    <td className="px-4 py-3">
+                      <span className="rounded-full border px-2 py-1 text-xs font-medium text-muted-foreground">
+                        {entry.architecture}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{entry.downloads.toLocaleString()}</td>
+                    <td className="px-4 py-3">
+                      <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={entry.id === latestId}
+                          onChange={() => setLatestId(entry.id)}
+                          className="h-4 w-4 rounded border"
+                        />
+                        Set as latest
+                      </label>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-primary" />
-            <h3 className="text-lg font-semibold">What's new</h3>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">Selected release highlights.</p>
-          <div className="mt-4 space-y-3">
-            {selectedVersion.notes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No release notes for this build.</p>
-            ) : (
-              selectedVersion.notes.map(note => (
-                <div key={note} className="flex items-start gap-2 text-sm">
-                  <span className="mt-1 h-2 w-2 rounded-full bg-primary" />
-                  <span>{note}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
-          <div className="flex items-center gap-2">
-            <Download className="h-5 w-5 text-primary" />
-            <h3 className="text-lg font-semibold">Version comparison</h3>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">Compare the selected build against latest.</p>
-
-          <div className="mt-4 space-y-4">
-            <div className="rounded-md border bg-muted/30 p-4">
-              <p className="text-xs uppercase text-muted-foreground">Latest build</p>
-              <p className="mt-2 text-lg font-semibold">v{latestVersion.version}</p>
-              <p className="text-sm text-muted-foreground">Released {formatDate(latestVersion.releaseDate)}</p>
+      {selectedVersion && latestVersion && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-primary" />
+              <h3 className="text-lg font-semibold">What's new</h3>
             </div>
-            <div
-              className={cn(
-                'rounded-md border p-4',
-                selectedVersion.id === latestVersion.id ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-muted/30'
-              )}
-            >
-              <p className="text-xs uppercase text-muted-foreground">Selected build</p>
-              <p className="mt-2 text-lg font-semibold">v{selectedVersion.version}</p>
-              <p className="text-sm text-muted-foreground">Released {formatDate(selectedVersion.releaseDate)}</p>
-              {selectedVersion.id === latestVersion.id ? (
-                <p className="mt-2 text-xs text-emerald-600">Up to date</p>
+            <p className="mt-1 text-sm text-muted-foreground">Selected release highlights.</p>
+            <div className="mt-4 space-y-3">
+              {selectedVersion.notes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No release notes for this build.</p>
               ) : (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {latestVersion.downloads - selectedVersion.downloads > 0
-                    ? `${(latestVersion.downloads - selectedVersion.downloads).toLocaleString()} fewer downloads than latest.`
-                    : 'Adoption tracking in progress.'}
-                </p>
+                selectedVersion.notes.map(note => (
+                  <div key={note} className="flex items-start gap-2 text-sm">
+                    <span className="mt-1 h-2 w-2 rounded-full bg-primary" />
+                    <span>{note}</span>
+                  </div>
+                ))
               )}
             </div>
           </div>
+
+          <div className="rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Download className="h-5 w-5 text-primary" />
+              <h3 className="text-lg font-semibold">Version comparison</h3>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">Compare the selected build against latest.</p>
+
+            <div className="mt-4 space-y-4">
+              <div className="rounded-md border bg-muted/30 p-4">
+                <p className="text-xs uppercase text-muted-foreground">Latest build</p>
+                <p className="mt-2 text-lg font-semibold">v{latestVersion.version}</p>
+                <p className="text-sm text-muted-foreground">Released {formatDate(latestVersion.releaseDate)}</p>
+              </div>
+              <div
+                className={cn(
+                  'rounded-md border p-4',
+                  selectedVersion.id === latestVersion.id ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-muted/30'
+                )}
+              >
+                <p className="text-xs uppercase text-muted-foreground">Selected build</p>
+                <p className="mt-2 text-lg font-semibold">v{selectedVersion.version}</p>
+                <p className="text-sm text-muted-foreground">Released {formatDate(selectedVersion.releaseDate)}</p>
+                {selectedVersion.id === latestVersion.id ? (
+                  <p className="mt-2 text-xs text-emerald-600">Up to date</p>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {latestVersion.downloads - selectedVersion.downloads > 0
+                      ? `${(latestVersion.downloads - selectedVersion.downloads).toLocaleString()} fewer downloads than latest.`
+                      : 'Adoption tracking in progress.'}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

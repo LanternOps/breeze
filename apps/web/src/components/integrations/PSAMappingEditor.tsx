@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Save } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type MappingRow = {
   id: string;
@@ -10,7 +11,7 @@ type MappingRow = {
   options: string[];
 };
 
-const initialMappings: MappingRow[] = [
+const defaultMappings: MappingRow[] = [
   {
     id: 'map-1',
     breezeField: 'Account name',
@@ -54,11 +55,79 @@ const initialMappings: MappingRow[] = [
 ];
 
 export default function PSAMappingEditor() {
-  const [mappings, setMappings] = useState<MappingRow[]>(initialMappings);
+  const [mappings, setMappings] = useState<MappingRow[]>(defaultMappings);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const [success, setSuccess] = useState<string>();
+
+  const fetchMappings = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(undefined);
+      const response = await fetchWithAuth('/psa/mappings');
+      if (response.status === 404) {
+        // No mappings saved yet, use defaults
+        return;
+      }
+      if (!response.ok) {
+        throw new Error('Failed to load PSA mappings');
+      }
+      const data = await response.json();
+      const savedMappings = data.mappings ?? data.data ?? data ?? [];
+      if (Array.isArray(savedMappings) && savedMappings.length > 0) {
+        setMappings(savedMappings);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load PSA mappings');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMappings();
+  }, [fetchMappings]);
 
   const updateMapping = (id: string, field: 'psaField' | 'defaultValue', value: string) => {
     setMappings(prev => prev.map(row => (row.id === id ? { ...row, [field]: value } : row)));
+    setSuccess(undefined);
   };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(undefined);
+    setSuccess(undefined);
+
+    try {
+      const response = await fetchWithAuth('/psa/mappings', {
+        method: 'PUT',
+        body: JSON.stringify({ mappings })
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to save PSA mappings');
+      }
+
+      setSuccess('PSA mappings saved successfully.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save PSA mappings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading PSA mappings...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border bg-card p-6 shadow-sm">
@@ -71,12 +140,26 @@ export default function PSAMappingEditor() {
         </div>
         <button
           type="button"
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Save className="h-4 w-4" />
-          Save mapping
+          {saving ? 'Saving...' : 'Save mapping'}
         </button>
       </div>
+
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {success}
+        </div>
+      )}
 
       <div className="mt-6 grid gap-4 lg:grid-cols-[1fr_1fr]">
         <div className="rounded-lg border bg-muted/30 px-4 py-3 text-sm font-semibold text-muted-foreground">

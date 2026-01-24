@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import PsaConnectionList, { type PsaConnection } from './PsaConnectionList';
 import PsaConnectionForm, { type PsaConnectionFormValues } from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
 
@@ -36,7 +37,7 @@ export default function PsaConnectionsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/psa/connections');
+      const response = await fetchWithAuth('/psa/connections');
       if (!response.ok) {
         throw new Error('Failed to fetch PSA connections');
       }
@@ -51,7 +52,7 @@ export default function PsaConnectionsPage() {
 
   const fetchTickets = useCallback(async () => {
     try {
-      const response = await fetch('/api/psa/tickets?limit=25');
+      const response = await fetchWithAuth('/psa/tickets?limit=25');
       if (response.ok) {
         const data = await response.json();
         setTickets(data.data ?? []);
@@ -63,7 +64,7 @@ export default function PsaConnectionsPage() {
 
   const fetchConnectionDetails = useCallback(async (connectionId: string) => {
     try {
-      const response = await fetch(`/api/psa/connections/${connectionId}`);
+      const response = await fetchWithAuth(`/psa/connections/${connectionId}`);
       if (response.ok) {
         const data = await response.json();
         return data.data as PsaConnectionDetails;
@@ -94,7 +95,7 @@ export default function PsaConnectionsPage() {
 
   const handleSyncNow = async (connection: PsaConnection) => {
     try {
-      const response = await fetch(`/api/psa/connections/${connection.id}/sync`, {
+      const response = await fetchWithAuth(`/psa/connections/${connection.id}/sync`, {
         method: 'POST'
       });
 
@@ -111,9 +112,8 @@ export default function PsaConnectionsPage() {
 
   const handleToggleStatus = async (connection: PsaConnection, newStatus: 'active' | 'paused') => {
     try {
-      const response = await fetch(`/api/psa/connections/${connection.id}/status`, {
+      const response = await fetchWithAuth(`/psa/connections/${connection.id}/status`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
 
@@ -146,7 +146,7 @@ export default function PsaConnectionsPage() {
     setTestResult(null);
 
     try {
-      const response = await fetch(`/api/psa/connections/${selectedConnection.id}/test`, {
+      const response = await fetchWithAuth(`/psa/connections/${selectedConnection.id}/test`, {
         method: 'POST'
       });
       const data = await response.json();
@@ -167,8 +167,8 @@ export default function PsaConnectionsPage() {
     setSubmitting(true);
     try {
       const url = modalMode === 'edit' && selectedConnection
-        ? `/api/psa/connections/${selectedConnection.id}`
-        : '/api/psa/connections';
+        ? `/psa/connections/${selectedConnection.id}`
+        : '/psa/connections';
       const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
       const payload = { ...values } as Partial<PsaConnectionFormValues>;
@@ -178,9 +178,8 @@ export default function PsaConnectionsPage() {
         if (!payload.clientSecret) delete payload.clientSecret;
       }
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
@@ -204,7 +203,7 @@ export default function PsaConnectionsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/psa/connections/${selectedConnection.id}`, {
+      const response = await fetchWithAuth(`/psa/connections/${selectedConnection.id}`, {
         method: 'DELETE'
       });
 

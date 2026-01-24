@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link2, MessageSquare, Save, Send, Users, Webhook } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -48,22 +49,22 @@ const statusToneStyles: Record<StatusTone, string> = {
   info: 'text-muted-foreground'
 };
 
-const mockDefaults = {
+const defaultSettings = {
   slack: {
-    enabled: true,
-    workspaceName: 'Breeze Operations',
-    workspaceId: 'T03BREEZE',
+    enabled: false,
+    workspaceName: '',
+    workspaceId: '',
     defaultChannel: '#ops-alerts'
   },
   teams: {
-    enabled: true,
-    tenantId: '7dbf6e6b-50a2-44d7-9a7f-1d9a63baf411',
-    clientId: 'd2f2c017-0b11-41c0-8b2e-21e0edbb1c93',
-    clientSecret: '********'
+    enabled: false,
+    tenantId: '',
+    clientId: '',
+    clientSecret: ''
   },
   discord: {
     enabled: false,
-    webhookUrl: 'https://discord.com/api/webhooks/0000000000000/xxxxxxxxxxxxxxxx'
+    webhookUrl: ''
   },
   routingRules: [
     { severity: 'critical', slack: '#sev1', teams: 'Ops - Sev1', discord: '#critical' },
@@ -85,9 +86,8 @@ const buildRoutingPayload = (rules: RoutingRule[], provider: ProviderKey) =>
   }));
 
 const saveIntegration = async (endpoint: string, payload: Record<string, unknown>) => {
-  const response = await fetch(endpoint, {
+  const response = await fetchWithAuth(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
 
@@ -97,9 +97,8 @@ const saveIntegration = async (endpoint: string, payload: Record<string, unknown
 };
 
 const sendTest = async (endpoint: string, payload: Record<string, unknown>) => {
-  const response = await fetch(endpoint, {
+  const response = await fetchWithAuth(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, test: true })
   });
 
@@ -109,30 +108,81 @@ const sendTest = async (endpoint: string, payload: Record<string, unknown>) => {
 };
 
 export default function CommunicationIntegrations() {
-  const [slackEnabled, setSlackEnabled] = useState(mockDefaults.slack.enabled);
-  const [slackWorkspaceName] = useState(mockDefaults.slack.workspaceName);
-  const [slackWorkspaceId] = useState(mockDefaults.slack.workspaceId);
-  const [slackDefaultChannel, setSlackDefaultChannel] = useState(mockDefaults.slack.defaultChannel);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string>();
+
+  const [slackEnabled, setSlackEnabled] = useState(defaultSettings.slack.enabled);
+  const [slackWorkspaceName, setSlackWorkspaceName] = useState(defaultSettings.slack.workspaceName);
+  const [slackWorkspaceId, setSlackWorkspaceId] = useState(defaultSettings.slack.workspaceId);
+  const [slackDefaultChannel, setSlackDefaultChannel] = useState(defaultSettings.slack.defaultChannel);
   const [slackStatus, setSlackStatus] = useState<StatusMessage | null>(null);
   const [slackSaving, setSlackSaving] = useState(false);
   const [slackTesting, setSlackTesting] = useState(false);
 
-  const [teamsEnabled, setTeamsEnabled] = useState(mockDefaults.teams.enabled);
-  const [teamsTenantId, setTeamsTenantId] = useState(mockDefaults.teams.tenantId);
-  const [teamsClientId, setTeamsClientId] = useState(mockDefaults.teams.clientId);
-  const [teamsClientSecret, setTeamsClientSecret] = useState(mockDefaults.teams.clientSecret);
+  const [teamsEnabled, setTeamsEnabled] = useState(defaultSettings.teams.enabled);
+  const [teamsTenantId, setTeamsTenantId] = useState(defaultSettings.teams.tenantId);
+  const [teamsClientId, setTeamsClientId] = useState(defaultSettings.teams.clientId);
+  const [teamsClientSecret, setTeamsClientSecret] = useState(defaultSettings.teams.clientSecret);
   const [teamsStatus, setTeamsStatus] = useState<StatusMessage | null>(null);
   const [teamsSaving, setTeamsSaving] = useState(false);
   const [teamsTesting, setTeamsTesting] = useState(false);
 
-  const [discordEnabled, setDiscordEnabled] = useState(mockDefaults.discord.enabled);
-  const [discordWebhookUrl, setDiscordWebhookUrl] = useState(mockDefaults.discord.webhookUrl);
+  const [discordEnabled, setDiscordEnabled] = useState(defaultSettings.discord.enabled);
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState(defaultSettings.discord.webhookUrl);
   const [discordStatus, setDiscordStatus] = useState<StatusMessage | null>(null);
   const [discordSaving, setDiscordSaving] = useState(false);
   const [discordTesting, setDiscordTesting] = useState(false);
 
-  const [routingRules, setRoutingRules] = useState<RoutingRule[]>(mockDefaults.routingRules);
-  const [messageTemplate, setMessageTemplate] = useState(mockDefaults.messageTemplate);
+  const [routingRules, setRoutingRules] = useState<RoutingRule[]>(defaultSettings.routingRules);
+  const [messageTemplate, setMessageTemplate] = useState(defaultSettings.messageTemplate);
+
+  const fetchSettings = useCallback(async () => {
+    try {
+      setLoading(true);
+      setLoadError(undefined);
+      const response = await fetchWithAuth('/integrations/communication');
+      if (response.status === 404) {
+        // No settings saved yet, use defaults
+        return;
+      }
+      if (!response.ok) {
+        throw new Error('Failed to load communication settings');
+      }
+      const data = await response.json();
+      const settings = data.data ?? data ?? {};
+
+      if (settings.slack) {
+        setSlackEnabled(settings.slack.enabled ?? false);
+        setSlackWorkspaceName(settings.slack.workspaceName ?? '');
+        setSlackWorkspaceId(settings.slack.workspaceId ?? '');
+        setSlackDefaultChannel(settings.slack.defaultChannel ?? '#ops-alerts');
+      }
+      if (settings.teams) {
+        setTeamsEnabled(settings.teams.enabled ?? false);
+        setTeamsTenantId(settings.teams.tenantId ?? '');
+        setTeamsClientId(settings.teams.clientId ?? '');
+        setTeamsClientSecret(settings.teams.clientSecret ?? '');
+      }
+      if (settings.discord) {
+        setDiscordEnabled(settings.discord.enabled ?? false);
+        setDiscordWebhookUrl(settings.discord.webhookUrl ?? '');
+      }
+      if (Array.isArray(settings.routingRules) && settings.routingRules.length > 0) {
+        setRoutingRules(settings.routingRules);
+      }
+      if (settings.messageTemplate) {
+        setMessageTemplate(settings.messageTemplate);
+      }
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load communication settings');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSettings();
+  }, [fetchSettings]);
 
   const handleRoutingChange = (severity: Severity, provider: ProviderKey, value: string) => {
     setRoutingRules(prev =>
@@ -144,7 +194,7 @@ export default function CommunicationIntegrations() {
     setSlackSaving(true);
     setSlackStatus(null);
     try {
-      await saveIntegration('/api/integrations/slack', {
+      await saveIntegration('/integrations/slack', {
         enabled: slackEnabled,
         workspaceName: slackWorkspaceName,
         workspaceId: slackWorkspaceId,
@@ -167,7 +217,7 @@ export default function CommunicationIntegrations() {
     setSlackTesting(true);
     setSlackStatus(null);
     try {
-      await sendTest('/api/integrations/slack', {
+      await sendTest('/integrations/slack', {
         enabled: slackEnabled,
         workspaceName: slackWorkspaceName,
         workspaceId: slackWorkspaceId,
@@ -190,7 +240,7 @@ export default function CommunicationIntegrations() {
     setTeamsSaving(true);
     setTeamsStatus(null);
     try {
-      await saveIntegration('/api/integrations/teams', {
+      await saveIntegration('/integrations/teams', {
         enabled: teamsEnabled,
         tenantId: teamsTenantId,
         clientId: teamsClientId,
@@ -213,7 +263,7 @@ export default function CommunicationIntegrations() {
     setTeamsTesting(true);
     setTeamsStatus(null);
     try {
-      await sendTest('/api/integrations/teams', {
+      await sendTest('/integrations/teams', {
         enabled: teamsEnabled,
         tenantId: teamsTenantId,
         clientId: teamsClientId,
@@ -236,7 +286,7 @@ export default function CommunicationIntegrations() {
     setDiscordSaving(true);
     setDiscordStatus(null);
     try {
-      await saveIntegration('/api/integrations/discord', {
+      await saveIntegration('/integrations/discord', {
         enabled: discordEnabled,
         webhookUrl: discordWebhookUrl,
         routing: buildRoutingPayload(routingRules, 'discord'),
@@ -257,7 +307,7 @@ export default function CommunicationIntegrations() {
     setDiscordTesting(true);
     setDiscordStatus(null);
     try {
-      await sendTest('/api/integrations/discord', {
+      await sendTest('/integrations/discord', {
         enabled: discordEnabled,
         webhookUrl: discordWebhookUrl,
         routing: buildRoutingPayload(routingRules, 'discord'),
@@ -274,6 +324,17 @@ export default function CommunicationIntegrations() {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading communication integrations...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -282,6 +343,12 @@ export default function CommunicationIntegrations() {
           Connect chat tools, route alerts by severity, and customize messaging templates.
         </p>
       </div>
+
+      {loadError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {loadError}
+        </div>
+      )}
 
       <div className="grid gap-6 xl:grid-cols-3">
         <section className="rounded-xl border bg-card p-6 shadow-sm">

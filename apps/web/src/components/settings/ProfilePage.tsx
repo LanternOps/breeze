@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
+import { fetchWithAuth } from '../../stores/auth';
 
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -66,8 +67,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     const fetchUser = async () => {
       try {
         setIsLoadingUser(true);
-        const response = await fetch('/api/users/me');
+        const response = await fetchWithAuth('/users/me');
         if (!response.ok) {
+          if (response.status === 401) {
+            window.location.href = '/login';
+            return;
+          }
           throw new Error('Failed to fetch user data');
         }
         const userData = await response.json();
@@ -95,11 +100,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     clearMessages();
     try {
       setIsUpdatingProfile(true);
-      const response = await fetch('/api/users/me', {
+      const response = await fetchWithAuth('/users/me', {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify(values)
       });
 
@@ -127,11 +129,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setPasswordSuccess(undefined);
     try {
       setIsChangingPassword(true);
-      const response = await fetch('/api/auth/change-password', {
+      const response = await fetchWithAuth('/auth/change-password', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({
           currentPassword: values.currentPassword,
           newPassword: values.newPassword
@@ -156,7 +155,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
-      const response = await fetch('/api/auth/mfa/setup', {
+      const response = await fetchWithAuth('/auth/mfa/setup', {
         method: 'POST'
       });
 
@@ -179,11 +178,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
-      const response = await fetch('/api/auth/mfa/enable', {
+      const response = await fetchWithAuth('/auth/mfa/enable', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({ code })
       });
 
@@ -209,11 +205,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
-      const response = await fetch('/api/auth/mfa/disable', {
+      const response = await fetchWithAuth('/auth/mfa/disable', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({ code })
       });
 
@@ -237,7 +230,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
-      const response = await fetch('/api/auth/mfa/recovery-codes', {
+      const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
         method: 'POST'
       });
 

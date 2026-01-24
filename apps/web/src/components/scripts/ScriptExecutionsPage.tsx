@@ -5,6 +5,7 @@ import ExecutionDetails from './ExecutionDetails';
 import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
 import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ScriptExecutionsPageProps = {
   scriptId: string;
@@ -27,8 +28,12 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   const fetchScript = useCallback(async () => {
     try {
-      const response = await fetch(`/api/scripts/${scriptId}`);
+      const response = await fetchWithAuth(`/scripts/${scriptId}`);
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch script');
       }
       const data = await response.json();
@@ -42,12 +47,16 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/scripts/${scriptId}/executions`);
+      const response = await fetchWithAuth(`/scripts/${scriptId}/executions`);
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch executions');
       }
       const data = await response.json();
-      setExecutions(data.executions ?? data ?? []);
+      setExecutions(data.data ?? data.executions ?? (Array.isArray(data) ? data : []));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -57,10 +66,10 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        setDevices(data.devices ?? data ?? []);
+        setDevices(data.data ?? data.devices ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail
@@ -69,10 +78,10 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetch('/api/sites');
+      const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.sites ?? data ?? []);
+        setSites(data.data ?? data.sites ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail
@@ -99,13 +108,16 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     deviceIds: string[],
     parameters: Record<string, string | number | boolean>
   ) => {
-    const response = await fetch('/api/scripts/execute', {
+    const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scriptId, deviceIds, parameters })
+      body: JSON.stringify({ deviceIds, parameters })
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       const data = await response.json();
       throw new Error(data.error || 'Failed to execute script');
     }

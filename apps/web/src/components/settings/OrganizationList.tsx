@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 export type Organization = {
   id: string;
   name: string;
-  status: 'active' | 'trial' | 'suspended' | 'inactive';
+  status: 'active' | 'trial' | 'suspended' | 'churned';
   deviceCount: number;
   createdAt: string;
 };
@@ -19,7 +19,7 @@ const statusLabels: Record<Organization['status'], string> = {
   active: 'Active',
   trial: 'Trial',
   suspended: 'Suspended',
-  inactive: 'Inactive'
+  churned: 'Churned'
 };
 
 export default function OrganizationList({

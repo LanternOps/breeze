@@ -27,5 +27,30 @@ export const useAppDispatch: () => AppDispatch = useDispatch;
 export const useAppSelector: TypedUseSelectorHook<RootState> = useSelector;
 
 // Re-export actions and selectors for convenience
-export * from './authSlice';
-export * from './alertsSlice';
+// Note: Both slices export clearError, so we need to be explicit
+export {
+  loginAsync,
+  logoutAsync,
+  setCredentials,
+  logout,
+  clearError as clearAuthError,
+  setLoading,
+} from './authSlice';
+
+export {
+  fetchAlerts,
+  acknowledgeAlertAsync,
+  setFilter,
+  clearError as clearAlertsError,
+  addAlert,
+  updateAlert,
+  removeAlert,
+  markAlertAsAcknowledged,
+  selectAlerts,
+  selectAlertsLoading,
+  selectAlertsError,
+  selectAlertsFilter,
+  selectFilteredAlerts,
+  selectUnacknowledgedAlertsCount,
+  selectCriticalAlertsCount,
+} from './alertsSlice';
