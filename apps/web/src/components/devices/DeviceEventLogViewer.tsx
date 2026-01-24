@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, FileText, Info, XCircle } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
+type EventLevel = 'error' | 'warning' | 'info';
+
 type EventLogEntry = {
   id?: string;
   level?: string;
@@ -15,7 +17,7 @@ type DeviceEventLogViewerProps = {
   deviceId: string;
 };
 
-const levelConfig: Record<string, { label: string; icon: typeof Info; badge: string }> = {
+const levelConfig: Record<EventLevel, { label: string; icon: typeof Info; badge: string }> = {
   error: {
     label: 'Error',
     icon: XCircle,
@@ -146,8 +148,9 @@ export default function DeviceEventLogViewer({ deviceId }: DeviceEventLogViewerP
           <p className="text-sm text-muted-foreground">No events match the selected levels.</p>
         ) : (
           events.map((event, index) => {
-            const level = (event.level || 'info').toLowerCase();
-            const config = levelConfig[level] ?? levelConfig.info;
+            const rawLevel = (event.level || 'info').toLowerCase();
+            const level: EventLevel = (rawLevel === 'error' || rawLevel === 'warning' || rawLevel === 'info') ? rawLevel : 'info';
+            const config = levelConfig[level];
             const Icon = config.icon;
             return (
               <div key={event.id ?? `${event.message ?? 'event'}-${index}`} className="rounded-md border p-4">

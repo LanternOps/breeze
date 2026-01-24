@@ -364,10 +364,10 @@ function normalizePatchList(raw: unknown): PatchItem[] {
     const items: PatchItem[] = [];
 
     if (Array.isArray(installed)) {
-      items.push(...normalizePatchList(installed).map(item => ({ ...item, status: 'installed' })));
+      items.push(...normalizePatchList(installed).map(item => ({ ...item, status: 'installed' as PatchStatus })));
     }
     if (Array.isArray(missing)) {
-      items.push(...normalizePatchList(missing).map(item => ({ ...item, status: 'missing' })));
+      items.push(...normalizePatchList(missing).map(item => ({ ...item, status: 'missing' as PatchStatus })));
     }
     if (items.length > 0) return items;
   }

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X } from 'lucide-react';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
 import DeviceCard from './DeviceCard';
-import ScriptPickerModal from './ScriptPickerModal';
+import ScriptPickerModal, { type Script } from './ScriptPickerModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, toggleMaintenanceMode } from '../../services/deviceActions';
 
@@ -200,7 +200,7 @@ export default function DevicesPage() {
     setScriptTargetDevices([]);
   };
 
-  const handleScriptSelect = async (scriptId: string, parameters?: Record<string, string>) => {
+  const handleScriptSelect = async (script: Script) => {
     if (actionInProgress) return;
 
     try {
@@ -208,15 +208,13 @@ export default function DevicesPage() {
       if (scriptTargetDevices.length === 1) {
         const target = scriptTargetDevices[0];
         await sendDeviceCommand(target.id, 'script', {
-          scriptId,
-          ...(parameters ? { parameters } : {})
+          scriptId: script.id
         });
-        showToast('success', `Script queued for ${target.hostname}`);
+        showToast('success', `Script "${script.name}" queued for ${target.hostname}`);
       } else {
         const deviceIds = scriptTargetDevices.map(device => device.id);
         const result = await sendBulkCommand(deviceIds, 'script', {
-          scriptId,
-          ...(parameters ? { parameters } : {})
+          scriptId: script.id
         });
         const successCount = result.commands?.length ?? 0;
         const failedCount = result.failed?.length ?? 0;

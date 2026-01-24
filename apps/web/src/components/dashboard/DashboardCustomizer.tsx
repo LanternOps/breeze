@@ -1,4 +1,4 @@
-import { type DragEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
@@ -479,7 +479,7 @@ export default function DashboardCustomizer() {
   }, [dashboards, defaultByRole]);
 
   const handleResizeStart = useCallback(
-    (event: MouseEvent, widget: DashboardWidget) => {
+    (event: React.MouseEvent, widget: DashboardWidget) => {
       event.stopPropagation();
       setResizeState({
         widgetId: widget.id,
