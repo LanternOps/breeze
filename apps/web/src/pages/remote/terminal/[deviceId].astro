@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import RemoteTerminalPage from '../../../components/remote/RemoteTerminalPage';
+
+const { deviceId } = Astro.params;
+---
+
+<DashboardLayout title="Remote Terminal">
+  <RemoteTerminalPage deviceId={deviceId!} client:load />
+</DashboardLayout>

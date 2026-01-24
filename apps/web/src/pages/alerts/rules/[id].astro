@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import AlertRuleEditPage from '../../../components/alerts/AlertRuleEditPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Edit Alert Rule">
+  <AlertRuleEditPage ruleId={id} client:load />
+</DashboardLayout>
