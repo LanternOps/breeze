@@ -6,8 +6,8 @@ import { db } from '../db';
 import {
   automations,
   automationRuns,
-  policies,
-  policyCompliance,
+  automationPolicies,
+  automationPolicyCompliance,
   organizations,
   devices,
   scripts
@@ -69,8 +69,8 @@ async function getAutomationWithOrgCheck(automationId: string, auth: { scope: st
 async function getPolicyWithOrgCheck(policyId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
   const [policy] = await db
     .select()
-    .from(policies)
-    .where(eq(policies.id, policyId))
+    .from(automationPolicies)
+    .where(eq(automationPolicies.id, policyId))
     .limit(1);
 
   if (!policy) {
@@ -637,14 +637,14 @@ automationRoutes.get(
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
-      conditions.push(eq(policies.orgId, auth.orgId));
+      conditions.push(eq(automationPolicies.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
         const hasAccess = await ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        conditions.push(eq(policies.orgId, query.orgId));
+        conditions.push(eq(automationPolicies.orgId, query.orgId));
       } else {
         // Get policies from all orgs under this partner
         const partnerOrgs = await db
@@ -659,19 +659,19 @@ automationRoutes.get(
             pagination: { page, limit, total: 0 }
           });
         }
-        conditions.push(inArray(policies.orgId, orgIds));
+        conditions.push(inArray(automationPolicies.orgId, orgIds));
       }
     } else if (auth.scope === 'system' && query.orgId) {
-      conditions.push(eq(policies.orgId, query.orgId));
+      conditions.push(eq(automationPolicies.orgId, query.orgId));
     }
 
     // Additional filters
     if (query.enforcement) {
-      conditions.push(eq(policies.enforcement, query.enforcement));
+      conditions.push(eq(automationPolicies.enforcement, query.enforcement));
     }
 
     if (query.enabled !== undefined) {
-      conditions.push(eq(policies.enabled, query.enabled === 'true'));
+      conditions.push(eq(automationPolicies.enabled, query.enabled === 'true'));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -679,16 +679,16 @@ automationRoutes.get(
     // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
-      .from(policies)
+      .from(automationPolicies)
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
     // Get policies
     const policiesList = await db
       .select()
-      .from(policies)
+      .from(automationPolicies)
       .where(whereCondition)
-      .orderBy(desc(policies.updatedAt))
+      .orderBy(desc(automationPolicies.updatedAt))
       .limit(limit)
       .offset(offset);
 
@@ -749,30 +749,30 @@ automationRoutes.get(
     }
 
     // Get policy counts
-    const policyCondition = orgIds.length > 0 ? inArray(policies.orgId, orgIds) : undefined;
+    const policyCondition = orgIds.length > 0 ? inArray(automationPolicies.orgId, orgIds) : undefined;
 
     const policyCounts = await db
       .select({
         total: sql<number>`count(*)`,
-        enabled: sql<number>`count(*) filter (where ${policies.enabled} = true)`
+        enabled: sql<number>`count(*) filter (where ${automationPolicies.enabled} = true)`
       })
-      .from(policies)
+      .from(automationPolicies)
       .where(policyCondition);
 
     // Get enforcement breakdown
     const enforcementCounts = await db
       .select({
-        enforcement: policies.enforcement,
+        enforcement: automationPolicies.enforcement,
         count: sql<number>`count(*)`
       })
-      .from(policies)
+      .from(automationPolicies)
       .where(policyCondition)
-      .groupBy(policies.enforcement);
+      .groupBy(automationPolicies.enforcement);
 
     // Get compliance status counts
     const policyIds = await db
-      .select({ id: policies.id })
-      .from(policies)
+      .select({ id: automationPolicies.id })
+      .from(automationPolicies)
       .where(policyCondition);
 
     const policyIdList = policyIds.map(p => p.id);
@@ -781,12 +781,12 @@ automationRoutes.get(
     if (policyIdList.length > 0) {
       complianceCounts = await db
         .select({
-          status: policyCompliance.status,
+          status: automationPolicyCompliance.status,
           count: sql<number>`count(*)`
         })
-        .from(policyCompliance)
-        .where(inArray(policyCompliance.policyId, policyIdList))
-        .groupBy(policyCompliance.status);
+        .from(automationPolicyCompliance)
+        .where(inArray(automationPolicyCompliance.policyId, policyIdList))
+        .groupBy(automationPolicyCompliance.status);
     }
 
     // Format response
@@ -846,12 +846,12 @@ automationRoutes.get(
     // Get compliance summary
     const complianceSummary = await db
       .select({
-        status: policyCompliance.status,
+        status: automationPolicyCompliance.status,
         count: sql<number>`count(*)`
       })
-      .from(policyCompliance)
-      .where(eq(policyCompliance.policyId, policyId))
-      .groupBy(policyCompliance.status);
+      .from(automationPolicyCompliance)
+      .where(eq(automationPolicyCompliance.policyId, policyId))
+      .groupBy(automationPolicyCompliance.status);
 
     // Get remediation script info if set
     let remediationScript = null;
@@ -938,7 +938,7 @@ automationRoutes.post(
     }
 
     const [policy] = await db
-      .insert(policies)
+      .insert(automationPolicies)
       .values({
         orgId: orgId!,
         name: data.name,
@@ -1007,9 +1007,9 @@ automationRoutes.put(
     if (data.remediationScriptId !== undefined) updates.remediationScriptId = data.remediationScriptId;
 
     const [updated] = await db
-      .update(policies)
+      .update(automationPolicies)
       .set(updates)
-      .where(eq(policies.id, policyId))
+      .where(eq(automationPolicies.id, policyId))
       .returning();
 
     return c.json(updated);
@@ -1031,13 +1031,13 @@ automationRoutes.delete(
 
     // Delete compliance records first
     await db
-      .delete(policyCompliance)
-      .where(eq(policyCompliance.policyId, policyId));
+      .delete(automationPolicyCompliance)
+      .where(eq(automationPolicyCompliance.policyId, policyId));
 
     // Delete policy
     await db
-      .delete(policies)
-      .where(eq(policies.id, policyId));
+      .delete(automationPolicies)
+      .where(eq(automationPolicies.id, policyId));
 
     return c.json({ success: true });
   }
@@ -1095,11 +1095,11 @@ automationRoutes.post(
       // Check existing compliance record
       const [existing] = await db
         .select()
-        .from(policyCompliance)
+        .from(automationPolicyCompliance)
         .where(
           and(
-            eq(policyCompliance.policyId, policyId),
-            eq(policyCompliance.deviceId, device.id)
+            eq(automationPolicyCompliance.policyId, policyId),
+            eq(automationPolicyCompliance.deviceId, device.id)
           )
         )
         .limit(1);
@@ -1111,7 +1111,7 @@ automationRoutes.post(
 
       if (existing) {
         await db
-          .update(policyCompliance)
+          .update(automationPolicyCompliance)
           .set({
             status: newStatus,
             details: {
@@ -1122,7 +1122,7 @@ automationRoutes.post(
             lastCheckedAt: new Date(),
             updatedAt: new Date()
           })
-          .where(eq(policyCompliance.id, existing.id));
+          .where(eq(automationPolicyCompliance.id, existing.id));
 
         evaluationResults.push({
           deviceId: device.id,
@@ -1132,7 +1132,7 @@ automationRoutes.post(
         });
       } else {
         await db
-          .insert(policyCompliance)
+          .insert(automationPolicyCompliance)
           .values({
             policyId,
             deviceId: device.id,
@@ -1156,12 +1156,12 @@ automationRoutes.post(
 
     // Update policy last evaluated time
     await db
-      .update(policies)
+      .update(automationPolicies)
       .set({
         lastEvaluatedAt: new Date(),
         updatedAt: new Date()
       })
-      .where(eq(policies.id, policyId));
+      .where(eq(automationPolicies.id, policyId));
 
     return c.json({
       message: 'Policy evaluation completed',
@@ -1194,10 +1194,10 @@ automationRoutes.get(
     }
 
     // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [eq(policyCompliance.policyId, policyId)];
+    const conditions: ReturnType<typeof eq>[] = [eq(automationPolicyCompliance.policyId, policyId)];
 
     if (query.status) {
-      conditions.push(eq(policyCompliance.status, query.status));
+      conditions.push(eq(automationPolicyCompliance.status, query.status));
     }
 
     const whereCondition = and(...conditions);
@@ -1205,29 +1205,29 @@ automationRoutes.get(
     // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
-      .from(policyCompliance)
+      .from(automationPolicyCompliance)
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
     // Get compliance records with device info
     const complianceList = await db
       .select({
-        id: policyCompliance.id,
-        policyId: policyCompliance.policyId,
-        deviceId: policyCompliance.deviceId,
-        status: policyCompliance.status,
-        details: policyCompliance.details,
-        lastCheckedAt: policyCompliance.lastCheckedAt,
-        remediationAttempts: policyCompliance.remediationAttempts,
-        updatedAt: policyCompliance.updatedAt,
+        id: automationPolicyCompliance.id,
+        policyId: automationPolicyCompliance.policyId,
+        deviceId: automationPolicyCompliance.deviceId,
+        status: automationPolicyCompliance.status,
+        details: automationPolicyCompliance.details,
+        lastCheckedAt: automationPolicyCompliance.lastCheckedAt,
+        remediationAttempts: automationPolicyCompliance.remediationAttempts,
+        updatedAt: automationPolicyCompliance.updatedAt,
         deviceHostname: devices.hostname,
         deviceStatus: devices.status,
         deviceOsType: devices.osType
       })
-      .from(policyCompliance)
-      .leftJoin(devices, eq(policyCompliance.deviceId, devices.id))
+      .from(automationPolicyCompliance)
+      .leftJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
       .where(whereCondition)
-      .orderBy(desc(policyCompliance.updatedAt))
+      .orderBy(desc(automationPolicyCompliance.updatedAt))
       .limit(limit)
       .offset(offset);
 

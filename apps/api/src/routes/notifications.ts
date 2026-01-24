@@ -3,10 +3,10 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { db } from '../db';
 import { userNotifications } from '../db/schema';
-import { eq, and, desc, isNull, sql } from 'drizzle-orm';
-import { authMiddleware, type AuthContext } from '../middleware/auth';
+import { eq, and, desc, sql } from 'drizzle-orm';
+import { authMiddleware } from '../middleware/auth';
 
-export const notificationRoutes = new Hono<AuthContext>();
+export const notificationRoutes = new Hono();
 
 // Apply auth middleware to all routes
 notificationRoutes.use('*', authMiddleware);
@@ -31,7 +31,7 @@ notificationRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
 
-    const conditions = [eq(userNotifications.userId, auth.userId)];
+    const conditions = [eq(userNotifications.userId, auth.user.id)];
 
     if (query.unreadOnly) {
       conditions.push(eq(userNotifications.read, false));
@@ -59,7 +59,7 @@ notificationRoutes.get(
       .select({ count: sql<number>`count(*)::int` })
       .from(userNotifications)
       .where(and(
-        eq(userNotifications.userId, auth.userId),
+        eq(userNotifications.userId, auth.user.id),
         eq(userNotifications.read, false)
       ));
 
@@ -81,7 +81,7 @@ notificationRoutes.get('/unread-count', async (c) => {
     .select({ count: sql<number>`count(*)::int` })
     .from(userNotifications)
     .where(and(
-      eq(userNotifications.userId, auth.userId),
+      eq(userNotifications.userId, auth.user.id),
       eq(userNotifications.read, false)
     ));
 
@@ -103,7 +103,7 @@ notificationRoutes.patch(
         .update(userNotifications)
         .set({ read: true, readAt: now })
         .where(and(
-          eq(userNotifications.userId, auth.userId),
+          eq(userNotifications.userId, auth.user.id),
           eq(userNotifications.read, false)
         ));
     } else if (body.ids && body.ids.length > 0) {
@@ -114,7 +114,7 @@ notificationRoutes.patch(
           .set({ read: true, readAt: now })
           .where(and(
             eq(userNotifications.id, id),
-            eq(userNotifications.userId, auth.userId)
+            eq(userNotifications.userId, auth.user.id)
           ));
       }
     }
@@ -135,7 +135,7 @@ notificationRoutes.delete(
       .delete(userNotifications)
       .where(and(
         eq(userNotifications.id, id),
-        eq(userNotifications.userId, auth.userId)
+        eq(userNotifications.userId, auth.user.id)
       ))
       .returning({ id: userNotifications.id });
 
@@ -153,7 +153,7 @@ notificationRoutes.delete('/', async (c) => {
 
   await db
     .delete(userNotifications)
-    .where(eq(userNotifications.userId, auth.userId));
+    .where(eq(userNotifications.userId, auth.user.id));
 
   return c.json({ success: true });
 });

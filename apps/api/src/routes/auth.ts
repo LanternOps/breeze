@@ -88,9 +88,11 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
 
   // Rate limit registration
   const redis = getRedis();
-  const rateCheck = await rateLimiter(redis, `register:${ip}`, 5, 3600);
-  if (!rateCheck.allowed) {
-    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+  if (redis) {
+    const rateCheck = await rateLimiter(redis, `register:${ip}`, 5, 3600);
+    if (!rateCheck.allowed) {
+      return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+    }
   }
 
   // Validate password strength
@@ -165,14 +167,16 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
 
   // Rate limit by IP + email combination
   const redis = getRedis();
-  const rateKey = `login:${ip}:${normalizedEmail}`;
-  const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
+  if (redis) {
+    const rateKey = `login:${ip}:${normalizedEmail}`;
+    const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
 
-  if (!rateCheck.allowed) {
-    return c.json({
-      error: 'Too many login attempts. Please try again later.',
-      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
-    }, 429);
+    if (!rateCheck.allowed) {
+      return c.json({
+        error: 'Too many login attempts. Please try again later.',
+        retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+      }, 429);
+    }
   }
 
   // Find user
@@ -199,6 +203,9 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
 
   // Check if MFA is required
   if (user.mfaEnabled && user.mfaSecret) {
+    if (!redis) {
+      return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+    }
     // Create a temporary token for MFA verification
     const tempToken = nanoid(32);
     await redis.setex(`mfa:pending:${tempToken}`, 300, user.id); // 5 min expiry
@@ -247,7 +254,9 @@ authRoutes.post('/logout', authMiddleware, async (c) => {
   // Invalidate all sessions for this user (optional: could invalidate just current session)
   // For now, we're using JWTs which are stateless, but we can add to a blacklist
   const redis = getRedis();
-  await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1'); // Revoke for access token lifetime
+  if (redis) {
+    await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1'); // Revoke for access token lifetime
+  }
 
   return c.json({ success: true });
 });
@@ -309,6 +318,9 @@ authRoutes.post('/mfa/setup', authMiddleware, async (c) => {
 
   // Store secret temporarily (not enabled yet until verified)
   const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'MFA setup unavailable. Please try again later.' }, 503);
+  }
   await redis.setex(
     `mfa:setup:${auth.user.id}`,
     600, // 10 min expiry
@@ -327,6 +339,10 @@ authRoutes.post('/mfa/setup', authMiddleware, async (c) => {
 authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
   const { code, tempToken } = c.req.valid('json');
   const redis = getRedis();
+
+  if (!redis) {
+    return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+  }
 
   // Case 1: Verifying during login (has tempToken)
   if (tempToken) {
@@ -469,16 +485,18 @@ authRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), as
 
   // Rate limit
   const redis = getRedis();
-  const rateCheck = await rateLimiter(
-    redis,
-    `forgot:${ip}`,
-    forgotPasswordLimiter.limit,
-    forgotPasswordLimiter.windowSeconds
-  );
+  if (redis) {
+    const rateCheck = await rateLimiter(
+      redis,
+      `forgot:${ip}`,
+      forgotPasswordLimiter.limit,
+      forgotPasswordLimiter.windowSeconds
+    );
 
-  if (!rateCheck.allowed) {
-    // Still return success to prevent enumeration
-    return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
+    if (!rateCheck.allowed) {
+      // Still return success to prevent enumeration
+      return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
+    }
   }
 
   // Find user (don't reveal if exists)
@@ -488,7 +506,7 @@ authRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), as
     .where(eq(users.email, normalizedEmail))
     .limit(1);
 
-  if (user) {
+  if (user && redis) {
     // Generate reset token
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
@@ -516,6 +534,9 @@ authRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), asyn
   }
 
   const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Password reset unavailable. Please try again later.' }, 503);
+  }
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const userId = await redis.get(`reset:${tokenHash}`);
 
