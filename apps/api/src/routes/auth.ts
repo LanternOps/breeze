@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
-import { users, sessions } from '../db/schema';
+import { users, sessions, partners, partnerUsers, roles } from '../db/schema';
 import {
   hashPassword,
   verifyPassword,
@@ -43,6 +43,16 @@ const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().min(1).max(255)
+});
+
+const registerPartnerSchema = z.object({
+  companyName: z.string().min(2).max(255),
+  email: z.string().email(),
+  password: z.string().min(8),
+  name: z.string().min(1).max(255),
+  acceptTerms: z.boolean().refine(val => val === true, {
+    message: 'You must accept the terms of service'
+  })
 });
 
 const mfaVerifySchema = z.object({
@@ -158,6 +168,162 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
     tokens,
     mfaRequired: false
   });
+});
+
+// Register Partner (self-service MSP/company signup)
+authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), async (c) => {
+  const { companyName, email, password, name, acceptTerms } = c.req.valid('json');
+  const ip = getClientIP(c);
+
+  // Rate limit registration - stricter for partner registration
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const rateCheck = await rateLimiter(redis, `register-partner:${ip}`, 3, 3600);
+  if (!rateCheck.allowed) {
+    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+  }
+
+  // Validate password strength
+  const passwordCheck = isPasswordStrong(password);
+  if (!passwordCheck.valid) {
+    return c.json({ error: passwordCheck.errors[0] }, 400);
+  }
+
+  // Check if user exists
+  const existingUser = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, email.toLowerCase()))
+    .limit(1);
+
+  if (existingUser.length > 0) {
+    return c.json({ error: 'An account with this email already exists' }, 400);
+  }
+
+  // Generate slug from company name
+  const baseSlug = companyName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 50);
+
+  // Check if slug exists and make unique if needed
+  let slug = baseSlug;
+  let suffix = 1;
+  while (true) {
+    const existingPartner = await db
+      .select({ id: partners.id })
+      .from(partners)
+      .where(eq(partners.slug, slug))
+      .limit(1);
+
+    if (existingPartner.length === 0) break;
+    slug = `${baseSlug}-${suffix}`;
+    suffix++;
+    if (suffix > 100) {
+      return c.json({ error: 'Unable to generate unique company identifier' }, 500);
+    }
+  }
+
+  // Start transaction - create partner, role, user, and association
+  try {
+    // Create partner
+    const [newPartner] = await db
+      .insert(partners)
+      .values({
+        name: companyName,
+        slug,
+        type: 'msp',
+        plan: 'free'
+      })
+      .returning();
+
+    if (!newPartner) {
+      return c.json({ error: 'Failed to create company' }, 500);
+    }
+
+    // Create Partner Admin role for this partner
+    const [adminRole] = await db
+      .insert(roles)
+      .values({
+        partnerId: newPartner.id,
+        scope: 'partner',
+        name: 'Partner Admin',
+        description: 'Full access to partner and all organizations',
+        isSystem: true
+      })
+      .returning();
+
+    if (!adminRole) {
+      // Cleanup partner
+      await db.delete(partners).where(eq(partners.id, newPartner.id));
+      return c.json({ error: 'Failed to create admin role' }, 500);
+    }
+
+    // Create user
+    const passwordHash = await hashPassword(password);
+    const [newUser] = await db
+      .insert(users)
+      .values({
+        email: email.toLowerCase(),
+        name,
+        passwordHash,
+        status: 'active'
+      })
+      .returning();
+
+    if (!newUser) {
+      // Cleanup
+      await db.delete(roles).where(eq(roles.id, adminRole.id));
+      await db.delete(partners).where(eq(partners.id, newPartner.id));
+      return c.json({ error: 'Failed to create user' }, 500);
+    }
+
+    // Associate user with partner
+    await db.insert(partnerUsers).values({
+      partnerId: newPartner.id,
+      userId: newUser.id,
+      roleId: adminRole.id,
+      orgAccess: 'all'
+    });
+
+    // Create tokens with partner scope
+    const tokens = await createTokenPair({
+      sub: newUser.id,
+      email: newUser.email,
+      roleId: adminRole.id,
+      orgId: null,
+      partnerId: newPartner.id,
+      scope: 'partner'
+    });
+
+    // Update last login
+    await db
+      .update(users)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(users.id, newUser.id));
+
+    return c.json({
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        mfaEnabled: false
+      },
+      partner: {
+        id: newPartner.id,
+        name: newPartner.name,
+        slug: newPartner.slug
+      },
+      tokens,
+      mfaRequired: false
+    });
+  } catch (err) {
+    console.error('Partner registration error:', err);
+    return c.json({ error: 'Registration failed. Please try again.' }, 500);
+  }
 });
 
 // Login

@@ -97,12 +97,14 @@ export default function LoginForm({
         {isLoading ? 'Signing in...' : submitLabel}
       </button>
 
-      <p className="text-center text-sm text-muted-foreground">
-        New here?{' '}
-        <a href="/register" className="font-medium text-primary hover:underline">
-          Create an account
-        </a>
-      </p>
+      <div className="space-y-2 text-center text-sm text-muted-foreground">
+        <p>
+          New here?{' '}
+          <a href="/register-partner" className="font-medium text-primary hover:underline">
+            Register your company
+          </a>
+        </p>
+      </div>
     </form>
   );
 }
