@@ -6,7 +6,6 @@ import {
   timestamp,
   boolean,
   jsonb,
-  pgEnum,
   integer,
   bigint,
   date,
@@ -16,16 +15,7 @@ import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 import { maintenanceWindows } from './maintenance';
-
-export const deploymentStatusEnum = pgEnum('deployment_status', [
-  'pending',
-  'downloading',
-  'installing',
-  'completed',
-  'failed',
-  'cancelled',
-  'rollback'
-]);
+import { deploymentStatusEnum } from './deployments';
 
 export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),

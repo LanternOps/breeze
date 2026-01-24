@@ -700,6 +700,12 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         schema: { type: 'string', format: 'uuid' },
         description: 'Filter by organization ID'
       },
+      partnerIdParam: {
+        name: 'partnerId',
+        in: 'query',
+        schema: { type: 'string', format: 'uuid' },
+        description: 'Filter by partner ID (system scope only)'
+      },
       idParam: {
         name: 'id',
         in: 'path',
@@ -1078,6 +1084,55 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/users/me': {
+      get: {
+        tags: ['Users'],
+        summary: 'Get current user',
+        description: 'Get the currently authenticated user profile',
+        responses: {
+          '200': {
+            description: 'Current user profile',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/User' }
+              }
+            }
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' }
+        }
+      },
+      patch: {
+        tags: ['Users'],
+        summary: 'Update current user',
+        description: 'Update the current user profile',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', minLength: 1, maxLength: 255 },
+                  avatarUrl: { type: 'string', nullable: true }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Updated user profile',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/User' }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '401': { $ref: '#/components/responses/Unauthorized' }
+        }
+      }
+    },
     '/users/{id}': {
       get: {
         tags: ['Users'],
@@ -1393,8 +1448,9 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       get: {
         tags: ['Organizations'],
         summary: 'List organizations',
-        description: 'List organizations under the current partner',
+        description: 'List organizations under the current partner (system scope can optionally filter by partnerId)',
         parameters: [
+          { $ref: '#/components/parameters/partnerIdParam' },
           { $ref: '#/components/parameters/pageParam' },
           { $ref: '#/components/parameters/limitParam' }
         ],
@@ -1418,7 +1474,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       post: {
         tags: ['Organizations'],
         summary: 'Create organization',
-        description: 'Create a new organization under the current partner',
+        description: 'Create a new organization under the current partner (system scope requires partnerId)',
         requestBody: {
           required: true,
           content: {
@@ -1426,6 +1482,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               schema: {
                 type: 'object',
                 properties: {
+                  partnerId: { type: 'string', format: 'uuid' },
                   name: { type: 'string', minLength: 1 },
                   slug: { type: 'string', minLength: 1, maxLength: 100 },
                   type: { type: 'string', enum: ['customer', 'internal'] },

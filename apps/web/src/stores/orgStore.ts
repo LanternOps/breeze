@@ -122,12 +122,18 @@ export const useOrgStore = create<OrgState>()(
 
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth(`/organizations?partnerId=${currentPartnerId}`);
+          const response = await fetchWithAuth(`/orgs/organizations?partnerId=${currentPartnerId}`);
           if (!response.ok) {
             throw new Error('Failed to fetch organizations');
           }
           const data = await response.json();
-          const organizations = data.organizations || data;
+          const organizations = Array.isArray(data?.data)
+            ? data.data
+            : Array.isArray(data?.organizations)
+              ? data.organizations
+              : Array.isArray(data)
+                ? data
+                : [];
           set({
             organizations,
             isLoading: false
@@ -155,12 +161,18 @@ export const useOrgStore = create<OrgState>()(
 
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth(`/sites?organizationId=${currentOrgId}`);
+          const response = await fetchWithAuth(`/orgs/sites?organizationId=${currentOrgId}`);
           if (!response.ok) {
             throw new Error('Failed to fetch sites');
           }
           const data = await response.json();
-          const sites = data.sites || data;
+          const sites = Array.isArray(data?.data)
+            ? data.data
+            : Array.isArray(data?.sites)
+              ? data.sites
+              : Array.isArray(data)
+                ? data
+                : [];
           set({
             sites,
             isLoading: false

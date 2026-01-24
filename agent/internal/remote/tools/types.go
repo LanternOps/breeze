@@ -37,6 +37,11 @@ const (
 	CmdRegistryGet    = "registry_get"
 	CmdRegistrySet    = "registry_set"
 	CmdRegistryDelete = "registry_delete"
+
+	// System
+	CmdReboot   = "reboot"
+	CmdShutdown = "shutdown"
+	CmdLock     = "lock"
 )
 
 // CommandResult represents the result of a command execution

@@ -1,6 +1,8 @@
+import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
@@ -41,6 +43,12 @@ import { snmpRoutes } from './routes/snmp';
 import { softwareRoutes } from './routes/software';
 import { systemToolsRoutes } from './routes/systemTools';
 import { notificationRoutes } from './routes/notifications';
+import { metricsRoutes } from './routes/metrics';
+import { groupRoutes } from './routes/groups';
+import { tagRoutes } from './routes/tags';
+import { customFieldRoutes } from './routes/customFields';
+import { filterRoutes } from './routes/filters';
+import { deploymentRoutes } from './routes/deployments';
 
 const app = new Hono();
 
@@ -51,8 +59,15 @@ app.use('*', prettyJSON());
 app.use(
   '*',
   cors({
-    origin: ['http://localhost:4321'],
-    credentials: true
+    origin: (origin) => {
+      const allowedOrigins = ['http://localhost:4321', 'http://localhost:4322'];
+      return allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
+    },
+    credentials: true,
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    exposeHeaders: ['Content-Length', 'X-Request-Id'],
+    maxAge: 86400
   })
 );
 
@@ -64,6 +79,9 @@ app.get('/health', (c) => {
     version: '0.1.0'
   });
 });
+
+// Metrics endpoint (for Prometheus scraping at /metrics)
+app.route('/metrics', metricsRoutes);
 
 // API routes
 const api = new Hono();
@@ -104,6 +122,12 @@ api.route('/snmp', snmpRoutes);
 api.route('/software', softwareRoutes);
 api.route('/system-tools', systemToolsRoutes);
 api.route('/notifications', notificationRoutes);
+api.route('/groups', groupRoutes);
+api.route('/tags', tagRoutes);
+api.route('/custom-fields', customFieldRoutes);
+api.route('/filters', filterRoutes);
+api.route('/deployments', deploymentRoutes);
+api.route('/metrics', metricsRoutes);
 
 app.route('/api/v1', api);
 
@@ -114,6 +138,17 @@ app.notFound((c) => {
 
 // Error handler
 app.onError((err, c) => {
+  // Handle HTTPException properly (e.g., 401, 403, etc.)
+  if (err instanceof HTTPException) {
+    return c.json(
+      {
+        error: err.message || 'Request failed',
+        message: err.message
+      },
+      err.status
+    );
+  }
+
   console.error('Error:', err);
   return c.json(
     {

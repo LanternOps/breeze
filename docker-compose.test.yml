@@ -1,0 +1,46 @@
+# Test Docker Compose - Ephemeral services for integration testing
+# Usage: docker compose -f docker-compose.test.yml up -d
+# Cleanup: docker compose -f docker-compose.test.yml down -v
+
+services:
+  # PostgreSQL Database for Tests
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: breeze-postgres-test
+    environment:
+      POSTGRES_USER: breeze_test
+      POSTGRES_PASSWORD: breeze_test
+      POSTGRES_DB: breeze_test
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts with dev
+    tmpfs:
+      - /var/lib/postgresql/data  # Use tmpfs for speed, data is ephemeral
+    networks:
+      - breeze-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U breeze_test -d breeze_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 2s
+
+  # Redis for Tests
+  redis-test:
+    image: redis:7-alpine
+    container_name: breeze-redis-test
+    command: redis-server --appendonly no --save ""  # No persistence for speed
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts with dev
+    networks:
+      - breeze-test-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+networks:
+  breeze-test-network:
+    driver: bridge
+    name: breeze-test-network

@@ -186,6 +186,14 @@ func (h *Heartbeat) processCommand(cmd Command) {
 	case tools.CmdRegistryDelete:
 		result = tools.DeleteRegistryValue(cmd.Payload)
 
+	// System
+	case tools.CmdReboot:
+		result = tools.Reboot(cmd.Payload)
+	case tools.CmdShutdown:
+		result = tools.Shutdown(cmd.Payload)
+	case tools.CmdLock:
+		result = tools.Lock(cmd.Payload)
+
 	default:
 		result = tools.CommandResult{
 			Status: "failed",

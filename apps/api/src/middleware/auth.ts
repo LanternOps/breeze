@@ -24,6 +24,54 @@ declare module 'hono' {
   }
 }
 
+// Optional auth - doesn't throw if not authenticated, just sets auth to null
+export async function optionalAuthMiddleware(c: Context, next: Next) {
+  const authHeader = c.req.header('Authorization');
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // Not authenticated - continue without auth context
+    await next();
+    return;
+  }
+
+  const token = authHeader.slice(7);
+  const payload = await verifyToken(token);
+
+  if (!payload || payload.type !== 'access') {
+    // Invalid token - continue without auth context
+    await next();
+    return;
+  }
+
+  // Fetch user
+  const [user] = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      status: users.status
+    })
+    .from(users)
+    .where(eq(users.id, payload.sub))
+    .limit(1);
+
+  if (user && user.status === 'active') {
+    c.set('auth', {
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name
+      },
+      token: payload,
+      partnerId: payload.partnerId,
+      orgId: payload.orgId,
+      scope: payload.scope
+    });
+  }
+
+  await next();
+}
+
 export async function authMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
 

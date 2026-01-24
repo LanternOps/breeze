@@ -24,6 +24,7 @@ export const devices = pgTable('devices', {
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
   tags: text('tags').array().default([]),
+  customFields: jsonb('custom_fields').default({}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -90,6 +91,8 @@ export const deviceGroups = pgTable('device_groups', {
   name: varchar('name', { length: 255 }).notNull(),
   type: deviceGroupTypeEnum('type').notNull().default('static'),
   rules: jsonb('rules'),
+  filterConditions: jsonb('filter_conditions'),
+  filterFieldsUsed: text('filter_fields_used').array().default([]),
   parentId: uuid('parent_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
@@ -98,11 +101,31 @@ export const deviceGroups = pgTable('device_groups', {
 export const deviceGroupMemberships = pgTable('device_group_memberships', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   groupId: uuid('group_id').notNull().references(() => deviceGroups.id),
+  isPinned: boolean('is_pinned').notNull().default(false),
   addedAt: timestamp('added_at').defaultNow().notNull(),
   addedBy: membershipSourceEnum('added_by').notNull().default('manual')
 }, (table) => ({
   pk: primaryKey({ columns: [table.deviceId, table.groupId] })
 }));
+
+// Audit log for group membership changes
+export const groupMembershipLogActionEnum = pgEnum('group_membership_log_action', ['added', 'removed']);
+export const groupMembershipLogReasonEnum = pgEnum('group_membership_log_reason', [
+  'manual',
+  'filter_match',
+  'filter_unmatch',
+  'pinned',
+  'unpinned'
+]);
+
+export const groupMembershipLog = pgTable('group_membership_log', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  groupId: uuid('group_id').notNull().references(() => deviceGroups.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  action: groupMembershipLogActionEnum('action').notNull(),
+  reason: groupMembershipLogReasonEnum('reason').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
 
 export const deviceCommands = pgTable('device_commands', {
   id: uuid('id').primaryKey().defaultRandom(),

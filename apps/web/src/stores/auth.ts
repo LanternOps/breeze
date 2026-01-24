@@ -81,13 +81,27 @@ export const useAuthStore = create<AuthState>()(
         user: state.user,
         tokens: state.tokens,
         isAuthenticated: state.isAuthenticated
-      })
+      }),
+      onRehydrateStorage: () => (state) => {
+        // Set isLoading to false after rehydration completes
+        if (state) {
+          state.setLoading(false);
+        }
+      }
     }
   )
 );
 
 // API helper functions
-const API_BASE = '/api';
+// In development, point directly to API server. In production, use relative path (proxied).
+const API_HOST = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+
+// Helper to build full API URL - converts /api/... to /api/v1/...
+function buildApiUrl(path: string): string {
+  // Remove leading /api if present and add /api/v1
+  const cleanPath = path.startsWith('/api/') ? path.slice(4) : path.startsWith('/api') ? path.slice(4) : path;
+  return `${API_HOST}/api/v1${cleanPath}`;
+}
 
 export async function fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
   const { tokens, logout, setTokens } = useAuthStore.getState();
@@ -100,11 +114,11 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
 
   headers.set('Content-Type', 'application/json');
 
-  let response = await fetch(`${API_BASE}${url}`, { ...options, headers });
+  let response = await fetch(buildApiUrl(url), { ...options, headers });
 
   // If unauthorized and we have a refresh token, try to refresh
   if (response.status === 401 && tokens?.refreshToken) {
-    const refreshResponse = await fetch(`${API_BASE}/auth/refresh`, {
+    const refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: tokens.refreshToken })
@@ -116,7 +130,7 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
 
       // Retry original request with new token
       headers.set('Authorization', `Bearer ${newTokens.accessToken}`);
-      response = await fetch(`${API_BASE}${url}`, { ...options, headers });
+      response = await fetch(buildApiUrl(url), { ...options, headers });
     } else {
       // Refresh failed, logout
       logout();
@@ -135,7 +149,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/auth/login`, {
+    const response = await fetch(buildApiUrl('/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password })
@@ -172,7 +186,7 @@ export async function apiVerifyMFA(code: string, tempToken: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/auth/mfa/verify`, {
+    const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, tempToken })
@@ -201,7 +215,7 @@ export async function apiRegister(email: string, password: string, name: string)
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/auth/register`, {
+    const response = await fetch(buildApiUrl('/auth/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password, name })
@@ -228,7 +242,7 @@ export async function apiLogout(): Promise<void> {
 
   if (tokens?.accessToken) {
     try {
-      await fetch(`${API_BASE}/auth/logout`, {
+      await fetch(buildApiUrl('/auth/logout'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -248,7 +262,7 @@ export async function apiForgotPassword(email: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+    const response = await fetch(buildApiUrl('/auth/forgot-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email })
@@ -271,7 +285,7 @@ export async function apiResetPassword(token: string, password: string): Promise
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/auth/reset-password`, {
+    const response = await fetch(buildApiUrl('/auth/reset-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, password })

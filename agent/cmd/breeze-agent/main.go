@@ -6,8 +6,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
 )
 
@@ -73,6 +75,10 @@ func main() {
 	}
 }
 
+// runAgent starts the main agent run loop. The heartbeat module handles:
+// - Periodic heartbeat calls to the API endpoint
+// - Receiving pending commands from the server via heartbeat response
+// - Executing commands and reporting results back to the server
 func runAgent() {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -89,9 +95,16 @@ func runAgent() {
 	fmt.Printf("Server: %s\n", cfg.ServerURL)
 	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
 
-	// Start heartbeat
+	// Start heartbeat - this implements the main agent run loop:
+	// 1. Periodically calls the heartbeat API endpoint (configurable interval)
+	// 2. Sends system metrics (CPU, RAM, disk usage) with each heartbeat
+	// 3. Receives pending commands from server in the heartbeat response
+	// 4. Executes received commands asynchronously (process, service, registry, etc.)
+	// 5. Reports command results back to the server
 	hb := heartbeat.New(cfg)
 	go hb.Start()
+
+	fmt.Println("Agent is running. Press Ctrl+C to stop.")
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
@@ -100,8 +113,11 @@ func runAgent() {
 	<-sigChan
 	fmt.Println("\nShutting down agent...")
 	hb.Stop()
+	fmt.Println("Agent stopped.")
 }
 
+// enrollDevice handles the enrollment process to register this agent with the Breeze server.
+// It collects device information, calls the enrollment API, and saves the returned credentials.
 func enrollDevice(enrollmentKey string) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -117,12 +133,86 @@ func enrollDevice(enrollmentKey string) {
 		os.Exit(1)
 	}
 
+	// Check if already enrolled
+	if cfg.AgentID != "" {
+		fmt.Fprintf(os.Stderr, "Agent is already enrolled with ID: %s\n", cfg.AgentID)
+		fmt.Fprintln(os.Stderr, "To re-enroll, delete the config file first.")
+		os.Exit(1)
+	}
+
 	fmt.Printf("Enrolling with server: %s\n", cfg.ServerURL)
 
-	// TODO: Implement enrollment API call
-	// api.Enroll(cfg.ServerURL, enrollmentKey)
+	// Collect device information for enrollment
+	hwCollector := collectors.NewHardwareCollector()
+
+	systemInfo, err := hwCollector.CollectSystemInfo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to collect system info: %v\n", err)
+		systemInfo = &collectors.SystemInfo{}
+	}
+
+	hardwareInfo, err := hwCollector.CollectHardware()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to collect hardware info: %v\n", err)
+		hardwareInfo = &collectors.HardwareInfo{}
+	}
+
+	fmt.Printf("Hostname: %s\n", systemInfo.Hostname)
+	fmt.Printf("OS: %s (%s)\n", systemInfo.OSVersion, systemInfo.Architecture)
+
+	// Create API client and make enrollment request
+	client := api.NewClient(cfg.ServerURL, "", "")
+
+	enrollReq := &api.EnrollRequest{
+		EnrollmentKey: enrollmentKey,
+		Hostname:      systemInfo.Hostname,
+		OSType:        systemInfo.OSType,
+		OSVersion:     systemInfo.OSVersion,
+		Architecture:  systemInfo.Architecture,
+		HardwareInfo: &api.HardwareInfo{
+			CPUModel:     hardwareInfo.CPUModel,
+			CPUCores:     hardwareInfo.CPUCores,
+			RAMTotalMB:   hardwareInfo.RAMTotalMB,
+			SerialNumber: hardwareInfo.SerialNumber,
+			Manufacturer: hardwareInfo.Manufacturer,
+			Model:        hardwareInfo.Model,
+		},
+	}
+
+	fmt.Println("Sending enrollment request...")
+
+	enrollResp, err := client.Enroll(enrollReq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Enrollment failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Update config with enrollment response
+	cfg.AgentID = enrollResp.AgentID
+	cfg.AuthToken = enrollResp.AuthToken
+
+	// Apply server-provided configuration if present
+	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
+		cfg.HeartbeatIntervalSeconds = enrollResp.Config.HeartbeatIntervalSeconds
+	}
+	if enrollResp.Config.MetricsIntervalSeconds > 0 {
+		cfg.MetricsIntervalSeconds = enrollResp.Config.MetricsIntervalSeconds
+	}
+	if len(enrollResp.Config.EnabledCollectors) > 0 {
+		cfg.EnabledCollectors = enrollResp.Config.EnabledCollectors
+	}
+
+	// Save the updated configuration
+	if err := config.Save(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to save config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Agent ID: %s\n", cfg.AgentID)
+		fmt.Fprintln(os.Stderr, "You may need to manually save the configuration.")
+		os.Exit(1)
+	}
 
 	fmt.Println("Enrollment successful!")
+	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
+	fmt.Println("Configuration saved.")
 	fmt.Println("Run 'breeze-agent run' to start the agent.")
 }
 
@@ -141,4 +231,7 @@ func checkStatus() {
 	fmt.Println("Status: Enrolled")
 	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
 	fmt.Printf("Server: %s\n", cfg.ServerURL)
+	fmt.Printf("Heartbeat Interval: %d seconds\n", cfg.HeartbeatIntervalSeconds)
+	fmt.Printf("Metrics Interval: %d seconds\n", cfg.MetricsIntervalSeconds)
+	fmt.Printf("Enabled Collectors: %v\n", cfg.EnabledCollectors)
 }

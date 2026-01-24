@@ -1,4 +1,4 @@
-import { getRedis } from './redis';
+import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 
 // Event types for type safety
@@ -97,7 +97,7 @@ class EventBus {
     source: string,
     options: PublishOptions = {}
   ): Promise<string> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const eventId = randomUUID();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
@@ -164,7 +164,7 @@ class EventBus {
     if (this.isConsuming) return;
     this.isConsuming = true;
 
-    const redis = getRedis();
+    const redis = getRedisConnection();
 
     // Ensure consumer groups exist for each org
     for (const orgId of orgIds) {
@@ -184,7 +184,7 @@ class EventBus {
   }
 
   private async consumeLoop(orgIds: string[]): Promise<void> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const streams = orgIds.map(orgId => `${STREAM_PREFIX}:${orgId}`);
     const streamArgs = streams.flatMap(s => [s, '>']);
 
@@ -220,7 +220,7 @@ class EventBus {
   private async processMessage(
     messageId: string,
     fields: string[],
-    redis: ReturnType<typeof getRedis>
+    redis: ReturnType<typeof getRedisConnection>
   ): Promise<void> {
     // Parse event from fields
     const eventJson = fields[1]; // fields = ['event', '{...}']
@@ -282,7 +282,7 @@ class EventBus {
     fromTimestamp: Date,
     toTimestamp?: Date
   ): Promise<BreezeEvent[]> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     // Convert timestamps to Redis stream IDs (ms-*)
@@ -301,7 +301,7 @@ class EventBus {
    * Get pending events that haven't been acknowledged
    */
   async getPending(orgId: string, count = 100): Promise<string[]> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     const pending = await redis.xpending(
@@ -319,7 +319,7 @@ class EventBus {
    * Get dead letter queue entries
    */
   async getDeadLetterQueue(count = 100): Promise<{ messageId: string; event: BreezeEvent }[]> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const entries = await redis.lrange(`${STREAM_PREFIX}:dlq`, 0, count - 1);
     return entries.map(entry => JSON.parse(entry));
   }
@@ -328,7 +328,7 @@ class EventBus {
    * Retry a dead letter queue entry
    */
   async retryDeadLetter(index: number): Promise<void> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const entry = await redis.lindex(`${STREAM_PREFIX}:dlq`, index);
     if (!entry) return;
 

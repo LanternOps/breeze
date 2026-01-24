@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'crypto';
-import { getRedis } from '../services/redis';
+import { getRedisConnection } from '../services/redis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
 
 // Webhook delivery configuration
@@ -199,7 +199,7 @@ class WebhookDeliveryWorker {
    * Queue a webhook for delivery
    */
   async queueDelivery(webhook: WebhookConfig, event: BreezeEvent): Promise<string> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const deliveryId = randomUUID();
 
     const job: WebhookDeliveryJob = {
@@ -245,7 +245,7 @@ class WebhookDeliveryWorker {
    * Process the next job from the queue
    */
   private async processNextJob(): Promise<void> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
 
     try {
       // Blocking pop with 5 second timeout
@@ -316,7 +316,7 @@ class WebhookDeliveryWorker {
    * Get dead letter queue entries
    */
   async getDeadLetterQueue(start = 0, count = 100): Promise<unknown[]> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const entries = await redis.lrange(WEBHOOK_DLQ, start, start + count - 1);
     return entries.map(e => JSON.parse(e));
   }
@@ -325,7 +325,7 @@ class WebhookDeliveryWorker {
    * Retry a dead letter queue entry
    */
   async retryFromDLQ(index: number): Promise<void> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const entry = await redis.lindex(WEBHOOK_DLQ, index);
     if (!entry) return;
 
@@ -350,7 +350,7 @@ class WebhookDeliveryWorker {
    * Clear dead letter queue
    */
   async clearDLQ(): Promise<number> {
-    const redis = getRedis();
+    const redis = getRedisConnection();
     const count = await redis.llen(WEBHOOK_DLQ);
     await redis.del(WEBHOOK_DLQ);
     return count;

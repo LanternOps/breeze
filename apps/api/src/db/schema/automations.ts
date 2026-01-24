@@ -42,7 +42,7 @@ export const automationRuns = pgTable('automation_runs', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 
-export const policies = pgTable('policies', {
+export const automationPolicies = pgTable('automation_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   name: varchar('name', { length: 255 }).notNull(),
@@ -59,9 +59,9 @@ export const policies = pgTable('policies', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
-export const policyCompliance = pgTable('policy_compliance', {
+export const automationPolicyCompliance = pgTable('automation_policy_compliance', {
   id: uuid('id').primaryKey().defaultRandom(),
-  policyId: uuid('policy_id').notNull().references(() => policies.id),
+  policyId: uuid('policy_id').notNull().references(() => automationPolicies.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   status: complianceStatusEnum('status').notNull().default('pending'),
   details: jsonb('details'),

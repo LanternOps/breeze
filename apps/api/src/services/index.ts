@@ -11,3 +11,4 @@ export * from './psa';
 export * from './notifications';
 export * from './plugins';
 export * from './commandQueue';
+export * from './email';

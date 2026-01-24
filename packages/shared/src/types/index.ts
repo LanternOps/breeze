@@ -374,3 +374,9 @@ export interface AuditLog {
   errorMessage: string | null;
   checksum: string | null;
 }
+
+// ============================================
+// Filter System Types
+// ============================================
+
+export * from './filters';

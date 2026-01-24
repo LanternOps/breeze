@@ -1,0 +1,364 @@
+import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
+import { and, desc, eq, inArray } from 'drizzle-orm';
+import { db } from '../db';
+import { organizations, savedFilters } from '../db/schema';
+import { authMiddleware, requireScope } from '../middleware/auth';
+import { evaluateFilterWithPreview, FilterConditionGroup } from '../services/filterEngine';
+
+// Filter schemas (defined locally to avoid rootDir issues)
+const filterOperatorSchema = z.enum([
+  'equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals',
+  'contains', 'notContains', 'startsWith', 'endsWith', 'matches',
+  'in', 'notIn', 'hasAny', 'hasAll', 'isEmpty', 'isNotEmpty',
+  'isNull', 'isNotNull', 'before', 'after', 'between', 'withinLast', 'notWithinLast'
+]);
+
+const filterValueSchema = z.union([
+  z.string(), z.number(), z.boolean(), z.coerce.date(),
+  z.array(z.string()), z.array(z.number()),
+  z.object({ from: z.coerce.date(), to: z.coerce.date() }),
+  z.object({ amount: z.number().positive(), unit: z.enum(['minutes', 'hours', 'days', 'weeks', 'months']) })
+]);
+
+const filterConditionSchema = z.object({
+  field: z.string().min(1),
+  operator: filterOperatorSchema,
+  value: filterValueSchema.optional()
+});
+
+interface LocalFilterConditionGroup {
+  operator: 'AND' | 'OR';
+  conditions: Array<
+    | { field: string; operator: string; value?: unknown }
+    | LocalFilterConditionGroup
+  >;
+}
+
+const filterConditionGroupSchema: z.ZodType<LocalFilterConditionGroup> = z.lazy(() =>
+  z.object({
+    operator: z.enum(['AND', 'OR']),
+    conditions: z.array(z.union([filterConditionSchema, filterConditionGroupSchema])).min(1)
+  })
+);
+
+const createSavedFilterSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(1000).optional(),
+  conditions: filterConditionGroupSchema
+});
+
+const updateSavedFilterSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().max(1000).nullable().optional(),
+  conditions: filterConditionGroupSchema.optional()
+});
+
+const savedFilterQuerySchema = z.object({
+  search: z.string().optional(),
+  page: z.coerce.number().min(1).default(1),
+  limit: z.coerce.number().min(1).max(100).default(50)
+});
+
+export const filterRoutes = new Hono();
+
+type SavedFilterResponse = {
+  id: string;
+  orgId: string;
+  name: string;
+  description: string | null;
+  conditions: unknown;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const filterIdParamSchema = z.object({
+  id: z.string().uuid()
+});
+
+const createFilterSchema = createSavedFilterSchema.extend({
+  orgId: z.string().uuid().optional()
+});
+
+const previewQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).optional()
+});
+
+filterRoutes.use('*', authMiddleware);
+
+async function ensureOrgAccess(
+  orgId: string,
+  auth: { scope: string; partnerId: string | null; orgId: string | null }
+) {
+  if (auth.scope === 'organization') {
+    return auth.orgId === orgId;
+  }
+
+  if (auth.scope === 'partner') {
+    const [org] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, auth.partnerId as string)))
+      .limit(1);
+
+    return Boolean(org);
+  }
+
+  return true;
+}
+
+async function getOrgIdsForAuth(
+  auth: { scope: string; partnerId: string | null; orgId: string | null }
+): Promise<string[] | null> {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return null;
+    return [auth.orgId];
+  }
+
+  if (auth.scope === 'partner') {
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, auth.partnerId as string));
+    return partnerOrgs.map((org) => org.id);
+  }
+
+  return null;
+}
+
+async function getFilterWithAccess(
+  filterId: string,
+  auth: { scope: string; partnerId: string | null; orgId: string | null }
+) {
+  const [filter] = await db
+    .select()
+    .from(savedFilters)
+    .where(eq(savedFilters.id, filterId))
+    .limit(1);
+
+  if (!filter) {
+    return null;
+  }
+
+  const hasAccess = await ensureOrgAccess(filter.orgId, auth);
+  if (!hasAccess) {
+    return null;
+  }
+
+  return filter;
+}
+
+function mapFilterRow(filter: typeof savedFilters.$inferSelect): SavedFilterResponse {
+  return {
+    id: filter.id,
+    orgId: filter.orgId,
+    name: filter.name,
+    description: filter.description ?? null,
+    conditions: filter.conditions,
+    createdBy: filter.createdBy ?? null,
+    createdAt: filter.createdAt.toISOString(),
+    updatedAt: filter.updatedAt.toISOString()
+  };
+}
+
+// GET / - List saved filters
+filterRoutes.get(
+  '/',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', savedFilterQuerySchema.pick({ search: true })),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    const orgIds = await getOrgIdsForAuth(auth);
+    if (auth.scope !== 'system' && (!orgIds || orgIds.length === 0)) {
+      return c.json({ data: [], total: 0 });
+    }
+
+    const conditions = [] as ReturnType<typeof eq>[];
+    if (orgIds) {
+      conditions.push(inArray(savedFilters.orgId, orgIds));
+    }
+
+    const whereCondition = conditions.length ? and(...conditions) : undefined;
+
+    const filters = await db
+      .select()
+      .from(savedFilters)
+      .where(whereCondition)
+      .orderBy(desc(savedFilters.createdAt));
+
+    let results = filters;
+    if (query.search) {
+      const term = query.search.toLowerCase();
+      results = results.filter((filter) => {
+        const inName = filter.name.toLowerCase().includes(term);
+        const inDescription = filter.description?.toLowerCase().includes(term) ?? false;
+        return inName || inDescription;
+      });
+    }
+
+    const data = results.map(mapFilterRow);
+
+    return c.json({ data, total: data.length });
+  }
+);
+
+// POST / - Create saved filter
+filterRoutes.post(
+  '/',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', createFilterSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const payload = c.req.valid('json');
+
+    let orgId = payload.orgId;
+    if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      orgId = auth.orgId;
+    } else if (auth.scope === 'partner') {
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for partner scope' }, 400);
+      }
+      const hasAccess = await ensureOrgAccess(orgId, auth);
+      if (!hasAccess) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+    } else if (auth.scope === 'system' && !orgId) {
+      return c.json({ error: 'orgId is required' }, 400);
+    }
+
+    const [filter] = await db
+      .insert(savedFilters)
+      .values({
+        orgId: orgId!,
+        name: payload.name,
+        description: payload.description ?? null,
+        conditions: payload.conditions,
+        createdBy: auth.user.id
+      })
+      .returning();
+
+    if (!filter) {
+      return c.json({ error: 'Failed to create saved filter' }, 500);
+    }
+
+    return c.json({ data: mapFilterRow(filter) }, 201);
+  }
+);
+
+// GET /:id - Get single saved filter
+filterRoutes.get(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', filterIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+
+    const filter = await getFilterWithAccess(id, auth);
+    if (!filter) {
+      return c.json({ error: 'Saved filter not found' }, 404);
+    }
+
+    return c.json({ data: mapFilterRow(filter) });
+  }
+);
+
+// PATCH /:id - Update saved filter
+filterRoutes.patch(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', filterIdParamSchema),
+  zValidator('json', updateSavedFilterSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const filter = await getFilterWithAccess(id, auth);
+    if (!filter) {
+      return c.json({ error: 'Saved filter not found' }, 404);
+    }
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (payload.name !== undefined) updates.name = payload.name;
+    if (payload.description !== undefined) updates.description = payload.description;
+    if (payload.conditions !== undefined) updates.conditions = payload.conditions;
+
+    const [updated] = await db
+      .update(savedFilters)
+      .set(updates)
+      .where(eq(savedFilters.id, id))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Failed to update saved filter' }, 500);
+    }
+
+    return c.json({ data: mapFilterRow(updated) });
+  }
+);
+
+// DELETE /:id - Delete saved filter
+filterRoutes.delete(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', filterIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+
+    const filter = await getFilterWithAccess(id, auth);
+    if (!filter) {
+      return c.json({ error: 'Saved filter not found' }, 404);
+    }
+
+    await db.delete(savedFilters).where(eq(savedFilters.id, id));
+
+    return c.json({ data: mapFilterRow(filter) });
+  }
+);
+
+// POST /:id/preview - Preview matching devices for saved filter
+filterRoutes.post(
+  '/:id/preview',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', filterIdParamSchema),
+  zValidator('query', previewQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const query = c.req.valid('query');
+
+    const filter = await getFilterWithAccess(id, auth);
+    if (!filter) {
+      return c.json({ error: 'Saved filter not found' }, 404);
+    }
+
+    const preview = await evaluateFilterWithPreview(
+      filter.conditions as FilterConditionGroup,
+      { orgId: filter.orgId, previewLimit: query.limit }
+    );
+
+    return c.json({
+      data: {
+        totalCount: preview.totalCount,
+        devices: preview.devices.map((device) => ({
+          id: device.id,
+          hostname: device.hostname,
+          displayName: device.displayName,
+          osType: device.osType,
+          status: device.status,
+          lastSeenAt: device.lastSeenAt ? device.lastSeenAt.toISOString() : null
+        })),
+        evaluatedAt: preview.evaluatedAt.toISOString()
+      }
+    });
+  }
+);

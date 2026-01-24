@@ -12,6 +12,7 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash'),
   mfaSecret: text('mfa_secret'),
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
+  mfaRecoveryCodes: jsonb('mfa_recovery_codes'),
   status: userStatusEnum('status').notNull().default('invited'),
   avatarUrl: text('avatar_url'),
   lastLoginAt: timestamp('last_login_at'),

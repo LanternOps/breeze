@@ -2,6 +2,7 @@
 import Layout from './Layout.astro';
 import Sidebar from '../components/layout/Sidebar';
 import Header from '../components/layout/Header';
+import AuthOverlay from '../components/auth/AuthOverlay';
 
 interface Props {
   title: string;
@@ -12,6 +13,7 @@ const currentPath = Astro.url.pathname;
 ---
 
 <Layout title={title}>
+  <AuthOverlay client:load />
   <div class="flex h-screen overflow-hidden">
     <Sidebar currentPath={currentPath} client:load />
     <div class="flex flex-1 flex-col overflow-hidden">
