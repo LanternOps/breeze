@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import NotificationChannelList, { type NotificationChannel } from './NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from './NotificationChannelForm';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -17,12 +18,16 @@ export default function NotificationChannelsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/alerts/channels');
+      const response = await fetchWithAuth('/alerts/channels');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch notification channels');
       }
       const data = await response.json();
-      setChannels(data.channels ?? data ?? []);
+      setChannels(data.channels ?? data.data ?? (Array.isArray(data) ? data : []));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -51,11 +56,15 @@ export default function NotificationChannelsPage() {
 
   const handleTest = async (channel: NotificationChannel) => {
     try {
-      const response = await fetch(`/api/alerts/channels/${channel.id}/test`, {
+      const response = await fetchWithAuth(`/alerts/channels/${channel.id}/test`, {
         method: 'POST'
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Test failed');
       }
 
@@ -179,17 +188,20 @@ export default function NotificationChannelsPage() {
       const payload = transformFormToPayload(values);
       const url =
         modalMode === 'create'
-          ? '/api/alerts/channels'
-          : `/api/alerts/channels/${selectedChannel?.id}`;
+          ? '/alerts/channels'
+          : `/alerts/channels/${selectedChannel?.id}`;
       const method = modalMode === 'create' ? 'POST' : 'PUT';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         const data = await response.json();
         throw new Error(data.error || 'Failed to save channel');
       }
@@ -208,11 +220,15 @@ export default function NotificationChannelsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/alerts/channels/${selectedChannel.id}`, {
+      const response = await fetchWithAuth(`/alerts/channels/${selectedChannel.id}`, {
         method: 'DELETE'
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to delete channel');
       }
 

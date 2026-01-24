@@ -63,13 +63,9 @@ export default function Header() {
     if (!user?.name) return '?';
     const parts = user.name.split(' ');
     if (parts.length >= 2) {
-      const first = parts[0];
-      const last = parts[parts.length - 1];
-      if (first && last) {
-        return `${first[0]}${last[0]}`.toUpperCase();
-      }
+      return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
     }
-    return user.name[0]?.toUpperCase() ?? '?';
+    return user.name[0].toUpperCase();
   };
 
   return (

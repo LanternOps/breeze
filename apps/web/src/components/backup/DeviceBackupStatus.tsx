@@ -9,6 +9,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type DeviceBackupStatusProps = {
   deviceId?: string;
@@ -59,7 +60,7 @@ export default function DeviceBackupStatus({ deviceId }: DeviceBackupStatusProps
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/devices/${deviceId}/backups`);
+      const response = await fetchWithAuth(`/backup/status/${deviceId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch device backup status');
       }

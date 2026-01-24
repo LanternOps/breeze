@@ -13,6 +13,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type ReportType =
   | 'device_inventory'
@@ -92,7 +93,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete }: ReportsLis
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/reports');
+      const response = await fetchWithAuth('/reports');
       if (!response.ok) {
         throw new Error('Failed to fetch reports');
       }
@@ -107,7 +108,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete }: ReportsLis
 
   const fetchRecentRuns = useCallback(async () => {
     try {
-      const response = await fetch('/api/reports/runs?limit=20');
+      const response = await fetchWithAuth('/reports/runs?limit=20');
       if (response.ok) {
         const data = await response.json();
         setRecentRuns(data.data ?? []);
@@ -125,7 +126,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete }: ReportsLis
   const handleGenerate = async (report: Report) => {
     setGeneratingIds(prev => new Set([...prev, report.id]));
     try {
-      const response = await fetch(`/api/reports/${report.id}/generate`, {
+      const response = await fetchWithAuth(`/reports/${report.id}/generate`, {
         method: 'POST'
       });
 
@@ -154,7 +155,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete }: ReportsLis
 
     setDeletingId(report.id);
     try {
-      const response = await fetch(`/api/reports/${report.id}`, {
+      const response = await fetchWithAuth(`/reports/${report.id}`, {
         method: 'DELETE'
       });
 

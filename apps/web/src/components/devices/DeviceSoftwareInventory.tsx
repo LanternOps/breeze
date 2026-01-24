@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Package } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type SoftwareItem = {
   id?: string;
@@ -32,7 +33,7 @@ export default function DeviceSoftwareInventory({ deviceId }: DeviceSoftwareInve
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/devices/${deviceId}/software`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/software`);
       if (!response.ok) throw new Error('Failed to fetch software inventory');
       const json = await response.json();
       const payload = json?.data ?? json;

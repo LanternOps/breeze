@@ -15,6 +15,7 @@ import {
 import { cn } from '@/lib/utils';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { ReportFormat, ReportSchedule, ReportType } from './ReportsList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type TemplatePreview = {
   gradient: string;
@@ -403,7 +404,7 @@ export default function ReportTemplates() {
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch('/api/reports/templates');
+      const response = await fetchWithAuth('/reports/templates');
       if (!response.ok) {
         throw new Error('Failed to fetch report templates');
       }

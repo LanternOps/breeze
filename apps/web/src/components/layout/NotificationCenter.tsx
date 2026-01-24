@@ -173,7 +173,7 @@ export default function NotificationCenter() {
         normalizeNotification(item, index)
       );
       normalized.sort(
-        (a: NotificationItem, b: NotificationItem) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
       setNotifications(normalized);
     } catch (err) {

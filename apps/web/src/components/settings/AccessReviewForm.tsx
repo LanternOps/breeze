@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 const accessReviewSchema = z.object({
   name: z.string().min(1, 'Review name is required').max(255),
   description: z.string().optional(),
-  scope: z.enum(['current', 'organization', 'partner']),
+  scope: z.enum(['current', 'organization', 'partner']).default('current'),
   reviewerIds: z.array(z.string()).optional(),
   dueDate: z.string().optional(),
   notifyReviewers: z.boolean().optional()
@@ -124,7 +124,7 @@ export default function AccessReviewForm({
 
         <form
           onSubmit={handleSubmit(async (values) => {
-            await onSubmit?.(values as AccessReviewFormValues);
+            await onSubmit?.(values);
           })}
           className="mt-6 space-y-5"
         >

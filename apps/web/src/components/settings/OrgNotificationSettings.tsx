@@ -353,13 +353,13 @@ export default function OrgNotificationSettings({
                       <td key={channel.id} className="px-2 py-2">
                         <input
                           type="checkbox"
-                          checked={preferences[alert.id]?.[channel.id] ?? false}
+                          checked={preferences[alert.id][channel.id]}
                           onChange={() => {
                             setPreferences(prev => ({
                               ...prev,
                               [alert.id]: {
                                 ...prev[alert.id],
-                                [channel.id]: !(prev[alert.id]?.[channel.id] ?? false)
+                                [channel.id]: !prev[alert.id][channel.id]
                               }
                             }));
                             markDirty();

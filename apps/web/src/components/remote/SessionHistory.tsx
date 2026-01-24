@@ -113,6 +113,88 @@ function formatDateTime(dateString?: string): string {
   });
 }
 
+// Mock data for demonstration
+const mockSessions: RemoteSession[] = [
+  {
+    id: '1',
+    deviceId: 'dev-1',
+    deviceHostname: 'WORKSTATION-01',
+    deviceOsType: 'windows',
+    userId: 'user-1',
+    userName: 'John Doe',
+    userEmail: 'john@example.com',
+    type: 'terminal',
+    status: 'disconnected',
+    startedAt: '2024-01-15T10:30:00Z',
+    endedAt: '2024-01-15T11:45:00Z',
+    durationSeconds: 4500,
+    bytesTransferred: 1024000,
+    createdAt: '2024-01-15T10:29:00Z'
+  },
+  {
+    id: '2',
+    deviceId: 'dev-2',
+    deviceHostname: 'SERVER-PROD-01',
+    deviceOsType: 'linux',
+    userId: 'user-1',
+    userName: 'John Doe',
+    userEmail: 'john@example.com',
+    type: 'terminal',
+    status: 'disconnected',
+    startedAt: '2024-01-15T09:00:00Z',
+    endedAt: '2024-01-15T09:30:00Z',
+    durationSeconds: 1800,
+    bytesTransferred: 512000,
+    createdAt: '2024-01-15T08:59:00Z'
+  },
+  {
+    id: '3',
+    deviceId: 'dev-3',
+    deviceHostname: 'DEV-MACBOOK-01',
+    deviceOsType: 'macos',
+    userId: 'user-2',
+    userName: 'Jane Smith',
+    userEmail: 'jane@example.com',
+    type: 'file_transfer',
+    status: 'disconnected',
+    startedAt: '2024-01-14T15:00:00Z',
+    endedAt: '2024-01-14T15:15:00Z',
+    durationSeconds: 900,
+    bytesTransferred: 52428800,
+    createdAt: '2024-01-14T14:59:00Z'
+  },
+  {
+    id: '4',
+    deviceId: 'dev-1',
+    deviceHostname: 'WORKSTATION-01',
+    deviceOsType: 'windows',
+    userId: 'user-3',
+    userName: 'Bob Johnson',
+    userEmail: 'bob@example.com',
+    type: 'desktop',
+    status: 'failed',
+    startedAt: '2024-01-14T10:00:00Z',
+    durationSeconds: 0,
+    createdAt: '2024-01-14T09:59:00Z'
+  },
+  {
+    id: '5',
+    deviceId: 'dev-4',
+    deviceHostname: 'LAPTOP-SALES-05',
+    deviceOsType: 'windows',
+    userId: 'user-2',
+    userName: 'Jane Smith',
+    userEmail: 'jane@example.com',
+    type: 'terminal',
+    status: 'disconnected',
+    startedAt: '2024-01-13T16:30:00Z',
+    endedAt: '2024-01-13T17:00:00Z',
+    durationSeconds: 1800,
+    bytesTransferred: 256000,
+    createdAt: '2024-01-13T16:29:00Z'
+  }
+];
+
 export default function SessionHistory({
   sessions: propSessions,
   loading = false,
@@ -122,7 +204,7 @@ export default function SessionHistory({
   limit,
   className
 }: SessionHistoryProps) {
-  const [sessions, setSessions] = useState<RemoteSession[]>(propSessions || []);
+  const [sessions, setSessions] = useState<RemoteSession[]>(propSessions || mockSessions);
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [userFilter, setUserFilter] = useState<string>('all');

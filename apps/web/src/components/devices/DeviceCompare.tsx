@@ -111,7 +111,82 @@ const patchCatalog = [
   'Systemd 255.1'
 ];
 
+const mockDevices: Device[] = [
+  {
+    id: '1',
+    hostname: 'WORKSTATION-001',
+    os: 'windows',
+    osVersion: '11 Pro 23H2',
+    status: 'online',
+    cpuPercent: 45,
+    ramPercent: 62,
+    lastSeen: '2024-01-15T12:00:00.000Z',
+    siteId: 'site-1',
+    siteName: 'Headquarters',
+    agentVersion: '2.5.1',
+    tags: ['production', 'engineering']
+  },
+  {
+    id: '2',
+    hostname: 'SERVER-DB-01',
+    os: 'linux',
+    osVersion: 'Ubuntu 22.04 LTS',
+    status: 'online',
+    cpuPercent: 78,
+    ramPercent: 85,
+    lastSeen: '2024-01-15T11:58:00.000Z',
+    siteId: 'site-1',
+    siteName: 'Headquarters',
+    agentVersion: '2.5.1',
+    tags: ['production', 'database']
+  },
+  {
+    id: '3',
+    hostname: 'MACBOOK-DESIGN-01',
+    os: 'macos',
+    osVersion: 'Sonoma 14.2',
+    status: 'online',
+    cpuPercent: 32,
+    ramPercent: 48,
+    lastSeen: '2024-01-15T11:55:00.000Z',
+    siteId: 'site-2',
+    siteName: 'Remote Office',
+    agentVersion: '2.5.0',
+    tags: ['design']
+  },
+  {
+    id: '4',
+    hostname: 'LAPTOP-SALES-02',
+    os: 'windows',
+    osVersion: '11 Pro 23H2',
+    status: 'offline',
+    cpuPercent: 0,
+    ramPercent: 0,
+    lastSeen: '2024-01-15T10:00:00.000Z',
+    siteId: 'site-2',
+    siteName: 'Remote Office',
+    agentVersion: '2.4.3',
+    tags: ['sales']
+  },
+  {
+    id: '5',
+    hostname: 'SERVER-WEB-01',
+    os: 'linux',
+    osVersion: 'Ubuntu 22.04 LTS',
+    status: 'maintenance',
+    cpuPercent: 12,
+    ramPercent: 35,
+    lastSeen: '2024-01-15T11:59:00.000Z',
+    siteId: 'site-1',
+    siteName: 'Headquarters',
+    agentVersion: '2.5.1',
+    tags: ['production', 'web']
+  }
+];
+
 function createFallbackDevice(id: string): Device {
+  const matched = mockDevices.find(device => device.id === id);
+  if (matched) return matched;
   return {
     id,
     hostname: `Device ${id}`,
@@ -542,7 +617,7 @@ export default function DeviceCompare() {
       const normalized = items.map((device: Record<string, unknown>, index: number) => normalizeDeviceSummary(device, index));
       setAvailableDevices(normalized);
     } catch (err) {
-      setAvailableDevices([]);
+      setAvailableDevices(mockDevices);
       setListError(err instanceof Error ? err.message : 'Failed to load devices');
     } finally {
       setLoadingDevices(false);

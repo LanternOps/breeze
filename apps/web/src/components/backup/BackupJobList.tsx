@@ -11,6 +11,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued';
 
@@ -83,7 +84,7 @@ export default function BackupJobList() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/backup/jobs');
+      const response = await fetchWithAuth('/backup/jobs');
       if (!response.ok) {
         throw new Error('Failed to fetch backup jobs');
       }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Terminal } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ScriptExecution = {
   id?: string;
@@ -49,7 +50,7 @@ export default function DeviceScriptHistory({ deviceId }: DeviceScriptHistoryPro
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/devices/${deviceId}/scripts/history`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/scripts`);
       if (!response.ok) throw new Error('Failed to fetch script history');
       const json = await response.json();
       const payload = json?.data ?? json;

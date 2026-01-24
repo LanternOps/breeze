@@ -22,9 +22,7 @@ interface AuditLogEntry {
   details?: Record<string, unknown>;
 }
 
-type IconComponent = typeof Monitor;
-
-const typeIcons: Record<string, IconComponent> = {
+const typeIcons: Record<string, typeof Monitor> = {
   script: FileCode,
   device: Monitor,
   user: User,
@@ -140,7 +138,7 @@ export default function RecentActivity() {
             <tbody>
               {activities.map((activity) => {
                 const targetType = (activity.resourceType || activity.targetType || 'default').toLowerCase();
-                const Icon = typeIcons[targetType] ?? typeIcons.default ?? Activity;
+                const Icon = typeIcons[targetType] || typeIcons.default;
                 const userName = activity.user?.name || activity.userName || 'System';
                 const target = activity.target || activity.targetName || activity.resourceId || '-';
                 const timestamp = activity.timestamp || activity.createdAt || '';

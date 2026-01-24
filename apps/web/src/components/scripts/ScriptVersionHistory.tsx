@@ -120,13 +120,11 @@ export default function ScriptVersionHistory({ scriptId }: ScriptVersionHistoryP
 
   useEffect(() => {
     if (sortedVersions.length === 0) return;
-    const firstVersion = sortedVersions[0];
-    const secondVersion = sortedVersions[1];
-    if (firstVersion && !compareRightId) {
-      setCompareRightId(firstVersion.id);
+    if (!compareRightId) {
+      setCompareRightId(sortedVersions[0].id);
     }
-    if (firstVersion && !compareLeftId) {
-      setCompareLeftId(secondVersion?.id ?? firstVersion.id);
+    if (!compareLeftId) {
+      setCompareLeftId(sortedVersions[1]?.id ?? sortedVersions[0].id);
     }
   }, [compareLeftId, compareRightId, sortedVersions]);
 

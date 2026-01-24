@@ -459,8 +459,7 @@ export default function ComplianceDashboard() {
       return;
     }
 
-    const firstControl = controls[0];
-    setSelectedControlId(prev => (prev && controls.some(control => control.id === prev) ? prev : firstControl?.id ?? null));
+    setSelectedControlId(prev => (prev && controls.some(control => control.id === prev) ? prev : controls[0].id));
   }, [controls]);
 
   const frameworkLabel = useMemo(

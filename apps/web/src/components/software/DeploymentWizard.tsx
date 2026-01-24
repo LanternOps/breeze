@@ -383,7 +383,7 @@ export default function DeploymentWizard() {
                     type="button"
                     onClick={() => {
                       setSelectedSoftwareId(item.id);
-                      setSelectedVersion(item.versions[0] ?? '');
+                      setSelectedVersion(item.versions[0]);
                     }}
                     className={cn(
                       'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition hover:border-primary/50',

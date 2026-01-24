@@ -8,8 +8,10 @@ import PatchList, {
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
 import PatchComplianceDashboard from './PatchComplianceDashboard';
 import PatchPolicyList, { type PatchPolicy, type PatchPolicyStatus } from './PatchPolicyList';
+import PatchPolicyForm, { type PatchPolicyFormValues } from './PatchPolicyForm';
 import PatchJobList from './PatchJobList';
 import DevicePatchStatus, { type DevicePatch } from './DevicePatchStatus';
+import { fetchWithAuth } from '../../stores/auth';
 
 const severityMap: Record<string, PatchSeverity> = {
   critical: 'critical',
@@ -193,6 +195,8 @@ export default function PatchesPage() {
   const [deviceSnapshot, setDeviceSnapshot] = useState<DeviceSnapshot | null>(null);
   const [deviceLoading, setDeviceLoading] = useState(true);
   const [deviceError, setDeviceError] = useState<string>();
+  const [policyModalOpen, setPolicyModalOpen] = useState(false);
+  const [policySubmitting, setPolicySubmitting] = useState(false);
 
   const tabs = useMemo(
     () => [
@@ -208,8 +212,12 @@ export default function PatchesPage() {
     try {
       setPatchesLoading(true);
       setPatchesError(undefined);
-      const response = await fetch('/api/patches');
+      const response = await fetchWithAuth('/patches');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch patches');
       }
       const data = await response.json();
@@ -229,8 +237,12 @@ export default function PatchesPage() {
     try {
       setPoliciesLoading(true);
       setPoliciesError(undefined);
-      const response = await fetch('/api/patch-policies');
+      const response = await fetchWithAuth('/patch-policies');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch patch policies');
       }
       const data = await response.json();
@@ -250,8 +262,12 @@ export default function PatchesPage() {
     try {
       setDeviceLoading(true);
       setDeviceError(undefined);
-      const response = await fetch('/api/devices?limit=1');
+      const response = await fetchWithAuth('/devices?limit=1');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch device data');
       }
       const data = await response.json();
@@ -295,8 +311,12 @@ export default function PatchesPage() {
   };
 
   const getScanDeviceIds = async (): Promise<string[]> => {
-    const response = await fetch('/api/devices?limit=100');
+    const response = await fetchWithAuth('/devices?limit=100');
     if (!response.ok) {
+      if (response.status === 401) {
+        window.location.href = '/login';
+        throw new Error('Authentication required');
+      }
       throw new Error('Failed to load devices for scan');
     }
     const data = await response.json();
@@ -319,12 +339,15 @@ export default function PatchesPage() {
       setScanLoading(true);
       setScanError(undefined);
       const deviceIds = await getScanDeviceIds();
-      const response = await fetch('/api/patches/scan', {
+      const response = await fetchWithAuth('/patches/scan', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceIds })
       });
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to start patch scan');
       }
       await fetchPatches();
@@ -332,6 +355,29 @@ export default function PatchesPage() {
       setScanError(err instanceof Error ? err.message : 'Failed to start patch scan');
     } finally {
       setScanLoading(false);
+    }
+  };
+
+  const handlePolicySubmit = async (values: PatchPolicyFormValues) => {
+    setPolicySubmitting(true);
+    try {
+      const response = await fetchWithAuth('/patch-policies', {
+        method: 'POST',
+        body: JSON.stringify(values)
+      });
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        throw new Error('Failed to create policy');
+      }
+      await fetchPolicies();
+      setPolicyModalOpen(false);
+    } catch (err) {
+      setPoliciesError(err instanceof Error ? err.message : 'Failed to create policy');
+    } finally {
+      setPolicySubmitting(false);
     }
   };
 
@@ -377,6 +423,10 @@ export default function PatchesPage() {
           </button>
           <button
             type="button"
+            onClick={() => {
+              setPoliciesError(undefined);
+              setPolicyModalOpen(true);
+            }}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
             <Plus className="h-4 w-4" />
@@ -507,6 +557,29 @@ export default function PatchesPage() {
         }}
         onSubmit={handleApprovalSubmit}
       />
+
+      {policyModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
+          <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Create Patch Policy</h2>
+              <button
+                type="button"
+                onClick={() => setPolicyModalOpen(false)}
+                className="h-8 w-8 rounded-md hover:bg-muted flex items-center justify-center"
+              >
+                ×
+              </button>
+            </div>
+            <PatchPolicyForm
+              onSubmit={handlePolicySubmit}
+              onCancel={() => setPolicyModalOpen(false)}
+              submitLabel={policySubmitting ? 'Creating...' : 'Create Policy'}
+              loading={policySubmitting}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

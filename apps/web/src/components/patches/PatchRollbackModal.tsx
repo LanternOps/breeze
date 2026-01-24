@@ -8,6 +8,7 @@ import {
   X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type RollbackReason =
   | 'system_instability'
@@ -149,13 +150,28 @@ export default function PatchRollbackModal({
       ? `${reasonLabel}: ${additionalDetails.trim()}`
       : reasonLabel;
 
+    const rollbackData = {
+      reason: fullReason,
+      scheduleType,
+      scheduledTime: scheduleType === 'scheduled' ? scheduledTime : undefined,
+      deviceIds: selectAllDevices ? undefined : Array.from(selectedDeviceIds)
+    };
+
     try {
-      await onRollback({
-        reason: fullReason,
-        scheduleType,
-        scheduledTime: scheduleType === 'scheduled' ? scheduledTime : undefined,
-        deviceIds: selectAllDevices ? undefined : Array.from(selectedDeviceIds)
+      const response = await fetchWithAuth(`/patches/${patch.id}/rollback`, {
+        method: 'POST',
+        body: JSON.stringify(rollbackData)
       });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        throw new Error('Failed to initiate rollback');
+      }
+
+      await onRollback(rollbackData);
       onClose();
     } catch {
       // Error handling is delegated to the parent

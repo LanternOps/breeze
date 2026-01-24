@@ -15,5 +15,6 @@ export { default as DevicePerformanceGraphs } from './DevicePerformanceGraphs';
 export { default as DeviceEventLogViewer } from './DeviceEventLogViewer';
 export { default as DeviceNetworkConnections } from './DeviceNetworkConnections';
 export { default as DeviceCompare } from './DeviceCompare';
+export { default as ScriptPickerModal } from './ScriptPickerModal';
 
 export type { Device, DeviceStatus, OSType } from './DeviceList';

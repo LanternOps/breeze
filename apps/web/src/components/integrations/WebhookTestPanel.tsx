@@ -22,11 +22,9 @@ const eventTypes = [
   'patch.completed',
   'backup.failed',
   'security.alert'
-] as const;
+];
 
-type EventType = typeof eventTypes[number];
-
-const samplePayloads: Record<EventType, Record<string, unknown>> = {
+const samplePayloads: Record<string, Record<string, unknown>> = {
   'device.offline': {
     id: 'evt_0123',
     type: 'device.offline',
@@ -64,7 +62,7 @@ type WebhookTestPanelProps = {
 };
 
 export default function WebhookTestPanel({ webhookId }: WebhookTestPanelProps) {
-  const [eventType, setEventType] = useState<EventType>(eventTypes[0]);
+  const [eventType, setEventType] = useState(eventTypes[0]);
   const [history, setHistory] = useState<TestHistoryItem[]>([]);
   const [response, setResponse] = useState<WebhookResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -187,7 +185,7 @@ export default function WebhookTestPanel({ webhookId }: WebhookTestPanelProps) {
             <label className="text-sm font-medium">Event type</label>
             <select
               value={eventType}
-              onChange={event => setEventType(event.target.value as EventType)}
+              onChange={event => setEventType(event.target.value)}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               {eventTypes.map(type => (

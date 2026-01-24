@@ -70,7 +70,7 @@ function parseCronSchedule(cron?: string) {
   const parts = cron.trim().split(/\s+/);
   if (parts.length < 2) return null;
 
-  const [minute = '0', hour = '0', dayOfMonth = '*', _month = '*', dayOfWeek = '*'] = parts;
+  const [minute, hour, dayOfMonth = '*', _month = '*', dayOfWeek = '*'] = parts;
   const safeHour = hour.padStart(2, '0');
   const safeMinute = minute.padStart(2, '0');
   const time = `${safeHour}:${safeMinute}`;

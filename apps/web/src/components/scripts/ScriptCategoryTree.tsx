@@ -48,19 +48,15 @@ const createId = (prefix: string = 'cat') => {
   return `${prefix}-${idCounter}`;
 };
 
-const findCategory = (nodes: ScriptCategory[], id: string): ScriptCategory | undefined => {
+const findCategoryName = (nodes: ScriptCategory[], id: string): string | undefined => {
   for (const node of nodes) {
-    if (node.id === id) return node;
+    if (node.id === id) return node.name;
     if (node.children) {
-      const found = findCategory(node.children, id);
+      const found = findCategoryName(node.children, id);
       if (found) return found;
     }
   }
   return undefined;
-};
-
-const findCategoryName = (nodes: ScriptCategory[], id: string): string | undefined => {
-  return findCategory(nodes, id)?.name;
 };
 
 const collectDescendantIds = (nodes: ScriptCategory[], id: string): string[] => {
@@ -121,9 +117,7 @@ const reorderCategories = (nodes: ScriptCategory[], dragId: string, targetId: st
   if (dragIndex !== -1 && targetIndex !== -1) {
     const next = [...nodes];
     const [dragged] = next.splice(dragIndex, 1);
-    if (dragged) {
-      next.splice(targetIndex, 0, dragged);
-    }
+    next.splice(targetIndex, 0, dragged);
     return next;
   }
 
@@ -276,9 +270,9 @@ export default function ScriptCategoryTree({
     onSelectCategory?.(id);
   };
 
-  const openRename = (category: ScriptCategory) => {
-    setRenameValue(category.name);
-    setRenameTargetId(category.id);
+  const openRename = (id: string) => {
+    setRenameValue(findCategoryName(categories, id) ?? '');
+    setRenameTargetId(id);
   };
 
   const handleRename = async () => {
@@ -415,7 +409,7 @@ export default function ScriptCategoryTree({
           <button
             type="button"
             onClick={() => {
-              openRename(category);
+              openRename(category.id);
             }}
             className="opacity-0 transition group-hover:opacity-100"
           >
@@ -547,10 +541,7 @@ export default function ScriptCategoryTree({
           <button
             type="button"
             onClick={() => {
-              const category = findCategory(categories, contextMenu.categoryId);
-              if (category) {
-                openRename(category);
-              }
+              openRename(contextMenu.categoryId);
               setContextMenu(null);
             }}
             className="flex w-full items-center gap-2 px-3 py-2 hover:bg-muted"

@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 import type { AlertSeverity } from './AlertList';
 
 type AlertTemplate = {
@@ -15,7 +16,6 @@ type AlertTemplate = {
 };
 
 type AlertTemplateListProps = {
-  templates?: AlertTemplate[];
   onEdit?: (template: AlertTemplate) => void;
   onDuplicate?: (template: AlertTemplate) => void;
   onDelete?: (template: AlertTemplate) => void;
@@ -30,68 +30,88 @@ const severityStyles: Record<AlertSeverity, { label: string; className: string }
   info: { label: 'Info', className: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
 };
 
-const mockTemplates: AlertTemplate[] = [
-  {
-    id: 'tmpl-001',
-    name: 'CPU Saturation',
-    description: 'Detect sustained high CPU usage on endpoints.',
-    severity: 'critical',
-    conditions: ['CPU > 90%', 'Duration 10m', 'Device online'],
-    autoResolve: true,
-    usageCount: 14,
-    builtIn: true
-  },
-  {
-    id: 'tmpl-002',
-    name: 'Memory Pressure',
-    description: 'Warn when memory usage remains elevated.',
-    severity: 'high',
-    conditions: ['Memory > 85%', 'Duration 15m'],
-    autoResolve: true,
-    usageCount: 9,
-    builtIn: true
-  },
-  {
-    id: 'tmpl-003',
-    name: 'Disk Space Risk',
-    description: 'Custom alert for critical disk thresholds.',
-    severity: 'medium',
-    conditions: ['Disk < 12%', 'Duration 5m', 'Exclude backup volumes'],
-    autoResolve: false,
-    usageCount: 6,
-    builtIn: false
-  },
-  {
-    id: 'tmpl-004',
-    name: 'Patch Compliance Drift',
-    description: 'Detect devices falling behind patch schedule.',
-    severity: 'low',
-    conditions: ['Missing patches > 7 days', 'Device type: servers'],
-    autoResolve: false,
-    usageCount: 4,
-    builtIn: false
-  },
-  {
-    id: 'tmpl-005',
-    name: 'Network Latency Spike',
-    description: 'Monitor WAN latency degradation.',
-    severity: 'high',
-    conditions: ['Latency > 250ms', 'Duration 8m', 'Region: West'],
-    autoResolve: true,
-    usageCount: 11,
-    builtIn: true
-  }
-];
-
 export default function AlertTemplateList({
-  templates = mockTemplates,
   onEdit,
   onDuplicate,
   onDelete,
   onCreate
 }: AlertTemplateListProps) {
+  const [templates, setTemplates] = useState<AlertTemplate[]>([]);
   const [severityFilter, setSeverityFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchTemplates = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetchWithAuth('/alerts/templates');
+
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch templates');
+      }
+
+      const data = await response.json();
+      setTemplates(data.templates || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load templates');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTemplates();
+  }, [fetchTemplates]);
+
+  const handleDelete = async (template: AlertTemplate) => {
+    if (template.builtIn) return;
+
+    try {
+      const response = await fetchWithAuth(`/alerts/templates/${template.id}`, {
+        method: 'DELETE'
+      });
+
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (response.ok) {
+        fetchTemplates();
+        onDelete?.(template);
+      }
+    } catch {
+      // Handle error silently or show notification
+    }
+  };
+
+  const handleDuplicate = async (template: AlertTemplate) => {
+    try {
+      const response = await fetchWithAuth(`/alerts/templates/${template.id}/duplicate`, {
+        method: 'POST'
+      });
+
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (response.ok) {
+        fetchTemplates();
+        onDuplicate?.(template);
+      }
+    } catch {
+      // Handle error silently or show notification
+    }
+  };
 
   const filteredTemplates = useMemo(() => {
     return templates.filter(template => {
@@ -107,6 +127,33 @@ export default function AlertTemplateList({
       return matchesSeverity && matchesSource;
     });
   }, [templates, severityFilter, sourceFilter]);
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex h-48 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
+          <p>{error}</p>
+          <button
+            type="button"
+            onClick={fetchTemplates}
+            className="text-sm text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -233,7 +280,7 @@ export default function AlertTemplateList({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDuplicate?.(template)}
+                        onClick={() => handleDuplicate(template)}
                         className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
                         title="Duplicate template"
                       >
@@ -241,7 +288,7 @@ export default function AlertTemplateList({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDelete?.(template)}
+                        onClick={() => handleDelete(template)}
                         disabled={template.builtIn}
                         className={cn(
                           'flex h-8 w-8 items-center justify-center rounded-md text-destructive transition',

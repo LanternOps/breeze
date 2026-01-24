@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Calendar } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type AlertItem = {
   id?: string;
@@ -52,7 +53,7 @@ export default function DeviceAlertHistory({
       const endDate = range?.endDate ?? appliedRange.endDate;
       if (startDate) params.set('startDate', startDate);
       if (endDate) params.set('endDate', endDate);
-      const response = await fetch(`/api/devices/${deviceId}/alerts?${params}`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/alerts?${params}`);
       if (!response.ok) throw new Error('Failed to fetch alert history');
       const json = await response.json();
       const payload = json?.data ?? json;

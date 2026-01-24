@@ -12,6 +12,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type BackupConfig = {
   id: string;
@@ -63,7 +64,7 @@ export default function BackupConfigList() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/backup/configs');
+      const response = await fetchWithAuth('/backup/configs');
       if (!response.ok) {
         throw new Error('Failed to fetch backup configurations');
       }

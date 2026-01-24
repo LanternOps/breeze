@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Patch } from './PatchList';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type PatchApprovalAction = 'approve' | 'decline' | 'defer';
 
@@ -65,17 +66,20 @@ export default function PatchApprovalModal({
     setSubmitError(undefined);
 
     try {
-      const endpoint = action === 'approve' ? 'approve' : 'reject';
-      const response = await fetch(`/api/patches/${patch.id}/${endpoint}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+      // Map actions to API endpoints: approve, decline, or defer
+      const endpoint = action === 'approve' ? 'approve' : action === 'decline' ? 'decline' : 'defer';
+      const response = await fetchWithAuth(`/patches/${patch.id}/${endpoint}`, {
+        method: 'POST',
         body: JSON.stringify({
-          note: notes,
-          action: action === 'defer' ? 'defer' : undefined
+          note: notes
         })
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to update patch approval');
       }
 

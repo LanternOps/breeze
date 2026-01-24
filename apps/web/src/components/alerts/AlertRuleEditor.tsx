@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Save, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 import type { AlertSeverity } from './AlertList';
 
 type TargetType = 'org' | 'site' | 'group' | 'device';
@@ -16,32 +17,6 @@ type TargetOption = {
   name: string;
 };
 
-const mockTemplates: TemplateOption[] = [
-  { id: 'tmpl-001', name: 'CPU Saturation', severity: 'critical' },
-  { id: 'tmpl-002', name: 'Memory Pressure', severity: 'high' },
-  { id: 'tmpl-003', name: 'Disk Space Risk', severity: 'medium' },
-  { id: 'tmpl-004', name: 'Patch Compliance Drift', severity: 'low' }
-];
-
-const targetsByType: Record<TargetType, TargetOption[]> = {
-  org: [{ id: 'org-all', name: 'All Sites' }],
-  site: [
-    { id: 'site-1', name: 'HQ Campus' },
-    { id: 'site-2', name: 'West DC' },
-    { id: 'site-3', name: 'EMEA Region' }
-  ],
-  group: [
-    { id: 'group-1', name: 'Core Servers' },
-    { id: 'group-2', name: 'Remote Workstations' },
-    { id: 'group-3', name: 'Linux Fleet' }
-  ],
-  device: [
-    { id: 'device-1', name: 'WAN-Gateway-07' },
-    { id: 'device-2', name: 'DB-Primary-02' },
-    { id: 'device-3', name: 'EdgeRouter-13' }
-  ]
-};
-
 const severityStyles: Record<AlertSeverity, string> = {
   critical: 'bg-red-500/20 text-red-700 border-red-500/40',
   high: 'bg-orange-500/20 text-orange-700 border-orange-500/40',
@@ -51,25 +26,159 @@ const severityStyles: Record<AlertSeverity, string> = {
 };
 
 export default function AlertRuleEditor() {
-  const [templateId, setTemplateId] = useState(mockTemplates[0].id);
+  const [templates, setTemplates] = useState<TemplateOption[]>([]);
+  const [targetsByType, setTargetsByType] = useState<Record<TargetType, TargetOption[]>>({
+    org: [],
+    site: [],
+    group: [],
+    device: []
+  });
+  const [templateId, setTemplateId] = useState('');
   const [targetType, setTargetType] = useState<TargetType>('site');
-  const [targetId, setTargetId] = useState(targetsByType.site[0].id);
+  const [targetId, setTargetId] = useState('');
   const [overrideEnabled, setOverrideEnabled] = useState(false);
   const [overrideSeverity, setOverrideSeverity] = useState<AlertSeverity>('high');
   const [overrideCooldown, setOverrideCooldown] = useState(20);
   const [active, setActive] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const [templatesRes, targetsRes] = await Promise.all([
+        fetchWithAuth('/alerts/templates'),
+        fetchWithAuth('/alerts/rules/targets')
+      ]);
+
+      if (templatesRes.status === 401 || targetsRes.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (!templatesRes.ok) {
+        throw new Error('Failed to fetch templates');
+      }
+
+      if (!targetsRes.ok) {
+        throw new Error('Failed to fetch targets');
+      }
+
+      const templatesData = await templatesRes.json();
+      const targetsData = await targetsRes.json();
+
+      const templatesList = (templatesData.templates || []).map((t: TemplateOption) => ({
+        id: t.id,
+        name: t.name,
+        severity: t.severity
+      }));
+      setTemplates(templatesList);
+
+      if (templatesList.length > 0 && !templateId) {
+        setTemplateId(templatesList[0].id);
+      }
+
+      const newTargetsByType: Record<TargetType, TargetOption[]> = {
+        org: targetsData.organizations || [],
+        site: targetsData.sites || [],
+        group: targetsData.groups || [],
+        device: targetsData.devices || []
+      };
+      setTargetsByType(newTargetsByType);
+
+      if (newTargetsByType[targetType].length > 0 && !targetId) {
+        setTargetId(newTargetsByType[targetType][0].id);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load data');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [templateId, targetType, targetId]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const selectedTemplate = useMemo(
-    () => mockTemplates.find(template => template.id === templateId) ?? mockTemplates[0],
-    [templateId]
+    () => templates.find(template => template.id === templateId) ?? templates[0],
+    [templates, templateId]
   );
 
   const targetOptions = targetsByType[targetType];
 
   const handleTargetTypeChange = (value: TargetType) => {
     setTargetType(value);
-    setTargetId(targetsByType[value][0]?.id ?? '');
+    const newTargets = targetsByType[value];
+    setTargetId(newTargets[0]?.id ?? '');
   };
+
+  const handleSaveRule = async () => {
+    if (!templateId || !targetId) return;
+
+    setIsSaving(true);
+
+    try {
+      const response = await fetchWithAuth('/alerts/rules', {
+        method: 'POST',
+        body: JSON.stringify({
+          templateId,
+          targetType,
+          targetId,
+          active,
+          overrides: overrideEnabled ? {
+            severity: overrideSeverity,
+            cooldown: overrideCooldown
+          } : null
+        })
+      });
+
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to save rule');
+      }
+
+      // Could show success notification here
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save rule');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex h-48 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error && templates.length === 0) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
+          <p>{error}</p>
+          <button
+            type="button"
+            onClick={fetchData}
+            className="text-sm text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -80,12 +189,20 @@ export default function AlertRuleEditor() {
         </div>
         <button
           type="button"
-          className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          onClick={handleSaveRule}
+          disabled={isSaving || !templateId || !targetId}
+          className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
           <Save className="h-4 w-4" />
-          Save rule
+          {isSaving ? 'Saving...' : 'Save rule'}
         </button>
       </div>
+
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-6">
@@ -99,7 +216,7 @@ export default function AlertRuleEditor() {
                   onChange={event => setTemplateId(event.target.value)}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
-                  {mockTemplates.map(template => (
+                  {templates.map(template => (
                     <option key={template.id} value={template.id}>
                       {template.name}
                     </option>
@@ -111,10 +228,10 @@ export default function AlertRuleEditor() {
                 <div
                   className={cn(
                     'mt-1 flex h-10 items-center rounded-md border px-3 text-sm font-medium',
-                    severityStyles[selectedTemplate.severity]
+                    selectedTemplate ? severityStyles[selectedTemplate.severity] : ''
                   )}
                 >
-                  {selectedTemplate.severity.toUpperCase()}
+                  {selectedTemplate?.severity?.toUpperCase() ?? 'N/A'}
                 </div>
               </div>
             </div>
@@ -143,11 +260,15 @@ export default function AlertRuleEditor() {
                   onChange={event => setTargetId(event.target.value)}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
-                  {targetOptions.map(option => (
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                    </option>
-                  ))}
+                  {targetOptions.length === 0 ? (
+                    <option value="">No targets available</option>
+                  ) : (
+                    targetOptions.map(option => (
+                      <option key={option.id} value={option.id}>
+                        {option.name}
+                      </option>
+                    ))
+                  )}
                 </select>
               </div>
             </div>
@@ -226,7 +347,7 @@ export default function AlertRuleEditor() {
             <div className="mt-3 space-y-2 text-sm">
               <p className="flex justify-between">
                 <span className="text-muted-foreground">Template</span>
-                <span className="font-medium">{selectedTemplate.name}</span>
+                <span className="font-medium">{selectedTemplate?.name ?? 'Not set'}</span>
               </p>
               <p className="flex justify-between">
                 <span className="text-muted-foreground">Target type</span>

@@ -28,6 +28,75 @@ type EffectivePolicyViewerProps = {
   devices?: EffectivePolicyDevice[];
 };
 
+const mockDevices: EffectivePolicyDevice[] = [
+  {
+    id: 'dev-301',
+    name: 'NYC-LT-112',
+    settings: [
+      {
+        key: 'Firewall default',
+        value: 'Block',
+        sourcePolicyId: 'pol-101',
+        sourcePolicyName: 'Endpoint Baseline',
+        sourcePolicyType: 'Security'
+      },
+      {
+        key: 'VPN enforcement',
+        value: 'Always on',
+        sourcePolicyId: 'pol-106',
+        sourcePolicyName: 'SOC Alert Routing',
+        sourcePolicyType: 'Security'
+      },
+      {
+        key: 'Patch window',
+        value: 'Sunday 2-4 AM',
+        sourcePolicyId: 'pol-104',
+        sourcePolicyName: 'Critical Patch Window',
+        sourcePolicyType: 'Maintenance'
+      }
+    ],
+    chain: [
+      { id: 'pol-201', name: 'Global Defaults', type: 'Baseline', priority: 50 },
+      { id: 'pol-104', name: 'Critical Patch Window', type: 'Maintenance', priority: 75 },
+      { id: 'pol-101', name: 'Endpoint Baseline', type: 'Security', priority: 85 },
+      { id: 'pol-106', name: 'SOC Alert Routing', type: 'Security', priority: 90 }
+    ]
+  },
+  {
+    id: 'dev-302',
+    name: 'AUS-LT-044',
+    settings: [
+      {
+        key: 'Firewall default',
+        value: 'Block',
+        sourcePolicyId: 'pol-101',
+        sourcePolicyName: 'Endpoint Baseline',
+        sourcePolicyType: 'Security'
+      },
+      {
+        key: 'VPN enforcement',
+        value: 'On demand',
+        sourcePolicyId: 'pol-102',
+        sourcePolicyName: 'CIS Level 1',
+        sourcePolicyType: 'Compliance'
+      },
+      {
+        key: 'Patch window',
+        value: 'Saturday 1-3 AM',
+        sourcePolicyId: 'pol-104',
+        sourcePolicyName: 'Critical Patch Window',
+        sourcePolicyType: 'Maintenance'
+      }
+    ],
+    chain: [
+      { id: 'pol-201', name: 'Global Defaults', type: 'Baseline', priority: 50 },
+      { id: 'pol-102', name: 'CIS Level 1', type: 'Compliance', priority: 80 },
+      { id: 'pol-101', name: 'Endpoint Baseline', type: 'Security', priority: 85 },
+      { id: 'pol-104', name: 'Critical Patch Window', type: 'Maintenance', priority: 75 }
+    ]
+  }
+];
+
 const badgeColors = [
   'bg-emerald-100 text-emerald-700',
   'bg-blue-100 text-blue-700',
@@ -36,7 +105,7 @@ const badgeColors = [
   'bg-rose-100 text-rose-700'
 ];
 
-export default function EffectivePolicyViewer({ devices = [] }: EffectivePolicyViewerProps) {
+export default function EffectivePolicyViewer({ devices = mockDevices }: EffectivePolicyViewerProps) {
   const [selectedDeviceId, setSelectedDeviceId] = useState(devices[0]?.id ?? '');
 
   const selectedDevice = useMemo(

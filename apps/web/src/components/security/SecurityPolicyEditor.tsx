@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
-import { CalendarClock, Plus, Save, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { CalendarClock, Loader2, Plus, Save, Trash2 } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ToggleRowProps = {
   label: string;
@@ -28,6 +29,25 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
   );
 }
 
+type SecurityPolicy = {
+  id: string;
+  name: string;
+  description?: string;
+  providerId?: string;
+  scanSchedule: 'daily' | 'weekly' | 'monthly' | 'manual';
+  realTimeProtection: boolean;
+  autoQuarantine: boolean;
+  severityThreshold: 'low' | 'medium' | 'high' | 'critical';
+  exclusions: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SecurityPolicyEditorProps = {
+  policyId?: string;
+  onSave?: (policy: SecurityPolicy) => void;
+};
+
 const minuteOptions = ['0', '15', '30', '45'];
 const hourOptions = ['0', '2', '6', '12', '18'];
 const dayOfMonthOptions = ['*', '1', '15'];
@@ -42,9 +62,19 @@ const dayOfWeekOptions = [
   { label: 'Sun', value: '0' }
 ];
 
-export default function SecurityPolicyEditor() {
-  const [policyName, setPolicyName] = useState('Default Workstation Policy');
-  const [description, setDescription] = useState('Baseline protection for employee endpoints.');
+const scanScheduleFromCron = (minute: string, hour: string, dayOfMonth: string, dayOfWeek: string): 'daily' | 'weekly' | 'monthly' | 'manual' => {
+  if (dayOfMonth !== '*') return 'monthly';
+  if (dayOfWeek !== '*') return 'weekly';
+  if (hour !== '*') return 'daily';
+  return 'manual';
+};
+
+export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolicyEditorProps) {
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const [policyName, setPolicyName] = useState('');
+  const [description, setDescription] = useState('');
   const [realTimeEnabled, setRealTimeEnabled] = useState(true);
   const [behavioralEnabled, setBehavioralEnabled] = useState(true);
   const [cloudLookupEnabled, setCloudLookupEnabled] = useState(true);
@@ -56,12 +86,83 @@ export default function SecurityPolicyEditor() {
   const [autoQuarantine, setAutoQuarantine] = useState(true);
   const [notifyUser, setNotifyUser] = useState(true);
   const [blockUsb, setBlockUsb] = useState(false);
-  const [exclusions, setExclusions] = useState<string[]>([
-    'C:\\\\Program Files\\\\FinanceApp\\\\',
-    '/Library/Developer/Xcode',
-    '/srv/backups'
-  ]);
+  const [exclusions, setExclusions] = useState<string[]>([]);
   const [newExclusion, setNewExclusion] = useState('');
+
+  const fetchPolicy = useCallback(async () => {
+    if (!policyId) return;
+
+    setLoading(true);
+    setError(undefined);
+
+    try {
+      const response = await fetchWithAuth(`/api/security/policies`);
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      const json = await response.json();
+      const policies: SecurityPolicy[] = json.data || [];
+      const policy = policies.find((p) => p.id === policyId);
+
+      if (policy) {
+        setPolicyName(policy.name);
+        setDescription(policy.description || '');
+        setRealTimeEnabled(policy.realTimeProtection);
+        setAutoQuarantine(policy.autoQuarantine);
+        setExclusions(policy.exclusions || []);
+        setScheduledEnabled(policy.scanSchedule !== 'manual');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load policy');
+    } finally {
+      setLoading(false);
+    }
+  }, [policyId]);
+
+  useEffect(() => {
+    fetchPolicy();
+  }, [fetchPolicy]);
+
+  const handleSavePolicy = async () => {
+    setSaving(true);
+    setError(undefined);
+
+    const scanSchedule = scheduledEnabled
+      ? scanScheduleFromCron(scanMinute, scanHour, scanDayOfMonth, scanDayOfWeek)
+      : 'manual';
+
+    const payload = {
+      name: policyName,
+      description,
+      scanSchedule,
+      realTimeProtection: realTimeEnabled,
+      autoQuarantine,
+      severityThreshold: 'medium' as const,
+      exclusions
+    };
+
+    try {
+      const url = policyId ? `/api/security/policies/${policyId}` : '/api/security/policies';
+      const method = policyId ? 'PUT' : 'POST';
+
+      const response = await fetchWithAuth(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+
+      const json = await response.json();
+      onSave?.(json.data || json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save policy');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const cronExpression = useMemo(
     () => `${scanMinute} ${scanHour} ${scanDayOfMonth} * ${scanDayOfWeek}`,
@@ -280,13 +381,21 @@ export default function SecurityPolicyEditor() {
         </div>
       </div>
 
+      {error && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
+          <p className="text-sm text-destructive">{error}</p>
+        </div>
+      )}
+
       <div className="flex justify-end">
         <button
           type="button"
-          className="inline-flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+          onClick={handleSavePolicy}
+          disabled={saving || loading}
+          className="inline-flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
-          <Save className="h-4 w-4" />
-          Save policy
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {saving ? 'Saving...' : 'Save policy'}
         </button>
       </div>
     </div>

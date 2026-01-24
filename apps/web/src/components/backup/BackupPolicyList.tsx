@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, Loader2, PauseCircle, Pencil, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type PolicyStatus = 'active' | 'paused' | 'draft' | 'archived';
 
@@ -64,7 +65,7 @@ export default function BackupPolicyList() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/backup/policies');
+      const response = await fetchWithAuth('/backup/policies');
       if (!response.ok) {
         throw new Error('Failed to fetch backup policies');
       }
@@ -102,11 +103,10 @@ export default function BackupPolicyList() {
     try {
       setSaving(true);
       setError(undefined);
-      const method = editingId ? 'PUT' : 'POST';
-      const endpoint = editingId ? `/api/backup/policies/${editingId}` : '/api/backup/policies';
-      const response = await fetch(endpoint, {
+      const method = editingId ? 'PATCH' : 'POST';
+      const endpoint = editingId ? `/backup/policies/${editingId}` : '/backup/policies';
+      const response = await fetchWithAuth(endpoint, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formState)
       });
 
@@ -130,7 +130,7 @@ export default function BackupPolicyList() {
     try {
       setDeletingId(policy.id);
       setError(undefined);
-      const response = await fetch(`/api/backup/policies/${policy.id}`, {
+      const response = await fetchWithAuth(`/backup/policies/${policy.id}`, {
         method: 'DELETE'
       });
       if (!response.ok) {

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import AlertRuleForm, { type AlertRuleFormValues } from './AlertRuleForm';
 import type { NotificationChannel } from './NotificationChannelList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -28,12 +29,16 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/alerts/rules/${ruleId}`);
+      const response = await fetchWithAuth(`/alerts/rules/${ruleId}`);
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch alert rule');
       }
       const data = await response.json();
-      const rule = data.rule ?? data;
+      const rule = data.rule ?? data.data ?? data;
 
       // Transform rule to form values
       setDefaultValues({
@@ -56,10 +61,10 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetch('/api/sites');
+      const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.sites ?? data ?? []);
+        setSites(data.sites ?? data.data ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail
@@ -68,10 +73,10 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
 
   const fetchGroups = useCallback(async () => {
     try {
-      const response = await fetch('/api/groups');
+      const response = await fetchWithAuth('/groups');
       if (response.ok) {
         const data = await response.json();
-        setGroups(data.groups ?? data ?? []);
+        setGroups(data.groups ?? data.data ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail
@@ -80,11 +85,12 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
+        const deviceList = data.devices ?? data.data ?? (Array.isArray(data) ? data : []);
         setDevices(
-          (data.devices ?? data ?? []).map((d: { id: string; hostname: string }) => ({
+          deviceList.map((d: { id: string; hostname: string }) => ({
             id: d.id,
             name: d.hostname
           }))
@@ -97,10 +103,10 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
 
   const fetchChannels = useCallback(async () => {
     try {
-      const response = await fetch('/api/alerts/channels');
+      const response = await fetchWithAuth('/alerts/channels');
       if (response.ok) {
         const data = await response.json();
-        setNotificationChannels(data.channels ?? data ?? []);
+        setNotificationChannels(data.channels ?? data.data ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail
@@ -136,16 +142,19 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
         enabled: true
       };
 
-      const url = isNew ? '/api/alerts/rules' : `/api/alerts/rules/${ruleId}`;
+      const url = isNew ? '/alerts/rules' : `/alerts/rules/${ruleId}`;
       const method = isNew ? 'POST' : 'PUT';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         const data = await response.json();
         throw new Error(data.error || 'Failed to save alert rule');
       }

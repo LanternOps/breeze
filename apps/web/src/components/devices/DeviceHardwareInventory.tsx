@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cpu, HardDrive, MemoryStick, Network } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type DiskDrive = {
   id?: string;
@@ -98,7 +99,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/devices/${deviceId}/hardware`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/hardware`);
       if (!response.ok) throw new Error('Failed to fetch hardware inventory');
       const json: HardwareInventoryResponse & { data?: HardwareInventoryResponse } = await response.json();
       const payload = json?.data ?? json;

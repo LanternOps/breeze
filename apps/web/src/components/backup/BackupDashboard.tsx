@@ -12,6 +12,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type StatChangeType = 'positive' | 'negative' | 'neutral';
 
@@ -120,7 +121,7 @@ export default function BackupDashboard() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/backup/stats');
+      const response = await fetchWithAuth('/backup/dashboard');
       if (!response.ok) {
         throw new Error('Failed to fetch backup overview');
       }
@@ -131,8 +132,8 @@ export default function BackupDashboard() {
       setRecentJobs(
         Array.isArray(overview.recentJobs)
           ? overview.recentJobs
-          : Array.isArray(overview.jobs)
-            ? overview.jobs
+          : Array.isArray(overview.latestJobs)
+            ? overview.latestJobs
             : []
       );
       setOverdueDevices(

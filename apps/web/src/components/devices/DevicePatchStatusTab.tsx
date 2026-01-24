@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type PatchItem = {
   id?: string;
@@ -55,7 +56,7 @@ export default function DevicePatchStatusTab({ deviceId }: DevicePatchStatusTabP
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/devices/${deviceId}/patches`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/patches`);
       if (!response.ok) throw new Error('Failed to fetch patch status');
       const json = await response.json();
       const data = json?.data ?? json;

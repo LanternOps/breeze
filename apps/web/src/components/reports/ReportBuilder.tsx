@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type BuilderReportType = 'devices' | 'alerts' | 'patches' | 'compliance' | 'activity';
 type ReportBuilderType = BuilderReportType | LegacyReportType;
@@ -1136,9 +1137,8 @@ export default function ReportBuilder({
       let response: Response | undefined;
 
       if (mode === 'adhoc') {
-        response = await fetch('/api/reports/generate', {
+        response = await fetchWithAuth('/reports/generate', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             type: payload.type,
             config: payload.config,
@@ -1146,15 +1146,13 @@ export default function ReportBuilder({
           })
         });
       } else if (mode === 'edit' && reportId) {
-        response = await fetch(`/api/reports/${reportId}`, {
+        response = await fetchWithAuth(`/reports/${reportId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
       } else {
-        response = await fetch('/api/reports', {
+        response = await fetchWithAuth('/reports', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
       }

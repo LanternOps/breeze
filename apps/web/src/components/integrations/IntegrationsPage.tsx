@@ -179,7 +179,7 @@ const statusStyles: Record<
 
 export default function IntegrationsPage() {
   const [activeTab, setActiveTab] = useState<IntegrationCategory['id']>('webhooks');
-  const activeCategory = integrationCatalog.find(category => category.id === activeTab) ?? integrationCatalog[0]!;
+  const activeCategory = integrationCatalog.find(category => category.id === activeTab) ?? integrationCatalog[0];
 
   const healthSummary = useMemo(() => {
     const totals = integrationCatalog.flatMap(category => category.integrations);

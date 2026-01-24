@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Network } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type NetworkConnection = {
   id?: string;
@@ -26,7 +27,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/devices/${deviceId}/connections`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/network`);
       if (!response.ok) throw new Error('Failed to fetch network connections');
       const json = await response.json();
       const payload = json?.data ?? json;

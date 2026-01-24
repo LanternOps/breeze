@@ -10,6 +10,7 @@ import {
   Server
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type RestoreType = 'full' | 'selective';
 
@@ -50,7 +51,7 @@ export default function RestoreWizard() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/backup/snapshots');
+      const response = await fetchWithAuth('/backup/snapshots');
       if (!response.ok) {
         throw new Error('Failed to fetch snapshots');
       }
@@ -106,13 +107,11 @@ export default function RestoreWizard() {
         snapshotId,
         restoreType,
         files: restoreType === 'selective' ? Array.from(selectedFiles) : [],
-        destination,
-        alternatePath: destination === 'alternate' ? alternatePath : undefined
+        targetPath: destination === 'alternate' ? alternatePath : undefined
       };
 
-      const response = await fetch('/api/backup/restore', {
+      const response = await fetchWithAuth('/backup/restore', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 

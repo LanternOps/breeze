@@ -11,6 +11,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type TreeNode = {
   id: string;
@@ -49,7 +50,7 @@ export default function SnapshotBrowser() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/backup/snapshots');
+      const response = await fetchWithAuth('/backup/snapshots');
       if (!response.ok) {
         throw new Error('Failed to fetch snapshots');
       }

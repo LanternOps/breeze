@@ -102,10 +102,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
 
   useEffect(() => {
     if (!metricOptions.includes(state.metricName)) {
-      const firstMetric = metricOptions[0];
-      if (firstMetric) {
-        setState(prev => ({ ...prev, metricName: firstMetric }));
-      }
+      setState(prev => ({ ...prev, metricName: metricOptions[0] }));
     }
   }, [metricOptions, state.metricName]);
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import AlertRuleList, { type AlertRule } from './AlertRuleList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'delete' | 'test';
 
@@ -17,12 +18,16 @@ export default function AlertRulesPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/alerts/rules');
+      const response = await fetchWithAuth('/alerts/rules');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch alert rules');
       }
       const data = await response.json();
-      setRules(data.rules ?? data ?? []);
+      setRules(data.rules ?? data.data ?? (Array.isArray(data) ? data : []));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -50,11 +55,15 @@ export default function AlertRulesPage() {
     setSubmitting(true);
 
     try {
-      const response = await fetch(`/api/alerts/rules/${rule.id}/test`, {
+      const response = await fetchWithAuth(`/alerts/rules/${rule.id}/test`, {
         method: 'POST'
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to test rule');
       }
 
@@ -75,13 +84,16 @@ export default function AlertRulesPage() {
 
   const handleToggle = async (rule: AlertRule, enabled: boolean) => {
     try {
-      const response = await fetch(`/api/alerts/rules/${rule.id}`, {
+      const response = await fetchWithAuth(`/alerts/rules/${rule.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled })
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error(`Failed to ${enabled ? 'enable' : 'disable'} rule`);
       }
 
@@ -104,11 +116,15 @@ export default function AlertRulesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/alerts/rules/${selectedRule.id}`, {
+      const response = await fetchWithAuth(`/alerts/rules/${selectedRule.id}`, {
         method: 'DELETE'
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to delete rule');
       }
 
@@ -183,6 +199,7 @@ export default function AlertRulesPage() {
         onDelete={handleDelete}
         onTest={handleTest}
         onToggle={handleToggle}
+        onCreate={() => window.location.href = '/alerts/rules/new'}
       />
 
       {/* Delete Confirmation Modal */}

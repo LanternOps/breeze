@@ -15,6 +15,7 @@ import {
   Timer
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ProviderId = 's3' | 'azure' | 'local' | 'gcs';
 
@@ -210,9 +211,8 @@ export default function BackupConfigEditor() {
           status: mode === 'publish' ? 'active' : 'draft'
         };
 
-        const response = await fetch('/api/backup/configs', {
+        const response = await fetchWithAuth('/backup/configs', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
 

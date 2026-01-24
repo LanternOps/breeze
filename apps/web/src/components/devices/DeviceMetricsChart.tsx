@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   LineChart,
   Line,
@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Legend
 } from 'recharts';
+import { fetchWithAuth } from '../../stores/auth';
 
 type TimeRange = '1h' | '6h' | '24h' | '7d' | '30d';
 
@@ -23,84 +24,6 @@ type MetricDataPoint = {
   ram: number;
   disk: number;
 };
-
-// Fixed base timestamp for deterministic data generation (avoids hydration mismatch)
-const FIXED_BASE_TIMESTAMP = new Date('2024-01-15T12:00:00.000Z').getTime();
-
-// Seeded random number generator for deterministic mock data
-function createSeededRandom(seed: number) {
-  let value = seed % 2147483647;
-  if (value <= 0) value += 2147483646;
-  return () => {
-    value = (value * 48271) % 2147483647;
-    return value / 2147483647;
-  };
-}
-
-function hashSeed(input: string): number {
-  return input.split('').reduce((acc, char) => acc + char.charCodeAt(0) * 37, 0);
-}
-
-// Generate mock data for the chart
-function generateMockData(range: TimeRange): MetricDataPoint[] {
-  const points: MetricDataPoint[] = [];
-  const random = createSeededRandom(hashSeed(range));
-  let count: number;
-  let intervalMs: number;
-
-  switch (range) {
-    case '1h':
-      count = 60;
-      intervalMs = 60 * 1000; // 1 minute
-      break;
-    case '6h':
-      count = 72;
-      intervalMs = 5 * 60 * 1000; // 5 minutes
-      break;
-    case '24h':
-      count = 96;
-      intervalMs = 15 * 60 * 1000; // 15 minutes
-      break;
-    case '7d':
-      count = 168;
-      intervalMs = 60 * 60 * 1000; // 1 hour
-      break;
-    case '30d':
-      count = 180;
-      intervalMs = 4 * 60 * 60 * 1000; // 4 hours
-      break;
-    default:
-      count = 60;
-      intervalMs = 60 * 1000;
-  }
-
-  let cpuBase = 35;
-  let ramBase = 55;
-  let diskBase = 45;
-
-  for (let i = count - 1; i >= 0; i--) {
-    const timestamp = new Date(FIXED_BASE_TIMESTAMP - i * intervalMs);
-
-    // Add some variation to the data using seeded random
-    cpuBase += (random() - 0.5) * 10;
-    cpuBase = Math.max(10, Math.min(95, cpuBase));
-
-    ramBase += (random() - 0.5) * 5;
-    ramBase = Math.max(30, Math.min(90, ramBase));
-
-    diskBase += (random() - 0.5) * 0.5;
-    diskBase = Math.max(40, Math.min(70, diskBase));
-
-    points.push({
-      timestamp: timestamp.toISOString(),
-      cpu: Math.round(cpuBase),
-      ram: Math.round(ramBase),
-      disk: Math.round(diskBase * 10) / 10
-    });
-  }
-
-  return points;
-}
 
 function formatTimestamp(timestamp: string, range: TimeRange): string {
   const date = new Date(timestamp);
@@ -135,12 +58,75 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
     ram: true,
     disk: true
   });
+  const [data, setData] = useState<MetricDataPoint[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const data = useMemo(() => generateMockData(timeRange), [timeRange]);
+  const fetchMetrics = useCallback(async () => {
+    if (!deviceId) {
+      setError('No device selected');
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetchWithAuth(`/devices/${deviceId}/metrics?range=${timeRange}`);
+
+      if (response.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch metrics');
+      }
+
+      const result = await response.json();
+      setData(result.metrics || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load metrics');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [deviceId, timeRange]);
+
+  useEffect(() => {
+    fetchMetrics();
+  }, [fetchMetrics]);
 
   const toggleMetric = (metric: 'cpu' | 'ram' | 'disk') => {
     setVisibleMetrics(prev => ({ ...prev, [metric]: !prev[metric] }));
   };
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex h-48 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
+          <p>{error}</p>
+          <button
+            type="button"
+            onClick={fetchMetrics}
+            className="text-sm text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (compact) {
     return (
@@ -342,8 +328,8 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
             <span className="text-xs text-muted-foreground">current</span>
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            Avg: {Math.round(data.reduce((sum, d) => sum + d.cpu, 0) / data.length)}% |
-            Max: {Math.max(...data.map(d => d.cpu))}%
+            Avg: {data.length > 0 ? Math.round(data.reduce((sum, d) => sum + d.cpu, 0) / data.length) : 0}% |
+            Max: {data.length > 0 ? Math.max(...data.map(d => d.cpu)) : 0}%
           </div>
         </div>
 
@@ -357,8 +343,8 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
             <span className="text-xs text-muted-foreground">current</span>
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            Avg: {Math.round(data.reduce((sum, d) => sum + d.ram, 0) / data.length)}% |
-            Max: {Math.max(...data.map(d => d.ram))}%
+            Avg: {data.length > 0 ? Math.round(data.reduce((sum, d) => sum + d.ram, 0) / data.length) : 0}% |
+            Max: {data.length > 0 ? Math.max(...data.map(d => d.ram)) : 0}%
           </div>
         </div>
 
@@ -372,8 +358,8 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
             <span className="text-xs text-muted-foreground">current</span>
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            Avg: {Math.round(data.reduce((sum, d) => sum + d.disk, 0) / data.length * 10) / 10}% |
-            Max: {Math.max(...data.map(d => d.disk))}%
+            Avg: {data.length > 0 ? Math.round(data.reduce((sum, d) => sum + d.disk, 0) / data.length * 10) / 10 : 0}% |
+            Max: {data.length > 0 ? Math.max(...data.map(d => d.disk)) : 0}%
           </div>
         </div>
       </div>

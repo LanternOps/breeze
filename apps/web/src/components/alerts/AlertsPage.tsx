@@ -4,6 +4,7 @@ import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
 import type { AlertSeverity } from './AlertList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'details' | 'acknowledge' | 'resolve' | 'suppress';
 
@@ -25,12 +26,16 @@ export default function AlertsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/alerts');
+      const response = await fetchWithAuth('/alerts');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch alerts');
       }
       const data = await response.json();
-      setAlerts(data.alerts ?? data ?? []);
+      setAlerts(data.data ?? data.alerts ?? (Array.isArray(data) ? data : []));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -40,10 +45,10 @@ export default function AlertsPage() {
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        setDevices(data.devices ?? data ?? []);
+        setDevices(data.data ?? data.devices ?? (Array.isArray(data) ? data : []));
       }
     } catch {
       // Silently fail
@@ -52,7 +57,7 @@ export default function AlertsPage() {
 
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {
-      const response = await fetch(`/api/alerts/${alertId}`);
+      const response = await fetchWithAuth(`/alerts/${alertId}`);
       if (response.ok) {
         const data = await response.json();
         setSelectedAlertHistory(data.statusHistory ?? []);
@@ -84,7 +89,7 @@ export default function AlertsPage() {
   const handleAcknowledge = async (alert: Alert) => {
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/alerts/${alert.id}/acknowledge`, {
+      const response = await fetchWithAuth(`/alerts/${alert.id}/acknowledge`, {
         method: 'POST'
       });
 
@@ -109,9 +114,8 @@ export default function AlertsPage() {
   const handleResolve = async (alert: Alert, note: string) => {
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/alerts/${alert.id}/resolve`, {
+      const response = await fetchWithAuth(`/alerts/${alert.id}/resolve`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ note })
       });
 
@@ -131,7 +135,7 @@ export default function AlertsPage() {
   const handleSuppress = async (alert: Alert) => {
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/alerts/${alert.id}/suppress`, {
+      const response = await fetchWithAuth(`/alerts/${alert.id}/suppress`, {
         method: 'POST'
       });
 
@@ -153,9 +157,8 @@ export default function AlertsPage() {
   const handleBulkAction = async (action: string, selectedAlerts: Alert[]) => {
     setSubmitting(true);
     try {
-      const response = await fetch('/api/alerts/bulk', {
+      const response = await fetchWithAuth('/alerts/bulk', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action,
           alertIds: selectedAlerts.map(a => a.id)

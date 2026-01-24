@@ -95,11 +95,8 @@ export default function SoftwareVersionManager() {
             setVersions(normalizedVersions);
 
             if (normalizedVersions.length > 0) {
-              const firstVersion = normalizedVersions[0];
-              if (firstVersion) {
-                setLatestId(firstVersion.id);
-                setSelectedVersionId(firstVersion.id);
-              }
+              setLatestId(normalizedVersions[0].id);
+              setSelectedVersionId(normalizedVersions[0].id);
             }
           }
         }

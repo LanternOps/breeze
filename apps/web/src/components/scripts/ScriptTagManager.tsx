@@ -120,7 +120,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
     for (let i = 0; i < name.length; i++) {
       hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
-    return colors[Math.abs(hash) % colors.length] ?? '#3b82f6';
+    return colors[Math.abs(hash) % colors.length];
   }
 
   const tagUsage = useMemo(() => {

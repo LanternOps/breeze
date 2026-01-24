@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, FileText, Info, XCircle } from 'lucide-react';
+import { fetchWithAuth } from '../../stores/auth';
 
 type EventLogEntry = {
   id?: string;
@@ -66,7 +67,7 @@ export default function DeviceEventLogViewer({ deviceId }: DeviceEventLogViewerP
     try {
       const params = new URLSearchParams();
       params.set('levels', selectedLevels.join(','));
-      const response = await fetch(`/api/devices/${deviceId}/events?${params}`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/events?${params}`);
       if (!response.ok) throw new Error('Failed to fetch event logs');
       const json = await response.json();
       const payload = json?.data ?? json;

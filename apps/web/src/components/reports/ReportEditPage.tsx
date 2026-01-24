@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { Report, ReportType } from './ReportsList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ReportEditPageProps = {
   reportId: string;
@@ -16,7 +17,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/reports/${reportId}`);
+      const response = await fetchWithAuth(`/reports/${reportId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch report');
       }

@@ -3,6 +3,7 @@ import { ArrowLeft, FileText } from 'lucide-react';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import ReportPreview from './ReportPreview';
 import type { ReportType } from './ReportsList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type ReportData = {
   type: ReportType;
@@ -20,9 +21,8 @@ export default function ReportBuilderPage() {
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch('/api/reports/generate', {
+      const response = await fetchWithAuth('/reports/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: values.type,
           config: {
@@ -54,9 +54,101 @@ export default function ReportBuilderPage() {
   const handleExport = useCallback(async (format: 'csv' | 'pdf' | 'excel') => {
     if (!previewData) return;
 
-    // In a real implementation, this would trigger a download
-    // For now, we'll just show an alert
-    alert(`Export to ${format.toUpperCase()} would be triggered here.`);
+    try {
+      // Get report data for export
+      const rows = (previewData.data as { rows?: unknown[] })?.rows ?? [];
+
+      if (format === 'csv') {
+        // Convert data to CSV format
+        if (rows.length === 0) {
+          throw new Error('No data to export');
+        }
+
+        const headers = Object.keys(rows[0] as Record<string, unknown>);
+        const csvContent = [
+          headers.join(','),
+          ...rows.map(row => {
+            const record = row as Record<string, unknown>;
+            return headers.map(header => {
+              const value = record[header];
+              // Escape values containing commas or quotes
+              const stringValue = value === null || value === undefined ? '' : String(value);
+              return stringValue.includes(',') || stringValue.includes('"')
+                ? `"${stringValue.replace(/"/g, '""')}"`
+                : stringValue;
+            }).join(',');
+          })
+        ].join('\n');
+
+        // Create blob and download
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${previewData.type}-report-${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } else if (format === 'excel') {
+        // For Excel, we'll export as CSV with .xls extension (basic compatibility)
+        if (rows.length === 0) {
+          throw new Error('No data to export');
+        }
+
+        const headers = Object.keys(rows[0] as Record<string, unknown>);
+        const csvContent = [
+          headers.join('\t'),
+          ...rows.map(row => {
+            const record = row as Record<string, unknown>;
+            return headers.map(header => {
+              const value = record[header];
+              return value === null || value === undefined ? '' : String(value);
+            }).join('\t');
+          })
+        ].join('\n');
+
+        const blob = new Blob([csvContent], { type: 'application/vnd.ms-excel' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${previewData.type}-report-${new Date().toISOString().split('T')[0]}.xls`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } else if (format === 'pdf') {
+        // PDF export - generate HTML content and open print dialog
+        const reportTitle = previewData.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const generatedAt = new Date().toLocaleString();
+
+        let tableHtml = '<p>No data available</p>';
+        if (rows.length > 0) {
+          const headers = Object.keys(rows[0] as Record<string, unknown>);
+          const headerRow = headers.map(h => `<th>${h}</th>`).join('');
+          const bodyRows = rows.map(row => {
+            const record = row as Record<string, unknown>;
+            return `<tr>${Object.values(record).map(v => `<td>${v ?? ''}</td>`).join('')}</tr>`;
+          }).join('');
+          tableHtml = `<table><thead><tr>${headerRow}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+        }
+
+        const htmlContent = `<!DOCTYPE html><html><head><title>${reportTitle} Report</title><style>body{font-family:system-ui,sans-serif;padding:20px}h1{font-size:18px;margin-bottom:10px}p{color:#666;font-size:12px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f5f5f5;font-weight:600}tr:nth-child(even){background-color:#fafafa}</style></head><body><h1>${reportTitle} Report</h1><p>Generated: ${generatedAt}</p>${tableHtml}</body></html>`;
+
+        // Create blob URL and open in new window for printing
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const printWindow = window.open(url, '_blank');
+        if (printWindow) {
+          printWindow.onload = () => {
+            printWindow.print();
+            URL.revokeObjectURL(url);
+          };
+        }
+      }
+    } catch (err) {
+      console.error('Export failed:', err);
+    }
   }, [previewData]);
 
   return (

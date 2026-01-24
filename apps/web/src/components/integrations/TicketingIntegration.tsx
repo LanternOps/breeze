@@ -220,7 +220,7 @@ export default function TicketingIntegration() {
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<StatusMessage | null>(null);
 
-  const activeProviderOption = providerOptions.find(option => option.id === activeProvider) ?? providerOptions[0]!;
+  const activeProviderOption = providerOptions.find(option => option.id === activeProvider) ?? providerOptions[0];
 
   const configComplete = useMemo(() => {
     if (activeProvider === 'zendesk') {

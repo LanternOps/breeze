@@ -15,6 +15,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type DeviceStatusData = {
   total: number;
@@ -85,11 +86,11 @@ export default function DashboardWidgets({
 
       if (showDeviceStatus) {
         promises.push(
-          fetch('/api/reports/data/device-inventory?limit=1')
+          fetchWithAuth('/reports/data/device-inventory?limit=1')
             .then(res => res.json())
             .then(data => {
               // Get status counts from devices endpoint
-              return fetch('/api/devices?limit=1')
+              return fetchWithAuth('/devices?limit=1')
                 .then(res => res.json())
                 .then(devData => {
                   // Calculate from the data or use summary if available
@@ -102,7 +103,7 @@ export default function DashboardWidgets({
                 });
             })
             .catch(() => {
-              // Fallback with mock data
+              // Fallback with empty data
               setDeviceStatus({ total: 0, online: 0, offline: 0, maintenance: 0 });
             })
         );
@@ -110,7 +111,7 @@ export default function DashboardWidgets({
 
       if (showAlertCounts) {
         promises.push(
-          fetch('/api/reports/data/alerts-summary')
+          fetchWithAuth('/reports/data/alerts-summary')
             .then(res => res.json())
             .then(data => {
               setAlertCounts({
@@ -129,7 +130,7 @@ export default function DashboardWidgets({
 
       if (showCompliance) {
         promises.push(
-          fetch('/api/reports/data/compliance')
+          fetchWithAuth('/reports/data/compliance')
             .then(res => res.json())
             .then(data => {
               setCompliance({
@@ -147,7 +148,7 @@ export default function DashboardWidgets({
 
       if (showResources) {
         promises.push(
-          fetch('/api/reports/data/metrics')
+          fetchWithAuth('/reports/data/metrics')
             .then(res => res.json())
             .then(data => {
               setResources({

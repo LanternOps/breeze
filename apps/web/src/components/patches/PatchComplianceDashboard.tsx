@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, CheckCircle, Monitor, Shield, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type PatchSeveritySummary = {
   total: number;
@@ -146,8 +147,12 @@ export default function PatchComplianceDashboard() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/patches/compliance');
+      const response = await fetchWithAuth('/patches/compliance');
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         throw new Error('Failed to fetch compliance data');
       }
       const payload = await response.json();

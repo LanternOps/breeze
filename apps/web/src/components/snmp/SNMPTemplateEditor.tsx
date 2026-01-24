@@ -78,8 +78,8 @@ export default function SNMPTemplateEditor() {
       setTemplates(normalizedTemplates);
 
       // Load first template if available
-      const first = normalizedTemplates[0];
-      if (first) {
+      if (normalizedTemplates.length > 0) {
+        const first = normalizedTemplates[0];
         setTemplateId(first.id);
         setName(first.name);
         setVendor(first.vendor);

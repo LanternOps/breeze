@@ -63,64 +63,6 @@ const statusConfig: Record<AlertRuleStatus, { label: string; className: string }
   paused: { label: 'Paused', className: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
 };
 
-const mockRules: AlertRule[] = [
-  {
-    id: 'rule-1001',
-    name: 'Critical CPU Escalation',
-    templateId: 'tmpl-001',
-    templateName: 'CPU Saturation',
-    targetType: 'org',
-    targetName: 'All sites',
-    status: 'active',
-    alertsTriggered: 32,
-    lastTriggered: '2h ago'
-  },
-  {
-    id: 'rule-1002',
-    name: 'Memory Pressure - Servers',
-    templateId: 'tmpl-002',
-    templateName: 'Memory Pressure',
-    targetType: 'group',
-    targetName: 'Core Servers',
-    status: 'active',
-    alertsTriggered: 11,
-    lastTriggered: '45m ago'
-  },
-  {
-    id: 'rule-1003',
-    name: 'Disk Risk - Finance',
-    templateId: 'tmpl-003',
-    templateName: 'Disk Space Risk',
-    targetType: 'site',
-    targetName: 'Finance Campus',
-    status: 'paused',
-    alertsTriggered: 4,
-    lastTriggered: '3d ago'
-  },
-  {
-    id: 'rule-1004',
-    name: 'Patch Drift - Linux Fleet',
-    templateId: 'tmpl-004',
-    templateName: 'Patch Compliance Drift',
-    targetType: 'group',
-    targetName: 'Linux Fleet',
-    status: 'active',
-    alertsTriggered: 19,
-    lastTriggered: '1d ago'
-  },
-  {
-    id: 'rule-1005',
-    name: 'Latency Watch - West',
-    templateId: 'tmpl-005',
-    templateName: 'Network Latency Spike',
-    targetType: 'device',
-    targetName: 'WAN-Gateway-07',
-    status: 'paused',
-    alertsTriggered: 2,
-    lastTriggered: '6d ago'
-  }
-];
-
 function formatTargets(targets: AlertRuleTarget): string {
   switch (targets.type) {
     case 'org':
@@ -173,18 +115,17 @@ function getStatus(rule: AlertRule): AlertRuleStatus {
 }
 
 export default function AlertRuleList({
-  rules,
+  rules = [],
   onEdit,
   onDelete,
   onToggle,
   onCreate
 }: AlertRuleListProps) {
-  const [localRules, setLocalRules] = useState<AlertRule[]>(mockRules);
   const [templateFilter, setTemplateFilter] = useState('all');
   const [targetFilter, setTargetFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
 
-  const data = rules ?? localRules;
+  const data = rules;
 
   const templateOptions = useMemo(() => {
     const set = new Set<string>();
@@ -211,21 +152,10 @@ export default function AlertRuleList({
   const handleToggle = (rule: AlertRule) => {
     const nextStatus: AlertRuleStatus = getStatus(rule) === 'active' ? 'paused' : 'active';
     onToggle?.(rule, nextStatus === 'active');
-
-    if (!rules) {
-      setLocalRules(prev =>
-        prev.map(item =>
-          item.id === rule.id ? { ...item, status: nextStatus, enabled: nextStatus === 'active' } : item
-        )
-      );
-    }
   };
 
   const handleDelete = (rule: AlertRule) => {
     onDelete?.(rule);
-    if (!rules) {
-      setLocalRules(prev => prev.filter(item => item.id !== rule.id));
-    }
   };
 
   return (

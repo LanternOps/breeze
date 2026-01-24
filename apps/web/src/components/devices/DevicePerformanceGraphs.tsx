@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   Legend
 } from 'recharts';
+import { fetchWithAuth } from '../../stores/auth';
 
 type TimeRange = '24h' | '7d' | '30d';
 
@@ -72,7 +73,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
         interval: rangeIntervals[timeRange]
       });
 
-      const response = await fetch(`/api/devices/${deviceId}/metrics?${params}`);
+      const response = await fetchWithAuth(`/devices/${deviceId}/metrics?${params}`);
       if (!response.ok) throw new Error('Failed to fetch performance metrics');
       const json = await response.json();
       const payload = json?.data ?? json;
