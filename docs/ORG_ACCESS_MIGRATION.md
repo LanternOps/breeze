@@ -2,115 +2,116 @@
 
 ## Overview
 
-Migrate all API endpoints from requiring `orgId` query parameter to using `auth.accessibleOrgIds` which is pre-computed in the auth middleware.
+Migrate all API endpoints from requiring `orgId` query parameter to using auth context helpers that are pre-computed in middleware.
 
-## Implementation Complete
-
-### Auth Context Now Includes `accessibleOrgIds`
+## Auth Context Helpers
 
 Location: `apps/api/src/middleware/auth.ts`
 
 ```typescript
-export interface AuthContext {
+interface AuthContext {
   // ... existing fields ...
 
-  /**
-   * Pre-computed list of org IDs this user can access.
-   * - string[] = user can access these specific orgs (org or partner scope)
-   * - null = user can access ALL orgs (system scope)
-   */
-  accessibleOrgIds: string[] | null;
+  accessibleOrgIds: string[] | null;  // null = system (all), [] = none, [...] = specific orgs
+
+  orgCondition(orgIdColumn: PgColumn): SQL | undefined;  // Returns filter condition
+  canAccessOrg(orgId: string): boolean;                   // Check specific org access
 }
 ```
 
-Computed automatically in `authMiddleware` and `optionalAuthMiddleware`.
+## Usage Pattern
 
-## Migration Pattern
+### Listing Resources (GET endpoints)
 
-### Before (Complex)
 ```typescript
-// Each route had to do this logic:
-if (auth.scope === 'organization') {
-  if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
-  orgId = auth.orgId;
-} else if (auth.scope === 'partner') {
-  if (!orgId) return c.json({ error: 'orgId is required for partner scope' }, 400);
-  // verify access...
-} else if (!orgId) {
-  return c.json({ error: 'orgId is required' }, 400);
-}
-```
+deviceRoutes.get('/', async (c) => {
+  const auth = c.get('auth');
+  const conditions = [];
 
-### After (Simple)
-```typescript
-import { inArray } from 'drizzle-orm';
+  // One line - handles all scopes automatically
+  const orgFilter = auth.orgCondition(devices.orgId);
+  if (orgFilter) conditions.push(orgFilter);
 
-// Route code is now trivial:
-const conditions = [];
-
-// Add org filter if user has limited access
-if (auth.accessibleOrgIds !== null) {
-  if (auth.accessibleOrgIds.length === 0) {
-    return c.json({ data: [] }); // User has no orgs
+  // Optional: allow filtering to specific org
+  if (query.orgId) {
+    if (!auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    conditions.push(eq(devices.orgId, query.orgId));
   }
-  conditions.push(inArray(table.orgId, auth.accessibleOrgIds));
-}
-// null means system scope - no org filter needed
 
-// Optional: allow filtering to specific org via query param
-if (query.orgId) {
-  if (auth.accessibleOrgIds && !auth.accessibleOrgIds.includes(query.orgId)) {
+  const data = await db.select().from(devices).where(and(...conditions));
+});
+```
+
+### Creating Resources (POST endpoints)
+
+```typescript
+deviceRoutes.post('/', async (c) => {
+  const auth = c.get('auth');
+  const { orgId, ...data } = c.req.valid('json');
+
+  // Validate org access
+  if (!auth.canAccessOrg(orgId)) {
     return c.json({ error: 'Access denied' }, 403);
   }
-  conditions.push(eq(table.orgId, query.orgId));
-}
 
-const data = await db.select().from(table).where(and(...conditions));
+  // Create resource
+  await db.insert(devices).values({ orgId, ...data });
+});
 ```
 
-## Files to Update
+## Migration Status
 
-### Priority 1: Dashboard Critical
-| File | Endpoint | Status |
-|------|----------|--------|
-| `devices.ts` | `GET /devices` | 🔲 Update |
-| `alerts.ts` | `GET /alerts` | 🔲 Update |
-| `orgs.ts` | `GET /orgs/sites` | 🔲 Update (already partially fixed) |
+### ✅ Complete
+| File | Endpoint | Notes |
+|------|----------|-------|
+| `middleware/auth.ts` | - | Added `orgCondition` and `canAccessOrg` helpers |
+| `devices.ts` | `GET /devices` | Example migration |
 
-### Priority 2: Common Operations
+### 🔲 Priority 1: Dashboard Critical
+| File | Endpoint | Notes |
+|------|----------|-------|
+| `alerts.ts` | `GET /alerts` | Called by dashboard |
+| `alerts.ts` | `GET /alerts/rules` | |
+| `orgs.ts` | `GET /orgs/sites` | Already partially fixed |
+| `discovery.ts` | `GET /discovery/profiles` | Already partially fixed |
+
+### 🔲 Priority 2: Common Operations
 | File | Endpoints |
 |------|-----------|
-| `alerts.ts` | rules, channels, policies |
-| `groups.ts` | device groups |
-| `scripts.ts` | scripts |
-| `webhooks.ts` | webhooks |
-| `filters.ts` | saved filters |
+| `alerts.ts` | POST/PUT rules, channels, policies |
+| `groups.ts` | CRUD operations |
+| `scripts.ts` | CRUD operations |
+| `webhooks.ts` | CRUD operations |
+| `filters.ts` | CRUD operations |
 
-### Priority 3: Feature-Specific
+### 🔲 Priority 3: Feature-Specific
 | File | Endpoints |
 |------|-----------|
 | `analytics.ts` | dashboards, metrics |
 | `automations.ts` | automations, policies |
 | `deployments.ts` | deployments |
-| `discovery.ts` | profiles, jobs |
 | `maintenance.ts` | windows |
 | `patchPolicies.ts` | patch policies |
 | `reports.ts` | reports |
+| `policies.ts` | policies |
+| `psa.ts` | PSA integration |
 
-## Update Checklist Per File
+## Migration Checklist Per Route
 
-For each file:
+For each route handler:
 
-1. [ ] Add `inArray` to drizzle-orm imports
-2. [ ] Make `orgId` optional in query schemas
-3. [ ] Replace org access logic with `auth.accessibleOrgIds` check
-4. [ ] Remove "orgId is required" error returns
-5. [ ] Test with org, partner, and system scope users
+1. [ ] Replace scope-checking logic with `auth.orgCondition(table.orgId)`
+2. [ ] Use `auth.canAccessOrg(orgId)` for validating specific org params
+3. [ ] Remove "orgId is required" error returns
+4. [ ] Make `orgId` optional in schemas if not already
+5. [ ] Remove unused `organizations` table queries
 
-## Example Migration: devices.ts
+## Before/After Example
 
+### Before (35 lines)
 ```typescript
-// Before
 if (auth.scope === 'organization') {
   if (!auth.orgId) {
     return c.json({ error: 'Organization context required' }, 403);
@@ -118,20 +119,40 @@ if (auth.scope === 'organization') {
   conditions.push(eq(devices.orgId, auth.orgId));
 } else if (auth.scope === 'partner') {
   if (query.orgId) {
-    // verify access...
+    const hasAccess = await ensureOrgAccess(query.orgId, auth);
+    if (!hasAccess) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
     conditions.push(eq(devices.orgId, query.orgId));
   } else {
-    const partnerOrgs = await db.select(...).from(organizations)...;
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, auth.partnerId as string));
+
+    const orgIds = partnerOrgs.map(o => o.id);
+    if (orgIds.length === 0) {
+      return c.json({ data: [], pagination: { page, limit, total: 0 } });
+    }
     conditions.push(inArray(devices.orgId, orgIds));
   }
+} else if (auth.scope === 'system' && query.orgId) {
+  conditions.push(eq(devices.orgId, query.orgId));
+}
+```
+
+### After (10 lines)
+```typescript
+const orgFilter = auth.orgCondition(devices.orgId);
+if (orgFilter) {
+  conditions.push(orgFilter);
 }
 
-// After
-if (auth.accessibleOrgIds !== null) {
-  if (auth.accessibleOrgIds.length === 0) {
-    return c.json({ data: [], pagination: { page, limit, total: 0 } });
+if (query.orgId) {
+  if (!auth.canAccessOrg(query.orgId)) {
+    return c.json({ error: 'Access to this organization denied' }, 403);
   }
-  conditions.push(inArray(devices.orgId, auth.accessibleOrgIds));
+  conditions.push(eq(devices.orgId, query.orgId));
 }
 ```
 
@@ -140,9 +161,11 @@ if (auth.accessibleOrgIds !== null) {
 Once stable, consider migrating to Row-Level Security:
 
 ```sql
--- Example RLS policy
 CREATE POLICY org_access ON devices
   USING (org_id = ANY(current_setting('app.accessible_org_ids')::uuid[]));
 ```
 
-This would move the access control to the database level.
+Set the session variable in middleware before queries:
+```typescript
+await db.execute(sql`SET app.accessible_org_ids = ${auth.accessibleOrgIds}`);
+```
