@@ -59,7 +59,11 @@ const getSortValue = (entry: AuditLogEntry, key: SortKey) => {
   }
 };
 
-export default function AuditLogViewer() {
+interface AuditLogViewerProps {
+  timezone?: string;
+}
+
+export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [sortConfig, setSortConfig] = useState<SortConfig>({
     key: 'timestamp',
@@ -298,7 +302,7 @@ export default function AuditLogViewer() {
                           </button>
                           <div>
                             <p className="font-medium text-foreground">
-                              {new Date(entry.timestamp).toLocaleString()}
+                              {new Date(entry.timestamp).toLocaleString([], { timeZone: timezone })}
                             </p>
                             <p className="text-xs text-muted-foreground">{entry.resourceType}</p>
                           </div>

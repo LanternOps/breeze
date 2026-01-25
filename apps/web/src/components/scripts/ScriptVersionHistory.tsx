@@ -20,6 +20,7 @@ type DiffLine = {
 
 type ScriptVersionHistoryProps = {
   scriptId: string;
+  timezone?: string;
 };
 
 const diffLines = (base: string, compare: string): DiffLine[] => {
@@ -49,17 +50,19 @@ const diffLines = (base: string, compare: string): DiffLine[] => {
   return lines;
 };
 
-const formatDate = (dateString: string) => {
+const formatDate = (dateString: string, timezone?: string) => {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   return date.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
-    year: 'numeric'
+    year: 'numeric',
+    timeZone: tz
   });
 };
 
-export default function ScriptVersionHistory({ scriptId }: ScriptVersionHistoryProps) {
+export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersionHistoryProps) {
   const [versions, setVersions] = useState<ScriptVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -241,7 +244,7 @@ export default function ScriptVersionHistory({ scriptId }: ScriptVersionHistoryP
                     <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
-                        {formatDate(version.date)}
+                        {formatDate(version.date, timezone)}
                       </span>
                       <span className="flex items-center gap-1">
                         <User className="h-3 w-3" />

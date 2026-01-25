@@ -8,12 +8,14 @@ interface SavedFilterListProps {
   onSelectFilter?: (filter: SavedFilter) => void;
   onApplyFilter?: (conditions: FilterConditionGroup) => void;
   className?: string;
+  timezone?: string;
 }
 
 export function SavedFilterList({
   onSelectFilter,
   onApplyFilter,
-  className = ''
+  className = '',
+  timezone
 }: SavedFilterListProps) {
   const [filters, setFilters] = useState<SavedFilter[]>([]);
   const [loading, setLoading] = useState(true);
@@ -324,7 +326,7 @@ export function SavedFilterList({
                     <span>·</span>
                     <span>
                       Created{' '}
-                      {new Date(filter.createdAt).toLocaleDateString()}
+                      {new Date(filter.createdAt).toLocaleDateString([], { timeZone: timezone })}
                     </span>
                   </div>
                 </div>

@@ -79,13 +79,17 @@ const deployments: DeploymentRecord[] = [
   }
 ];
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
-export default function DeploymentList() {
+interface DeploymentListProps {
+  timezone?: string;
+}
+
+export default function DeploymentList({ timezone }: DeploymentListProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [dateFrom, setDateFrom] = useState('');
@@ -225,7 +229,7 @@ export default function DeploymentList() {
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">{formatDate(item.createdAt)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{formatDate(item.createdAt, timezone)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{item.createdBy}</td>
                       <td className="px-4 py-3 text-right">
                         {item.status === 'pending' ? (

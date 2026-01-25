@@ -56,6 +56,7 @@ type ReportsListProps = {
   onEdit?: (report: Report) => void;
   onGenerate?: (report: Report) => void;
   onDelete?: (report: Report) => void;
+  timezone?: string;
 };
 
 const reportTypeLabels: Record<ReportType, string> = {
@@ -80,7 +81,10 @@ const formatLabels: Record<ReportFormat, string> = {
   excel: 'Excel'
 };
 
-export default function ReportsList({ onEdit, onGenerate, onDelete }: ReportsListProps) {
+const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: ReportsListProps) {
+  const effectiveTimezone = timezone || getBrowserTimezone();
   const [reports, setReports] = useState<Report[]>([]);
   const [recentRuns, setRecentRuns] = useState<ReportRun[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,7 +191,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete }: ReportsLis
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return 'Never';
-    return new Date(dateStr).toLocaleString();
+    return new Date(dateStr).toLocaleString([], { timeZone: effectiveTimezone });
   };
 
   if (loading) {

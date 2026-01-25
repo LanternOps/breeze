@@ -123,13 +123,17 @@ const statusBadge: Record<ThreatStatus, string> = {
   resolved: 'bg-slate-500/20 text-slate-700 border-slate-500/40'
 };
 
-function formatDetectedAt(value: string): string {
+function formatDetectedAt(value: string, timezone?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 }
 
-export default function ThreatList() {
+interface ThreatListProps {
+  timezone?: string;
+}
+
+export default function ThreatList({ timezone }: ThreatListProps) {
   const [query, setQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -344,7 +348,7 @@ export default function ThreatList() {
                       {threat.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{formatDetectedAt(threat.detectedAt)}</td>
+                  <td className="px-4 py-3 text-sm text-muted-foreground">{formatDetectedAt(threat.detectedAt, timezone)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       <button type="button" className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted">

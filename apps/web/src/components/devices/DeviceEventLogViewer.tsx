@@ -15,6 +15,7 @@ type EventLogEntry = {
 
 type DeviceEventLogViewerProps = {
   deviceId: string;
+  timezone?: string;
 };
 
 const levelConfig: Record<EventLevel, { label: string; icon: typeof Info; badge: string }> = {
@@ -35,21 +36,25 @@ const levelConfig: Record<EventLevel, { label: string; icon: typeof Info; badge:
   }
 };
 
-function formatDateTime(value?: string) {
+function formatDateTime(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
 }
 
-export default function DeviceEventLogViewer({ deviceId }: DeviceEventLogViewerProps) {
+export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEventLogViewerProps) {
   const [events, setEvents] = useState<EventLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [siteTimezone, setSiteTimezone] = useState<string | undefined>(timezone);
   const [levelFilters, setLevelFilters] = useState({
     error: true,
     warning: true,
     info: true
   });
+
+  // Use provided timezone, fetched siteTimezone, or browser default
+  const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const selectedLevels = useMemo(() => {
     return Object.entries(levelFilters)
@@ -74,6 +79,9 @@ export default function DeviceEventLogViewer({ deviceId }: DeviceEventLogViewerP
       const json = await response.json();
       const payload = json?.data ?? json;
       setEvents(Array.isArray(payload) ? payload : []);
+      if (json?.timezone || json?.siteTimezone) {
+        setSiteTimezone(json.timezone ?? json.siteTimezone);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch event logs');
     } finally {
@@ -161,7 +169,7 @@ export default function DeviceEventLogViewer({ deviceId }: DeviceEventLogViewerP
                       <p className="text-sm font-medium">{event.message || 'Event logged'}</p>
                       <p className="mt-1 text-xs text-muted-foreground">
                         {event.source ? `${event.source} • ` : ''}
-                        {formatDateTime(event.timestamp || event.createdAt)}
+                        {formatDateTime(event.timestamp || event.createdAt, effectiveTimezone)}
                       </p>
                     </div>
                   </div>

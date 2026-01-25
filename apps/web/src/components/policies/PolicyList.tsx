@@ -21,6 +21,7 @@ type PolicyListProps = {
   onToggleStatus?: (policy: Policy, nextStatus: PolicyStatus) => void;
   onDuplicate?: (policy: Policy) => void;
   onDelete?: (policy: Policy) => void;
+  timezone?: string;
 };
 
 const policyTypeLabels: Record<PolicyType, string> = {
@@ -95,10 +96,10 @@ const mockPolicies: Policy[] = [
   }
 ];
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleDateString([], { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 export default function PolicyList({
@@ -106,7 +107,8 @@ export default function PolicyList({
   onEdit,
   onToggleStatus,
   onDuplicate,
-  onDelete
+  onDelete,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: PolicyListProps) {
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | PolicyType>('all');
@@ -209,7 +211,7 @@ export default function PolicyList({
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{policy.priority}</td>
                   <td className="px-4 py-3 text-muted-foreground">{policy.assignmentsCount}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{formatDate(policy.updatedAt)}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{formatDate(policy.updatedAt, timezone)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       <button

@@ -99,7 +99,11 @@ const severityBadge: Record<ThreatSeverity, string> = {
   critical: 'bg-red-500/20 text-red-700 border-red-500/40'
 };
 
-export default function ThreatDetail() {
+interface ThreatDetailProps {
+  timezone?: string;
+}
+
+export default function ThreatDetail({ timezone }: ThreatDetailProps) {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-2">
@@ -130,7 +134,7 @@ export default function ThreatDetail() {
               </div>
               <div>
                 <p className="text-xs uppercase text-muted-foreground">Detected</p>
-                <p className="text-sm font-medium">{new Date(threat.detectedAt).toLocaleString()}</p>
+                <p className="text-sm font-medium">{new Date(threat.detectedAt).toLocaleString([], { timeZone: timezone })}</p>
               </div>
               <div>
                 <p className="text-xs uppercase text-muted-foreground">Status</p>

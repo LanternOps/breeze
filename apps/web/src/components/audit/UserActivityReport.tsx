@@ -18,9 +18,13 @@ type UserOption = {
   name: string;
 };
 
-const formatTimestamp = (value: string) => new Date(value).toLocaleString();
+const formatTimestamp = (value: string, timezone?: string) => new Date(value).toLocaleString([], { timeZone: timezone });
 
-export default function UserActivityReport() {
+interface UserActivityReportProps {
+  timezone?: string;
+}
+
+export default function UserActivityReport({ timezone }: UserActivityReportProps) {
   const [users, setUsers] = useState<UserOption[]>([{ id: 'all', name: 'All users' }]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('all');
@@ -258,7 +262,7 @@ export default function UserActivityReport() {
                     )}
                   />
                   <div className="flex-1 border-l border-dashed border-muted pl-4">
-                    <p className="text-xs text-muted-foreground">{formatTimestamp(entry.timestamp)}</p>
+                    <p className="text-xs text-muted-foreground">{formatTimestamp(entry.timestamp, timezone)}</p>
                     <p className="text-sm font-medium text-foreground capitalize">
                       {entry.action} - {entry.resource}
                     </p>
@@ -309,7 +313,7 @@ export default function UserActivityReport() {
               ) : (
                 sortedTimeline.slice(0, 5).map(entry => (
                   <tr key={entry.id}>
-                    <td className="px-3 py-2 text-muted-foreground">{formatTimestamp(entry.timestamp)}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{formatTimestamp(entry.timestamp, timezone)}</td>
                     <td className="px-3 py-2 capitalize text-foreground">{entry.action}</td>
                     <td className="px-3 py-2 text-foreground">{entry.resource}</td>
                     <td className="px-3 py-2 text-muted-foreground">{entry.ipAddress}</td>

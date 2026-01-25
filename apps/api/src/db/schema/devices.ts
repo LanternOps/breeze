@@ -56,6 +56,20 @@ export const deviceNetwork = pgTable('device_network', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
+export const deviceDisks = pgTable('device_disks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  mountPoint: varchar('mount_point', { length: 255 }).notNull(),
+  device: varchar('device', { length: 255 }),
+  fsType: varchar('fs_type', { length: 50 }),
+  totalGb: real('total_gb').notNull(),
+  usedGb: real('used_gb').notNull(),
+  freeGb: real('free_gb').notNull(),
+  usedPercent: real('used_percent').notNull(),
+  health: varchar('health', { length: 50 }).default('healthy'),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+});
+
 export const deviceMetrics = pgTable('device_metrics', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   timestamp: timestamp('timestamp').notNull(),

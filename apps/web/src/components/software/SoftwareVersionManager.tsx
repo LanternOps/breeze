@@ -14,10 +14,10 @@ type VersionEntry = {
   notes: string[];
 };
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
 function normalizeVersion(raw: Record<string, unknown>, index: number): VersionEntry {
@@ -47,7 +47,11 @@ function normalizeVersion(raw: Record<string, unknown>, index: number): VersionE
   };
 }
 
-export default function SoftwareVersionManager() {
+interface SoftwareVersionManagerProps {
+  timezone?: string;
+}
+
+export default function SoftwareVersionManager({ timezone }: SoftwareVersionManagerProps) {
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -340,7 +344,7 @@ export default function SoftwareVersionManager() {
                         v{entry.version}
                       </button>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatDate(entry.releaseDate)}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{formatDate(entry.releaseDate, timezone)}</td>
                     <td className="px-4 py-3">
                       <span className="rounded-full border px-2 py-1 text-xs font-medium text-muted-foreground">
                         {entry.architecture}
@@ -399,7 +403,7 @@ export default function SoftwareVersionManager() {
               <div className="rounded-md border bg-muted/30 p-4">
                 <p className="text-xs uppercase text-muted-foreground">Latest build</p>
                 <p className="mt-2 text-lg font-semibold">v{latestVersion.version}</p>
-                <p className="text-sm text-muted-foreground">Released {formatDate(latestVersion.releaseDate)}</p>
+                <p className="text-sm text-muted-foreground">Released {formatDate(latestVersion.releaseDate, timezone)}</p>
               </div>
               <div
                 className={cn(
@@ -409,7 +413,7 @@ export default function SoftwareVersionManager() {
               >
                 <p className="text-xs uppercase text-muted-foreground">Selected build</p>
                 <p className="mt-2 text-lg font-semibold">v{selectedVersion.version}</p>
-                <p className="text-sm text-muted-foreground">Released {formatDate(selectedVersion.releaseDate)}</p>
+                <p className="text-sm text-muted-foreground">Released {formatDate(selectedVersion.releaseDate, timezone)}</p>
                 {selectedVersion.id === latestVersion.id ? (
                   <p className="mt-2 text-xs text-emerald-600">Up to date</p>
                 ) : (

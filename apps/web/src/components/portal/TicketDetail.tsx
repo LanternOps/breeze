@@ -9,6 +9,7 @@ type TicketDetailProps = {
     deviceName?: string;
   };
   comments: TicketComment[];
+  timezone?: string;
 };
 
 const statusStyles: Record<TicketStatus, string> = {
@@ -25,7 +26,7 @@ const priorityStyles: Record<TicketPriority, string> = {
   urgent: 'text-rose-700'
 };
 
-export default function TicketDetail({ ticket, comments }: TicketDetailProps) {
+export default function TicketDetail({ ticket, comments, timezone }: TicketDetailProps) {
   const visibleComments = comments.filter(comment => comment.isPublic);
 
   return (
@@ -64,7 +65,7 @@ export default function TicketDetail({ ticket, comments }: TicketDetailProps) {
           {ticket.createdAt && (
             <div>
               <div className="text-xs uppercase tracking-wide text-muted-foreground">Created</div>
-              <div>{new Date(ticket.createdAt).toLocaleDateString()}</div>
+              <div>{new Date(ticket.createdAt).toLocaleDateString([], { timeZone: timezone })}</div>
             </div>
           )}
           {ticket.deviceName && (

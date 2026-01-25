@@ -6,6 +6,7 @@ const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
 
 type DeviceCardProps = {
   device: Device;
+  timezone?: string;
   onClick?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
 };
@@ -34,7 +35,7 @@ const osIcons: Record<OSType, React.ReactNode> = {
   )
 };
 
-function formatLastSeen(dateString: string): string {
+function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -48,7 +49,7 @@ function formatLastSeen(dateString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
 // Placeholder sparkline component
@@ -77,8 +78,11 @@ function MiniSparkline({ data, color }: { data: number[]; color: string }) {
   );
 }
 
-export default function DeviceCard({ device, onClick, onAction }: DeviceCardProps) {
+export default function DeviceCard({ device, timezone, onClick, onAction }: DeviceCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Use provided timezone or browser default
+  const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   // Placeholder data for sparklines
   const cpuHistory = [45, 52, 48, 61, 55, 58, 62, device.cpuPercent];
@@ -193,7 +197,7 @@ export default function DeviceCard({ device, onClick, onAction }: DeviceCardProp
 
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
         <span>{device.siteName}</span>
-        <span>Last seen {formatLastSeen(device.lastSeen)}</span>
+        <span>Last seen {formatLastSeen(device.lastSeen, effectiveTimezone)}</span>
       </div>
     </div>
   );

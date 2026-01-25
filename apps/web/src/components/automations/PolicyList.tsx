@@ -47,6 +47,7 @@ type PolicyListProps = {
   onViewCompliance?: (policy: Policy) => void;
   onToggle?: (policy: Policy, enabled: boolean) => void;
   pageSize?: number;
+  timezone?: string;
 };
 
 const enforcementConfig: Record<EnforcementLevel, { label: string; color: string; icon: typeof Shield; description: string }> = {
@@ -70,7 +71,7 @@ const enforcementConfig: Record<EnforcementLevel, { label: string; color: string
   }
 };
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -84,7 +85,7 @@ function formatDate(dateString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
 function ComplianceMiniChart({ compliance }: { compliance: Policy['compliance'] | undefined }) {
@@ -153,7 +154,8 @@ export default function PolicyList({
   onDelete,
   onViewCompliance,
   onToggle,
-  pageSize = 10
+  pageSize = 10,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: PolicyListProps) {
   const [query, setQuery] = useState('');
   const [enforcementFilter, setEnforcementFilter] = useState<string>('all');
@@ -304,7 +306,7 @@ export default function PolicyList({
                       {policy.lastEvaluatedAt ? (
                         <div className="flex items-center gap-1">
                           <Calendar className="h-3 w-3" />
-                          {formatDate(policy.lastEvaluatedAt)}
+                          {formatDate(policy.lastEvaluatedAt, timezone)}
                         </div>
                       ) : (
                         <span className="text-muted-foreground/60">Never</span>

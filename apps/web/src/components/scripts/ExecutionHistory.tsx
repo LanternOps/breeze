@@ -26,6 +26,7 @@ type ExecutionHistoryProps = {
   onViewDetails?: (execution: ScriptExecution) => void;
   pageSize?: number;
   showScriptName?: boolean;
+  timezone?: string;
 };
 
 const statusConfig: Record<ExecutionStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
@@ -46,15 +47,16 @@ function formatDuration(seconds?: number): string {
   return `${hours}h ${mins}m`;
 }
 
-function formatDateTime(dateString: string): string {
+function formatDateTime(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const now = REFERENCE_DATE;
   const isToday = date.toDateString() === now.toDateString();
 
   if (isToday) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: tz });
   }
 
   const yesterday = new Date(now);
@@ -62,14 +64,15 @@ function formatDateTime(dateString: string): string {
   const isYesterday = date.toDateString() === yesterday.toDateString();
 
   if (isYesterday) {
-    return `Yesterday ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    return `Yesterday ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: tz })}`;
   }
 
   return date.toLocaleString([], {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    timeZone: tz
   });
 }
 
@@ -77,7 +80,8 @@ export default function ExecutionHistory({
   executions,
   onViewDetails,
   pageSize = 10,
-  showScriptName = true
+  showScriptName = true,
+  timezone
 }: ExecutionHistoryProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -228,7 +232,7 @@ export default function ExecutionHistory({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDateTime(execution.startedAt)}
+                      {formatDateTime(execution.startedAt, timezone)}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {execution.status === 'running' ? (

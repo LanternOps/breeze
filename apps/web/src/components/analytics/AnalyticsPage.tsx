@@ -330,7 +330,11 @@ const fetchJson = async (url: string) => {
   }
 };
 
-export default function AnalyticsPage() {
+interface AnalyticsPageProps {
+  timezone?: string;
+}
+
+export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [selectedDashboard, setSelectedDashboard] = useState('operations');
   const [dateRange, setDateRange] = useState('30d');
   const [customStartDate, setCustomStartDate] = useState('');
@@ -707,7 +711,7 @@ export default function AnalyticsPage() {
           </button>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              Updated {lastUpdated.toLocaleTimeString()}
+              Updated {lastUpdated.toLocaleTimeString([], { timeZone: timezone })}
             </span>
           )}
         </div>

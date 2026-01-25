@@ -15,6 +15,7 @@ export type ComplianceDevice = {
 type PolicyComplianceViewProps = {
   devices?: ComplianceDevice[];
   onRetryRemediation?: (device: ComplianceDevice) => void;
+  timezone?: string;
 };
 
 const mockDevices: ComplianceDevice[] = [
@@ -69,15 +70,16 @@ const statusStyles: Record<ComplianceStatus, string> = {
   exempt: 'bg-gray-100 text-gray-700'
 };
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleString([], { timeZone: timezone, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export default function PolicyComplianceView({
   devices = mockDevices,
-  onRetryRemediation
+  onRetryRemediation,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: PolicyComplianceViewProps) {
   const [statusFilter, setStatusFilter] = useState<'all' | ComplianceStatus>('all');
 
@@ -165,7 +167,7 @@ export default function PolicyComplianceView({
                   </span>
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">
-                  {formatDate(device.lastChecked)}
+                  {formatDate(device.lastChecked, timezone)}
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">{device.remediationAttempts}</td>
                 <td className="px-4 py-3 text-right">

@@ -16,6 +16,7 @@ export type WebhookDelivery = {
 type WebhookDeliveryHistoryProps = {
   deliveries: WebhookDelivery[];
   onRetry?: (delivery: WebhookDelivery) => void | Promise<void>;
+  timezone?: string;
 };
 
 const statusStyles: Record<WebhookDeliveryStatus, string> = {
@@ -36,15 +37,16 @@ const statusIcons: Record<WebhookDeliveryStatus, typeof CheckCircle> = {
   pending: Clock
 };
 
-function formatTimestamp(value: string) {
+function formatTimestamp(value: string, timezone?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 }
 
 export default function WebhookDeliveryHistory({
   deliveries,
-  onRetry
+  onRetry,
+  timezone
 }: WebhookDeliveryHistoryProps) {
   const [retryingId, setRetryingId] = useState<string | null>(null);
 
@@ -93,7 +95,7 @@ export default function WebhookDeliveryHistory({
                 return (
                   <tr key={delivery.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatTimestamp(delivery.timestamp)}
+                      {formatTimestamp(delivery.timestamp, timezone)}
                     </td>
                     <td className="px-4 py-3 text-sm font-medium">{delivery.event}</td>
                     <td className="px-4 py-3 text-sm">

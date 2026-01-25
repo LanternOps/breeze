@@ -16,6 +16,7 @@ type ScriptExecution = {
 
 type DeviceScriptHistoryProps = {
   deviceId: string;
+  timezone?: string;
 };
 
 const statusStyles: Record<string, string> = {
@@ -26,10 +27,10 @@ const statusStyles: Record<string, string> = {
   queued: 'bg-blue-500/20 text-blue-700 border-blue-500/40'
 };
 
-function formatDateTime(value?: string) {
+function formatDateTime(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
 }
 
 function formatDuration(ms?: number, seconds?: number) {
@@ -41,10 +42,14 @@ function formatDuration(ms?: number, seconds?: number) {
   return `${minutes}m ${remaining}s`;
 }
 
-export default function DeviceScriptHistory({ deviceId }: DeviceScriptHistoryProps) {
+export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScriptHistoryProps) {
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [siteTimezone, setSiteTimezone] = useState<string | undefined>(timezone);
+
+  // Use provided timezone, fetched siteTimezone, or browser default
+  const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -55,6 +60,9 @@ export default function DeviceScriptHistory({ deviceId }: DeviceScriptHistoryPro
       const json = await response.json();
       const payload = json?.data ?? json;
       setExecutions(Array.isArray(payload) ? payload : []);
+      if (json?.timezone || json?.siteTimezone) {
+        setSiteTimezone(json.timezone ?? json.siteTimezone);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch script history');
     } finally {
@@ -73,12 +81,12 @@ export default function DeviceScriptHistory({ deviceId }: DeviceScriptHistoryPro
         id: item.id ?? `${item.scriptName ?? item.name ?? 'script'}-${index}`,
         name: item.scriptName ?? item.name ?? 'Unnamed script',
         status,
-        startedAt: formatDateTime(item.startedAt),
-        completedAt: formatDateTime(item.completedAt),
+        startedAt: formatDateTime(item.startedAt, effectiveTimezone),
+        completedAt: formatDateTime(item.completedAt, effectiveTimezone),
         duration: formatDuration(item.durationMs, item.durationSeconds)
       };
     });
-  }, [executions]);
+  }, [executions, effectiveTimezone]);
 
   if (loading) {
     return (

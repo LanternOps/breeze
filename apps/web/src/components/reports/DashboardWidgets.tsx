@@ -62,15 +62,20 @@ type DashboardWidgetsProps = {
   showCompliance?: boolean;
   showResources?: boolean;
   refreshInterval?: number; // in seconds
+  timezone?: string;
 };
+
+const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 export default function DashboardWidgets({
   showDeviceStatus = true,
   showAlertCounts = true,
   showCompliance = true,
   showResources = true,
-  refreshInterval = 60
+  refreshInterval = 60,
+  timezone
 }: DashboardWidgetsProps) {
+  const effectiveTimezone = timezone || getBrowserTimezone();
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatusData | null>(null);
   const [alertCounts, setAlertCounts] = useState<AlertCountsData | null>(null);
   const [compliance, setCompliance] = useState<ComplianceData | null>(null);
@@ -475,7 +480,7 @@ export default function DashboardWidgets({
 
       {/* Last Updated */}
       <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
-        <span>Last updated: {lastUpdated.toLocaleTimeString()}</span>
+        <span>Last updated: {lastUpdated.toLocaleTimeString([], { timeZone: effectiveTimezone })}</span>
         <button
           type="button"
           onClick={fetchData}

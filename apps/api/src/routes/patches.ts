@@ -1,62 +1,17 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { and, eq, sql, inArray, desc } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { db } from '../db';
+import {
+  patches,
+  devicePatches,
+  patchApprovals,
+  devices
+} from '../db/schema';
 
 export const patchRoutes = new Hono();
-
-type PatchSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
-type PatchOs = 'windows' | 'macos' | 'linux';
-
-const patchCatalog = [
-  {
-    id: 'patch-001',
-    title: 'Windows cumulative update',
-    source: 'windows_update',
-    severity: 'critical' as PatchSeverity,
-    os: 'windows' as PatchOs,
-    releasedAt: '2024-02-01T00:00:00.000Z',
-    requiresReboot: true,
-    description: 'Security rollup for Windows 11.'
-  },
-  {
-    id: 'patch-002',
-    title: 'macOS security update',
-    source: 'apple_security',
-    severity: 'high' as PatchSeverity,
-    os: 'macos' as PatchOs,
-    releasedAt: '2024-02-10T00:00:00.000Z',
-    requiresReboot: true,
-    description: 'Security update for macOS.'
-  },
-  {
-    id: 'patch-003',
-    title: 'Linux kernel update',
-    source: 'linux_vendor',
-    severity: 'medium' as PatchSeverity,
-    os: 'linux' as PatchOs,
-    releasedAt: '2024-02-20T00:00:00.000Z',
-    requiresReboot: false,
-    description: 'Kernel security update.'
-  }
-];
-
-const patchSources = [
-  { id: 'windows_update', name: 'Windows Update', os: 'windows' as PatchOs },
-  { id: 'apple_security', name: 'Apple Security', os: 'macos' as PatchOs },
-  { id: 'linux_vendor', name: 'Linux Vendor', os: 'linux' as PatchOs }
-];
-
-const patchApprovals = [
-  {
-    id: 'approval-001',
-    patchId: 'patch-001',
-    orgId: '00000000-0000-0000-0000-000000000000',
-    status: 'approved' as const,
-    updatedAt: '2024-02-05T00:00:00.000Z',
-    updatedBy: 'system'
-  }
-];
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -64,36 +19,17 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-function resolveOrgId(
-  auth: { scope: string; orgId: string | null },
-  requestedOrgId?: string
-) {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) {
-      return { error: 'Organization context required' } as const;
-    }
-
-    if (requestedOrgId && requestedOrgId !== auth.orgId) {
-      return { error: 'Access to this organization denied' } as const;
-    }
-
-    return { orgId: auth.orgId } as const;
-  }
-
-  return { orgId: requestedOrgId ?? null } as const;
-}
-
 const listPatchesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
-  source: z.string().min(1).max(100).optional(),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+  source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
+  severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional()
 });
 
 const patchIdParamSchema = z.object({
-  id: z.string().min(1)
+  id: z.string().uuid()
 });
 
 const scanSchema = z.object({
@@ -109,8 +45,8 @@ const listApprovalsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
-  status: z.enum(['approved', 'declined', 'deferred', 'pending']).optional(),
-  patchId: z.string().min(1).optional()
+  status: z.enum(['approved', 'rejected', 'deferred', 'pending']).optional(),
+  patchId: z.string().uuid().optional()
 });
 
 const approvalActionSchema = z.object({
@@ -123,15 +59,14 @@ const deferSchema = z.object({
 });
 
 const bulkApproveSchema = z.object({
-  patchIds: z.array(z.string().min(1)).min(1),
+  patchIds: z.array(z.string().uuid()).min(1),
   note: z.string().max(1000).optional()
 });
 
 const complianceSchema = z.object({
   orgId: z.string().uuid().optional(),
-  source: z.string().min(1).max(100).optional(),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-  os: z.enum(['windows', 'macos', 'linux']).optional()
+  source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
+  severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional()
 });
 
 const complianceReportSchema = z.object({
@@ -149,22 +84,80 @@ patchRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, 403);
+
+    // Check org access if specified
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
     const { page, limit, offset } = getPagination(query);
-    const filtered = patchCatalog.filter((patch) => {
-      if (query.source && patch.source !== query.source) return false;
-      if (query.severity && patch.severity !== query.severity) return false;
-      if (query.os && patch.os !== query.os) return false;
-      return true;
-    });
+
+    // Build conditions
+    const conditions = [];
+    if (query.source) {
+      conditions.push(eq(patches.source, query.source));
+    }
+    if (query.severity) {
+      conditions.push(eq(patches.severity, query.severity));
+    }
+    if (query.os) {
+      conditions.push(sql`${query.os} = ANY(${patches.osTypes})`);
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Get patches with optional approval status for the org
+    const patchList = await db
+      .select({
+        id: patches.id,
+        title: patches.title,
+        description: patches.description,
+        source: patches.source,
+        severity: patches.severity,
+        category: patches.category,
+        osTypes: patches.osTypes,
+        releaseDate: patches.releaseDate,
+        requiresReboot: patches.requiresReboot,
+        downloadSizeMb: patches.downloadSizeMb,
+        createdAt: patches.createdAt
+      })
+      .from(patches)
+      .where(whereClause)
+      .orderBy(desc(patches.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Get total count
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(patches)
+      .where(whereClause);
+
+    // If org specified, get approval statuses
+    let approvalStatuses: Record<string, string> = {};
+    if (query.orgId) {
+      const approvals = await db
+        .select({
+          patchId: patchApprovals.patchId,
+          status: patchApprovals.status
+        })
+        .from(patchApprovals)
+        .where(eq(patchApprovals.orgId, query.orgId));
+
+      approvalStatuses = Object.fromEntries(
+        approvals.map(a => [a.patchId, a.status])
+      );
+    }
+
+    const data = patchList.map(patch => ({
+      ...patch,
+      os: patch.osTypes?.[0] || 'unknown',
+      approvalStatus: approvalStatuses[patch.id] || 'pending'
+    }));
 
     return c.json({
-      data: filtered.slice(offset, offset + limit),
-      pagination: { page, limit, total: filtered.length }
+      data,
+      pagination: { page, limit, total: Number(count) }
     });
   }
 );
@@ -175,7 +168,11 @@ patchRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', scanSchema),
   async (c) => {
+    const auth = c.get('auth');
     const data = c.req.valid('json');
+
+    // TODO: Queue a scan command to the specified devices
+    // For now, return success - the agent periodically scans anyway
     return c.json({
       success: true,
       jobId: `scan-${Date.now()}`,
@@ -190,9 +187,20 @@ patchRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listSourcesSchema),
   async (c) => {
+    const sources = [
+      { id: 'microsoft', name: 'Microsoft Windows Update', os: 'windows' },
+      { id: 'apple', name: 'Apple Software Update', os: 'macos' },
+      { id: 'linux', name: 'Linux Package Manager', os: 'linux' },
+      { id: 'third_party', name: 'Third Party', os: null },
+      { id: 'custom', name: 'Custom', os: null }
+    ];
+
     const query = c.req.valid('query');
-    const sources = query.os ? patchSources.filter((s) => s.os === query.os) : patchSources;
-    return c.json({ data: sources });
+    const filtered = query.os
+      ? sources.filter(s => s.os === query.os || s.os === null)
+      : sources;
+
+    return c.json({ data: filtered });
   }
 );
 
@@ -204,22 +212,39 @@ patchRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, 403);
+
+    // Check org access
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
     const { page, limit, offset } = getPagination(query);
-    const filtered = patchApprovals.filter((approval) => {
-      if (orgResult.orgId && approval.orgId !== orgResult.orgId) return false;
-      if (query.status && approval.status !== query.status) return false;
-      if (query.patchId && approval.patchId !== query.patchId) return false;
-      return true;
-    });
+
+    const conditions = [];
+    const orgCond = auth.orgCondition(patchApprovals.orgId);
+    if (orgCond) conditions.push(orgCond);
+    if (query.orgId) conditions.push(eq(patchApprovals.orgId, query.orgId));
+    if (query.status) conditions.push(eq(patchApprovals.status, query.status));
+    if (query.patchId) conditions.push(eq(patchApprovals.patchId, query.patchId));
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const approvals = await db
+      .select()
+      .from(patchApprovals)
+      .where(whereClause)
+      .orderBy(desc(patchApprovals.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(patchApprovals)
+      .where(whereClause);
 
     return c.json({
-      data: filtered.slice(offset, offset + limit),
-      pagination: { page, limit, total: filtered.length }
+      data: approvals,
+      pagination: { page, limit, total: Number(count) }
     });
   }
 );
@@ -230,12 +255,45 @@ patchRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', bulkApproveSchema),
   async (c) => {
+    const auth = c.get('auth');
     const data = c.req.valid('json');
-    return c.json({
-      success: true,
-      approved: data.patchIds,
-      failed: []
-    });
+
+    if (!auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+
+    const approved: string[] = [];
+    const failed: string[] = [];
+
+    for (const patchId of data.patchIds) {
+      try {
+        await db
+          .insert(patchApprovals)
+          .values({
+            orgId: auth.orgId,
+            patchId,
+            status: 'approved',
+            approvedBy: auth.userId,
+            approvedAt: new Date(),
+            notes: data.note
+          })
+          .onConflictDoUpdate({
+            target: [patchApprovals.orgId, patchApprovals.patchId],
+            set: {
+              status: 'approved',
+              approvedBy: auth.userId,
+              approvedAt: new Date(),
+              notes: data.note,
+              updatedAt: new Date()
+            }
+          });
+        approved.push(patchId);
+      } catch {
+        failed.push(patchId);
+      }
+    }
+
+    return c.json({ success: true, approved, failed });
   }
 );
 
@@ -247,32 +305,71 @@ patchRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, 403);
+
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
-    const approvalsForOrg = patchApprovals.filter((approval) => {
-      if (orgResult.orgId && approval.orgId !== orgResult.orgId) return false;
-      return true;
-    });
+    const targetOrgId = query.orgId || auth.orgId;
+    if (!targetOrgId) {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
 
-    const summary = approvalsForOrg.reduce(
-      (acc, approval) => {
-        acc.total++;
-        acc[approval.status]++;
-        return acc;
-      },
-      { total: 0, approved: 0, declined: 0, deferred: 0, pending: 0 }
-    );
+    // Get devices in org
+    const orgDevices = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(eq(devices.orgId, targetOrgId));
+
+    const deviceIds = orgDevices.map(d => d.id);
+
+    if (deviceIds.length === 0) {
+      return c.json({
+        data: {
+          summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
+          compliancePercent: 100
+        }
+      });
+    }
+
+    // Get patch status counts
+    const statusCounts = await db
+      .select({
+        status: devicePatches.status,
+        count: sql<number>`count(*)`
+      })
+      .from(devicePatches)
+      .where(inArray(devicePatches.deviceId, deviceIds))
+      .groupBy(devicePatches.status);
+
+    const summary = {
+      total: 0,
+      pending: 0,
+      installed: 0,
+      failed: 0,
+      missing: 0,
+      skipped: 0
+    };
+
+    for (const row of statusCounts) {
+      const count = Number(row.count);
+      summary.total += count;
+      if (row.status in summary) {
+        summary[row.status as keyof typeof summary] = count;
+      }
+    }
+
+    const compliancePercent = summary.total > 0
+      ? Math.round((summary.installed / summary.total) * 100)
+      : 100;
 
     return c.json({
       data: {
         summary,
+        compliancePercent,
         filters: {
           source: query.source ?? null,
-          severity: query.severity ?? null,
-          os: query.os ?? null
+          severity: query.severity ?? null
         }
       }
     });
@@ -287,11 +384,12 @@ patchRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, 403);
+
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
+    // TODO: Queue report generation job
     return c.json({
       reportId: `report-${Date.now()}`,
       status: 'queued',
@@ -307,16 +405,47 @@ patchRoutes.post(
   zValidator('param', patchIdParamSchema),
   zValidator('json', approvalActionSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const patch = patchCatalog.find((item) => item.id === id);
+    const data = c.req.valid('json');
+
+    if (!auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+
+    // Verify patch exists
+    const [patch] = await db
+      .select({ id: patches.id })
+      .from(patches)
+      .where(eq(patches.id, id))
+      .limit(1);
+
     if (!patch) {
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    return c.json({
-      id: patch.id,
-      status: 'approved'
-    });
+    await db
+      .insert(patchApprovals)
+      .values({
+        orgId: auth.orgId,
+        patchId: id,
+        status: 'approved',
+        approvedBy: auth.userId,
+        approvedAt: new Date(),
+        notes: data.note
+      })
+      .onConflictDoUpdate({
+        target: [patchApprovals.orgId, patchApprovals.patchId],
+        set: {
+          status: 'approved',
+          approvedBy: auth.userId,
+          approvedAt: new Date(),
+          notes: data.note,
+          updatedAt: new Date()
+        }
+      });
+
+    return c.json({ id, status: 'approved' });
   }
 );
 
@@ -327,16 +456,42 @@ patchRoutes.post(
   zValidator('param', patchIdParamSchema),
   zValidator('json', approvalActionSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const patch = patchCatalog.find((item) => item.id === id);
+    const data = c.req.valid('json');
+
+    if (!auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+
+    const [patch] = await db
+      .select({ id: patches.id })
+      .from(patches)
+      .where(eq(patches.id, id))
+      .limit(1);
+
     if (!patch) {
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    return c.json({
-      id: patch.id,
-      status: 'declined'
-    });
+    await db
+      .insert(patchApprovals)
+      .values({
+        orgId: auth.orgId,
+        patchId: id,
+        status: 'rejected',
+        notes: data.note
+      })
+      .onConflictDoUpdate({
+        target: [patchApprovals.orgId, patchApprovals.patchId],
+        set: {
+          status: 'rejected',
+          notes: data.note,
+          updatedAt: new Date()
+        }
+      });
+
+    return c.json({ id, status: 'declined' });
   }
 );
 
@@ -347,15 +502,45 @@ patchRoutes.post(
   zValidator('param', patchIdParamSchema),
   zValidator('json', deferSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
-    const patch = patchCatalog.find((item) => item.id === id);
+
+    if (!auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+
+    const [patch] = await db
+      .select({ id: patches.id })
+      .from(patches)
+      .where(eq(patches.id, id))
+      .limit(1);
+
     if (!patch) {
       return c.json({ error: 'Patch not found' }, 404);
     }
 
+    await db
+      .insert(patchApprovals)
+      .values({
+        orgId: auth.orgId,
+        patchId: id,
+        status: 'deferred',
+        deferUntil: new Date(data.deferUntil),
+        notes: data.note
+      })
+      .onConflictDoUpdate({
+        target: [patchApprovals.orgId, patchApprovals.patchId],
+        set: {
+          status: 'deferred',
+          deferUntil: new Date(data.deferUntil),
+          notes: data.note,
+          updatedAt: new Date()
+        }
+      });
+
     return c.json({
-      id: patch.id,
+      id,
       status: 'deferred',
       deferUntil: data.deferUntil
     });
@@ -369,7 +554,13 @@ patchRoutes.get(
   zValidator('param', patchIdParamSchema),
   async (c) => {
     const { id } = c.req.valid('param');
-    const patch = patchCatalog.find((item) => item.id === id);
+
+    const [patch] = await db
+      .select()
+      .from(patches)
+      .where(eq(patches.id, id))
+      .limit(1);
+
     if (!patch) {
       return c.json({ error: 'Patch not found' }, 404);
     }

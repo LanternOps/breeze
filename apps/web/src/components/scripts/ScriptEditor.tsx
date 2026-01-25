@@ -94,6 +94,7 @@ type VersionEntry = {
 
 type ScriptEditorProps = {
   scriptId: string;
+  timezone?: string;
 };
 
 const categoryOptions = [
@@ -155,16 +156,18 @@ const serializeParameterType = (type: ParameterType) => {
   return type;
 };
 
-const formatDateTime = (value?: string) => {
+const formatDateTime = (value?: string, timezone?: string) => {
   if (!value) return 'Unknown';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   return date.toLocaleString([], {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    timeZone: tz
   });
 };
 
@@ -199,7 +202,7 @@ const normalizeParameters = (parameters: ScriptRecord['parameters']): ScriptPara
   }));
 };
 
-export default function ScriptEditor({ scriptId }: ScriptEditorProps) {
+export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) {
   const [script, setScript] = useState<ScriptRecord | null>(null);
   const [formState, setFormState] = useState<ScriptFormState | null>(null);
   const [versionHistory, setVersionHistory] = useState<VersionEntry[]>([]);
@@ -1109,7 +1112,7 @@ export default function ScriptEditor({ scriptId }: ScriptEditorProps) {
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(entry.updatedAt)}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(entry.updatedAt, timezone)}</p>
                 </div>
               ))}
             </div>
@@ -1124,11 +1127,11 @@ export default function ScriptEditor({ scriptId }: ScriptEditorProps) {
               </div>
               <div className="flex items-center justify-between">
                 <span>Last updated</span>
-                <span className="text-foreground">{formatDateTime(script?.updatedAt)}</span>
+                <span className="text-foreground">{formatDateTime(script?.updatedAt, timezone)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Created</span>
-                <span className="text-foreground">{formatDateTime(script?.createdAt)}</span>
+                <span className="text-foreground">{formatDateTime(script?.createdAt, timezone)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Language</span>

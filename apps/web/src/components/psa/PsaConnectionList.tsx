@@ -18,6 +18,7 @@ type PsaConnectionListProps = {
   onSyncNow?: (connection: PsaConnection) => void;
   onToggleStatus?: (connection: PsaConnection, newStatus: 'active' | 'paused') => void;
   onDelete?: (connection: PsaConnection) => void;
+  timezone?: string;
 };
 
 const providerMeta: Record<PsaProvider, { label: string; className: string }> = {
@@ -126,7 +127,8 @@ export default function PsaConnectionList({
   onEdit,
   onSyncNow,
   onToggleStatus,
-  onDelete
+  onDelete,
+  timezone
 }: PsaConnectionListProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<PsaConnectionStatus | 'all'>('all');
@@ -134,7 +136,7 @@ export default function PsaConnectionList({
   const formatDate = (value: string | null) => {
     if (!value) return 'Never';
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { timeZone: timezone });
   };
 
   const statusOptions = useMemo(() => {
