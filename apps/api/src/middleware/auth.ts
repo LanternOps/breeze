@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { db } from '../db';
-import { users, partnerUsers, organizationUsers } from '../db/schema';
+import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
 import { eq } from 'drizzle-orm';
 
 export interface AuthContext {
@@ -16,6 +16,17 @@ export interface AuthContext {
   partnerId: string | null;
   orgId: string | null;
   scope: 'system' | 'partner' | 'organization';
+  /**
+   * Pre-computed list of org IDs this user can access.
+   * - string[] = user can access these specific orgs (org or partner scope)
+   * - null = user can access ALL orgs (system scope)
+   *
+   * Usage in routes:
+   *   if (auth.accessibleOrgIds) {
+   *     conditions.push(inArray(table.orgId, auth.accessibleOrgIds));
+   *   }
+   */
+  accessibleOrgIds: string[] | null;
 }
 
 declare module 'hono' {
@@ -56,6 +67,12 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
     .limit(1);
 
   if (user && user.status === 'active') {
+    const accessibleOrgIds = await computeAccessibleOrgIds(
+      payload.scope,
+      payload.partnerId,
+      payload.orgId
+    );
+
     c.set('auth', {
       user: {
         id: user.id,
@@ -65,11 +82,44 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
       token: payload,
       partnerId: payload.partnerId,
       orgId: payload.orgId,
-      scope: payload.scope
+      scope: payload.scope,
+      accessibleOrgIds
     });
   }
 
   await next();
+}
+
+/**
+ * Compute which org IDs a user can access based on their scope.
+ * Called once per request in authMiddleware.
+ */
+async function computeAccessibleOrgIds(
+  scope: 'system' | 'partner' | 'organization',
+  partnerId: string | null,
+  orgId: string | null
+): Promise<string[] | null> {
+  if (scope === 'system') {
+    // System users can access all orgs - return null to indicate no filter
+    return null;
+  }
+
+  if (scope === 'organization') {
+    // Org users can only access their org
+    return orgId ? [orgId] : [];
+  }
+
+  if (scope === 'partner' && partnerId) {
+    // Partner users can access all orgs under their partner
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId));
+
+    return partnerOrgs.map(o => o.id);
+  }
+
+  return [];
 }
 
 export async function authMiddleware(c: Context, next: Next) {
@@ -110,6 +160,13 @@ export async function authMiddleware(c: Context, next: Next) {
     throw new HTTPException(403, { message: 'Account is not active' });
   }
 
+  // Pre-compute accessible org IDs
+  const accessibleOrgIds = await computeAccessibleOrgIds(
+    payload.scope,
+    payload.partnerId,
+    payload.orgId
+  );
+
   c.set('auth', {
     user: {
       id: user.id,
@@ -119,7 +176,8 @@ export async function authMiddleware(c: Context, next: Next) {
     token: payload,
     partnerId: payload.partnerId,
     orgId: payload.orgId,
-    scope: payload.scope
+    scope: payload.scope,
+    accessibleOrgIds
   });
 
   await next();
@@ -252,4 +310,75 @@ export function requireSiteAccess(siteIdParam: string = 'siteId') {
 
     await next();
   };
+}
+
+/**
+ * Resolves which org(s) a user can access based on their auth context.
+ * Use this instead of requiring orgId on every request.
+ *
+ * @param auth - The auth context from the request
+ * @param requestedOrgId - Optional specific org ID requested (query param)
+ * @returns Object with either:
+ *   - type: 'single' with orgId - filter to one org
+ *   - type: 'multiple' with orgIds - filter to these orgs (partner seeing all their orgs)
+ *   - type: 'all' - no org filter (system scope)
+ *   - type: 'error' - access denied
+ */
+export async function resolveOrgAccess(
+  auth: AuthContext,
+  requestedOrgId?: string
+): Promise<
+  | { type: 'single'; orgId: string }
+  | { type: 'multiple'; orgIds: string[] }
+  | { type: 'all' }
+  | { type: 'error'; error: string; status: 400 | 403 }
+> {
+  // Organization-scoped users can only see their org
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) {
+      return { type: 'error', error: 'Organization context required', status: 403 };
+    }
+    // If they requested a different org, deny
+    if (requestedOrgId && requestedOrgId !== auth.orgId) {
+      return { type: 'error', error: 'Access to this organization denied', status: 403 };
+    }
+    return { type: 'single', orgId: auth.orgId };
+  }
+
+  // Partner-scoped users
+  if (auth.scope === 'partner') {
+    if (!auth.partnerId) {
+      return { type: 'error', error: 'Partner context required', status: 403 };
+    }
+
+    // If specific org requested, verify it belongs to partner
+    if (requestedOrgId) {
+      const [org] = await db
+        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, requestedOrgId))
+        .limit(1);
+
+      if (!org || org.partnerId !== auth.partnerId) {
+        return { type: 'error', error: 'Access to this organization denied', status: 403 };
+      }
+
+      return { type: 'single', orgId: requestedOrgId };
+    }
+
+    // No specific org - get all orgs under this partner
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, auth.partnerId));
+
+    return { type: 'multiple', orgIds: partnerOrgs.map(o => o.id) };
+  }
+
+  // System-scoped users
+  if (requestedOrgId) {
+    return { type: 'single', orgId: requestedOrgId };
+  }
+
+  return { type: 'all' };
 }
