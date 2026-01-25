@@ -27,3 +27,4 @@ export * from './policies';
 export * from './automations';
 export * from './filters';
 export * from './customFields';
+export * from './agentVersions';

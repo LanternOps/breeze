@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { serve } from '@hono/node-server';
+import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
@@ -49,8 +50,13 @@ import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
 import { filterRoutes } from './routes/filters';
 import { deploymentRoutes } from './routes/deployments';
+import { createAgentWsRoutes } from './routes/agentWs';
+import { agentVersionRoutes } from './routes/agentVersions';
 
 const app = new Hono();
+
+// Create WebSocket helpers (must be done before routes are registered)
+const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
 // Global middleware
 app.use('*', logger());
@@ -128,6 +134,8 @@ api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
 api.route('/deployments', deploymentRoutes);
 api.route('/metrics', metricsRoutes);
+api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
+api.route('/agent-versions', agentVersionRoutes);
 
 app.route('/api/v1', api);
 
@@ -163,9 +171,13 @@ const port = parseInt(process.env.API_PORT || '3001', 10);
 
 console.log(`Breeze API starting on port ${port}...`);
 
-serve({
+const server = serve({
   fetch: app.fetch,
   port
 });
 
+// Inject WebSocket support into the HTTP server
+injectWebSocket(server);
+
 console.log(`Breeze API running at http://localhost:${port}`);
+console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);

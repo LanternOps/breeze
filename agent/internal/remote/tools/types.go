@@ -42,6 +42,17 @@ const (
 	CmdReboot   = "reboot"
 	CmdShutdown = "shutdown"
 	CmdLock     = "lock"
+
+	// Software inventory
+	CmdCollectSoftware = "collect_software"
+
+	// File transfer
+	CmdFileTransfer   = "file_transfer"
+	CmdCancelTransfer = "cancel_transfer"
+
+	// Remote desktop
+	CmdStartDesktop = "start_desktop"
+	CmdStopDesktop  = "stop_desktop"
 )
 
 // CommandResult represents the result of a command execution

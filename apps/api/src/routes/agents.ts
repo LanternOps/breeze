@@ -9,7 +9,8 @@ import {
   deviceNetwork,
   deviceMetrics,
   deviceCommands,
-  enrollmentKeys
+  enrollmentKeys,
+  softwareInventory
 } from '../db/schema';
 import { createHash, randomBytes } from 'crypto';
 
@@ -376,4 +377,58 @@ agentRoutes.put('/:id/hardware', zValidator('json', updateHardwareSchema), async
     });
 
   return c.json({ success: true });
+});
+
+// Update software inventory
+const updateSoftwareSchema = z.object({
+  software: z.array(z.object({
+    name: z.string().min(1),
+    version: z.string().optional(),
+    vendor: z.string().optional(),
+    installDate: z.string().optional(),
+    installLocation: z.string().optional(),
+    uninstallString: z.string().optional()
+  }))
+});
+
+agentRoutes.put('/:id/software', zValidator('json', updateSoftwareSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  // Use a transaction to replace all software entries atomically
+  await db.transaction(async (tx) => {
+    // Delete existing software entries for this device
+    await tx
+      .delete(softwareInventory)
+      .where(eq(softwareInventory.deviceId, device.id));
+
+    // Insert new software entries
+    if (data.software.length > 0) {
+      const now = new Date();
+      await tx.insert(softwareInventory).values(
+        data.software.map((item) => ({
+          deviceId: device.id,
+          name: item.name,
+          version: item.version || null,
+          vendor: item.vendor || null,
+          installDate: item.installDate || null,
+          installLocation: item.installLocation || null,
+          uninstallString: item.uninstallString || null,
+          lastSeen: now
+        }))
+      );
+    }
+  });
+
+  return c.json({ success: true, count: data.software.length });
 });

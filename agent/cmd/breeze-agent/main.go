@@ -9,6 +9,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
 )
@@ -104,6 +105,15 @@ func runAgent() {
 	hb := heartbeat.New(cfg)
 	go hb.Start()
 
+	// Start WebSocket client for real-time command delivery
+	wsConfig := &websocket.Config{
+		ServerURL: cfg.ServerURL,
+		AgentID:   cfg.AgentID,
+		AuthToken: cfg.AuthToken,
+	}
+	wsClient := websocket.New(wsConfig, hb.HandleCommand)
+	go wsClient.Start()
+
 	fmt.Println("Agent is running. Press Ctrl+C to stop.")
 
 	// Wait for shutdown signal
@@ -112,6 +122,7 @@ func runAgent() {
 
 	<-sigChan
 	fmt.Println("\nShutting down agent...")
+	wsClient.Stop()
 	hb.Stop()
 	fmt.Println("Agent stopped.")
 }
@@ -169,6 +180,7 @@ func enrollDevice(enrollmentKey string) {
 		OSType:        systemInfo.OSType,
 		OSVersion:     systemInfo.OSVersion,
 		Architecture:  systemInfo.Architecture,
+		AgentVersion:  version,
 		HardwareInfo: &api.HardwareInfo{
 			CPUModel:     hardwareInfo.CPUModel,
 			CPUCores:     hardwareInfo.CPUCores,
