@@ -4,7 +4,8 @@ import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { db } from '../db';
 import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, inArray, SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 
 export interface AuthContext {
   user: {
@@ -16,17 +17,28 @@ export interface AuthContext {
   partnerId: string | null;
   orgId: string | null;
   scope: 'system' | 'partner' | 'organization';
+
   /**
    * Pre-computed list of org IDs this user can access.
    * - string[] = user can access these specific orgs (org or partner scope)
    * - null = user can access ALL orgs (system scope)
-   *
-   * Usage in routes:
-   *   if (auth.accessibleOrgIds) {
-   *     conditions.push(inArray(table.orgId, auth.accessibleOrgIds));
-   *   }
    */
   accessibleOrgIds: string[] | null;
+
+  /**
+   * Helper to get the org filter condition for any table.
+   * Returns undefined for system scope (no filter needed).
+   *
+   * Usage:
+   *   const data = await db.select().from(devices).where(auth.orgCondition(devices.orgId));
+   */
+  orgCondition: (orgIdColumn: PgColumn) => SQL | undefined;
+
+  /**
+   * Check if user can access a specific org ID.
+   * Use when validating an orgId passed as a parameter.
+   */
+  canAccessOrg: (orgId: string) => boolean;
 }
 
 declare module 'hono' {
@@ -73,6 +85,22 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
       payload.orgId
     );
 
+    const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
+      if (accessibleOrgIds === null) return undefined;
+      if (accessibleOrgIds.length === 0) {
+        return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
+      }
+      if (accessibleOrgIds.length === 1) {
+        return eq(orgIdColumn, accessibleOrgIds[0]);
+      }
+      return inArray(orgIdColumn, accessibleOrgIds);
+    };
+
+    const canAccessOrg = (orgId: string): boolean => {
+      if (accessibleOrgIds === null) return true;
+      return accessibleOrgIds.includes(orgId);
+    };
+
     c.set('auth', {
       user: {
         id: user.id,
@@ -83,7 +111,9 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
       partnerId: payload.partnerId,
       orgId: payload.orgId,
       scope: payload.scope,
-      accessibleOrgIds
+      accessibleOrgIds,
+      orgCondition,
+      canAccessOrg
     });
   }
 
@@ -167,6 +197,26 @@ export async function authMiddleware(c: Context, next: Next) {
     payload.orgId
   );
 
+  // Create helper functions
+  const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
+    if (accessibleOrgIds === null) {
+      return undefined; // System scope - no filter
+    }
+    if (accessibleOrgIds.length === 0) {
+      // No accessible orgs - return impossible condition
+      return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
+    }
+    if (accessibleOrgIds.length === 1) {
+      return eq(orgIdColumn, accessibleOrgIds[0]);
+    }
+    return inArray(orgIdColumn, accessibleOrgIds);
+  };
+
+  const canAccessOrg = (orgId: string): boolean => {
+    if (accessibleOrgIds === null) return true; // System scope
+    return accessibleOrgIds.includes(orgId);
+  };
+
   c.set('auth', {
     user: {
       id: user.id,
@@ -177,7 +227,9 @@ export async function authMiddleware(c: Context, next: Next) {
     partnerId: payload.partnerId,
     orgId: payload.orgId,
     scope: payload.scope,
-    accessibleOrgIds
+    accessibleOrgIds,
+    orgCondition,
+    canAccessOrg
   });
 
   await next();

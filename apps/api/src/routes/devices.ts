@@ -119,37 +119,17 @@ deviceRoutes.get(
     // Build conditions array
     const conditions: ReturnType<typeof eq>[] = [];
 
-    // Filter by org access based on scope
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      conditions.push(eq(devices.orgId, auth.orgId));
-    } else if (auth.scope === 'partner') {
-      // Get all orgs under this partner
-      if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
-        if (!hasAccess) {
-          return c.json({ error: 'Access to this organization denied' }, 403);
-        }
-        conditions.push(eq(devices.orgId, query.orgId));
-      } else {
-        // Get devices from all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
+    // Filter by org access (uses pre-computed accessibleOrgIds from auth middleware)
+    const orgFilter = auth.orgCondition(devices.orgId);
+    if (orgFilter) {
+      conditions.push(orgFilter);
+    }
 
-        const orgIds = partnerOrgs.map(o => o.id);
-        if (orgIds.length === 0) {
-          return c.json({
-            data: [],
-            pagination: { page, limit, total: 0 }
-          });
-        }
-        conditions.push(inArray(devices.orgId, orgIds));
+    // Optional: filter to specific org if requested (must be accessible)
+    if (query.orgId) {
+      if (!auth.canAccessOrg(query.orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
       }
-    } else if (auth.scope === 'system' && query.orgId) {
       conditions.push(eq(devices.orgId, query.orgId));
     }
 
