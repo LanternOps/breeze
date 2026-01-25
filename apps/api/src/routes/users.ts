@@ -129,6 +129,78 @@ async function getScopedUser(userId: string, scopeContext: ScopeContext) {
 
 // --- Users ---
 
+// Get current user's profile (no special permissions needed - just auth)
+userRoutes.get('/me', async (c) => {
+  const auth = c.get('auth');
+
+  const [user] = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      avatarUrl: users.avatarUrl,
+      status: users.status,
+      mfaEnabled: users.mfaEnabled,
+      createdAt: users.createdAt,
+      lastLoginAt: users.lastLoginAt
+    })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  return c.json({
+    ...user,
+    partnerId: auth.partnerId,
+    orgId: auth.orgId,
+    scope: auth.scope
+  });
+});
+
+// Update current user's profile
+userRoutes.patch('/me', async (c) => {
+  const auth = c.get('auth');
+  const body = await c.req.json();
+
+  const updates: { name?: string; avatarUrl?: string; updatedAt: Date } = {
+    updatedAt: new Date()
+  };
+
+  if (body.name && typeof body.name === 'string') {
+    updates.name = body.name.slice(0, 255);
+  }
+
+  if (body.avatarUrl !== undefined) {
+    updates.avatarUrl = body.avatarUrl;
+  }
+
+  if (Object.keys(updates).length === 1) {
+    return c.json({ error: 'No valid updates provided' }, 400);
+  }
+
+  const [updated] = await db
+    .update(users)
+    .set(updates)
+    .where(eq(users.id, auth.user.id))
+    .returning({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      avatarUrl: users.avatarUrl,
+      status: users.status,
+      mfaEnabled: users.mfaEnabled
+    });
+
+  if (!updated) {
+    return c.json({ error: 'Failed to update profile' }, 500);
+  }
+
+  return c.json(updated);
+});
+
 userRoutes.get(
   '/',
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),

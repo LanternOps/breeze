@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
-import { users, sessions, partners, partnerUsers, roles } from '../db/schema';
+import { users, sessions, partners, partnerUsers, roles, organizationUsers, organizations } from '../db/schema';
 import {
   hashPassword,
   verifyPassword,
@@ -386,14 +386,63 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     });
   }
 
-  // Create tokens
+  // Look up user's partner/org context
+  let roleId: string | null = null;
+  let partnerId: string | null = null;
+  let orgId: string | null = null;
+  let scope: 'system' | 'partner' | 'organization' = 'system';
+
+  // Check for partner association first
+  const [partnerAssoc] = await db
+    .select({
+      partnerId: partnerUsers.partnerId,
+      roleId: partnerUsers.roleId
+    })
+    .from(partnerUsers)
+    .where(eq(partnerUsers.userId, user.id))
+    .limit(1);
+
+  if (partnerAssoc) {
+    partnerId = partnerAssoc.partnerId;
+    roleId = partnerAssoc.roleId;
+    scope = 'partner';
+  } else {
+    // Check for organization association
+    const [orgAssoc] = await db
+      .select({
+        orgId: organizationUsers.orgId,
+        roleId: organizationUsers.roleId
+      })
+      .from(organizationUsers)
+      .where(eq(organizationUsers.userId, user.id))
+      .limit(1);
+
+    if (orgAssoc) {
+      orgId = orgAssoc.orgId;
+      roleId = orgAssoc.roleId;
+      scope = 'organization';
+
+      // Get partnerId from org
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, orgAssoc.orgId))
+        .limit(1);
+
+      if (org) {
+        partnerId = org.partnerId;
+      }
+    }
+  }
+
+  // Create tokens with user's context
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
-    roleId: null, // TODO: Fetch from partnerUsers/organizationUsers
-    orgId: null,
-    partnerId: null,
-    scope: 'system'
+    roleId,
+    orgId,
+    partnerId,
+    scope
   });
 
   // Update last login
@@ -544,14 +593,54 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     // Clear temp token
     await redis.del(`mfa:pending:${tempToken}`);
 
-    // Create tokens
+    // Look up user's partner/org context
+    let mfaRoleId: string | null = null;
+    let mfaPartnerId: string | null = null;
+    let mfaOrgId: string | null = null;
+    let mfaScope: 'system' | 'partner' | 'organization' = 'system';
+
+    const [mfaPartnerAssoc] = await db
+      .select({ partnerId: partnerUsers.partnerId, roleId: partnerUsers.roleId })
+      .from(partnerUsers)
+      .where(eq(partnerUsers.userId, user.id))
+      .limit(1);
+
+    if (mfaPartnerAssoc) {
+      mfaPartnerId = mfaPartnerAssoc.partnerId;
+      mfaRoleId = mfaPartnerAssoc.roleId;
+      mfaScope = 'partner';
+    } else {
+      const [mfaOrgAssoc] = await db
+        .select({ orgId: organizationUsers.orgId, roleId: organizationUsers.roleId })
+        .from(organizationUsers)
+        .where(eq(organizationUsers.userId, user.id))
+        .limit(1);
+
+      if (mfaOrgAssoc) {
+        mfaOrgId = mfaOrgAssoc.orgId;
+        mfaRoleId = mfaOrgAssoc.roleId;
+        mfaScope = 'organization';
+
+        const [mfaOrg] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, mfaOrgAssoc.orgId))
+          .limit(1);
+
+        if (mfaOrg) {
+          mfaPartnerId = mfaOrg.partnerId;
+        }
+      }
+    }
+
+    // Create tokens with user's context
     const tokens = await createTokenPair({
       sub: user.id,
       email: user.email,
-      roleId: null,
-      orgId: null,
-      partnerId: null,
-      scope: 'system'
+      roleId: mfaRoleId,
+      orgId: mfaOrgId,
+      partnerId: mfaPartnerId,
+      scope: mfaScope
     });
 
     // Update last login
