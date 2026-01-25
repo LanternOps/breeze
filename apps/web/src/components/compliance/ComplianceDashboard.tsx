@@ -195,11 +195,11 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function formatDate(value?: string): string {
+function formatDate(value?: string, timezone?: string): string {
   if (!value) return 'TBD';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleDateString([], { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function normalizeControlStatus(value: unknown): ControlStatus {
@@ -412,7 +412,11 @@ function buildQuery(framework: string): string {
   return query ? `?${query}` : '';
 }
 
-export default function ComplianceDashboard() {
+interface ComplianceDashboardProps {
+  timezone?: string;
+}
+
+export default function ComplianceDashboard({ timezone }: ComplianceDashboardProps) {
   const [framework, setFramework] = useState<string>(frameworks[0]?.id ?? 'cis');
   const [statusData, setStatusData] = useState<ComplianceStatusData | null>(null);
   const [controls, setControls] = useState<ComplianceControl[]>([]);
@@ -749,7 +753,7 @@ export default function ComplianceDashboard() {
 
                   <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                     <span>Owner: {selectedControl.owner ?? 'Unassigned'}</span>
-                    <span>Last checked: {formatDate(selectedControl.lastChecked)}</span>
+                    <span>Last checked: {formatDate(selectedControl.lastChecked, timezone)}</span>
                   </div>
 
                   <div>
@@ -843,7 +847,7 @@ export default function ComplianceDashboard() {
                             </p>
                           </div>
                         </div>
-                        <span className="text-xs text-muted-foreground">{formatDate(item.linkedAt)}</span>
+                        <span className="text-xs text-muted-foreground">{formatDate(item.linkedAt, timezone)}</span>
                       </div>
                       <div className="mt-2 text-xs text-muted-foreground">
                         Linked by {item.linkedBy ?? 'Security team'}
@@ -885,7 +889,7 @@ export default function ComplianceDashboard() {
                       </span>
                       <span className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
-                        Due {formatDate(item.dueDate)}
+                        Due {formatDate(item.dueDate, timezone)}
                       </span>
                     </div>
                   </div>

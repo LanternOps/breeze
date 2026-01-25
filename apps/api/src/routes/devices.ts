@@ -7,13 +7,16 @@ import {
   devices,
   deviceHardware,
   deviceNetwork,
+  deviceDisks,
   deviceMetrics,
   deviceSoftware,
   deviceGroups,
   deviceGroupMemberships,
   deviceCommands,
   sites,
-  organizations
+  organizations,
+  patches,
+  devicePatches
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 
@@ -89,7 +92,8 @@ const updateDeviceSchema = z.object({
 const metricsQuerySchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
-  interval: z.enum(['1m', '5m', '1h', '1d']).optional()
+  interval: z.enum(['1m', '5m', '1h', '1d']).optional(),
+  range: z.enum(['1h', '6h', '24h', '7d', '30d']).optional()
 });
 
 const softwareQuerySchema = z.object({
@@ -259,7 +263,7 @@ deviceRoutes.get(
 
     // Get recent metrics (last 24 hours, sampled)
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const recentMetrics = await db
+    const recentMetricsRaw = await db
       .select()
       .from(deviceMetrics)
       .where(
@@ -270,6 +274,13 @@ deviceRoutes.get(
       )
       .orderBy(desc(deviceMetrics.timestamp))
       .limit(288); // ~5 min intervals for 24 hours
+
+    // Convert BigInt fields to numbers for JSON serialization
+    const recentMetrics = recentMetricsRaw.map(m => ({
+      ...m,
+      networkInBytes: m.networkInBytes ? Number(m.networkInBytes) : null,
+      networkOutBytes: m.networkOutBytes ? Number(m.networkOutBytes) : null
+    }));
 
     // Get group memberships
     const memberships = await db
@@ -284,12 +295,20 @@ deviceRoutes.get(
       .innerJoin(deviceGroups, eq(deviceGroupMemberships.groupId, deviceGroups.id))
       .where(eq(deviceGroupMemberships.deviceId, deviceId));
 
+    // Get site timezone
+    const [site] = await db
+      .select({ timezone: sites.timezone })
+      .from(sites)
+      .where(eq(sites.id, device.siteId))
+      .limit(1);
+
     return c.json({
       ...device,
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,
-      groups: memberships
+      groups: memberships,
+      siteTimezone: site?.timezone || 'UTC'
     });
   }
 );
@@ -391,12 +410,43 @@ deviceRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // Get site timezone
+    const [site] = await db
+      .select({ timezone: sites.timezone })
+      .from(sites)
+      .where(eq(sites.id, device.siteId))
+      .limit(1);
+    const timezone = site?.timezone || 'UTC';
+
+    // Handle range parameter for simpler time range queries
+    const rangeToMs: Record<string, number> = {
+      '1h': 60 * 60 * 1000,
+      '6h': 6 * 60 * 60 * 1000,
+      '24h': 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000
+    };
+
+    const rangeToInterval: Record<string, '1m' | '5m' | '1h' | '1d'> = {
+      '1h': '1m',
+      '6h': '5m',
+      '24h': '5m',
+      '7d': '1h',
+      '30d': '1d'
+    };
+
     // Default to last 24 hours
     const endDate = query.endDate ? new Date(query.endDate) : new Date();
     const startDate = query.startDate
       ? new Date(query.startDate)
-      : new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
-    const interval = query.interval || '5m';
+      : query.range
+        ? new Date(endDate.getTime() - rangeToMs[query.range])
+        : new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
+
+    let interval: '1m' | '5m' | '1h' | '1d' = query.interval || '5m';
+    if (query.range && !query.interval) {
+      interval = rangeToInterval[query.range];
+    }
 
     // Map interval to seconds for aggregation
     const intervalSeconds: Record<string, number> = {
@@ -437,9 +487,11 @@ deviceRoutes.get(
 
     return c.json({
       data: aggregatedData,
+      metrics: aggregatedData, // Alias for frontend compatibility
       interval,
       startDate: startDate.toISOString(),
-      endDate: endDate.toISOString()
+      endDate: endDate.toISOString(),
+      timezone
     });
   }
 );
@@ -640,7 +692,7 @@ deviceRoutes.post(
 
 // Additional helper routes that were in the original file
 
-// GET /devices/:id/hardware - Get device hardware (kept for backward compatibility)
+// GET /devices/:id/hardware - Get device hardware with disks and network adapters
 deviceRoutes.get(
   '/:id/hardware',
   requireScope('organization', 'partner', 'system'),
@@ -659,11 +711,23 @@ deviceRoutes.get(
       .where(eq(deviceHardware.deviceId, deviceId))
       .limit(1);
 
-    if (!hardware) {
-      return c.json({ error: 'Hardware info not found' }, 404);
-    }
+    // Get disk drives
+    const diskDrives = await db
+      .select()
+      .from(deviceDisks)
+      .where(eq(deviceDisks.deviceId, deviceId));
 
-    return c.json(hardware);
+    // Get network adapters
+    const networkInterfaces = await db
+      .select()
+      .from(deviceNetwork)
+      .where(eq(deviceNetwork.deviceId, deviceId));
+
+    return c.json({
+      hardware: hardware || null,
+      diskDrives,
+      networkInterfaces
+    });
   }
 );
 
@@ -1026,5 +1090,107 @@ deviceRoutes.delete(
       );
 
     return c.json({ success: true });
+  }
+);
+
+// GET /devices/:id/patches - Get patch status for a device
+deviceRoutes.get(
+  '/:id/patches',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // Get all patches associated with this device
+    const devicePatchList = await db
+      .select({
+        id: devicePatches.id,
+        patchId: devicePatches.patchId,
+        status: devicePatches.status,
+        installedAt: devicePatches.installedAt,
+        lastCheckedAt: devicePatches.lastCheckedAt,
+        failureCount: devicePatches.failureCount,
+        lastError: devicePatches.lastError,
+        // Join patch details
+        title: patches.title,
+        description: patches.description,
+        severity: patches.severity,
+        category: patches.category,
+        source: patches.source,
+        releaseDate: patches.releaseDate,
+        requiresReboot: patches.requiresReboot
+      })
+      .from(devicePatches)
+      .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+      .where(eq(devicePatches.deviceId, deviceId))
+      .orderBy(desc(devicePatches.lastCheckedAt));
+
+    // Separate into pending and installed
+    const pending = devicePatchList
+      .filter(p => p.status === 'pending' || p.status === 'missing')
+      .map(p => ({
+        id: p.patchId,
+        name: p.title,
+        title: p.title,
+        severity: p.severity,
+        status: p.status,
+        releaseDate: p.releaseDate,
+        category: p.category,
+        source: p.source,
+        requiresReboot: p.requiresReboot
+      }));
+
+    const installed = devicePatchList
+      .filter(p => p.status === 'installed')
+      .map(p => ({
+        id: p.patchId,
+        name: p.title,
+        title: p.title,
+        severity: p.severity,
+        status: p.status,
+        installedAt: p.installedAt,
+        category: p.category,
+        source: p.source
+      }));
+
+    const failed = devicePatchList
+      .filter(p => p.status === 'failed')
+      .map(p => ({
+        id: p.patchId,
+        name: p.title,
+        title: p.title,
+        severity: p.severity,
+        status: p.status,
+        lastError: p.lastError,
+        failureCount: p.failureCount
+      }));
+
+    const total = pending.length + installed.length;
+    const compliancePercent = total > 0
+      ? Math.round((installed.length / total) * 100)
+      : 100;
+
+    return c.json({
+      data: {
+        compliancePercent,
+        pending,
+        installed,
+        failed,
+        patches: devicePatchList.map(p => ({
+          id: p.patchId,
+          name: p.title,
+          title: p.title,
+          severity: p.severity,
+          status: p.status,
+          releaseDate: p.releaseDate,
+          installedAt: p.installedAt
+        }))
+      }
+    });
   }
 );

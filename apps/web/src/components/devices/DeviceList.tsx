@@ -24,6 +24,7 @@ export type Device = {
 type DeviceListProps = {
   devices: Device[];
   sites?: { id: string; name: string }[];
+  timezone?: string;
   onSelect?: (device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
   pageSize?: number;
@@ -47,7 +48,7 @@ const osLabels: Record<OSType, string> = {
   linux: 'Linux'
 };
 
-function formatLastSeen(dateString: string): string {
+function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -61,16 +62,20 @@ function formatLastSeen(dateString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
 export default function DeviceList({
   devices,
   sites = [],
+  timezone,
   onSelect,
   onBulkAction,
   pageSize = 10
 }: DeviceListProps) {
+  // Use provided timezone or browser default
+  const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [osFilter, setOsFilter] = useState<string>('all');
@@ -326,7 +331,7 @@ export default function DeviceList({
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatLastSeen(device.lastSeen)}
+                    {formatLastSeen(device.lastSeen, effectiveTimezone)}
                   </td>
                 </tr>
               ))

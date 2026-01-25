@@ -1,5 +1,6 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
 ---
 
 <DashboardLayout title="Settings">
@@ -10,6 +11,7 @@ import DashboardLayout from '../../layouts/DashboardLayout.astro';
     </div>
 
     <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+      <PartnerSettingsCard client:load />
       <a
         href="/settings/organizations"
         class="rounded-lg border bg-card p-6 shadow-sm transition hover:border-primary hover:shadow-md"

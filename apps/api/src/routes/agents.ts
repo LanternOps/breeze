@@ -7,10 +7,13 @@ import {
   devices,
   deviceHardware,
   deviceNetwork,
+  deviceDisks,
   deviceMetrics,
   deviceCommands,
   enrollmentKeys,
-  softwareInventory
+  softwareInventory,
+  patches,
+  devicePatches
 } from '../db/schema';
 import { createHash, randomBytes } from 'crypto';
 
@@ -431,4 +434,209 @@ agentRoutes.put('/:id/software', zValidator('json', updateSoftwareSchema), async
   });
 
   return c.json({ success: true, count: data.software.length });
+});
+
+// Update disk drives inventory
+const updateDisksSchema = z.object({
+  disks: z.array(z.object({
+    mountPoint: z.string().min(1),
+    device: z.string().optional(),
+    fsType: z.string().optional(),
+    totalGb: z.number(),
+    usedGb: z.number(),
+    freeGb: z.number(),
+    usedPercent: z.number(),
+    health: z.string().optional()
+  }))
+});
+
+agentRoutes.put('/:id/disks', zValidator('json', updateDisksSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  // Use a transaction to replace all disk entries atomically
+  await db.transaction(async (tx) => {
+    // Delete existing disk entries for this device
+    await tx
+      .delete(deviceDisks)
+      .where(eq(deviceDisks.deviceId, device.id));
+
+    // Insert new disk entries
+    if (data.disks.length > 0) {
+      const now = new Date();
+      await tx.insert(deviceDisks).values(
+        data.disks.map((disk) => ({
+          deviceId: device.id,
+          mountPoint: disk.mountPoint,
+          device: disk.device || null,
+          fsType: disk.fsType || null,
+          totalGb: disk.totalGb,
+          usedGb: disk.usedGb,
+          freeGb: disk.freeGb,
+          usedPercent: disk.usedPercent,
+          health: disk.health || 'healthy',
+          updatedAt: now
+        }))
+      );
+    }
+  });
+
+  return c.json({ success: true, count: data.disks.length });
+});
+
+// Update network adapters
+const updateNetworkSchema = z.object({
+  adapters: z.array(z.object({
+    interfaceName: z.string().min(1),
+    macAddress: z.string().optional(),
+    ipAddress: z.string().optional(),
+    ipType: z.enum(['ipv4', 'ipv6']).optional(),
+    isPrimary: z.boolean().optional()
+  }))
+});
+
+agentRoutes.put('/:id/network', zValidator('json', updateNetworkSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  // Use a transaction to replace all network entries atomically
+  await db.transaction(async (tx) => {
+    // Delete existing network entries for this device
+    await tx
+      .delete(deviceNetwork)
+      .where(eq(deviceNetwork.deviceId, device.id));
+
+    // Insert new network entries
+    if (data.adapters.length > 0) {
+      const now = new Date();
+      await tx.insert(deviceNetwork).values(
+        data.adapters.map((adapter) => ({
+          deviceId: device.id,
+          interfaceName: adapter.interfaceName,
+          macAddress: adapter.macAddress || null,
+          ipAddress: adapter.ipAddress || null,
+          ipType: adapter.ipType || 'ipv4',
+          isPrimary: adapter.isPrimary || false,
+          updatedAt: now
+        }))
+      );
+    }
+  });
+
+  return c.json({ success: true, count: data.adapters.length });
+});
+
+// Submit available patches
+const submitPatchesSchema = z.object({
+  patches: z.array(z.object({
+    name: z.string().min(1),
+    version: z.string().optional(),
+    currentVersion: z.string().optional(),
+    kbNumber: z.string().optional(),
+    category: z.string().optional(),
+    severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
+    size: z.number().int().optional(),
+    requiresRestart: z.boolean().optional(),
+    releaseDate: z.string().optional(),
+    description: z.string().optional(),
+    source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom')
+  }))
+});
+
+agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  await db.transaction(async (tx) => {
+    // First, mark all existing patches for this device as "missing" (will update found ones)
+    await tx
+      .update(devicePatches)
+      .set({ status: 'missing', lastCheckedAt: new Date() })
+      .where(eq(devicePatches.deviceId, device.id));
+
+    for (const patchData of data.patches) {
+      // Generate an external ID based on source + name + version
+      const externalId = patchData.kbNumber ||
+        `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
+
+      // Upsert the patch record
+      const [patch] = await tx
+        .insert(patches)
+        .values({
+          source: patchData.source,
+          externalId: externalId,
+          title: patchData.name,
+          description: patchData.description || null,
+          severity: patchData.severity || 'unknown',
+          category: patchData.category || null,
+          releaseDate: patchData.releaseDate || null,
+          requiresReboot: patchData.requiresRestart || false,
+          downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null
+        })
+        .onConflictDoUpdate({
+          target: [patches.source, patches.externalId],
+          set: {
+            title: patchData.name,
+            description: patchData.description || null,
+            severity: patchData.severity || 'unknown',
+            category: patchData.category || null,
+            requiresReboot: patchData.requiresRestart || false,
+            updatedAt: new Date()
+          }
+        })
+        .returning();
+
+      if (patch) {
+        // Upsert the device-patch relationship as "pending" (available but not installed)
+        await tx
+          .insert(devicePatches)
+          .values({
+            deviceId: device.id,
+            patchId: patch.id,
+            status: 'pending',
+            lastCheckedAt: new Date()
+          })
+          .onConflictDoUpdate({
+            target: [devicePatches.deviceId, devicePatches.patchId],
+            set: {
+              status: 'pending',
+              lastCheckedAt: new Date(),
+              updatedAt: new Date()
+            }
+          });
+      }
+    }
+  });
+
+  return c.json({ success: true, count: data.patches.length });
 });

@@ -1,0 +1,10 @@
+agent_id: "47b38c3ff519b3b8413591bda9b95313ea4ebddaf0b2745c4ed1a732ad87a703"
+server_url: "http://localhost:3001"
+auth_token: "brz_test_token"
+heartbeat_interval_seconds: 10
+metrics_interval_seconds: 10
+enabled_collectors:
+  - "hardware"
+  - "software"
+  - "metrics"
+  - "network"

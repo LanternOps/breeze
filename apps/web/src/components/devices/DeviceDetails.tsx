@@ -38,6 +38,7 @@ type Tab =
 
 type DeviceDetailsProps = {
   device: Device;
+  timezone?: string;
   onBack?: () => void;
   onAction?: (action: string, device: Device) => void;
 };
@@ -60,7 +61,7 @@ const osLabels: Record<OSType, string> = {
   linux: 'Linux'
 };
 
-function formatLastSeen(dateString: string): string {
+function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -74,11 +75,14 @@ function formatLastSeen(dateString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
-export default function DeviceDetails({ device, onBack, onAction }: DeviceDetailsProps) {
+export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
+
+  // Use provided timezone or browser default
+  const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Overview', icon: <Monitor className="h-4 w-4" /> },
@@ -147,28 +151,28 @@ export default function DeviceDetails({ device, onBack, onAction }: DeviceDetail
                   <Cpu className="h-4 w-4" />
                   CPU
                 </div>
-                <p className="mt-2 text-2xl font-bold">{device.cpuPercent}%</p>
+                <p className="mt-2 text-2xl font-bold">{device.cpuPercent.toFixed(1)}%</p>
               </div>
               <div className="rounded-lg border bg-card p-4 shadow-sm">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <MemoryStick className="h-4 w-4" />
                   RAM
                 </div>
-                <p className="mt-2 text-2xl font-bold">{device.ramPercent}%</p>
+                <p className="mt-2 text-2xl font-bold">{device.ramPercent.toFixed(1)}%</p>
               </div>
               <div className="rounded-lg border bg-card p-4 shadow-sm">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Clock className="h-4 w-4" />
                   Last Seen
                 </div>
-                <p className="mt-2 text-2xl font-bold">{formatLastSeen(device.lastSeen)}</p>
+                <p className="mt-2 text-2xl font-bold">{formatLastSeen(device.lastSeen, effectiveTimezone)}</p>
               </div>
             </div>
 
             <DevicePerformanceGraphs deviceId={device.id} compact />
           </div>
 
-          <DeviceAlertHistory deviceId={device.id} showFilters={false} limit={4} />
+          <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} showFilters={false} limit={4} />
         </div>
       )}
 
@@ -177,19 +181,19 @@ export default function DeviceDetails({ device, onBack, onAction }: DeviceDetail
       )}
 
       {activeTab === 'software' && (
-        <DeviceSoftwareInventory deviceId={device.id} />
+        <DeviceSoftwareInventory deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'patches' && (
-        <DevicePatchStatusTab deviceId={device.id} />
+        <DevicePatchStatusTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'alerts' && (
-        <DeviceAlertHistory deviceId={device.id} />
+        <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'scripts' && (
-        <DeviceScriptHistory deviceId={device.id} />
+        <DeviceScriptHistory deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'performance' && (
@@ -197,7 +201,7 @@ export default function DeviceDetails({ device, onBack, onAction }: DeviceDetail
       )}
 
       {activeTab === 'eventlog' && (
-        <DeviceEventLogViewer deviceId={device.id} />
+        <DeviceEventLogViewer deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'connections' && (

@@ -64,6 +64,7 @@ type ComplianceDashboardProps = {
   nonCompliantDevices: DeviceCompliance[];
   onViewDevice?: (deviceId: string) => void;
   onViewPolicy?: (policyId: string) => void;
+  timezone?: string;
 };
 
 const statusConfig: Record<ComplianceStatus, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
@@ -87,7 +88,7 @@ const statusConfig: Record<ComplianceStatus, { label: string; color: string; bgC
   }
 };
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -101,7 +102,7 @@ function formatDate(dateString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
 function CompliancePieChart({ data }: { data: { compliant: number; nonCompliant: number; unknown: number } }) {
@@ -264,7 +265,8 @@ export default function ComplianceDashboard({
   policies,
   nonCompliantDevices,
   onViewDevice,
-  onViewPolicy
+  onViewPolicy,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: ComplianceDashboardProps) {
   const [deviceQuery, setDeviceQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -515,7 +517,7 @@ export default function ComplianceDashboard({
                   <div className="mt-2 pl-8">
                     <p className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Calendar className="h-3 w-3" />
-                      Last checked: {formatDate(device.lastCheckedAt)}
+                      Last checked: {formatDate(device.lastCheckedAt, timezone)}
                     </p>
                   </div>
                 </div>

@@ -15,6 +15,7 @@ export type PsaTicket = {
 
 type PsaTicketListProps = {
   tickets: PsaTicket[];
+  timezone?: string;
 };
 
 const statusConfig: Record<PsaTicketStatus, { label: string; className: string }> = {
@@ -40,14 +41,14 @@ const statusConfig: Record<PsaTicketStatus, { label: string; className: string }
   }
 };
 
-export default function PsaTicketList({ tickets }: PsaTicketListProps) {
+export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<PsaTicketStatus | 'all'>('all');
 
   const formatDate = (value: string | null) => {
     if (!value) return 'Unknown';
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { timeZone: timezone });
   };
 
   const statusOptions = useMemo(() => {

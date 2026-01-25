@@ -12,7 +12,14 @@ type ReportData = {
   data: Record<string, unknown>;
 };
 
-export default function ReportBuilderPage() {
+type ReportBuilderPageProps = {
+  timezone?: string;
+};
+
+const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps = {}) {
+  const effectiveTimezone = timezone || getBrowserTimezone();
   const [previewData, setPreviewData] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -120,7 +127,7 @@ export default function ReportBuilderPage() {
       } else if (format === 'pdf') {
         // PDF export - generate HTML content and open print dialog
         const reportTitle = previewData.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        const generatedAt = new Date().toLocaleString();
+        const generatedAt = new Date().toLocaleString([], { timeZone: effectiveTimezone });
 
         let tableHtml = '<p>No data available</p>';
         if (rows.length > 0) {
@@ -149,7 +156,7 @@ export default function ReportBuilderPage() {
     } catch (err) {
       console.error('Export failed:', err);
     }
-  }, [previewData]);
+  }, [previewData, effectiveTimezone]);
 
   return (
     <div className="space-y-6">
@@ -203,6 +210,7 @@ export default function ReportBuilderPage() {
               }
             }}
             onExport={handleExport}
+            timezone={effectiveTimezone}
           />
         </div>
       </div>

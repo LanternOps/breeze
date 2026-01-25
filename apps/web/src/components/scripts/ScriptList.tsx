@@ -28,6 +28,7 @@ type ScriptListProps = {
   onEdit?: (script: Script) => void;
   onDelete?: (script: Script) => void;
   pageSize?: number;
+  timezone?: string;
 };
 
 const languageConfig: Record<ScriptLanguage, { label: string; color: string; icon: string }> = {
@@ -49,7 +50,7 @@ const osLabels: Record<OSType, string> = {
   linux: 'Linux'
 };
 
-function formatLastRun(dateString?: string): string {
+function formatLastRun(dateString?: string, timezone?: string): string {
   if (!dateString) return 'Never';
 
   const date = new Date(dateString);
@@ -65,7 +66,8 @@ function formatLastRun(dateString?: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return date.toLocaleDateString(undefined, { timeZone: tz });
 }
 
 export default function ScriptList({
@@ -74,7 +76,8 @@ export default function ScriptList({
   onRun,
   onEdit,
   onDelete,
-  pageSize = 10
+  pageSize = 10,
+  timezone
 }: ScriptListProps) {
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -236,7 +239,7 @@ export default function ScriptList({
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatLastRun(script.lastRun)}
+                    {formatLastRun(script.lastRun, timezone)}
                   </td>
                   <td className="px-4 py-3">
                     <span className={cn(

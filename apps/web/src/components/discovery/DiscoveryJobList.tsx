@@ -46,11 +46,11 @@ const statusMap: Record<ApiJobStatus, DiscoveryJobStatus> = {
   failed: 'failed'
 };
 
-function formatTimestamp(value?: string) {
+function formatTimestamp(value?: string, timezone?: string) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 }
 
 function mapJob(job: ApiDiscoveryJob): DiscoveryJob {
@@ -83,7 +83,11 @@ function mapJob(job: ApiDiscoveryJob): DiscoveryJob {
   };
 }
 
-export default function DiscoveryJobList() {
+interface DiscoveryJobListProps {
+  timezone?: string;
+}
+
+export default function DiscoveryJobList({ timezone }: DiscoveryJobListProps) {
   const [jobs, setJobs] = useState<DiscoveryJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -214,9 +218,9 @@ export default function DiscoveryJobList() {
                     <td className="px-4 py-3 text-sm">
                       {job.hostsDiscovered} / {job.hostsTargeted}
                     </td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt)}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.startedAt)}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.finishedAt)}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.startedAt, timezone)}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.finishedAt, timezone)}</td>
                   </tr>
                 );
               })

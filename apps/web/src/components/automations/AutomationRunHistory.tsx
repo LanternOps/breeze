@@ -48,6 +48,7 @@ type AutomationRunHistoryProps = {
   isOpen: boolean;
   onClose: () => void;
   automationName?: string;
+  timezone?: string;
 };
 
 type StatusKey = 'running' | 'success' | 'failed' | 'partial' | 'skipped';
@@ -92,10 +93,10 @@ const triggerLabels: Record<string, string> = {
   api: 'API Call'
 };
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 }
 
 function formatDuration(ms: number): string {
@@ -106,7 +107,7 @@ function formatDuration(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
-function formatRelativeTime(dateString: string): string {
+function formatRelativeTime(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -120,10 +121,10 @@ function formatRelativeTime(dateString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
-function RunItem({ run }: { run: AutomationRun }) {
+function RunItem({ run, timezone }: { run: AutomationRun; timezone: string }) {
   const [expanded, setExpanded] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
 
@@ -143,7 +144,7 @@ function RunItem({ run }: { run: AutomationRun }) {
           <StatusIcon className={cn('h-5 w-5', statusConfig[run.status].color)} />
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">{formatRelativeTime(run.startedAt)}</span>
+              <span className="text-sm font-medium">{formatRelativeTime(run.startedAt, timezone)}</span>
               <span
                 className={cn(
                   'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
@@ -244,12 +245,12 @@ function RunItem({ run }: { run: AutomationRun }) {
           <div className="mt-4 flex items-center gap-4 text-xs text-muted-foreground">
             <div className="flex items-center gap-1">
               <Calendar className="h-3 w-3" />
-              Started: {formatDate(run.startedAt)}
+              Started: {formatDate(run.startedAt, timezone)}
             </div>
             {run.completedAt && (
               <div className="flex items-center gap-1">
                 <Calendar className="h-3 w-3" />
-                Completed: {formatDate(run.completedAt)}
+                Completed: {formatDate(run.completedAt, timezone)}
               </div>
             )}
           </div>
@@ -263,7 +264,8 @@ export default function AutomationRunHistory({
   runs,
   isOpen,
   onClose,
-  automationName
+  automationName,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: AutomationRunHistoryProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
@@ -321,7 +323,7 @@ export default function AutomationRunHistory({
           ) : (
             <div className="space-y-3">
               {filteredRuns.map(run => (
-                <RunItem key={run.id} run={run} />
+                <RunItem key={run.id} run={run} timezone={timezone} />
               ))}
             </div>
           )}

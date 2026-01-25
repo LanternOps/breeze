@@ -123,14 +123,14 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
 
   const diskRows = useMemo(() => {
     return disks.map((disk, index) => {
-      const sizeGb = toNumber(disk.sizeGb ?? disk.sizeGB ?? disk.capacityGb ?? null);
+      const sizeGb = toNumber(disk.sizeGb ?? disk.sizeGB ?? disk.totalGb ?? disk.capacityGb ?? null);
       const usedGb = toNumber(disk.usedGb ?? disk.usedGB ?? disk.used ?? null);
-      const percentValue = toNumber(disk.percentUsed ?? disk.usagePercent ?? null);
+      const percentValue = toNumber(disk.percentUsed ?? disk.usagePercent ?? disk.usedPercent ?? null);
       const computedPercent = percentValue ?? (sizeGb && usedGb ? Math.min(100, Math.round((usedGb / sizeGb) * 100)) : null);
 
       return {
         key: disk.id ?? `${disk.name ?? disk.model ?? 'disk'}-${index}`,
-        name: disk.name ?? disk.model ?? `Disk ${index + 1}`,
+        name: disk.name ?? disk.mountPoint ?? disk.model ?? `Disk ${index + 1}`,
         sizeLabel: formatGb(sizeGb),
         usedLabel: usedGb !== null ? formatGb(usedGb) : 'Not reported',
         percentLabel: computedPercent !== null ? `${computedPercent}%` : 'Not reported',
@@ -138,6 +138,25 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
       };
     });
   }, [disks]);
+
+  // Compute total storage from disks
+  const totalStorageGb = useMemo(() => {
+    if (!disks || disks.length === 0) return hardware?.diskTotalGb ?? null;
+    const seen = new Set<string>();
+    let total = 0;
+    for (const disk of disks) {
+      const size = toNumber(disk.totalGb ?? disk.sizeGb ?? disk.capacityGb ?? null);
+      const deviceKey = disk.device ?? disk.mountPoint ?? disk.id;
+      if (disk.mountPoint === '/' || disk.mountPoint === 'C:\\') {
+        return size;
+      }
+      if (deviceKey && !seen.has(deviceKey)) {
+        seen.add(deviceKey);
+        total += size ?? 0;
+      }
+    }
+    return total > 0 ? total : (hardware?.diskTotalGb ?? null);
+  }, [disks, hardware?.diskTotalGb]);
 
   if (loading) {
     return (
@@ -194,7 +213,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
             <HardDrive className="h-4 w-4" />
             Storage
           </div>
-          <p className="mt-3 text-lg font-semibold">{formatGb(hardware?.diskTotalGb)}</p>
+          <p className="mt-3 text-lg font-semibold">{formatGb(totalStorageGb)}</p>
           <p className="mt-1 text-sm text-muted-foreground">Total disk capacity</p>
         </div>
       </div>

@@ -140,6 +140,7 @@ type AutomationRunSummary = {
 
 type AutomationEditorProps = {
   automationId: string;
+  timezone?: string;
 };
 
 const triggerOptions: { value: TriggerType; label: string; description: string; icon: typeof Clock }[] = [
@@ -231,11 +232,11 @@ const describeCron = (cron: string): string => {
   return cron;
 };
 
-const formatDateTime = (value?: string) => {
+const formatDateTime = (value: string | undefined, timezone: string) => {
   if (!value) return 'Not scheduled';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 };
 
 const buildAction = (type: ActionType, base?: Partial<BaseAction>): AutomationAction => {
@@ -424,7 +425,10 @@ const buildPayload = (draft: AutomationDraft) => ({
   errorHandling: draft.errorHandling
 });
 
-export default function AutomationEditor({ automationId }: AutomationEditorProps) {
+export default function AutomationEditor({
+  automationId,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+}: AutomationEditorProps) {
   const [automation, setAutomation] = useState<AutomationDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -628,7 +632,7 @@ export default function AutomationEditor({ automationId }: AutomationEditorProps
     if (!automation.enabled) return 'Automation disabled';
     if (automation.trigger.type === 'schedule') {
       return automation.nextRunAt
-        ? `Next run at ${formatDateTime(automation.nextRunAt)}`
+        ? `Next run at ${formatDateTime(automation.nextRunAt, timezone)}`
         : `Next run based on ${automation.trigger.cron}`;
     }
     if (automation.trigger.type === 'event') return 'Runs when the selected event occurs';
@@ -1996,7 +2000,7 @@ export default function AutomationEditor({ automationId }: AutomationEditorProps
                   <div key={run.id} className="rounded-md border bg-background p-3">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm font-medium">{formatDateTime(run.startedAt)}</p>
+                        <p className="text-sm font-medium">{formatDateTime(run.startedAt, timezone)}</p>
                         <p className="text-xs text-muted-foreground">
                           {run.triggeredBy ?? 'manual'} {run.devicesTotal ? `• ${run.devicesTotal} devices` : ''}
                         </p>

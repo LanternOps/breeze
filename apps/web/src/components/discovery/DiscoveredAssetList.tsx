@@ -75,11 +75,11 @@ const assetTypeMap: Record<string, DiscoveredAssetType> = {
   unknown: 'unknown'
 };
 
-function formatLastSeen(value?: string) {
+function formatLastSeen(value?: string, timezone?: string) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 }
 
 function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
@@ -109,7 +109,11 @@ function toDetail(asset: DiscoveredAsset): AssetDetail {
   };
 }
 
-export default function DiscoveredAssetList() {
+interface DiscoveredAssetListProps {
+  timezone?: string;
+}
+
+export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListProps) {
   const [assets, setAssets] = useState<DiscoveredAsset[]>([]);
   const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -249,7 +253,7 @@ export default function DiscoveredAssetList() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">{asset.manufacturer}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{formatLastSeen(asset.lastSeen)}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">{formatLastSeen(asset.lastSeen, timezone)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       <button

@@ -14,6 +14,7 @@ type PolicyVersionHistoryProps = {
   versions?: PolicyVersion[];
   onCompare?: (version: PolicyVersion) => void;
   onRollback?: (version: PolicyVersion) => void;
+  timezone?: string;
 };
 
 const mockVersions: PolicyVersion[] = [
@@ -47,16 +48,17 @@ const mockVersions: PolicyVersion[] = [
   }
 ];
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleString([], { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 export default function PolicyVersionHistory({
   versions = mockVersions,
   onCompare,
-  onRollback
+  onRollback,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: PolicyVersionHistoryProps) {
   const [compareId, setCompareId] = useState<string | null>(null);
   const [pendingRollbackId, setPendingRollbackId] = useState<string | null>(null);
@@ -94,7 +96,7 @@ export default function PolicyVersionHistory({
                   <div className="text-sm font-semibold">Version {version.version}</div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Clock className="h-3.5 w-3.5" />
-                    {formatDate(version.createdAt)} by {version.author}
+                    {formatDate(version.createdAt, timezone)} by {version.author}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

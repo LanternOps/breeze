@@ -59,9 +59,10 @@ const samplePayloads: Record<string, Record<string, unknown>> = {
 
 type WebhookTestPanelProps = {
   webhookId: string;
+  timezone?: string;
 };
 
-export default function WebhookTestPanel({ webhookId }: WebhookTestPanelProps) {
+export default function WebhookTestPanel({ webhookId, timezone }: WebhookTestPanelProps) {
   const [eventType, setEventType] = useState(eventTypes[0]);
   const [history, setHistory] = useState<TestHistoryItem[]>([]);
   const [response, setResponse] = useState<WebhookResponse | null>(null);
@@ -89,7 +90,7 @@ export default function WebhookTestPanel({ webhookId }: WebhookTestPanelProps) {
           id: delivery.id,
           event: delivery.event || 'unknown',
           status: delivery.statusCode || 0,
-          timestamp: delivery.createdAt ? new Date(delivery.createdAt).toLocaleString() : 'Unknown'
+          timestamp: delivery.createdAt ? new Date(delivery.createdAt).toLocaleString([], { timeZone: timezone }) : 'Unknown'
         }))
       );
     } catch (err) {

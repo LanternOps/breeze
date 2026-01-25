@@ -28,6 +28,7 @@ type PatchPayload = {
 
 type DevicePatchStatusTabProps = {
   deviceId: string;
+  timezone?: string;
 };
 
 const severityStyles: Record<string, string> = {
@@ -37,20 +38,24 @@ const severityStyles: Record<string, string> = {
   low: 'text-blue-600'
 };
 
-function formatDate(value?: string) {
+function formatDate(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
 function normalizePatchName(patch: PatchItem) {
   return patch.title || patch.name || patch.kb || 'Unnamed patch';
 }
 
-export default function DevicePatchStatusTab({ deviceId }: DevicePatchStatusTabProps) {
+export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatchStatusTabProps) {
   const [payload, setPayload] = useState<PatchPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [siteTimezone, setSiteTimezone] = useState<string | undefined>(timezone);
+
+  // Use provided timezone, fetched siteTimezone, or browser default
+  const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const fetchPatchStatus = useCallback(async () => {
     setLoading(true);
@@ -61,6 +66,9 @@ export default function DevicePatchStatusTab({ deviceId }: DevicePatchStatusTabP
       const json = await response.json();
       const data = json?.data ?? json;
       setPayload(data);
+      if (json?.timezone || json?.siteTimezone) {
+        setSiteTimezone(json.timezone ?? json.siteTimezone);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch patch status');
     } finally {
@@ -177,7 +185,7 @@ export default function DevicePatchStatusTab({ deviceId }: DevicePatchStatusTabP
                           {patch.severity || 'Not reported'}
                         </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">
-                          {formatDate(patch.releaseDate ?? patch.releasedAt)}
+                          {formatDate(patch.releaseDate ?? patch.releasedAt, effectiveTimezone)}
                         </td>
                       </tr>
                     );
@@ -218,7 +226,7 @@ export default function DevicePatchStatusTab({ deviceId }: DevicePatchStatusTabP
                         <td className={`px-4 py-3 text-xs font-medium ${severityStyles[severityKey] || 'text-muted-foreground'}`}>
                           {patch.severity || 'Not reported'}
                         </td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt)}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone)}</td>
                       </tr>
                     );
                   })

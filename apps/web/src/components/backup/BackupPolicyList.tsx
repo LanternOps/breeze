@@ -52,7 +52,11 @@ const defaultFormState: PolicyFormState = {
   status: 'draft'
 };
 
-export default function BackupPolicyList() {
+interface BackupPolicyListProps {
+  timezone?: string;
+}
+
+export default function BackupPolicyList({ timezone }: BackupPolicyListProps) {
   const [policies, setPolicies] = useState<BackupPolicy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -144,7 +148,7 @@ export default function BackupPolicyList() {
     }
   };
 
-  const formatDate = (value?: string) => {
+  const formatDate = (value?: string, timezone?: string) => {
     if (!value) {
       return '--';
     }
@@ -152,7 +156,7 @@ export default function BackupPolicyList() {
     if (Number.isNaN(date.getTime())) {
       return value;
     }
-    return date.toLocaleString();
+    return date.toLocaleString([], { timeZone: timezone });
   };
 
   if (loading) {
@@ -326,7 +330,7 @@ export default function BackupPolicyList() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {formatDate(policy.updatedAt)}
+                      {formatDate(policy.updatedAt, timezone)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">

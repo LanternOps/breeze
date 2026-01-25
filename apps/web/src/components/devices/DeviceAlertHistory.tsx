@@ -15,6 +15,7 @@ type AlertItem = {
 
 type DeviceAlertHistoryProps = {
   deviceId: string;
+  timezone?: string;
   showFilters?: boolean;
   limit?: number;
 };
@@ -26,23 +27,28 @@ const severityStyles: Record<string, string> = {
   info: 'bg-blue-500/20 text-blue-700 border-blue-500/40'
 };
 
-function formatDateTime(value?: string) {
+function formatDateTime(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
 }
 
 export default function DeviceAlertHistory({
   deviceId,
+  timezone,
   showFilters = true,
   limit
 }: DeviceAlertHistoryProps) {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [siteTimezone, setSiteTimezone] = useState<string | undefined>(timezone);
   const [startDateInput, setStartDateInput] = useState('');
   const [endDateInput, setEndDateInput] = useState('');
   const [appliedRange, setAppliedRange] = useState({ startDate: '', endDate: '' });
+
+  // Use provided timezone, fetched siteTimezone, or browser default
+  const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const fetchAlerts = useCallback(async (range?: { startDate: string; endDate: string }) => {
     setLoading(true);
@@ -58,6 +64,9 @@ export default function DeviceAlertHistory({
       const json = await response.json();
       const payload = json?.data ?? json;
       setAlerts(Array.isArray(payload) ? payload : []);
+      if (json?.timezone || json?.siteTimezone) {
+        setSiteTimezone(json.timezone ?? json.siteTimezone);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch alert history');
     } finally {
@@ -171,7 +180,7 @@ export default function DeviceAlertHistory({
                   <div>
                     <p className="text-sm font-medium">{alert.message || alert.summary || 'Alert reported'}</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {formatDateTime(alert.createdAt || alert.timestamp)}
+                      {formatDateTime(alert.createdAt || alert.timestamp, effectiveTimezone)}
                     </p>
                   </div>
                   <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badgeStyle}`}>

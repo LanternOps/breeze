@@ -43,6 +43,7 @@ type WebhookListProps = {
   onToggle?: (webhook: Webhook, enabled: boolean) => void | Promise<void>;
   onSelect?: (webhook: Webhook) => void;
   selectedWebhookId?: string | null;
+  timezone?: string;
 };
 
 const statusStyles: Record<WebhookStatus, string> = {
@@ -60,11 +61,11 @@ const getStatus = (webhook: Webhook): WebhookStatus => {
   return webhook.enabled === false ? 'disabled' : 'active';
 };
 
-const formatTimestamp = (value?: string | null) => {
+const formatTimestamp = (value?: string | null, timezone?: string) => {
   if (!value) return 'N/A';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 };
 
 export default function WebhookList({
@@ -74,7 +75,8 @@ export default function WebhookList({
   onTest,
   onToggle,
   onSelect,
-  selectedWebhookId
+  selectedWebhookId,
+  timezone
 }: WebhookListProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<WebhookStatus | 'all'>('all');
@@ -230,7 +232,7 @@ export default function WebhookList({
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <div className="space-y-2">
-                        <p className="text-sm text-muted-foreground">{formatTimestamp(lastTriggered)}</p>
+                        <p className="text-sm text-muted-foreground">{formatTimestamp(lastTriggered, timezone)}</p>
                         {(webhook.successCount != null || webhook.failureCount != null) && (
                           <div className="flex items-center gap-2">
                             <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700">

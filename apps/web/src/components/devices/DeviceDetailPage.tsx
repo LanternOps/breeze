@@ -45,6 +45,9 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
       const data = await response.json();
 
+      // Get latest metrics from recentMetrics array
+      const latestMetrics = data.recentMetrics?.[0];
+
       // Transform API response to match Device type
       const transformedDevice: Device = {
         id: data.id,
@@ -52,8 +55,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         os: (data.osType ?? data.os ?? 'windows') as OSType,
         osVersion: data.osVersion ?? '',
         status: (data.status ?? 'offline') as DeviceStatus,
-        cpuPercent: data.hardware?.cpuPercent ?? 0,
-        ramPercent: data.hardware?.ramPercent ?? 0,
+        cpuPercent: latestMetrics?.cpuPercent ?? 0,
+        ramPercent: latestMetrics?.ramPercent ?? 0,
         lastSeen: data.lastSeenAt ?? data.lastSeen ?? '',
         siteId: data.siteId ?? '',
         siteName: data.siteName ?? 'Unknown Site',

@@ -59,6 +59,7 @@ type AutomationListProps = {
   onToggle?: (automation: Automation, enabled: boolean) => void;
   onViewHistory?: (automation: Automation) => void;
   pageSize?: number;
+  timezone?: string;
 };
 
 const triggerConfig: Record<TriggerType, { label: string; icon: typeof Clock; color: string }> = {
@@ -93,7 +94,7 @@ const statusConfig: Record<StatusKey, { label: string; color: string; icon: type
   partial: { label: 'Partial', color: 'text-yellow-500', icon: AlertTriangle }
 };
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -107,7 +108,7 @@ function formatDate(dateString: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
 export default function AutomationList({
@@ -117,7 +118,8 @@ export default function AutomationList({
   onRun,
   onToggle,
   onViewHistory,
-  pageSize = 10
+  pageSize = 10,
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: AutomationListProps) {
   const [query, setQuery] = useState('');
   const [triggerFilter, setTriggerFilter] = useState<string>('all');
@@ -254,7 +256,7 @@ export default function AutomationList({
                       {automation.lastRunAt ? (
                         <div className="flex items-center gap-1">
                           <Calendar className="h-3 w-3" />
-                          {formatDate(automation.lastRunAt)}
+                          {formatDate(automation.lastRunAt, timezone)}
                         </div>
                       ) : (
                         <span className="text-muted-foreground/60">Never</span>

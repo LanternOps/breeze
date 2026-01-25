@@ -55,6 +55,10 @@ type MetricKey = 'cpu' | 'ram' | 'disk';
 
 type TimeRange = '1h' | '6h' | '24h';
 
+type DeviceCompareProps = {
+  timezone?: string;
+};
+
 const statusColors: Record<DeviceStatus, string> = {
   online: 'bg-green-500/20 text-green-700 border-green-500/40',
   offline: 'bg-red-500/20 text-red-700 border-red-500/40',
@@ -239,19 +243,26 @@ function formatCapacity(value: unknown, fallback = 'Unknown'): string {
   return `${value} B`;
 }
 
-function formatTimestamp(timestamp: string, range: TimeRange): string {
+function formatTimestamp(timestamp: string, range: TimeRange, timezone?: string): string {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return timestamp;
+  const tzOptions = timezone ? { timeZone: timezone } : undefined;
   switch (range) {
     case '1h':
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...tzOptions });
     case '6h':
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...tzOptions });
     case '24h':
-      return date.toLocaleDateString([], { weekday: 'short', hour: '2-digit' });
+      return date.toLocaleDateString([], { weekday: 'short', hour: '2-digit', ...tzOptions });
     default:
-      return date.toLocaleTimeString();
+      return date.toLocaleTimeString([], tzOptions);
   }
+}
+
+function formatDateTime(value: string, timezone?: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
 }
 
 function createSeededRandom(seed: number) {
@@ -570,7 +581,84 @@ function escapeCsv(value: string): string {
   return value;
 }
 
-export default function DeviceCompare() {
+function buildPdfHtml(selectedDevices: DeviceComparisonData[], osLabels: Record<OSType, string>, generatedDate: string): string {
+  const specsRows = [
+    { label: 'OS', getValue: (device: DeviceComparisonData) => `${osLabels[device.os]} ${device.osVersion}` },
+    { label: 'CPU', getValue: (device: DeviceComparisonData) => device.cpuModel || 'Unknown' },
+    { label: 'RAM', getValue: (device: DeviceComparisonData) => device.totalRam || 'Unknown' },
+    { label: 'Disk', getValue: (device: DeviceComparisonData) => device.diskTotal || 'Unknown' },
+    { label: 'Agent Version', getValue: (device: DeviceComparisonData) => device.agentVersion || 'Unknown' }
+  ];
+
+  const specsTableRows = specsRows.map(row =>
+    `<tr><td>${row.label}</td>${selectedDevices.map(device => `<td>${row.getValue(device)}</td>`).join('')}</tr>`
+  ).join('');
+
+  const softwareSection = selectedDevices.map(device => {
+    const list = device.software.map(item => item.name).join(', ');
+    return `<div><strong>${device.hostname}:</strong> ${list || 'No software data'}</div>`;
+  }).join('');
+
+  const patchesSection = selectedDevices.map(device => {
+    const missing = device.patches.filter(patch => patch.status === 'missing').map(patch => patch.name);
+    return `<div><strong>${device.hostname} missing:</strong> ${missing.join(', ') || 'None'}</div>`;
+  }).join('');
+
+  const configKeys = Array.from(new Set(selectedDevices.flatMap(device => Object.keys(device.config))));
+  const configRows = configKeys.map(key =>
+    `<tr><td>${key}</td>${selectedDevices.map(device => `<td>${device.config[key] ?? '-'}</td>`).join('')}</tr>`
+  ).join('');
+
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <title>Device Comparison</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+      h1 { font-size: 20px; margin-bottom: 4px; }
+      h2 { font-size: 16px; margin-top: 20px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+      th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 12px; }
+      th { background: #f9fafb; }
+      ul { margin: 6px 0 0 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Device Comparison Report</h1>
+    <div>Generated ${generatedDate}</div>
+    <h2>Specs</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Spec</th>
+          ${selectedDevices.map(device => `<th>${device.hostname}</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${specsTableRows}
+      </tbody>
+    </table>
+    <h2>Software</h2>
+    ${softwareSection}
+    <h2>Patches</h2>
+    ${patchesSection}
+    <h2>Configuration</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Key</th>
+          ${selectedDevices.map(device => `<th>${device.hostname}</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${configRows}
+      </tbody>
+    </table>
+  </body>
+</html>`;
+}
+
+export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
   const [availableDevices, setAvailableDevices] = useState<Device[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [deviceDetails, setDeviceDetails] = useState<Record<string, DeviceComparisonData>>({});
@@ -583,6 +671,9 @@ export default function DeviceCompare() {
   const [timeRange, setTimeRange] = useState<TimeRange>('6h');
   const [showAllConfig, setShowAllConfig] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Use provided timezone or browser default
+  const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const deviceMap = useMemo(() => {
     const map = new Map<string, Device>();
@@ -777,81 +868,8 @@ export default function DeviceCompare() {
 
   const handleExportPdf = () => {
     if (selectedDevices.length === 0) return;
-    const html = `
-      <html>
-        <head>
-          <title>Device Comparison</title>
-          <style>
-            body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
-            h1 { font-size: 20px; margin-bottom: 4px; }
-            h2 { font-size: 16px; margin-top: 20px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-            th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 12px; }
-            th { background: #f9fafb; }
-            ul { margin: 6px 0 0 16px; }
-          </style>
-        </head>
-        <body>
-          <h1>Device Comparison Report</h1>
-          <div>Generated ${new Date().toLocaleString()}</div>
-          <h2>Specs</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Spec</th>
-                ${selectedDevices.map(device => `<th>${device.hostname}</th>`).join('')}
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>OS</td>
-                ${selectedDevices.map(device => `<td>${osLabels[device.os]} ${device.osVersion}</td>`).join('')}
-              </tr>
-              <tr>
-                <td>CPU</td>
-                ${selectedDevices.map(device => `<td>${device.cpuModel || 'Unknown'}</td>`).join('')}
-              </tr>
-              <tr>
-                <td>RAM</td>
-                ${selectedDevices.map(device => `<td>${device.totalRam || 'Unknown'}</td>`).join('')}
-              </tr>
-              <tr>
-                <td>Disk</td>
-                ${selectedDevices.map(device => `<td>${device.diskTotal || 'Unknown'}</td>`).join('')}
-              </tr>
-              <tr>
-                <td>Agent Version</td>
-                ${selectedDevices.map(device => `<td>${device.agentVersion || 'Unknown'}</td>`).join('')}
-              </tr>
-            </tbody>
-          </table>
-          <h2>Software</h2>
-          ${selectedDevices.map(device => {
-            const list = device.software.map(item => item.name).join(', ');
-            return `<div><strong>${device.hostname}:</strong> ${list || 'No software data'}</div>`;
-          }).join('')}
-          <h2>Patches</h2>
-          ${selectedDevices.map(device => {
-            const missing = device.patches.filter(patch => patch.status === 'missing').map(patch => patch.name);
-            return `<div><strong>${device.hostname} missing:</strong> ${missing.join(', ') || 'None'}</div>`;
-          }).join('')}
-          <h2>Configuration</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                ${selectedDevices.map(device => `<th>${device.hostname}</th>`).join('')}
-              </tr>
-            </thead>
-            <tbody>
-              ${Array.from(new Set(selectedDevices.flatMap(device => Object.keys(device.config)))).map(key => {
-                return `<tr><td>${key}</td>${selectedDevices.map(device => `<td>${device.config[key] ?? '-'}</td>`).join('')}</tr>`;
-              }).join('')}
-            </tbody>
-          </table>
-        </body>
-      </html>
-    `;
+    const generatedDate = formatDateTime(new Date().toISOString(), effectiveTimezone);
+    const html = buildPdfHtml(selectedDevices, osLabels, generatedDate);
     const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=900,height=700');
     if (!printWindow) return;
     printWindow.document.open();
@@ -1368,7 +1386,7 @@ export default function DeviceCompare() {
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                     <XAxis
                       dataKey="timestamp"
-                      tickFormatter={(value) => formatTimestamp(value as string, timeRange)}
+                      tickFormatter={(value) => formatTimestamp(value as string, timeRange, effectiveTimezone)}
                       tick={{ fontSize: 12 }}
                       className="text-muted-foreground"
                     />
@@ -1386,7 +1404,7 @@ export default function DeviceCompare() {
                         borderRadius: '0.5rem',
                         fontSize: '12px'
                       }}
-                      labelFormatter={(value) => new Date(String(value)).toLocaleString()}
+                      labelFormatter={(value) => formatDateTime(String(value), effectiveTimezone)}
                       formatter={(value: number, name: string) => [`${value}%`, name]}
                     />
                     <Legend

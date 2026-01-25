@@ -197,6 +197,93 @@ orgRoutes.delete('/partners/:id', requireScope('system'), async (c) => {
   return c.json({ success: true });
 });
 
+// --- Partner Self-Service (partner-scoped users) ---
+
+const dayScheduleSchema = z.object({
+  start: z.string(),
+  end: z.string(),
+  closed: z.boolean().optional()
+});
+
+const partnerSettingsSchema = z.object({
+  timezone: z.string().optional(),
+  dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
+  timeFormat: z.enum(['12h', '24h']).optional(),
+  language: z.literal('en').optional(),
+  businessHours: z.object({
+    preset: z.enum(['24/7', 'business', 'extended', 'custom']),
+    custom: z.record(z.string(), dayScheduleSchema).optional()
+  }).optional(),
+  contact: z.object({
+    name: z.string().optional(),
+    email: z.string().email().optional().or(z.literal('')),
+    phone: z.string().optional(),
+    website: z.string().optional()
+  }).optional()
+});
+
+const updatePartnerSettingsSchema = z.object({
+  settings: partnerSettingsSchema.optional(),
+  name: z.string().min(1).optional(),
+  billingEmail: z.string().email().optional()
+});
+
+// Get own partner details (for partner-scoped users)
+orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, async (c) => {
+  const auth = c.get('auth');
+
+  const [partner] = await db
+    .select()
+    .from(partners)
+    .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
+    .limit(1);
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  return c.json(partner);
+});
+
+// Update own partner settings (for partner-scoped users)
+orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, zValidator('json', updatePartnerSettingsSchema), async (c) => {
+  const auth = c.get('auth');
+  const body = c.req.valid('json');
+
+  // Get current partner to merge settings
+  const [current] = await db
+    .select()
+    .from(partners)
+    .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
+    .limit(1);
+
+  if (!current) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  // Merge settings
+  const currentSettings = (current.settings as Record<string, unknown>) || {};
+  const newSettings = body.settings
+    ? { ...currentSettings, ...body.settings }
+    : currentSettings;
+
+  const updateData: Record<string, unknown> = {
+    settings: newSettings,
+    updatedAt: new Date()
+  };
+
+  if (body.name) updateData.name = body.name;
+  if (body.billingEmail) updateData.billingEmail = body.billingEmail;
+
+  const [partner] = await db
+    .update(partners)
+    .set(updateData)
+    .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
+    .returning();
+
+  return c.json(partner);
+});
+
 // --- Organizations (partner-scoped) ---
 
 orgRoutes.get('/organizations', requireScope('partner'), requirePartner, zValidator('query', paginationSchema), async (c) => {

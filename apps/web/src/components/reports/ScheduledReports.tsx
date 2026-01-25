@@ -20,6 +20,8 @@ import type { Report } from './ReportsList';
 
 const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
 
+const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
 
 type ReportSchedule = {
@@ -71,7 +73,7 @@ const runStatusConfig: Record<
   failed: { label: 'Failed', color: 'text-destructive', icon: XCircle }
 };
 
-function formatRelative(dateString?: string | null): string {
+function formatRelative(dateString?: string | null, timezone?: string): string {
   if (!dateString) return 'Never';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
@@ -86,17 +88,17 @@ function formatRelative(dateString?: string | null): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
-function formatDateTime(dateString?: string | null): string {
+function formatDateTime(dateString?: string | null, timezone?: string): string {
   if (!dateString) return '-';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleString();
+  return date.toLocaleString([], { timeZone: timezone });
 }
 
-function formatTime(time: string): string {
+function formatTime(time: string, timezone?: string): string {
   if (!time) return '';
   const [rawHour, rawMinute] = time.split(':');
   const hour = Number.parseInt(rawHour ?? '0', 10);
@@ -104,7 +106,7 @@ function formatTime(time: string): string {
   if (Number.isNaN(hour) || Number.isNaN(minute)) return time;
   const date = new Date();
   date.setHours(hour, minute, 0, 0);
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: timezone });
 }
 
 function isValidEmail(email: string): boolean {
@@ -198,9 +200,10 @@ type RunHistoryModalProps = {
   loading: boolean;
   onClose: () => void;
   reportName?: string;
+  timezone?: string;
 };
 
-function RunHistoryModal({ schedule, runs, loading, onClose, reportName }: RunHistoryModalProps) {
+function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezone }: RunHistoryModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
       <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
@@ -250,7 +253,7 @@ function RunHistoryModal({ schedule, runs, loading, onClose, reportName }: RunHi
                   return (
                     <tr key={run.id} className="hover:bg-muted/40">
                       <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatDateTime(run.startedAt)}
+                        {formatDateTime(run.startedAt, timezone)}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -270,7 +273,7 @@ function RunHistoryModal({ schedule, runs, loading, onClose, reportName }: RunHi
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatDateTime(run.completedAt)}
+                        {formatDateTime(run.completedAt, timezone)}
                       </td>
                       <td className="px-4 py-3 text-right">
                         {run.status === 'completed' && run.outputUrl ? (
@@ -296,7 +299,12 @@ function RunHistoryModal({ schedule, runs, loading, onClose, reportName }: RunHi
   );
 }
 
-export default function ScheduledReports() {
+type ScheduledReportsProps = {
+  timezone?: string;
+};
+
+export default function ScheduledReports({ timezone }: ScheduledReportsProps = {}) {
+  const effectiveTimezone = timezone || getBrowserTimezone();
   const [schedules, setSchedules] = useState<ReportSchedule[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
@@ -790,13 +798,13 @@ export default function ScheduledReports() {
                           <Clock className="h-3 w-3" />
                           {frequencyOptions.find(option => option.value === schedule.frequency)?.label ?? schedule.frequency}
                         </span>
-                        <p className="mt-1 text-xs text-muted-foreground">at {formatTime(schedule.time)}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">at {formatTime(schedule.time, effectiveTimezone)}</p>
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {schedule.nextRunAt ? (
                           <div className="flex items-center gap-1">
                             <Calendar className="h-3 w-3" />
-                            {formatDateTime(schedule.nextRunAt)}
+                            {formatDateTime(schedule.nextRunAt, effectiveTimezone)}
                           </div>
                         ) : (
                           <span className="text-muted-foreground/60">Not scheduled</span>
@@ -809,7 +817,7 @@ export default function ScheduledReports() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatRelative(schedule.lastRunAt)}
+                        {formatRelative(schedule.lastRunAt, effectiveTimezone)}
                         <button
                           type="button"
                           onClick={() => handleViewHistory(schedule)}
@@ -1080,6 +1088,7 @@ export default function ScheduledReports() {
           loading={historyLoading}
           onClose={() => setHistoryTarget(null)}
           reportName={reportLookup.get(historyTarget.reportId)?.name}
+          timezone={effectiveTimezone}
         />
       )}
     </div>

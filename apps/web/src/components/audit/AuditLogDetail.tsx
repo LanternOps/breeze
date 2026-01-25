@@ -27,11 +27,12 @@ type AuditLogDetailProps = {
   entry: AuditLogEntry;
   isOpen: boolean;
   onClose: () => void;
+  timezone?: string;
 };
 
 const formatJson = (value: Record<string, unknown>) => JSON.stringify(value, null, 2);
 
-export default function AuditLogDetail({ entry, isOpen, onClose }: AuditLogDetailProps) {
+export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: AuditLogDetailProps) {
   if (!isOpen) return null;
 
   return (
@@ -62,7 +63,7 @@ export default function AuditLogDetail({ entry, isOpen, onClose }: AuditLogDetai
               <div className="mt-3 space-y-2 text-sm text-muted-foreground">
                 <p>
                   <span className="font-medium text-foreground">Timestamp:</span>{' '}
-                  {new Date(entry.timestamp).toLocaleString()}
+                  {new Date(entry.timestamp).toLocaleString([], { timeZone: timezone })}
                 </p>
                 <p>
                   <span className="font-medium text-foreground">Action:</span> {entry.action}

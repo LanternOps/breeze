@@ -7,6 +7,7 @@ type ExecutionDetailsProps = {
   execution: ScriptExecution;
   isOpen: boolean;
   onClose: () => void;
+  timezone?: string;
 };
 
 const statusConfig: Record<ExecutionStatus, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
@@ -27,16 +28,18 @@ function formatDuration(seconds?: number): string {
   return `${hours}h ${mins}m`;
 }
 
-function formatDateTime(dateString: string): string {
+function formatDateTime(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   return date.toLocaleString([], {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-    second: '2-digit'
+    second: '2-digit',
+    timeZone: tz
   });
 }
 
@@ -144,7 +147,8 @@ function OutputSection({
 export default function ExecutionDetails({
   execution,
   isOpen,
-  onClose
+  onClose,
+  timezone
 }: ExecutionDetailsProps) {
   if (!isOpen) return null;
 
@@ -211,7 +215,7 @@ export default function ExecutionDetails({
             </div>
             <div className="rounded-md border bg-muted/20 p-4">
               <p className="text-xs font-medium text-muted-foreground">Started At</p>
-              <p className="text-sm font-medium mt-1">{formatDateTime(execution.startedAt)}</p>
+              <p className="text-sm font-medium mt-1">{formatDateTime(execution.startedAt, timezone)}</p>
             </div>
             <div className="rounded-md border bg-muted/20 p-4">
               <p className="text-xs font-medium text-muted-foreground">Duration</p>
@@ -248,7 +252,7 @@ export default function ExecutionDetails({
           {execution.completedAt && (
             <div className="rounded-md border bg-muted/20 p-4">
               <p className="text-xs font-medium text-muted-foreground">Completed At</p>
-              <p className="text-sm font-medium mt-1">{formatDateTime(execution.completedAt)}</p>
+              <p className="text-sm font-medium mt-1">{formatDateTime(execution.completedAt, timezone)}</p>
             </div>
           )}
 

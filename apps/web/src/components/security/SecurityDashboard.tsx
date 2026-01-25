@@ -474,7 +474,11 @@ const fetchJson = async (url: string) => {
   }
 };
 
-export default function SecurityDashboard() {
+interface SecurityDashboardProps {
+  timezone?: string;
+}
+
+export default function SecurityDashboard({ timezone }: SecurityDashboardProps) {
   const [overview, setOverview] = useState<SecurityOverview>(defaultOverview);
   const [vulnerabilities, setVulnerabilities] = useState<VulnerabilitySummary>(defaultVulnerabilities);
   const [loading, setLoading] = useState(true);
@@ -583,7 +587,7 @@ export default function SecurityDashboard() {
           </button>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              Updated {lastUpdated.toLocaleTimeString()}
+              Updated {lastUpdated.toLocaleTimeString([], { timeZone: timezone })}
             </span>
           )}
         </div>

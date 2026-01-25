@@ -13,10 +13,10 @@ type InventoryItem = {
   managed: boolean;
 };
 
-function formatDate(dateString: string): string {
+function formatDate(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString([], { timeZone: timezone });
 }
 
 function normalizeInventoryItem(raw: Record<string, unknown>, index: number): InventoryItem {
@@ -31,7 +31,11 @@ function normalizeInventoryItem(raw: Record<string, unknown>, index: number): In
   };
 }
 
-export default function SoftwareInventoryView() {
+interface SoftwareInventoryViewProps {
+  timezone?: string;
+}
+
+export default function SoftwareInventoryView({ timezone }: SoftwareInventoryViewProps) {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -273,7 +277,7 @@ export default function SoftwareInventoryView() {
                     <td className="px-4 py-3 font-medium text-foreground">{item.software}</td>
                     <td className="px-4 py-3 text-muted-foreground">{item.version}</td>
                     <td className="px-4 py-3 text-muted-foreground">{item.vendor}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatDate(item.installDate)}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{formatDate(item.installDate, timezone)}</td>
                     <td className="px-4 py-3">
                       <span
                         className={cn(
