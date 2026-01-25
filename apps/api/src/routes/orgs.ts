@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { partners, organizations, sites } from '../db/schema';
 import { authMiddleware, requireScope, requirePartner } from '../middleware/auth';
@@ -43,7 +43,8 @@ const createOrganizationSchema = z.object({
 const updateOrganizationSchema = createOrganizationSchema.partial();
 
 const listSitesSchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().uuid().optional(),
+  organizationId: z.string().uuid().optional(), // Alias for orgId (frontend compatibility)
   page: z.string().optional(),
   limit: z.string().optional()
 });
@@ -342,29 +343,61 @@ orgRoutes.delete('/organizations/:id', requireScope('partner'), requirePartner, 
 
 orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth');
-  const { orgId, ...pagination } = c.req.valid('query');
+  const { orgId, organizationId, ...pagination } = c.req.valid('query');
 
-  const allowed = await ensureOrgAccess(orgId, auth);
-  if (!allowed) {
-    return c.json({ error: 'Access to this organization denied' }, 403);
-  }
+  // Support both orgId and organizationId parameter names
+  const effectiveOrgId = orgId || organizationId;
 
   const { page, limit, offset } = getPagination(pagination);
-  const conditions = eq(sites.orgId, orgId);
+  let conditions;
 
-  const countResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(sites)
-    .where(conditions);
+  if (effectiveOrgId) {
+    // Specific org requested - check access
+    const allowed = await ensureOrgAccess(effectiveOrgId, auth);
+    if (!allowed) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+    conditions = eq(sites.orgId, effectiveOrgId);
+  } else {
+    // No org specified - return sites from all accessible orgs
+    if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ data: [], pagination: { page, limit, total: 0 } });
+      }
+      conditions = eq(sites.orgId, auth.orgId);
+    } else if (auth.scope === 'partner') {
+      if (!auth.partnerId) {
+        return c.json({ data: [], pagination: { page, limit, total: 0 } });
+      }
+      // Get all orgs under this partner
+      const partnerOrgs = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.partnerId, auth.partnerId));
+
+      const orgIds = partnerOrgs.map(o => o.id);
+      if (orgIds.length === 0) {
+        return c.json({ data: [], pagination: { page, limit, total: 0 } });
+      }
+      conditions = inArray(sites.orgId, orgIds);
+    } else {
+      // System scope - no filter (dangerous but allowed for admins)
+      conditions = undefined;
+    }
+  }
+
+  const countQuery = db.select({ count: sql<number>`count(*)` }).from(sites);
+  if (conditions) {
+    countQuery.where(conditions);
+  }
+  const countResult = await countQuery;
   const count = countResult[0]?.count ?? 0;
 
-  const data = await db
-    .select()
-    .from(sites)
-    .where(conditions)
-    .limit(limit)
-    .offset(offset)
-    .orderBy(sites.createdAt);
+  const dataQuery = db.select().from(sites);
+  if (conditions) {
+    dataQuery.where(conditions);
+  }
+  const data = await dataQuery.limit(limit).offset(offset).orderBy(sites.createdAt);
 
   return c.json({
     data,
