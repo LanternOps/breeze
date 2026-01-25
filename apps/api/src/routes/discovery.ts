@@ -207,12 +207,23 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId, true);
+    const orgResult = resolveOrgId(auth, query.orgId, false);
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
 
-    const data = discoveryProfiles.filter(profile => profile.orgId === orgResult.orgId);
+    // Filter profiles based on org access
+    let data;
+    if (orgResult.orgId) {
+      // Specific org requested
+      data = discoveryProfiles.filter(profile => profile.orgId === orgResult.orgId);
+    } else if (auth.scope === 'organization' && auth.orgId) {
+      // Org-scoped user - show their org's profiles
+      data = discoveryProfiles.filter(profile => profile.orgId === auth.orgId);
+    } else {
+      // Partner/system - show all accessible profiles (for now, all of them)
+      data = discoveryProfiles;
+    }
     return c.json({ data });
   }
 );
