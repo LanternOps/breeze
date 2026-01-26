@@ -11,6 +11,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 export type SeverityLevel = 'low' | 'medium' | 'high' | 'critical';
 export type PolicyStatus = 'draft' | 'active' | 'inactive' | 'archived';
@@ -590,7 +591,7 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/policies/${policyId}`);
+      const response = await fetchWithAuth(`/policies/${policyId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch policy');
       }
@@ -632,22 +633,22 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
       setTargetsLoading(true);
       setTargetsError(undefined);
       const [orgRes, siteRes, groupRes] = await Promise.all([
-        fetch('/api/organizations'),
-        fetch('/api/sites'),
-        fetch('/api/groups')
+        fetchWithAuth('/orgs/organizations'),
+        fetchWithAuth('/orgs/sites'),
+        fetchWithAuth('/groups')
       ]);
 
       if (orgRes.ok) {
         const data = await orgRes.json();
-        setOrganizations(data.organizations ?? data ?? []);
+        setOrganizations(data.data ?? data.organizations ?? data ?? []);
       }
       if (siteRes.ok) {
         const data = await siteRes.json();
-        setSites(data.sites ?? data ?? []);
+        setSites(data.data ?? data.sites ?? data ?? []);
       }
       if (groupRes.ok) {
         const data = await groupRes.json();
-        setGroups(data.groups ?? data ?? []);
+        setGroups(data.data ?? data.groups ?? data ?? []);
       }
     } catch (err) {
       setTargetsError(err instanceof Error ? err.message : 'Failed to load targets');
@@ -658,10 +659,10 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
 
   const fetchScripts = useCallback(async () => {
     try {
-      const response = await fetch('/api/scripts');
+      const response = await fetchWithAuth('/scripts');
       if (!response.ok) return;
       const data = await response.json();
-      setScripts(data.scripts ?? data ?? []);
+      setScripts(data.data ?? data.scripts ?? data ?? []);
     } catch {
       // ignore script loading errors
     }
@@ -679,10 +680,9 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
         rules: buildRulePayload(policyState),
         checkIntervalMinutes: resolveFrequencyMinutes
       };
-      const response = await fetch(`/api/policies/${policyId}`,
+      const response = await fetchWithAuth(`/policies/${policyId}`,
         {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         }
       );
@@ -717,7 +717,7 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
     try {
       setDeleting(true);
       setSaveError(undefined);
-      const response = await fetch(`/api/policies/${policyId}`,
+      const response = await fetchWithAuth(`/policies/${policyId}`,
         {
           method: 'DELETE'
         }
@@ -741,7 +741,7 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
       setUpdatingStatus(true);
       setSaveError(undefined);
       const endpoint = enabled ? 'deactivate' : 'activate';
-      const response = await fetch(`/api/policies/${policyId}/${endpoint}`,
+      const response = await fetchWithAuth(`/policies/${policyId}/${endpoint}`,
         {
           method: 'POST'
         }

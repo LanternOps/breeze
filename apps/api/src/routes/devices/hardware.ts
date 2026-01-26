@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceHardware, deviceDisks, deviceNetwork } from '../../db/schema';
+import { deviceHardware, deviceDisks, deviceNetwork, deviceConnections } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck } from './helpers';
 
@@ -89,5 +89,27 @@ hardwareRoutes.get(
       .where(eq(deviceDisks.deviceId, deviceId));
 
     return c.json({ data: diskDrives });
+  }
+);
+
+// GET /devices/:id/connections - Get active network connections
+hardwareRoutes.get(
+  '/:id/connections',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const connections = await db
+      .select()
+      .from(deviceConnections)
+      .where(eq(deviceConnections.deviceId, deviceId));
+
+    return c.json({ data: connections });
   }
 );

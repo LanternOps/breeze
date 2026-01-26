@@ -124,6 +124,180 @@ async function getEscalationPolicyWithOrgCheck(policyId: string, auth: { scope: 
   return policy;
 }
 
+type AlertRuleRow = typeof alertRules.$inferSelect;
+type AlertTemplateRow = typeof alertTemplates.$inferSelect;
+
+type AlertRuleOverrides = {
+  description?: string;
+  severity?: string;
+  conditions?: unknown;
+  cooldownMinutes?: number;
+  cooldown?: number;
+  autoResolve?: boolean;
+  notificationChannelIds?: string[];
+  notificationChannels?: string[];
+  escalationPolicyId?: string;
+  targets?: {
+    type?: string;
+    ids?: string[];
+  };
+  targetIds?: string[];
+  templateOwned?: boolean;
+  updatedAt?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getOverrides(value: unknown): AlertRuleOverrides {
+  return isRecord(value) ? value as AlertRuleOverrides : {};
+}
+
+function normalizeTargetsForRule(
+  data: {
+    targets?: { type?: string; ids?: string[] };
+    targetType?: string;
+    targetId?: string;
+  },
+  orgId: string
+) {
+  const inputTargets = data.targets ?? (data.targetType ? { type: data.targetType, ids: data.targetId ? [data.targetId] : [] } : { type: 'all', ids: [] });
+  const targetType = inputTargets.type ?? 'all';
+  const targetIds = Array.isArray(inputTargets.ids) ? inputTargets.ids.filter(Boolean) : [];
+  let targetId: string | undefined;
+
+  if (targetType === 'all' || targetType === 'org') {
+    targetId = orgId;
+  } else {
+    targetId = targetIds[0] ?? data.targetId;
+  }
+
+  return {
+    targetType,
+    targetId,
+    targetIds,
+    targets: {
+      type: targetType,
+      ids: targetIds.length > 0 ? targetIds : (targetType === 'all' || targetType === 'org') ? [] : targetIds
+    }
+  };
+}
+
+function getNotificationChannelIds(overrides: AlertRuleOverrides) {
+  if (Array.isArray(overrides.notificationChannelIds)) return overrides.notificationChannelIds;
+  if (Array.isArray(overrides.notificationChannels)) return overrides.notificationChannels;
+  return [];
+}
+
+function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemplateRow | null) {
+  const overrides = getOverrides(rule.overrideSettings);
+  const overrideTargets = overrides.targets;
+  const targetType = overrideTargets?.type ?? rule.targetType ?? 'all';
+  const targetIds = Array.isArray(overrideTargets?.ids)
+    ? overrideTargets?.ids
+    : Array.isArray(overrides.targetIds)
+      ? overrides.targetIds
+      : (targetType === 'all' || targetType === 'org') ? [] : [rule.targetId];
+
+  const notificationChannelIds = getNotificationChannelIds(overrides);
+  const severity = overrides.severity ?? template?.severity ?? 'medium';
+  const cooldownMinutes = overrides.cooldownMinutes ?? overrides.cooldown ?? template?.cooldownMinutes ?? 15;
+  const autoResolve = overrides.autoResolve ?? template?.autoResolve ?? false;
+
+  return {
+    id: rule.id,
+    orgId: rule.orgId,
+    name: rule.name,
+    description: overrides.description ?? template?.description ?? null,
+    enabled: rule.isActive,
+    isActive: rule.isActive,
+    severity,
+    targets: {
+      type: targetType,
+      ids: targetIds
+    },
+    targetType: rule.targetType,
+    targetId: rule.targetId,
+    conditions: overrides.conditions ?? template?.conditions ?? [],
+    cooldownMinutes,
+    autoResolve,
+    escalationPolicyId: overrides.escalationPolicyId ?? null,
+    notificationChannelIds,
+    notificationChannels: notificationChannelIds,
+    templateId: rule.templateId,
+    templateName: template?.name,
+    createdAt: rule.createdAt,
+    updatedAt: overrides.updatedAt ?? rule.createdAt
+  };
+}
+
+async function resolveAlertTemplate(params: {
+  templateId?: string;
+  orgId: string;
+  name?: string;
+  description?: string;
+  severity?: string;
+  conditions?: unknown;
+  cooldownMinutes?: number;
+  autoResolve?: boolean;
+}) {
+  const templateName = params.name?.trim() || 'Custom Alert Template';
+  const templateSeverity = (params.severity ?? 'medium') as AlertTemplateRow['severity'];
+  const templateConditions = params.conditions ?? {};
+  const templateCooldownMinutes = params.cooldownMinutes ?? 15;
+  const templateAutoResolve = params.autoResolve ?? false;
+
+  if (params.templateId) {
+    const [existing] = await db
+      .select()
+      .from(alertTemplates)
+      .where(eq(alertTemplates.id, params.templateId))
+      .limit(1);
+
+    if (existing) {
+      return { template: existing, created: false };
+    }
+
+    const [createdTemplate] = await db
+      .insert(alertTemplates)
+      .values({
+        id: params.templateId,
+        orgId: params.orgId,
+        name: templateName,
+        description: params.description,
+        conditions: templateConditions,
+        severity: templateSeverity,
+        titleTemplate: `${templateName} alert`,
+        messageTemplate: `Alert triggered for ${templateName}.`,
+        autoResolve: templateAutoResolve,
+        cooldownMinutes: templateCooldownMinutes,
+        isBuiltIn: false
+      })
+      .returning();
+
+    return { template: createdTemplate, created: true };
+  }
+
+  const [createdTemplate] = await db
+    .insert(alertTemplates)
+    .values({
+      orgId: params.orgId,
+      name: templateName,
+      description: params.description,
+      conditions: templateConditions,
+      severity: templateSeverity,
+      titleTemplate: `${templateName} alert`,
+      messageTemplate: `Alert triggered for ${templateName}.`,
+      autoResolve: templateAutoResolve,
+      cooldownMinutes: templateCooldownMinutes,
+      isBuiltIn: false
+    })
+    .returning();
+
+  return { template: createdTemplate, created: true };
+}
+
 // Validation schemas
 
 // Alert Rules schemas
@@ -131,25 +305,80 @@ const listAlertRulesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
-  isActive: z.enum(['true', 'false']).optional()
+  isActive: z.enum(['true', 'false']).optional(),
+  enabled: z.enum(['true', 'false']).optional()
 });
 
 const createAlertRuleSchema = z.object({
   orgId: z.string().uuid().optional(),
-  templateId: z.string().uuid(),
-  name: z.string().min(1).max(200),
-  targetType: z.string().min(1).max(50),
-  targetId: z.string().uuid(),
+  templateId: z.string().uuid().optional(),
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+  targetType: z.string().min(1).max(50).optional(),
+  targetId: z.string().uuid().optional(),
+  targets: z.object({
+    type: z.enum(['all', 'org', 'site', 'group', 'device']),
+    ids: z.array(z.string().uuid()).optional()
+  }).optional(),
+  conditions: z.any().optional(),
+  notificationChannelIds: z.array(z.string().uuid()).optional(),
+  notificationChannels: z.array(z.string().uuid()).optional(),
+  cooldownMinutes: z.coerce.number().int().min(1).max(1440).optional(),
+  autoResolve: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  active: z.boolean().optional(),
+  isActive: z.boolean().optional(),
   overrideSettings: z.any().optional(),
-  isActive: z.boolean().default(true)
+  overrides: z.any().optional(),
+  escalationPolicyId: z.string().uuid().optional()
+}).superRefine((data, ctx) => {
+  if (!data.templateId) {
+    if (!data.name) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['name'],
+        message: 'Rule name is required'
+      });
+    }
+    if (!data.severity) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['severity'],
+        message: 'Severity is required'
+      });
+    }
+    if (data.conditions === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['conditions'],
+        message: 'Conditions are required'
+      });
+    }
+  }
 });
 
 const updateAlertRuleSchema = z.object({
   templateId: z.string().uuid().optional(),
   name: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
   targetType: z.string().min(1).max(50).optional(),
   targetId: z.string().uuid().optional(),
+  targets: z.object({
+    type: z.enum(['all', 'org', 'site', 'group', 'device']),
+    ids: z.array(z.string().uuid()).optional()
+  }).optional(),
+  conditions: z.any().optional(),
+  notificationChannelIds: z.array(z.string().uuid()).optional(),
+  notificationChannels: z.array(z.string().uuid()).optional(),
+  cooldownMinutes: z.coerce.number().int().min(1).max(1440).optional(),
+  autoResolve: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  active: z.boolean().optional(),
   overrideSettings: z.any().optional(),
+  overrides: z.any().optional(),
+  escalationPolicyId: z.string().uuid().optional(),
   isActive: z.boolean().optional()
 });
 
@@ -272,8 +501,9 @@ alertRoutes.get(
     }
 
     // Additional filters
-    if (query.isActive !== undefined) {
-      conditions.push(eq(alertRules.isActive, query.isActive === 'true'));
+    const enabledFilter = query.enabled ?? query.isActive;
+    if (enabledFilter !== undefined) {
+      conditions.push(eq(alertRules.isActive, enabledFilter === 'true'));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -285,17 +515,21 @@ alertRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get rules
+    // Get rules with templates
     const rulesList = await db
-      .select()
+      .select({
+        rule: alertRules,
+        template: alertTemplates
+      })
       .from(alertRules)
+      .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
       .where(whereCondition)
       .orderBy(desc(alertRules.createdAt))
       .limit(limit)
       .offset(offset);
 
     return c.json({
-      data: rulesList,
+      data: rulesList.map(({ rule, template }) => formatAlertRuleResponse(rule, template)),
       pagination: { page, limit, total }
     });
   }
@@ -314,7 +548,13 @@ alertRoutes.get(
       return c.json({ error: 'Alert rule not found' }, 404);
     }
 
-    return c.json(rule);
+    const [template] = await db
+      .select()
+      .from(alertTemplates)
+      .where(eq(alertTemplates.id, rule.templateId))
+      .limit(1);
+
+    return c.json(formatAlertRuleResponse(rule, template ?? null));
   }
 );
 
@@ -327,40 +567,87 @@ alertRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Determine orgId
-    let orgId = data.orgId;
-
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
-      }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
-      }
-    } else if (auth.scope === 'system' && !orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
+    const orgId = data.orgId ?? auth.orgId;
+    if (!orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
     }
+
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    const { targetType, targetId, targetIds, targets } = normalizeTargetsForRule(
+      {
+        targets: data.targets,
+        targetType: data.targetType,
+        targetId: data.targetId
+      },
+      orgId
+    );
+
+    if (!targetId) {
+      return c.json({ error: 'Target is required' }, 400);
+    }
+
+    const { template, created } = await resolveAlertTemplate({
+      templateId: data.templateId,
+      orgId,
+      name: data.name,
+      description: data.description,
+      severity: data.severity,
+      conditions: data.conditions,
+      cooldownMinutes: data.cooldownMinutes,
+      autoResolve: data.autoResolve
+    });
+
+    if (!created && template.orgId && template.orgId !== orgId) {
+      return c.json({ error: 'Access to this alert template denied' }, 403);
+    }
+
+    const baseOverrides: Record<string, unknown> = {
+      ...(isRecord(data.overrideSettings) ? data.overrideSettings : {}),
+      ...(isRecord(data.overrides) ? data.overrides : {})
+    };
+
+    if (data.description !== undefined) baseOverrides.description = data.description;
+    if (data.severity !== undefined) baseOverrides.severity = data.severity;
+    if (data.conditions !== undefined) baseOverrides.conditions = data.conditions;
+    if (data.cooldownMinutes !== undefined) baseOverrides.cooldownMinutes = data.cooldownMinutes;
+    if (data.autoResolve !== undefined) baseOverrides.autoResolve = data.autoResolve;
+    if (data.escalationPolicyId !== undefined) baseOverrides.escalationPolicyId = data.escalationPolicyId;
+    if (baseOverrides.cooldownMinutes === undefined && typeof baseOverrides.cooldown === 'number') {
+      baseOverrides.cooldownMinutes = baseOverrides.cooldown;
+    }
+
+    const notificationChannelIds = data.notificationChannelIds ?? data.notificationChannels;
+    if (notificationChannelIds !== undefined) {
+      baseOverrides.notificationChannelIds = notificationChannelIds;
+    }
+
+    baseOverrides.targets = targets;
+    baseOverrides.targetIds = targetIds;
+
+    if (created) {
+      baseOverrides.templateOwned = true;
+    }
+
+    const isActive = data.isActive ?? data.enabled ?? data.active ?? true;
+    const ruleName = data.name?.trim() ?? template.name;
 
     const [rule] = await db
       .insert(alertRules)
       .values({
-        orgId: orgId!,
-        templateId: data.templateId,
-        name: data.name,
-        targetType: data.targetType,
-        targetId: data.targetId,
-        overrideSettings: data.overrideSettings,
-        isActive: data.isActive
+        orgId,
+        templateId: template.id,
+        name: ruleName,
+        targetType,
+        targetId,
+        overrideSettings: Object.keys(baseOverrides).length > 0 ? baseOverrides : undefined,
+        isActive
       })
       .returning();
 
-    return c.json(rule, 201);
+    return c.json(formatAlertRuleResponse(rule, template), 201);
   }
 );
 
@@ -383,15 +670,114 @@ alertRoutes.put(
       return c.json({ error: 'Alert rule not found' }, 404);
     }
 
-    // Build updates object
     const updates: Record<string, unknown> = {};
+    let templateOwned = getOverrides(rule.overrideSettings).templateOwned;
 
-    if (data.templateId !== undefined) updates.templateId = data.templateId;
+    if (data.templateId !== undefined) {
+      const resolved = await resolveAlertTemplate({
+        templateId: data.templateId,
+        orgId: rule.orgId,
+        name: data.name,
+        description: data.description,
+        severity: data.severity,
+        conditions: data.conditions,
+        cooldownMinutes: data.cooldownMinutes,
+        autoResolve: data.autoResolve
+      });
+
+      if (!resolved.created && resolved.template.orgId && resolved.template.orgId !== rule.orgId) {
+        return c.json({ error: 'Access to this alert template denied' }, 403);
+      }
+
+      updates.templateId = resolved.template.id;
+      templateOwned = resolved.created;
+    }
+
     if (data.name !== undefined) updates.name = data.name;
-    if (data.targetType !== undefined) updates.targetType = data.targetType;
-    if (data.targetId !== undefined) updates.targetId = data.targetId;
-    if (data.overrideSettings !== undefined) updates.overrideSettings = data.overrideSettings;
-    if (data.isActive !== undefined) updates.isActive = data.isActive;
+
+    if (data.targets || data.targetType || data.targetId) {
+      const resolvedTargets = normalizeTargetsForRule(
+        {
+          targets: data.targets,
+          targetType: data.targetType,
+          targetId: data.targetId
+        },
+        rule.orgId
+      );
+
+      if (!resolvedTargets.targetId) {
+        return c.json({ error: 'Target is required' }, 400);
+      }
+
+      updates.targetType = resolvedTargets.targetType;
+      updates.targetId = resolvedTargets.targetId;
+
+      const overrides = getOverrides(rule.overrideSettings);
+      overrides.targets = resolvedTargets.targets;
+      overrides.targetIds = resolvedTargets.targetIds;
+      rule.overrideSettings = overrides;
+    }
+
+    const baseOverrides: Record<string, unknown> = {
+      ...getOverrides(rule.overrideSettings),
+      ...(isRecord(data.overrideSettings) ? data.overrideSettings : {}),
+      ...(isRecord(data.overrides) ? data.overrides : {})
+    };
+
+    if (data.description !== undefined) baseOverrides.description = data.description;
+    if (data.severity !== undefined) baseOverrides.severity = data.severity;
+    if (data.conditions !== undefined) baseOverrides.conditions = data.conditions;
+    if (data.cooldownMinutes !== undefined) baseOverrides.cooldownMinutes = data.cooldownMinutes;
+    if (data.autoResolve !== undefined) baseOverrides.autoResolve = data.autoResolve;
+    if (data.escalationPolicyId !== undefined) baseOverrides.escalationPolicyId = data.escalationPolicyId;
+    if (baseOverrides.cooldownMinutes === undefined && typeof baseOverrides.cooldown === 'number') {
+      baseOverrides.cooldownMinutes = baseOverrides.cooldown;
+    }
+
+    const notificationChannelIds = data.notificationChannelIds ?? data.notificationChannels;
+    if (notificationChannelIds !== undefined) {
+      baseOverrides.notificationChannelIds = notificationChannelIds;
+    }
+
+    if (templateOwned !== undefined) {
+      baseOverrides.templateOwned = templateOwned;
+    }
+    if (Object.keys(baseOverrides).length > 0) {
+      baseOverrides.updatedAt = new Date().toISOString();
+      updates.overrideSettings = baseOverrides;
+    }
+
+    const isActive = data.isActive ?? data.enabled ?? data.active;
+    if (isActive !== undefined) updates.isActive = isActive;
+
+    if (Object.keys(updates).length === 0) {
+      return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    if (templateOwned) {
+      const [currentTemplate] = await db
+        .select()
+        .from(alertTemplates)
+        .where(eq(alertTemplates.id, (updates.templateId as string) ?? rule.templateId))
+        .limit(1);
+
+      if (currentTemplate) {
+        const templateUpdates: Record<string, unknown> = {};
+        if (data.name !== undefined) templateUpdates.name = data.name.trim();
+        if (data.description !== undefined) templateUpdates.description = data.description;
+        if (data.conditions !== undefined) templateUpdates.conditions = data.conditions;
+        if (data.severity !== undefined) templateUpdates.severity = data.severity;
+        if (data.cooldownMinutes !== undefined) templateUpdates.cooldownMinutes = data.cooldownMinutes;
+        if (data.autoResolve !== undefined) templateUpdates.autoResolve = data.autoResolve;
+
+        if (Object.keys(templateUpdates).length > 0) {
+          await db
+            .update(alertTemplates)
+            .set(templateUpdates)
+            .where(eq(alertTemplates.id, currentTemplate.id));
+        }
+      }
+    }
 
     const [updated] = await db
       .update(alertRules)
@@ -399,7 +785,13 @@ alertRoutes.put(
       .where(eq(alertRules.id, ruleId))
       .returning();
 
-    return c.json(updated);
+    const [template] = await db
+      .select()
+      .from(alertTemplates)
+      .where(eq(alertTemplates.id, updated.templateId))
+      .limit(1);
+
+    return c.json(formatAlertRuleResponse(updated, template ?? null));
   }
 );
 
@@ -752,75 +1144,6 @@ alertRoutes.get(
   }
 );
 
-// GET /alerts/:id - Get alert details
-alertRoutes.get(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const alertId = c.req.param('id');
-
-    // Skip if this is a route like /alerts/rules, /alerts/channels, etc.
-    if (['rules', 'channels', 'policies', 'summary'].includes(alertId)) {
-      return c.notFound();
-    }
-
-    const alert = await getAlertWithOrgCheck(alertId, auth);
-    if (!alert) {
-      return c.json({ error: 'Alert not found' }, 404);
-    }
-
-    // Get related information
-    const [device] = await db
-      .select()
-      .from(devices)
-      .where(eq(devices.id, alert.deviceId))
-      .limit(1);
-
-    const [rule] = await db
-      .select()
-      .from(alertRules)
-      .where(eq(alertRules.id, alert.ruleId))
-      .limit(1);
-
-    // Get notification history
-    const notifications = await db
-      .select({
-        id: alertNotifications.id,
-        channelId: alertNotifications.channelId,
-        status: alertNotifications.status,
-        sentAt: alertNotifications.sentAt,
-        errorMessage: alertNotifications.errorMessage,
-        createdAt: alertNotifications.createdAt,
-        channelName: notificationChannels.name,
-        channelType: notificationChannels.type
-      })
-      .from(alertNotifications)
-      .leftJoin(notificationChannels, eq(alertNotifications.channelId, notificationChannels.id))
-      .where(eq(alertNotifications.alertId, alertId))
-      .orderBy(desc(alertNotifications.createdAt));
-
-    return c.json({
-      ...alert,
-      device: device ? {
-        id: device.id,
-        hostname: device.hostname,
-        osType: device.osType,
-        status: device.status
-      } : null,
-      rule: rule ? {
-        id: rule.id,
-        name: rule.name,
-        templateId: rule.templateId,
-        targetType: rule.targetType,
-        targetId: rule.targetId,
-        isActive: rule.isActive
-      } : null,
-      notifications
-    });
-  }
-);
-
 // POST /alerts/:id/acknowledge - Acknowledge an alert
 alertRoutes.post(
   '/:id/acknowledge',
@@ -1016,30 +1339,19 @@ alertRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Determine orgId
-    let orgId = data.orgId;
+    const orgId = data.orgId ?? auth.orgId;
+    if (!orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
 
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
-      }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
-      }
-    } else if (auth.scope === 'system' && !orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
     }
 
     const [channel] = await db
       .insert(notificationChannels)
       .values({
-        orgId: orgId!,
+        orgId,
         name: data.name,
         type: data.type,
         config: data.config,
@@ -1383,5 +1695,74 @@ alertRoutes.delete(
       .where(eq(escalationPolicies.id, policyId));
 
     return c.json({ success: true });
+  }
+);
+
+// GET /alerts/:id - Get alert details
+alertRoutes.get(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const alertId = c.req.param('id');
+
+    // Skip if this is a route like /alerts/rules, /alerts/channels, etc.
+    if (['rules', 'channels', 'policies', 'summary'].includes(alertId)) {
+      return c.notFound();
+    }
+
+    const alert = await getAlertWithOrgCheck(alertId, auth);
+    if (!alert) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+
+    // Get related information
+    const [device] = await db
+      .select()
+      .from(devices)
+      .where(eq(devices.id, alert.deviceId))
+      .limit(1);
+
+    const [rule] = await db
+      .select()
+      .from(alertRules)
+      .where(eq(alertRules.id, alert.ruleId))
+      .limit(1);
+
+    // Get notification history
+    const notifications = await db
+      .select({
+        id: alertNotifications.id,
+        channelId: alertNotifications.channelId,
+        status: alertNotifications.status,
+        sentAt: alertNotifications.sentAt,
+        errorMessage: alertNotifications.errorMessage,
+        createdAt: alertNotifications.createdAt,
+        channelName: notificationChannels.name,
+        channelType: notificationChannels.type
+      })
+      .from(alertNotifications)
+      .leftJoin(notificationChannels, eq(alertNotifications.channelId, notificationChannels.id))
+      .where(eq(alertNotifications.alertId, alertId))
+      .orderBy(desc(alertNotifications.createdAt));
+
+    return c.json({
+      ...alert,
+      device: device ? {
+        id: device.id,
+        hostname: device.hostname,
+        osType: device.osType,
+        status: device.status
+      } : null,
+      rule: rule ? {
+        id: rule.id,
+        name: rule.name,
+        templateId: rule.templateId,
+        targetType: rule.targetType,
+        targetId: rule.targetId,
+        isActive: rule.isActive
+      } : null,
+      notifications
+    });
   }
 );

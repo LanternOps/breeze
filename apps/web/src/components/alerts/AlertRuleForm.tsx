@@ -472,12 +472,17 @@ export default function AlertRuleForm({
             ))}
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">
-            No notification channels configured.{' '}
-            <a href="/alerts/channels" className="text-primary hover:underline">
+            <p className="text-sm text-muted-foreground">
+              No notification channels configured.{' '}
+            <a
+              href="/alerts/channels"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline"
+            >
               Create one
             </a>
-          </p>
+            </p>
         )}
       </div>
 

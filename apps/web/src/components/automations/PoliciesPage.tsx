@@ -22,7 +22,18 @@ export default function PoliciesPage() {
         throw new Error('Failed to fetch policies');
       }
       const data = await response.json();
-      setPolicies(data.data ?? data.policies ?? []);
+      const items = Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.policies)
+          ? data.policies
+          : Array.isArray(data)
+            ? data
+            : [];
+      const normalized = items.map((policy: Policy & { status?: string; enabled?: boolean }) => ({
+        ...policy,
+        enabled: policy.enabled ?? policy.status === 'active'
+      }));
+      setPolicies(normalized);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

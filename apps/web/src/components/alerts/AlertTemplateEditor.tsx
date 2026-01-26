@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Plus, Save, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AlertSeverity } from './AlertList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type AlertTemplateEditorProps = {
   templateId?: string;
@@ -421,7 +422,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/alert-templates/${templateId}`);
+      const response = await fetchWithAuth(`/alert-templates/templates/${templateId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch alert template.');
       }
@@ -472,10 +473,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
   const fetchOrganizations = useCallback(async () => {
     try {
-      const response = await fetch('/api/organizations');
+      const response = await fetchWithAuth('/orgs/organizations');
       if (response.ok) {
         const data = await response.json();
-        setOrganizations((data.organizations ?? data ?? []).map((org: Option) => ({
+        const items = data.data ?? data.organizations ?? data ?? [];
+        setOrganizations((items as Option[]).map((org: Option) => ({
           id: org.id,
           name: org.name
         })));
@@ -487,10 +489,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetch('/api/sites');
+      const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites((data.sites ?? data ?? []).map((site: Option) => ({
+        const items = data.data ?? data.sites ?? data ?? [];
+        setSites((items as Option[]).map((site: Option) => ({
           id: site.id,
           name: site.name
         })));
@@ -502,10 +505,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
   const fetchGroups = useCallback(async () => {
     try {
-      const response = await fetch('/api/groups');
+      const response = await fetchWithAuth('/groups');
       if (response.ok) {
         const data = await response.json();
-        setGroups((data.groups ?? data ?? []).map((group: Option) => ({
+        const items = data.data ?? data.groups ?? data ?? [];
+        setGroups((items as Option[]).map((group: Option) => ({
           id: group.id,
           name: group.name
         })));
@@ -517,10 +521,11 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
   const fetchAutomations = useCallback(async () => {
     try {
-      const response = await fetch('/api/automations');
+      const response = await fetchWithAuth('/automations');
       if (response.ok) {
         const data = await response.json();
-        setAutomations((data.automations ?? data ?? []).map((automation: Option) => ({
+        const items = data.data ?? data.automations ?? data ?? [];
+        setAutomations((items as Option[]).map((automation: Option) => ({
           id: automation.id,
           name: automation.name
         })));
@@ -689,9 +694,8 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           : 0
       };
 
-      const response = await fetch(`/api/alert-templates/${templateId}`, {
+      const response = await fetchWithAuth(`/alert-templates/templates/${templateId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 

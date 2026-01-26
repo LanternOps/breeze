@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { History, X } from 'lucide-react';
-import SessionHistory, { type RemoteSession } from './SessionHistory';
+import SessionHistory, { normalizeRemoteSession, type RemoteSession, type RemoteSessionApi } from './SessionHistory';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -15,21 +15,42 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
 
   const handleExport = useCallback(async () => {
     try {
-      const response = await fetch('/api/remote/sessions/history?limit=1000', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      });
+      const authHeaders = {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      };
+      const sessions: RemoteSession[] = [];
+      const pageSize = 100;
+      let page = 1;
+      let total = Number.POSITIVE_INFINITY;
 
-      if (!response.ok) {
-        throw new Error('Failed to fetch sessions for export');
+      while (sessions.length < total) {
+        const response = await fetch(`/api/remote/sessions/history?limit=${pageSize}&page=${page}`, {
+          headers: authHeaders
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch sessions for export');
+        }
+
+        const data = await response.json();
+        const batch = (data.data ?? []).map((session: RemoteSessionApi) => normalizeRemoteSession(session));
+        sessions.push(...batch);
+
+        if (typeof data.pagination?.total === 'number') {
+          total = data.pagination.total;
+        } else {
+          total = sessions.length;
+        }
+
+        if (batch.length === 0) {
+          break;
+        }
+
+        page += 1;
       }
 
-      const data = await response.json();
-      const sessions = data.data;
-
       // Create CSV content
-      const headers = ['ID', 'Device', 'User', 'Type', 'Status', 'Started', 'Ended', 'Duration (s)', 'Bytes Transferred'];
+      const csvHeaders = ['ID', 'Device', 'User', 'Type', 'Status', 'Started', 'Ended', 'Duration (s)', 'Bytes Transferred'];
       const rows = sessions.map((s: RemoteSession) => [
         s.id,
         s.deviceHostname,
@@ -43,7 +64,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
       ]);
 
       const csvContent = [
-        headers.join(','),
+        csvHeaders.join(','),
         ...rows.map((row: (string | number)[]) => row.map(cell => `"${cell}"`).join(','))
       ].join('\n');
 

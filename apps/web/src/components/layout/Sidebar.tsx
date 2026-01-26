@@ -99,7 +99,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         </button>
       </div>
 
-      <nav className="flex-1 space-y-1 p-2">
+      <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto p-2">
         {navigation.map((item) => {
           const isActive = item.href === '/'
             ? currentPath === '/'

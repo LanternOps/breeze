@@ -2,9 +2,9 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, organizations } from '../../db/schema';
 
-export function getPagination(query: { page?: string; limit?: string }) {
+export function getPagination(query: { page?: string; limit?: string }, maxLimit = 100) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
+  const limit = Math.min(maxLimit, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
   return { page, limit, offset: (page - 1) * limit };
 }
 

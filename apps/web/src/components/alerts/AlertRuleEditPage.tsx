@@ -3,6 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import AlertRuleForm, { type AlertRuleFormValues } from './AlertRuleForm';
 import type { NotificationChannel } from './NotificationChannelList';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -22,6 +23,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
   const [groups, setGroups] = useState<Group[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
+  const { currentOrgId } = useOrgStore();
 
   const fetchRule = useCallback(async () => {
     if (!ruleId || isNew) return;
@@ -141,13 +143,14 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
         autoResolve: values.autoResolve,
         enabled: true
       };
+      const requestPayload = isNew && currentOrgId ? { ...payload, orgId: currentOrgId } : payload;
 
       const url = isNew ? '/alerts/rules' : `/alerts/rules/${ruleId}`;
       const method = isNew ? 'POST' : 'PUT';
 
       const response = await fetchWithAuth(url, {
         method,
-        body: JSON.stringify(payload)
+        body: JSON.stringify(requestPayload)
       });
 
       if (!response.ok) {
