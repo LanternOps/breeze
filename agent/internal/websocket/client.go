@@ -226,6 +226,23 @@ func (c *Client) readPump() {
 			return
 		}
 
+		// First, check if this is a server message (has type but no id)
+		var msg struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(message, &msg); err != nil {
+			fmt.Printf("Failed to parse message: %v\n", err)
+			continue
+		}
+
+		// Skip non-command messages (connected, ack, heartbeat_ack, error, etc.)
+		// Commands have both an ID and a type like "run_script", "list_processes", etc.
+		if msg.ID == "" {
+			// Server acknowledgments, errors, etc. - not commands
+			continue
+		}
+
 		var cmd Command
 		if err := json.Unmarshal(message, &cmd); err != nil {
 			fmt.Printf("Failed to parse command: %v\n", err)

@@ -110,6 +110,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           window.location.href = `/remote/files/${device.id}`;
           return;
 
+        case 'remote-tools':
+          window.location.href = `/remote/tools?deviceId=${device.id}&deviceName=${encodeURIComponent(device.hostname)}&os=${device.os}`;
+          return;
+
         case 'run-script':
           showToast('error', 'Script picker not yet implemented');
           break;

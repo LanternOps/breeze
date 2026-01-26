@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Save, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import type { AlertSeverity } from './AlertList';
 
 type TargetType = 'org' | 'site' | 'group' | 'device';
@@ -43,6 +44,7 @@ export default function AlertRuleEditor() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { currentOrgId } = useOrgStore();
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -122,18 +124,21 @@ export default function AlertRuleEditor() {
     setIsSaving(true);
 
     try {
+      const requestPayload = {
+        templateId,
+        targetType,
+        targetId,
+        active,
+        overrides: overrideEnabled ? {
+          severity: overrideSeverity,
+          cooldown: overrideCooldown
+        } : null,
+        ...(currentOrgId ? { orgId: currentOrgId } : {})
+      };
+
       const response = await fetchWithAuth('/alerts/rules', {
         method: 'POST',
-        body: JSON.stringify({
-          templateId,
-          targetType,
-          targetId,
-          active,
-          overrides: overrideEnabled ? {
-            severity: overrideSeverity,
-            cooldown: overrideCooldown
-          } : null
-        })
+        body: JSON.stringify(requestPayload)
       });
 
       if (response.status === 401) {

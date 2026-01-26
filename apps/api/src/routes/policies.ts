@@ -149,6 +149,7 @@ const updatePolicySchema = z.object({
   description: z.string().optional(),
   type: policyTypeSchema.optional(),
   status: policyStatusSchema.optional(),
+  enabled: z.boolean().optional(),
   enforcementLevel: enforcementLevelSchema.optional(),
   targetType: policyTargetTypeSchema.optional(),
   targetIds: z.array(z.string().min(1)).optional(),
@@ -1094,6 +1095,17 @@ policyRoutes.patch(
     }
 
     const beforeSnapshot = snapshotPolicy(policy);
+
+    if (data.enabled === true && policy.status !== 'active') {
+      policy.status = 'active';
+      policy.activatedAt = new Date();
+      policy.deactivatedAt = null;
+    }
+
+    if (data.enabled === false && policy.status === 'active') {
+      policy.status = 'inactive';
+      policy.deactivatedAt = new Date();
+    }
 
     if (data.name !== undefined) policy.name = data.name;
     if (data.description !== undefined) policy.description = data.description;

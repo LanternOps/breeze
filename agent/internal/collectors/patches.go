@@ -15,6 +15,15 @@ type PatchInfo struct {
 	Source      string `json:"source"` // "apple", "microsoft", "homebrew", "apt", "yum"
 }
 
+// InstalledPatchInfo represents a previously installed update/patch
+type InstalledPatchInfo struct {
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Category    string `json:"category"`
+	Source      string `json:"source"`
+	InstalledAt string `json:"installedAt"` // ISO 8601 timestamp
+}
+
 // PatchCollector collects available patches/updates
 type PatchCollector struct{}
 

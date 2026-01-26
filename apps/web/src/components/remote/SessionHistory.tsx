@@ -16,7 +16,9 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
+const DATE_LOCALE = 'en-US';
+const DATE_TIME_ZONE = 'UTC';
+const FALLBACK_LABEL = '-';
 
 export type SessionType = 'terminal' | 'desktop' | 'file_transfer';
 export type SessionStatus = 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed';
@@ -37,6 +39,19 @@ export type RemoteSession = {
   bytesTransferred?: number;
   recordingUrl?: string;
   createdAt: string;
+};
+
+export type RemoteSessionApi = Omit<
+  RemoteSession,
+  'deviceHostname' | 'deviceOsType' | 'userName' | 'userEmail' | 'bytesTransferred'
+> & {
+  deviceHostname?: string;
+  deviceOsType?: string;
+  userName?: string;
+  userEmail?: string;
+  bytesTransferred?: number | null;
+  device?: { hostname?: string; osType?: string };
+  user?: { name?: string; email?: string };
 };
 
 export type SessionHistoryProps = {
@@ -84,116 +99,69 @@ function formatBytes(bytes?: number): string {
 }
 
 // Format date/time
+function isSameUtcDate(a: Date, b: Date): boolean {
+  return a.getUTCFullYear() === b.getUTCFullYear()
+    && a.getUTCMonth() === b.getUTCMonth()
+    && a.getUTCDate() === b.getUTCDate();
+}
+
 function formatDateTime(dateString?: string): string {
   if (!dateString) return '-';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = REFERENCE_DATE;
-  const isToday = date.toDateString() === now.toDateString();
+  const now = new Date();
+  const isToday = isSameUtcDate(date, now);
 
   if (isToday) {
-    return `Today ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    return `Today ${date.toLocaleTimeString(DATE_LOCALE, {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: DATE_TIME_ZONE
+    })}`;
   }
 
   const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const isYesterday = date.toDateString() === yesterday.toDateString();
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const isYesterday = isSameUtcDate(date, yesterday);
 
   if (isYesterday) {
-    return `Yesterday ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    return `Yesterday ${date.toLocaleTimeString(DATE_LOCALE, {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: DATE_TIME_ZONE
+    })}`;
   }
 
-  return date.toLocaleString([], {
+  return date.toLocaleString(DATE_LOCALE, {
     month: 'short',
     day: 'numeric',
-    year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+    year: date.getUTCFullYear() !== now.getUTCFullYear() ? 'numeric' : undefined,
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    timeZone: DATE_TIME_ZONE
   });
 }
 
-// Mock data for demonstration
-const mockSessions: RemoteSession[] = [
-  {
-    id: '1',
-    deviceId: 'dev-1',
-    deviceHostname: 'WORKSTATION-01',
-    deviceOsType: 'windows',
-    userId: 'user-1',
-    userName: 'John Doe',
-    userEmail: 'john@example.com',
-    type: 'terminal',
-    status: 'disconnected',
-    startedAt: '2024-01-15T10:30:00Z',
-    endedAt: '2024-01-15T11:45:00Z',
-    durationSeconds: 4500,
-    bytesTransferred: 1024000,
-    createdAt: '2024-01-15T10:29:00Z'
-  },
-  {
-    id: '2',
-    deviceId: 'dev-2',
-    deviceHostname: 'SERVER-PROD-01',
-    deviceOsType: 'linux',
-    userId: 'user-1',
-    userName: 'John Doe',
-    userEmail: 'john@example.com',
-    type: 'terminal',
-    status: 'disconnected',
-    startedAt: '2024-01-15T09:00:00Z',
-    endedAt: '2024-01-15T09:30:00Z',
-    durationSeconds: 1800,
-    bytesTransferred: 512000,
-    createdAt: '2024-01-15T08:59:00Z'
-  },
-  {
-    id: '3',
-    deviceId: 'dev-3',
-    deviceHostname: 'DEV-MACBOOK-01',
-    deviceOsType: 'macos',
-    userId: 'user-2',
-    userName: 'Jane Smith',
-    userEmail: 'jane@example.com',
-    type: 'file_transfer',
-    status: 'disconnected',
-    startedAt: '2024-01-14T15:00:00Z',
-    endedAt: '2024-01-14T15:15:00Z',
-    durationSeconds: 900,
-    bytesTransferred: 52428800,
-    createdAt: '2024-01-14T14:59:00Z'
-  },
-  {
-    id: '4',
-    deviceId: 'dev-1',
-    deviceHostname: 'WORKSTATION-01',
-    deviceOsType: 'windows',
-    userId: 'user-3',
-    userName: 'Bob Johnson',
-    userEmail: 'bob@example.com',
-    type: 'desktop',
-    status: 'failed',
-    startedAt: '2024-01-14T10:00:00Z',
-    durationSeconds: 0,
-    createdAt: '2024-01-14T09:59:00Z'
-  },
-  {
-    id: '5',
-    deviceId: 'dev-4',
-    deviceHostname: 'LAPTOP-SALES-05',
-    deviceOsType: 'windows',
-    userId: 'user-2',
-    userName: 'Jane Smith',
-    userEmail: 'jane@example.com',
-    type: 'terminal',
-    status: 'disconnected',
-    startedAt: '2024-01-13T16:30:00Z',
-    endedAt: '2024-01-13T17:00:00Z',
-    durationSeconds: 1800,
-    bytesTransferred: 256000,
-    createdAt: '2024-01-13T16:29:00Z'
-  }
-];
+export function normalizeRemoteSession(session: RemoteSessionApi): RemoteSession {
+  return {
+    id: session.id,
+    deviceId: session.deviceId,
+    deviceHostname: session.deviceHostname ?? session.device?.hostname ?? FALLBACK_LABEL,
+    deviceOsType: session.deviceOsType ?? session.device?.osType ?? FALLBACK_LABEL,
+    userId: session.userId,
+    userName: session.userName ?? session.user?.name ?? FALLBACK_LABEL,
+    userEmail: session.userEmail ?? session.user?.email ?? FALLBACK_LABEL,
+    type: session.type,
+    status: session.status,
+    startedAt: session.startedAt ?? undefined,
+    endedAt: session.endedAt ?? undefined,
+    durationSeconds: session.durationSeconds ?? undefined,
+    bytesTransferred: session.bytesTransferred ?? undefined,
+    recordingUrl: session.recordingUrl ?? undefined,
+    createdAt: session.createdAt
+  };
+}
 
 export default function SessionHistory({
   sessions: propSessions,
@@ -204,13 +172,13 @@ export default function SessionHistory({
   limit,
   className
 }: SessionHistoryProps) {
-  const [sessions, setSessions] = useState<RemoteSession[]>(propSessions || mockSessions);
+  const [sessions, setSessions] = useState<RemoteSession[]>(propSessions ?? []);
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [userFilter, setUserFilter] = useState<string>('all');
   const [dateFilter, setDateFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
-  const [isLoading, setIsLoading] = useState(loading);
+  const [isLoading, setIsLoading] = useState(loading || !propSessions);
 
   // Get unique users for filter
   const uniqueUsers = useMemo(() => {
@@ -226,7 +194,7 @@ export default function SessionHistory({
   // Filter sessions
   const filteredSessions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const now = REFERENCE_DATE;
+    const now = new Date();
 
     return sessions.filter(session => {
       const matchesQuery = normalizedQuery.length === 0
@@ -247,12 +215,12 @@ export default function SessionHistory({
 
         switch (dateFilter) {
           case 'today':
-            matchesDate = sessionDate.toDateString() === now.toDateString();
+            matchesDate = isSameUtcDate(sessionDate, now);
             break;
           case 'yesterday': {
             const yesterday = new Date(now);
-            yesterday.setDate(yesterday.getDate() - 1);
-            matchesDate = sessionDate.toDateString() === yesterday.toDateString();
+            yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+            matchesDate = isSameUtcDate(sessionDate, yesterday);
             break;
           }
           case 'week':
@@ -301,6 +269,7 @@ export default function SessionHistory({
       const params = new URLSearchParams();
       if (typeFilter !== 'all') params.set('type', typeFilter);
       if (userFilter !== 'all') params.set('userId', userFilter);
+      params.set('limit', String(limit ?? 100));
 
       const response = await fetch(`/api/remote/sessions/history?${params.toString()}`, {
         headers: {
@@ -310,21 +279,25 @@ export default function SessionHistory({
 
       if (response.ok) {
         const data = await response.json();
-        setSessions(data.data);
+        const normalized = (data.data ?? []).map((session: RemoteSessionApi) => normalizeRemoteSession(session));
+        setSessions(normalized);
       }
     } catch (error) {
       console.error('Failed to fetch sessions:', error);
     } finally {
       setIsLoading(false);
     }
-  }, [typeFilter, userFilter]);
+  }, [typeFilter, userFilter, limit]);
 
   // Use prop sessions if provided
   useEffect(() => {
     if (propSessions) {
       setSessions(propSessions);
+      setIsLoading(loading);
+      return;
     }
-  }, [propSessions]);
+    void fetchSessions();
+  }, [propSessions, loading, fetchSessions]);
 
   return (
     <div className={cn('rounded-lg border bg-card shadow-sm', className)}>

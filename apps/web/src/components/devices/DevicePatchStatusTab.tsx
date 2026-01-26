@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle, AlertTriangle } from 'lucide-react';
+import { CheckCircle, AlertTriangle, Apple, Package, ExternalLink } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
 type PatchItem = {
@@ -9,6 +9,8 @@ type PatchItem = {
   kb?: string;
   severity?: string;
   status?: string;
+  category?: string;
+  source?: string;
   releaseDate?: string;
   releasedAt?: string;
   installedAt?: string;
@@ -38,6 +40,30 @@ const severityStyles: Record<string, string> = {
   low: 'text-blue-600'
 };
 
+const categoryBadges: Record<string, { label: string; className: string }> = {
+  system: { label: 'OS Update', className: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' },
+  security: { label: 'Security', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
+  application: { label: 'App', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
+  homebrew: { label: 'Homebrew', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' }
+};
+
+function getCategoryBadge(patch: PatchItem) {
+  const name = (patch.name || patch.title || '').toLowerCase();
+
+  // Auto-detect macOS updates by name
+  if (name.startsWith('macos') || name.startsWith('mac os')) {
+    return categoryBadges.system;
+  }
+  // Auto-detect security updates
+  if (name.includes('security') || name.includes('xprotect') || name.includes('gatekeeper') || name.includes('mrt')) {
+    return categoryBadges.security;
+  }
+
+  // Use category from data if available
+  const category = (patch.category || '').toLowerCase();
+  return categoryBadges[category] || null;
+}
+
 function formatDate(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
   const date = new Date(value);
@@ -46,6 +72,30 @@ function formatDate(value?: string, timezone?: string) {
 
 function normalizePatchName(patch: PatchItem) {
   return patch.title || patch.name || patch.kb || 'Unnamed patch';
+}
+
+function getHomebrewUrl(patch: PatchItem): string | null {
+  const category = (patch.category || '').toLowerCase();
+  if (category !== 'homebrew' && category !== 'homebrew-cask') {
+    return null;
+  }
+
+  const name = patch.name || patch.title || '';
+  if (!name) return null;
+
+  // Handle tap packages like "mongodb/brew/mongodb-community@7.0"
+  // Extract just the package name after the last slash
+  const packageName = name.includes('/') ? name.split('/').pop() : name;
+  if (!packageName) return null;
+
+  // Remove version suffix like "@7.0" for the URL
+  const baseName = packageName.split('@')[0];
+
+  const baseUrl = category === 'homebrew-cask'
+    ? 'https://formulae.brew.sh/cask/'
+    : 'https://formulae.brew.sh/formula/';
+
+  return `${baseUrl}${baseName}`;
 }
 
 export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatchStatusTabProps) {
@@ -80,7 +130,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
     fetchPatchStatus();
   }, [fetchPatchStatus]);
 
-  const { pending, installed, compliancePercent } = useMemo(() => {
+  const { pendingApple, pendingOther, installedApple, installedThirdParty, compliancePercent } = useMemo(() => {
     const data = payload ?? {};
     const pendingList = data.pending ?? data.pendingPatches ?? data.available ?? [];
     const installedList = data.installed ?? data.installedPatches ?? data.applied ?? [];
@@ -93,12 +143,43 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
       ? installedList
       : patches.filter(patch => (patch.status || '').toLowerCase() === 'installed');
 
+    // Helper to determine if patch is from Apple (not Homebrew)
+    const isApplePatch = (patch: PatchItem) => {
+      const category = (patch.category || '').toLowerCase();
+      const name = (patch.name || patch.title || '').toLowerCase();
+
+      // Exclude Homebrew packages (they have source=apple but category=homebrew)
+      if (category === 'homebrew' || category === 'homebrew-cask') {
+        return false;
+      }
+
+      // Apple system/security/app updates
+      return category === 'system' ||
+        category === 'security' ||
+        category === 'application' ||
+        name.startsWith('macos') ||
+        name.startsWith('mac os') ||
+        name.includes('xprotect') ||
+        name.includes('gatekeeper') ||
+        name.includes('rosetta');
+    };
+
+    // Split pending patches
+    const applePending = inferredPending.filter(isApplePatch);
+    const otherPending = inferredPending.filter(p => !isApplePatch(p));
+
+    // Split installed patches
+    const appleInstalled = inferredInstalled.filter(isApplePatch);
+    const thirdPartyInstalled = inferredInstalled.filter(p => !isApplePatch(p));
+
     const total = inferredPending.length + inferredInstalled.length;
     const compliance = data.compliancePercent ?? data.compliance ?? (total > 0 ? Math.round((inferredInstalled.length / total) * 100) : 100);
 
     return {
-      pending: inferredPending,
-      installed: inferredInstalled,
+      pendingApple: applePending,
+      pendingOther: otherPending,
+      installedApple: appleInstalled,
+      installedThirdParty: thirdPartyInstalled,
       compliancePercent: compliance
     };
   }, [payload]);
@@ -147,95 +228,226 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
             <div className="h-full rounded-full bg-primary" style={{ width: `${compliancePercent}%` }} />
           </div>
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span>{pending.length} pending</span>
-            <span>{installed.length} installed</span>
+            <span>{pendingApple.length + pendingOther.length} pending</span>
+            <span>{installedApple.length + installedThirdParty.length} installed</span>
           </div>
         </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
+        {/* Pending Apple Updates */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-yellow-500" />
-            <h3 className="font-semibold">Pending Patches</h3>
+            <Apple className="h-4 w-4 text-gray-600" />
+            <h3 className="font-semibold">Pending Apple Updates</h3>
+            {pendingApple.length > 0 && (
+              <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
+                {pendingApple.length}
+              </span>
+            )}
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
-            <table className="min-w-full divide-y">
-              <thead className="bg-muted/40">
-                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Patch</th>
-                  <th className="px-4 py-3">Severity</th>
-                  <th className="px-4 py-3">Released</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {pending.length === 0 ? (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No pending patches.
-                    </td>
+            <div className="max-h-64 overflow-y-auto">
+              <table className="min-w-full divide-y">
+                <thead className="bg-muted/40 sticky top-0">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">Update</th>
+                    <th className="px-4 py-3">Category</th>
                   </tr>
-                ) : (
-                  pending.map((patch, index) => {
-                    const severityKey = (patch.severity || '').toLowerCase();
-                    return (
-                      <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending'}-${index}`} className="text-sm">
-                        <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
-                        <td className={`px-4 py-3 text-xs font-medium ${severityStyles[severityKey] || 'text-muted-foreground'}`}>
-                          {patch.severity || 'Not reported'}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">
-                          {formatDate(patch.releaseDate ?? patch.releasedAt, effectiveTimezone)}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y">
+                  {pendingApple.length === 0 ? (
+                    <tr>
+                      <td colSpan={2} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                        No pending Apple updates.
+                      </td>
+                    </tr>
+                  ) : (
+                    pendingApple.map((patch, index) => {
+                      const badge = getCategoryBadge(patch);
+                      return (
+                        <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-apple'}-${index}`} className="text-sm">
+                          <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
+                          <td className="px-4 py-3">
+                            {badge && (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
+                                {badge.label}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
+        {/* Pending Other Updates (Homebrew, etc.) */}
+        <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-yellow-500" />
+            <h3 className="font-semibold">Pending Package Updates</h3>
+            {pendingOther.length > 0 && (
+              <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
+                {pendingOther.length}
+              </span>
+            )}
+          </div>
+          <div className="mt-4 overflow-hidden rounded-md border">
+            <div className="max-h-64 overflow-y-auto">
+              <table className="min-w-full divide-y">
+                <thead className="bg-muted/40 sticky top-0">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">Package</th>
+                    <th className="px-4 py-3">Type</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {pendingOther.length === 0 ? (
+                    <tr>
+                      <td colSpan={2} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                        No pending package updates.
+                      </td>
+                    </tr>
+                  ) : (
+                    pendingOther.map((patch, index) => {
+                      const badge = getCategoryBadge(patch);
+                      const brewUrl = getHomebrewUrl(patch);
+                      return (
+                        <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-other'}-${index}`} className="text-sm">
+                          <td className="px-4 py-3 font-medium">
+                            {brewUrl ? (
+                              <a
+                                href={brewUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                              >
+                                {normalizePatchName(patch)}
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            ) : (
+                              normalizePatchName(patch)
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {badge && (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
+                                {badge.label}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        {/* Installed Apple Updates */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
-            <h3 className="font-semibold">Installed Patches</h3>
+            <Apple className="h-4 w-4 text-gray-600" />
+            <h3 className="font-semibold">Installed Apple Updates</h3>
+            <span className="text-xs text-muted-foreground">({installedApple.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
-            <table className="min-w-full divide-y">
-              <thead className="bg-muted/40">
-                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Patch</th>
-                  <th className="px-4 py-3">Severity</th>
-                  <th className="px-4 py-3">Installed</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {installed.length === 0 ? (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No installed patches reported.
-                    </td>
+            <div className="max-h-64 overflow-y-auto">
+              <table className="min-w-full divide-y">
+                <thead className="bg-muted/40 sticky top-0">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">Update</th>
+                    <th className="px-4 py-3">Category</th>
+                    <th className="px-4 py-3">Installed</th>
                   </tr>
-                ) : (
-                  installed.map((patch, index) => {
-                    const severityKey = (patch.severity || '').toLowerCase();
+                </thead>
+                <tbody className="divide-y">
+                  {installedApple.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                        No Apple updates reported.
+                      </td>
+                    </tr>
+                  ) : (
+                    installedApple.map((patch, index) => {
+                      const badge = getCategoryBadge(patch);
+                      return (
+                        <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'apple'}-${index}`} className="text-sm">
+                          <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
+                          <td className="px-4 py-3">
+                            {badge && (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
+                                {badge.label}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone)}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Installed Third-Party Updates */}
+      {installedThirdParty.length > 0 && (
+        <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="flex items-center gap-2">
+            <CheckCircle className="h-4 w-4 text-green-500" />
+            <Package className="h-4 w-4 text-blue-500" />
+            <h3 className="font-semibold">Installed Third-Party Updates</h3>
+            <span className="text-xs text-muted-foreground">({installedThirdParty.length})</span>
+          </div>
+          <div className="mt-4 overflow-hidden rounded-md border">
+            <div className="max-h-64 overflow-y-auto">
+              <table className="min-w-full divide-y">
+                <thead className="bg-muted/40 sticky top-0">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">Software</th>
+                    <th className="px-4 py-3">Installed</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {installedThirdParty.map((patch, index) => {
+                    const brewUrl = getHomebrewUrl(patch);
                     return (
-                      <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'installed'}-${index}`} className="text-sm">
-                        <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
-                        <td className={`px-4 py-3 text-xs font-medium ${severityStyles[severityKey] || 'text-muted-foreground'}`}>
-                          {patch.severity || 'Not reported'}
+                      <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'thirdparty'}-${index}`} className="text-sm">
+                        <td className="px-4 py-3 font-medium">
+                          {brewUrl ? (
+                            <a
+                              href={brewUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                            >
+                              {normalizePatchName(patch)}
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          ) : (
+                            normalizePatchName(patch)
+                          )}
                         </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone)}</td>
                       </tr>
                     );
-                  })
-                )}
-              </tbody>
-            </table>
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

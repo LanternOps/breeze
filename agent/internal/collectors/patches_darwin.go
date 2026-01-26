@@ -5,9 +5,11 @@ package collectors
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Collect retrieves available patches/updates on macOS
@@ -227,4 +229,81 @@ func (c *PatchCollector) CollectWithCasks() ([]PatchInfo, error) {
 
 	patches = append(patches, caskPatches...)
 	return patches, nil
+}
+
+// CollectInstalled retrieves recently installed updates/patches on macOS
+// Uses system_profiler which is efficient and returns structured JSON
+func (c *PatchCollector) CollectInstalled(maxAge time.Duration) ([]InstalledPatchInfo, error) {
+	// Run system_profiler to get install history (JSON output is faster to parse)
+	cmd := exec.Command("system_profiler", "SPInstallHistoryDataType", "-json")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	return c.parseInstallHistory(output, maxAge), nil
+}
+
+// parseInstallHistory parses the JSON output of system_profiler SPInstallHistoryDataType
+func (c *PatchCollector) parseInstallHistory(output []byte, maxAge time.Duration) []InstalledPatchInfo {
+	var result struct {
+		SPInstallHistoryDataType []struct {
+			Name        string `json:"_name"`
+			Version     string `json:"install_version"`
+			Source      string `json:"package_source"`
+			InstallDate string `json:"install_date"`
+		} `json:"SPInstallHistoryDataType"`
+	}
+
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil
+	}
+
+	var patches []InstalledPatchInfo
+	cutoff := time.Now().Add(-maxAge)
+
+	for _, item := range result.SPInstallHistoryDataType {
+		// Skip GarageBand/Logic content packs (not meaningful patches)
+		if strings.HasPrefix(item.Name, "MAContent") ||
+			strings.HasPrefix(item.Name, "MobileAssets") ||
+			strings.Contains(item.Name, "AssetPack") {
+			continue
+		}
+
+		// Parse the install date (format: "2024-01-15T10:30:00Z")
+		installTime, err := time.Parse("2006-01-02T15:04:05Z", item.InstallDate)
+		if err != nil {
+			// Try alternate format
+			installTime, err = time.Parse("2006-01-02", item.InstallDate)
+			if err != nil {
+				continue
+			}
+		}
+
+		// Skip patches older than maxAge
+		if installTime.Before(cutoff) {
+			continue
+		}
+
+		// Determine source and category
+		source := "apple"
+		category := c.categorizeAppleUpdate(item.Name)
+
+		// Check if it's from Apple or third-party
+		// system_profiler uses "package_source_apple" for Apple software
+		if item.Source != "" && !strings.Contains(item.Source, "apple") {
+			source = "third_party"
+			category = "application"
+		}
+
+		patches = append(patches, InstalledPatchInfo{
+			Name:        item.Name,
+			Version:     item.Version,
+			Category:    category,
+			Source:      source,
+			InstalledAt: installTime.Format(time.RFC3339),
+		})
+	}
+
+	return patches
 }

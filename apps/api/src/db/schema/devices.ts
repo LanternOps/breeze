@@ -153,3 +153,19 @@ export const deviceCommands = pgTable('device_commands', {
   completedAt: timestamp('completed_at'),
   result: jsonb('result')
 });
+
+export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);
+
+export const deviceConnections = pgTable('device_connections', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  protocol: connectionProtocolEnum('protocol').notNull(),
+  localAddr: varchar('local_addr', { length: 45 }).notNull(),
+  localPort: integer('local_port').notNull(),
+  remoteAddr: varchar('remote_addr', { length: 45 }),
+  remotePort: integer('remote_port'),
+  state: varchar('state', { length: 20 }),
+  pid: integer('pid'),
+  processName: varchar('process_name', { length: 255 }),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+});

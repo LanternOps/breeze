@@ -80,7 +80,7 @@ deviceRoutes.post('/', async (c) => {
 ### 🔲 Priority 2: Common Operations
 | File | Endpoints |
 |------|-----------|
-| `alerts.ts` | POST/PUT rules, channels, policies |
+| `alerts.ts` | POST/PUT rules, channels, policies (POST `/alerts/channels` returns 400 without `orgId`; needs org handler) |
 | `groups.ts` | CRUD operations |
 | `scripts.ts` | CRUD operations |
 | `webhooks.ts` | CRUD operations |

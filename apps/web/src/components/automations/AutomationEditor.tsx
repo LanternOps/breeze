@@ -18,6 +18,7 @@ import {
   Zap
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 
 type TriggerType = 'schedule' | 'event' | 'alert' | 'webhook';
 type ActionType = 'run_script' | 'send_alert' | 'create_ticket' | 'send_email' | 'call_webhook';
@@ -447,7 +448,7 @@ export default function AutomationEditor({
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/automations/${automationId}`);
+      const response = await fetchWithAuth(`/automations/${automationId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch automation');
       }
@@ -463,10 +464,10 @@ export default function AutomationEditor({
 
   const fetchScripts = useCallback(async () => {
     try {
-      const response = await fetch('/api/scripts');
+      const response = await fetchWithAuth('/scripts');
       if (!response.ok) return;
       const data = await response.json();
-      setScripts(data.scripts ?? data ?? []);
+      setScripts(data.data ?? data.scripts ?? data ?? []);
     } catch {
       // ignore
     }
@@ -474,10 +475,10 @@ export default function AutomationEditor({
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (!response.ok) return;
       const data = await response.json();
-      setDevices(data.devices ?? data ?? []);
+      setDevices(data.data ?? data.devices ?? data ?? []);
     } catch {
       // ignore
     }
@@ -485,10 +486,10 @@ export default function AutomationEditor({
 
   const fetchRuns = useCallback(async () => {
     try {
-      const response = await fetch(`/api/automations/${automationId}/runs`);
+      const response = await fetchWithAuth(`/automations/${automationId}/runs`);
       if (!response.ok) return;
       const data = await response.json();
-      setRuns(data.runs ?? data ?? []);
+      setRuns(data.data ?? data.runs ?? data ?? []);
     } catch {
       // ignore
     }
@@ -511,9 +512,8 @@ export default function AutomationEditor({
     setError(undefined);
     setStatusMessage(undefined);
     try {
-      const response = await fetch(`/api/automations/${automationId}`, {
+      const response = await fetchWithAuth(`/automations/${automationId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload(automation))
       });
       if (!response.ok) {
@@ -536,9 +536,8 @@ export default function AutomationEditor({
     setToggleLoading(true);
     updateAutomation(prev => ({ ...prev, enabled: nextEnabled }));
     try {
-      const response = await fetch(`/api/automations/${automationId}`, {
+      const response = await fetchWithAuth(`/automations/${automationId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: nextEnabled })
       });
       if (!response.ok) {
@@ -561,9 +560,8 @@ export default function AutomationEditor({
     setError(undefined);
     setStatusMessage(undefined);
     try {
-      const response = await fetch(`/api/automations/${automationId}/run`, {
+      const response = await fetchWithAuth(`/automations/${automationId}/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceId: testDeviceId, mode: 'test' })
       });
       if (!response.ok) {

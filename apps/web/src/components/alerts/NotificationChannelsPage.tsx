@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import NotificationChannelList, { type NotificationChannel } from './NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from './NotificationChannelForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -13,6 +14,7 @@ export default function NotificationChannelsPage() {
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedChannel, setSelectedChannel] = useState<NotificationChannel | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { currentOrgId } = useOrgStore();
 
   const fetchChannels = useCallback(async () => {
     try {
@@ -192,9 +194,13 @@ export default function NotificationChannelsPage() {
           : `/alerts/channels/${selectedChannel?.id}`;
       const method = modalMode === 'create' ? 'POST' : 'PUT';
 
+      const requestPayload = modalMode === 'create' && currentOrgId
+        ? { ...payload, orgId: currentOrgId }
+        : payload;
+
       const response = await fetchWithAuth(url, {
         method,
-        body: JSON.stringify(payload)
+        body: JSON.stringify(requestPayload)
       });
 
       if (!response.ok) {

@@ -96,10 +96,23 @@ export const useAuthStore = create<AuthState>()(
 // In development, point directly to API server. In production, use relative path (proxied).
 const API_HOST = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
 
-// Helper to build full API URL - converts /api/... to /api/v1/...
+// Helper to build full API URL - converts /path to /api/v1/path
 function buildApiUrl(path: string): string {
-  // Remove leading /api if present and add /api/v1
-  const cleanPath = path.startsWith('/api/') ? path.slice(4) : path.startsWith('/api') ? path.slice(4) : path;
+  // If already a full URL, return as-is
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return path;
+  }
+
+  // Ensure path starts with /
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  // Remove leading /api if present (to avoid /api/v1/api/...)
+  const cleanPath = normalizedPath.startsWith('/api/')
+    ? normalizedPath.slice(4)
+    : normalizedPath.startsWith('/api')
+      ? normalizedPath.slice(4)
+      : normalizedPath;
+
   return `${API_HOST}/api/v1${cleanPath}`;
 }
 

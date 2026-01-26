@@ -20,7 +20,7 @@ softwareRoutes.get(
     const auth = c.get('auth');
     const deviceId = c.req.param('id');
     const query = c.req.valid('query');
-    const { page, limit, offset } = getPagination(query);
+    const { page, limit, offset } = getPagination(query, 1000);
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {

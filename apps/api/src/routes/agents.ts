@@ -10,6 +10,7 @@ import {
   deviceDisks,
   deviceMetrics,
   deviceCommands,
+  deviceConnections,
   enrollmentKeys,
   softwareInventory,
   patches,
@@ -546,7 +547,7 @@ agentRoutes.put('/:id/network', zValidator('json', updateNetworkSchema), async (
   return c.json({ success: true, count: data.adapters.length });
 });
 
-// Submit available patches
+// Submit available and installed patches
 const submitPatchesSchema = z.object({
   patches: z.array(z.object({
     name: z.string().min(1),
@@ -560,12 +561,21 @@ const submitPatchesSchema = z.object({
     releaseDate: z.string().optional(),
     description: z.string().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom')
-  }))
+  })),
+  installed: z.array(z.object({
+    name: z.string().min(1),
+    version: z.string().optional(),
+    category: z.string().optional(),
+    source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
+    installedAt: z.string()
+  })).optional()
 });
 
 agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
+  const installedCount = data.installed?.length || 0;
+  console.log(`[PATCHES] Agent ${agentId} submitting ${data.patches.length} pending, ${installedCount} installed`);
 
   const [device] = await db
     .select()
@@ -584,6 +594,7 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
       .set({ status: 'missing', lastCheckedAt: new Date() })
       .where(eq(devicePatches.deviceId, device.id));
 
+    // Process pending patches
     for (const patchData of data.patches) {
       // Generate an external ID based on source + name + version
       const externalId = patchData.kbNumber ||
@@ -636,7 +647,117 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
           });
       }
     }
+
+    // Process installed patches
+    if (data.installed && data.installed.length > 0) {
+      for (const patchData of data.installed) {
+        const externalId = `${patchData.source}:${patchData.name}:${patchData.version || 'installed'}`;
+
+        // Upsert the patch record
+        const [patch] = await tx
+          .insert(patches)
+          .values({
+            source: patchData.source,
+            externalId: externalId,
+            title: patchData.name,
+            severity: 'unknown',
+            category: patchData.category || null
+          })
+          .onConflictDoUpdate({
+            target: [patches.source, patches.externalId],
+            set: {
+              title: patchData.name,
+              category: patchData.category || null,
+              updatedAt: new Date()
+            }
+          })
+          .returning();
+
+        if (patch) {
+          // Upsert the device-patch relationship as "installed"
+          const installedAt = patchData.installedAt ? new Date(patchData.installedAt) : new Date();
+          await tx
+            .insert(devicePatches)
+            .values({
+              deviceId: device.id,
+              patchId: patch.id,
+              status: 'installed',
+              installedAt: installedAt,
+              installedVersion: patchData.version || null,
+              lastCheckedAt: new Date()
+            })
+            .onConflictDoUpdate({
+              target: [devicePatches.deviceId, devicePatches.patchId],
+              set: {
+                status: 'installed',
+                installedAt: installedAt,
+                installedVersion: patchData.version || null,
+                lastCheckedAt: new Date(),
+                updatedAt: new Date()
+              }
+            });
+        }
+      }
+    }
   });
 
-  return c.json({ success: true, count: data.patches.length });
+  return c.json({ success: true, pending: data.patches.length, installed: installedCount });
+});
+
+// Submit network connections
+const submitConnectionsSchema = z.object({
+  connections: z.array(z.object({
+    protocol: z.enum(['tcp', 'tcp6', 'udp', 'udp6']),
+    localAddr: z.string().min(1),
+    localPort: z.number().int().min(0).max(65535),
+    remoteAddr: z.string().optional(),
+    remotePort: z.number().int().min(0).max(65535).optional(),
+    state: z.string().optional(),
+    pid: z.number().int().optional(),
+    processName: z.string().optional()
+  }))
+});
+
+agentRoutes.put('/:id/connections', zValidator('json', submitConnectionsSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  // Use a transaction to replace all connection entries atomically
+  await db.transaction(async (tx) => {
+    // Delete existing connection entries for this device
+    await tx
+      .delete(deviceConnections)
+      .where(eq(deviceConnections.deviceId, device.id));
+
+    // Insert new connection entries
+    if (data.connections.length > 0) {
+      const now = new Date();
+      await tx.insert(deviceConnections).values(
+        data.connections.map((conn) => ({
+          deviceId: device.id,
+          protocol: conn.protocol,
+          localAddr: conn.localAddr,
+          localPort: conn.localPort,
+          remoteAddr: conn.remoteAddr || null,
+          remotePort: conn.remotePort || null,
+          state: conn.state || null,
+          pid: conn.pid || null,
+          processName: conn.processName || null,
+          updatedAt: now
+        }))
+      );
+    }
+  });
+
+  return c.json({ success: true, count: data.connections.length });
 });

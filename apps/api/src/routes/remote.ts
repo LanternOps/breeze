@@ -31,6 +31,9 @@ async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: 
   }
 
   if (auth.scope === 'partner') {
+    if (!auth.partnerId) {
+      return false;
+    }
     const [org] = await db
       .select({ id: organizations.id })
       .from(organizations)
@@ -324,15 +327,18 @@ remoteRoutes.get(
 
     // Filter by org access based on scope
     if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      conditions.push(eq(devices.orgId, auth.orgId));
-    } else if (auth.scope === 'partner') {
-      const partnerOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, auth.partnerId as string));
+    if (!auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    conditions.push(eq(devices.orgId, auth.orgId));
+  } else if (auth.scope === 'partner') {
+    if (!auth.partnerId) {
+      return c.json({ error: 'Partner context required' }, 403);
+    }
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, auth.partnerId as string));
 
       const orgIds = partnerOrgs.map(o => o.id);
       if (orgIds.length === 0) {
@@ -441,15 +447,18 @@ remoteRoutes.get(
 
     // Filter by org access based on scope
     if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      conditions.push(eq(devices.orgId, auth.orgId));
-    } else if (auth.scope === 'partner') {
-      const partnerOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, auth.partnerId as string));
+    if (!auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    conditions.push(eq(devices.orgId, auth.orgId));
+  } else if (auth.scope === 'partner') {
+    if (!auth.partnerId) {
+      return c.json({ error: 'Partner context required' }, 403);
+    }
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, auth.partnerId as string));
 
       const orgIds = partnerOrgs.map(o => o.id);
       if (orgIds.length === 0) {
@@ -956,15 +965,18 @@ remoteRoutes.get(
 
     // Filter by org access based on scope
     if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      conditions.push(eq(devices.orgId, auth.orgId));
-    } else if (auth.scope === 'partner') {
-      const partnerOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, auth.partnerId as string));
+    if (!auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    conditions.push(eq(devices.orgId, auth.orgId));
+  } else if (auth.scope === 'partner') {
+    if (!auth.partnerId) {
+      return c.json({ error: 'Partner context required' }, 403);
+    }
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, auth.partnerId as string));
 
       const orgIds = partnerOrgs.map(o => o.id);
       if (orgIds.length === 0) {
