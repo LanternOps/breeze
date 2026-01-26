@@ -10,7 +10,7 @@ require (
 	github.com/shirou/gopsutil/v3 v3.24.1
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.18.2
-	go.uber.org/zap v1.26.0
+	go.uber.org/zap v1.27.1
 	golang.org/x/net v0.29.0
 	golang.org/x/sys v0.26.0
 )
