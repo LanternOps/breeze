@@ -13,6 +13,10 @@
  */
 
 import { Hono } from 'hono';
+import { sql, eq, gte, avg, desc } from 'drizzle-orm';
+import { db } from '../db';
+import { devices, deviceMetrics, remoteSessions } from '../db/schema';
+import { authMiddleware, requireScope } from '../middleware/auth';
 
 export const metricsRoutes = new Hono();
 
@@ -296,23 +300,117 @@ function escapeLabel(value: string): string {
 // ============================================
 
 /**
- * GET /metrics
- * Returns metrics in Prometheus exposition format
+ * GET / — Dashboard summary metrics (JSON)
+ * Queries devices table for counts and remote_sessions for session stats.
  */
-metricsRoutes.get('/metrics', async (c) => {
-  const metrics = formatMetrics();
+metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  try {
+    // Device counts by status (exclude decommissioned)
+    const statusCounts = await db
+      .select({
+        status: devices.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(devices)
+      .where(sql`${devices.status} != 'decommissioned'`)
+      .groupBy(devices.status);
 
-  return c.text(metrics, 200, {
-    'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-  });
+    let total = 0;
+    let online = 0;
+    let offline = 0;
+    for (const row of statusCounts) {
+      const n = Number(row.count);
+      total += n;
+      if (row.status === 'online') online = n;
+      if (row.status === 'offline' || row.status === 'maintenance') offline += n;
+    }
+
+    // Uptime = % of non-decommissioned devices that are online
+    const uptime = total > 0 ? Math.round((online / total) * 1000) / 10 : 0;
+
+    // Active remote sessions
+    const [sessionRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(remoteSessions)
+      .where(eq(remoteSessions.status, 'active'));
+    const activeSessions = Number(sessionRow?.count ?? 0);
+
+    // Total sessions in the last 30 days
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const [totalSessionRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(remoteSessions)
+      .where(gte(remoteSessions.createdAt, thirtyDaysAgo));
+    const totalSessions = Number(totalSessionRow?.count ?? 0);
+
+    return c.json({
+      data: {
+        uptime,
+        remoteSessions: activeSessions,
+        sessions: totalSessions,
+        devices: { total, online, offline },
+        business_metrics: {
+          devices_total: total,
+          devices_active: online,
+        },
+      },
+    });
+  } catch {
+    // Fallback if DB is unreachable (e.g. tables not yet migrated)
+    return c.json({
+      data: {
+        uptime: 0,
+        remoteSessions: 0,
+        sessions: 0,
+        devices: { total: 0, online: 0, offline: 0 },
+        business_metrics: { devices_total: 0, devices_active: 0 },
+      },
+    });
+  }
 });
 
 /**
- * GET /metrics/json
- * Returns metrics in JSON format (for debugging)
+ * GET /trends — CPU/memory performance trends
+ * Aggregates deviceMetrics into daily averages for the requested range.
  */
-metricsRoutes.get('/metrics/json', async (c) => {
+metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  const range = c.req.query('range') ?? '30d';
+  const days = range === '24h' ? 1 : range === '7d' ? 7 : 30;
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  try {
+    const rows = await db
+      .select({
+        bucket: sql<string>`date_trunc('day', ${deviceMetrics.timestamp})`.as('bucket'),
+        cpu: avg(deviceMetrics.cpuPercent).as('cpu'),
+        memory: avg(deviceMetrics.ramPercent).as('memory'),
+      })
+      .from(deviceMetrics)
+      .where(gte(deviceMetrics.timestamp, since))
+      .groupBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`)
+      .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
+
+    if (rows.length > 0) {
+      return c.json(
+        rows.map((r) => ({
+          timestamp: r.bucket,
+          cpu: Math.round(Number(r.cpu ?? 0)),
+          memory: Math.round(Number(r.memory ?? 0)),
+        }))
+      );
+    }
+
+    // No metrics data yet — return empty array
+    return c.json([]);
+  } catch {
+    return c.json([]);
+  }
+});
+
+/**
+ * GET /json — Metrics in JSON format (for debugging)
+ */
+metricsRoutes.get('/json', async (c) => {
   return c.json({
     http_requests_total: httpRequestsTotal,
     http_request_duration_seconds: httpRequestDurationSeconds,
@@ -329,6 +427,31 @@ metricsRoutes.get('/metrics/json', async (c) => {
       uptime_seconds: process.uptime(),
       node_version: process.version,
     },
+  });
+});
+
+/**
+ * GET /prometheus — Metrics in Prometheus exposition format
+ */
+metricsRoutes.get('/prometheus', async (c) => {
+  const metrics = formatMetrics();
+
+  return c.text(metrics, 200, {
+    'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+  });
+});
+
+/**
+ * GET /metrics — Backward-compatible alias for Prometheus scraping.
+ * Existing Prometheus configs may point to /metrics/metrics; keep it working.
+ */
+metricsRoutes.get('/metrics', async (c) => {
+  const metrics = formatMetrics();
+
+  return c.text(metrics, 200, {
+    'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
   });
 });
 

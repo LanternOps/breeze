@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql, gte, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations } from '../db/schema';
+import { organizations, devices } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 
 export const analyticsRoutes = new Hono();
@@ -173,7 +173,10 @@ const createSlaSchema = z.object({
 });
 
 const executiveSummarySchema = z.object({
-  periodType: z.enum(['daily', 'weekly', 'monthly'])
+  periodType: z.enum(['daily', 'weekly', 'monthly']).optional(),
+  range: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
 });
 
 analyticsRoutes.use('*', authMiddleware);
@@ -662,10 +665,106 @@ analyticsRoutes.get(
   async (c) => {
     const query = c.req.valid('query');
 
-    return c.json({
-      periodType: query.periodType,
-      highlights: [],
-      metrics: []
-    });
+    try {
+      // Device counts by status (exclude decommissioned)
+      const statusCounts = await db
+        .select({
+          status: devices.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(devices)
+        .where(ne(devices.status, 'decommissioned'))
+        .groupBy(devices.status);
+
+      let total = 0;
+      let online = 0;
+      let offline = 0;
+      for (const row of statusCounts) {
+        const n = Number(row.count);
+        total += n;
+        if (row.status === 'online') online = n;
+        if (row.status === 'offline' || row.status === 'maintenance') offline += n;
+      }
+
+      // Weekly enrollment trend (last 12 weeks)
+      const twelveWeeksAgo = new Date(Date.now() - 12 * 7 * 24 * 60 * 60 * 1000);
+      const weeklyTrend = await db
+        .select({
+          week: sql<string>`date_trunc('week', ${devices.enrolledAt})`.as('week'),
+          count: sql<number>`count(*)`,
+        })
+        .from(devices)
+        .where(gte(devices.enrolledAt, twelveWeeksAgo))
+        .groupBy(sql`date_trunc('week', ${devices.enrolledAt})`)
+        .orderBy(sql`date_trunc('week', ${devices.enrolledAt})`);
+
+      const trendData = weeklyTrend.map((row) => ({
+        timestamp: row.week,
+        value: Number(row.count),
+      }));
+
+      return c.json({
+        data: {
+          periodType: query.periodType ?? 'monthly',
+          devices: { total, online, offline },
+          totalDevices: total,
+          onlineDevices: online,
+          offlineDevices: offline,
+          trendData,
+          trendLabel: 'Weekly enrollments',
+          highlights: [],
+          metrics: [],
+        },
+      });
+    } catch {
+      return c.json({
+        data: {
+          devices: { total: 0, online: 0, offline: 0 },
+          totalDevices: 0,
+          onlineDevices: 0,
+          offlineDevices: 0,
+          trendData: [],
+          highlights: [],
+          metrics: [],
+        },
+      });
+    }
+  }
+);
+
+// ============================================
+// OS DISTRIBUTION
+// ============================================
+
+analyticsRoutes.get(
+  '/os-distribution',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    try {
+      // Group by osType + osVersion for granularity
+      const rows = await db
+        .select({
+          osType: devices.osType,
+          osVersion: devices.osVersion,
+          count: sql<number>`count(*)`,
+        })
+        .from(devices)
+        .where(ne(devices.status, 'decommissioned'))
+        .groupBy(devices.osType, devices.osVersion)
+        .orderBy(sql`count(*) desc`);
+
+      if (rows.length > 0) {
+        return c.json(
+          rows.map((r) => ({
+            name: `${r.osType} ${r.osVersion}`.trim(),
+            value: Number(r.count),
+          }))
+        );
+      }
+
+      return c.json([]);
+    } catch {
+      return c.json([]);
+    }
   }
 );

@@ -2,6 +2,12 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
+import { eq, sql } from 'drizzle-orm';
+import { db } from '../db';
+import {
+  policies as policiesTable,
+  policyCompliance as policyComplianceTable,
+} from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 
 export const policyRoutes = new Hono();
@@ -555,6 +561,86 @@ policyRoutes.get(
       policies: effectivePolicies,
       count: effectivePolicies.length
     });
+  }
+);
+
+// GET /policies/compliance/stats - Aggregate compliance statistics from DB
+policyRoutes.get(
+  '/compliance/stats',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    try {
+      // Total and active policies from DB
+      const policyCountRows = await db
+        .select({
+          status: policiesTable.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(policiesTable)
+        .groupBy(policiesTable.status);
+
+      let totalPolicies = 0;
+      let enabledPolicies = 0;
+      for (const row of policyCountRows) {
+        const n = Number(row.count);
+        totalPolicies += n;
+        if (row.status === 'active') enabledPolicies = n;
+      }
+
+      // Compliance breakdown from policy_compliance table
+      const complianceRows = await db
+        .select({
+          status: policyComplianceTable.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(policyComplianceTable)
+        .groupBy(policyComplianceTable.status);
+
+      let compliant = 0;
+      let nonCompliant = 0;
+      let pending = 0;
+      let totalChecks = 0;
+      for (const row of complianceRows) {
+        const n = Number(row.count);
+        totalChecks += n;
+        if (row.status === 'compliant') compliant = n;
+        else if (row.status === 'non-compliant') nonCompliant = n;
+        else pending += n; // 'pending' or other
+      }
+
+      const complianceRate = totalChecks > 0
+        ? Math.round((compliant / totalChecks) * 100)
+        : 0;
+
+      return c.json({
+        data: {
+          complianceRate,
+          complianceScore: complianceRate,
+          totalPolicies,
+          enabledPolicies,
+          complianceOverview: {
+            compliant,
+            non_compliant: nonCompliant,
+            pending,
+          },
+        },
+      });
+    } catch {
+      // Fallback: use in-memory data if DB tables don't exist yet
+      ensureSeedData();
+      const allPolicies = Array.from(policies.values());
+      const activePolicies = allPolicies.filter((p) => p.status === 'active');
+
+      return c.json({
+        data: {
+          complianceRate: 0,
+          complianceScore: 0,
+          totalPolicies: allPolicies.length,
+          enabledPolicies: activePolicies.length,
+          complianceOverview: { compliant: 0, non_compliant: 0, pending: 0 },
+        },
+      });
+    }
   }
 );
 
