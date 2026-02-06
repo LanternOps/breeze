@@ -1,5 +1,7 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { FileCog, ShieldCheck, CalendarClock, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import PatchList, {
   type Patch,
   type PatchApprovalStatus,
@@ -197,6 +199,7 @@ export default function PatchesPage() {
   const [deviceError, setDeviceError] = useState<string>();
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
   const [policySubmitting, setPolicySubmitting] = useState(false);
+  const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
 
   const tabs = useMemo(
     () => [
@@ -469,6 +472,14 @@ export default function PatchesPage() {
           ))}
         </nav>
       </div>
+
+      <DeviceFilterBar
+        value={deviceFilter}
+        onChange={setDeviceFilter}
+        collapsible
+        defaultExpanded={false}
+        showPreview
+      />
 
       {activeTab === 'patches' && (
         <div className="grid gap-6 lg:grid-cols-3">

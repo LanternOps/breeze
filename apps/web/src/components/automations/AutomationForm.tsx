@@ -13,10 +13,13 @@ import {
   Copy,
   HelpCircle,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Filter
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TriggerType } from './AutomationList';
+import type { DeploymentTargetConfig } from '@breeze/shared';
+import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
 // Cron expression helper
 function describeCron(cron: string): string {
@@ -178,6 +181,8 @@ export default function AutomationForm({
   notificationChannels = []
 }: AutomationFormProps) {
   const [conditionsExpanded, setConditionsExpanded] = useState(true);
+  const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>('simple');
+  const [automationTargetConfig, setAutomationTargetConfig] = useState<DeploymentTargetConfig>({ type: 'all' });
 
   const {
     register,
@@ -430,7 +435,7 @@ export default function AutomationForm({
         </div>
       </div>
 
-      {/* Conditions Builder */}
+      {/* Device Targeting */}
       <div className="rounded-md border bg-muted/20 p-4">
         <button
           type="button"
@@ -438,7 +443,7 @@ export default function AutomationForm({
           className="flex w-full items-center justify-between"
         >
           <div>
-            <h3 className="text-sm font-semibold">Conditions (Optional)</h3>
+            <h3 className="text-sm font-semibold">Device Targeting (Optional)</h3>
             <p className="text-xs text-muted-foreground">Filter which devices this automation applies to</p>
           </div>
           {conditionsExpanded ? (
@@ -449,53 +454,91 @@ export default function AutomationForm({
         </button>
 
         {conditionsExpanded && (
-          <div className="mt-4 space-y-3">
-            {conditionFields.map((field, index) => (
-              <div key={field.id} className="flex items-center gap-2 rounded-md border bg-background p-3">
-                <GripVertical className="h-4 w-4 text-muted-foreground cursor-move" />
-                <select
-                  className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  {...register(`conditions.${index}.type`)}
-                >
-                  {conditionTypeOptions.map(opt => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  {...register(`conditions.${index}.operator`)}
-                >
-                  {operatorOptions.map(opt => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  placeholder="Value"
-                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  {...register(`conditions.${index}.value`)}
-                />
+          <div className="mt-4 space-y-4">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs font-medium text-muted-foreground">Mode:</span>
+              <div className="flex rounded-md border">
                 <button
                   type="button"
-                  onClick={() => removeCondition(index)}
-                  className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive"
+                  onClick={() => setConditionMode('simple')}
+                  className={cn(
+                    'px-3 py-1 text-xs font-medium rounded-l-md transition',
+                    conditionMode === 'simple' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                  )}
                 >
-                  <Trash2 className="h-4 w-4" />
+                  Simple
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConditionMode('advanced')}
+                  className={cn(
+                    'px-3 py-1 text-xs font-medium rounded-r-md transition',
+                    conditionMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                  )}
+                >
+                  <Filter className="h-3 w-3 inline mr-1" />
+                  Advanced
                 </button>
               </div>
-            ))}
+            </div>
 
-            <button
-              type="button"
-              onClick={() => appendCondition({ type: 'site', operator: 'is', value: '' })}
-              className="inline-flex items-center gap-1 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
-            >
-              <Plus className="h-4 w-4" />
-              Add Condition
-            </button>
+            {conditionMode === 'simple' ? (
+              <div className="space-y-3">
+                {conditionFields.map((field, index) => (
+                  <div key={field.id} className="flex items-center gap-2 rounded-md border bg-background p-3">
+                    <GripVertical className="h-4 w-4 text-muted-foreground cursor-move" />
+                    <select
+                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      {...register(`conditions.${index}.type`)}
+                    >
+                      {conditionTypeOptions.map(opt => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      {...register(`conditions.${index}.operator`)}
+                    >
+                      {operatorOptions.map(opt => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      placeholder="Value"
+                      className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      {...register(`conditions.${index}.value`)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeCondition(index)}
+                      className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() => appendCondition({ type: 'site', operator: 'is', value: '' })}
+                  className="inline-flex items-center gap-1 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Condition
+                </button>
+              </div>
+            ) : (
+              <DeviceTargetSelector
+                value={automationTargetConfig}
+                onChange={setAutomationTargetConfig}
+                modes={['all', 'filter']}
+                showPreview={true}
+              />
+            )}
           </div>
         )}
       </div>

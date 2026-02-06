@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
@@ -15,6 +16,8 @@ import (
 	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/scripts"
+	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
 )
@@ -44,14 +47,20 @@ type Heartbeat struct {
 	client              *http.Client
 	stopChan            chan struct{}
 	metricsCol          *collectors.MetricsCollector
+	hardwareCol         *collectors.HardwareCollector
 	softwareCol         *collectors.SoftwareCollector
 	inventoryCol        *collectors.InventoryCollector
 	patchCol            *collectors.PatchCollector
 	connectionsCol      *collectors.ConnectionsCollector
+	eventLogCol         *collectors.EventLogCollector
 	agentVersion        string
 	fileTransferMgr     *filetransfer.Manager
 	desktopMgr          *desktop.SessionManager
-	lastInventoryUpdate time.Time
+	terminalMgr         *terminal.Manager
+	wsClient            *websocket.Client
+	mu                  sync.Mutex
+	lastInventoryUpdate  time.Time
+	lastEventLogUpdate   time.Time
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -70,13 +79,30 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		client:          &http.Client{Timeout: 30 * time.Second},
 		stopChan:        make(chan struct{}),
 		metricsCol:      collectors.NewMetricsCollector(),
+		hardwareCol:     collectors.NewHardwareCollector(),
 		softwareCol:     collectors.NewSoftwareCollector(),
 		inventoryCol:    collectors.NewInventoryCollector(),
 		patchCol:        collectors.NewPatchCollector(),
 		connectionsCol:  collectors.NewConnectionsCollector(),
+		eventLogCol:     collectors.NewEventLogCollector(),
 		agentVersion:    version,
 		fileTransferMgr: filetransfer.NewManager(ftConfig),
 		desktopMgr:      desktop.NewSessionManager(),
+		terminalMgr:     terminal.NewManager(),
+	}
+}
+
+// SetWebSocketClient sets the WebSocket client for terminal output streaming
+func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
+	h.wsClient = ws
+}
+
+// sendTerminalOutput streams terminal output via WebSocket
+func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
+	if h.wsClient != nil {
+		if err := h.wsClient.SendTerminalOutput(sessionId, data); err != nil {
+			fmt.Printf("Warning: terminal output dropped for session %s: %v\n", sessionId, err)
+		}
 	}
 }
 
@@ -95,8 +121,22 @@ func (h *Heartbeat) Start() {
 		case <-ticker.C:
 			h.sendHeartbeat()
 			// Send inventory every 15 minutes
-			if time.Since(h.lastInventoryUpdate) > 15*time.Minute {
+			h.mu.Lock()
+			shouldSendInventory := time.Since(h.lastInventoryUpdate) > 15*time.Minute
+			if shouldSendInventory {
+				h.lastInventoryUpdate = time.Now()
+			}
+			shouldSendEventLogs := time.Since(h.lastEventLogUpdate) > 5*time.Minute
+			if shouldSendEventLogs {
+				h.lastEventLogUpdate = time.Now()
+			}
+			h.mu.Unlock()
+			if shouldSendInventory {
 				go h.sendInventory()
+			}
+			// Send event logs every 5 minutes
+			if shouldSendEventLogs {
+				go h.sendEventLogs()
 			}
 		case <-h.stopChan:
 			return
@@ -108,15 +148,51 @@ func (h *Heartbeat) Stop() {
 	close(h.stopChan)
 }
 
-// sendInventory collects and sends software, disk, network, connections, and patch inventory
+// sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory
 func (h *Heartbeat) sendInventory() {
-	h.lastInventoryUpdate = time.Now()
-
+	go h.sendHardwareInventory()
 	go h.sendSoftwareInventory()
 	go h.sendDiskInventory()
 	go h.sendNetworkInventory()
 	go h.sendConnectionsInventory()
 	go h.sendPatchInventory()
+}
+
+func (h *Heartbeat) sendHardwareInventory() {
+	hw, err := h.hardwareCol.CollectHardware()
+	if err != nil {
+		fmt.Printf("Error collecting hardware info: %v\n", err)
+		return
+	}
+
+	body, err := json.Marshal(hw)
+	if err != nil {
+		fmt.Printf("Error marshaling hardware info: %v\n", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/hardware", h.config.ServerURL, h.config.AgentID)
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
+	if err != nil {
+		fmt.Printf("Error creating hardware info request: %v\n", err)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		fmt.Printf("Error sending hardware info: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Println("Hardware info sent")
+	} else {
+		fmt.Printf("Hardware info failed with status %d\n", resp.StatusCode)
+	}
 }
 
 func (h *Heartbeat) sendSoftwareInventory() {
@@ -402,6 +478,47 @@ func (h *Heartbeat) sendConnectionsInventory() {
 	}
 }
 
+func (h *Heartbeat) sendEventLogs() {
+	events, err := h.eventLogCol.Collect()
+	if err != nil {
+		fmt.Printf("Error collecting event logs: %v\n", err)
+		return
+	}
+
+	if len(events) == 0 {
+		return
+	}
+
+	body, err := json.Marshal(map[string]interface{}{"events": events})
+	if err != nil {
+		fmt.Printf("Error marshaling event logs: %v\n", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/eventlogs", h.config.ServerURL, h.config.AgentID)
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
+	if err != nil {
+		fmt.Printf("Error creating event logs request: %v\n", err)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		fmt.Printf("Error sending event logs: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Printf("Event logs sent: %d events\n", len(events))
+	} else {
+		fmt.Printf("Event logs failed with status %d\n", resp.StatusCode)
+	}
+}
+
 func (h *Heartbeat) sendHeartbeat() {
 	metrics, err := h.metricsCol.Collect()
 	if err != nil {
@@ -534,10 +651,22 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 		}
 	}
 
-	// Also submit result via HTTP to keep database in sync
-	go h.submitCommandResult(cmd.ID, result)
+	// Submit result via HTTP to keep database in sync (skip terminal commands
+	// which use ephemeral IDs not stored in the database)
+	if !isTerminalCommand(cmd.Type) {
+		go h.submitCommandResult(cmd.ID, result)
+	}
 
 	return wsResult
+}
+
+// isTerminalCommand returns true for terminal-related command types
+func isTerminalCommand(cmdType string) bool {
+	switch cmdType {
+	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop:
+		return true
+	}
+	return false
 }
 
 // executeCommand runs a command and returns the result
@@ -682,6 +811,53 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 				DurationMs: time.Since(start).Milliseconds(),
 			}
 		}
+
+	// Terminal commands
+	case tools.CmdTerminalStart:
+		result = tools.StartTerminal(h.terminalMgr, cmd.Payload, h.sendTerminalOutput)
+	case tools.CmdTerminalData:
+		result = tools.WriteTerminal(h.terminalMgr, cmd.Payload)
+	case tools.CmdTerminalResize:
+		result = tools.ResizeTerminal(h.terminalMgr, cmd.Payload)
+	case tools.CmdTerminalStop:
+		result = tools.StopTerminal(h.terminalMgr, cmd.Payload)
+
+	// Script execution
+	case tools.CmdScript:
+		language := tools.GetPayloadString(cmd.Payload, "language", "bash")
+		content := tools.GetPayloadString(cmd.Payload, "content", "")
+		timeoutSec := tools.GetPayloadInt(cmd.Payload, "timeoutSeconds", 300)
+		if content == "" {
+			result = tools.CommandResult{
+				Status: "failed",
+				Error:  "script content is empty",
+			}
+		} else {
+			runner := scripts.NewRunner()
+			scriptResult := runner.Run(language, content, time.Duration(timeoutSec)*time.Second)
+			result = tools.CommandResult{
+				Status:     scriptResult.Status,
+				ExitCode:   scriptResult.ExitCode,
+				Stdout:     scriptResult.Stdout,
+				Stderr:     scriptResult.Stderr,
+				Error:      scriptResult.ErrorMsg,
+				DurationMs: scriptResult.DurationMs,
+			}
+		}
+
+	// File operations
+	case tools.CmdFileList:
+		result = tools.ListFiles(cmd.Payload)
+	case tools.CmdFileRead:
+		result = tools.ReadFile(cmd.Payload)
+	case tools.CmdFileWrite:
+		result = tools.WriteFile(cmd.Payload)
+	case tools.CmdFileDelete:
+		result = tools.DeleteFile(cmd.Payload)
+	case tools.CmdFileMkdir:
+		result = tools.MakeDirectory(cmd.Payload)
+	case tools.CmdFileRename:
+		result = tools.RenameFile(cmd.Payload)
 
 	default:
 		result = tools.CommandResult{

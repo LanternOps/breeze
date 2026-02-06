@@ -53,6 +53,23 @@ const (
 	// Remote desktop
 	CmdStartDesktop = "start_desktop"
 	CmdStopDesktop  = "stop_desktop"
+
+	// Terminal commands
+	CmdTerminalStart  = "terminal_start"
+	CmdTerminalData   = "terminal_data"
+	CmdTerminalResize = "terminal_resize"
+	CmdTerminalStop   = "terminal_stop"
+
+	// Script execution
+	CmdScript = "script"
+
+	// File operations
+	CmdFileList   = "file_list"
+	CmdFileRead   = "file_read"
+	CmdFileWrite  = "file_write"
+	CmdFileDelete = "file_delete"
+	CmdFileMkdir  = "file_mkdir"
+	CmdFileRename = "file_rename"
 )
 
 // CommandResult represents the result of a command execution
@@ -207,6 +224,22 @@ type RegistryValuesResponse struct {
 	Values []RegistryValue `json:"values"`
 	Path   string          `json:"path"`
 	Hive   string          `json:"hive"`
+}
+
+// FileEntry represents a file or directory in file listing responses
+type FileEntry struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Type        string `json:"type"` // "file" or "directory"
+	Size        int64  `json:"size,omitempty"`
+	Modified    string `json:"modified,omitempty"`
+	Permissions string `json:"permissions,omitempty"`
+}
+
+// FileListResponse represents the response for file listing
+type FileListResponse struct {
+	Path    string      `json:"path"`
+	Entries []FileEntry `json:"entries"`
 }
 
 // Payload helpers

@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import AlertDetailPage from '../../components/alerts/AlertDetailPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Alert Details">
+  <AlertDetailPage alertId={id!} client:load />
+</DashboardLayout>

@@ -16,7 +16,7 @@ export type Script = {
   category: string;
   osTypes: OSType[];
   lastRun?: string;
-  status: ScriptStatus;
+  status?: ScriptStatus;
   createdAt: string;
   updatedAt: string;
 };
@@ -242,12 +242,17 @@ export default function ScriptList({
                     {formatLastRun(script.lastRun, timezone)}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={cn(
-                      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                      statusConfig[script.status].color
-                    )}>
-                      {statusConfig[script.status].label}
-                    </span>
+                    {(() => {
+                      const cfg = statusConfig[script.status ?? 'active'];
+                      return (
+                        <span className={cn(
+                          'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                          cfg.color
+                        )}>
+                          {cfg.label}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">

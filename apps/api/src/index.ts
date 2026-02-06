@@ -51,7 +51,15 @@ import { customFieldRoutes } from './routes/customFields';
 import { filterRoutes } from './routes/filters';
 import { deploymentRoutes } from './routes/deployments';
 import { createAgentWsRoutes } from './routes/agentWs';
+import { createTerminalWsRoutes } from './routes/terminalWs';
 import { agentVersionRoutes } from './routes/agentVersions';
+
+// Workers
+import { initializeAlertWorkers } from './jobs/alertWorker';
+import { initializeOfflineDetector } from './jobs/offlineDetector';
+import { initializeNotificationDispatcher } from './services/notificationDispatcher';
+import { initializeEventLogRetention } from './jobs/eventLogRetention';
+import { isRedisAvailable } from './services/redis';
 
 const app = new Hono();
 
@@ -107,6 +115,7 @@ api.route('/audit', auditRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
+api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/sso', ssoRoutes);
@@ -181,3 +190,29 @@ injectWebSocket(server);
 
 console.log(`Breeze API running at http://localhost:${port}`);
 console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+// Initialize background workers (only if Redis is available)
+let workersHealthy = false;
+export function areWorkersHealthy(): boolean { return workersHealthy; }
+
+async function initializeWorkers(): Promise<void> {
+  if (!isRedisAvailable()) {
+    console.warn('[WARN] Redis not available - background workers disabled');
+    return;
+  }
+
+  try {
+    await initializeAlertWorkers();
+    await initializeOfflineDetector();
+    await initializeNotificationDispatcher();
+    await initializeEventLogRetention();
+    workersHealthy = true;
+    console.log('Background workers initialized');
+  } catch (error) {
+    workersHealthy = false;
+    console.error('[CRITICAL] Failed to initialize background workers:', error);
+  }
+}
+
+// Run worker initialization
+initializeWorkers();

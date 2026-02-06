@@ -1,6 +1,7 @@
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceCommands, devices } from '../db/schema';
+import { deviceCommands, devices, auditLogs } from '../db/schema';
+import { sendCommandToAgent } from '../routes/agentWs';
 
 // Command types for system tools
 export const CommandTypes = {
@@ -34,6 +35,23 @@ export const CommandTypes = {
   REGISTRY_GET: 'registry_get',
   REGISTRY_SET: 'registry_set',
   REGISTRY_DELETE: 'registry_delete',
+
+  // File operations
+  FILE_LIST: 'file_list',
+  FILE_READ: 'file_read',
+  FILE_WRITE: 'file_write',
+  FILE_DELETE: 'file_delete',
+  FILE_MKDIR: 'file_mkdir',
+  FILE_RENAME: 'file_rename',
+
+  // Terminal
+  TERMINAL_START: 'terminal_start',
+  TERMINAL_DATA: 'terminal_data',
+  TERMINAL_RESIZE: 'terminal_resize',
+  TERMINAL_STOP: 'terminal_stop',
+
+  // Script execution
+  SCRIPT: 'script',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -65,6 +83,25 @@ export interface QueuedCommand {
   result: CommandResult | null;
 }
 
+// Commands that modify system state and should always be audit-logged
+const AUDITED_COMMANDS: Set<string> = new Set([
+  CommandTypes.KILL_PROCESS,
+  CommandTypes.START_SERVICE,
+  CommandTypes.STOP_SERVICE,
+  CommandTypes.RESTART_SERVICE,
+  CommandTypes.TASK_RUN,
+  CommandTypes.TASK_ENABLE,
+  CommandTypes.TASK_DISABLE,
+  CommandTypes.REGISTRY_SET,
+  CommandTypes.REGISTRY_DELETE,
+  CommandTypes.FILE_WRITE,
+  CommandTypes.FILE_DELETE,
+  CommandTypes.FILE_MKDIR,
+  CommandTypes.FILE_RENAME,
+  CommandTypes.TERMINAL_START,
+  CommandTypes.SCRIPT,
+]);
+
 /**
  * Queue a command for execution on a device
  */
@@ -84,6 +121,32 @@ export async function queueCommand(
       createdBy: userId || null,
     })
     .returning();
+
+  // Audit log for mutating commands
+  if (command && AUDITED_COMMANDS.has(type)) {
+    const [device] = await db
+      .select({ orgId: devices.orgId, hostname: devices.hostname })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+
+    if (device) {
+      db.insert(auditLogs)
+        .values({
+          orgId: device.orgId,
+          actorType: userId ? 'user' : 'system',
+          actorId: userId || '00000000-0000-0000-0000-000000000000',
+          action: `agent.command.${type}`,
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname,
+          details: { commandId: command.id, type, payload },
+          result: 'success',
+        })
+        .execute()
+        .catch((err) => console.error('Failed to write audit log:', err));
+    }
+  }
 
   return command as QueuedCommand;
 }
@@ -177,6 +240,22 @@ export async function executeCommand(
 
   // Queue the command
   const command = await queueCommand(deviceId, type, payload, userId);
+
+  // Try to dispatch via WebSocket for immediate execution
+  if (device.agentId) {
+    const sent = sendCommandToAgent(device.agentId, {
+      id: command.id,
+      type,
+      payload
+    });
+    if (sent) {
+      // Mark as sent so heartbeat won't re-dispatch
+      await db
+        .update(deviceCommands)
+        .set({ status: 'sent', executedAt: new Date() })
+        .where(eq(deviceCommands.id, command.id));
+    }
+  }
 
   // Wait for result
   const result = await waitForCommandResult(command.id, timeoutMs);

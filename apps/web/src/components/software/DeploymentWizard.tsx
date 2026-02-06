@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle, ChevronRight, Loader2, Search, Server, CalendarClock, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import type { DeploymentTargetConfig } from '@breeze/shared';
+import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
 type WizardStep = 'software' | 'targets' | 'configure' | 'review';
 
@@ -80,6 +82,8 @@ export default function DeploymentWizard() {
   const [scheduleType, setScheduleType] = useState<'immediate' | 'scheduled' | 'maintenance'>('immediate');
   const [scheduledAt, setScheduledAt] = useState('');
   const [maintenanceWindow, setMaintenanceWindow] = useState('Saturday 02:00 - 04:00');
+  const [targetMode, setTargetMode] = useState<'tree' | 'advanced'>('tree');
+  const [targetConfig, setTargetConfig] = useState<DeploymentTargetConfig>({ type: 'devices', deviceIds: [] });
 
   const fetchData = useCallback(async () => {
     try {
@@ -234,12 +238,29 @@ export default function DeploymentWizard() {
 
   const selectedDeviceCount = useMemo(() => selectedDevices.size, [selectedDevices]);
 
+  // Sync selectedDevices when using advanced targeting
+  const handleTargetConfigChange = useCallback((config: DeploymentTargetConfig) => {
+    setTargetConfig(config);
+    if (config.type === 'devices' && config.deviceIds) {
+      setSelectedDevices(new Set(config.deviceIds));
+    }
+  }, []);
+
   const canProceed = useMemo(() => {
     if (activeStep === 'software') return Boolean(selectedSoftwareId && selectedVersion);
-    if (activeStep === 'targets') return selectedDevices.size > 0;
+    if (activeStep === 'targets') {
+      if (targetMode === 'advanced') {
+        if (targetConfig.type === 'all') return true;
+        if (targetConfig.type === 'devices') return (targetConfig.deviceIds?.length ?? 0) > 0;
+        if (targetConfig.type === 'groups') return (targetConfig.groupIds?.length ?? 0) > 0;
+        if (targetConfig.type === 'filter') return !!targetConfig.filter;
+        return false;
+      }
+      return selectedDevices.size > 0;
+    }
     if (activeStep === 'configure') return scheduleType !== 'scheduled' || Boolean(scheduledAt);
     return true;
-  }, [activeStep, selectedSoftwareId, selectedVersion, selectedDevices, scheduleType, scheduledAt]);
+  }, [activeStep, selectedSoftwareId, selectedVersion, selectedDevices, scheduleType, scheduledAt, targetMode, targetConfig]);
 
   const toggleDevices = (deviceIds: string[], select: boolean) => {
     setSelectedDevices(prev => {
@@ -441,6 +462,50 @@ export default function DeploymentWizard() {
     }
 
     if (activeStep === 'targets') {
+      // Mode toggle between tree and advanced
+      const targetModeToggle = (
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-sm font-medium text-muted-foreground">Target by:</span>
+          <div className="flex rounded-md border">
+            <button
+              type="button"
+              onClick={() => setTargetMode('tree')}
+              className={cn(
+                'px-3 py-1.5 text-xs font-medium transition rounded-l-md',
+                targetMode === 'tree' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+              )}
+            >
+              Hierarchy
+            </button>
+            <button
+              type="button"
+              onClick={() => setTargetMode('advanced')}
+              className={cn(
+                'px-3 py-1.5 text-xs font-medium transition rounded-r-md',
+                targetMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+              )}
+            >
+              Advanced
+            </button>
+          </div>
+        </div>
+      );
+
+      if (targetMode === 'advanced') {
+        return (
+          <div>
+            {targetModeToggle}
+            <DeviceTargetSelector
+              value={targetConfig}
+              onChange={handleTargetConfigChange}
+              modes={['manual', 'groups', 'filter']}
+              showPreview={true}
+              showSavedFilters={true}
+            />
+          </div>
+        );
+      }
+
       const TreeItem = ({ node, level }: { node: TargetNode; level: number }) => {
         const checkboxRef = useRef<HTMLInputElement | null>(null);
         const deviceIds = collectDeviceIds(node);
@@ -480,7 +545,9 @@ export default function DeploymentWizard() {
       };
 
       return (
-        <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
+        <div>
+          {targetModeToggle}
+          <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
           <div className="rounded-lg border bg-card p-5 shadow-sm">
             <h3 className="text-sm font-semibold">Organization targets</h3>
             <p className="text-xs text-muted-foreground">Select groups or devices for deployment.</p>
@@ -506,6 +573,7 @@ export default function DeploymentWizard() {
               Tip: Selecting a group automatically includes all devices within it.
             </div>
           </div>
+        </div>
         </div>
       );
     }

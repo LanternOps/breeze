@@ -204,9 +204,9 @@ coreRoutes.get(
       .innerJoin(deviceGroups, eq(deviceGroupMemberships.groupId, deviceGroups.id))
       .where(eq(deviceGroupMemberships.deviceId, deviceId));
 
-    // Get site timezone
+    // Get site info
     const [site] = await db
-      .select({ timezone: sites.timezone })
+      .select({ timezone: sites.timezone, name: sites.name })
       .from(sites)
       .where(eq(sites.id, device.siteId))
       .limit(1);
@@ -217,6 +217,7 @@ coreRoutes.get(
       networkInterfaces,
       recentMetrics,
       groups: memberships,
+      siteName: site?.name || 'Unknown Site',
       siteTimezone: site?.timezone || 'UTC'
     });
   }

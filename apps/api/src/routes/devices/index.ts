@@ -9,6 +9,7 @@ import { groupsRoutes } from './groups';
 import { patchesRoutes } from './patches';
 import { scriptsRoutes } from './scripts';
 import { eventsRoutes } from './events';
+import { eventLogsRoutes } from './eventlogs';
 
 export const deviceRoutes = new Hono();
 
@@ -27,6 +28,7 @@ deviceRoutes.route('/', alertsRoutes);
 deviceRoutes.route('/', patchesRoutes);
 deviceRoutes.route('/', scriptsRoutes);
 deviceRoutes.route('/', eventsRoutes);
+deviceRoutes.route('/', eventLogsRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere
 export * from './helpers';

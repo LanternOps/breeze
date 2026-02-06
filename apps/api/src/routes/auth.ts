@@ -39,12 +39,6 @@ const loginSchema = z.object({
   password: z.string().min(1)
 });
 
-const registerSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-  name: z.string().min(1).max(255)
-});
-
 const registerPartnerSchema = z.object({
   companyName: z.string().min(2).max(255),
   email: z.string().email(),
@@ -90,85 +84,6 @@ function genericAuthError() {
 // ============================================
 // Routes
 // ============================================
-
-// Register
-authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
-  const { email, password, name } = c.req.valid('json');
-  const ip = getClientIP(c);
-
-  // Rate limit registration - fail closed for security
-  const redis = getRedis();
-  if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
-  }
-  const rateCheck = await rateLimiter(redis, `register:${ip}`, 5, 3600);
-  if (!rateCheck.allowed) {
-    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
-  }
-
-  // Validate password strength
-  const passwordCheck = isPasswordStrong(password);
-  if (!passwordCheck.valid) {
-    return c.json({ error: passwordCheck.errors[0] }, 400);
-  }
-
-  // Check if user exists
-  const existingUser = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, email.toLowerCase()))
-    .limit(1);
-
-  if (existingUser.length > 0) {
-    // Don't reveal that email exists - return success anyway
-    // In production, you'd send an email saying "you already have an account"
-    return c.json({ success: true, message: 'If this email is valid, you will receive a confirmation.' });
-  }
-
-  // Create user
-  const passwordHash = await hashPassword(password);
-  const result = await db
-    .insert(users)
-    .values({
-      email: email.toLowerCase(),
-      name,
-      passwordHash,
-      status: 'active'
-    })
-    .returning();
-
-  const newUser = result[0];
-  if (!newUser) {
-    return c.json({ error: 'Failed to create user' }, 500);
-  }
-
-  // Create tokens
-  const tokens = await createTokenPair({
-    sub: newUser.id,
-    email: newUser.email,
-    roleId: null,
-    orgId: null,
-    partnerId: null,
-    scope: 'system'
-  });
-
-  // Update last login
-  await db
-    .update(users)
-    .set({ lastLoginAt: new Date() })
-    .where(eq(users.id, newUser.id));
-
-  return c.json({
-    user: {
-      id: newUser.id,
-      email: newUser.email,
-      name: newUser.name,
-      mfaEnabled: false
-    },
-    tokens,
-    mfaRequired: false
-  });
-});
 
 // Register Partner (self-service MSP/company signup)
 authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), async (c) => {

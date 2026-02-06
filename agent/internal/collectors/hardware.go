@@ -15,6 +15,7 @@ type HardwareInfo struct {
 	CPUThreads   int    `json:"cpuThreads"`
 	RAMTotalMB   uint64 `json:"ramTotalMb"`
 	DiskTotalGB  uint64 `json:"diskTotalGb"`
+	GPUModel     string `json:"gpuModel,omitempty"`
 	SerialNumber string `json:"serialNumber,omitempty"`
 	Manufacturer string `json:"manufacturer,omitempty"`
 	Model        string `json:"model,omitempty"`
@@ -43,12 +44,19 @@ func (c *HardwareCollector) CollectSystemInfo() (*SystemInfo, error) {
 	hostInfo, err := host.Info()
 	if err == nil {
 		info.Hostname = hostInfo.Hostname
-		info.OSType = hostInfo.OS
+		info.OSType = normalizeOSType(hostInfo.OS)
 		info.OSVersion = hostInfo.Platform + " " + hostInfo.PlatformVersion
 		info.OSBuild = hostInfo.KernelVersion
 	}
 
 	return info, nil
+}
+
+func normalizeOSType(os string) string {
+	if os == "darwin" {
+		return "macos"
+	}
+	return os
 }
 
 func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {
@@ -78,6 +86,9 @@ func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {
 	if err == nil {
 		hw.DiskTotalGB = diskUsage.Total / 1024 / 1024 / 1024
 	}
+
+	// Platform-specific: serial number, manufacturer, model, BIOS, GPU
+	collectPlatformHardware(hw)
 
 	return hw, nil
 }

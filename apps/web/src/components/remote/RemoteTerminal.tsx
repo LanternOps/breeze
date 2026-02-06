@@ -11,6 +11,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth, useAuthStore } from '@/stores/auth';
 
 // xterm.js will be loaded dynamically
 type XTermInstance = {
@@ -72,6 +73,7 @@ export default function RemoteTerminal({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [connectionTime, setConnectionTime] = useState<Date | null>(null);
   const [bytesTransferred, setBytesTransferred] = useState({ sent: 0, received: 0 });
+  const [terminalReady, setTerminalReady] = useState(false);
 
   // Initialize xterm.js
   const initTerminal = useCallback(async () => {
@@ -143,6 +145,9 @@ export default function RemoteTerminal({
       terminal.writeln('\x1b[1;34mBreeze RMM Remote Terminal\x1b[0m');
       terminal.writeln(`\x1b[90mConnecting to ${deviceHostname}...\x1b[0m`);
       terminal.writeln('');
+
+      // Signal that terminal is ready for connection
+      setTerminalReady(true);
     } catch (error) {
       console.error('Failed to initialize terminal:', error);
       onError?.('Failed to initialize terminal');
@@ -160,12 +165,8 @@ export default function RemoteTerminal({
       let currentSessionId = sessionId;
 
       if (!currentSessionId) {
-        const response = await fetch('/api/remote/sessions', {
+        const response = await fetchWithAuth('/remote/sessions', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
           body: JSON.stringify({
             deviceId,
             type: 'terminal'
@@ -183,16 +184,28 @@ export default function RemoteTerminal({
         if (currentSessionId) onSessionCreated?.(currentSessionId);
       }
 
+      // Get access token from auth store
+      const { tokens } = useAuthStore.getState();
+      if (!tokens?.accessToken) {
+        throw new Error('Not authenticated');
+      }
+
       // Establish WebSocket connection for terminal data
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${wsProtocol}//${window.location.host}/api/remote/sessions/${currentSessionId}/ws`;
+      // Connect directly to API server for WebSocket (Astro SSR doesn't proxy WebSocket)
+      const apiHost = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+      const wsProtocol = apiHost.startsWith('https') ? 'wss:' : 'ws:';
+      const apiHostname = apiHost.replace(/^https?:\/\//, '');
+      const wsUrl = `${wsProtocol}//${apiHostname}/api/v1/remote/sessions/${currentSessionId}/ws?token=${encodeURIComponent(tokens.accessToken)}`;
 
       const ws = new WebSocket(wsUrl);
       webSocketRef.current = ws;
 
+      // Track whether the server has confirmed the session is ready.
+      // We must not send any messages (resize, data) until then.
+      let serverReady = false;
+
       ws.onopen = () => {
-        setStatus('connected');
-        setConnectionTime(new Date());
+        setStatus('connecting');
         terminalRef.current?.writeln('\x1b[1;32mConnected!\x1b[0m');
         terminalRef.current?.writeln('');
         terminalRef.current?.focus();
@@ -200,11 +213,39 @@ export default function RemoteTerminal({
 
       ws.onmessage = (event) => {
         if (terminalRef.current) {
-          terminalRef.current.write(event.data);
-          setBytesTransferred(prev => ({
-            ...prev,
-            received: prev.received + event.data.length
-          }));
+          try {
+            const message = JSON.parse(event.data);
+            if (message.type === 'output' && message.data) {
+              terminalRef.current.write(message.data);
+              setBytesTransferred(prev => ({
+                ...prev,
+                received: prev.received + message.data.length
+              }));
+            } else if (message.type === 'error') {
+              terminalRef.current.writeln(`\x1b[1;31mError: ${message.message}\x1b[0m`);
+            } else if (message.type === 'connected') {
+              // Server has set up the session — now safe to send messages
+              serverReady = true;
+              setStatus('connected');
+              setConnectionTime(new Date());
+
+              // Send initial resize to match actual terminal dimensions
+              if (terminalRef.current && ws.readyState === WebSocket.OPEN) {
+                const cols = terminalRef.current.cols;
+                const rows = terminalRef.current.rows;
+                if (cols && rows) {
+                  ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+                }
+              }
+            }
+          } catch {
+            // If not JSON, write raw data (backwards compatibility)
+            terminalRef.current.write(event.data);
+            setBytesTransferred(prev => ({
+              ...prev,
+              received: prev.received + event.data.length
+            }));
+          }
         }
       };
 
@@ -224,10 +265,10 @@ export default function RemoteTerminal({
         }
       };
 
-      // Handle terminal input
+      // Handle terminal input — only forward after server confirms session
       const dataDisposable = terminalRef.current.onData((data: string) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(data);
+        if (serverReady && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'data', data }));
           setBytesTransferred(prev => ({
             ...prev,
             sent: prev.sent + data.length
@@ -235,9 +276,9 @@ export default function RemoteTerminal({
         }
       });
 
-      // Handle terminal resize
+      // Handle terminal resize — only forward after server confirms session
       const resizeDisposable = terminalRef.current.onResize((size: { cols: number; rows: number }) => {
-        if (ws.readyState === WebSocket.OPEN) {
+        if (serverReady && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'resize',
             cols: size.cols,
@@ -271,12 +312,8 @@ export default function RemoteTerminal({
 
     if (sessionId) {
       try {
-        await fetch(`/api/remote/sessions/${sessionId}/end`, {
+        await fetchWithAuth(`/remote/sessions/${sessionId}/end`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
           body: JSON.stringify({
             bytesTransferred: bytesTransferred.sent + bytesTransferred.received
           })
@@ -329,14 +366,14 @@ export default function RemoteTerminal({
 
   // Auto-connect after terminal is initialized
   useEffect(() => {
-    if (terminalRef.current && status === 'disconnected' && !sessionId) {
+    if (terminalReady && status === 'disconnected' && !sessionId) {
       // Small delay to ensure terminal is ready
       const timer = setTimeout(() => {
         connect();
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [terminalRef.current, status, sessionId, connect]);
+  }, [terminalReady, status, sessionId, connect]);
 
   // Format connection duration
   const getConnectionDuration = () => {
@@ -455,10 +492,11 @@ export default function RemoteTerminal({
       <div
         ref={terminalContainerRef}
         className={cn(
-          'flex-1 min-h-[400px] bg-[#1a1b26]',
+          'flex-1 min-h-[400px] bg-[#1a1b26] cursor-text',
           isFullscreen && 'min-h-0'
         )}
         style={{ padding: '8px' }}
+        onClick={() => terminalRef.current?.focus()}
       />
     </div>
   );

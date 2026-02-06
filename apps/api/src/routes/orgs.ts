@@ -286,10 +286,23 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, zValida
 
 // --- Organizations (partner-scoped) ---
 
-orgRoutes.get('/organizations', requireScope('partner'), requirePartner, zValidator('query', paginationSchema), async (c) => {
+const listOrganizationsSchema = z.object({
+  partnerId: z.string().uuid().optional(),
+  page: z.string().optional(),
+  limit: z.string().optional()
+});
+
+orgRoutes.get('/organizations', requireScope('partner', 'system'), zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth');
-  const { page, limit, offset } = getPagination(c.req.valid('query'));
-  const conditions = and(eq(organizations.partnerId, auth.partnerId as string), isNull(organizations.deletedAt));
+  const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
+  const { page, limit, offset } = getPagination(pagination);
+
+  // Partner users always filter to their own partner; system users can optionally filter by partnerId
+  const effectivePartnerId = auth.scope === 'partner' ? auth.partnerId : queryPartnerId;
+
+  const conditions = effectivePartnerId
+    ? and(eq(organizations.partnerId, effectivePartnerId), isNull(organizations.deletedAt))
+    : isNull(organizations.deletedAt);
 
   const countResult = await db
     .select({ count: sql<number>`count(*)` })
@@ -311,12 +324,16 @@ orgRoutes.get('/organizations', requireScope('partner'), requirePartner, zValida
   });
 });
 
-orgRoutes.post('/organizations', requireScope('partner'), requirePartner, zValidator('json', createOrganizationSchema), async (c) => {
+orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
+  if (!auth.partnerId) {
+    return c.json({ error: 'Partner context required to create organizations' }, 400);
+  }
+
   const insertValues = {
-    partnerId: auth.partnerId as string,
+    partnerId: auth.partnerId,
     name: data.name,
     slug: data.slug,
     type: data.type,
@@ -336,20 +353,19 @@ orgRoutes.post('/organizations', requireScope('partner'), requirePartner, zValid
   return c.json(organization, 201);
 });
 
-orgRoutes.get('/organizations/:id', requireScope('partner'), requirePartner, async (c) => {
+orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id');
+
+  // Partner users can only see their own orgs; system users see all
+  const conditions = auth.partnerId
+    ? and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt))
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
   const [organization] = await db
     .select()
     .from(organizations)
-    .where(
-      and(
-        eq(organizations.id, id),
-        eq(organizations.partnerId, auth.partnerId as string),
-        isNull(organizations.deletedAt)
-      )
-    )
+    .where(conditions)
     .limit(1);
 
   if (!organization) {
@@ -359,7 +375,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner'), requirePartner, asy
   return c.json(organization);
 });
 
-orgRoutes.patch('/organizations/:id', requireScope('partner'), requirePartner, zValidator('json', updateOrganizationSchema), async (c) => {
+orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id');
   const data = c.req.valid('json');
@@ -384,16 +400,14 @@ orgRoutes.patch('/organizations/:id', requireScope('partner'), requirePartner, z
     updates.contractEnd = data.contractEnd ? new Date(data.contractEnd) : null;
   }
 
+  const conditions = auth.partnerId
+    ? and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt))
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
+
   const [organization] = await db
     .update(organizations)
     .set(updates)
-    .where(
-      and(
-        eq(organizations.id, id),
-        eq(organizations.partnerId, auth.partnerId as string),
-        isNull(organizations.deletedAt)
-      )
-    )
+    .where(conditions)
     .returning();
 
   if (!organization) {
@@ -403,20 +417,18 @@ orgRoutes.patch('/organizations/:id', requireScope('partner'), requirePartner, z
   return c.json(organization);
 });
 
-orgRoutes.delete('/organizations/:id', requireScope('partner'), requirePartner, async (c) => {
+orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id');
+
+  const conditions = auth.partnerId
+    ? and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt))
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
   const [organization] = await db
     .update(organizations)
     .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(organizations.id, id),
-        eq(organizations.partnerId, auth.partnerId as string),
-        isNull(organizations.deletedAt)
-      )
-    )
+    .where(conditions)
     .returning();
 
   if (!organization) {

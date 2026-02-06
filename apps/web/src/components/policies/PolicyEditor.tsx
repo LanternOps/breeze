@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Check,
+  Filter,
   GripVertical,
   Plus,
   RefreshCw,
@@ -12,6 +13,10 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
+import { FilterPreview } from '../filters/FilterPreview';
+import { useFilterPreview } from '../../hooks/useFilterPreview';
 
 export type SeverityLevel = 'low' | 'medium' | 'high' | 'critical';
 export type PolicyStatus = 'draft' | 'active' | 'inactive' | 'archived';
@@ -400,6 +405,14 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
   const [scripts, setScripts] = useState<OptionItem[]>([]);
   const [dragging, setDragging] = useState<DragPayload | null>(null);
   const [dragOver, setDragOver] = useState<DragPayload | null>(null);
+  const [targetMode, setTargetMode] = useState<'hierarchy' | 'filter'>('hierarchy');
+  const [filterConditions, setFilterConditions] = useState<FilterConditionGroup>({
+    operator: 'AND',
+    conditions: []
+  });
+  const { preview: filterPreview, loading: filterPreviewLoading } = useFilterPreview(filterConditions, {
+    enabled: targetMode === 'filter' && filterConditions.conditions.length > 0
+  });
 
   const enabled = policyState.status === 'active';
 
@@ -1680,9 +1693,34 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
                 Select organizations, sites, and device groups.
               </p>
             </div>
-            {targetsLoading ? (
-              <div className="text-xs text-muted-foreground">Loading targets...</div>
-            ) : null}
+            <div className="flex items-center gap-2">
+              <div className="flex rounded-md border">
+                <button
+                  type="button"
+                  onClick={() => setTargetMode('hierarchy')}
+                  className={cn(
+                    'px-3 py-1.5 text-xs font-medium rounded-l-md transition',
+                    targetMode === 'hierarchy' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                  )}
+                >
+                  Hierarchy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTargetMode('filter')}
+                  className={cn(
+                    'px-3 py-1.5 text-xs font-medium rounded-r-md transition',
+                    targetMode === 'filter' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                  )}
+                >
+                  <Filter className="h-3 w-3 inline mr-1" />
+                  Advanced Filter
+                </button>
+              </div>
+              {targetsLoading ? (
+                <div className="text-xs text-muted-foreground">Loading targets...</div>
+              ) : null}
+            </div>
           </div>
 
           {targetsError && (
@@ -1691,97 +1729,115 @@ export default function PolicyEditor({ policyId }: PolicyEditorProps) {
             </div>
           )}
 
-          <div className="mt-4 grid gap-4 lg:grid-cols-3">
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-muted-foreground">Organizations</div>
+          {targetMode === 'hierarchy' ? (
+            <div className="mt-4 grid gap-4 lg:grid-cols-3">
               <div className="space-y-2">
-                {organizations.length === 0 && (
-                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                    No organizations available.
-                  </div>
-                )}
-                {organizations.map(org => (
-                  <label
-                    key={org.id}
-                    className={cn(
-                      'flex items-center justify-between rounded-md border px-3 py-2 text-xs',
-                      policyState.targetScope.organizations.includes(org.id)
-                        ? 'border-primary/40 bg-primary/5'
-                        : 'border-muted bg-background'
-                    )}
-                  >
-                    <span className="font-medium text-foreground">{org.name}</span>
-                    <input
-                      type="checkbox"
-                      checked={policyState.targetScope.organizations.includes(org.id)}
-                      onChange={() => updateTargetScope('organizations', org.id)}
-                      className="h-4 w-4"
-                    />
-                  </label>
-                ))}
+                <div className="text-xs font-medium text-muted-foreground">Organizations</div>
+                <div className="space-y-2">
+                  {organizations.length === 0 && (
+                    <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                      No organizations available.
+                    </div>
+                  )}
+                  {organizations.map(org => (
+                    <label
+                      key={org.id}
+                      className={cn(
+                        'flex items-center justify-between rounded-md border px-3 py-2 text-xs',
+                        policyState.targetScope.organizations.includes(org.id)
+                          ? 'border-primary/40 bg-primary/5'
+                          : 'border-muted bg-background'
+                      )}
+                    >
+                      <span className="font-medium text-foreground">{org.name}</span>
+                      <input
+                        type="checkbox"
+                        checked={policyState.targetScope.organizations.includes(org.id)}
+                        onChange={() => updateTargetScope('organizations', org.id)}
+                        className="h-4 w-4"
+                      />
+                    </label>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-muted-foreground">Sites</div>
               <div className="space-y-2">
-                {sites.length === 0 && (
-                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                    No sites available.
-                  </div>
-                )}
-                {sites.map(site => (
-                  <label
-                    key={site.id}
-                    className={cn(
-                      'flex items-center justify-between rounded-md border px-3 py-2 text-xs',
-                      policyState.targetScope.sites.includes(site.id)
-                        ? 'border-primary/40 bg-primary/5'
-                        : 'border-muted bg-background'
-                    )}
-                  >
-                    <span className="font-medium text-foreground">{site.name}</span>
-                    <input
-                      type="checkbox"
-                      checked={policyState.targetScope.sites.includes(site.id)}
-                      onChange={() => updateTargetScope('sites', site.id)}
-                      className="h-4 w-4"
-                    />
-                  </label>
-                ))}
+                <div className="text-xs font-medium text-muted-foreground">Sites</div>
+                <div className="space-y-2">
+                  {sites.length === 0 && (
+                    <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                      No sites available.
+                    </div>
+                  )}
+                  {sites.map(site => (
+                    <label
+                      key={site.id}
+                      className={cn(
+                        'flex items-center justify-between rounded-md border px-3 py-2 text-xs',
+                        policyState.targetScope.sites.includes(site.id)
+                          ? 'border-primary/40 bg-primary/5'
+                          : 'border-muted bg-background'
+                      )}
+                    >
+                      <span className="font-medium text-foreground">{site.name}</span>
+                      <input
+                        type="checkbox"
+                        checked={policyState.targetScope.sites.includes(site.id)}
+                        onChange={() => updateTargetScope('sites', site.id)}
+                        className="h-4 w-4"
+                      />
+                    </label>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-muted-foreground">Device groups</div>
               <div className="space-y-2">
-                {groups.length === 0 && (
-                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                    No groups available.
-                  </div>
-                )}
-                {groups.map(group => (
-                  <label
-                    key={group.id}
-                    className={cn(
-                      'flex items-center justify-between rounded-md border px-3 py-2 text-xs',
-                      policyState.targetScope.groups.includes(group.id)
-                        ? 'border-primary/40 bg-primary/5'
-                        : 'border-muted bg-background'
-                    )}
-                  >
-                    <span className="font-medium text-foreground">{group.name}</span>
-                    <input
-                      type="checkbox"
-                      checked={policyState.targetScope.groups.includes(group.id)}
-                      onChange={() => updateTargetScope('groups', group.id)}
-                      className="h-4 w-4"
-                    />
-                  </label>
-                ))}
+                <div className="text-xs font-medium text-muted-foreground">Device groups</div>
+                <div className="space-y-2">
+                  {groups.length === 0 && (
+                    <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                      No groups available.
+                    </div>
+                  )}
+                  {groups.map(group => (
+                    <label
+                      key={group.id}
+                      className={cn(
+                        'flex items-center justify-between rounded-md border px-3 py-2 text-xs',
+                        policyState.targetScope.groups.includes(group.id)
+                          ? 'border-primary/40 bg-primary/5'
+                          : 'border-muted bg-background'
+                      )}
+                    >
+                      <span className="font-medium text-foreground">{group.name}</span>
+                      <input
+                        type="checkbox"
+                        checked={policyState.targetScope.groups.includes(group.id)}
+                        onChange={() => updateTargetScope('groups', group.id)}
+                        className="h-4 w-4"
+                      />
+                    </label>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="mt-4 space-y-4">
+              <FilterBuilder
+                value={filterConditions}
+                onChange={setFilterConditions}
+                filterFields={DEFAULT_FILTER_FIELDS}
+              />
+              {filterConditions.conditions.length > 0 && (
+                <FilterPreview
+                  preview={filterPreview}
+                  loading={filterPreviewLoading}
+                  error={null}
+                  onRefresh={() => setFilterConditions({ ...filterConditions })}
+                />
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">

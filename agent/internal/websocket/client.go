@@ -38,6 +38,7 @@ type Command struct {
 
 // CommandResult represents the result of a command execution
 type CommandResult struct {
+	Type      string `json:"type"`
 	CommandID string `json:"commandId"`
 	Status    string `json:"status"`
 	Result    any    `json:"result,omitempty"`
@@ -300,6 +301,7 @@ func (c *Client) processCommand(cmd Command) {
 	fmt.Printf("Processing WebSocket command: %s (type: %s)\n", cmd.ID, cmd.Type)
 
 	result := c.cmdHandler(cmd)
+	result.Type = "command_result"
 	result.CommandID = cmd.ID
 
 	if err := c.SendResult(result); err != nil {
@@ -321,5 +323,27 @@ func (c *Client) SendResult(result CommandResult) error {
 		return fmt.Errorf("client is stopped")
 	default:
 		return fmt.Errorf("send channel is full")
+	}
+}
+
+// SendTerminalOutput sends terminal output data to the server
+func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
+	msg := map[string]any{
+		"type":      "terminal_output",
+		"sessionId": sessionId,
+		"data":      string(data),
+	}
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal terminal output: %w", err)
+	}
+
+	select {
+	case c.sendChan <- msgBytes:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("send channel full")
 	}
 }

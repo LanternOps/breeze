@@ -10,10 +10,12 @@ import {
   Activity,
   FileText,
   Network,
-  CheckCircle
+  CheckCircle,
+  Info
 } from 'lucide-react';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import DeviceActions from './DeviceActions';
+import DeviceInfoTab from './DeviceInfoTab';
 import DeviceHardwareInventory from './DeviceHardwareInventory';
 import DeviceSoftwareInventory from './DeviceSoftwareInventory';
 import DevicePatchStatusTab from './DevicePatchStatusTab';
@@ -27,6 +29,7 @@ const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
 
 type Tab =
   | 'overview'
+  | 'details'
   | 'hardware'
   | 'software'
   | 'patches'
@@ -86,6 +89,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Overview', icon: <Monitor className="h-4 w-4" /> },
+    { id: 'details', label: 'Device Details', icon: <Info className="h-4 w-4" /> },
     { id: 'hardware', label: 'Hardware Inventory', icon: <Cpu className="h-4 w-4" /> },
     { id: 'software', label: 'Software Inventory', icon: <Package className="h-4 w-4" /> },
     { id: 'patches', label: 'Patch Status', icon: <CheckCircle className="h-4 w-4" /> },
@@ -174,6 +178,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
           <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} showFilters={false} limit={4} />
         </div>
+      )}
+
+      {activeTab === 'details' && (
+        <DeviceInfoTab deviceId={device.id} />
       )}
 
       {activeTab === 'hardware' && (

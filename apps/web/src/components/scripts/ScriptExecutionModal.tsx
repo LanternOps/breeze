@@ -1,8 +1,11 @@
 import { useState, useMemo, useEffect } from 'react';
-import { X, Search, Play, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { X, Search, Play, Loader2, CheckCircle, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Script, ScriptLanguage } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
+import { useFilterPreview } from '../../hooks/useFilterPreview';
 
 export type Device = {
   id: string;
@@ -52,6 +55,20 @@ export default function ScriptExecutionModal({
   const [executionState, setExecutionState] = useState<ExecutionState>('idle');
   const [errorMessage, setErrorMessage] = useState<string>();
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showAdvancedFilter, setShowAdvancedFilter] = useState(false);
+  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup>({
+    operator: 'AND',
+    conditions: [{ field: 'hostname', operator: 'contains', value: '' }]
+  });
+
+  const { preview: filterPreview } = useFilterPreview(
+    showAdvancedFilter ? advancedFilter : null,
+    { enabled: showAdvancedFilter }
+  );
+  const advancedFilterIds = useMemo(() => {
+    if (!showAdvancedFilter || !filterPreview) return null;
+    return new Set(filterPreview.devices.map(d => d.id));
+  }, [showAdvancedFilter, filterPreview]);
 
   // Initialize parameters with defaults
   useEffect(() => {
@@ -83,6 +100,11 @@ export default function ScriptExecutionModal({
     const normalizedQuery = query.trim().toLowerCase();
 
     return compatibleDevices.filter(device => {
+      // Apply advanced filter if active
+      if (advancedFilterIds !== null && !advancedFilterIds.has(device.id)) {
+        return false;
+      }
+
       const matchesQuery = normalizedQuery.length === 0
         ? true
         : device.hostname.toLowerCase().includes(normalizedQuery);
@@ -91,7 +113,7 @@ export default function ScriptExecutionModal({
 
       return matchesQuery && matchesSite && matchesStatus;
     });
-  }, [compatibleDevices, query, siteFilter, statusFilter]);
+  }, [compatibleDevices, query, siteFilter, statusFilter, advancedFilterIds]);
 
   const handleDeviceToggle = (deviceId: string) => {
     const newSet = new Set(selectedDeviceIds);
@@ -325,6 +347,36 @@ export default function ScriptExecutionModal({
                 <option value="offline">Offline</option>
                 <option value="maintenance">Maintenance</option>
               </select>
+            </div>
+
+            {/* Advanced Filter Toggle */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowAdvancedFilter(!showAdvancedFilter)}
+                className={cn(
+                  'inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium transition',
+                  showAdvancedFilter ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
+                )}
+              >
+                <Filter className="h-3 w-3" />
+                Advanced Filters
+                {showAdvancedFilter && advancedFilterIds && (
+                  <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[10px]">
+                    {advancedFilterIds.size} match
+                  </span>
+                )}
+              </button>
+              {showAdvancedFilter && (
+                <div className="mt-3">
+                  <FilterBuilder
+                    value={advancedFilter}
+                    onChange={setAdvancedFilter}
+                    filterFields={DEFAULT_FILTER_FIELDS}
+                    showPreview={false}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Device List */}

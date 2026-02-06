@@ -12,6 +12,7 @@ import {
   organizations
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { sendCommandToAgent } from './agentWs';
 
 export const scriptRoutes = new Hono();
 
@@ -254,6 +255,111 @@ scriptRoutes.get(
       data: scriptList,
       pagination: { page, limit, total }
     });
+  }
+);
+
+// GET /scripts/system-library - List system scripts available to import
+scriptRoutes.get(
+  '/system-library',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const systemScripts = await db
+      .select({
+        id: scripts.id,
+        name: scripts.name,
+        description: scripts.description,
+        category: scripts.category,
+        osTypes: scripts.osTypes,
+        language: scripts.language,
+      })
+      .from(scripts)
+      .where(eq(scripts.isSystem, true))
+      .orderBy(scripts.category, scripts.name);
+
+    return c.json({ data: systemScripts });
+  }
+);
+
+// POST /scripts/import/:id - Clone a system script into the caller's org
+scriptRoutes.post(
+  '/import/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', z.object({ orgId: z.string().uuid().optional() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const sourceId = c.req.param('id');
+    const body = c.req.valid('json');
+
+    // Fetch the system script
+    const [source] = await db
+      .select()
+      .from(scripts)
+      .where(and(eq(scripts.id, sourceId), eq(scripts.isSystem, true)))
+      .limit(1);
+
+    if (!source) {
+      return c.json({ error: 'System script not found' }, 404);
+    }
+
+    // Determine target orgId
+    let orgId: string | null = null;
+    if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      orgId = auth.orgId;
+    } else if (auth.scope === 'partner') {
+      if (body.orgId) {
+        const hasAccess = await ensureOrgAccess(body.orgId, auth);
+        if (!hasAccess) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+        orgId = body.orgId;
+      } else if (auth.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
+        orgId = auth.accessibleOrgIds[0];
+      } else {
+        return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+      }
+    } else if (auth.scope === 'system') {
+      orgId = body.orgId ?? null;
+    }
+
+    if (!orgId) {
+      return c.json({ error: 'Target organization required' }, 400);
+    }
+
+    // Check if already imported (same name + org)
+    const [existing] = await db
+      .select({ id: scripts.id })
+      .from(scripts)
+      .where(and(eq(scripts.orgId, orgId), eq(scripts.name, source.name)))
+      .limit(1);
+
+    if (existing) {
+      return c.json({ error: 'A script with this name already exists in your organization' }, 409);
+    }
+
+    // Clone into the org
+    const [cloned] = await db
+      .insert(scripts)
+      .values({
+        orgId,
+        name: source.name,
+        description: source.description,
+        category: source.category,
+        osTypes: source.osTypes,
+        language: source.language,
+        content: source.content,
+        parameters: source.parameters,
+        timeoutSeconds: source.timeoutSeconds,
+        runAs: source.runAs,
+        isSystem: false,
+        version: 1,
+        createdBy: auth.user.id,
+      })
+      .returning();
+
+    return c.json(cloned, 201);
   }
 );
 
@@ -540,6 +646,26 @@ scriptRoutes.post(
 
       if (!command) {
         throw new Error('Failed to create command');
+      }
+
+      // Push command via WebSocket for immediate execution
+      if (device.agentId) {
+        const sent = sendCommandToAgent(device.agentId, {
+          id: command.id,
+          type: 'script',
+          payload: command.payload as Record<string, unknown>
+        });
+        if (sent) {
+          await db
+            .update(deviceCommands)
+            .set({ status: 'sent', executedAt: new Date() })
+            .where(eq(deviceCommands.id, command.id));
+
+          await db
+            .update(scriptExecutions)
+            .set({ status: 'running', startedAt: new Date() })
+            .where(eq(scriptExecutions.id, execution.id));
+        }
       }
 
       executions.push({

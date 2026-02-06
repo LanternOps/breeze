@@ -236,6 +236,21 @@ remoteRoutes.use('*', authMiddleware);
 // REMOTE SESSIONS ENDPOINTS
 // ============================================
 
+// DELETE /remote/sessions/stale - Cleanup stale sessions (dev only)
+remoteRoutes.delete(
+  '/sessions/stale',
+  requireScope('system', 'partner'),
+  async (c) => {
+    const result = await db
+      .update(remoteSessions)
+      .set({ status: 'disconnected', endedAt: new Date() })
+      .where(inArray(remoteSessions.status, ['pending', 'connecting', 'active']))
+      .returning({ id: remoteSessions.id });
+
+    return c.json({ cleaned: result.length, ids: result.map(r => r.id) });
+  }
+);
+
 // POST /remote/sessions - Initiate remote session
 remoteRoutes.post(
   '/sessions',

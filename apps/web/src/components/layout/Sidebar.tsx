@@ -10,6 +10,7 @@ import {
   Settings,
   Building,
   Building2,
+  Filter,
   Users,
   ChevronLeft,
   ChevronRight,
@@ -69,12 +70,32 @@ const managementNav = [
 
 const settingsNav = [
   { name: 'Organization', href: '/settings/organization', icon: Building },
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
   { name: 'Integrations', href: '/integrations/webhooks', icon: Plug }
 ];
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const currentPath = initialPath;
+
+  // Find the single most-specific matching href across all sections
+  // so only one nav item highlights at a time
+  const allNavItems = [
+    ...navigation, ...monitoringNav, ...operationsNav,
+    ...integrationsNav, ...managementNav, ...settingsNav,
+  ];
+  const activeHref = (() => {
+    let best: string | null = null;
+    for (const item of allNavItems) {
+      const matches = item.href === '/'
+        ? currentPath === '/'
+        : currentPath === item.href || currentPath.startsWith(item.href + '/');
+      if (matches && (!best || item.href.length > best.length)) {
+        best = item.href;
+      }
+    }
+    return best;
+  })();
 
   return (
     <aside
@@ -101,9 +122,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
       <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto p-2">
         {navigation.map((item) => {
-          const isActive = item.href === '/'
-            ? currentPath === '/'
-            : currentPath.startsWith(item.href);
+          const isActive = item.href === activeHref;
           return (
             <a
               key={item.name}
@@ -129,7 +148,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
         {monitoringNav.map((item) => {
-          const isActive = currentPath.startsWith(item.href);
+          const isActive = item.href === activeHref;
           return (
             <a
               key={item.name}
@@ -155,7 +174,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
         {operationsNav.map((item) => {
-          const isActive = currentPath.startsWith(item.href);
+          const isActive = item.href === activeHref;
           return (
             <a
               key={item.name}
@@ -181,7 +200,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
         {integrationsNav.map((item) => {
-          const isActive = currentPath.startsWith(item.href);
+          const isActive = item.href === activeHref;
           return (
             <a
               key={item.name}
@@ -207,7 +226,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
         {managementNav.map((item) => {
-          const isActive = currentPath.startsWith(item.href);
+          const isActive = item.href === activeHref;
           return (
             <a
               key={item.name}
@@ -233,7 +252,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
         {settingsNav.map((item) => {
-          const isActive = currentPath.startsWith(item.href);
+          const isActive = item.href === activeHref;
           return (
             <a
               key={item.name}

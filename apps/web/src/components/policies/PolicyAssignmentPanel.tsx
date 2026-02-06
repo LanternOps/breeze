@@ -1,6 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Building2, ChevronDown, ChevronRight, Monitor, Users, MapPin, X } from 'lucide-react';
+import { Building2, ChevronDown, ChevronRight, Filter, Monitor, Users, MapPin, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
+import { FilterPreview } from '../filters/FilterPreview';
+import { useFilterPreview } from '../../hooks/useFilterPreview';
 
 export type AssignmentTargetType = 'org' | 'site' | 'group' | 'device';
 
@@ -107,6 +111,14 @@ export default function PolicyAssignmentPanel({
     'group-nyc-it': 90,
     'dev-aus-1': 70
   });
+  const [assignmentMode, setAssignmentMode] = useState<'tree' | 'filter'>('tree');
+  const [filterConditions, setFilterConditions] = useState<FilterConditionGroup>({
+    operator: 'AND',
+    conditions: []
+  });
+  const { preview: filterPreview, loading: filterPreviewLoading } = useFilterPreview(filterConditions, {
+    enabled: assignmentMode === 'filter' && filterConditions.conditions.length > 0
+  });
 
   const nodeMap = useMemo(() => buildNodeMap(targets), [targets]);
 
@@ -207,66 +219,118 @@ export default function PolicyAssignmentPanel({
   };
 
   return (
-    <div className="grid gap-6 rounded-lg border bg-card p-6 shadow-sm lg:grid-cols-2">
-      <div className="space-y-4">
+    <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold">Available targets</h3>
+          <h3 className="text-base font-semibold">Policy assignments</h3>
           <p className="text-sm text-muted-foreground">
-            Drag targets or use checkboxes to assign them.
+            Choose targets by hierarchy or advanced filter.
           </p>
         </div>
-        <div className="max-h-[420px] overflow-auto rounded-lg border bg-muted/20 p-2">
-          <div className="space-y-1">{targets.map(target => renderNode(target, 0))}</div>
+        <div className="flex rounded-md border">
+          <button
+            type="button"
+            onClick={() => setAssignmentMode('tree')}
+            className={cn(
+              'px-3 py-1.5 text-xs font-medium rounded-l-md transition',
+              assignmentMode === 'tree' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+            )}
+          >
+            Tree View
+          </button>
+          <button
+            type="button"
+            onClick={() => setAssignmentMode('filter')}
+            className={cn(
+              'px-3 py-1.5 text-xs font-medium rounded-r-md transition',
+              assignmentMode === 'filter' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+            )}
+          >
+            <Filter className="h-3 w-3 inline mr-1" />
+            Advanced Filter
+          </button>
         </div>
       </div>
 
-      <div className="space-y-4">
-        <div>
-          <h3 className="text-base font-semibold">Assigned targets</h3>
-          <p className="text-sm text-muted-foreground">
-            Set priority overrides to control policy precedence.
-          </p>
-        </div>
-        <div className="space-y-2">
-          {assignedTargets.length === 0 && (
-            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-              No assignments yet. Choose targets to apply this policy.
+      {assignmentMode === 'tree' ? (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold">Available targets</h3>
+              <p className="text-xs text-muted-foreground">
+                Drag targets or use checkboxes to assign them.
+              </p>
             </div>
-          )}
-          {assignedTargets.map(target => (
-            <div
-              key={target.id}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-background px-3 py-2"
-            >
-              <div>
-                <div className="text-sm font-medium">{target.name}</div>
-                <div className="text-xs text-muted-foreground">{target.path}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-muted-foreground" htmlFor={`priority-${target.id}`}>
-                  Priority override
-                </label>
-                <input
-                  id={`priority-${target.id}`}
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={priorityOverrides[target.id] ?? 0}
-                  onChange={event => handlePriorityChange(target.id, Number(event.target.value))}
-                  className="h-9 w-20 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-                <button
-                  type="button"
-                  onClick={() => toggleAssignment(target.id, false)}
-                  className="inline-flex h-9 items-center justify-center rounded-md border border-destructive/40 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+            <div className="max-h-[420px] overflow-auto rounded-lg border bg-muted/20 p-2">
+              <div className="space-y-1">{targets.map(target => renderNode(target, 0))}</div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold">Assigned targets</h3>
+              <p className="text-xs text-muted-foreground">
+                Set priority overrides to control policy precedence.
+              </p>
+            </div>
+            <div className="space-y-2">
+              {assignedTargets.length === 0 && (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                  No assignments yet. Choose targets to apply this policy.
+                </div>
+              )}
+              {assignedTargets.map(target => (
+                <div
+                  key={target.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-background px-3 py-2"
                 >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
+                  <div>
+                    <div className="text-sm font-medium">{target.name}</div>
+                    <div className="text-xs text-muted-foreground">{target.path}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-muted-foreground" htmlFor={`priority-${target.id}`}>
+                      Priority override
+                    </label>
+                    <input
+                      id={`priority-${target.id}`}
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={priorityOverrides[target.id] ?? 0}
+                      onChange={event => handlePriorityChange(target.id, Number(event.target.value))}
+                      className="h-9 w-20 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => toggleAssignment(target.id, false)}
+                      className="inline-flex h-9 items-center justify-center rounded-md border border-destructive/40 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="space-y-4">
+          <FilterBuilder
+            value={filterConditions}
+            onChange={setFilterConditions}
+            filterFields={DEFAULT_FILTER_FIELDS}
+          />
+          {filterConditions.conditions.length > 0 && (
+            <FilterPreview
+              preview={filterPreview}
+              loading={filterPreviewLoading}
+              error={null}
+              onRefresh={() => setFilterConditions({ ...filterConditions })}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

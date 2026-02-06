@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, Trash2, GripVertical } from 'lucide-react';
+import { Plus, Trash2, GripVertical, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AlertSeverity } from './AlertList';
+import type { DeploymentTargetConfig } from '@breeze/shared';
+import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
 const conditionSchema = z.object({
   type: z.enum(['metric', 'status', 'custom']),
@@ -131,6 +133,8 @@ export default function AlertRuleForm({
   const watchTargetType = watch('targetType');
   const watchConditions = watch('conditions');
   const watchChannelIds = watch('notificationChannelIds');
+  const [targetViewMode, setTargetViewMode] = useState<'simple' | 'advanced'>('simple');
+  const [advancedTargetConfig, setAdvancedTargetConfig] = useState<DeploymentTargetConfig>({ type: 'all' });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
@@ -249,52 +253,103 @@ export default function AlertRuleForm({
 
       {/* Target Selection */}
       <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold mb-4">Target Devices</h3>
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Target Type</label>
-            <select
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              {...register('targetType')}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold">Target Devices</h3>
+          <div className="flex rounded-md border">
+            <button
+              type="button"
+              onClick={() => setTargetViewMode('simple')}
+              className={cn(
+                'px-3 py-1 text-xs font-medium rounded-l-md transition',
+                targetViewMode === 'simple' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+              )}
             >
-              {targetTypeOptions.map(opt => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+              Simple
+            </button>
+            <button
+              type="button"
+              onClick={() => setTargetViewMode('advanced')}
+              className={cn(
+                'px-3 py-1 text-xs font-medium rounded-r-md transition',
+                targetViewMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+              )}
+            >
+              <Filter className="h-3 w-3 inline mr-1" />
+              Advanced
+            </button>
           </div>
-
-          {watchTargetType !== 'all' && targetOptions.length > 0 && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium">
-                Select {watchTargetType === 'site' ? 'Sites' : watchTargetType === 'group' ? 'Groups' : 'Devices'}
-              </label>
-              <div className="max-h-48 overflow-y-auto rounded-md border bg-background p-2">
-                {targetOptions.map(target => (
-                  <label
-                    key={target.id}
-                    className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-muted cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={watch('targetIds')?.includes(target.id) || false}
-                      onChange={() => handleTargetToggle(target.id)}
-                      className="h-4 w-4 rounded border-gray-300"
-                    />
-                    <span className="text-sm">{target.name}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {watchTargetType !== 'all' && targetOptions.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              No {watchTargetType === 'site' ? 'sites' : watchTargetType === 'group' ? 'groups' : 'devices'} available.
-            </p>
-          )}
         </div>
+
+        {targetViewMode === 'simple' ? (
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Target Type</label>
+              <select
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                {...register('targetType')}
+              >
+                {targetTypeOptions.map(opt => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {watchTargetType !== 'all' && targetOptions.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">
+                  Select {watchTargetType === 'site' ? 'Sites' : watchTargetType === 'group' ? 'Groups' : 'Devices'}
+                </label>
+                <div className="max-h-48 overflow-y-auto rounded-md border bg-background p-2">
+                  {targetOptions.map(target => (
+                    <label
+                      key={target.id}
+                      className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-muted cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={watch('targetIds')?.includes(target.id) || false}
+                        onChange={() => handleTargetToggle(target.id)}
+                        className="h-4 w-4 rounded border-gray-300"
+                      />
+                      <span className="text-sm">{target.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {watchTargetType !== 'all' && targetOptions.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No {watchTargetType === 'site' ? 'sites' : watchTargetType === 'group' ? 'groups' : 'devices'} available.
+              </p>
+            )}
+          </div>
+        ) : (
+          <DeviceTargetSelector
+            value={advancedTargetConfig}
+            onChange={(config) => {
+              setAdvancedTargetConfig(config);
+              // Sync back to form values
+              if (config.type === 'all') {
+                setValue('targetType', 'all');
+                setValue('targetIds', []);
+              } else if (config.type === 'devices' && config.deviceIds) {
+                setValue('targetType', 'device');
+                setValue('targetIds', config.deviceIds);
+              } else if (config.type === 'groups' && config.groupIds) {
+                setValue('targetType', 'group');
+                setValue('targetIds', config.groupIds);
+              }
+            }}
+            modes={['all', 'manual', 'groups', 'filter']}
+            sites={sites}
+            groups={groups.map(g => ({ ...g, deviceCount: undefined }))}
+            devices={devices.map(d => ({ id: d.id, hostname: d.name }))}
+            showPreview={true}
+          />
+        )}
       </div>
 
       {/* Conditions Builder */}

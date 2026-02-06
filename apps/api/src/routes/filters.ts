@@ -163,6 +163,56 @@ function mapFilterRow(filter: typeof savedFilters.$inferSelect): SavedFilterResp
   };
 }
 
+// POST /preview - Ad-hoc filter preview (no saved filter required)
+filterRoutes.post(
+  '/preview',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', z.object({
+    conditions: filterConditionGroupSchema,
+    limit: z.number().int().positive().max(100).optional()
+  })),
+  async (c) => {
+    const auth = c.get('auth');
+    const { conditions, limit } = c.req.valid('json');
+
+    const orgIds = await getOrgIdsForAuth(auth);
+    if (!orgIds || orgIds.length === 0) {
+      return c.json({ data: { totalCount: 0, devices: [], evaluatedAt: new Date().toISOString() } });
+    }
+
+    // Evaluate filter across all orgs the user has access to
+    const allDevices: Array<{ id: string; hostname: string; displayName: string | null; osType: string; status: string; lastSeenAt: Date | null }> = [];
+    let totalCount = 0;
+
+    for (const orgId of orgIds) {
+      const preview = await evaluateFilterWithPreview(
+        conditions as unknown as FilterConditionGroup,
+        { orgId, previewLimit: limit }
+      );
+      totalCount += preview.totalCount;
+      allDevices.push(...preview.devices);
+    }
+
+    // Trim to limit after aggregating
+    const trimmedDevices = allDevices.slice(0, limit ?? 10);
+
+    return c.json({
+      data: {
+        totalCount,
+        devices: trimmedDevices.map((device) => ({
+          id: device.id,
+          hostname: device.hostname,
+          displayName: device.displayName,
+          osType: device.osType,
+          status: device.status,
+          lastSeenAt: device.lastSeenAt ? device.lastSeenAt.toISOString() : null
+        })),
+        evaluatedAt: new Date().toISOString()
+      }
+    });
+  }
+);
+
 // GET / - List saved filters
 filterRoutes.get(
   '/',

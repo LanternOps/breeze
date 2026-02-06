@@ -38,6 +38,7 @@ coverage/
 agent/breeze-agent
 agent/bin/
 agent/*.exe
+agent/agent.yaml
 
 # Temporary
 tmp/

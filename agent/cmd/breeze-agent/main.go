@@ -102,7 +102,7 @@ func runAgent() {
 	// 3. Receives pending commands from server in the heartbeat response
 	// 4. Executes received commands asynchronously (process, service, registry, etc.)
 	// 5. Reports command results back to the server
-	hb := heartbeat.New(cfg)
+	hb := heartbeat.NewWithVersion(cfg, version)
 	go hb.Start()
 
 	// Start WebSocket client for real-time command delivery
@@ -112,6 +112,7 @@ func runAgent() {
 		AuthToken: cfg.AuthToken,
 	}
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
+	hb.SetWebSocketClient(wsClient) // Wire terminal output streaming
 	go wsClient.Start()
 
 	fmt.Println("Agent is running. Press Ctrl+C to stop.")
@@ -184,10 +185,14 @@ func enrollDevice(enrollmentKey string) {
 		HardwareInfo: &api.HardwareInfo{
 			CPUModel:     hardwareInfo.CPUModel,
 			CPUCores:     hardwareInfo.CPUCores,
+			CPUThreads:   hardwareInfo.CPUThreads,
 			RAMTotalMB:   hardwareInfo.RAMTotalMB,
+			DiskTotalGB:  hardwareInfo.DiskTotalGB,
+			GPUModel:     hardwareInfo.GPUModel,
 			SerialNumber: hardwareInfo.SerialNumber,
 			Manufacturer: hardwareInfo.Manufacturer,
 			Model:        hardwareInfo.Model,
+			BIOSVersion:  hardwareInfo.BIOSVersion,
 		},
 	}
 
@@ -202,6 +207,8 @@ func enrollDevice(enrollmentKey string) {
 	// Update config with enrollment response
 	cfg.AgentID = enrollResp.AgentID
 	cfg.AuthToken = enrollResp.AuthToken
+	cfg.OrgID = enrollResp.OrgID
+	cfg.SiteID = enrollResp.SiteID
 
 	// Apply server-provided configuration if present
 	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
@@ -215,7 +222,7 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	// Save the updated configuration
-	if err := config.Save(cfg); err != nil {
+	if err := config.SaveTo(cfg, cfgFile); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to save config: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Agent ID: %s\n", cfg.AgentID)
 		fmt.Fprintln(os.Stderr, "You may need to manually save the configuration.")

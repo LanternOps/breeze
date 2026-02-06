@@ -14,11 +14,22 @@ import {
   enrollmentKeys,
   softwareInventory,
   patches,
-  devicePatches
+  devicePatches,
+  deviceEventLogs
 } from '../db/schema';
 import { createHash, randomBytes } from 'crypto';
+import { agentAuthMiddleware } from '../middleware/agentAuth';
 
 export const agentRoutes = new Hono();
+
+// Apply agent auth to all parameterized routes (skips /enroll)
+agentRoutes.use('/:id/*', async (c, next) => {
+  // Hono matches "enroll" as :id — skip auth for the enrollment endpoint
+  if (c.req.param('id') === 'enroll') {
+    return next();
+  }
+  return agentAuthMiddleware(c, next);
+});
 
 // Enrollment request schema
 const enrollSchema = z.object({
@@ -37,7 +48,8 @@ const enrollSchema = z.object({
     serialNumber: z.string().optional(),
     manufacturer: z.string().optional(),
     model: z.string().optional(),
-    biosVersion: z.string().optional()
+    biosVersion: z.string().optional(),
+    gpuModel: z.string().optional()
   }).optional(),
   networkInfo: z.array(z.object({
     name: z.string(),
@@ -109,6 +121,7 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
   // Generate unique identifiers
   const agentId = generateAgentId();
   const apiKey = generateApiKey();
+  const tokenHash = createHash('sha256').update(apiKey).digest('hex');
 
   // Validate site exists
   const siteId = key.siteId;
@@ -116,32 +129,70 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
     return c.json({ error: 'Enrollment key must be associated with a site' }, 400);
   }
 
-  // Create device record in transaction
-  const result = await db.transaction(async (tx) => {
+  // Check for existing device with same hostname + org + site (re-enrollment)
+  const [existingDevice] = await db
+    .select({ id: devices.id, status: devices.status })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.hostname, data.hostname),
+        eq(devices.orgId, key.orgId),
+        eq(devices.siteId, siteId)
+      )
+    )
+    .limit(1);
 
-    // Insert device
-    const [device] = await tx
-      .insert(devices)
-      .values({
-        orgId: key.orgId,
-        siteId: siteId,
-        agentId: agentId,
-        hostname: data.hostname,
-        osType: data.osType,
-        osVersion: data.osVersion,
-        architecture: data.architecture,
-        agentVersion: data.agentVersion,
-        status: 'online',
-        lastSeenAt: new Date(),
-        tags: []
-      })
-      .returning();
+  if (existingDevice && existingDevice.status === 'decommissioned') {
+    return c.json({ error: 'Device has been decommissioned. Contact an administrator.' }, 403);
+  }
+
+  // Create or re-enroll device in transaction
+  const result = await db.transaction(async (tx) => {
+    let device;
+
+    if (existingDevice) {
+      // Re-enrollment: update existing device with new credentials
+      [device] = await tx
+        .update(devices)
+        .set({
+          agentId: agentId,
+          agentTokenHash: tokenHash,
+          osType: data.osType,
+          osVersion: data.osVersion,
+          architecture: data.architecture,
+          agentVersion: data.agentVersion,
+          status: 'online',
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(devices.id, existingDevice.id))
+        .returning();
+    } else {
+      // New enrollment: create device record
+      [device] = await tx
+        .insert(devices)
+        .values({
+          orgId: key.orgId,
+          siteId: siteId,
+          agentId: agentId,
+          agentTokenHash: tokenHash,
+          hostname: data.hostname,
+          osType: data.osType,
+          osVersion: data.osVersion,
+          architecture: data.architecture,
+          agentVersion: data.agentVersion,
+          status: 'online',
+          lastSeenAt: new Date(),
+          tags: []
+        })
+        .returning();
+    }
 
     if (!device) {
       throw new Error('Failed to create device');
     }
 
-    // Insert hardware info if provided
+    // Upsert hardware info if provided
     if (data.hardwareInfo) {
       await tx
         .insert(deviceHardware)
@@ -152,15 +203,33 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
           cpuThreads: data.hardwareInfo.cpuThreads,
           ramTotalMb: data.hardwareInfo.ramTotalMb,
           diskTotalGb: data.hardwareInfo.diskTotalGb,
+          gpuModel: data.hardwareInfo.gpuModel,
           serialNumber: data.hardwareInfo.serialNumber,
           manufacturer: data.hardwareInfo.manufacturer,
           model: data.hardwareInfo.model,
           biosVersion: data.hardwareInfo.biosVersion
+        })
+        .onConflictDoUpdate({
+          target: deviceHardware.deviceId,
+          set: {
+            cpuModel: data.hardwareInfo.cpuModel,
+            cpuCores: data.hardwareInfo.cpuCores,
+            cpuThreads: data.hardwareInfo.cpuThreads,
+            ramTotalMb: data.hardwareInfo.ramTotalMb,
+            diskTotalGb: data.hardwareInfo.diskTotalGb,
+            gpuModel: data.hardwareInfo.gpuModel,
+            serialNumber: data.hardwareInfo.serialNumber,
+            manufacturer: data.hardwareInfo.manufacturer,
+            model: data.hardwareInfo.model,
+            biosVersion: data.hardwareInfo.biosVersion,
+            updatedAt: new Date()
+          }
         });
     }
 
-    // Insert network interfaces if provided
+    // Replace network interfaces if provided
     if (data.networkInfo && data.networkInfo.length > 0) {
+      await tx.delete(deviceNetwork).where(eq(deviceNetwork.deviceId, device.id));
       for (const nic of data.networkInfo) {
         await tx
           .insert(deviceNetwork)
@@ -760,4 +829,63 @@ agentRoutes.put('/:id/connections', zValidator('json', submitConnectionsSchema),
   });
 
   return c.json({ success: true, count: data.connections.length });
+});
+
+// Submit event logs
+const submitEventLogsSchema = z.object({
+  events: z.array(z.object({
+    timestamp: z.string().min(1),
+    level: z.enum(['info', 'warning', 'error', 'critical']),
+    category: z.enum(['security', 'hardware', 'application', 'system']),
+    source: z.string().min(1),
+    eventId: z.string().optional(),
+    message: z.string().min(1),
+    details: z.record(z.any()).optional()
+  }))
+});
+
+agentRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  if (data.events.length === 0) {
+    return c.json({ success: true, count: 0 });
+  }
+
+  // Batch insert event logs with ON CONFLICT dedup
+  const rows = data.events.map((event: any) => ({
+    deviceId: device.id,
+    orgId: device.orgId,
+    timestamp: new Date(event.timestamp),
+    level: event.level,
+    category: event.category,
+    source: event.source,
+    eventId: event.eventId || null,
+    message: event.message,
+    details: event.details || null
+  }));
+
+  let inserted = 0;
+  try {
+    // Insert in batches of 100 to avoid oversized queries
+    for (let i = 0; i < rows.length; i += 100) {
+      const batch = rows.slice(i, i + 100);
+      await db.insert(deviceEventLogs).values(batch).onConflictDoNothing();
+      inserted += batch.length;
+    }
+  } catch (err) {
+    console.error(`[EventLogs] Error batch inserting events for device ${device.id}:`, err);
+  }
+
+  return c.json({ success: true, count: inserted });
 });

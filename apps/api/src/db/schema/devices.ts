@@ -12,6 +12,7 @@ export const devices = pgTable('devices', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
   agentId: varchar('agent_id', { length: 64 }).notNull().unique(),
+  agentTokenHash: varchar('agent_token_hash', { length: 64 }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),

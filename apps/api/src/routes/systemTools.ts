@@ -93,6 +93,20 @@ interface ScheduledTaskInfo {
   }>;
 }
 
+interface FileEntryInfo {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modified?: string;
+  permissions?: string;
+}
+
+type RegistryOverrides = {
+  added: Set<string>;
+  removed: Set<string>;
+};
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
@@ -261,6 +275,33 @@ function generateMockScheduledTasks(): ScheduledTaskInfo[] {
   ];
 }
 
+function generateMockFileEntries(path: string): FileEntryInfo[] {
+  const normalized = path && path !== '/' ? path.replace(/\/$/, '') : '';
+  const joinPath = (name: string) => (normalized ? `${normalized}/${name}` : `/${name}`);
+  const now = new Date().toISOString();
+
+  return [
+    { name: 'Documents', path: joinPath('Documents'), type: 'directory' },
+    { name: 'Downloads', path: joinPath('Downloads'), type: 'directory' },
+    { name: 'Pictures', path: joinPath('Pictures'), type: 'directory' },
+    { name: 'config.json', path: joinPath('config.json'), type: 'file', size: 2048, modified: now },
+    { name: 'readme.md', path: joinPath('readme.md'), type: 'file', size: 5120, modified: now },
+    { name: 'app.log', path: joinPath('app.log'), type: 'file', size: 102400, modified: now },
+    { name: 'backup.zip', path: joinPath('backup.zip'), type: 'file', size: 52428800, modified: now },
+    { name: 'script.py', path: joinPath('script.py'), type: 'file', size: 1536, modified: now }
+  ];
+}
+
+const registryKeyOverrides = new Map<string, RegistryOverrides>();
+
+function getRegistryOverrides(key: string): RegistryOverrides {
+  const existing = registryKeyOverrides.get(key);
+  if (existing) return existing;
+  const created = { added: new Set<string>(), removed: new Set<string>() };
+  registryKeyOverrides.set(key, created);
+  return created;
+}
+
 // ============================================
 // VALIDATION SCHEMAS
 // ============================================
@@ -281,7 +322,7 @@ const serviceNameParamSchema = z.object({
 
 const registryQuerySchema = z.object({
   hive: z.enum(['HKEY_LOCAL_MACHINE', 'HKEY_CURRENT_USER', 'HKEY_CLASSES_ROOT', 'HKEY_USERS', 'HKEY_CURRENT_CONFIG']),
-  path: z.string().min(1).max(1024)
+  path: z.string().min(0).max(1024)
 });
 
 const registryValueQuerySchema = registryQuerySchema.extend({
@@ -290,10 +331,20 @@ const registryValueQuerySchema = registryQuerySchema.extend({
 
 const registryValueBodySchema = z.object({
   hive: z.enum(['HKEY_LOCAL_MACHINE', 'HKEY_CURRENT_USER', 'HKEY_CLASSES_ROOT', 'HKEY_USERS', 'HKEY_CURRENT_CONFIG']),
-  path: z.string().min(1).max(1024),
+  path: z.string().min(0).max(1024),
   name: z.string().min(0).max(256),
   type: z.enum(['REG_SZ', 'REG_EXPAND_SZ', 'REG_BINARY', 'REG_DWORD', 'REG_QWORD', 'REG_MULTI_SZ']),
   data: z.union([z.string(), z.number(), z.array(z.string())])
+});
+
+const registryKeyBodySchema = z.object({
+  hive: z.enum(['HKEY_LOCAL_MACHINE', 'HKEY_CURRENT_USER', 'HKEY_CLASSES_ROOT', 'HKEY_USERS', 'HKEY_CURRENT_CONFIG']),
+  path: z.string().min(1).max(1024)
+});
+
+const registryKeyQuerySchema = z.object({
+  hive: z.enum(['HKEY_LOCAL_MACHINE', 'HKEY_CURRENT_USER', 'HKEY_CLASSES_ROOT', 'HKEY_USERS', 'HKEY_CURRENT_CONFIG']),
+  path: z.string().min(1).max(1024)
 });
 
 const eventLogNameParamSchema = z.object({
@@ -320,6 +371,10 @@ const eventRecordParamSchema = z.object({
 const taskPathParamSchema = z.object({
   deviceId: z.string().uuid(),
   path: z.string().min(1).max(512)
+});
+
+const fileListQuerySchema = z.object({
+  path: z.string().min(1).max(2048)
 });
 
 const paginationQuerySchema = z.object({
@@ -736,13 +791,31 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
+    const prefix = path ? `${path}\\` : '';
     const mockKeys: RegistryKey[] = [
-      { name: 'SOFTWARE', path: `${hive}\\${path}\\SOFTWARE`, subKeyCount: 15, valueCount: 0, lastModified: '2024-01-10T10:00:00Z' },
-      { name: 'SYSTEM', path: `${hive}\\${path}\\SYSTEM`, subKeyCount: 8, valueCount: 0, lastModified: '2024-01-12T14:30:00Z' },
-      { name: 'HARDWARE', path: `${hive}\\${path}\\HARDWARE`, subKeyCount: 3, valueCount: 2, lastModified: '2024-01-01T00:00:00Z' }
+      { name: 'SOFTWARE', path: `${prefix}SOFTWARE`, subKeyCount: 15, valueCount: 0, lastModified: '2024-01-10T10:00:00Z' },
+      { name: 'SYSTEM', path: `${prefix}SYSTEM`, subKeyCount: 8, valueCount: 0, lastModified: '2024-01-12T14:30:00Z' },
+      { name: 'HARDWARE', path: `${prefix}HARDWARE`, subKeyCount: 3, valueCount: 2, lastModified: '2024-01-01T00:00:00Z' }
     ];
 
-    return c.json({ data: mockKeys });
+    const overrideKey = `${deviceId}:${hive}:${path}`;
+    const overrides = registryKeyOverrides.get(overrideKey);
+    const keys = overrides
+      ? [
+          ...mockKeys.filter(key => !overrides.removed.has(key.name)),
+          ...Array.from(overrides.added)
+            .filter(name => !mockKeys.some(key => key.name === name))
+            .map(name => ({
+              name,
+              path: `${prefix}${name}`,
+              subKeyCount: 0,
+              valueCount: 0,
+              lastModified: new Date().toISOString()
+            }))
+        ]
+      : mockKeys;
+
+    return c.json({ data: keys });
   }
 );
 
@@ -899,6 +972,114 @@ systemToolsRoutes.delete(
     return c.json({
       success: true,
       message: `Registry value ${name} deleted successfully`
+    });
+  }
+);
+
+// POST /api/v1/system-tools/devices/:deviceId/registry/key - Create registry key
+systemToolsRoutes.post(
+  '/devices/:deviceId/registry/key',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', registryKeyBodySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { hive, path } = c.req.valid('json');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const normalizedPath = path.replace(/\\+$/, '');
+    const parts = normalizedPath.split('\\');
+    const name = parts.pop();
+    const parentPath = parts.join('\\');
+
+    if (!name) {
+      return c.json({ error: 'Invalid registry key path' }, 400);
+    }
+
+    const overrideKey = `${deviceId}:${hive}:${parentPath}`;
+    const overrides = getRegistryOverrides(overrideKey);
+    overrides.added.add(name);
+    overrides.removed.delete(name);
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'create_registry_key',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: {
+        hive,
+        path: normalizedPath
+      },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: 'success'
+    });
+
+    return c.json({
+      success: true,
+      message: `Registry key ${normalizedPath} created successfully`
+    });
+  }
+);
+
+// DELETE /api/v1/system-tools/devices/:deviceId/registry/key - Delete registry key
+systemToolsRoutes.delete(
+  '/devices/:deviceId/registry/key',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('query', registryKeyQuerySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { hive, path } = c.req.valid('query');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const normalizedPath = path.replace(/\\+$/, '');
+    const parts = normalizedPath.split('\\');
+    const name = parts.pop();
+    const parentPath = parts.join('\\');
+
+    if (!name) {
+      return c.json({ error: 'Invalid registry key path' }, 400);
+    }
+
+    const overrideKey = `${deviceId}:${hive}:${parentPath}`;
+    const overrides = getRegistryOverrides(overrideKey);
+    overrides.removed.add(name);
+    overrides.added.delete(name);
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'delete_registry_key',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: {
+        hive,
+        path: normalizedPath
+      },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: 'success'
+    });
+
+    return c.json({
+      success: true,
+      message: `Registry key ${normalizedPath} deleted successfully`
     });
   }
 );
@@ -1255,5 +1436,119 @@ systemToolsRoutes.post(
       message: `Scheduled task ${task.name} disabled`,
       data: { ...task, state: 'disabled' as const }
     });
+  }
+);
+
+// ============================================
+// FILE BROWSER ROUTES
+// ============================================
+
+// GET /api/v1/system-tools/devices/:deviceId/files - List files for a path
+systemToolsRoutes.get(
+  '/devices/:deviceId/files',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('query', fileListQuerySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { path } = c.req.valid('query');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    // Execute file_list command on agent
+    const result = await executeCommand(deviceId, CommandTypes.FILE_LIST, {
+      path
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Agent failed to list files. The device may be offline.' }, 502);
+    }
+
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({ data: data.entries || [] });
+    } catch {
+      return c.json({ error: 'Failed to parse agent response for file listing' }, 502);
+    }
+  }
+);
+
+// POST /api/v1/system-tools/devices/:deviceId/files/upload - Upload a file
+systemToolsRoutes.post(
+  '/devices/:deviceId/files/upload',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const body = await c.req.json<{
+      path: string;
+      content: string;
+      encoding?: 'base64' | 'text';
+    }>();
+
+    if (!body.path || typeof body.path !== 'string') {
+      return c.json({ error: 'path is required' }, 400);
+    }
+    if (body.content === undefined || typeof body.content !== 'string') {
+      return c.json({ error: 'content is required' }, 400);
+    }
+
+    const result = await executeCommand(deviceId, CommandTypes.FILE_WRITE, {
+      path: body.path,
+      content: body.content,
+      encoding: body.encoding || 'text'
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    // Audit log after command execution with actual result
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'file_upload',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: {
+        path: body.path,
+        encoding: body.encoding || 'text',
+        sizeBytes: body.content.length
+      },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: result.status === 'failed' ? 'failure' : 'success'
+    });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to write file' }, 500);
+    }
+
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({
+        success: true,
+        data: {
+          path: data.path || body.path,
+          size: data.size || 0,
+          written: true
+        }
+      });
+    } catch {
+      return c.json({
+        success: true,
+        data: { path: body.path, written: true }
+      });
+    }
   }
 );

@@ -21,6 +21,7 @@ import {
   FileCog
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '@/stores/auth';
 
 export type FileEntry = {
   name: string;
@@ -118,31 +119,24 @@ export default function FileManager({
     setSelectedItems(new Set());
 
     try {
-      // In a real implementation, this would call the API
-      // For now, simulate with mock data
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Mock directory contents
-      const mockEntries: FileEntry[] = [
-        { name: 'Documents', path: `${path}/Documents`, type: 'directory' },
-        { name: 'Downloads', path: `${path}/Downloads`, type: 'directory' },
-        { name: 'Pictures', path: `${path}/Pictures`, type: 'directory' },
-        { name: 'config.json', path: `${path}/config.json`, type: 'file', size: 2048, modified: '2024-01-15T10:30:00Z' },
-        { name: 'readme.md', path: `${path}/readme.md`, type: 'file', size: 5120, modified: '2024-01-14T15:45:00Z' },
-        { name: 'app.log', path: `${path}/app.log`, type: 'file', size: 102400, modified: '2024-01-15T11:00:00Z' },
-        { name: 'backup.zip', path: `${path}/backup.zip`, type: 'file', size: 52428800, modified: '2024-01-10T08:00:00Z' },
-        { name: 'script.py', path: `${path}/script.py`, type: 'file', size: 1536, modified: '2024-01-13T09:20:00Z' },
-      ];
-
-      setEntries(mockEntries);
+      const params = new URLSearchParams({ path });
+      const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files?${params}`);
+      if (!response.ok) {
+        const json = await response.json();
+        throw new Error(json.error || 'Failed to load directory');
+      }
+      const json = await response.json();
+      const entriesData = Array.isArray(json.data) ? json.data : [];
+      setEntries(entriesData);
       setCurrentPath(path);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load directory';
       onError?.(message);
+      setEntries([]);
     } finally {
       setLoading(false);
     }
-  }, [onError]);
+  }, [deviceId, onError]);
 
   // Navigate to directory
   const navigateTo = useCallback((path: string) => {
@@ -224,12 +218,8 @@ export default function FileManager({
 
     try {
       // Create transfer record via API
-      const response = await fetch('/api/remote/transfers', {
+      const response = await fetchWithAuth('/remote/transfers', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
         body: JSON.stringify({
           deviceId,
           sessionId,
@@ -281,33 +271,44 @@ export default function FileManager({
       }]);
 
       try {
-        // Create transfer record via API
-        const response = await fetch('/api/remote/transfers', {
+        // Read file content as base64
+        setTransfers(prev => prev.map(t =>
+          t.id === transferId ? { ...t, status: 'transferring', progress: 10 } : t
+        ));
+
+        const content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            // Strip the data URL prefix (e.g., "data:text/plain;base64,")
+            const base64 = result.split(',')[1] || '';
+            resolve(base64);
+          };
+          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.readAsDataURL(file);
+        });
+
+        setTransfers(prev => prev.map(t =>
+          t.id === transferId ? { ...t, progress: 40 } : t
+        ));
+
+        // Upload file content to agent via system tools API
+        const remotePath = currentPath.endsWith('/')
+          ? `${currentPath}${file.name}`
+          : `${currentPath}/${file.name}`;
+
+        const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/upload`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
           body: JSON.stringify({
-            deviceId,
-            sessionId,
-            direction: 'upload',
-            remotePath: `${currentPath}/${file.name}`,
-            localFilename: file.name,
-            sizeBytes: file.size
+            path: remotePath,
+            content,
+            encoding: 'base64'
           })
         });
 
         if (!response.ok) {
-          throw new Error('Failed to initiate upload');
-        }
-
-        // Simulate transfer progress
-        for (let progress = 0; progress <= 100; progress += 10) {
-          await new Promise(resolve => setTimeout(resolve, 200));
-          setTransfers(prev => prev.map(t =>
-            t.id === transferId ? { ...t, status: 'transferring', progress } : t
-          ));
+          const err = await response.json().catch(() => ({ error: 'Upload failed' }));
+          throw new Error(err.error || 'Upload failed');
         }
 
         setTransfers(prev => prev.map(t =>
@@ -326,7 +327,7 @@ export default function FileManager({
         ));
       }
     }
-  }, [deviceId, sessionId, currentPath, fetchDirectory]);
+  }, [deviceId, currentPath, fetchDirectory]);
 
   // Handle drag and drop
   const handleDragOver = useCallback((event: React.DragEvent) => {
@@ -351,11 +352,8 @@ export default function FileManager({
   // Cancel transfer
   const cancelTransfer = useCallback(async (transferId: string) => {
     try {
-      await fetch(`/api/remote/transfers/${transferId}/cancel`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+      await fetchWithAuth(`/remote/transfers/${transferId}/cancel`, {
+        method: 'POST'
       });
 
       setTransfers(prev => prev.filter(t => t.id !== transferId));

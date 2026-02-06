@@ -2,6 +2,14 @@
 
 package terminal
 
+/*
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+*/
+import "C"
+
 import (
 	"fmt"
 	"os"
@@ -10,47 +18,47 @@ import (
 	"unsafe"
 )
 
-// Constants for macOS PTY ioctls
-const (
-	TIOCGPTN   = 0x40047476 // Get PTY number
-	TIOCPTYGRANT = 0x20007454 // Grant access to slave PTY
-	TIOCPTYUNLK  = 0x20007452 // Unlock slave PTY
-)
-
-// start starts the PTY session (macOS implementation)
+// start starts the PTY session (macOS implementation using cgo)
 func (s *Session) start() error {
-	// Open a new PTY using posix_openpt equivalent
-	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open PTY master: %w", err)
+	// Open PTY master via posix_openpt
+	masterFd, err := C.posix_openpt(C.O_RDWR)
+	if masterFd < 0 || err != nil {
+		return fmt.Errorf("posix_openpt failed: %w", err)
 	}
 
-	// Grant and unlock the slave PTY
-	if err := grantpt(master); err != nil {
-		master.Close()
-		return fmt.Errorf("failed to grant PTY: %w", err)
+	// Grant and unlock
+	if rc := C.grantpt(masterFd); rc != 0 {
+		C.close(masterFd)
+		return fmt.Errorf("grantpt failed")
+	}
+	if rc := C.unlockpt(masterFd); rc != 0 {
+		C.close(masterFd)
+		return fmt.Errorf("unlockpt failed")
 	}
 
-	if err := unlockpt(master); err != nil {
-		master.Close()
-		return fmt.Errorf("failed to unlock PTY: %w", err)
+	// Get slave name
+	cName := C.ptsname(masterFd)
+	if cName == nil {
+		C.close(masterFd)
+		return fmt.Errorf("ptsname returned nil")
 	}
+	slaveName := C.GoString(cName)
 
-	// Get the slave PTY name
-	slaveName, err := ptsname(master)
-	if err != nil {
-		master.Close()
-		return fmt.Errorf("failed to get slave PTY name: %w", err)
+	// Wrap the C fd in a Go *os.File
+	master := os.NewFile(uintptr(masterFd), "/dev/ptmx")
+	if master == nil {
+		C.close(masterFd)
+		return fmt.Errorf("failed to wrap master fd")
 	}
 
 	// Open the slave PTY
 	slave, err := os.OpenFile(slaveName, os.O_RDWR, 0)
 	if err != nil {
 		master.Close()
-		return fmt.Errorf("failed to open slave PTY: %w", err)
+		return fmt.Errorf("failed to open slave PTY %s: %w", slaveName, err)
 	}
 
-	// Set initial size
+	// Set initial window size
 	if err := setWinsize(master.Fd(), s.Cols, s.Rows); err != nil {
 		master.Close()
 		slave.Close()
@@ -114,46 +122,6 @@ func (s *Session) resize(cols, rows uint16) error {
 	s.Rows = rows
 
 	return setWinsize(s.pty.Fd(), cols, rows)
-}
-
-// ptsname returns the name of the slave PTY (macOS uses ioctl)
-func ptsname(f *os.File) (string, error) {
-	// On macOS, we need to use a different approach
-	// The slave name is /dev/ttysXXX corresponding to /dev/ptysXXX
-	name := make([]byte, 128)
-
-	// Use TIOCPTYGNAME on macOS
-	const TIOCPTYGNAME = 0x40107471
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), TIOCPTYGNAME, uintptr(unsafe.Pointer(&name[0])))
-	if errno != 0 {
-		return "", fmt.Errorf("TIOCPTYGNAME failed: %w", errno)
-	}
-
-	// Find the null terminator
-	for i, b := range name {
-		if b == 0 {
-			return string(name[:i]), nil
-		}
-	}
-	return string(name), nil
-}
-
-// grantpt grants access to the slave PTY
-func grantpt(f *os.File) error {
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), TIOCPTYGRANT, 0)
-	if errno != 0 {
-		return errno
-	}
-	return nil
-}
-
-// unlockpt unlocks the slave PTY
-func unlockpt(f *os.File) error {
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), TIOCPTYUNLK, 0)
-	if errno != 0 {
-		return errno
-	}
-	return nil
 }
 
 // Winsize represents the terminal window size

@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
+import { createHash } from 'crypto';
 import { db } from '../db';
-import { devices, deviceCommands } from '../db/schema';
+import { devices, deviceCommands, scriptExecutions, scriptExecutionBatches } from '../db/schema';
+import { handleTerminalOutput } from './terminalWs';
 
 // Store active WebSocket connections by agentId
 // Map<agentId, WSContext>
@@ -12,13 +14,14 @@ const activeConnections = new Map<string, WSContext>();
 // Message types from agent
 const commandResultSchema = z.object({
   type: z.literal('command_result'),
-  commandId: z.string().uuid(),
+  commandId: z.string(),
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
-  durationMs: z.number().int(),
-  error: z.string().optional()
+  durationMs: z.number().int().optional(),
+  error: z.string().optional(),
+  result: z.any().optional()
 });
 
 const heartbeatMessageSchema = z.object({
@@ -26,9 +29,16 @@ const heartbeatMessageSchema = z.object({
   timestamp: z.number()
 });
 
+const terminalOutputSchema = z.object({
+  type: z.literal('terminal_output'),
+  sessionId: z.string(),
+  data: z.string()
+});
+
 const agentMessageSchema = z.discriminatedUnion('type', [
   commandResultSchema,
-  heartbeatMessageSchema
+  heartbeatMessageSchema,
+  terminalOutputSchema
 ]);
 
 // Command types sent to agent
@@ -39,26 +49,26 @@ export interface AgentCommand {
 }
 
 /**
- * Validate agent token against the device
- * The token is the authToken returned during enrollment (brz_xxx format)
- * For now, we validate by checking if the agentId exists
- * In production, you would hash and compare the token
+ * Validate agent token by hashing it and comparing against the stored hash.
  */
 async function validateAgentToken(agentId: string, token: string): Promise<boolean> {
   if (!token || !token.startsWith('brz_')) {
     return false;
   }
 
-  // Look up the device by agentId
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+
   const [device] = await db
-    .select({ id: devices.id })
+    .select({ id: devices.id, agentTokenHash: devices.agentTokenHash })
     .from(devices)
     .where(eq(devices.agentId, agentId))
     .limit(1);
 
-  // For now, just validate that the device exists and token format is valid
-  // In production, store hashed tokens and compare
-  return !!device;
+  if (!device || !device.agentTokenHash) {
+    return false;
+  }
+
+  return device.agentTokenHash === tokenHash;
 }
 
 /**
@@ -98,14 +108,20 @@ async function processCommandResult(
       return;
     }
 
+    // Agent sends structured data in `result` field (parsed JSON) rather than
+    // `stdout` (raw string). Convert it back to a JSON string for storage.
+    const stdout = result.stdout ||
+      (result.result !== undefined ? JSON.stringify(result.result) : undefined);
+
     await db
       .update(deviceCommands)
       .set({
         status: result.status === 'completed' ? 'completed' : 'failed',
         completedAt: new Date(),
         result: {
+          status: result.status,
           exitCode: result.exitCode,
-          stdout: result.stdout,
+          stdout,
           stderr: result.stderr,
           durationMs: result.durationMs,
           error: result.error
@@ -114,6 +130,41 @@ async function processCommandResult(
       .where(eq(deviceCommands.id, result.commandId));
 
     console.log(`Command ${result.commandId} ${result.status} for agent ${agentId}`);
+
+    // If this was a script command, update the scriptExecutions record
+    if (command.type === 'script') {
+      const payload = command.payload as Record<string, unknown> | null;
+      const executionId = payload?.executionId as string | undefined;
+      if (executionId) {
+        const scriptStatus = result.status === 'completed'
+          ? (result.exitCode && result.exitCode !== 0 ? 'failed' : 'completed')
+          : result.status === 'timeout' ? 'timeout' : 'failed';
+
+        await db
+          .update(scriptExecutions)
+          .set({
+            status: scriptStatus,
+            completedAt: new Date(),
+            exitCode: result.exitCode ?? null,
+            stdout: stdout ?? null,
+            stderr: result.stderr ?? null,
+            errorMessage: result.error ?? null,
+          })
+          .where(eq(scriptExecutions.id, executionId));
+
+        // Update batch counters if this is part of a batch
+        const batchId = payload?.batchId as string | undefined;
+        if (batchId) {
+          const counterField = scriptStatus === 'completed' ? 'devicesCompleted' : 'devicesFailed';
+          await db
+            .update(scriptExecutionBatches)
+            .set({
+              [counterField]: sql`${scriptExecutionBatches[counterField]} + 1`
+            })
+            .where(eq(scriptExecutionBatches.id, batchId));
+        }
+      }
+    }
   } catch (error) {
     console.error(`Failed to process command result for ${agentId}:`, error);
   }
@@ -215,6 +266,24 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
           : event.data.toString();
 
         const message = JSON.parse(data);
+
+        // Handle terminal_output messages directly (high-frequency streaming
+        // data that doesn't need full schema validation)
+        if (message.type === 'terminal_output' && typeof message.sessionId === 'string' && typeof message.data === 'string') {
+          handleTerminalOutput(message.sessionId, message.data);
+          return;
+        }
+
+        // Handle command_result for terminal commands (non-UUID IDs)
+        if (message.type === 'command_result' && typeof message.commandId === 'string' && message.commandId.startsWith('term-')) {
+          // Terminal command results don't map to DB records - just acknowledge
+          ws.send(JSON.stringify({
+            type: 'ack',
+            commandId: message.commandId
+          }));
+          return;
+        }
+
         const parsed = agentMessageSchema.safeParse(message);
 
         if (!parsed.success) {
@@ -248,6 +317,11 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
               timestamp: Date.now(),
               commands: pendingCommands
             }));
+            break;
+
+          case 'terminal_output':
+            // Fallback - should be caught by the fast path above
+            handleTerminalOutput(parsed.data.sessionId, parsed.data.data);
             break;
         }
       } catch (error) {
@@ -308,10 +382,8 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
   }
 
   try {
-    ws.send(JSON.stringify({
-      messageType: 'command',
-      command
-    }));
+    // Send command directly - agent expects {id, type, payload} at top level
+    ws.send(JSON.stringify(command));
     return true;
   } catch (error) {
     console.error(`Failed to send command to agent ${agentId}:`, error);

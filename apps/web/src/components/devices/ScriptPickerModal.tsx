@@ -5,7 +5,6 @@ import { fetchWithAuth } from '../../stores/auth';
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type OSType = 'windows' | 'macos' | 'linux';
-export type ScriptStatus = 'active' | 'draft' | 'archived';
 
 export type Script = {
   id: string;
@@ -14,7 +13,7 @@ export type Script = {
   language: ScriptLanguage;
   category: string;
   osTypes: OSType[];
-  status: ScriptStatus;
+  isSystem?: boolean;
 };
 
 type ScriptPickerModalProps = {
@@ -22,6 +21,7 @@ type ScriptPickerModalProps = {
   onClose: () => void;
   onSelect: (script: Script) => void;
   deviceHostname?: string;
+  deviceOs?: OSType | OSType[];
 };
 
 const languageConfig: Record<ScriptLanguage, { label: string; color: string; icon: string }> = {
@@ -35,7 +35,8 @@ export default function ScriptPickerModal({
   isOpen,
   onClose,
   onSelect,
-  deviceHostname
+  deviceHostname,
+  deviceOs
 }: ScriptPickerModalProps) {
   const [scripts, setScripts] = useState<Script[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,17 +63,16 @@ export default function ScriptPickerModal({
       const data = await response.json();
       const scriptList = data.data ?? data.scripts ?? data ?? [];
 
-      // Transform and filter to active scripts only
+      // Transform scripts
       const transformedScripts: Script[] = scriptList
-        .filter((s: Record<string, unknown>) => s.status === 'active')
         .map((s: Record<string, unknown>) => ({
           id: s.id as string,
           name: (s.name ?? 'Unnamed Script') as string,
           description: s.description as string | undefined,
-          language: (s.language ?? 'powershell') as ScriptLanguage,
+          language: (s.language ?? 'bash') as ScriptLanguage,
           category: (s.category ?? 'General') as string,
-          osTypes: (s.osTypes ?? s.os_types ?? ['windows']) as OSType[],
-          status: (s.status ?? 'active') as ScriptStatus
+          osTypes: (s.osTypes ?? s.os_types ?? ['macos', 'linux']) as OSType[],
+          isSystem: s.isSystem as boolean | undefined
         }));
 
       setScripts(transformedScripts);
@@ -90,6 +90,9 @@ export default function ScriptPickerModal({
 
   const filteredScripts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
+    const osFilter = deviceOs
+      ? Array.isArray(deviceOs) ? deviceOs : [deviceOs]
+      : null;
 
     return scripts.filter(script => {
       const matchesQuery = normalizedQuery.length === 0
@@ -97,10 +100,11 @@ export default function ScriptPickerModal({
         : script.name.toLowerCase().includes(normalizedQuery) ||
           (script.description?.toLowerCase().includes(normalizedQuery) ?? false);
       const matchesCategory = categoryFilter === 'all' ? true : script.category === categoryFilter;
+      const matchesOs = !osFilter || osFilter.some(os => script.osTypes.includes(os));
 
-      return matchesQuery && matchesCategory;
+      return matchesQuery && matchesCategory && matchesOs;
     });
-  }, [scripts, query, categoryFilter]);
+  }, [scripts, query, categoryFilter, deviceOs]);
 
   const handleSelect = (script: Script) => {
     onSelect(script);

@@ -135,7 +135,31 @@ class EventBus {
 
     console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
 
+    // Invoke local in-process handlers immediately
+    // This handles the case where startConsuming() hasn't been called
+    await this.invokeLocalHandlers(event);
+
     return eventId;
+  }
+
+  /**
+   * Invoke local in-process handlers for an event
+   * Called when publishing to handle local subscribers immediately
+   */
+  private async invokeLocalHandlers(event: BreezeEvent): Promise<void> {
+    const typeHandlers = this.handlers.get(event.type) || new Set();
+    const wildcardHandlers = this.handlers.get('*') || new Set();
+    const allHandlers = [...typeHandlers, ...wildcardHandlers];
+
+    if (allHandlers.length === 0) return;
+
+    for (const handler of allHandlers) {
+      try {
+        await handler(event);
+      } catch (err) {
+        console.error(`[EventBus] Local handler failed for ${event.type}:`, err);
+      }
+    }
   }
 
   /**

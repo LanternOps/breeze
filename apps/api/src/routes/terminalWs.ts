@@ -152,7 +152,9 @@ function createTerminalWsHandlers(sessionId: string, token: string | undefined) 
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
+      console.log(`Terminal WebSocket onOpen for session ${sessionId}`);
       await validationPromise;
+      console.log(`Terminal validation result:`, validationResult?.valid, validationResult?.error);
 
       if (!validationResult || !validationResult.valid) {
         console.warn(`Terminal WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
@@ -172,7 +174,9 @@ function createTerminalWsHandlers(sessionId: string, token: string | undefined) 
       }
 
       // Check if agent is connected
+      console.log(`Checking if agent ${device.agentId} is connected...`);
       if (!isAgentConnected(device.agentId)) {
+        console.warn(`Agent ${device.agentId} is not connected via WebSocket`);
         ws.send(JSON.stringify({
           type: 'error',
           code: 'AGENT_OFFLINE',
@@ -181,6 +185,7 @@ function createTerminalWsHandlers(sessionId: string, token: string | undefined) 
         ws.close(4002, 'Agent offline');
         return;
       }
+      console.log(`Agent ${device.agentId} is connected`);
 
       // Store the terminal session
       activeTerminalSessions.set(sessionId, {

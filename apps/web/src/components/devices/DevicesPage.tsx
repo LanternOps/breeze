@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X } from 'lucide-react';
+import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
 import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script } from './ScriptPickerModal';
+import DeviceSettingsModal from './DeviceSettingsModal';
+import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, sendBulkCommand, toggleMaintenanceMode } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode } from '../../services/deviceActions';
 
 type ViewMode = 'list' | 'grid';
 
@@ -34,6 +37,8 @@ export default function DevicesPage() {
   const [tokenError, setTokenError] = useState<string>();
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
+  const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
+  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
 
   const scriptTargetLabel =
     scriptTargetDevices.length === 1
@@ -41,6 +46,11 @@ export default function DevicesPage() {
       : scriptTargetDevices.length > 1
         ? `${scriptTargetDevices.length} devices`
         : 'selected devices';
+
+  const scriptTargetOs = useMemo(() => {
+    const unique = [...new Set(scriptTargetDevices.map(d => d.os))];
+    return unique.length > 0 ? unique : undefined;
+  }, [scriptTargetDevices]);
 
   const showToast = useCallback((type: 'success' | 'error', message: string) => {
     const id = Date.now().toString();
@@ -205,25 +215,13 @@ export default function DevicesPage() {
 
     try {
       setActionInProgress(true);
-      if (scriptTargetDevices.length === 1) {
-        const target = scriptTargetDevices[0];
-        await sendDeviceCommand(target.id, 'script', {
-          scriptId: script.id
-        });
-        showToast('success', `Script "${script.name}" queued for ${target.hostname}`);
-      } else {
-        const deviceIds = scriptTargetDevices.map(device => device.id);
-        const result = await sendBulkCommand(deviceIds, 'script', {
-          scriptId: script.id
-        });
-        const successCount = result.commands?.length ?? 0;
-        const failedCount = result.failed?.length ?? 0;
+      const deviceIds = scriptTargetDevices.map(d => d.id);
+      const result = await executeScript(script.id, deviceIds);
 
-        if (failedCount === 0) {
-          showToast('success', `Script queued for ${successCount} devices`);
-        } else {
-          showToast('error', `Script queued for ${successCount} devices, ${failedCount} failed`);
-        }
+      if (scriptTargetDevices.length === 1) {
+        showToast('success', `Script "${script.name}" queued for ${scriptTargetDevices[0].hostname}`);
+      } else {
+        showToast('success', `Script "${script.name}" queued for ${result.devicesTargeted} devices`);
       }
 
       closeScriptPicker();
@@ -265,6 +263,10 @@ export default function DevicesPage() {
 
         case 'run-script':
           openScriptPicker([device]);
+          break;
+
+        case 'settings':
+          setSettingsDevice(device);
           break;
 
         default:
@@ -425,12 +427,21 @@ export default function DevicesPage() {
         </div>
       </div>
 
+      <DeviceFilterBar
+        value={advancedFilter}
+        onChange={setAdvancedFilter}
+        showPreview={true}
+        showSavedFilters={true}
+        collapsible={true}
+      />
+
       {viewMode === 'list' ? (
         <DeviceList
           devices={devices}
           sites={sites}
           onSelect={handleSelectDevice}
           onBulkAction={handleBulkAction}
+          serverFilter={advancedFilter}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -562,7 +573,17 @@ export default function DevicesPage() {
         onClose={closeScriptPicker}
         onSelect={handleScriptSelect}
         deviceHostname={scriptTargetLabel}
+        deviceOs={scriptTargetOs}
       />
+
+      {settingsDevice && (
+        <DeviceSettingsModal
+          device={settingsDevice}
+          isOpen={!!settingsDevice}
+          onClose={() => setSettingsDevice(null)}
+          onSaved={fetchDevices}
+        />
+      )}
     </div>
   );
 }

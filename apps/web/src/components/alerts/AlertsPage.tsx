@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
 import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 
 type ModalMode = 'closed' | 'details' | 'acknowledge' | 'resolve' | 'suppress';
 
@@ -21,6 +23,8 @@ export default function AlertsPage() {
   const [selectedAlertNotifications, setSelectedAlertNotifications] = useState<NotificationHistory[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | null>(null);
+  const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
+  const [deviceFilterIds, setDeviceFilterIds] = useState<Set<string> | null>(null);
 
   const fetchAlerts = useCallback(async () => {
     try {
@@ -72,6 +76,38 @@ export default function AlertsPage() {
     fetchAlerts();
     fetchDevices();
   }, [fetchAlerts, fetchDevices]);
+
+  useEffect(() => {
+    if (!deviceFilter || deviceFilter.conditions.length === 0) {
+      setDeviceFilterIds(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth('/filters/preview', {
+          method: 'POST',
+          body: JSON.stringify({ conditions: deviceFilter, limit: 100 })
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const ids = new Set<string>((data.data?.devices ?? []).map((d: { id: string }) => d.id));
+        if (!cancelled) setDeviceFilterIds(ids);
+      } catch (err) {
+        console.error('Filter preview failed:', err);
+        if (!cancelled) setDeviceFilterIds(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [deviceFilter]);
+
+  const filteredAlerts = useMemo(() => {
+    if (!deviceFilterIds) return alerts;
+    return alerts.filter(alert => {
+      const deviceId = (alert as unknown as Record<string, unknown>).deviceId as string | undefined;
+      return deviceId ? deviceFilterIds.has(deviceId) : true;
+    });
+  }, [alerts, deviceFilterIds]);
 
   const handleSelect = async (alert: Alert) => {
     setSelectedAlert(alert);
@@ -248,8 +284,16 @@ export default function AlertsPage() {
 
       <AlertsSummary alerts={alertCounts} onFilterBySeverity={handleFilterBySeverity} />
 
+      <DeviceFilterBar
+        value={deviceFilter}
+        onChange={setDeviceFilter}
+        collapsible
+        defaultExpanded={false}
+        showPreview
+      />
+
       <AlertList
-        alerts={alerts}
+        alerts={filteredAlerts}
         devices={devices}
         onSelect={handleSelect}
         onAcknowledge={handleAcknowledge}

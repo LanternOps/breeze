@@ -7,6 +7,7 @@ import {
   CalendarClock,
   CheckCircle,
   Clock,
+  Filter,
   GripVertical,
   Mail,
   Play,
@@ -19,6 +20,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import type { DeploymentTargetConfig } from '@breeze/shared';
+import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
 type TriggerType = 'schedule' | 'event' | 'alert' | 'webhook';
 type ActionType = 'run_script' | 'send_alert' | 'create_ticket' | 'send_email' | 'call_webhook';
@@ -443,6 +446,8 @@ export default function AutomationEditor({
   const [toggleLoading, setToggleLoading] = useState(false);
   const [draggingActionId, setDraggingActionId] = useState<string | null>(null);
   const [dragOverActionId, setDragOverActionId] = useState<string | null>(null);
+  const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>('simple');
+  const [advancedTargetConfig, setAdvancedTargetConfig] = useState<DeploymentTargetConfig>({ type: 'all' });
 
   const fetchAutomation = useCallback(async () => {
     try {
@@ -990,105 +995,143 @@ export default function AutomationEditor({
                   Filter which devices qualify and when actions can run.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  updateAutomation(prev => ({
-                    ...prev,
-                    conditions: [
-                      ...prev.conditions,
-                      {
-                        id: createId('cond'),
-                        field: 'site',
-                        operator: 'is',
-                        value: ''
-                      }
-                    ]
-                  }))
-                }
-                className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
-              >
-                <Plus className="h-4 w-4" />
-                Add Filter
-              </button>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {automation.conditions.length === 0 && (
-                <div className="rounded-md border border-dashed bg-muted/10 p-4 text-sm text-muted-foreground">
-                  No filters applied. All devices are eligible.
+              <div className="flex items-center gap-2">
+                <div className="flex rounded-md border">
+                  <button
+                    type="button"
+                    onClick={() => setConditionMode('simple')}
+                    className={cn(
+                      'px-3 py-1.5 text-xs font-medium rounded-l-md transition',
+                      conditionMode === 'simple' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                    )}
+                  >
+                    Simple
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConditionMode('advanced')}
+                    className={cn(
+                      'px-3 py-1.5 text-xs font-medium rounded-r-md transition',
+                      conditionMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                    )}
+                  >
+                    <Filter className="h-3 w-3 inline mr-1" />
+                    Advanced
+                  </button>
                 </div>
-              )}
-              {automation.conditions.map(condition => (
-                <div key={condition.id} className="flex flex-wrap gap-2 rounded-md border bg-background p-3">
-                  <select
-                    value={condition.field}
-                    onChange={event =>
-                      updateAutomation(prev => ({
-                        ...prev,
-                        conditions: prev.conditions.map(item =>
-                          item.id === condition.id
-                            ? { ...item, field: event.target.value as ConditionField }
-                            : item
-                        )
-                      }))
-                    }
-                    className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    {conditionFieldOptions.map(option => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={condition.operator}
-                    onChange={event =>
-                      updateAutomation(prev => ({
-                        ...prev,
-                        conditions: prev.conditions.map(item =>
-                          item.id === condition.id
-                            ? { ...item, operator: event.target.value as ConditionOperator }
-                            : item
-                        )
-                      }))
-                    }
-                    className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    {operatorOptions.map(option => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="text"
-                    value={condition.value}
-                    onChange={event =>
-                      updateAutomation(prev => ({
-                        ...prev,
-                        conditions: prev.conditions.map(item =>
-                          item.id === condition.id ? { ...item, value: event.target.value } : item
-                        )
-                      }))
-                    }
-                    placeholder="Value"
-                    className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  />
+                {conditionMode === 'simple' && (
                   <button
                     type="button"
                     onClick={() =>
                       updateAutomation(prev => ({
                         ...prev,
-                        conditions: prev.conditions.filter(item => item.id !== condition.id)
+                        conditions: [
+                          ...prev.conditions,
+                          {
+                            id: createId('cond'),
+                            field: 'site',
+                            operator: 'is',
+                            value: ''
+                          }
+                        ]
                       }))
                     }
-                    className="flex h-9 w-9 items-center justify-center rounded-md text-destructive hover:bg-muted"
+                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Plus className="h-4 w-4" />
+                    Add Filter
                   </button>
-                </div>
-              ))}
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {conditionMode === 'simple' ? (
+                <>
+                  {automation.conditions.length === 0 && (
+                    <div className="rounded-md border border-dashed bg-muted/10 p-4 text-sm text-muted-foreground">
+                      No filters applied. All devices are eligible.
+                    </div>
+                  )}
+                  {automation.conditions.map(condition => (
+                    <div key={condition.id} className="flex flex-wrap gap-2 rounded-md border bg-background p-3">
+                      <select
+                        value={condition.field}
+                        onChange={event =>
+                          updateAutomation(prev => ({
+                            ...prev,
+                            conditions: prev.conditions.map(item =>
+                              item.id === condition.id
+                                ? { ...item, field: event.target.value as ConditionField }
+                                : item
+                            )
+                          }))
+                        }
+                        className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {conditionFieldOptions.map(option => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={condition.operator}
+                        onChange={event =>
+                          updateAutomation(prev => ({
+                            ...prev,
+                            conditions: prev.conditions.map(item =>
+                              item.id === condition.id
+                                ? { ...item, operator: event.target.value as ConditionOperator }
+                                : item
+                            )
+                          }))
+                        }
+                        className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {operatorOptions.map(option => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={condition.value}
+                        onChange={event =>
+                          updateAutomation(prev => ({
+                            ...prev,
+                            conditions: prev.conditions.map(item =>
+                              item.id === condition.id ? { ...item, value: event.target.value } : item
+                            )
+                          }))
+                        }
+                        placeholder="Value"
+                        className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateAutomation(prev => ({
+                            ...prev,
+                            conditions: prev.conditions.filter(item => item.id !== condition.id)
+                          }))
+                        }
+                        className="flex h-9 w-9 items-center justify-center rounded-md text-destructive hover:bg-muted"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <DeviceTargetSelector
+                  value={advancedTargetConfig}
+                  onChange={setAdvancedTargetConfig}
+                  modes={['all', 'filter']}
+                  showPreview={true}
+                />
+              )}
             </div>
 
             <div className="mt-6 rounded-md border bg-muted/20 p-4">

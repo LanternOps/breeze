@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
+import { useMemo, useState, useEffect } from 'react';
+import { Search, ChevronLeft, ChevronRight, MoreHorizontal, Filter } from 'lucide-react';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { fetchWithAuth } from '../../stores/auth';
 
 const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
 
@@ -28,6 +30,7 @@ type DeviceListProps = {
   onSelect?: (device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
   pageSize?: number;
+  serverFilter?: FilterConditionGroup | null;
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -71,7 +74,8 @@ export default function DeviceList({
   timezone,
   onSelect,
   onBulkAction,
-  pageSize = 10
+  pageSize = 10,
+  serverFilter = null
 }: DeviceListProps) {
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -83,11 +87,62 @@ export default function DeviceList({
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
+  const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
+  const [serverFilterLoading, setServerFilterLoading] = useState(false);
+
+  // Fetch matching device IDs from server when advanced filter changes
+  useEffect(() => {
+    if (!serverFilter) {
+      setServerFilterIds(null);
+      return;
+    }
+
+    const hasValidConditions = serverFilter.conditions.some(c => {
+      if ('conditions' in c) return true;
+      return c.value !== '' && c.value !== null && c.value !== undefined;
+    });
+
+    if (!hasValidConditions) {
+      setServerFilterIds(null);
+      return;
+    }
+
+    setServerFilterLoading(true);
+    const controller = new AbortController();
+
+    fetchWithAuth('/filters/preview', {
+      method: 'POST',
+      body: JSON.stringify({ conditions: serverFilter, limit: 100 }),
+      signal: controller.signal
+    })
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          const result = data.data ?? data;
+          const ids = new Set<string>((result.devices ?? []).map((d: { id: string }) => d.id));
+          setServerFilterIds(ids);
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          console.error('Filter preview failed:', err);
+          setServerFilterIds(null);
+        }
+      })
+      .finally(() => setServerFilterLoading(false));
+
+    return () => controller.abort();
+  }, [serverFilter]);
 
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter(device => {
+      // Apply server-side advanced filter
+      if (serverFilterIds !== null && !serverFilterIds.has(device.id)) {
+        return false;
+      }
+
       const matchesQuery = normalizedQuery.length === 0
         ? true
         : device.hostname.toLowerCase().includes(normalizedQuery);
@@ -97,7 +152,7 @@ export default function DeviceList({
 
       return matchesQuery && matchesStatus && matchesOs && matchesSite;
     });
-  }, [devices, query, statusFilter, osFilter, siteFilter]);
+  }, [devices, query, statusFilter, osFilter, siteFilter, serverFilterIds]);
 
   const totalPages = Math.ceil(filteredDevices.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -136,9 +191,18 @@ export default function DeviceList({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Devices</h2>
-          <p className="text-sm text-muted-foreground">
-            {filteredDevices.length} of {devices.length} devices
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-muted-foreground">
+              {filteredDevices.length} of {devices.length} devices
+            </p>
+            {serverFilterIds !== null && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                <Filter className="h-3 w-3" />
+                Advanced filter active
+                {serverFilterLoading && <span className="ml-1 animate-pulse">...</span>}
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="relative">

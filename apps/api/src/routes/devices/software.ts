@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, like, sql, asc } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceSoftware } from '../../db/schema';
+import { softwareInventory } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { softwareQuerySchema } from './schemas';
@@ -28,10 +28,10 @@ softwareRoutes.get(
     }
 
     // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [eq(deviceSoftware.deviceId, deviceId)];
+    const conditions: ReturnType<typeof eq>[] = [eq(softwareInventory.deviceId, deviceId)];
 
     if (query.search) {
-      conditions.push(like(deviceSoftware.name, `%${query.search}%`));
+      conditions.push(like(softwareInventory.name, `%${query.search}%`));
     }
 
     const whereCondition = and(...conditions);
@@ -39,16 +39,16 @@ softwareRoutes.get(
     // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
-      .from(deviceSoftware)
+      .from(softwareInventory)
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
     // Get software list
     const software = await db
       .select()
-      .from(deviceSoftware)
+      .from(softwareInventory)
       .where(whereCondition)
-      .orderBy(asc(deviceSoftware.name))
+      .orderBy(asc(softwareInventory.name))
       .limit(limit)
       .offset(offset);
 

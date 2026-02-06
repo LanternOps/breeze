@@ -29,15 +29,21 @@ type EnrollRequest struct {
 type HardwareInfo struct {
 	CPUModel     string `json:"cpuModel,omitempty"`
 	CPUCores     int    `json:"cpuCores,omitempty"`
+	CPUThreads   int    `json:"cpuThreads,omitempty"`
 	RAMTotalMB   uint64 `json:"ramTotalMb,omitempty"`
+	DiskTotalGB  uint64 `json:"diskTotalGb,omitempty"`
+	GPUModel     string `json:"gpuModel,omitempty"`
 	SerialNumber string `json:"serialNumber,omitempty"`
 	Manufacturer string `json:"manufacturer,omitempty"`
 	Model        string `json:"model,omitempty"`
+	BIOSVersion  string `json:"biosVersion,omitempty"`
 }
 
 type EnrollResponse struct {
 	AgentID   string      `json:"agentId"`
 	AuthToken string      `json:"authToken"`
+	OrgID     string      `json:"orgId"`
+	SiteID    string      `json:"siteId"`
 	Config    AgentConfig `json:"config"`
 }
 
@@ -77,7 +83,7 @@ func (c *Client) Enroll(req *EnrollRequest) (*EnrollResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("enrollment failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 	}

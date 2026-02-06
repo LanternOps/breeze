@@ -8,3 +8,7 @@ export { OperatorSelector, OPERATOR_LABELS, SHORT_LABELS } from './OperatorSelec
 export { ValueInput } from './ValueInput';
 export { FilterPreview } from './FilterPreview';
 export { SavedFilterList } from './SavedFilterList';
+export { DeviceFilterBar } from './DeviceFilterBar';
+export { DeviceTargetSelector } from './DeviceTargetSelector';
+export { ModeToggle } from './ModeToggle';
+export type { ModeToggleOption } from './ModeToggle';

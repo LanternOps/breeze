@@ -1,47 +1,35 @@
 ---
 import Layout from '../../layouts/Layout.astro';
+import RemoteToolsPage from '../../components/remote/RemoteToolsPage';
+
+const searchParams = Astro.url.searchParams;
+const deviceId = searchParams.get('deviceId') ?? 'demo-device-001';
+const rawDeviceName = searchParams.get('deviceName') ?? 'Demo Windows Workstation';
+const deviceName = rawDeviceName.replace(/[<>"'&]/g, '');
+const osParam = searchParams.get('os') ?? 'windows';
+const normalizedOs = osParam === 'darwin' ? 'macos' : osParam;
+const deviceOs = normalizedOs === 'windows' || normalizedOs === 'macos' || normalizedOs === 'linux'
+  ? normalizedOs
+  : 'windows';
 ---
 
 <Layout title="Remote Tools | Breeze RMM">
-  <div class="h-[calc(100vh-4rem)]" id="remote-tools-root">
-    <div class="flex h-full items-center justify-center">
-      <div class="text-center">
-        <p class="text-muted-foreground">Loading Remote Tools...</p>
-        <p class="mt-2 text-sm text-muted-foreground">
-          Select a device to access remote management tools
-        </p>
+  <div class="h-[calc(100vh-4rem)]">
+    <RemoteToolsPage
+      deviceId={deviceId}
+      deviceName={deviceName}
+      deviceOs={deviceOs}
+      showClose={true}
+      client:only="react"
+    >
+      <div slot="fallback" class="flex h-full items-center justify-center">
+        <div class="text-center">
+          <p class="text-muted-foreground">Loading Remote Tools...</p>
+          <p class="mt-2 text-sm text-muted-foreground">
+            Select a device to access remote management tools
+          </p>
+        </div>
       </div>
-    </div>
+    </RemoteToolsPage>
   </div>
 </Layout>
-
-<script>
-  import { createElement } from 'react';
-  import { createRoot } from 'react-dom/client';
-  import RemoteToolsPage from '../../components/remote/RemoteToolsPage';
-
-  document.addEventListener('DOMContentLoaded', () => {
-    const container = document.getElementById('remote-tools-root');
-    if (container) {
-      // Get device info from URL params
-      const params = new URLSearchParams(window.location.search);
-      const deviceId = params.get('deviceId') || 'demo-device-001';
-      // Sanitize deviceName to prevent XSS - decode and remove potentially harmful characters
-      const rawDeviceName = params.get('deviceName') || 'Demo Windows Workstation';
-      const deviceName = decodeURIComponent(rawDeviceName).replace(/[<>"'&]/g, '');
-      const deviceOs = (params.get('os') as 'windows' | 'linux' | 'darwin') || 'windows';
-
-      const root = createRoot(container);
-      root.render(
-        createElement(RemoteToolsPage, {
-          deviceId,
-          deviceName,
-          deviceOs,
-          onClose: () => {
-            window.history.back();
-          }
-        })
-      );
-    }
-  });
-</script>

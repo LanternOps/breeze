@@ -23,8 +23,16 @@ import { cn } from '@/lib/utils';
 
 const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
 
-// Types
+// Platform type
+export type Platform = 'windows' | 'macos' | 'linux';
+
+// Types - Windows uses capitalized levels, macOS uses lowercase
 export type EventLevel = 'Information' | 'Warning' | 'Error' | 'Critical';
+export type MacOSEventLevel = 'info' | 'warning' | 'error' | 'critical';
+export type MacOSCategory = 'security' | 'hardware' | 'application' | 'system';
+
+// Normalized level for display
+type NormalizedLevel = 'Information' | 'Warning' | 'Error' | 'Critical';
 
 export type EventLog = {
   name: string;
@@ -39,7 +47,7 @@ export type EventLogEntry = {
   level: EventLevel;
   timeCreated: string;
   source: string;
-  eventId: number;
+  eventId: number | string;
   message: string;
   taskCategory?: string;
   keywords?: string[];
@@ -48,6 +56,9 @@ export type EventLogEntry = {
   processId?: number;
   threadId?: number;
   rawXml?: string;
+  // macOS-specific fields
+  category?: MacOSCategory;
+  details?: Record<string, unknown>;
 };
 
 export type EventFilter = {
@@ -57,11 +68,13 @@ export type EventFilter = {
   sources?: string[];
   eventId?: number;
   keywords?: string;
+  category?: MacOSCategory;
 };
 
 export type EventViewerProps = {
   deviceId: string;
   deviceName?: string;
+  platform?: Platform;
   logs?: EventLog[];
   selectedLog?: string;
   events?: EventLogEntry[];
@@ -71,12 +84,38 @@ export type EventViewerProps = {
   onGetEvent?: (logName: string, recordId: string) => Promise<EventLogEntry>;
 };
 
-// Default logs
-const defaultLogs: EventLog[] = [
+// Normalize macOS lowercase levels to display levels
+function normalizeLevel(level: string): NormalizedLevel {
+  switch (level.toLowerCase()) {
+    case 'info':
+    case 'information':
+      return 'Information';
+    case 'warning':
+      return 'Warning';
+    case 'error':
+      return 'Error';
+    case 'critical':
+    case 'fault':
+      return 'Critical';
+    default:
+      return 'Information';
+  }
+}
+
+// Default logs (Windows)
+const defaultWindowsLogs: EventLog[] = [
   { name: 'System', displayName: 'System', recordCount: 12847 },
   { name: 'Application', displayName: 'Application', recordCount: 8923 },
   { name: 'Security', displayName: 'Security', recordCount: 45231 },
   { name: 'Setup', displayName: 'Setup', recordCount: 156 }
+];
+
+// Default categories (macOS)
+const defaultMacOSLogs: EventLog[] = [
+  { name: 'security', displayName: 'Security' },
+  { name: 'hardware', displayName: 'Hardware' },
+  { name: 'application', displayName: 'Application' },
+  { name: 'system', displayName: 'System' }
 ];
 
 // Mock events for demo
@@ -300,13 +339,14 @@ function truncateMessage(message: string, maxLength: number = 80): string {
 
 // Export to CSV
 function exportToCsv(events: EventLogEntry[], filename: string): void {
-  const headers = ['Record ID', 'Level', 'Date/Time', 'Source', 'Event ID', 'Message'];
+  const headers = ['Record ID', 'Level', 'Date/Time', 'Source', 'Event ID', 'Category', 'Message'];
   const rows = events.map(e => [
     e.recordId,
     e.level,
     formatDateTime(e.timeCreated),
     e.source,
-    e.eventId.toString(),
+    String(e.eventId),
+    e.category || '',
     '"' + e.message.replace(/"/g, '""') + '"'
   ]);
   
@@ -322,7 +362,8 @@ function exportToCsv(events: EventLogEntry[], filename: string): void {
 export default function EventViewer({
   deviceId,
   deviceName,
-  logs = defaultLogs,
+  platform = 'windows',
+  logs: propLogs,
   selectedLog: initialSelectedLog,
   events: initialEvents,
   loading: externalLoading = false,
@@ -330,8 +371,11 @@ export default function EventViewer({
   onQueryEvents,
   onGetEvent
 }: EventViewerProps) {
+  const isMacOS = platform === 'macos';
+  const defaultLogs = isMacOS ? defaultMacOSLogs : defaultWindowsLogs;
+  const logs = propLogs || defaultLogs;
   // State
-  const [selectedLog, setSelectedLog] = useState<string>(initialSelectedLog || 'System');
+  const [selectedLog, setSelectedLog] = useState<string>(initialSelectedLog || (isMacOS ? 'security' : 'System'));
   const [events, setEvents] = useState<EventLogEntry[]>(initialEvents || []);
   const [loading, setLoading] = useState(externalLoading);
   const [selectedEvent, setSelectedEvent] = useState<EventLogEntry | null>(null);
@@ -353,13 +397,17 @@ export default function EventViewer({
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(30);
 
-  // Load mock data on mount if no events provided
+  // Load mock data on mount if no events provided and no query handler is set.
   useEffect(() => {
-    if (!initialEvents) {
+    if (!initialEvents && !onQueryEvents) {
       const filteredMockEvents = mockEvents.filter(e => e.logName === selectedLog);
       setEvents(filteredMockEvents);
     }
-  }, [initialEvents, selectedLog]);
+  }, [initialEvents, onQueryEvents, selectedLog]);
+
+  useEffect(() => {
+    setLoading(externalLoading);
+  }, [externalLoading]);
 
   // Auto-refresh effect
   useEffect(() => {
@@ -371,6 +419,11 @@ export default function EventViewer({
     
     return () => clearInterval(interval);
   }, [autoRefresh, refreshInterval, selectedLog]);
+
+  useEffect(() => {
+    if (!onQueryEvents) return;
+    handleRefresh();
+  }, [handleRefresh, onQueryEvents, selectedLog]);
 
   // Handle log selection
   const handleSelectLog = useCallback((logName: string) => {
@@ -458,16 +511,17 @@ export default function EventViewer({
       const matchesQuery = normalizedQuery.length === 0 ||
         event.message.toLowerCase().includes(normalizedQuery) ||
         event.source.toLowerCase().includes(normalizedQuery) ||
-        event.eventId.toString().includes(normalizedQuery);
-      
+        String(event.eventId).includes(normalizedQuery);
+
       // Level filter
-      const matchesLevel = levelFilters.size === 0 || levelFilters.has(event.level);
+      const normalized = normalizeLevel(event.level);
+      const matchesLevel = levelFilters.size === 0 || levelFilters.has(normalized);
       
       // Source filter
       const matchesSource = !sourceFilter || event.source === sourceFilter;
       
       // Event ID filter
-      const matchesEventId = !eventIdFilter || event.eventId.toString() === eventIdFilter;
+      const matchesEventId = !eventIdFilter || String(event.eventId) === eventIdFilter;
       
       // Date range filter
       let matchesDateRange = true;
@@ -519,7 +573,7 @@ export default function EventViewer({
       <div className="w-1/5 min-w-[200px] border-r bg-muted/30 flex flex-col">
         <div className="p-4 border-b">
           <h3 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground">
-            Event Logs
+            {isMacOS ? 'Categories' : 'Event Logs'}
           </h3>
           {deviceName && (
             <p className="text-xs text-muted-foreground mt-1 truncate" title={deviceName}>
@@ -560,7 +614,7 @@ export default function EventViewer({
         <div className="p-4 border-b bg-muted/20">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold">{selectedLog} Log</h2>
+              <h2 className="text-lg font-semibold">{isMacOS ? selectedLog.charAt(0).toUpperCase() + selectedLog.slice(1) + ' Events' : selectedLog + ' Log'}</h2>
               <span className="text-sm text-muted-foreground">
                 ({filteredEvents.length} events)
               </span>
@@ -757,7 +811,7 @@ export default function EventViewer({
                   <th className="px-4 py-3 w-24">Level</th>
                   <th className="px-4 py-3 w-44">Date/Time</th>
                   <th className="px-4 py-3 w-48">Source</th>
-                  <th className="px-4 py-3 w-20">Event ID</th>
+                  <th className="px-4 py-3 w-20">{isMacOS ? 'ID' : 'Event ID'}</th>
                   <th className="px-4 py-3">Message</th>
                 </tr>
               </thead>
@@ -770,7 +824,8 @@ export default function EventViewer({
                   </tr>
                 ) : (
                   paginatedEvents.map((event) => {
-                    const config = levelConfig[event.level];
+                    const normalized = normalizeLevel(event.level);
+                    const config = levelConfig[normalized];
                     const Icon = config.icon;
                     return (
                       <tr
@@ -788,7 +843,7 @@ export default function EventViewer({
                             config.color
                           )}>
                             <Icon className="h-3.5 w-3.5" />
-                            {event.level}
+                            {normalized}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-sm">
@@ -861,7 +916,8 @@ export default function EventViewer({
             <div className="flex items-center justify-between p-4 border-b bg-muted/30">
               <div className="flex items-center gap-3">
                 {(() => {
-                  const config = levelConfig[selectedEvent.level];
+                  const normalized = normalizeLevel(selectedEvent.level);
+                  const config = levelConfig[normalized];
                   const Icon = config.icon;
                   return (
                     <div className={cn(
@@ -893,17 +949,21 @@ export default function EventViewer({
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs font-medium text-muted-foreground">Level</label>
-                    <div className={cn(
-                      'mt-1 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-sm font-medium',
-                      levelConfig[selectedEvent.level].bgColor,
-                      levelConfig[selectedEvent.level].color
-                    )}>
-                      {(() => {
-                        const Icon = levelConfig[selectedEvent.level].icon;
-                        return <Icon className="h-4 w-4" />;
-                      })()}
-                      {selectedEvent.level}
-                    </div>
+                    {(() => {
+                      const normalized = normalizeLevel(selectedEvent.level);
+                      const cfg = levelConfig[normalized];
+                      const LevelIcon = cfg.icon;
+                      return (
+                        <div className={cn(
+                          'mt-1 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-sm font-medium',
+                          cfg.bgColor,
+                          cfg.color
+                        )}>
+                          <LevelIcon className="h-4 w-4" />
+                          {normalized}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div>
                     <label className="text-xs font-medium text-muted-foreground">Event ID</label>
@@ -914,8 +974,8 @@ export default function EventViewer({
                     <p className="mt-1 text-sm">{formatDateTime(selectedEvent.timeCreated)}</p>
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Log Name</label>
-                    <p className="mt-1 text-sm">{selectedEvent.logName}</p>
+                    <label className="text-xs font-medium text-muted-foreground">{isMacOS ? 'Category' : 'Log Name'}</label>
+                    <p className="mt-1 text-sm">{isMacOS ? selectedEvent.category || selectedEvent.logName : selectedEvent.logName}</p>
                   </div>
                 </div>
 
@@ -996,7 +1056,7 @@ export default function EventViewer({
                   </div>
                 )}
 
-                {/* Raw XML */}
+                {/* Raw XML (Windows) */}
                 {selectedEvent.rawXml && (
                   <div>
                     <label className="text-xs font-medium text-muted-foreground">Raw XML</label>
@@ -1005,20 +1065,32 @@ export default function EventViewer({
                     </pre>
                   </div>
                 )}
+
+                {/* Details JSON (macOS) */}
+                {selectedEvent.details && Object.keys(selectedEvent.details).length > 0 && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground">Details</label>
+                    <pre className="mt-2 p-3 rounded-md bg-muted/50 border text-xs overflow-x-auto">
+                      {JSON.stringify(selectedEvent.details, null, 2)}
+                    </pre>
+                  </div>
+                )}
               </div>
             </div>
 
             {/* Panel Footer */}
             <div className="p-4 border-t bg-muted/30 flex items-center gap-2">
-              <a
-                href={'https://docs.microsoft.com/en-us/windows/win32/eventlog/event-identifiers?search=' + selectedEvent.eventId}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-3 py-2 rounded-md border hover:bg-muted text-sm"
-              >
-                <ExternalLink className="h-4 w-4" />
-                Look up Event ID
-              </a>
+              {!isMacOS && (
+                <a
+                  href={'https://docs.microsoft.com/en-us/windows/win32/eventlog/event-identifiers?search=' + selectedEvent.eventId}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-3 py-2 rounded-md border hover:bg-muted text-sm"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  Look up Event ID
+                </a>
+              )}
               <button
                 type="button"
                 onClick={() => {

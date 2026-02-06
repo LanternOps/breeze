@@ -60,6 +60,34 @@ export async function sendBulkCommand(
   return data.data ?? data;
 }
 
+export interface ScriptExecuteResult {
+  batchId: string | null;
+  scriptId: string;
+  devicesTargeted: number;
+  executions: Array<{ executionId: string; deviceId: string; commandId: string }>;
+  status: string;
+}
+
+export async function executeScript(
+  scriptId: string,
+  deviceIds: string[],
+  parameters?: Record<string, unknown>
+): Promise<ScriptExecuteResult> {
+  const body: Record<string, unknown> = { deviceIds };
+  if (parameters) body.parameters = parameters;
+
+  const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
+    method: 'POST',
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to execute script'));
+  }
+
+  return await response.json();
+}
+
 export async function toggleMaintenanceMode(
   deviceId: string,
   enable: boolean,

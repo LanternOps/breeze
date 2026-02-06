@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, CheckCircle, XCircle } from 'lucide-react';
 import DeviceDetails from './DeviceDetails';
+import DeviceSettingsModal from './DeviceSettingsModal';
+import ScriptPickerModal, { type Script } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, toggleMaintenanceMode } from '../../services/deviceActions';
+import { sendDeviceCommand, executeScript, toggleMaintenanceMode } from '../../services/deviceActions';
 
 type DeviceDetailPageProps = {
   deviceId: string;
@@ -21,6 +23,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [error, setError] = useState<string>();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [actionInProgress, setActionInProgress] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
 
   const showToast = useCallback((type: 'success' | 'error', message: string) => {
     const id = Date.now().toString();
@@ -115,7 +119,11 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           return;
 
         case 'run-script':
-          showToast('error', 'Script picker not yet implemented');
+          setScriptPickerOpen(true);
+          break;
+
+        case 'settings':
+          setSettingsOpen(true);
           break;
 
         default:
@@ -123,6 +131,20 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
       }
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : `Failed to ${action} ${device.hostname}`);
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  const handleScriptSelect = async (script: Script) => {
+    if (actionInProgress || !device) return;
+
+    try {
+      setActionInProgress(true);
+      await executeScript(script.id, [device.id]);
+      showToast('success', `Script "${script.name}" queued for ${device.hostname}`);
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : 'Failed to queue script');
     } finally {
       setActionInProgress(false);
     }
@@ -196,6 +218,19 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         Back to devices
       </button>
       <DeviceDetails device={device} onBack={handleBack} onAction={handleAction} />
+      <DeviceSettingsModal
+        device={device}
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={fetchDevice}
+      />
+      <ScriptPickerModal
+        isOpen={scriptPickerOpen}
+        onClose={() => setScriptPickerOpen(false)}
+        onSelect={handleScriptSelect}
+        deviceHostname={device.hostname}
+        deviceOs={device.os}
+      />
     </div>
   );
 }

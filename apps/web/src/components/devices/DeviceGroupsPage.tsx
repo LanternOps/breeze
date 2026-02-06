@@ -1,5 +1,10 @@
 import { useState, useEffect, useMemo, useCallback, type DragEvent, type FormEvent } from 'react';
 import { Plus, Pencil, Trash2, Shield, Play, X } from 'lucide-react';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
+import { FilterPreview } from '../filters/FilterPreview';
+import { useFilterPreview } from '../../hooks/useFilterPreview';
+import { legacyRulesToFilterConditions } from './filterMigration';
 
 type OSType = 'windows' | 'macos' | 'linux';
 
@@ -61,6 +66,7 @@ type GroupFormState = {
   policyId: string;
   rules: DeviceGroupRule[];
   deviceIds: string[];
+  filterConditions: FilterConditionGroup;
 };
 
 type DragPayload = {
@@ -175,13 +181,19 @@ export default function DeviceGroupsPage() {
   const [selectedGroup, setSelectedGroup] = useState<DeviceGroup | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string>();
+  const EMPTY_FILTER: FilterConditionGroup = {
+    operator: 'AND',
+    conditions: [{ field: 'hostname', operator: 'contains', value: '' }]
+  };
+
   const [groupForm, setGroupForm] = useState<GroupFormState>({
     name: '',
     description: '',
     type: 'static',
     policyId: '',
     rules: [],
-    deviceIds: []
+    deviceIds: [],
+    filterConditions: EMPTY_FILTER
   });
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
   const [assignmentQuery, setAssignmentQuery] = useState('');
@@ -190,6 +202,13 @@ export default function DeviceGroupsPage() {
   const [deleteReassignGroupId, setDeleteReassignGroupId] = useState('');
   const [draggingDevice, setDraggingDevice] = useState<DragPayload | null>(null);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
+
+  const { preview: formPreview, loading: formPreviewLoading, error: formPreviewError, refresh: formPreviewRefresh } = useFilterPreview(
+    groupForm.type === 'dynamic' && (modalMode === 'create' || modalMode === 'edit')
+      ? groupForm.filterConditions
+      : null,
+    { enabled: true }
+  );
 
   const deviceById = useMemo(() => {
     return new Map(devices.map(device => [device.id, device]));
@@ -336,13 +355,19 @@ export default function DeviceGroupsPage() {
 
   const resetForm = (group?: DeviceGroup) => {
     if (group) {
+      // Migrate legacy rules to filter conditions if needed
+      const filterConditions = group.rules && group.rules.length > 0
+        ? legacyRulesToFilterConditions(group.rules)
+        : EMPTY_FILTER;
+
       setGroupForm({
         name: group.name ?? '',
         description: group.description ?? '',
         type: group.type ?? 'static',
         policyId: group.policyId ?? '',
         rules: group.rules ? [...group.rules] : [],
-        deviceIds: group.deviceIds ? [...group.deviceIds] : group.devices?.map(device => device.id) ?? []
+        deviceIds: group.deviceIds ? [...group.deviceIds] : group.devices?.map(device => device.id) ?? [],
+        filterConditions
       });
     } else {
       setGroupForm({
@@ -351,7 +376,8 @@ export default function DeviceGroupsPage() {
         type: 'static',
         policyId: '',
         rules: [],
-        deviceIds: []
+        deviceIds: [],
+        filterConditions: EMPTY_FILTER
       });
     }
     setAssignmentQuery('');
@@ -475,9 +501,15 @@ export default function DeviceGroupsPage() {
       setFormError('Group name is required.');
       return;
     }
-    if (groupForm.type === 'dynamic' && groupForm.rules.length === 0) {
-      setFormError('Add at least one rule to a dynamic group.');
-      return;
+    if (groupForm.type === 'dynamic') {
+      const hasValidCondition = groupForm.filterConditions.conditions.some(c => {
+        if ('conditions' in c) return true;
+        return c.value !== '' && c.value !== null && c.value !== undefined;
+      });
+      if (!hasValidCondition) {
+        setFormError('Add at least one filter condition to a dynamic group.');
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -489,6 +521,7 @@ export default function DeviceGroupsPage() {
         description: groupForm.description.trim(),
         type: groupForm.type,
         rules: groupForm.type === 'dynamic' ? groupForm.rules : [],
+        filterConditions: groupForm.type === 'dynamic' ? groupForm.filterConditions : null,
         deviceIds: groupForm.type === 'static' ? groupForm.deviceIds : [],
         policyId: groupForm.policyId || null
       };
@@ -999,7 +1032,10 @@ export default function DeviceGroupsPage() {
                       setGroupForm(prev => ({
                         ...prev,
                         type: 'dynamic',
-                        rules: prev.rules.length > 0 ? prev.rules : [buildRule()]
+                        rules: prev.rules.length > 0 ? prev.rules : [buildRule()],
+                        filterConditions: prev.filterConditions.conditions.length > 0
+                          ? prev.filterConditions
+                          : EMPTY_FILTER
                       }))
                     }
                     className={`inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition ${
@@ -1014,173 +1050,25 @@ export default function DeviceGroupsPage() {
               </div>
 
               {groupForm.type === 'dynamic' ? (
-                <div className="rounded-md border bg-muted/20 p-4">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className="text-sm font-semibold">Auto-membership Rules</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Devices must match all rules to join the group.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setGroupForm(prev => ({ ...prev, rules: [...prev.rules, buildRule()] }))}
-                      className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
-                    >
-                      <Plus className="h-3 w-3" />
-                      Add Rule
-                    </button>
+                <div className="rounded-md border bg-muted/20 p-4 space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold">Auto-membership Filter</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Devices matching these conditions will automatically join the group.
+                    </p>
                   </div>
-                  <div className="mt-4 space-y-3">
-                    {groupForm.rules.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No rules defined yet.</p>
-                    ) : (
-                      groupForm.rules.map(rule => {
-                        const operatorOptions = ruleOperatorOptions[rule.field];
-                        return (
-                          <div
-                            key={rule.id}
-                            className="grid gap-3 rounded-md border bg-background p-3 sm:grid-cols-[140px_170px_1fr_auto]"
-                          >
-                            <select
-                              value={rule.field}
-                              onChange={event => {
-                                const field = event.target.value as RuleField;
-                                const nextOperator = ruleOperatorOptions[field][0]?.value ?? 'is';
-                                const nextValue =
-                                  field === 'os'
-                                    ? 'windows'
-                                    : field === 'site'
-                                      ? siteOptions[0]?.id ?? ''
-                                      : field === 'tag'
-                                        ? tagOptions[0] ?? ''
-                                        : '';
-                                setGroupForm(prev => ({
-                                  ...prev,
-                                  rules: prev.rules.map(item =>
-                                    item.id === rule.id
-                                      ? { ...item, field, operator: nextOperator, value: nextValue }
-                                      : item
-                                  )
-                                }));
-                              }}
-                              className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                            >
-                              <option value="os">OS</option>
-                              <option value="site">Site</option>
-                              <option value="tag">Tag</option>
-                              <option value="hostname">Hostname</option>
-                            </select>
-                            <select
-                              value={rule.operator}
-                              onChange={event => {
-                                const operator = event.target.value as RuleOperator;
-                                setGroupForm(prev => ({
-                                  ...prev,
-                                  rules: prev.rules.map(item =>
-                                    item.id === rule.id ? { ...item, operator } : item
-                                  )
-                                }));
-                              }}
-                              className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                            >
-                              {operatorOptions.map(option => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                            <div>
-                              {rule.field === 'os' ? (
-                                <select
-                                  value={rule.value}
-                                  onChange={event => {
-                                    const value = event.target.value;
-                                    setGroupForm(prev => ({
-                                      ...prev,
-                                      rules: prev.rules.map(item =>
-                                        item.id === rule.id ? { ...item, value } : item
-                                      )
-                                    }));
-                                  }}
-                                  className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                                >
-                                  <option value="windows">Windows</option>
-                                  <option value="macos">macOS</option>
-                                  <option value="linux">Linux</option>
-                                </select>
-                              ) : rule.field === 'site' ? (
-                                <select
-                                  value={rule.value}
-                                  onChange={event => {
-                                    const value = event.target.value;
-                                    setGroupForm(prev => ({
-                                      ...prev,
-                                      rules: prev.rules.map(item =>
-                                        item.id === rule.id ? { ...item, value } : item
-                                      )
-                                    }));
-                                  }}
-                                  className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                                >
-                                  <option value="">Select site</option>
-                                  {siteOptions.map(site => (
-                                    <option key={site.id} value={site.id}>
-                                      {site.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : rule.field === 'tag' ? (
-                                <input
-                                  list="tag-options"
-                                  value={rule.value}
-                                  onChange={event => {
-                                    const value = event.target.value;
-                                    setGroupForm(prev => ({
-                                      ...prev,
-                                      rules: prev.rules.map(item =>
-                                        item.id === rule.id ? { ...item, value } : item
-                                      )
-                                    }));
-                                  }}
-                                  className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                                  placeholder="tag name"
-                                />
-                              ) : (
-                                <input
-                                  type="text"
-                                  value={rule.value}
-                                  onChange={event => {
-                                    const value = event.target.value;
-                                    setGroupForm(prev => ({
-                                      ...prev,
-                                      rules: prev.rules.map(item =>
-                                        item.id === rule.id ? { ...item, value } : item
-                                      )
-                                    }));
-                                  }}
-                                  className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                                  placeholder="regex or substring"
-                                />
-                              )}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setGroupForm(prev => ({
-                                  ...prev,
-                                  rules: prev.rules.filter(item => item.id !== rule.id)
-                                }));
-                              }}
-                              className="inline-flex h-9 w-9 items-center justify-center rounded-md border text-muted-foreground transition hover:bg-muted"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
+                  <FilterBuilder
+                    value={groupForm.filterConditions}
+                    onChange={(conditions) => setGroupForm(prev => ({ ...prev, filterConditions: conditions }))}
+                    filterFields={DEFAULT_FILTER_FIELDS}
+                    showPreview={false}
+                  />
+                  <FilterPreview
+                    preview={formPreview}
+                    loading={formPreviewLoading}
+                    error={formPreviewError}
+                    onRefresh={formPreviewRefresh}
+                  />
                 </div>
               ) : (
                 <div className="rounded-md border bg-muted/20 p-4">

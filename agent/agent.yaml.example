@@ -1,0 +1,16 @@
+# Breeze RMM Agent Configuration
+# Copy this file to agent.yaml before running the agent.
+# Values are populated automatically during enrollment.
+
+agent_id: ""
+auth_token: ""
+enabled_collectors:
+    - hardware
+    - software
+    - metrics
+    - network
+heartbeat_interval_seconds: 60
+metrics_interval_seconds: 30
+org_id: ""
+server_url: http://localhost:3001
+site_id: ""

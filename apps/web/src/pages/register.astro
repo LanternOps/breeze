@@ -1,8 +1,4 @@
 ---
-import AuthLayout from '../layouts/AuthLayout.astro';
-import RegisterPage from '../components/auth/RegisterPage';
+// Redirect to partner registration — standalone registration is not supported
+return Astro.redirect('/register-partner', 301);
 ---
-
-<AuthLayout title="Create Account">
-  <RegisterPage client:load />
-</AuthLayout>

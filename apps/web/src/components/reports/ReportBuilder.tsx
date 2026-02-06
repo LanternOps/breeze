@@ -25,6 +25,10 @@ import {
 import { cn } from '@/lib/utils';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
+import type { FilterConditionGroup } from '@breeze/shared';
+import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
+import { FilterPreview } from '../filters/FilterPreview';
+import { useFilterPreview } from '../../hooks/useFilterPreview';
 
 type BuilderReportType = 'devices' | 'alerts' | 'patches' | 'compliance' | 'activity';
 type ReportBuilderType = BuilderReportType | LegacyReportType;
@@ -828,6 +832,14 @@ export default function ReportBuilder({
   const [saving, setSaving] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState<string>();
+  const [filterMode, setFilterMode] = useState<'simple' | 'advanced'>('simple');
+  const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup>({
+    operator: 'AND',
+    conditions: []
+  });
+  const { preview: deviceFilterPreview, loading: deviceFilterPreviewLoading } = useFilterPreview(deviceFilter, {
+    enabled: filterMode === 'advanced' && deviceFilter.conditions.length > 0
+  });
 
   useEffect(() => {
     if (!defaultValues || defaultsAppliedRef.current) return;
@@ -1545,84 +1557,132 @@ export default function ReportBuilder({
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <div>
-              <h2 className="text-sm font-semibold">Filters</h2>
-              <p className="text-xs text-muted-foreground">Build AND/OR filters to target records.</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Filter className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <h2 className="text-sm font-semibold">Filters</h2>
+                <p className="text-xs text-muted-foreground">Filter report data by records or device properties.</p>
+              </div>
+            </div>
+            <div className="flex rounded-md border">
+              <button
+                type="button"
+                onClick={() => setFilterMode('simple')}
+                className={cn(
+                  'px-3 py-1.5 text-xs font-medium rounded-l-md transition',
+                  filterMode === 'simple' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                )}
+              >
+                Record Filters
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterMode('advanced')}
+                className={cn(
+                  'px-3 py-1.5 text-xs font-medium rounded-r-md transition',
+                  filterMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                )}
+              >
+                <Filter className="h-3 w-3 inline mr-1" />
+                Device Filter
+              </button>
             </div>
           </div>
 
-          {filterConditions.length === 0 ? (
-            <div className="rounded-md border border-dashed p-4 text-xs text-muted-foreground">
-              No filters yet. Add your first condition.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {filterConditions.map((condition, index) => (
-                <div key={condition.id} className="grid gap-2 sm:grid-cols-[80px_1fr_1fr_1fr_auto]">
-                  {index === 0 ? (
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground self-center">
-                      Where
-                    </div>
-                  ) : (
-                    <select
-                      value={condition.logic}
-                      onChange={event => updateFilterCondition(condition.id, { logic: event.target.value as 'and' | 'or' })}
-                      className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                    >
-                      <option value="and">AND</option>
-                      <option value="or">OR</option>
-                    </select>
-                  )}
-                  <select
-                    value={condition.field}
-                    onChange={event => updateFilterCondition(condition.id, { field: event.target.value })}
-                    className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    {fieldDefinitions.map(field => (
-                      <option key={field.id} value={field.id}>
-                        {field.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={condition.operator}
-                    onChange={event => updateFilterCondition(condition.id, { operator: event.target.value })}
-                    className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    {filterOperators.map(operator => (
-                      <option key={operator.value} value={operator.value}>
-                        {operator.label}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    value={condition.value}
-                    onChange={event => updateFilterCondition(condition.id, { value: event.target.value })}
-                    className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                    placeholder="Value"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeFilterCondition(condition.id)}
-                    className="flex h-9 w-9 items-center justify-center rounded-md border text-muted-foreground hover:text-foreground"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+          {filterMode === 'simple' ? (
+            <>
+              {filterConditions.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-xs text-muted-foreground">
+                  No filters yet. Add your first condition.
                 </div>
-              ))}
+              ) : (
+                <div className="space-y-3">
+                  {filterConditions.map((condition, index) => (
+                    <div key={condition.id} className="grid gap-2 sm:grid-cols-[80px_1fr_1fr_1fr_auto]">
+                      {index === 0 ? (
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground self-center">
+                          Where
+                        </div>
+                      ) : (
+                        <select
+                          value={condition.logic}
+                          onChange={event => updateFilterCondition(condition.id, { logic: event.target.value as 'and' | 'or' })}
+                          className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        >
+                          <option value="and">AND</option>
+                          <option value="or">OR</option>
+                        </select>
+                      )}
+                      <select
+                        value={condition.field}
+                        onChange={event => updateFilterCondition(condition.id, { field: event.target.value })}
+                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {fieldDefinitions.map(field => (
+                          <option key={field.id} value={field.id}>
+                            {field.label}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={condition.operator}
+                        onChange={event => updateFilterCondition(condition.id, { operator: event.target.value })}
+                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {filterOperators.map(operator => (
+                          <option key={operator.value} value={operator.value}>
+                            {operator.label}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        value={condition.value}
+                        onChange={event => updateFilterCondition(condition.id, { value: event.target.value })}
+                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="Value"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeFilterCondition(condition.id)}
+                        className="flex h-9 w-9 items-center justify-center rounded-md border text-muted-foreground hover:text-foreground"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={addFilterCondition}
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
+              >
+                <Plus className="h-3 w-3" />
+                Add condition
+              </button>
+            </>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Scope this report to devices matching the filter below.
+              </p>
+              <FilterBuilder
+                value={deviceFilter}
+                onChange={setDeviceFilter}
+                filterFields={DEFAULT_FILTER_FIELDS}
+              />
+              {deviceFilter.conditions.length > 0 && (
+                <FilterPreview
+                  preview={deviceFilterPreview}
+                  loading={deviceFilterPreviewLoading}
+                  error={null}
+                  onRefresh={() => setDeviceFilter({ ...deviceFilter })}
+                />
+              )}
             </div>
           )}
-
-          <button
-            type="button"
-            onClick={addFilterCondition}
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
-          >
-            <Plus className="h-3 w-3" />
-            Add condition
-          </button>
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">

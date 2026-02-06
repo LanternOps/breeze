@@ -984,6 +984,12 @@ export default function RegistryEditor({
       setDeleteTarget(null);
       // Navigate to parent
       const parentPath = currentPath.split('\\').slice(0, -1).join('\\');
+      const cacheKey = parentPath ? currentHive + '\\' + parentPath : currentHive;
+      setKeyCache(prev => {
+        const next = { ...prev };
+        delete next[cacheKey];
+        return next;
+      });
       setCurrentPath(parentPath);
     } catch (error) {
       console.error('Failed to delete key:', error);

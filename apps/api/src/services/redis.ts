@@ -55,13 +55,32 @@ export async function closeRedis(): Promise<void> {
 
 /**
  * Get Redis connection for BullMQ queues.
- * Returns the IORedis client instance.
- * Throws if Redis is not available.
+ * BullMQ requires maxRetriesPerRequest: null for blocking operations.
+ * Creates a NEW connection each time - caller should manage lifecycle.
  */
 export function getRedisConnection(): Redis {
-  const redis = getRedis();
-  if (!redis) {
+  if (!redisAvailable) {
     throw new Error('Redis connection required but not available');
   }
-  return redis;
+
+  const url = process.env.REDIS_URL || 'redis://localhost:6379';
+
+  // BullMQ requires maxRetriesPerRequest: null for blocking commands
+  const connection = new Redis(url, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+    retryStrategy(times) {
+      if (times > 10) {
+        return null; // Stop retrying
+      }
+      const delay = Math.min(times * 100, 3000);
+      return delay;
+    }
+  });
+
+  connection.on('error', (err: Error) => {
+    console.error('BullMQ Redis connection error:', err.message);
+  });
+
+  return connection;
 }
