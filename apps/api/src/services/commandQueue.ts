@@ -260,15 +260,7 @@ export async function executeCommand(
   // Wait for result
   const result = await waitForCommandResult(command.id, timeoutMs);
 
-  if (result.status === 'completed' && result.result) {
-    return result.result;
-  }
-
-  if (result.status === 'failed' && result.result) {
-    return result.result;
-  }
-
-  return {
+  return result.result ?? {
     status: 'failed',
     error: 'Command did not complete'
   };

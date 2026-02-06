@@ -1,10 +1,17 @@
+//go:build darwin
+
 package collectors
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const darwinCmdTimeout = 15 * time.Second
 
 // system_profiler JSON structures
 type spHardwareDataType struct {
@@ -26,18 +33,23 @@ type spDisplaysDataType struct {
 
 type spDisplayEntry struct {
 	ChipsetModel string `json:"sppci_model"`
-	// Apple Silicon reports GPU via chip_type in hardware, but discrete GPUs show here
 }
 
 func collectPlatformHardware(hw *HardwareInfo) {
-	// Always Apple on macOS
 	hw.Manufacturer = "Apple"
 
+	ctx, cancel := context.WithTimeout(context.Background(), darwinCmdTimeout)
+	defer cancel()
+
 	// Get hardware details via system_profiler JSON output
-	out, err := exec.Command("system_profiler", "SPHardwareDataType", "-json").Output()
-	if err == nil {
+	out, err := exec.CommandContext(ctx, "system_profiler", "SPHardwareDataType", "-json").Output()
+	if err != nil {
+		fmt.Printf("Warning: system_profiler SPHardwareDataType failed: %v\n", err)
+	} else {
 		var data spHardwareDataType
-		if json.Unmarshal(out, &data) == nil && len(data.SPHardwareDataType) > 0 {
+		if unmarshalErr := json.Unmarshal(out, &data); unmarshalErr != nil {
+			fmt.Printf("Warning: failed to parse SPHardwareDataType JSON: %v\n", unmarshalErr)
+		} else if len(data.SPHardwareDataType) > 0 {
 			entry := data.SPHardwareDataType[0]
 			hw.SerialNumber = entry.SerialNumber
 			if entry.ModelName != "" {
@@ -46,18 +58,24 @@ func collectPlatformHardware(hw *HardwareInfo) {
 				hw.Model = entry.MachineName
 			}
 			hw.BIOSVersion = entry.BootROMVer
-			// On Apple Silicon, the chip_type is the GPU (e.g. "Apple M1")
 			if entry.ChipType != "" && hw.GPUModel == "" {
 				hw.GPUModel = entry.ChipType
 			}
 		}
 	}
 
-	// Get GPU info from displays data
-	out, err = exec.Command("system_profiler", "SPDisplaysDataType", "-json").Output()
-	if err == nil {
+	// Get GPU info from displays data (use separate timeout)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), darwinCmdTimeout)
+	defer cancel2()
+
+	out, err = exec.CommandContext(ctx2, "system_profiler", "SPDisplaysDataType", "-json").Output()
+	if err != nil {
+		fmt.Printf("Warning: system_profiler SPDisplaysDataType failed: %v\n", err)
+	} else {
 		var data spDisplaysDataType
-		if json.Unmarshal(out, &data) == nil && len(data.SPDisplaysDataType) > 0 {
+		if unmarshalErr := json.Unmarshal(out, &data); unmarshalErr != nil {
+			fmt.Printf("Warning: failed to parse SPDisplaysDataType JSON: %v\n", unmarshalErr)
+		} else if len(data.SPDisplaysDataType) > 0 {
 			chipset := data.SPDisplaysDataType[0].ChipsetModel
 			if chipset != "" {
 				hw.GPUModel = chipset
@@ -68,7 +86,9 @@ func collectPlatformHardware(hw *HardwareInfo) {
 	// Fallback: use sysctl for model identifier if not set
 	if hw.Model == "" {
 		out, err = exec.Command("sysctl", "-n", "hw.model").Output()
-		if err == nil {
+		if err != nil {
+			fmt.Printf("Warning: sysctl hw.model failed: %v\n", err)
+		} else {
 			hw.Model = strings.TrimSpace(string(out))
 		}
 	}

@@ -1,14 +1,26 @@
+//go:build windows
+
 package collectors
 
 import (
+	"context"
+	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
+const wmicTimeout = 15 * time.Second
+
 // wmicGet runs a wmic query and returns the trimmed output value.
-func wmicGet(class, property string) string {
-	out, err := exec.Command("wmic", class, "get", property, "/format:list").Output()
+func wmicGet(args []string, property string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), wmicTimeout)
+	defer cancel()
+
+	cmdArgs := append(args, "get", property, "/format:list")
+	out, err := exec.CommandContext(ctx, "wmic", cmdArgs...).Output()
 	if err != nil {
+		fmt.Printf("Warning: wmic %s failed: %v\n", strings.Join(args, " "), err)
 		return ""
 	}
 	// Output format: "Property=Value\r\n"
@@ -22,9 +34,9 @@ func wmicGet(class, property string) string {
 }
 
 func collectPlatformHardware(hw *HardwareInfo) {
-	hw.SerialNumber = wmicGet("bios", "SerialNumber")
-	hw.Manufacturer = wmicGet("computersystem", "Manufacturer")
-	hw.Model = wmicGet("computersystem", "Model")
-	hw.BIOSVersion = wmicGet("bios", "SMBIOSBIOSVersion")
-	hw.GPUModel = wmicGet("path win32_videocontroller", "Name")
+	hw.SerialNumber = wmicGet([]string{"bios"}, "SerialNumber")
+	hw.Manufacturer = wmicGet([]string{"computersystem"}, "Manufacturer")
+	hw.Model = wmicGet([]string{"computersystem"}, "Model")
+	hw.BIOSVersion = wmicGet([]string{"bios"}, "SMBIOSBIOSVersion")
+	hw.GPUModel = wmicGet([]string{"path", "win32_videocontroller"}, "Name")
 }

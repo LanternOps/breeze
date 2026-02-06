@@ -1,3 +1,4 @@
+import Redis from 'ioredis';
 import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 
@@ -82,9 +83,33 @@ class EventBus {
   private handlers: Map<string, Set<EventHandler>> = new Map();
   private consumerName: string;
   private isConsuming = false;
+  private redisClient: Redis | null = null;
 
   constructor() {
     this.consumerName = `consumer-${process.pid}-${randomUUID().slice(0, 8)}`;
+  }
+
+  /**
+   * Get or create a persistent Redis connection for the EventBus.
+   * Reuses the same connection across all operations to prevent leaks.
+   */
+  private getOrCreateRedis(): Redis {
+    if (this.redisClient && this.redisClient.status !== 'end') {
+      return this.redisClient;
+    }
+    this.redisClient = getRedisConnection();
+    return this.redisClient;
+  }
+
+  /**
+   * Close the persistent Redis connection and clean up resources.
+   */
+  async close(): Promise<void> {
+    this.stopConsuming();
+    if (this.redisClient) {
+      await this.redisClient.quit();
+      this.redisClient = null;
+    }
   }
 
   /**
@@ -97,7 +122,7 @@ class EventBus {
     source: string,
     options: PublishOptions = {}
   ): Promise<string> {
-    const redis = getRedisConnection();
+    const redis = this.getOrCreateRedis();
     const eventId = randomUUID();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
@@ -188,7 +213,7 @@ class EventBus {
     if (this.isConsuming) return;
     this.isConsuming = true;
 
-    const redis = getRedisConnection();
+    const redis = this.getOrCreateRedis();
 
     // Ensure consumer groups exist for each org
     for (const orgId of orgIds) {
@@ -208,7 +233,7 @@ class EventBus {
   }
 
   private async consumeLoop(orgIds: string[]): Promise<void> {
-    const redis = getRedisConnection();
+    const redis = this.getOrCreateRedis();
     const streams = orgIds.map(orgId => `${STREAM_PREFIX}:${orgId}`);
     const streamArgs = streams.flatMap(s => [s, '>']);
 
@@ -244,7 +269,7 @@ class EventBus {
   private async processMessage(
     messageId: string,
     fields: string[],
-    redis: ReturnType<typeof getRedisConnection>
+    redis: Redis
   ): Promise<void> {
     // Parse event from fields
     const eventJson = fields[1]; // fields = ['event', '{...}']
@@ -306,7 +331,7 @@ class EventBus {
     fromTimestamp: Date,
     toTimestamp?: Date
   ): Promise<BreezeEvent[]> {
-    const redis = getRedisConnection();
+    const redis = this.getOrCreateRedis();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     // Convert timestamps to Redis stream IDs (ms-*)
@@ -325,7 +350,7 @@ class EventBus {
    * Get pending events that haven't been acknowledged
    */
   async getPending(orgId: string, count = 100): Promise<string[]> {
-    const redis = getRedisConnection();
+    const redis = this.getOrCreateRedis();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     const pending = await redis.xpending(
@@ -343,7 +368,7 @@ class EventBus {
    * Get dead letter queue entries
    */
   async getDeadLetterQueue(count = 100): Promise<{ messageId: string; event: BreezeEvent }[]> {
-    const redis = getRedisConnection();
+    const redis = this.getOrCreateRedis();
     const entries = await redis.lrange(`${STREAM_PREFIX}:dlq`, 0, count - 1);
     return entries.map(entry => JSON.parse(entry));
   }
@@ -352,7 +377,7 @@ class EventBus {
    * Retry a dead letter queue entry
    */
   async retryDeadLetter(index: number): Promise<void> {
-    const redis = getRedisConnection();
+    const redis = this.getOrCreateRedis();
     const entry = await redis.lindex(`${STREAM_PREFIX}:dlq`, index);
     if (!entry) return;
 

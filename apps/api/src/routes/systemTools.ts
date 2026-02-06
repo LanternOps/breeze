@@ -428,20 +428,9 @@ systemToolsRoutes.get(
           totalPages: data.totalPages || 1
         }
       });
-    } catch {
-      // Fallback to mock data if agent call fails
-      const processes = generateMockProcesses();
-      const { offset } = getPagination(c.req.valid('query'));
-      const paginatedProcesses = processes.slice(offset, offset + limit);
-      return c.json({
-        data: paginatedProcesses,
-        meta: {
-          total: processes.length,
-          page,
-          limit,
-          totalPages: Math.ceil(processes.length / limit)
-        }
-      });
+    } catch (parseError) {
+      console.error('Failed to parse agent response for process listing:', parseError);
+      return c.json({ error: 'Failed to parse agent response for process listing' }, 502);
     }
   }
 );
@@ -462,14 +451,7 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
-    const processes = generateMockProcesses();
-    const process = processes.find(p => p.pid === pid);
-
-    if (!process) {
-      return c.json({ error: 'Process not found' }, 404);
-    }
-
-    return c.json({ data: process });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -580,20 +562,9 @@ systemToolsRoutes.get(
           totalPages: data.totalPages || 1
         }
       });
-    } catch {
-      // Fallback to mock data
-      const services = generateMockServices();
-      const { offset } = getPagination(c.req.valid('query'));
-      const paginatedServices = services.slice(offset, offset + limit);
-      return c.json({
-        data: paginatedServices,
-        meta: {
-          total: services.length,
-          page,
-          limit,
-          totalPages: Math.ceil(services.length / limit)
-        }
-      });
+    } catch (parseError) {
+      console.error('Failed to parse agent response for service listing:', parseError);
+      return c.json({ error: 'Failed to parse agent response for service listing' }, 502);
     }
   }
 );
@@ -614,14 +585,7 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
-    const services = generateMockServices();
-    const service = services.find(s => s.name === name);
-
-    if (!service) {
-      return c.json({ error: 'Service not found' }, 404);
-    }
-
-    return c.json({ data: service });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -640,36 +604,8 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const services = generateMockServices();
-    const service = services.find(s => s.name === name);
-
-    if (!service) {
-      return c.json({ error: 'Service not found' }, 404);
-    }
-
-    // Audit log for sensitive operation
-    await createAuditLog({
-      orgId: device.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'start_service',
-      resourceType: 'device',
-      resourceId: deviceId,
-      resourceName: device.hostname ?? device.id,
-      details: {
-        serviceName: name,
-        serviceDisplayName: service.displayName
-      },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
-    });
-
     // TODO: Replace with actual agent call
-    return c.json({
-      success: true,
-      message: `Service ${name} started successfully`,
-      data: { ...service, status: 'running' as const }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -688,36 +624,8 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const services = generateMockServices();
-    const service = services.find(s => s.name === name);
-
-    if (!service) {
-      return c.json({ error: 'Service not found' }, 404);
-    }
-
-    // Audit log for sensitive operation
-    await createAuditLog({
-      orgId: device.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'stop_service',
-      resourceType: 'device',
-      resourceId: deviceId,
-      resourceName: device.hostname ?? device.id,
-      details: {
-        serviceName: name,
-        serviceDisplayName: service.displayName
-      },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
-    });
-
     // TODO: Replace with actual agent call
-    return c.json({
-      success: true,
-      message: `Service ${name} stopped successfully`,
-      data: { ...service, status: 'stopped' as const }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -736,36 +644,8 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const services = generateMockServices();
-    const service = services.find(s => s.name === name);
-
-    if (!service) {
-      return c.json({ error: 'Service not found' }, 404);
-    }
-
-    // Audit log for sensitive operation
-    await createAuditLog({
-      orgId: device.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'restart_service',
-      resourceType: 'device',
-      resourceId: deviceId,
-      resourceName: device.hostname ?? device.id,
-      details: {
-        serviceName: name,
-        serviceDisplayName: service.displayName
-      },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
-    });
-
     // TODO: Replace with actual agent call
-    return c.json({
-      success: true,
-      message: `Service ${name} restarted successfully`,
-      data: { ...service, status: 'running' as const }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1104,9 +984,7 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
-    const eventLogs = generateMockEventLogs();
-
-    return c.json({ data: eventLogs });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1126,14 +1004,7 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
-    const eventLogs = generateMockEventLogs();
-    const eventLog = eventLogs.find(l => l.name === name);
-
-    if (!eventLog) {
-      return c.json({ error: 'Event log not found' }, 404);
-    }
-
-    return c.json({ data: eventLog });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1155,39 +1026,7 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
-    let events = generateMockEventEntries();
-    
-    // Apply filters
-    if (query.level) {
-      events = events.filter(e => e.level === query.level);
-    }
-    if (query.source) {
-      events = events.filter(e => e.source.toLowerCase().includes(query.source!.toLowerCase()));
-    }
-    if (query.eventId) {
-      events = events.filter(e => e.eventId === query.eventId);
-    }
-
-    const { page, limit, offset } = getPagination(query);
-    const paginatedEvents = events.slice(offset, offset + limit);
-
-    return c.json({
-      data: paginatedEvents,
-      meta: {
-        logName: name,
-        total: events.length,
-        page,
-        limit,
-        totalPages: Math.ceil(events.length / limit),
-        filters: {
-          level: query.level,
-          source: query.source,
-          startTime: query.startTime,
-          endTime: query.endTime,
-          eventId: query.eventId
-        }
-      }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1207,20 +1046,7 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
-    const events = generateMockEventEntries();
-    const event = events.find(e => e.recordId === recordId);
-
-    if (!event) {
-      return c.json({ error: 'Event not found' }, 404);
-    }
-
-    return c.json({
-      data: {
-        ...event,
-        logName: name,
-        rawXml: '<Event>...</Event>' // Mock XML representation
-      }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1245,20 +1071,7 @@ systemToolsRoutes.get(
     }
 
     // TODO: Replace with actual agent call
-    const tasks = generateMockScheduledTasks();
-    const { page, limit, offset } = getPagination(c.req.valid('query'));
-
-    const paginatedTasks = tasks.slice(offset, offset + limit);
-
-    return c.json({
-      data: paginatedTasks,
-      meta: {
-        total: tasks.length,
-        page,
-        limit,
-        totalPages: Math.ceil(tasks.length / limit)
-      }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1277,18 +1090,8 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // Decode the path (URL encoded)
-    const decodedPath = decodeURIComponent(path);
-
     // TODO: Replace with actual agent call
-    const tasks = generateMockScheduledTasks();
-    const task = tasks.find(t => t.path === decodedPath || t.path.endsWith(decodedPath));
-
-    if (!task) {
-      return c.json({ error: 'Scheduled task not found' }, 404);
-    }
-
-    return c.json({ data: task });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1307,37 +1110,8 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const decodedPath = decodeURIComponent(path);
-    const tasks = generateMockScheduledTasks();
-    const task = tasks.find(t => t.path === decodedPath || t.path.endsWith(decodedPath));
-
-    if (!task) {
-      return c.json({ error: 'Scheduled task not found' }, 404);
-    }
-
-    // Audit log for task execution
-    await createAuditLog({
-      orgId: device.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'run_scheduled_task',
-      resourceType: 'device',
-      resourceId: deviceId,
-      resourceName: device.hostname ?? device.id,
-      details: {
-        taskPath: decodedPath,
-        taskName: task.name
-      },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
-    });
-
     // TODO: Replace with actual agent call
-    return c.json({
-      success: true,
-      message: `Scheduled task ${task.name} started`,
-      data: { ...task, state: 'running' as const }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1356,37 +1130,8 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const decodedPath = decodeURIComponent(path);
-    const tasks = generateMockScheduledTasks();
-    const task = tasks.find(t => t.path === decodedPath || t.path.endsWith(decodedPath));
-
-    if (!task) {
-      return c.json({ error: 'Scheduled task not found' }, 404);
-    }
-
-    // Audit log for task enable
-    await createAuditLog({
-      orgId: device.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'enable_scheduled_task',
-      resourceType: 'device',
-      resourceId: deviceId,
-      resourceName: device.hostname ?? device.id,
-      details: {
-        taskPath: decodedPath,
-        taskName: task.name
-      },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
-    });
-
     // TODO: Replace with actual agent call
-    return c.json({
-      success: true,
-      message: `Scheduled task ${task.name} enabled`,
-      data: { ...task, state: 'ready' as const }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 
@@ -1405,37 +1150,8 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const decodedPath = decodeURIComponent(path);
-    const tasks = generateMockScheduledTasks();
-    const task = tasks.find(t => t.path === decodedPath || t.path.endsWith(decodedPath));
-
-    if (!task) {
-      return c.json({ error: 'Scheduled task not found' }, 404);
-    }
-
-    // Audit log for task disable
-    await createAuditLog({
-      orgId: device.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'disable_scheduled_task',
-      resourceType: 'device',
-      resourceId: deviceId,
-      resourceName: device.hostname ?? device.id,
-      details: {
-        taskPath: decodedPath,
-        taskName: task.name
-      },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
-    });
-
     // TODO: Replace with actual agent call
-    return c.json({
-      success: true,
-      message: `Scheduled task ${task.name} disabled`,
-      data: { ...task, state: 'disabled' as const }
-    });
+    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
   }
 );
 

@@ -69,6 +69,16 @@ function computeDurationSeconds(startedAt?: string, completedAt?: string): numbe
   return Math.max(0, Math.round((end - start) / 1000));
 }
 
+function getStatusDescription(status: string, errorMessage?: string): string {
+  switch (status) {
+    case 'running': return 'Script is currently executing...';
+    case 'completed': return 'Script completed successfully';
+    case 'failed': return errorMessage || 'Script execution failed';
+    case 'timeout': return 'Script execution timed out';
+    default: return 'Script is waiting to be executed';
+  }
+}
+
 function OutputSection({
   title,
   content,
@@ -249,11 +259,6 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
     );
   }
 
-  const selected = selectedExecution;
-  const selectedStatus = (selected?.status || 'pending').toLowerCase();
-  const config = statusConfig[selectedStatus] || statusConfig.pending;
-  const StatusIcon = config.icon;
-
   return (
     <>
       <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -323,14 +328,18 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
       </div>
 
       {/* Execution Details Modal */}
-      {selected && (
+      {selectedExecution && (() => {
+        const selectedStatus = (selectedExecution.status || 'pending').toLowerCase();
+        const config = statusConfig[selectedStatus] || statusConfig.pending;
+        const StatusIcon = config.icon;
+        return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
                 <h2 className="text-lg font-semibold">Execution Details</h2>
-                <p className="text-sm text-muted-foreground">{selected.scriptName ?? selected.name ?? 'Script'}</p>
+                <p className="text-sm text-muted-foreground">{selectedExecution.scriptName ?? selectedExecution.name ?? 'Script'}</p>
               </div>
               <button
                 type="button"
@@ -356,15 +365,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                       {config.label}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {selectedStatus === 'running'
-                        ? 'Script is currently executing...'
-                        : selectedStatus === 'completed'
-                          ? 'Script completed successfully'
-                          : selectedStatus === 'failed'
-                            ? selected.errorMessage || 'Script execution failed'
-                            : selectedStatus === 'timeout'
-                              ? 'Script execution timed out'
-                              : 'Script is waiting to be executed'}
+                      {getStatusDescription(selectedStatus, selectedExecution.errorMessage)}
                     </p>
                   </div>
                 </div>
@@ -375,13 +376,13 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                 <div className="rounded-md border bg-muted/20 p-4">
                   <p className="text-xs font-medium text-muted-foreground">Started At</p>
                   <p className="text-sm font-medium mt-1">
-                    {formatDateTime(selected.startedAt ?? selected.createdAt, effectiveTimezone)}
+                    {formatDateTime(selectedExecution.startedAt ?? selectedExecution.createdAt, effectiveTimezone)}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/20 p-4">
                   <p className="text-xs font-medium text-muted-foreground">Completed At</p>
                   <p className="text-sm font-medium mt-1">
-                    {formatDateTime(selected.completedAt, effectiveTimezone)}
+                    {formatDateTime(selectedExecution.completedAt, effectiveTimezone)}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/20 p-4">
@@ -394,8 +395,8 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                       </span>
                     ) : (
                       formatDuration(
-                        selected.durationMs,
-                        selected.durationSeconds ?? computeDurationSeconds(selected.startedAt ?? selected.createdAt, selected.completedAt)
+                        selectedExecution.durationMs,
+                        selectedExecution.durationSeconds ?? computeDurationSeconds(selectedExecution.startedAt ?? selectedExecution.createdAt, selectedExecution.completedAt)
                       )
                     )}
                   </p>
@@ -403,14 +404,14 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                 <div className="rounded-md border bg-muted/20 p-4">
                   <p className="text-xs font-medium text-muted-foreground">Exit Code</p>
                   <p className="text-sm font-medium mt-1">
-                    {selected.exitCode !== undefined && selected.exitCode !== null ? (
+                    {selectedExecution.exitCode !== undefined && selectedExecution.exitCode !== null ? (
                       <span className={cn(
                         'inline-flex items-center rounded px-2 py-0.5 font-mono',
-                        selected.exitCode === 0
+                        selectedExecution.exitCode === 0
                           ? 'bg-green-500/20 text-green-700'
                           : 'bg-red-500/20 text-red-700'
                       )}>
-                        {selected.exitCode}
+                        {selectedExecution.exitCode}
                       </span>
                     ) : (
                       <span className="text-muted-foreground">-</span>
@@ -424,15 +425,15 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                 <h3 className="text-sm font-semibold">Output</h3>
                 <OutputSection
                   title="Standard Output (stdout)"
-                  content={selected.stdout}
+                  content={selectedExecution.stdout}
                   icon={Terminal}
                   defaultOpen={true}
                 />
                 <OutputSection
                   title="Standard Error (stderr)"
-                  content={selected.stderr}
+                  content={selectedExecution.stderr}
                   icon={AlertOctagon}
-                  defaultOpen={!!selected.stderr}
+                  defaultOpen={!!selectedExecution.stderr}
                   variant="error"
                 />
               </div>
@@ -450,7 +451,8 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </>
   );
 }

@@ -110,7 +110,7 @@ async function processCommandResult(
 
     // Agent sends structured data in `result` field (parsed JSON) rather than
     // `stdout` (raw string). Convert it back to a JSON string for storage.
-    const stdout = result.stdout ||
+    const stdout = result.stdout ??
       (result.result !== undefined ? JSON.stringify(result.result) : undefined);
 
     await db
@@ -136,9 +136,14 @@ async function processCommandResult(
       const payload = command.payload as Record<string, unknown> | null;
       const executionId = payload?.executionId as string | undefined;
       if (executionId) {
-        const scriptStatus = result.status === 'completed'
-          ? (result.exitCode && result.exitCode !== 0 ? 'failed' : 'completed')
-          : result.status === 'timeout' ? 'timeout' : 'failed';
+        let scriptStatus: string;
+        if (result.status === 'completed') {
+          scriptStatus = result.exitCode && result.exitCode !== 0 ? 'failed' : 'completed';
+        } else if (result.status === 'timeout') {
+          scriptStatus = 'timeout';
+        } else {
+          scriptStatus = 'failed';
+        }
 
         await db
           .update(scriptExecutions)
@@ -319,10 +324,6 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
             }));
             break;
 
-          case 'terminal_output':
-            // Fallback - should be caught by the fast path above
-            handleTerminalOutput(parsed.data.sessionId, parsed.data.data);
-            break;
         }
       } catch (error) {
         console.error(`Error processing message from agent ${agentId}:`, error);
@@ -346,6 +347,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
     onError: (event: unknown, _ws: WSContext) => {
       console.error(`WebSocket error for agent ${agentId}:`, event);
       activeConnections.delete(agentId);
+      updateDeviceStatus(agentId, 'offline');
     }
   };
 }

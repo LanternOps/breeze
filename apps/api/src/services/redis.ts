@@ -13,12 +13,11 @@ export function getRedis(): Redis | null {
     redisClient = new Redis(url, {
       maxRetriesPerRequest: 3,
       retryStrategy(times) {
-        if (times > 3) {
-          redisAvailable = false;
-          console.warn('Redis unavailable - rate limiting disabled');
-          return null; // Stop retrying
+        // Exponential backoff with 30s cap - never stop retrying so recovery is possible
+        const delay = Math.min(times * 1000, 30000);
+        if (!redisAvailable) {
+          console.log(`[Redis] Attempting reconnection (attempt ${times}, next retry in ${delay}ms)`);
         }
-        const delay = Math.min(times * 50, 2000);
         return delay;
       },
       lazyConnect: true
@@ -26,14 +25,19 @@ export function getRedis(): Redis | null {
 
     redisClient.on('error', (err: Error & { code?: string }) => {
       if (err.code === 'ECONNREFUSED') {
+        if (redisAvailable) {
+          console.error('Redis unavailable - features degraded, will keep retrying');
+        }
         redisAvailable = false;
-        console.warn('Redis unavailable - rate limiting disabled');
       } else {
         console.error('Redis connection error:', err);
       }
     });
 
     redisClient.on('connect', () => {
+      if (!redisAvailable) {
+        console.log('[Redis] Reconnected successfully - resuming normal operation');
+      }
       redisAvailable = true;
       console.log('Redis connected');
     });
@@ -70,10 +74,8 @@ export function getRedisConnection(): Redis {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
     retryStrategy(times) {
-      if (times > 10) {
-        return null; // Stop retrying
-      }
-      const delay = Math.min(times * 100, 3000);
+      // Exponential backoff with 30s cap - never stop retrying
+      const delay = Math.min(times * 1000, 30000);
       return delay;
     }
   });

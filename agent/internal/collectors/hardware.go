@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"os"
 	"runtime"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -81,8 +82,15 @@ func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {
 		hw.RAMTotalMB = vmem.Total / 1024 / 1024
 	}
 
-	// Disk
-	diskUsage, err := disk.Usage("/")
+	// Disk — use platform-appropriate root path
+	rootPath := "/"
+	if runtime.GOOS == "windows" {
+		rootPath = os.Getenv("SystemDrive") + "\\"
+		if rootPath == "\\" {
+			rootPath = "C:\\"
+		}
+	}
+	diskUsage, err := disk.Usage(rootPath)
 	if err == nil {
 		hw.DiskTotalGB = diskUsage.Total / 1024 / 1024 / 1024
 	}

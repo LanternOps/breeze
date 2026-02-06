@@ -380,6 +380,10 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
   const id = c.req.param('id');
   const data = c.req.valid('json');
 
+  if (!auth.partnerId) {
+    return c.json({ error: 'Partner context required for this operation' }, 403);
+  }
+
   if (Object.keys(data).length === 0) {
     return c.json({ error: 'No updates provided' }, 400);
   }
@@ -400,9 +404,7 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
     updates.contractEnd = data.contractEnd ? new Date(data.contractEnd) : null;
   }
 
-  const conditions = auth.partnerId
-    ? and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt))
-    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
+  const conditions = and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt));
 
   const [organization] = await db
     .update(organizations)
@@ -421,9 +423,11 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async 
   const auth = c.get('auth');
   const id = c.req.param('id');
 
-  const conditions = auth.partnerId
-    ? and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt))
-    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
+  if (!auth.partnerId) {
+    return c.json({ error: 'Partner context required for this operation' }, 403);
+  }
+
+  const conditions = and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt));
 
   const [organization] = await db
     .update(organizations)

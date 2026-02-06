@@ -339,10 +339,32 @@ function createTerminalWsHandlers(sessionId: string, token: string | undefined) 
       }
     },
 
-    onError: (event: unknown, _ws: WSContext) => {
+    onError: async (event: unknown, _ws: WSContext) => {
       console.error(`Terminal WebSocket error for session ${sessionId}:`, event);
+      const termSession = activeTerminalSessions.get(sessionId);
       activeTerminalSessions.delete(sessionId);
       unregisterTerminalOutputCallback(sessionId);
+
+      // Update session status in database to match onClose behavior
+      if (termSession) {
+        try {
+          const endedAt = new Date();
+          const durationSeconds = Math.round((endedAt.getTime() - termSession.startedAt.getTime()) / 1000);
+
+          await db
+            .update(remoteSessions)
+            .set({
+              status: 'disconnected',
+              endedAt,
+              durationSeconds
+            })
+            .where(eq(remoteSessions.id, sessionId));
+
+          console.log(`Terminal session ${sessionId} errored and cleaned up (duration: ${durationSeconds}s)`);
+        } catch (dbError) {
+          console.error(`Failed to update session ${sessionId} status after error:`, dbError);
+        }
+      }
     }
   };
 }

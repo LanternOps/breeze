@@ -50,7 +50,7 @@ export default function ScriptPickerModal({
     }
   }, [isOpen]);
 
-  const fetchScripts = async () => {
+  async function fetchScripts() {
     try {
       setLoading(true);
       setError(undefined);
@@ -81,7 +81,7 @@ export default function ScriptPickerModal({
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const categories = useMemo(() => {
     const cats = new Set(scripts.map(s => s.category));
@@ -90,9 +90,10 @@ export default function ScriptPickerModal({
 
   const filteredScripts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const osFilter = deviceOs
-      ? Array.isArray(deviceOs) ? deviceOs : [deviceOs]
-      : null;
+    let osFilter: OSType[] | null = null;
+    if (deviceOs) {
+      osFilter = Array.isArray(deviceOs) ? deviceOs : [deviceOs];
+    }
 
     return scripts.filter(script => {
       const matchesQuery = normalizedQuery.length === 0

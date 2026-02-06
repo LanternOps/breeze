@@ -512,23 +512,35 @@ export function subscribeToAlertEvents(): void {
   const eventBus = getEventBus();
 
   eventBus.subscribe('alert.triggered', async (event) => {
-    const payload = event.payload as { alertId?: string };
-    if (payload.alertId) {
-      await dispatchAlertNotifications(payload.alertId);
+    try {
+      const payload = event.payload as { alertId?: string };
+      if (payload.alertId) {
+        await dispatchAlertNotifications(payload.alertId);
+      }
+    } catch (error) {
+      console.error('Failed to dispatch alert notifications:', error);
     }
   });
 
   eventBus.subscribe('alert.acknowledged', async (event) => {
-    const payload = event.payload as { alertId?: string };
-    if (payload.alertId) {
-      await cancelAlertEscalations(payload.alertId);
+    try {
+      const payload = event.payload as { alertId?: string };
+      if (payload.alertId) {
+        await cancelAlertEscalations(payload.alertId);
+      }
+    } catch (error) {
+      console.error('Failed to cancel escalations on acknowledge:', error);
     }
   });
 
   eventBus.subscribe('alert.resolved', async (event) => {
-    const payload = event.payload as { alertId?: string };
-    if (payload.alertId) {
-      await cancelAlertEscalations(payload.alertId);
+    try {
+      const payload = event.payload as { alertId?: string };
+      if (payload.alertId) {
+        await cancelAlertEscalations(payload.alertId);
+      }
+    } catch (error) {
+      console.error('Failed to cancel escalations on resolve:', error);
     }
   });
 

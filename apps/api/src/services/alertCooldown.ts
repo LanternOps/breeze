@@ -11,6 +11,31 @@ import { getRedis, isRedisAvailable } from './redis';
 // Key pattern for cooldown tracking
 const COOLDOWN_PREFIX = 'breeze:alerts:cooldown';
 
+// In-memory fallback when Redis is unavailable
+// Stores cooldown expiry timestamps keyed by "ruleId:deviceId"
+const memoryCooldowns: Map<string, number> = new Map();
+
+/**
+ * Check and clean up expired entries from in-memory cooldowns
+ */
+function memoryHasCooldown(key: string): boolean {
+  const expiry = memoryCooldowns.get(key);
+  if (expiry === undefined) return false;
+  if (Date.now() >= expiry) {
+    memoryCooldowns.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Set an in-memory cooldown entry
+ */
+function memorySetCooldown(key: string, cooldownMinutes: number): void {
+  const expiryMs = Date.now() + cooldownMinutes * 60 * 1000;
+  memoryCooldowns.set(key, expiryMs);
+}
+
 /**
  * Build Redis key for cooldown tracking
  */
@@ -27,13 +52,18 @@ function buildCooldownKey(ruleId: string, deviceId: string): string {
  */
 export async function isCooldownActive(ruleId: string, deviceId: string): Promise<boolean> {
   if (!isRedisAvailable()) {
-    // If Redis is unavailable, assume no cooldown (fail open)
-    console.warn('[AlertCooldown] Redis unavailable, skipping cooldown check');
-    return false;
+    // Fail closed: suppress duplicate alerts when Redis is down
+    console.error('[AlertCooldown] Redis unavailable, using in-memory fallback (fail-closed)');
+    const memKey = `${ruleId}:${deviceId}`;
+    return memoryHasCooldown(memKey);
   }
 
   const redis = getRedis();
-  if (!redis) return false;
+  if (!redis) {
+    console.error('[AlertCooldown] Redis client null, using in-memory fallback (fail-closed)');
+    const memKey = `${ruleId}:${deviceId}`;
+    return memoryHasCooldown(memKey);
+  }
 
   const key = buildCooldownKey(ruleId, deviceId);
   const exists = await redis.exists(key);
@@ -54,12 +84,19 @@ export async function setCooldown(
   cooldownMinutes: number
 ): Promise<void> {
   if (!isRedisAvailable()) {
-    console.warn('[AlertCooldown] Redis unavailable, skipping cooldown set');
+    console.error('[AlertCooldown] Redis unavailable, setting in-memory cooldown fallback');
+    const memKey = `${ruleId}:${deviceId}`;
+    memorySetCooldown(memKey, cooldownMinutes);
     return;
   }
 
   const redis = getRedis();
-  if (!redis) return;
+  if (!redis) {
+    console.error('[AlertCooldown] Redis client null, setting in-memory cooldown fallback');
+    const memKey = `${ruleId}:${deviceId}`;
+    memorySetCooldown(memKey, cooldownMinutes);
+    return;
+  }
 
   const key = buildCooldownKey(ruleId, deviceId);
   const ttlSeconds = cooldownMinutes * 60;

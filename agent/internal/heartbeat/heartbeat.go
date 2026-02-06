@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -158,23 +157,18 @@ func (h *Heartbeat) sendInventory() {
 	go h.sendPatchInventory()
 }
 
-func (h *Heartbeat) sendHardwareInventory() {
-	hw, err := h.hardwareCol.CollectHardware()
+// sendInventoryData marshals the payload and sends it to the given endpoint via PUT.
+func (h *Heartbeat) sendInventoryData(endpoint string, payload interface{}, label string) {
+	body, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Printf("Error collecting hardware info: %v\n", err)
+		fmt.Printf("Error marshaling %s: %v\n", label, err)
 		return
 	}
 
-	body, err := json.Marshal(hw)
-	if err != nil {
-		fmt.Printf("Error marshaling hardware info: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/api/v1/agents/%s/hardware", h.config.ServerURL, h.config.AgentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/%s", h.config.ServerURL, h.config.AgentID, endpoint)
 	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
 	if err != nil {
-		fmt.Printf("Error creating hardware info request: %v\n", err)
+		fmt.Printf("Error creating %s request: %v\n", label, err)
 		return
 	}
 
@@ -183,16 +177,25 @@ func (h *Heartbeat) sendHardwareInventory() {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		fmt.Printf("Error sending hardware info: %v\n", err)
+		fmt.Printf("Error sending %s: %v\n", label, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		fmt.Println("Hardware info sent")
+		fmt.Printf("%s sent\n", label)
 	} else {
-		fmt.Printf("Hardware info failed with status %d\n", resp.StatusCode)
+		fmt.Printf("%s failed with status %d\n", label, resp.StatusCode)
 	}
+}
+
+func (h *Heartbeat) sendHardwareInventory() {
+	hw, err := h.hardwareCol.CollectHardware()
+	if err != nil {
+		fmt.Printf("Error collecting hardware info: %v\n", err)
+		return
+	}
+	h.sendInventoryData("hardware", hw, "Hardware info")
 }
 
 func (h *Heartbeat) sendSoftwareInventory() {
@@ -214,34 +217,7 @@ func (h *Heartbeat) sendSoftwareInventory() {
 		}
 	}
 
-	body, err := json.Marshal(map[string]interface{}{"software": items})
-	if err != nil {
-		fmt.Printf("Error marshaling software inventory: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/api/v1/agents/%s/software", h.config.ServerURL, h.config.AgentID)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating software inventory request: %v\n", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending software inventory: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Software inventory sent: %d items\n", len(software))
-	} else {
-		fmt.Printf("Software inventory failed with status %d\n", resp.StatusCode)
-	}
+	h.sendInventoryData("software", map[string]interface{}{"software": items}, fmt.Sprintf("Software inventory (%d items)", len(software)))
 }
 
 func (h *Heartbeat) sendDiskInventory() {
@@ -251,34 +227,7 @@ func (h *Heartbeat) sendDiskInventory() {
 		return
 	}
 
-	body, err := json.Marshal(map[string]interface{}{"disks": disks})
-	if err != nil {
-		fmt.Printf("Error marshaling disk inventory: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/api/v1/agents/%s/disks", h.config.ServerURL, h.config.AgentID)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating disk inventory request: %v\n", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending disk inventory: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Disk inventory sent: %d disks\n", len(disks))
-	} else {
-		fmt.Printf("Disk inventory failed with status %d\n", resp.StatusCode)
-	}
+	h.sendInventoryData("disks", map[string]interface{}{"disks": disks}, fmt.Sprintf("Disk inventory (%d disks)", len(disks)))
 }
 
 func (h *Heartbeat) sendNetworkInventory() {
@@ -288,34 +237,7 @@ func (h *Heartbeat) sendNetworkInventory() {
 		return
 	}
 
-	body, err := json.Marshal(map[string]interface{}{"adapters": adapters})
-	if err != nil {
-		fmt.Printf("Error marshaling network inventory: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/api/v1/agents/%s/network", h.config.ServerURL, h.config.AgentID)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating network inventory request: %v\n", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending network inventory: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Network inventory sent: %d adapters\n", len(adapters))
-	} else {
-		fmt.Printf("Network inventory failed with status %d\n", resp.StatusCode)
-	}
+	h.sendInventoryData("network", map[string]interface{}{"adapters": adapters}, fmt.Sprintf("Network inventory (%d adapters)", len(adapters)))
 }
 
 func (h *Heartbeat) sendPatchInventory() {
@@ -366,38 +288,10 @@ func (h *Heartbeat) sendPatchInventory() {
 		}
 	}
 
-	body, err := json.Marshal(map[string]interface{}{
+	h.sendInventoryData("patches", map[string]interface{}{
 		"patches":   pendingItems,
 		"installed": installedItems,
-	})
-	if err != nil {
-		fmt.Printf("Error marshaling patch inventory: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/api/v1/agents/%s/patches", h.config.ServerURL, h.config.AgentID)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating patch inventory request: %v\n", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending patch inventory: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Patch inventory sent: %d pending, %d installed\n", len(patches), len(installedPatches))
-	} else {
-		respBody, _ := io.ReadAll(resp.Body)
-		fmt.Printf("Patch inventory failed with status %d: %s\n", resp.StatusCode, string(respBody))
-	}
+	}, fmt.Sprintf("Patch inventory (%d pending, %d installed)", len(patches), len(installedPatches)))
 }
 
 func (h *Heartbeat) mapPatchSource(source string) string {
@@ -448,34 +342,7 @@ func (h *Heartbeat) sendConnectionsInventory() {
 		}
 	}
 
-	body, err := json.Marshal(map[string]interface{}{"connections": items})
-	if err != nil {
-		fmt.Printf("Error marshaling connections: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/api/v1/agents/%s/connections", h.config.ServerURL, h.config.AgentID)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating connections request: %v\n", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending connections: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Connections inventory sent: %d active connections\n", len(connections))
-	} else {
-		fmt.Printf("Connections inventory failed with status %d\n", resp.StatusCode)
-	}
+	h.sendInventoryData("connections", map[string]interface{}{"connections": items}, fmt.Sprintf("Connections inventory (%d active)", len(connections)))
 }
 
 func (h *Heartbeat) sendEventLogs() {
@@ -489,34 +356,7 @@ func (h *Heartbeat) sendEventLogs() {
 		return
 	}
 
-	body, err := json.Marshal(map[string]interface{}{"events": events})
-	if err != nil {
-		fmt.Printf("Error marshaling event logs: %v\n", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/api/v1/agents/%s/eventlogs", h.config.ServerURL, h.config.AgentID)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating event logs request: %v\n", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		fmt.Printf("Error sending event logs: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Event logs sent: %d events\n", len(events))
-	} else {
-		fmt.Printf("Event logs failed with status %d\n", resp.StatusCode)
-	}
+	h.sendInventoryData("eventlogs", map[string]interface{}{"events": events}, fmt.Sprintf("Event logs (%d events)", len(events)))
 }
 
 func (h *Heartbeat) sendHeartbeat() {

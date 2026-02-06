@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,19 @@ const (
 	// maxFileReadSize is the maximum file size for reading (1MB)
 	maxFileReadSize = 1024 * 1024
 )
+
+// deniedSystemPaths are critical system paths that mutating file operations should never target directly.
+var deniedSystemPaths = []string{"/", "/boot", "/proc", "/sys", "/dev", "/bin", "/sbin", "/usr"}
+
+// isDeniedSystemPath checks whether the given cleaned path matches a denied system path.
+func isDeniedSystemPath(cleanPath string) bool {
+	for _, d := range deniedSystemPaths {
+		if cleanPath == d {
+			return true
+		}
+	}
+	return false
+}
 
 // ListFiles lists the contents of a directory
 func ListFiles(payload map[string]any) CommandResult {
@@ -119,6 +133,11 @@ func WriteFile(payload map[string]any) CommandResult {
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
 
+	// Check against denied system paths
+	if isDeniedSystemPath(cleanPath) {
+		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+	}
+
 	// Ensure parent directory exists
 	parentDir := filepath.Dir(cleanPath)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
@@ -163,6 +182,19 @@ func DeleteFile(payload map[string]any) CommandResult {
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
 
+	// Check against denied system paths
+	if isDeniedSystemPath(cleanPath) {
+		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+	}
+
+	// Block recursive deletes on any top-level directory (e.g. /home, /var, /opt)
+	if recursive {
+		parts := strings.Split(strings.TrimPrefix(cleanPath, "/"), "/")
+		if len(parts) <= 1 {
+			return NewErrorResult(fmt.Errorf("recursive delete denied on top-level path: %s", cleanPath), time.Since(start).Milliseconds())
+		}
+	}
+
 	// Check if path exists
 	info, err := os.Stat(cleanPath)
 	if err != nil {
@@ -201,6 +233,11 @@ func MakeDirectory(payload map[string]any) CommandResult {
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
 
+	// Check against denied system paths
+	if isDeniedSystemPath(cleanPath) {
+		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+	}
+
 	// Create directory and any necessary parents
 	if err := os.MkdirAll(cleanPath, 0755); err != nil {
 		return NewErrorResult(fmt.Errorf("failed to create directory: %w", err), time.Since(start).Milliseconds())
@@ -229,6 +266,14 @@ func RenameFile(payload map[string]any) CommandResult {
 	// Normalize path separators
 	cleanOldPath := filepath.Clean(oldPath)
 	cleanNewPath := filepath.Clean(newPath)
+
+	// Check against denied system paths
+	if isDeniedSystemPath(cleanOldPath) {
+		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanOldPath), time.Since(start).Milliseconds())
+	}
+	if isDeniedSystemPath(cleanNewPath) {
+		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanNewPath), time.Since(start).Milliseconds())
+	}
 
 	// Check if source exists
 	if _, err := os.Stat(cleanOldPath); err != nil {
