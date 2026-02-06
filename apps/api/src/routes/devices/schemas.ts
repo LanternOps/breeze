@@ -13,7 +13,11 @@ export const listDevicesSchema = z.object({
 export const updateDeviceSchema = z.object({
   displayName: z.string().min(1).max(255).optional(),
   siteId: z.string().uuid().optional(),
-  tags: z.array(z.string()).optional()
+  tags: z.array(z.string()).optional(),
+  customFields: z.record(
+    z.string().max(100),
+    z.union([z.string().max(10000), z.number(), z.boolean(), z.null()])
+  ).optional()
 });
 
 export const metricsQuerySchema = z.object({

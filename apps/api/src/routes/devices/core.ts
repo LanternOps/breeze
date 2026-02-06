@@ -95,6 +95,7 @@ coreRoutes.get(
         lastSeenAt: devices.lastSeenAt,
         enrolledAt: devices.enrolledAt,
         tags: devices.tags,
+        customFields: devices.customFields,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -127,6 +128,7 @@ coreRoutes.get(
       lastSeenAt: d.lastSeenAt,
       enrolledAt: d.enrolledAt,
       tags: d.tags,
+      customFields: d.customFields,
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
       hardware: {
@@ -264,6 +266,15 @@ coreRoutes.patch(
     if (data.displayName !== undefined) updates.displayName = data.displayName;
     if (data.siteId !== undefined) updates.siteId = data.siteId;
     if (data.tags !== undefined) updates.tags = data.tags;
+    if (data.customFields !== undefined) {
+      // Merge with existing custom fields rather than replacing
+      const raw = device.customFields;
+      const existing: Record<string, unknown> =
+        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+          ? (raw as Record<string, unknown>)
+          : {};
+      updates.customFields = { ...existing, ...data.customFields };
+    }
 
     const [updated] = await db
       .update(devices)

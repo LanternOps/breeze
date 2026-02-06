@@ -11,6 +11,7 @@ import {
   Building,
   Building2,
   Filter,
+  ListChecks,
   Users,
   ChevronLeft,
   ChevronRight,
@@ -70,6 +71,7 @@ const managementNav = [
 
 const settingsNav = [
   { name: 'Organization', href: '/settings/organization', icon: Building },
+  { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
   { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
   { name: 'Integrations', href: '/integrations/webhooks', icon: Plug }
 ];

@@ -8,6 +8,7 @@ import {
   patches,
   devicePatches,
   patchApprovals,
+  patchJobs,
   devices
 } from '../db/schema';
 
@@ -72,6 +73,12 @@ const complianceSchema = z.object({
 const complianceReportSchema = z.object({
   orgId: z.string().uuid().optional(),
   format: z.enum(['csv', 'pdf']).optional()
+});
+
+const listJobsSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  status: z.enum(['scheduled', 'running', 'completed', 'failed', 'cancelled']).optional()
 });
 
 patchRoutes.use('*', authMiddleware);
@@ -297,6 +304,43 @@ patchRoutes.post(
   }
 );
 
+// GET /patches/jobs - List patch deployment jobs
+patchRoutes.get(
+  '/jobs',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', listJobsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const { page, limit, offset } = getPagination(query);
+
+    const conditions = [];
+    const orgCond = auth.orgCondition(patchJobs.orgId);
+    if (orgCond) conditions.push(orgCond);
+    if (query.status) conditions.push(eq(patchJobs.status, query.status));
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const jobs = await db
+      .select()
+      .from(patchJobs)
+      .where(whereClause)
+      .orderBy(desc(patchJobs.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(patchJobs)
+      .where(whereClause);
+
+    return c.json({
+      data: jobs,
+      pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
+    });
+  }
+);
+
 // GET /patches/compliance - Get compliance summary
 patchRoutes.get(
   '/compliance',
@@ -310,16 +354,23 @@ patchRoutes.get(
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
-    const targetOrgId = query.orgId || auth.orgId;
-    if (!targetOrgId) {
-      return c.json({ error: 'Organization context required' }, 400);
+    // Get devices scoped to org (or all accessible orgs for partner/system)
+    const deviceConditions = [];
+    if (query.orgId) {
+      deviceConditions.push(eq(devices.orgId, query.orgId));
+    } else {
+      const orgCond = auth.orgCondition(devices.orgId);
+      if (orgCond) {
+        deviceConditions.push(orgCond);
+      } else if (auth.scope !== 'system') {
+        return c.json({ error: 'Organization context required' }, 400);
+      }
     }
 
-    // Get devices in org
     const orgDevices = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(eq(devices.orgId, targetOrgId));
+      .where(deviceConditions.length > 0 ? and(...deviceConditions) : undefined);
 
     const deviceIds = orgDevices.map(d => d.id);
 
