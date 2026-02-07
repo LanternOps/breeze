@@ -3,9 +3,10 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { devices, organizations, auditLogs } from '../db/schema';
+import { devices, organizations } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { executeCommand, CommandTypes } from '../services/commandQueue';
+import { createAuditLog } from '../services/auditService';
 
 export const systemToolsRoutes = new Hono();
 
@@ -160,34 +161,6 @@ async function getDeviceWithOrgCheck(deviceId: string, auth: { scope: string; pa
   return device;
 }
 
-async function createAuditLog(params: {
-  orgId: string;
-  actorId: string;
-  actorEmail: string;
-  action: string;
-  resourceType: string;
-  resourceId?: string;
-  resourceName?: string;
-  details?: Record<string, unknown>;
-  ipAddress?: string;
-  result: 'success' | 'failure' | 'denied';
-  errorMessage?: string;
-}) {
-  await db.insert(auditLogs).values({
-    orgId: params.orgId,
-    actorType: 'user',
-    actorId: params.actorId,
-    actorEmail: params.actorEmail,
-    action: params.action,
-    resourceType: params.resourceType,
-    resourceId: params.resourceId,
-    resourceName: params.resourceName,
-    details: params.details,
-    ipAddress: params.ipAddress,
-    result: params.result,
-    errorMessage: params.errorMessage
-  });
-}
 
 // Mock data generators for development
 function generateMockProcesses(): ProcessInfo[] {

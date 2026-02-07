@@ -4,37 +4,10 @@ import { z } from 'zod';
 import { eq, and, ilike, sql, desc } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { pluginCatalog, pluginInstallations, pluginLogs, organizations, auditLogs } from '../db/schema';
+import { pluginCatalog, pluginInstallations, pluginLogs, organizations } from '../db/schema';
+import { createAuditLog } from '../services/auditService';
 
 export const pluginRoutes = new Hono();
-
-// Helper function to create audit logs
-async function createAuditLog(params: {
-  orgId: string;
-  actorId: string;
-  actorEmail: string;
-  action: string;
-  resourceType: string;
-  resourceId?: string;
-  resourceName?: string;
-  details?: Record<string, unknown>;
-  result: 'success' | 'failure' | 'denied';
-  errorMessage?: string;
-}) {
-  await db.insert(auditLogs).values({
-    orgId: params.orgId,
-    actorType: 'user',
-    actorId: params.actorId,
-    actorEmail: params.actorEmail,
-    action: params.action,
-    resourceType: params.resourceType,
-    resourceId: params.resourceId,
-    resourceName: params.resourceName,
-    details: params.details,
-    result: params.result,
-    errorMessage: params.errorMessage
-  });
-}
 
 // Helper functions for org access
 async function canAccessOrg(
