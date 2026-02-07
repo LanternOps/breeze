@@ -19,7 +19,6 @@ import { alertTemplateRoutes } from './routes/alertTemplates';
 import { orgRoutes } from './routes/orgs';
 import { userRoutes } from './routes/users';
 import { roleRoutes } from './routes/roles';
-import { auditRoutes } from './routes/audit';
 import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { reportRoutes } from './routes/reports';
@@ -54,6 +53,8 @@ import { createAgentWsRoutes } from './routes/agentWs';
 import { createTerminalWsRoutes } from './routes/terminalWs';
 import { createDesktopWsRoutes } from './routes/desktopWs';
 import { agentVersionRoutes } from './routes/agentVersions';
+import { aiRoutes } from './routes/ai';
+import { mcpServerRoutes } from './routes/mcpServer';
 
 // Workers
 import { initializeAlertWorkers } from './jobs/alertWorker';
@@ -82,7 +83,7 @@ app.use(
       return allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
     },
     credentials: true,
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     exposeHeaders: ['Content-Length', 'X-Request-Id'],
     maxAge: 86400
@@ -115,7 +116,6 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
-api.route('/audit', auditRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
@@ -150,6 +150,8 @@ api.route('/deployments', deploymentRoutes);
 api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
+api.route('/ai', aiRoutes);
+api.route('/mcp', mcpServerRoutes);
 
 app.route('/api/v1', api);
 

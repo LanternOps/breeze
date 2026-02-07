@@ -1,46 +1,19 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { and, desc, eq, gte, lte, ilike, or, sql, SQL } from 'drizzle-orm';
+import { db } from '../db';
+import { auditLogs as auditLogsTable, users } from '../db/schema';
+import { authMiddleware } from '../middleware/auth';
 
 export const auditLogRoutes = new Hono();
 
-type AuditLogEntry = {
-  id: string;
-  timestamp: string;
-  user: {
-    id: string;
-    name: string;
-    email: string;
-    role: string;
-  };
-  action: string;
-  resource: {
-    type: string;
-    id: string;
-    name: string;
-  };
-  category: string;
-  result: 'success' | 'failure';
-  ipAddress: string;
-  userAgent: string;
-  details: Record<string, unknown>;
-};
+// Apply auth to all routes
+auditLogRoutes.use('*', authMiddleware);
 
-type AuditFilters = {
-  user?: string;
-  action?: string;
-  resource?: string;
-  from?: string;
-  to?: string;
-};
-
-type ActionTemplate = {
-  action: string;
-  resourceType: 'user' | 'device' | 'script' | 'policy' | 'alert' | 'organization';
-  category: string;
-  result: 'success' | 'failure';
-  details: Record<string, unknown>;
-};
+// ============================================
+// Schemas
+// ============================================
 
 const listLogsSchema = z.object({
   page: z.string().optional(),
@@ -52,15 +25,8 @@ const listLogsSchema = z.object({
   to: z.string().datetime().optional()
 });
 
-const searchSchema = z.object({
-  q: z.string().min(1),
-  page: z.string().optional(),
-  limit: z.string().optional(),
-  user: z.string().min(1).optional(),
-  action: z.string().min(1).optional(),
-  resource: z.string().min(1).optional(),
-  from: z.string().datetime().optional(),
-  to: z.string().datetime().optional()
+const searchSchema = listLogsSchema.extend({
+  q: z.string().min(1)
 });
 
 const idParamSchema = z.object({
@@ -85,170 +51,9 @@ const reportQuerySchema = z.object({
   to: z.string().datetime().optional()
 });
 
-const users = [
-  { id: 'user-1', name: 'Avery Lee', email: 'avery.lee@breeze.example', role: 'admin' },
-  { id: 'user-2', name: 'Jordan Patel', email: 'jordan.patel@breeze.example', role: 'operator' },
-  { id: 'user-3', name: 'Morgan Chen', email: 'morgan.chen@breeze.example', role: 'analyst' },
-  { id: 'user-4', name: 'Riley Morgan', email: 'riley.morgan@breeze.example', role: 'security' },
-  { id: 'user-5', name: 'Casey Park', email: 'casey.park@breeze.example', role: 'admin' },
-  { id: 'user-6', name: 'Sam Rivera', email: 'sam.rivera@breeze.example', role: 'support' }
-];
-
-const resourceNames = {
-  device: ['SF-Laptop-12', 'NY-Server-3', 'Austin-Desktop-7', 'Berlin-VM-4', 'Tokyo-Mac-2', 'Denver-WS-9'],
-  script: ['Patch Tuesday', 'Cleanup Temp', 'Vuln Scan', 'Onboarding Check', 'Log Rotate'],
-  policy: ['USB Storage', 'Disk Encryption', 'Password Rotation', 'Firewall Baseline', 'Admin Access'],
-  alert: ['Malware Detected', 'Suspicious Login', 'Disk Space Low', 'Unauthorized USB', 'Privilege Escalation'],
-  organization: ['Breeze HQ', 'Breeze West', 'Breeze East']
-};
-
-const actionTemplates: ActionTemplate[] = [
-  {
-    action: 'user.login',
-    resourceType: 'user',
-    category: 'authentication',
-    result: 'success',
-    details: { method: 'password', mfa: true }
-  },
-  {
-    action: 'user.login.failed',
-    resourceType: 'user',
-    category: 'authentication',
-    result: 'failure',
-    details: { method: 'password', reason: 'invalid_password' }
-  },
-  {
-    action: 'user.logout',
-    resourceType: 'user',
-    category: 'authentication',
-    result: 'success',
-    details: { sessionDurationMinutes: 42 }
-  },
-  {
-    action: 'user.permission.change',
-    resourceType: 'user',
-    category: 'security',
-    result: 'success',
-    details: { fromRole: 'viewer', toRole: 'admin' }
-  },
-  {
-    action: 'device.create',
-    resourceType: 'device',
-    category: 'device',
-    result: 'success',
-    details: { model: 'ThinkPad X1 Carbon', os: 'Windows 11', assetTag: 'AT-4821' }
-  },
-  {
-    action: 'device.delete',
-    resourceType: 'device',
-    category: 'device',
-    result: 'success',
-    details: { reason: 'decommissioned' }
-  },
-  {
-    action: 'device.update',
-    resourceType: 'device',
-    category: 'device',
-    result: 'success',
-    details: { fields: ['hostname', 'owner'] }
-  },
-  {
-    action: 'device.policy.apply',
-    resourceType: 'device',
-    category: 'device',
-    result: 'success',
-    details: { policy: 'Disk Encryption' }
-  },
-  {
-    action: 'script.execute',
-    resourceType: 'script',
-    category: 'automation',
-    result: 'success',
-    details: { status: 'completed', durationSeconds: 72 }
-  },
-  {
-    action: 'script.execute',
-    resourceType: 'script',
-    category: 'automation',
-    result: 'failure',
-    details: { status: 'failed', error: 'timeout' }
-  },
-  {
-    action: 'policy.update',
-    resourceType: 'policy',
-    category: 'policy',
-    result: 'success',
-    details: { changes: ['enforcement', 'scope'] }
-  },
-  {
-    action: 'policy.create',
-    resourceType: 'policy',
-    category: 'policy',
-    result: 'success',
-    details: { template: 'Baseline' }
-  },
-  {
-    action: 'alert.create',
-    resourceType: 'alert',
-    category: 'alert',
-    result: 'success',
-    details: { severity: 'high', source: 'edr' }
-  },
-  {
-    action: 'alert.resolve',
-    resourceType: 'alert',
-    category: 'alert',
-    result: 'success',
-    details: { resolution: 'quarantined' }
-  },
-  {
-    action: 'organization.update',
-    resourceType: 'organization',
-    category: 'organization',
-    result: 'success',
-    details: { fields: ['billingEmail', 'timezone'] }
-  },
-  {
-    action: 'data.export',
-    resourceType: 'organization',
-    category: 'compliance',
-    result: 'success',
-    details: { format: 'csv', recordCount: 1200 }
-  },
-  {
-    action: 'data.access',
-    resourceType: 'organization',
-    category: 'compliance',
-    result: 'success',
-    details: { dataset: 'device.inventory', operation: 'read' }
-  }
-];
-
-const ipAddresses = [
-  '192.0.2.10',
-  '198.51.100.23',
-  '203.0.113.45',
-  '10.0.5.22',
-  '172.16.4.50',
-  '192.168.1.18'
-];
-
-const userAgents = [
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/118.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/117.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
-  'Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/119.0.0.0'
-];
-
-const locations = [
-  { city: 'San Francisco', region: 'CA', country: 'US' },
-  { city: 'New York', region: 'NY', country: 'US' },
-  { city: 'Austin', region: 'TX', country: 'US' },
-  { city: 'Berlin', region: 'BE', country: 'DE' },
-  { city: 'Tokyo', region: '13', country: 'JP' }
-];
+// ============================================
+// Action classification sets (for reports)
+// ============================================
 
 const securityActions = new Set([
   'user.login',
@@ -278,8 +83,11 @@ const dataChangeActions = new Set([
   'script.execute',
   'organization.update'
 ]);
-
 const exportActions = new Set(['data.export']);
+
+// ============================================
+// Helpers
+// ============================================
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -287,402 +95,491 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-function normalize(value?: string) {
-  return value?.trim().toLowerCase();
+function escapeIlike(value: string): string {
+  return value.replace(/[%_\\]/g, '\\$&');
 }
 
-function pickFilters(input: { user?: string; action?: string; resource?: string; from?: string; to?: string }): AuditFilters {
+function deriveCategory(action: string): string {
+  if (action.startsWith('user.login') || action.startsWith('user.logout') || action.startsWith('user.permission')) return 'authentication';
+  if (action.startsWith('device.')) return 'device';
+  if (action.startsWith('script.')) return 'automation';
+  if (action.startsWith('policy.')) return 'policy';
+  if (action.startsWith('alert.')) return 'alert';
+  if (action.startsWith('data.')) return 'compliance';
+  if (action.startsWith('organization.')) return 'organization';
+  return 'system';
+}
+
+type DbRow = {
+  log: typeof auditLogsTable.$inferSelect;
+  userName: string | null;
+};
+
+function flattenEntry(row: DbRow) {
+  const log = row.log;
+  const details = log.details as Record<string, unknown> | null;
   return {
-    user: input.user,
-    action: input.action,
-    resource: input.resource,
-    from: input.from,
-    to: input.to
+    id: log.id,
+    timestamp: log.timestamp.toISOString(),
+    action: log.action,
+    resource: log.resourceName ?? log.resourceType,
+    resourceType: log.resourceType,
+    details: details ? JSON.stringify(details) : '{}',
+    ipAddress: log.ipAddress ?? '',
+    userAgent: log.userAgent ?? '',
+    sessionId: details?.sessionId ?? null,
+    user: {
+      name: row.userName ?? log.actorEmail ?? 'Unknown',
+      email: log.actorEmail ?? '',
+      role: log.actorType,
+      department: ''
+    },
+    changes: {
+      before: {},
+      after: details ?? {}
+    }
   };
 }
 
-function applyFilters(logs: AuditLogEntry[], filters: AuditFilters): AuditLogEntry[] {
-  const userTerm = normalize(filters.user);
-  const actionTerm = normalize(filters.action);
-  const resourceTerm = normalize(filters.resource);
-  const fromDate = filters.from ? new Date(filters.from) : null;
-  const toDate = filters.to ? new Date(filters.to) : null;
-
-  return logs.filter((log) => {
-    if (userTerm) {
-      const matchesUser = [log.user.id, log.user.name, log.user.email].some((value) =>
-        value.toLowerCase().includes(userTerm)
-      );
-      if (!matchesUser) return false;
-    }
-
-    if (actionTerm && !log.action.toLowerCase().includes(actionTerm)) {
-      return false;
-    }
-
-    if (resourceTerm) {
-      const matchesResource = [log.resource.type, log.resource.id, log.resource.name].some((value) =>
-        value.toLowerCase().includes(resourceTerm)
-      );
-      if (!matchesResource) return false;
-    }
-
-    const timestamp = new Date(log.timestamp);
-    if (fromDate && timestamp < fromDate) return false;
-    if (toDate && timestamp > toDate) return false;
-
-    return true;
-  });
+function toFullEntry(row: DbRow) {
+  const log = row.log;
+  const details = log.details as Record<string, unknown> | null;
+  return {
+    id: log.id,
+    timestamp: log.timestamp.toISOString(),
+    user: {
+      id: log.actorId,
+      name: row.userName ?? log.actorEmail ?? 'Unknown',
+      email: log.actorEmail ?? '',
+      role: log.actorType
+    },
+    action: log.action,
+    resource: {
+      type: log.resourceType,
+      id: log.resourceId ?? '',
+      name: log.resourceName ?? ''
+    },
+    category: deriveCategory(log.action),
+    result: log.result,
+    ipAddress: log.ipAddress ?? '',
+    userAgent: log.userAgent ?? '',
+    details: details ?? {}
+  };
 }
 
-function applySearch(logs: AuditLogEntry[], term: string) {
-  const normalized = normalize(term);
-  if (!normalized) return logs;
+function buildFilterConditions(
+  orgCond: SQL | undefined,
+  filters: { user?: string; action?: string; resource?: string; from?: string; to?: string }
+): SQL | undefined {
+  const conditions: SQL[] = [];
 
-  return logs.filter((log) => {
-    const haystack = [
-      log.action,
-      log.category,
-      log.user.name,
-      log.user.email,
-      log.resource.type,
-      log.resource.name,
-      log.resource.id,
-      log.ipAddress,
-      log.userAgent,
-      JSON.stringify(log.details)
-    ].join(' ').toLowerCase();
+  if (orgCond) conditions.push(orgCond);
 
-    return haystack.includes(normalized);
-  });
-}
-
-function resolveResource(resourceType: ActionTemplate['resourceType'], user: AuditLogEntry['user'], index: number) {
-  if (resourceType === 'user') {
-    return {
-      type: 'user',
-      id: user?.id ?? 'user-unknown',
-      name: user?.name ?? 'Unknown User'
-    };
+  if (filters.user) {
+    const term = `%${escapeIlike(filters.user)}%`;
+    conditions.push(
+      or(
+        ilike(auditLogsTable.actorEmail, term),
+        ilike(users.name, term)
+      )!
+    );
   }
 
-  const names = resourceNames[resourceType]?.filter((value): value is string => value != null) ?? [];
-  const nameIndex = names.length > 0 ? index % names.length : 0;
-  const resourceIndex = names.length > 0 ? nameIndex + 1 : index + 1;
-  const name = names[nameIndex] ?? `${resourceType}-${resourceIndex}`;
-  return {
-    type: resourceType,
-    id: `${resourceType}-${resourceIndex}`,
-    name
-  };
-}
-
-function createMockAuditLogs(count: number): AuditLogEntry[] {
-  const logs: AuditLogEntry[] = [];
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-  const minuteMs = 60 * 1000;
-  const fallbackUser: AuditLogEntry['user'] = users[0] ?? {
-    id: 'user-unknown',
-    name: 'Unknown User',
-    email: 'unknown@breeze.example',
-    role: 'unknown'
-  };
-  const fallbackIpAddress = ipAddresses[0] ?? '0.0.0.0';
-  const fallbackUserAgent = userAgents[0] ?? 'Unknown';
-  const fallbackLocation = locations[0] ?? { city: 'Unknown', region: 'Unknown', country: 'Unknown' };
-
-  for (let i = 0; i < count; i += 1) {
-    const template = actionTemplates.length > 0 ? actionTemplates[i % actionTemplates.length] : undefined;
-    const user = users[(i * 3) % users.length] ?? fallbackUser;
-    const ipAddress = ipAddresses[(i * 5) % ipAddresses.length] ?? fallbackIpAddress;
-    const userAgent = userAgents[(i * 7) % userAgents.length] ?? fallbackUserAgent;
-    const location = locations[(i * 11) % locations.length] ?? fallbackLocation;
-    const resource = resolveResource(template?.resourceType ?? 'organization', user, i);
-    const dayOffset = (i * 2) % 30;
-    const minuteOffset = (i * 37) % (24 * 60);
-    const timestamp = new Date(now - dayOffset * dayMs - minuteOffset * minuteMs);
-
-    logs.push({
-      id: `audit-${String(i + 1).padStart(4, '0')}`,
-      timestamp: timestamp.toISOString(),
-      user: {
-        id: user?.id ?? fallbackUser.id,
-        name: user?.name ?? fallbackUser.name,
-        email: user?.email ?? fallbackUser.email,
-        role: user?.role ?? fallbackUser.role
-      },
-      action: template?.action ?? 'system.unknown',
-      resource,
-      category: template?.category ?? 'system',
-      result: template?.result ?? 'success',
-      ipAddress: ipAddress ?? fallbackIpAddress,
-      userAgent: userAgent ?? fallbackUserAgent,
-      details: {
-        ...(template?.details ?? {}),
-        requestId: `req-${1000 + i}`,
-        sessionId: `sess-${(i % 12) + 1}`,
-        location: location ?? fallbackLocation
-      }
-    });
+  if (filters.action) {
+    conditions.push(ilike(auditLogsTable.action, `%${escapeIlike(filters.action)}%`));
   }
 
-  return logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  if (filters.resource) {
+    const term = `%${escapeIlike(filters.resource)}%`;
+    conditions.push(
+      or(
+        ilike(auditLogsTable.resourceType, term),
+        ilike(auditLogsTable.resourceName, term)
+      )!
+    );
+  }
+
+  if (filters.from) {
+    conditions.push(gte(auditLogsTable.timestamp, new Date(filters.from)));
+  }
+
+  if (filters.to) {
+    conditions.push(lte(auditLogsTable.timestamp, new Date(filters.to)));
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
-function toCsv(logs: AuditLogEntry[]): string {
+function buildSearchCondition(q: string): SQL {
+  const term = `%${escapeIlike(q)}%`;
+  return or(
+    ilike(auditLogsTable.action, term),
+    ilike(auditLogsTable.actorEmail, term),
+    ilike(auditLogsTable.resourceType, term),
+    ilike(auditLogsTable.resourceName, term),
+    sql`${auditLogsTable.details}::text ILIKE ${term}`
+  )!;
+}
+
+async function queryRows(where: SQL | undefined, limit: number, offset: number): Promise<DbRow[]> {
+  return db
+    .select({ log: auditLogsTable, userName: users.name })
+    .from(auditLogsTable)
+    .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+    .where(where)
+    .orderBy(desc(auditLogsTable.timestamp))
+    .limit(limit)
+    .offset(offset);
+}
+
+async function countRows(where: SQL | undefined): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(auditLogsTable)
+    .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+    .where(where);
+  return row?.count ?? 0;
+}
+
+async function fetchAllForReports(orgCond: SQL | undefined, filters: { from?: string; to?: string }): Promise<DbRow[]> {
+  const where = buildFilterConditions(orgCond, filters);
+  return queryRows(where, 5000, 0);
+}
+
+function toCsv(rows: DbRow[]): string {
   const headers = [
-    'id',
-    'timestamp',
-    'userId',
-    'userName',
-    'userEmail',
-    'action',
-    'resourceType',
-    'resourceId',
-    'resourceName',
-    'category',
-    'result',
-    'ipAddress',
-    'userAgent',
-    'details'
+    'id', 'timestamp', 'actorId', 'actorName', 'actorEmail',
+    'action', 'resourceType', 'resourceId', 'resourceName',
+    'category', 'result', 'ipAddress', 'userAgent', 'details'
   ];
 
   const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
 
-  const rows = logs.map((log) => {
+  const csvRows = rows.map((row) => {
+    const log = row.log;
     const values = [
       log.id,
-      log.timestamp,
-      log.user.id,
-      log.user.name,
-      log.user.email,
+      log.timestamp.toISOString(),
+      log.actorId,
+      row.userName ?? '',
+      log.actorEmail ?? '',
       log.action,
-      log.resource.type,
-      log.resource.id,
-      log.resource.name,
-      log.category,
+      log.resourceType,
+      log.resourceId ?? '',
+      log.resourceName ?? '',
+      deriveCategory(log.action),
       log.result,
-      log.ipAddress,
-      log.userAgent,
-      JSON.stringify(log.details)
+      log.ipAddress ?? '',
+      log.userAgent ?? '',
+      JSON.stringify(log.details ?? {})
     ];
-
-    return values.map((value) => escape(String(value))).join(',');
+    return values.map((v) => escape(String(v))).join(',');
   });
 
-  return [headers.join(','), ...rows].join('\n');
+  return [headers.join(','), ...csvRows].join('\n');
 }
 
-function summarizeUsers(logs: AuditLogEntry[]) {
+function summarizeUsers(rows: DbRow[]) {
   const byUser = new Map<string, { userId: string; userName: string; userEmail: string; actionCount: number; lastActiveAt: string }>();
 
-  for (const log of logs) {
-    const existing = byUser.get(log.user.id);
+  for (const row of rows) {
+    const userId = row.log.actorId;
+    const existing = byUser.get(userId);
     if (!existing) {
-      byUser.set(log.user.id, {
-        userId: log.user.id,
-        userName: log.user.name,
-        userEmail: log.user.email,
+      byUser.set(userId, {
+        userId,
+        userName: row.userName ?? row.log.actorEmail ?? 'Unknown',
+        userEmail: row.log.actorEmail ?? '',
         actionCount: 1,
-        lastActiveAt: log.timestamp
+        lastActiveAt: row.log.timestamp.toISOString()
       });
       continue;
     }
-
     existing.actionCount += 1;
-    if (new Date(log.timestamp).getTime() > new Date(existing.lastActiveAt).getTime()) {
-      existing.lastActiveAt = log.timestamp;
+    if (row.log.timestamp.getTime() > new Date(existing.lastActiveAt).getTime()) {
+      existing.lastActiveAt = row.log.timestamp.toISOString();
     }
   }
 
   return Array.from(byUser.values()).sort((a, b) => b.actionCount - a.actionCount);
 }
 
-function summarizeActions(logs: AuditLogEntry[]) {
+function summarizeActions(rows: DbRow[]) {
   const counts = new Map<string, number>();
-  for (const log of logs) {
-    counts.set(log.action, (counts.get(log.action) ?? 0) + 1);
+  for (const row of rows) {
+    counts.set(row.log.action, (counts.get(row.log.action) ?? 0) + 1);
   }
-
   return Array.from(counts.entries())
     .map(([action, count]) => ({ action, count }))
     .sort((a, b) => b.count - a.count);
 }
 
-function summarizeCategories(logs: AuditLogEntry[]) {
+function summarizeCategories(rows: DbRow[]) {
   const counts = new Map<string, number>();
-  for (const log of logs) {
-    counts.set(log.category, (counts.get(log.category) ?? 0) + 1);
+  for (const row of rows) {
+    const cat = deriveCategory(row.log.action);
+    counts.set(cat, (counts.get(cat) ?? 0) + 1);
   }
-
   return Array.from(counts.entries())
     .map(([category, count]) => ({ category, count }))
     .sort((a, b) => b.count - a.count);
 }
 
-const auditLogs = createMockAuditLogs(90);
+// ============================================
+// Routes
+// ============================================
 
-auditLogRoutes.get(
-  '/logs',
-  zValidator('query', listLogsSchema),
-  (c) => {
+function paginatedListHandler(
+  dataKey: string,
+  mapFn: (row: DbRow) => unknown
+) {
+  return async (c: any) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
-    const filtered = applyFilters(auditLogs, pickFilters(query));
-    const data = filtered.slice(offset, offset + limit);
+
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const where = buildFilterConditions(orgCond, query);
+    const [total, rows] = await Promise.all([
+      countRows(where),
+      queryRows(where, limit, offset)
+    ]);
 
     return c.json({
-      data,
+      [dataKey]: rows.map(mapFn),
       pagination: {
         page,
         limit,
-        total: filtered.length,
-        totalPages: Math.ceil(filtered.length / limit)
+        total,
+        totalPages: Math.ceil(total / limit)
       }
     });
-  }
+  };
+}
+
+// GET / — used by AuditLogViewer (returns flattenEntry shape)
+auditLogRoutes.get(
+  '/',
+  zValidator('query', listLogsSchema),
+  paginatedListHandler('entries', flattenEntry)
 );
 
+// GET /logs — used by RecentActivity, UserActivityReport (returns full entry shape)
+auditLogRoutes.get(
+  '/logs',
+  zValidator('query', listLogsSchema),
+  paginatedListHandler('data', toFullEntry)
+);
+
+// GET /logs/:id — single entry detail
 auditLogRoutes.get(
   '/logs/:id',
   zValidator('param', idParamSchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const log = auditLogs.find((entry) => entry.id === id);
 
-    if (!log) {
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const conditions: SQL[] = [eq(auditLogsTable.id, id)];
+    if (orgCond) conditions.push(orgCond);
+
+    const [row] = await db
+      .select({ log: auditLogsTable, userName: users.name })
+      .from(auditLogsTable)
+      .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+      .where(and(...conditions));
+
+    if (!row) {
       return c.json({ error: 'Audit log not found' }, 404);
     }
 
-    return c.json(log);
+    return c.json(toFullEntry(row));
   }
 );
 
+// GET /search
 auditLogRoutes.get(
   '/search',
   zValidator('query', searchSchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
-    const filtered = applyFilters(auditLogs, pickFilters(query));
-    const searched = applySearch(filtered, query.q);
-    const data = searched.slice(offset, offset + limit);
+
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const filterWhere = buildFilterConditions(orgCond, query);
+    const searchCond = buildSearchCondition(query.q);
+    const where = filterWhere ? and(filterWhere, searchCond) : searchCond;
+
+    const [total, rows] = await Promise.all([
+      countRows(where),
+      queryRows(where, limit, offset)
+    ]);
 
     return c.json({
-      data,
+      data: rows.map(toFullEntry),
       query: query.q,
       pagination: {
         page,
         limit,
-        total: searched.length,
-        totalPages: Math.ceil(searched.length / limit)
+        total,
+        totalPages: Math.ceil(total / limit)
       }
     });
   }
 );
 
+// POST /export — used by AuditExport component
 auditLogRoutes.post(
   '/export',
   zValidator('json', exportSchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const body = c.req.valid('json');
-    const filters = pickFilters({
+
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const where = buildFilterConditions(orgCond, {
       ...(body.filters ?? {}),
       from: body.dateRange?.from,
       to: body.dateRange?.to
     });
-    const filtered = applyFilters(auditLogs, filters);
+
+    const rows = await queryRows(where, 10000, 0);
 
     if (body.format === 'csv') {
       c.header('Content-Type', 'text/csv');
       c.header('Content-Disposition', 'attachment; filename="audit-logs.csv"');
-      return c.body(toCsv(filtered));
+      return c.body(toCsv(rows));
     }
 
-    return c.json({ data: filtered, total: filtered.length });
+    return c.json({ data: rows.map(toFullEntry), total: rows.length });
   }
 );
 
+// GET /export — used by AuditLogViewer export button (CSV download)
+const exportGetSchema = z.object({
+  userId: z.string().uuid().optional()
+});
+
+auditLogRoutes.get(
+  '/export',
+  zValidator('query', exportGetSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+
+    const { userId } = c.req.valid('query');
+    const conditions: SQL[] = [];
+    if (orgCond) conditions.push(orgCond);
+    if (userId) conditions.push(eq(auditLogsTable.actorId, userId));
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const rows = await queryRows(where, 10000, 0);
+
+    c.header('Content-Type', 'text/csv');
+    c.header('Content-Disposition', 'attachment; filename="audit-logs.csv"');
+    return c.body(toCsv(rows));
+  }
+);
+
+// GET /reports/user-activity
 auditLogRoutes.get(
   '/reports/user-activity',
   zValidator('query', reportQuerySchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
-    const scopedLogs = applyFilters(auditLogs, pickFilters(query));
-    const actionsPerUser = summarizeUsers(scopedLogs);
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const rows = await fetchAllForReports(orgCond, query);
+
+    const actionsPerUser = summarizeUsers(rows);
+    const recentActivity = rows.slice(0, 10).map(toFullEntry);
 
     return c.json({
       totalUsers: actionsPerUser.length,
-      totalEvents: scopedLogs.length,
+      totalEvents: rows.length,
       actionsPerUser,
       topUsers: actionsPerUser.slice(0, 5),
-      recentActivity: scopedLogs.slice(0, 10)
+      recentActivity
     });
   }
 );
 
+// GET /reports/security-events
 auditLogRoutes.get(
   '/reports/security-events',
   zValidator('query', reportQuerySchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
-    const scopedLogs = applyFilters(auditLogs, pickFilters(query));
-    const securityLogs = scopedLogs.filter((log) => securityActions.has(log.action));
-    const byAction = summarizeActions(securityLogs);
-    const loginAttempts = securityLogs.filter((log) => log.action.startsWith('user.login')).length;
-    const failedLogins = securityLogs.filter((log) => log.action === 'user.login.failed').length;
-    const permissionChanges = securityLogs.filter((log) => log.action === 'user.permission.change').length;
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const allRows = await fetchAllForReports(orgCond, query);
+
+    const securityRows = allRows.filter((r) => securityActions.has(r.log.action));
+    const byAction = summarizeActions(securityRows);
+    const loginAttempts = securityRows.filter((r) => r.log.action.startsWith('user.login')).length;
+    const failedLogins = securityRows.filter((r) => r.log.action === 'user.login.failed').length;
+    const permissionChanges = securityRows.filter((r) => r.log.action === 'user.permission.change').length;
 
     return c.json({
-      totalEvents: securityLogs.length,
+      totalEvents: securityRows.length,
       loginAttempts,
       failedLogins,
       permissionChanges,
       byAction,
-      recentEvents: securityLogs.slice(0, 10)
+      recentEvents: securityRows.slice(0, 10).map(toFullEntry)
     });
   }
 );
 
+// GET /reports/compliance
 auditLogRoutes.get(
   '/reports/compliance',
   zValidator('query', reportQuerySchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
-    const scopedLogs = applyFilters(auditLogs, pickFilters(query));
-    const complianceLogs = scopedLogs.filter((log) => complianceActions.has(log.action) || log.category === 'compliance');
-    const byAction = summarizeActions(complianceLogs);
-    const dataAccess = complianceLogs.filter((log) => dataAccessActions.has(log.action)).length;
-    const dataChanges = complianceLogs.filter((log) => dataChangeActions.has(log.action)).length;
-    const exports = complianceLogs.filter((log) => exportActions.has(log.action)).length;
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const allRows = await fetchAllForReports(orgCond, query);
+
+    const complianceRows = allRows.filter((r) =>
+      complianceActions.has(r.log.action) || deriveCategory(r.log.action) === 'compliance'
+    );
+    const byAction = summarizeActions(complianceRows);
+    const dataAccess = complianceRows.filter((r) => dataAccessActions.has(r.log.action)).length;
+    const dataChanges = complianceRows.filter((r) => dataChangeActions.has(r.log.action)).length;
+    const exports = complianceRows.filter((r) => exportActions.has(r.log.action)).length;
 
     return c.json({
-      totalEvents: complianceLogs.length,
+      totalEvents: complianceRows.length,
       dataAccess,
       dataChanges,
       exports,
       byAction,
-      recentEvents: complianceLogs.slice(0, 10)
+      recentEvents: complianceRows.slice(0, 10).map(toFullEntry)
     });
   }
 );
 
+// GET /stats
 auditLogRoutes.get(
   '/stats',
   zValidator('query', reportQuerySchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
-    const scopedLogs = applyFilters(auditLogs, pickFilters(query));
-    const byCategory = summarizeCategories(scopedLogs);
-    const byUser = summarizeUsers(scopedLogs).map((entry) => ({
+    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const rows = await fetchAllForReports(orgCond, query);
+
+    const byCategory = summarizeCategories(rows);
+    const byUser = summarizeUsers(rows).map((entry) => ({
       userId: entry.userId,
       userName: entry.userName,
       actionCount: entry.actionCount
     }));
 
     return c.json({
-      totalEvents: scopedLogs.length,
+      totalEvents: rows.length,
       byCategory,
       byUser,
       range: {

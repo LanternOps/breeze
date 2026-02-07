@@ -25,6 +25,7 @@ import {
   getRedis
 } from '../services';
 import { authMiddleware } from '../middleware/auth';
+import { createAuditLogAsync } from '../services/auditService';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 
@@ -68,7 +69,7 @@ const refreshSchema = z.object({
 });
 
 // ============================================
-// Helper Functions
+// Helpers
 // ============================================
 
 function getClientIP(c: any): string {
@@ -79,6 +80,25 @@ function getClientIP(c: any): string {
 
 function genericAuthError() {
   return { error: 'Invalid email or password' };
+}
+
+function auditLogin(
+  c: any,
+  opts: { orgId: string; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string }
+): void {
+  createAuditLogAsync({
+    orgId: opts.orgId,
+    actorId: opts.userId,
+    actorEmail: opts.email,
+    action: 'user.login',
+    resourceType: 'user',
+    resourceId: opts.userId,
+    resourceName: opts.name,
+    details: { method: 'password', mfa: opts.mfa, scope: opts.scope },
+    ipAddress: opts.ip,
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
 }
 
 // ============================================
@@ -366,6 +386,12 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, user.id));
 
+  if (orgId) {
+    auditLogin(c, { orgId, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
+  } else {
+    console.warn('[audit] Skipping login audit for non-org-scoped user', { userId: user.id, scope });
+  }
+
   return c.json({
     user: {
       id: user.id,
@@ -390,6 +416,23 @@ authRoutes.post('/logout', authMiddleware, async (c) => {
     return c.json({ success: true, warning: 'Session logged out but token may remain valid briefly' }, 200);
   }
   await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1'); // Revoke for access token lifetime
+
+  if (auth.orgId) {
+    createAuditLogAsync({
+      orgId: auth.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'user.logout',
+      resourceType: 'user',
+      resourceId: auth.user.id,
+      resourceName: auth.user.name,
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'success'
+    });
+  } else {
+    console.warn('[audit] Skipping logout audit for non-org-scoped user', { userId: auth.user.id, scope: auth.scope });
+  }
 
   return c.json({ success: true });
 });
@@ -563,6 +606,12 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
       .update(users)
       .set({ lastLoginAt: new Date() })
       .where(eq(users.id, user.id));
+
+    if (mfaOrgId) {
+      auditLogin(c, { orgId: mfaOrgId, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
+    } else {
+      console.warn('[audit] Skipping MFA login audit for non-org-scoped user', { userId: user.id, scope: mfaScope });
+    }
 
     return c.json({
       user: {

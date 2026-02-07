@@ -12,3 +12,4 @@ export * from './notifications';
 export * from './plugins';
 export * from './commandQueue';
 export * from './email';
+export * from './auditService';
