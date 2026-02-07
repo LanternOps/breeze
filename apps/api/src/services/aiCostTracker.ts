@@ -171,6 +171,64 @@ export async function recordUsage(
         });
     }
   });
+
+  // Cost anomaly detection (after transaction completes)
+  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+    console.error('[AI] Cost anomaly check failed:', err);
+  });
+}
+
+/**
+ * Check for cost anomalies after recording usage.
+ * Logs warnings for sessions consuming too much budget.
+ */
+async function checkCostAnomalies(
+  sessionId: string,
+  orgId: string,
+  costCents: number,
+  dailyKey: string
+): Promise<void> {
+  const [budget] = await db
+    .select()
+    .from(aiBudgets)
+    .where(eq(aiBudgets.orgId, orgId))
+    .limit(1);
+
+  if (!budget || !budget.dailyBudgetCents) return;
+
+  // Check if single session exceeds 10% of daily budget
+  const [session] = await db
+    .select({ totalCostCents: aiSessions.totalCostCents })
+    .from(aiSessions)
+    .where(eq(aiSessions.id, sessionId))
+    .limit(1);
+
+  if (session && session.totalCostCents > budget.dailyBudgetCents * 0.1) {
+    console.warn(
+      `[AI] Cost anomaly: session ${sessionId} has used ${session.totalCostCents} cents ` +
+      `(>${Math.round(budget.dailyBudgetCents * 0.1)} cents = 10% of daily budget)`
+    );
+  }
+
+  // Check if daily spend > 80% of budget
+  const [dailyUsage] = await db
+    .select({ totalCostCents: aiCostUsage.totalCostCents })
+    .from(aiCostUsage)
+    .where(
+      and(
+        eq(aiCostUsage.orgId, orgId),
+        eq(aiCostUsage.period, 'daily'),
+        eq(aiCostUsage.periodKey, dailyKey)
+      )
+    )
+    .limit(1);
+
+  if (dailyUsage && dailyUsage.totalCostCents > budget.dailyBudgetCents * 0.8) {
+    console.warn(
+      `[AI] Cost warning: org ${orgId} daily spend at ${dailyUsage.totalCostCents} cents ` +
+      `(>${Math.round(budget.dailyBudgetCents * 0.8)} cents = 80% of daily budget)`
+    );
+  }
 }
 
 /**

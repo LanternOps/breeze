@@ -211,6 +211,11 @@ export const PERMISSIONS = {
   SITES_WRITE: { resource: 'sites', action: 'write' },
   SITES_DELETE: { resource: 'sites', action: 'delete' },
 
+  // Automations
+  AUTOMATIONS_READ: { resource: 'automations', action: 'read' },
+  AUTOMATIONS_WRITE: { resource: 'automations', action: 'write' },
+  AUTOMATIONS_DELETE: { resource: 'automations', action: 'delete' },
+
   // Remote access
   REMOTE_ACCESS: { resource: 'remote', action: 'access' },
 

@@ -20,6 +20,9 @@ import {
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { writeRouteAudit } from '../services/auditEvents';
+import { db } from '../db';
+import { auditLogs } from '../db/schema';
+import { eq, and, desc, gte, sql as drizzleSql } from 'drizzle-orm';
 
 // Inline validators (avoid rootDir issues with @breeze/shared)
 const aiPageContextSchema = z.discriminatedUnion('type', [
@@ -190,7 +193,7 @@ aiRoutes.post(
 
     return streamSSE(c, async (stream) => {
       try {
-        const generator = sendMessage(sessionId, body.content, auth, body.pageContext);
+        const generator = sendMessage(sessionId, body.content, auth, body.pageContext, c);
 
         for await (const event of generator) {
           await stream.writeSSE({
@@ -325,5 +328,58 @@ aiRoutes.get(
 
     const sessions = await getSessionHistory(orgId, { limit, offset });
     return c.json({ data: sessions });
+  }
+);
+
+// GET /admin/security-events - Get AI security and tool audit events
+aiRoutes.get(
+  '/admin/security-events',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = c.req.query('orgId') || auth.orgId;
+    if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 100);
+    const sinceParam = c.req.query('since');
+    const actionFilter = c.req.query('action');
+
+    const since = sinceParam
+      ? new Date(sinceParam)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // Default: last 7 days
+
+    const conditions = [
+      eq(auditLogs.orgId, orgId),
+      gte(auditLogs.timestamp, since),
+      drizzleSql`(${auditLogs.action} LIKE 'ai.security.%' OR ${auditLogs.action} LIKE 'ai.tool.%')`,
+    ];
+
+    if (actionFilter) {
+      conditions.push(eq(auditLogs.action, actionFilter));
+    }
+
+    const events = await db
+      .select({
+        id: auditLogs.id,
+        timestamp: auditLogs.timestamp,
+        actorType: auditLogs.actorType,
+        actorEmail: auditLogs.actorEmail,
+        action: auditLogs.action,
+        resourceType: auditLogs.resourceType,
+        resourceId: auditLogs.resourceId,
+        result: auditLogs.result,
+        errorMessage: auditLogs.errorMessage,
+        details: auditLogs.details,
+      })
+      .from(auditLogs)
+      .where(and(...conditions))
+      .orderBy(desc(auditLogs.timestamp))
+      .limit(limit);
+
+    return c.json({ data: events });
   }
 );

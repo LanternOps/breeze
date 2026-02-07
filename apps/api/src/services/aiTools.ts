@@ -21,6 +21,8 @@ import {
 } from '../db/schema';
 import { eq, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { escapeLike } from '../utils/sql';
+import { validateToolInput } from './aiToolSchemas';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -112,8 +114,9 @@ registerTool({
       conditions.push(eq(devices.siteId, input.siteId as string));
     }
     if (input.search) {
+      const searchPattern = '%' + escapeLike(input.search as string) + '%';
       conditions.push(
-        sql`(${devices.hostname} ILIKE ${'%' + input.search + '%'} OR ${devices.displayName} ILIKE ${'%' + input.search + '%'})`
+        sql`(${devices.hostname} ILIKE ${searchPattern} OR ${devices.displayName} ILIKE ${searchPattern})`
       );
     }
 
@@ -843,5 +846,12 @@ export async function executeTool(
 ): Promise<string> {
   const tool = aiTools.get(toolName);
   if (!tool) throw new Error(`Unknown tool: ${toolName}`);
+
+  // Validate input against Zod schema before execution
+  const validation = validateToolInput(toolName, input);
+  if (!validation.success) {
+    return JSON.stringify({ error: validation.error });
+  }
+
   return tool.handler(input, auth);
 }
