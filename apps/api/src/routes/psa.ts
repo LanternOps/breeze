@@ -106,8 +106,33 @@ const listTicketsSchema = z.object({
 
 psaRoutes.use('*', authMiddleware);
 
+// Helper to resolve accessible org IDs for the current auth context
+async function resolveOrgIds(auth: { scope: string; partnerId: string | null; orgId: string | null }, queryOrgId?: string): Promise<string[] | null> {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return [];
+    return [auth.orgId];
+  }
+
+  if (auth.scope === 'partner') {
+    if (queryOrgId) {
+      const hasAccess = await ensureOrgAccess(queryOrgId, auth);
+      return hasAccess ? [queryOrgId] : [];
+    }
+    const partnerOrgs = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, auth.partnerId as string));
+    return partnerOrgs.map((org) => org.id);
+  }
+
+  // system scope
+  return queryOrgId ? [queryOrgId] : null;
+}
+
+// --- Connections ---
+
 psaRoutes.get(
-  '/',
+  '/connections',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listConnectionsSchema),
   async (c) => {
@@ -115,32 +140,10 @@ psaRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    let orgIds: string[] | null = null;
+    const orgIds = await resolveOrgIds(auth, query.orgId);
 
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      orgIds = [auth.orgId];
-    } else if (auth.scope === 'partner') {
-      if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
-        if (!hasAccess) {
-          return c.json({ error: 'Access to this organization denied' }, 403);
-        }
-        orgIds = [query.orgId];
-      } else {
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        orgIds = partnerOrgs.map((org) => org.id);
-      }
-    } else if (auth.scope === 'system') {
-      if (query.orgId) {
-        orgIds = [query.orgId];
-      }
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
     }
 
     let connections = Array.from(psaConnections.values());
@@ -149,7 +152,7 @@ psaRoutes.get(
       if (orgIds.length === 0) {
         return c.json({ data: [], pagination: { page, limit, total: 0 } });
       }
-      connections = connections.filter((connection) => orgIds?.includes(connection.orgId));
+      connections = connections.filter((connection) => orgIds.includes(connection.orgId));
     }
 
     if (query.provider) {
@@ -169,7 +172,7 @@ psaRoutes.get(
 );
 
 psaRoutes.post(
-  '/',
+  '/connections',
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createConnectionSchema),
   async (c) => {
@@ -218,7 +221,7 @@ psaRoutes.post(
 );
 
 psaRoutes.get(
-  '/:id',
+  '/connections/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
@@ -234,12 +237,12 @@ psaRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    return c.json(serializeConnection(connection, true));
+    return c.json({ data: serializeConnection(connection, true) });
   }
 );
 
 psaRoutes.patch(
-  '/:id',
+  '/connections/:id',
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateConnectionSchema),
   async (c) => {
@@ -279,7 +282,7 @@ psaRoutes.patch(
 );
 
 psaRoutes.delete(
-  '/:id',
+  '/connections/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
@@ -303,7 +306,7 @@ psaRoutes.delete(
 );
 
 psaRoutes.post(
-  '/:id/test',
+  '/connections/:id/test',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
@@ -324,20 +327,14 @@ psaRoutes.post(
     psaConnections.set(connection.id, connection);
 
     return c.json({
-      id: connection.id,
-      provider: connection.provider,
-      name: connection.name,
-      testedAt: connection.lastTestedAt.toISOString(),
-      result: {
-        success: true,
-        message: 'Credentials verified'
-      }
+      success: true,
+      message: 'Credentials verified'
     });
   }
 );
 
 psaRoutes.post(
-  '/:id/sync',
+  '/connections/:id/sync',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
@@ -366,8 +363,65 @@ psaRoutes.post(
   }
 );
 
+psaRoutes.post(
+  '/connections/:id/status',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const connectionId = c.req.param('id');
+    const connection = psaConnections.get(connectionId);
+
+    if (!connection) {
+      return c.json({ error: 'PSA connection not found' }, 404);
+    }
+
+    const hasAccess = await ensureOrgAccess(connection.orgId, auth);
+    if (!hasAccess) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    const body = await c.req.json<{ status: string }>();
+    connection.settings = { ...connection.settings, status: body.status };
+    connection.updatedAt = new Date();
+    psaConnections.set(connection.id, connection);
+
+    return c.json({ success: true, status: body.status });
+  }
+);
+
+// --- Tickets ---
+
 psaRoutes.get(
-  '/:id/tickets',
+  '/tickets',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', listTicketsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const { page, limit, offset } = getPagination(query);
+
+    const orgIds = await resolveOrgIds(auth);
+
+    // Collect tickets from all accessible connections
+    let allTickets: PsaTicket[] = [];
+    for (const [connId, connection] of psaConnections) {
+      if (orgIds && !orgIds.includes(connection.orgId)) continue;
+      const tickets = psaTickets.get(connId) ?? [];
+      allTickets = allTickets.concat(tickets);
+    }
+
+    const total = allTickets.length;
+    const data = allTickets.slice(offset, offset + limit);
+
+    return c.json({
+      data,
+      pagination: { page, limit, total }
+    });
+  }
+);
+
+psaRoutes.get(
+  '/connections/:id/tickets',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listTicketsSchema),
   async (c) => {

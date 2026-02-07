@@ -28,5 +28,5 @@ WORKDIR /app/apps/web
 # Expose port
 EXPOSE 4321
 
-# Run in development mode with hot-reloading (astro dev)
-CMD ["pnpm", "dev", "--host", "0.0.0.0"]
+# Sync dependencies on container start so package.json changes don't break hot-reload.
+CMD ["sh", "-lc", "pnpm install --prefer-offline --no-frozen-lockfile && pnpm dev --host 0.0.0.0"]

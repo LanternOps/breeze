@@ -1,6 +1,6 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { db } from '../db';
-import { deployments, deploymentDevices, devices, deviceCommands, scripts, users, organizationUsers } from '../db/schema';
+import { deployments, deploymentDevices, devices, deviceCommands, scripts, users, organizationUsers, patches } from '../db/schema';
 import { eq, and, asc, inArray } from 'drizzle-orm';
 import {
   getDeploymentProgress,
@@ -655,6 +655,18 @@ async function executePatchPayload(
   deviceId: string,
   startTime: number
 ): Promise<ExecutionResult> {
+  const patchRecords = payload.patchIds.length > 0
+    ? await db
+      .select({
+        id: patches.id,
+        source: patches.source,
+        externalId: patches.externalId,
+        title: patches.title
+      })
+      .from(patches)
+      .where(inArray(patches.id, payload.patchIds))
+    : [];
+
   // Create command for the device to install patches
   const [command] = await db
     .insert(deviceCommands)
@@ -662,7 +674,8 @@ async function executePatchPayload(
       deviceId,
       type: 'install_patches',
       payload: {
-        patchIds: payload.patchIds
+        patchIds: payload.patchIds,
+        patches: patchRecords
       },
       status: 'pending'
     })
@@ -697,11 +710,26 @@ async function executePatchPayload(
     }
 
     if (updatedCommand.status === 'completed' || updatedCommand.status === 'failed') {
-      const result = updatedCommand.result as { success?: boolean; installedCount?: number; error?: string } | null;
+      const result = updatedCommand.result as { exitCode?: number; stdout?: string; stderr?: string; error?: string } | null;
+      let parsedStdout: { success?: boolean; installedCount?: number; failedCount?: number; error?: string } | null = null;
+      if (result?.stdout) {
+        try {
+          parsedStdout = JSON.parse(result.stdout);
+        } catch {
+          parsedStdout = null;
+        }
+      }
+
+      const success = updatedCommand.status === 'completed' &&
+        (parsedStdout?.success ?? true) &&
+        (typeof result?.exitCode !== 'number' || result.exitCode === 0);
+
       return {
-        success: result?.success || false,
-        output: result?.installedCount ? `Installed ${result.installedCount} patches` : undefined,
-        error: result?.error,
+        success,
+        output: typeof parsedStdout?.installedCount === 'number'
+          ? `Installed ${parsedStdout.installedCount} patches`
+          : undefined,
+        error: result?.error || result?.stderr || parsedStdout?.error,
         durationMs: Date.now() - startTime
       };
     }

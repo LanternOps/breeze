@@ -96,7 +96,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
     setError(undefined);
 
     try {
-      const response = await fetchWithAuth(`/api/security/policies`);
+      const response = await fetchWithAuth('/security/policies');
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
@@ -142,7 +142,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
     };
 
     try {
-      const url = policyId ? `/api/security/policies/${policyId}` : '/api/security/policies';
+      const url = policyId ? `/security/policies/${policyId}` : '/security/policies';
       const method = policyId ? 'PUT' : 'POST';
 
       const response = await fetchWithAuth(url, {

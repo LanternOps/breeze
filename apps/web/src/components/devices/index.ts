@@ -9,6 +9,7 @@ export { default as DeviceDetailPage } from './DeviceDetailPage';
 export { default as DeviceHardwareInventory } from './DeviceHardwareInventory';
 export { default as DeviceSoftwareInventory } from './DeviceSoftwareInventory';
 export { default as DevicePatchStatusTab } from './DevicePatchStatusTab';
+export { default as DeviceSecurityTab } from './DeviceSecurityTab';
 export { default as DeviceAlertHistory } from './DeviceAlertHistory';
 export { default as DeviceScriptHistory } from './DeviceScriptHistory';
 export { default as DevicePerformanceGraphs } from './DevicePerformanceGraphs';

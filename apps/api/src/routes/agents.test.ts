@@ -33,12 +33,25 @@ vi.mock('../db/schema', () => ({
   deviceNetwork: {},
   deviceMetrics: {},
   deviceCommands: {},
-  enrollmentKeys: {}
+  enrollmentKeys: {},
+  deviceDisks: {},
+  deviceConnections: {},
+  softwareInventory: {},
+  patches: {},
+  devicePatches: {},
+  deviceEventLogs: {},
+  securityStatus: {},
+  securityThreats: {},
+  securityScans: {}
 }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c, next) => next()),
   requireScope: vi.fn(() => async (_c, next) => next())
+}));
+
+vi.mock('../middleware/agentAuth', () => ({
+  agentAuthMiddleware: vi.fn((c, next) => next())
 }));
 
 import { db } from '../db';
@@ -54,18 +67,26 @@ describe('agent routes', () => {
 
   describe('POST /agents/enroll', () => {
     it('should enroll an agent with a valid enrollment key', async () => {
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'key-123',
-              key: 'enroll-key',
-              orgId: 'org-123',
-              siteId: 'site-123'
-            }])
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'key-123',
+                key: 'enroll-key',
+                orgId: 'org-123',
+                siteId: 'site-123'
+              }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
 
       const tx = {
         insert: vi.fn().mockReturnValue({

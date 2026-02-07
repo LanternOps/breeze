@@ -6,6 +6,7 @@ import { db } from '../db';
 import { apiKeys, organizations } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { createHash, randomBytes } from 'crypto';
+import { createAuditLogAsync } from '../services/auditService';
 
 export const apiKeyRoutes = new Hono();
 
@@ -55,6 +56,32 @@ async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: 
 
   // system scope has access to all
   return true;
+}
+
+function writeApiKeyAudit(
+  c: any,
+  auth: { user: { id: string; email?: string } },
+  event: {
+    orgId: string;
+    action: string;
+    keyId?: string;
+    keyName?: string;
+    details?: Record<string, unknown>;
+  }
+): void {
+  createAuditLogAsync({
+    orgId: event.orgId,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: event.action,
+    resourceType: 'api_key',
+    resourceId: event.keyId,
+    resourceName: event.keyName,
+    details: event.details,
+    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
 }
 
 // ============================================
@@ -232,6 +259,18 @@ apiKeyRoutes.post(
       return c.json({ error: 'Failed to create API key' }, 500);
     }
 
+    writeApiKeyAudit(c, auth, {
+      orgId: apiKey.orgId,
+      action: 'api_key.create',
+      keyId: apiKey.id,
+      keyName: apiKey.name,
+      details: {
+        scopes: apiKey.scopes,
+        rateLimit: apiKey.rateLimit,
+        expiresAt: apiKey.expiresAt
+      }
+    });
+
     // Return the full key ONCE - it won't be retrievable later
     return c.json({
       id: apiKey.id,
@@ -356,6 +395,20 @@ apiKeyRoutes.patch(
         status: apiKeys.status
       });
 
+    if (updated) {
+      writeApiKeyAudit(c, auth, {
+        orgId: updated.orgId,
+        action: 'api_key.update',
+        keyId: updated.id,
+        keyName: updated.name,
+        details: {
+          changedFields: Object.keys(data),
+          scopes: updated.scopes,
+          rateLimit: updated.rateLimit
+        }
+      });
+    }
+
     return c.json(updated);
   }
 );
@@ -405,6 +458,19 @@ apiKeyRoutes.delete(
         status: apiKeys.status,
         updatedAt: apiKeys.updatedAt
       });
+
+    if (revoked) {
+      writeApiKeyAudit(c, auth, {
+        orgId: existingKey.orgId,
+        action: 'api_key.revoke',
+        keyId: existingKey.id,
+        keyName: revoked.name,
+        details: {
+          keyPrefix: revoked.keyPrefix,
+          previousStatus: existingKey.status
+        }
+      });
+    }
 
     return c.json({
       success: true,
@@ -472,6 +538,20 @@ apiKeyRoutes.post(
         updatedAt: apiKeys.updatedAt,
         status: apiKeys.status
       });
+
+    if (rotated) {
+      writeApiKeyAudit(c, auth, {
+        orgId: rotated.orgId,
+        action: 'api_key.rotate',
+        keyId: rotated.id,
+        keyName: rotated.name,
+        details: {
+          keyPrefix: rotated.keyPrefix,
+          previousKeyPrefix: existingKey.keyPrefix,
+          resetUsageCount: true
+        }
+      });
+    }
 
     // Return the new full key ONCE
     return c.json({

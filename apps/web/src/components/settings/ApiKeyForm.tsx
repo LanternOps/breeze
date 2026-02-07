@@ -18,6 +18,9 @@ export const API_KEY_SCOPES: ApiKeyScope[] = [
   { id: 'alerts:write', label: 'Alerts: Write', description: 'Create and manage alert rules' },
   { id: 'reports:read', label: 'Reports: Read', description: 'View and download reports' },
   { id: 'reports:write', label: 'Reports: Write', description: 'Create and schedule reports' },
+  { id: 'ai:read', label: 'AI: Read', description: 'Query devices, alerts, and metrics via AI/MCP' },
+  { id: 'ai:write', label: 'AI: Write', description: 'Create automations and manage alerts via AI/MCP' },
+  { id: 'ai:execute', label: 'AI: Execute', description: 'Execute commands and scripts via AI/MCP', adminOnly: true },
   { id: 'users:read', label: 'Users: Read', description: 'View user information', adminOnly: true }
 ];
 

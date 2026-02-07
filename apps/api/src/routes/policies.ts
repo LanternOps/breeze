@@ -9,6 +9,7 @@ import {
   policyCompliance as policyComplianceTable,
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { createAuditLogAsync } from '../services/auditService';
 
 export const policyRoutes = new Hono();
 
@@ -292,6 +293,32 @@ function addPolicyVersion(policy: Policy, note?: string, rolledBackFrom?: string
   return versionEntry;
 }
 
+function writePolicyAudit(
+  c: any,
+  auth: { user: { id: string; email?: string } },
+  event: {
+    orgId: string;
+    action: string;
+    policyId?: string;
+    policyName?: string;
+    details?: Record<string, unknown>;
+  }
+): void {
+  createAuditLogAsync({
+    orgId: event.orgId,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: event.action,
+    resourceType: 'policy',
+    resourceId: event.policyId,
+    resourceName: event.policyName,
+    details: event.details,
+    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
+}
+
 function stableComplianceStatus(seed: string): ComplianceStatus {
   let hash = 0;
   for (const char of seed) {
@@ -514,6 +541,19 @@ policyRoutes.post(
 
     policies.set(policy.id, policy);
     addPolicyVersion(policy, `Created from template ${template.name}`);
+
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.create.from_template',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        templateId: template.id,
+        templateName: template.name,
+        targetType: policy.targetType,
+        targetIds: policy.targetIds ?? []
+      }
+    });
 
     return c.json(policy, 201);
   }
@@ -739,6 +779,20 @@ policyRoutes.post(
     policies.set(policy.id, policy);
     addPolicyVersion(policy, 'Initial version');
 
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.create',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        type: policy.type,
+        status: policy.status,
+        enforcementLevel: policy.enforcementLevel,
+        targetType: policy.targetType,
+        targetIds: policy.targetIds ?? []
+      }
+    });
+
     return c.json(policy, 201);
   }
 );
@@ -818,6 +872,18 @@ policyRoutes.post(
     policy.version += 1;
 
     addPolicyVersion(policy, `Rollback to version ${targetVersion.version}`, targetVersion.id);
+
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.rollback',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        rolledBackToVersion: targetVersion.version,
+        rolledBackToVersionId: targetVersion.id,
+        currentVersion: policy.version
+      }
+    });
 
     return c.json({
       policy,
@@ -905,6 +971,18 @@ policyRoutes.post(
     assignments.push(assignment);
     policyAssignments.set(id, assignments);
 
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.assignment.create',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        assignmentId: assignment.id,
+        targetType: assignment.targetType,
+        targetId: assignment.targetId
+      }
+    });
+
     return c.json(assignment, 201);
   }
 );
@@ -936,7 +1014,22 @@ policyRoutes.delete(
     }
 
     const [removed] = assignments.splice(index, 1);
+    if (!removed) {
+      return c.json({ error: 'Assignment not found' }, 404);
+    }
     policyAssignments.set(id, assignments);
+
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.assignment.delete',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        assignmentId: removed.id,
+        targetType: removed.targetType,
+        targetId: removed.targetId
+      }
+    });
 
     return c.json(removed);
   }
@@ -1031,6 +1124,16 @@ policyRoutes.post(
     policy.deactivatedAt = null;
     policy.updatedAt = new Date();
 
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.activate',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        status: policy.status
+      }
+    });
+
     return c.json(policy);
   }
 );
@@ -1061,6 +1164,16 @@ policyRoutes.post(
     policy.status = 'inactive';
     policy.deactivatedAt = new Date();
     policy.updatedAt = new Date();
+
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.deactivate',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        status: policy.status
+      }
+    });
 
     return c.json(policy);
   }
@@ -1215,6 +1328,18 @@ policyRoutes.patch(
     if (changed) {
       policy.version += 1;
       addPolicyVersion(policy, 'Policy updated');
+      writePolicyAudit(c, auth, {
+        orgId: policy.orgId,
+        action: 'policy.update',
+        policyId: policy.id,
+        policyName: policy.name,
+        details: {
+          changedFields: Object.keys(data),
+          version: policy.version,
+          status: policy.status,
+          enforcementLevel: policy.enforcementLevel
+        }
+      });
     }
 
     return c.json(policy);
@@ -1247,6 +1372,16 @@ policyRoutes.delete(
     policy.status = 'archived';
     policy.archivedAt = new Date();
     policy.updatedAt = new Date();
+
+    writePolicyAudit(c, auth, {
+      orgId: policy.orgId,
+      action: 'policy.archive',
+      policyId: policy.id,
+      policyName: policy.name,
+      details: {
+        status: policy.status
+      }
+    });
 
     return c.json({
       id: policy.id,

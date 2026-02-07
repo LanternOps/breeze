@@ -4,11 +4,13 @@ import { z } from 'zod';
 import { and, eq, sql, inArray, desc } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
+import { queueCommand } from '../services/commandQueue';
 import {
   patches,
   devicePatches,
   patchApprovals,
   patchJobs,
+  patchRollbacks,
   devices
 } from '../db/schema';
 
@@ -57,6 +59,21 @@ const approvalActionSchema = z.object({
 const deferSchema = z.object({
   deferUntil: z.string().datetime(),
   note: z.string().max(1000).optional()
+});
+
+const rollbackSchema = z.object({
+  reason: z.string().max(2000).optional(),
+  scheduleType: z.enum(['immediate', 'scheduled']).default('immediate'),
+  scheduledTime: z.string().datetime().optional(),
+  deviceIds: z.array(z.string().uuid()).optional()
+}).superRefine((value, ctx) => {
+  if (value.scheduleType === 'scheduled' && !value.scheduledTime) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['scheduledTime'],
+      message: 'scheduledTime is required when scheduleType is scheduled'
+    });
+  }
 });
 
 const bulkApproveSchema = z.object({
@@ -178,12 +195,55 @@ patchRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // TODO: Queue a scan command to the specified devices
-    // For now, return success - the agent periodically scans anyway
+    const requestedDevices = await db
+      .select({
+        id: devices.id,
+        orgId: devices.orgId
+      })
+      .from(devices)
+      .where(inArray(devices.id, data.deviceIds));
+
+    const foundDeviceIDs = new Set(requestedDevices.map((d) => d.id));
+    const missingDeviceIDs = data.deviceIds.filter((id) => !foundDeviceIDs.has(id));
+
+    const accessibleDevices = requestedDevices.filter((device) => auth.canAccessOrg(device.orgId));
+    const inaccessibleDeviceIDs = requestedDevices
+      .filter((device) => !auth.canAccessOrg(device.orgId))
+      .map((device) => device.id);
+
+    const queueResults = await Promise.all(
+      accessibleDevices.map(async (device) => {
+        try {
+          const command = await queueCommand(
+            device.id,
+            'patch_scan',
+            { source: data.source ?? null },
+            auth.user.id
+          );
+          return { ok: true as const, commandId: command.id };
+        } catch {
+          return { ok: false as const, deviceId: device.id };
+        }
+      })
+    );
+
+    const queuedCommandIds = queueResults
+      .filter((r): r is { ok: true; commandId: string } => r.ok)
+      .map((r) => r.commandId);
+    const failedDeviceIDs = queueResults
+      .filter((r): r is { ok: false; deviceId: string } => !r.ok)
+      .map((r) => r.deviceId);
+
     return c.json({
-      success: true,
+      success: failedDeviceIDs.length === 0,
       jobId: `scan-${Date.now()}`,
-      deviceCount: data.deviceIds.length
+      deviceCount: accessibleDevices.length,
+      queuedCommandIds,
+      failedDeviceIds: failedDeviceIDs,
+      skipped: {
+        missingDeviceIds: missingDeviceIDs,
+        inaccessibleDeviceIds: inaccessibleDeviceIDs
+      }
     });
   }
 );
@@ -280,7 +340,7 @@ patchRoutes.post(
             orgId: auth.orgId,
             patchId,
             status: 'approved',
-            approvedBy: auth.userId,
+            approvedBy: auth.user.id,
             approvedAt: new Date(),
             notes: data.note
           })
@@ -288,7 +348,7 @@ patchRoutes.post(
             target: [patchApprovals.orgId, patchApprovals.patchId],
             set: {
               status: 'approved',
-              approvedBy: auth.userId,
+              approvedBy: auth.user.id,
               approvedAt: new Date(),
               notes: data.note,
               updatedAt: new Date()
@@ -384,13 +444,22 @@ patchRoutes.get(
     }
 
     // Get patch status counts
+    const complianceConditions = [inArray(devicePatches.deviceId, deviceIds)];
+    if (query.source) {
+      complianceConditions.push(eq(patches.source, query.source));
+    }
+    if (query.severity) {
+      complianceConditions.push(eq(patches.severity, query.severity));
+    }
+
     const statusCounts = await db
       .select({
         status: devicePatches.status,
         count: sql<number>`count(*)`
       })
       .from(devicePatches)
-      .where(inArray(devicePatches.deviceId, deviceIds))
+      .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+      .where(and(...complianceConditions))
       .groupBy(devicePatches.status);
 
     const summary = {
@@ -449,6 +518,135 @@ patchRoutes.get(
   }
 );
 
+// POST /patches/:id/rollback - Queue rollback commands for a patch
+patchRoutes.post(
+  '/:id/rollback',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', patchIdParamSchema),
+  zValidator('json', rollbackSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const data = c.req.valid('json');
+
+    if (data.scheduleType === 'scheduled') {
+      return c.json({ error: 'Scheduled rollback is not supported yet' }, 400);
+    }
+
+    const [patch] = await db
+      .select({
+        id: patches.id,
+        source: patches.source,
+        externalId: patches.externalId,
+        title: patches.title
+      })
+      .from(patches)
+      .where(eq(patches.id, id))
+      .limit(1);
+
+    if (!patch) {
+      return c.json({ error: 'Patch not found' }, 404);
+    }
+
+    let candidateDevices: Array<{ id: string; orgId: string }> = [];
+    let missingDeviceIds: string[] = [];
+
+    if (data.deviceIds && data.deviceIds.length > 0) {
+      candidateDevices = await db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId
+        })
+        .from(devices)
+        .where(inArray(devices.id, data.deviceIds));
+
+      const foundIds = new Set(candidateDevices.map((device) => device.id));
+      missingDeviceIds = data.deviceIds.filter((deviceId) => !foundIds.has(deviceId));
+    } else {
+      candidateDevices = await db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId
+        })
+        .from(devicePatches)
+        .innerJoin(devices, eq(devicePatches.deviceId, devices.id))
+        .where(
+          and(
+            eq(devicePatches.patchId, id),
+            eq(devicePatches.status, 'installed')
+          )
+        );
+    }
+
+    const accessibleDevices = candidateDevices.filter((device) => auth.canAccessOrg(device.orgId));
+    const inaccessibleDeviceIds = candidateDevices
+      .filter((device) => !auth.canAccessOrg(device.orgId))
+      .map((device) => device.id);
+
+    if (accessibleDevices.length === 0) {
+      return c.json({
+        error: 'No accessible devices found for rollback',
+        skipped: {
+          missingDeviceIds,
+          inaccessibleDeviceIds
+        }
+      }, 404);
+    }
+
+    const queueResults = await Promise.all(
+      accessibleDevices.map(async (device) => {
+        try {
+          const command = await queueCommand(
+            device.id,
+            'rollback_patches',
+            {
+              patchIds: [id],
+              patches: [patch],
+              reason: data.reason ?? null
+            },
+            auth.user.id
+          );
+
+          return { ok: true as const, deviceId: device.id, commandId: command.id };
+        } catch {
+          return { ok: false as const, deviceId: device.id };
+        }
+      })
+    );
+
+    const queued = queueResults.filter((result): result is { ok: true; deviceId: string; commandId: string } => result.ok);
+    const failedDeviceIds = queueResults
+      .filter((result): result is { ok: false; deviceId: string } => !result.ok)
+      .map((result) => result.deviceId);
+
+    if (queued.length > 0) {
+      await db
+        .insert(patchRollbacks)
+        .values(
+          queued.map((entry) => ({
+            deviceId: entry.deviceId,
+            patchId: id,
+            reason: data.reason ?? null,
+            status: 'pending',
+            initiatedBy: auth.user.id
+          }))
+        );
+    }
+
+    return c.json({
+      success: failedDeviceIds.length === 0,
+      patchId: id,
+      queuedCommandIds: queued.map((entry) => entry.commandId),
+      deviceCount: accessibleDevices.length,
+      failedDeviceIds,
+      skipped: {
+        missingDeviceIds,
+        inaccessibleDeviceIds
+      }
+    });
+  }
+);
+
 // POST /patches/:id/approve - Approve patch
 patchRoutes.post(
   '/:id/approve',
@@ -481,7 +679,7 @@ patchRoutes.post(
         orgId: auth.orgId,
         patchId: id,
         status: 'approved',
-        approvedBy: auth.userId,
+        approvedBy: auth.user.id,
         approvedAt: new Date(),
         notes: data.note
       })
@@ -489,7 +687,7 @@ patchRoutes.post(
         target: [patchApprovals.orgId, patchApprovals.patchId],
         set: {
           status: 'approved',
-          approvedBy: auth.userId,
+          approvedBy: auth.user.id,
           approvedAt: new Date(),
           notes: data.note,
           updatedAt: new Date()

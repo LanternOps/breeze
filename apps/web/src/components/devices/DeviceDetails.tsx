@@ -11,7 +11,8 @@ import {
   FileText,
   Network,
   CheckCircle,
-  Info
+  Info,
+  Shield
 } from 'lucide-react';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import DeviceActions from './DeviceActions';
@@ -19,6 +20,7 @@ import DeviceInfoTab from './DeviceInfoTab';
 import DeviceHardwareInventory from './DeviceHardwareInventory';
 import DeviceSoftwareInventory from './DeviceSoftwareInventory';
 import DevicePatchStatusTab from './DevicePatchStatusTab';
+import DeviceSecurityTab from './DeviceSecurityTab';
 import DeviceAlertHistory from './DeviceAlertHistory';
 import DeviceScriptHistory from './DeviceScriptHistory';
 import DevicePerformanceGraphs from './DevicePerformanceGraphs';
@@ -33,6 +35,7 @@ type Tab =
   | 'hardware'
   | 'software'
   | 'patches'
+  | 'security'
   | 'alerts'
   | 'scripts'
   | 'performance'
@@ -93,6 +96,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'hardware', label: 'Hardware Inventory', icon: <Cpu className="h-4 w-4" /> },
     { id: 'software', label: 'Software Inventory', icon: <Package className="h-4 w-4" /> },
     { id: 'patches', label: 'Patch Status', icon: <CheckCircle className="h-4 w-4" /> },
+    { id: 'security', label: 'Security', icon: <Shield className="h-4 w-4" /> },
     { id: 'alerts', label: 'Alert History', icon: <AlertTriangle className="h-4 w-4" /> },
     { id: 'scripts', label: 'Script History', icon: <Terminal className="h-4 w-4" /> },
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" /> },
@@ -194,6 +198,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'patches' && (
         <DevicePatchStatusTab deviceId={device.id} timezone={effectiveTimezone} />
+      )}
+
+      {activeTab === 'security' && (
+        <DeviceSecurityTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'alerts' && (

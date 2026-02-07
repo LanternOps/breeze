@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Monitor, CheckCircle, AlertTriangle, XCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { useAiStore } from '@/stores/aiStore';
 
 interface DashboardStatsData {
   totalDevices: number;
@@ -53,6 +54,13 @@ export default function DashboardStats() {
           warningAlerts,
           criticalAlerts,
           onlinePercentage
+        });
+
+        // Inject AI context with dashboard stats
+        useAiStore.getState().setPageContext({
+          type: 'dashboard',
+          deviceCount: totalDevices,
+          alertCount: warningAlerts + criticalAlerts
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load dashboard stats');

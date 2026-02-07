@@ -20,7 +20,7 @@ import {
 } from '../db/schema';
 import { eq, and, inArray, isNull, or } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
-import { isCooldownActive, setCooldown, clearCooldown } from './alertCooldown';
+import { isCooldownActive, setCooldown } from './alertCooldown';
 import { publishEvent } from './eventBus';
 
 // Types for alert creation
@@ -87,7 +87,9 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     return null;
   }
 
-  // Check for existing active alert (dedupe)
+  // Check for existing open alert (dedupe)
+  // Skip if there's any non-resolved alert — active, acknowledged, or suppressed
+  // all mean the user is already aware of / managing this condition
   const [existingAlert] = await db
     .select()
     .from(alerts)
@@ -95,13 +97,13 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       and(
         eq(alerts.ruleId, ruleId),
         eq(alerts.deviceId, deviceId),
-        eq(alerts.status, 'active')
+        inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
       )
     )
     .limit(1);
 
   if (existingAlert) {
-    console.log(`[AlertService] Active alert already exists for rule=${ruleId} device=${deviceId}`);
+    console.log(`[AlertService] Open alert (${existingAlert.status}) already exists for rule=${ruleId} device=${deviceId}`);
     return null;
   }
 
@@ -249,8 +251,27 @@ export async function resolveAlert(
     })
     .where(eq(alerts.id, alertId));
 
-  // Clear cooldown so alert can trigger again if needed
-  await clearCooldown(alert.ruleId, alert.deviceId);
+  // Set a cooldown after resolution to prevent immediate re-trigger.
+  // Uses the rule's configured cooldown so the condition must persist
+  // beyond the cooldown window before a new alert is created.
+  const [rule] = await db
+    .select()
+    .from(alertRules)
+    .where(eq(alertRules.id, alert.ruleId))
+    .limit(1);
+
+  if (rule) {
+    const [template] = await db
+      .select()
+      .from(alertTemplates)
+      .where(eq(alertTemplates.id, rule.templateId))
+      .limit(1);
+
+    const overrides = rule.overrideSettings as Record<string, unknown> | null;
+    const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
+      template?.cooldownMinutes ?? 15;
+    await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+  }
 
   // Publish event
   await publishEvent(

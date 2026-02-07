@@ -33,7 +33,17 @@ export default function UsersPage() {
         throw new Error('Failed to fetch users');
       }
       const data = await response.json();
-      setUsers(data.users ?? data ?? []);
+      const rows = (data.data ?? []).map((u: Record<string, unknown>) => ({
+        id: u.id as string,
+        name: (u.name as string) || '',
+        email: (u.email as string) || '',
+        role: (u.roleName as string) || '',
+        status: (u.status as string) || 'pending',
+        lastLogin: u.lastLoginAt
+          ? new Date(u.lastLoginAt as string).toLocaleDateString()
+          : 'Never',
+      }));
+      setUsers(rows);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
