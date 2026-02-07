@@ -21,8 +21,6 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 // Platform type
 export type Platform = 'windows' | 'macos' | 'linux';
 
@@ -104,10 +102,10 @@ function normalizeLevel(level: string): NormalizedLevel {
 
 // Default logs (Windows)
 const defaultWindowsLogs: EventLog[] = [
-  { name: 'System', displayName: 'System', recordCount: 12847 },
-  { name: 'Application', displayName: 'Application', recordCount: 8923 },
-  { name: 'Security', displayName: 'Security', recordCount: 45231 },
-  { name: 'Setup', displayName: 'Setup', recordCount: 156 }
+  { name: 'System', displayName: 'System' },
+  { name: 'Application', displayName: 'Application' },
+  { name: 'Security', displayName: 'Security' },
+  { name: 'Setup', displayName: 'Setup' }
 ];
 
 // Default categories (macOS)
@@ -116,154 +114,6 @@ const defaultMacOSLogs: EventLog[] = [
   { name: 'hardware', displayName: 'Hardware' },
   { name: 'application', displayName: 'Application' },
   { name: 'system', displayName: 'System' }
-];
-
-// Mock events for demo
-const mockEvents: EventLogEntry[] = [
-  {
-    recordId: '1001',
-    logName: 'System',
-    level: 'Information',
-    timeCreated: '2024-01-15T11:55:00.000Z',
-    source: 'Microsoft-Windows-Kernel-General',
-    eventId: 1,
-    message: 'The system time has changed to 2024-01-15T10:30:00.000Z from 2024-01-15T10:29:58.000Z.',
-    taskCategory: 'Time Change',
-    computerName: 'WORKSTATION-01',
-    processId: 4
-  },
-  {
-    recordId: '1002',
-    logName: 'System',
-    level: 'Warning',
-    timeCreated: '2024-01-15T11:45:00.000Z',
-    source: 'Microsoft-Windows-WindowsUpdateClient',
-    eventId: 20,
-    message: 'Installation Started: Windows has started installing the following update: 2024-01 Cumulative Update for Windows 11 (KB5034123)',
-    taskCategory: 'Windows Update Install',
-    computerName: 'WORKSTATION-01',
-    processId: 1234
-  },
-  {
-    recordId: '1003',
-    logName: 'System',
-    level: 'Error',
-    timeCreated: '2024-01-15T11:30:00.000Z',
-    source: 'Service Control Manager',
-    eventId: 7034,
-    message: 'The Windows Update service terminated unexpectedly. It has done this 1 time(s).',
-    taskCategory: 'None',
-    computerName: 'WORKSTATION-01',
-    processId: 664
-  },
-  {
-    recordId: '1004',
-    logName: 'System',
-    level: 'Information',
-    timeCreated: '2024-01-15T11:15:00.000Z',
-    source: 'Service Control Manager',
-    eventId: 7036,
-    message: 'The Background Intelligent Transfer Service service entered the running state.',
-    taskCategory: 'None',
-    computerName: 'WORKSTATION-01',
-    processId: 664
-  },
-  {
-    recordId: '1005',
-    logName: 'System',
-    level: 'Critical',
-    timeCreated: '2024-01-15T10:00:00.000Z',
-    source: 'Microsoft-Windows-Kernel-Power',
-    eventId: 41,
-    message: 'The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly.',
-    taskCategory: '(63)',
-    computerName: 'WORKSTATION-01',
-    processId: 4
-  },
-  {
-    recordId: '1006',
-    logName: 'System',
-    level: 'Information',
-    timeCreated: '2024-01-15T09:00:00.000Z',
-    source: 'Microsoft-Windows-Winlogon',
-    eventId: 7001,
-    message: 'User Logon Notification for Customer Experience Improvement Program',
-    taskCategory: 'None',
-    computerName: 'WORKSTATION-01',
-    processId: 612
-  },
-  {
-    recordId: '1007',
-    logName: 'System',
-    level: 'Warning',
-    timeCreated: '2024-01-15T08:00:00.000Z',
-    source: 'disk',
-    eventId: 11,
-    message: 'The driver detected a controller error on \\Device\\Harddisk1\\DR1.',
-    taskCategory: 'None',
-    computerName: 'WORKSTATION-01',
-    processId: 4
-  },
-  {
-    recordId: '1008',
-    logName: 'System',
-    level: 'Information',
-    timeCreated: '2024-01-15T07:00:00.000Z',
-    source: 'Microsoft-Windows-WindowsUpdateClient',
-    eventId: 19,
-    message: 'Installation Successful: Windows successfully installed the following update: 2024-01 Cumulative Update for Windows 11 (KB5034123)',
-    taskCategory: 'Windows Update Install',
-    computerName: 'WORKSTATION-01',
-    processId: 1234
-  },
-  {
-    recordId: '1009',
-    logName: 'Application',
-    level: 'Error',
-    timeCreated: '2024-01-15T11:40:00.000Z',
-    source: 'Application Error',
-    eventId: 1000,
-    message: 'Faulting application name: chrome.exe, version: 120.0.6099.130, time stamp: 0x65789abc. Faulting module name: chrome.dll, version: 120.0.6099.130',
-    taskCategory: '(100)',
-    computerName: 'WORKSTATION-01',
-    processId: 5678
-  },
-  {
-    recordId: '1010',
-    logName: 'Application',
-    level: 'Information',
-    timeCreated: '2024-01-15T11:00:00.000Z',
-    source: 'Windows Error Reporting',
-    eventId: 1001,
-    message: 'Fault bucket type: 0. Event Name: APPCRASH. Response: Not available.',
-    taskCategory: 'None',
-    computerName: 'WORKSTATION-01',
-    processId: 1920
-  },
-  {
-    recordId: '1011',
-    logName: 'Security',
-    level: 'Information',
-    timeCreated: '2024-01-15T11:50:00.000Z',
-    source: 'Microsoft-Windows-Security-Auditing',
-    eventId: 4624,
-    message: 'An account was successfully logged on. Subject: Security ID: SYSTEM. Account Name: WORKSTATION-01$.',
-    taskCategory: 'Logon',
-    computerName: 'WORKSTATION-01',
-    userId: 'S-1-5-18'
-  },
-  {
-    recordId: '1012',
-    logName: 'Security',
-    level: 'Warning',
-    timeCreated: '2024-01-15T11:35:00.000Z',
-    source: 'Microsoft-Windows-Security-Auditing',
-    eventId: 4625,
-    message: 'An account failed to log on. Subject: Security ID: NULL SID. Failure Reason: Unknown user name or bad password.',
-    taskCategory: 'Logon',
-    computerName: 'WORKSTATION-01',
-    userId: 'S-1-0-0'
-  }
 ];
 
 // Level configuration
@@ -319,7 +169,7 @@ function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = REFERENCE_DATE;
+  const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
@@ -378,6 +228,7 @@ export default function EventViewer({
   const [selectedLog, setSelectedLog] = useState<string>(initialSelectedLog || (isMacOS ? 'security' : 'System'));
   const [events, setEvents] = useState<EventLogEntry[]>(initialEvents || []);
   const [loading, setLoading] = useState(externalLoading);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventLogEntry | null>(null);
   const [detailPanelOpen, setDetailPanelOpen] = useState(false);
   
@@ -397,11 +248,10 @@ export default function EventViewer({
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(30);
 
-  // Load mock data on mount if no events provided and no query handler is set.
+  // Reset events when no query handler is set and no events are provided
   useEffect(() => {
     if (!initialEvents && !onQueryEvents) {
-      const filteredMockEvents = mockEvents.filter(e => e.logName === selectedLog);
-      setEvents(filteredMockEvents);
+      setEvents([]);
     }
   }, [initialEvents, onQueryEvents, selectedLog]);
 
@@ -431,40 +281,33 @@ export default function EventViewer({
     setCurrentPage(1);
     setSelectedEvent(null);
     setDetailPanelOpen(false);
+    setFetchError(null);
     onSelectLog?.(logName);
-    
-    // Load mock events for this log
+
     if (!onQueryEvents) {
-      const filteredMockEvents = mockEvents.filter(e => e.logName === logName);
-      setEvents(filteredMockEvents);
+      setEvents([]);
     }
   }, [onSelectLog, onQueryEvents]);
 
   // Handle refresh
   const handleRefresh = useCallback(async () => {
-    if (onQueryEvents) {
-      setLoading(true);
-      try {
-        const filter: EventFilter = {};
-        if (levelFilters.size > 0) filter.levels = Array.from(levelFilters);
-        if (query) filter.keywords = query;
-        if (eventIdFilter) filter.eventId = parseInt(eventIdFilter, 10);
-        
-        const result = await onQueryEvents(selectedLog, filter);
-        setEvents(result);
-      } catch (error) {
-        console.error('Failed to fetch events:', error);
-      } finally {
-        setLoading(false);
-      }
-    } else {
-      // Simulate refresh with mock data
-      setLoading(true);
-      setTimeout(() => {
-        const filteredMockEvents = mockEvents.filter(e => e.logName === selectedLog);
-        setEvents(filteredMockEvents);
-        setLoading(false);
-      }, 500);
+    if (!onQueryEvents) return;
+
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const filter: EventFilter = {};
+      if (levelFilters.size > 0) filter.levels = Array.from(levelFilters);
+      if (query) filter.keywords = query;
+      if (eventIdFilter) filter.eventId = parseInt(eventIdFilter, 10);
+
+      const result = await onQueryEvents(selectedLog, filter);
+      setEvents(result);
+    } catch (error) {
+      console.error('Failed to fetch events:', error);
+      setFetchError('Failed to fetch event logs. Please try again.');
+    } finally {
+      setLoading(false);
     }
   }, [onQueryEvents, selectedLog, levelFilters, query, eventIdFilter]);
 
@@ -504,7 +347,7 @@ export default function EventViewer({
   // Filter events
   const filteredEvents = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const now = REFERENCE_DATE;
+    const now = new Date();
     
     return events.filter(event => {
       // Text search
@@ -816,10 +659,31 @@ export default function EventViewer({
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {paginatedEvents.length === 0 ? (
+                {fetchError ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-12 text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <XCircle className="h-8 w-8 text-red-400" />
+                        <p className="text-sm text-red-600 dark:text-red-400">{fetchError}</p>
+                        <button
+                          type="button"
+                          onClick={handleRefresh}
+                          className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm hover:bg-muted"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          Retry
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ) : paginatedEvents.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-12 text-center text-sm text-muted-foreground">
-                      No events found. Try adjusting your filters.
+                      {!onQueryEvents
+                        ? 'No event logs available. Connect a query handler to fetch events from this device.'
+                        : hasActiveFilters
+                          ? 'No events found. Try adjusting your filters.'
+                          : 'No event logs available.'}
                     </td>
                   </tr>
                 ) : (

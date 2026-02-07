@@ -545,7 +545,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         setError(`Unable to load: ${errors.join(', ')}`);
       }
 
-      setLastUpdated(new Date('2024-01-15T12:00:00.000Z'));
+      setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load analytics data');
     } finally {

@@ -25,8 +25,6 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 // Types
 export type TaskStatus = 'ready' | 'running' | 'disabled' | 'queued' | 'unknown';
 
@@ -185,7 +183,7 @@ function formatDateTime(dateString?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = REFERENCE_DATE;
+  const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
 
   if (isToday) {
@@ -242,233 +240,6 @@ function buildFolderTree(tasks: ScheduledTask[]): FolderNode {
 
   return root;
 }
-
-// Mock data
-const mockTasks: ScheduledTask[] = [
-  {
-    name: 'Scheduled Start',
-    path: '\\Microsoft\\Windows\\WindowsUpdate\\Scheduled Start',
-    folder: '\\Microsoft\\Windows\\WindowsUpdate',
-    status: 'ready',
-    lastRun: '2024-01-15T03:00:00Z',
-    lastResult: 0,
-    nextRun: '2024-01-16T03:00:00Z',
-    author: 'Microsoft Corporation',
-    description: 'This task is used to start the Windows Update service when needed to perform tasks.',
-    triggers: ['Daily at 3:00 AM']
-  },
-  {
-    name: 'ScheduledDefrag',
-    path: '\\Microsoft\\Windows\\Defrag\\ScheduledDefrag',
-    folder: '\\Microsoft\\Windows\\Defrag',
-    status: 'ready',
-    lastRun: '2024-01-14T02:00:00Z',
-    lastResult: 0,
-    nextRun: '2024-01-21T02:00:00Z',
-    author: 'Microsoft Corporation',
-    description: 'This task optimizes local storage drives.',
-    triggers: ['Weekly on Wednesday at 2:00 AM']
-  },
-  {
-    name: 'ScanForUpdates',
-    path: '\\Microsoft\\Windows\\WindowsUpdate\\ScanForUpdates',
-    folder: '\\Microsoft\\Windows\\WindowsUpdate',
-    status: 'running',
-    lastRun: '2024-01-15T10:00:00Z',
-    lastResult: 267009,
-    author: 'Microsoft Corporation',
-    description: 'Scans for Windows updates.',
-    triggers: ['Every 4 hours']
-  },
-  {
-    name: 'Microsoft Compatibility Appraiser',
-    path: '\\Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser',
-    folder: '\\Microsoft\\Windows\\Application Experience',
-    status: 'ready',
-    lastRun: '2024-01-15T08:00:00Z',
-    lastResult: 0,
-    nextRun: '2024-01-16T08:00:00Z',
-    author: 'Microsoft Corporation',
-    description: 'Collects program telemetry information if opted-in to the Microsoft Customer Experience Improvement Program.',
-    triggers: ['Daily at 8:00 AM']
-  },
-  {
-    name: 'Cleanup',
-    path: '\\Microsoft\\Windows\\DiskCleanup\\Cleanup',
-    folder: '\\Microsoft\\Windows\\DiskCleanup',
-    status: 'disabled',
-    lastRun: '2024-01-10T04:00:00Z',
-    lastResult: 0,
-    author: 'Microsoft Corporation',
-    description: 'Cleans up disk space by removing temporary files.',
-    triggers: ['Monthly on the 1st at 4:00 AM']
-  },
-  {
-    name: 'Automatic Maintenance',
-    path: '\\Microsoft\\Windows\\TaskScheduler\\Automatic Maintenance',
-    folder: '\\Microsoft\\Windows\\TaskScheduler',
-    status: 'queued',
-    lastRun: '2024-01-15T02:00:00Z',
-    lastResult: 0,
-    nextRun: '2024-01-15T14:00:00Z',
-    author: 'Microsoft Corporation',
-    description: 'Performs automatic maintenance tasks.',
-    triggers: ['When system is idle']
-  },
-  {
-    name: 'Windows Defender Scheduled Scan',
-    path: '\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan',
-    folder: '\\Microsoft\\Windows\\Windows Defender',
-    status: 'ready',
-    lastRun: '2024-01-15T12:00:00Z',
-    lastResult: 0,
-    nextRun: '2024-01-16T12:00:00Z',
-    author: 'Microsoft Corporation',
-    description: 'Performs a scheduled scan of the local drives.',
-    triggers: ['Daily at 12:00 PM']
-  },
-  {
-    name: 'Windows Defender Cache Maintenance',
-    path: '\\Microsoft\\Windows\\Windows Defender\\Windows Defender Cache Maintenance',
-    folder: '\\Microsoft\\Windows\\Windows Defender',
-    status: 'ready',
-    lastRun: '2024-01-15T01:00:00Z',
-    lastResult: 0,
-    nextRun: '2024-01-16T01:00:00Z',
-    author: 'Microsoft Corporation',
-    description: 'Performs maintenance on the Windows Defender cache.',
-    triggers: ['Daily at 1:00 AM']
-  },
-  {
-    name: 'Idle Maintenance',
-    path: '\\Microsoft\\Windows\\Maintenance\\Idle Maintenance',
-    folder: '\\Microsoft\\Windows\\Maintenance',
-    status: 'ready',
-    lastRun: '2024-01-15T09:30:00Z',
-    lastResult: 0,
-    author: 'Microsoft Corporation',
-    description: 'Performs maintenance when the system is idle.',
-    triggers: ['On idle']
-  },
-  {
-    name: 'Backup',
-    path: '\\Custom\\Backup',
-    folder: '\\Custom',
-    status: 'ready',
-    lastRun: '2024-01-15T00:00:00Z',
-    lastResult: 0,
-    nextRun: '2024-01-16T00:00:00Z',
-    author: 'Administrator',
-    description: 'Custom daily backup task.',
-    triggers: ['Daily at midnight']
-  }
-];
-
-const mockTaskDetails: TaskDetails = {
-  name: 'Scheduled Start',
-  path: '\\Microsoft\\Windows\\WindowsUpdate\\Scheduled Start',
-  folder: '\\Microsoft\\Windows\\WindowsUpdate',
-  status: 'ready',
-  lastRun: '2024-01-15T03:00:00Z',
-  lastResult: 0,
-  nextRun: '2024-01-16T03:00:00Z',
-  author: 'Microsoft Corporation',
-  description: 'This task is used to start the Windows Update service when needed to perform tasks.',
-  triggers: [
-    {
-      type: 'daily',
-      description: 'At 3:00 AM every day',
-      enabled: true,
-      nextRun: '2024-01-16T03:00:00Z',
-      startBoundary: '2020-01-01T03:00:00Z'
-    },
-    {
-      type: 'boot',
-      description: 'At system startup',
-      enabled: true,
-      repetition: {
-        interval: 'PT1H',
-        duration: 'P1D',
-        stopAtDurationEnd: false
-      }
-    }
-  ],
-  actions: [
-    {
-      type: 'execute',
-      path: 'C:\\Windows\\System32\\usoclient.exe',
-      arguments: 'StartScan',
-      description: 'Start Windows Update scan'
-    }
-  ],
-  conditions: {
-    powerCondition: {
-      disallowStartIfOnBatteries: false,
-      stopIfGoingOnBatteries: false
-    },
-    networkCondition: {
-      name: 'Any connection'
-    }
-  },
-  settings: {
-    allowDemandStart: true,
-    stopIfGoingOnBatteries: false,
-    runOnlyIfNetworkAvailable: true,
-    executionTimeLimit: 'PT72H',
-    deleteExpiredTaskAfter: 'Disabled',
-    restartOnFailure: {
-      count: 3,
-      interval: 'PT1M'
-    },
-    multipleInstances: 'ignore_new'
-  },
-  securityPrincipal: {
-    userId: 'SYSTEM',
-    logonType: 'Service Account',
-    runLevel: 'highest'
-  }
-};
-
-const mockHistory: TaskHistory[] = [
-  {
-    id: '1',
-    eventId: 102,
-    timestamp: '2024-01-15T03:00:15Z',
-    level: 'info',
-    message: 'Task completed successfully.',
-    resultCode: 0
-  },
-  {
-    id: '2',
-    eventId: 100,
-    timestamp: '2024-01-15T03:00:00Z',
-    level: 'info',
-    message: 'Task started.'
-  },
-  {
-    id: '3',
-    eventId: 102,
-    timestamp: '2024-01-14T03:00:12Z',
-    level: 'info',
-    message: 'Task completed successfully.',
-    resultCode: 0
-  },
-  {
-    id: '4',
-    eventId: 100,
-    timestamp: '2024-01-14T03:00:00Z',
-    level: 'info',
-    message: 'Task started.'
-  },
-  {
-    id: '5',
-    eventId: 103,
-    timestamp: '2024-01-13T03:00:30Z',
-    level: 'warning',
-    message: 'Task failed to complete within the time limit.',
-    resultCode: 1
-  }
-];
 
 // Folder Tree Component
 function FolderTree({
@@ -941,7 +712,7 @@ export default function ScheduledTasks({
   onRefresh,
   className
 }: ScheduledTasksProps) {
-  const [tasks, setTasks] = useState<ScheduledTask[]>(propTasks || mockTasks);
+  const [tasks, setTasks] = useState<ScheduledTask[]>(propTasks || []);
   const [selectedFolder, setSelectedFolder] = useState<string>('\\');
   const [selectedTaskPath, setSelectedTaskPath] = useState<string | null>(null);
   const [taskDetails, setTaskDetails] = useState<TaskDetails | null>(propSelectedTask || null);
@@ -1019,16 +790,14 @@ export default function ScheduledTasks({
           const details = await onSelectTask(path);
           setTaskDetails(details);
         } else {
-          // Use mock data
-          await new Promise(resolve => setTimeout(resolve, 300));
-          setTaskDetails(mockTaskDetails);
+          setTaskDetails(null);
         }
 
         if (onGetHistory) {
           const history = await onGetHistory(path);
           setTaskHistory(history);
         } else {
-          setTaskHistory(mockHistory);
+          setTaskHistory([]);
         }
       } catch (error) {
         console.error('Failed to load task details:', error);
@@ -1046,8 +815,6 @@ export default function ScheduledTasks({
       try {
         if (onRunTask) {
           await onRunTask(path);
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 500));
         }
         // Refresh task list
         if (onRefresh) {
@@ -1069,8 +836,6 @@ export default function ScheduledTasks({
       try {
         if (onEnableTask) {
           await onEnableTask(path);
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 500));
         }
         // Refresh task list
         if (onRefresh) {
@@ -1092,8 +857,6 @@ export default function ScheduledTasks({
       try {
         if (onDisableTask) {
           await onDisableTask(path);
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 500));
         }
         // Refresh task list
         if (onRefresh) {
@@ -1114,8 +877,6 @@ export default function ScheduledTasks({
     try {
       if (onRefresh) {
         await onRefresh();
-      } else {
-        await new Promise(resolve => setTimeout(resolve, 500));
       }
     } finally {
       setRefreshing(false);
@@ -1181,9 +942,13 @@ export default function ScheduledTasks({
           ) : filteredTasks.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-gray-500">
               <Calendar className="h-12 w-12 mb-3" />
-              <p className="text-lg font-medium">No tasks found</p>
+              <p className="text-lg font-medium">No scheduled tasks available</p>
               <p className="text-sm">
-                {searchQuery ? 'Try adjusting your search query' : 'No scheduled tasks in this folder'}
+                {searchQuery
+                  ? 'Try adjusting your search query'
+                  : tasks.length === 0
+                  ? 'No scheduled tasks have been loaded for this device'
+                  : 'No scheduled tasks in this folder'}
               </p>
             </div>
           ) : (

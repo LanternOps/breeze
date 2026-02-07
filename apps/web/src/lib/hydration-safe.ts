@@ -152,26 +152,3 @@ export function useRelativeTime(
   }
 }
 
-/**
- * Creates stable mock data timestamps based on a fixed reference date.
- * Use this for generating mock data that won't cause hydration mismatches.
- *
- * @param offsetMs - Offset in milliseconds from the reference date
- * @returns ISO date string
- */
-export function getMockTimestamp(offsetMs: number = 0): string {
-  // Use a fixed reference date for mock data
-  const referenceDate = new Date('2024-01-15T12:00:00.000Z');
-  return new Date(referenceDate.getTime() + offsetMs).toISOString();
-}
-
-/**
- * Creates a stable mock timestamp relative to a base time.
- * Useful for creating a series of related mock timestamps.
- */
-export const mockTimeOffsets = {
-  minutesAgo: (n: number) => getMockTimestamp(-n * 60 * 1000),
-  hoursAgo: (n: number) => getMockTimestamp(-n * 60 * 60 * 1000),
-  daysAgo: (n: number) => getMockTimestamp(-n * 24 * 60 * 60 * 1000),
-  daysFromNow: (n: number) => getMockTimestamp(n * 24 * 60 * 60 * 1000),
-};

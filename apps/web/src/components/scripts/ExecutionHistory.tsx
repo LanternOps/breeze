@@ -1,9 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Search, ChevronLeft, ChevronRight, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
 
 export type ScriptExecution = {
@@ -52,7 +49,7 @@ function formatDateTime(dateString: string, timezone?: string): string {
   if (Number.isNaN(date.getTime())) return dateString;
 
   const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const now = REFERENCE_DATE;
+  const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
 
   if (isToday) {
@@ -90,7 +87,7 @@ export default function ExecutionHistory({
 
   const filteredExecutions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const now = REFERENCE_DATE;
+    const now = new Date();
 
     return executions.filter(execution => {
       const matchesQuery = normalizedQuery.length === 0

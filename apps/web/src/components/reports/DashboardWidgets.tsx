@@ -82,7 +82,7 @@ export default function DashboardWidgets({
   const [resources, setResources] = useState<ResourceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [lastUpdated, setLastUpdated] = useState<Date>(new Date('2024-01-15T12:00:00.000Z'));
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
   const fetchData = useCallback(async () => {
     setError(undefined);

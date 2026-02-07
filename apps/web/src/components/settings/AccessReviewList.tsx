@@ -35,9 +35,6 @@ const statusLabels: Record<AccessReviewStatus, string> = {
 
 const dayMs = 1000 * 60 * 60 * 24;
 
-// Fixed reference date for SSR hydration consistency
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString('en-US', {
     year: 'numeric',
@@ -54,7 +51,8 @@ function getDueStatus(dueDate?: string): { label: string; isOverdue: boolean } {
   if (Number.isNaN(due.getTime())) {
     return { label: 'No deadline', isOverdue: false };
   }
-  const diffMs = due.getTime() - REFERENCE_DATE.getTime();
+  const now = new Date();
+  const diffMs = due.getTime() - now.getTime();
   if (diffMs < 0) {
     const overdueDays = Math.ceil(Math.abs(diffMs) / dayMs);
     return { label: `${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue`, isOverdue: true };

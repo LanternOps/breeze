@@ -80,14 +80,12 @@ const statusConfig: Record<AlertStatus, { label: string; color: string }> = {
   suppressed: { label: 'Suppressed', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
 };
 
-// Fixed reference date to avoid hydration mismatches
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const diffMs = REFERENCE_DATE.getTime() - date.getTime();
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -135,7 +133,8 @@ export default function AlertList({
       let matchesDateRange = true;
       if (dateRangeFilter !== 'all') {
         const alertDate = new Date(alert.triggeredAt);
-        const diffMs = REFERENCE_DATE.getTime() - alertDate.getTime();
+        const now = new Date();
+        const diffMs = now.getTime() - alertDate.getTime();
         const diffHours = diffMs / (1000 * 60 * 60);
 
         switch (dateRangeFilter) {

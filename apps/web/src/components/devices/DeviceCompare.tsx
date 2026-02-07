@@ -85,140 +85,6 @@ const timeRangeOptions: Record<TimeRange, { label: string; count: number; interv
   '24h': { label: 'Last 24 hours', count: 24, intervalMs: 60 * 60 * 1000 }
 };
 
-const softwareCatalog = [
-  'Google Chrome',
-  'Slack',
-  'Visual Studio Code',
-  'Docker Desktop',
-  'Zoom',
-  'Microsoft Office',
-  'Notion',
-  'Figma',
-  'Postman',
-  '1Password',
-  'Git',
-  'Node.js',
-  'Python',
-  'Tableau',
-  'Salesforce Agent',
-  'Datadog Agent'
-];
-
-const patchCatalog = [
-  'KB5034123',
-  'KB5034765',
-  'OpenSSL 3.0.12',
-  'Kernel 6.6.4',
-  'macOS Rapid Security 14.2',
-  'Chrome 120.0.6099.130',
-  'LibreSSL 3.8.2',
-  'Systemd 255.1'
-];
-
-const mockDevices: Device[] = [
-  {
-    id: '1',
-    hostname: 'WORKSTATION-001',
-    os: 'windows',
-    osVersion: '11 Pro 23H2',
-    status: 'online',
-    cpuPercent: 45,
-    ramPercent: 62,
-    lastSeen: '2024-01-15T12:00:00.000Z',
-    orgId: 'org-1',
-    orgName: 'Acme Corp',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['production', 'engineering']
-  },
-  {
-    id: '2',
-    hostname: 'SERVER-DB-01',
-    os: 'linux',
-    osVersion: 'Ubuntu 22.04 LTS',
-    status: 'online',
-    cpuPercent: 78,
-    ramPercent: 85,
-    lastSeen: '2024-01-15T11:58:00.000Z',
-    orgId: 'org-1',
-    orgName: 'Acme Corp',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['production', 'database']
-  },
-  {
-    id: '3',
-    hostname: 'MACBOOK-DESIGN-01',
-    os: 'macos',
-    osVersion: 'Sonoma 14.2',
-    status: 'online',
-    cpuPercent: 32,
-    ramPercent: 48,
-    lastSeen: '2024-01-15T11:55:00.000Z',
-    orgId: 'org-1',
-    orgName: 'Acme Corp',
-    siteId: 'site-2',
-    siteName: 'Remote Office',
-    agentVersion: '2.5.0',
-    tags: ['design']
-  },
-  {
-    id: '4',
-    hostname: 'LAPTOP-SALES-02',
-    os: 'windows',
-    osVersion: '11 Pro 23H2',
-    status: 'offline',
-    cpuPercent: 0,
-    ramPercent: 0,
-    lastSeen: '2024-01-15T10:00:00.000Z',
-    orgId: 'org-1',
-    orgName: 'Acme Corp',
-    siteId: 'site-2',
-    siteName: 'Remote Office',
-    agentVersion: '2.4.3',
-    tags: ['sales']
-  },
-  {
-    id: '5',
-    hostname: 'SERVER-WEB-01',
-    os: 'linux',
-    osVersion: 'Ubuntu 22.04 LTS',
-    status: 'maintenance',
-    cpuPercent: 12,
-    ramPercent: 35,
-    lastSeen: '2024-01-15T11:59:00.000Z',
-    orgId: 'org-1',
-    orgName: 'Acme Corp',
-    siteId: 'site-1',
-    siteName: 'Headquarters',
-    agentVersion: '2.5.1',
-    tags: ['production', 'web']
-  }
-];
-
-function createFallbackDevice(id: string): Device {
-  const matched = mockDevices.find(device => device.id === id);
-  if (matched) return matched;
-  return {
-    id,
-    hostname: `Device ${id}`,
-    os: 'windows',
-    osVersion: 'Unknown',
-    status: 'offline',
-    cpuPercent: 0,
-    ramPercent: 0,
-    lastSeen: '2024-01-15T12:00:00.000Z',
-    orgId: '',
-    orgName: 'Unknown',
-    siteId: 'site-0',
-    siteName: 'Unknown',
-    agentVersion: '-',
-    tags: []
-  };
-}
-
 function normalizeOs(value: unknown): OSType {
   const raw = String(value ?? '').toLowerCase();
   if (raw.includes('mac')) return 'macos';
@@ -441,7 +307,7 @@ function normalizeMetrics(raw: unknown): MetricPoint[] {
 }
 
 // Fixed base timestamp for deterministic metric generation (avoids hydration mismatch)
-const FIXED_BASE_TIMESTAMP = new Date('2024-01-15T12:00:00.000Z').getTime();
+const FIXED_BASE_TIMESTAMP = Date.now();
 
 function generateMetrics(device: Device, range: TimeRange): MetricPoint[] {
   const { count, intervalMs } = timeRangeOptions[range];
@@ -467,51 +333,16 @@ function generateMetrics(device: Device, range: TimeRange): MetricPoint[] {
   return points;
 }
 
-function buildMockDetail(device: Device): DeviceComparisonData {
-  const random = createSeededRandom(hashSeed(device.id));
-  const cpuModel = device.os === 'macos'
-    ? 'Apple M2 Pro'
-    : device.os === 'linux'
-    ? 'AMD EPYC 7713'
-    : 'Intel Core i7-12700K';
-  const totalRam = device.os === 'linux' ? '64 GB' : device.os === 'macos' ? '32 GB' : '16 GB';
-  const diskTotal = device.os === 'linux' ? '2 TB' : device.os === 'macos' ? '1 TB' : '512 GB';
-
-  const softwareCount = 6 + Math.floor(random() * 5);
-  const software = Array.from({ length: softwareCount }, (_, index) => {
-    const name = softwareCatalog[(index + Math.floor(random() * softwareCatalog.length)) % softwareCatalog.length];
-    return { name };
-  });
-
-  const patches = patchCatalog.map((patch, index) => {
-    const roll = random();
-    let status: PatchStatus = 'installed';
-    if (roll < 0.2) status = 'missing';
-    else if (roll < 0.35) status = 'pending';
-    return {
-      id: `patch-${device.id}-${index}`,
-      name: patch,
-      status
-    };
-  });
-
-  const config: Record<string, string> = {
-    timezone: device.os === 'linux' ? 'UTC' : 'America/Los_Angeles',
-    autoUpdates: random() > 0.4 ? 'enabled' : 'disabled',
-    diskEncryption: random() > 0.3 ? 'enabled' : 'disabled',
-    remoteAccess: random() > 0.5 ? 'enabled' : 'disabled',
-    patchWindow: random() > 0.5 ? 'Sat 02:00-04:00' : 'Wed 01:00-03:00'
-  };
-
+function deviceToComparisonData(device: Device): DeviceComparisonData {
   return {
     ...device,
-    cpuModel,
-    totalRam,
-    diskTotal,
-    software,
-    patches,
-    config,
-    metrics: generateMetrics(device, '24h')
+    cpuModel: 'Unknown',
+    totalRam: 'Unknown',
+    diskTotal: 'Unknown',
+    software: [],
+    patches: [],
+    config: {},
+    metrics: []
   };
 }
 
@@ -706,7 +537,14 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
   }, [availableDevices, query]);
 
   const selectedDevices = useMemo(() => {
-    return selectedIds.map(id => deviceDetails[id] ?? buildMockDetail(deviceMap.get(id) ?? createFallbackDevice(id)));
+    return selectedIds
+      .map(id => {
+        if (deviceDetails[id]) return deviceDetails[id];
+        const device = deviceMap.get(id);
+        if (device) return deviceToComparisonData(device);
+        return null;
+      })
+      .filter((item): item is DeviceComparisonData => item !== null);
   }, [selectedIds, deviceDetails, deviceMap]);
 
   const canCompare = selectedIds.length >= 2;
@@ -726,7 +564,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       const normalized = items.map((device: Record<string, unknown>, index: number) => normalizeDeviceSummary(device, index));
       setAvailableDevices(normalized);
     } catch (err) {
-      setAvailableDevices(mockDevices);
+      setAvailableDevices([]);
       setListError(err instanceof Error ? err.message : 'Failed to load devices');
     } finally {
       setLoadingDevices(false);
@@ -738,31 +576,57 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     setLoadingDetails(true);
     setDetailsError(undefined);
 
+    const failedIds: string[] = [];
     try {
       const results = await Promise.all(
         ids.map(async id => {
-          const fallback = deviceMap.get(id) ?? createFallbackDevice(id);
+          const fallback = deviceMap.get(id);
           try {
             const response = await fetch(`/api/devices/${id}`);
             if (!response.ok) throw new Error('Failed to fetch device');
             const data = await response.json();
-            const normalized = normalizeDeviceDetail(data as Record<string, unknown>, fallback);
+            const baseFallback: Device = fallback ?? {
+              id,
+              hostname: `Device ${id}`,
+              os: 'windows',
+              osVersion: 'Unknown',
+              status: 'offline',
+              cpuPercent: 0,
+              ramPercent: 0,
+              lastSeen: new Date().toISOString(),
+              orgId: '',
+              orgName: 'Unknown',
+              siteId: '',
+              siteName: 'Unknown',
+              agentVersion: '-',
+              tags: []
+            };
+            const normalized = normalizeDeviceDetail(data as Record<string, unknown>, baseFallback);
             return [id, normalized] as const;
-          } catch (err) {
-            return [id, buildMockDetail(fallback)] as const;
+          } catch {
+            failedIds.push(id);
+            if (fallback) {
+              return [id, deviceToComparisonData(fallback)] as const;
+            }
+            return [id, null] as const;
           }
         })
       );
       setDeviceDetails(prev => {
         const next: Record<string, DeviceComparisonData> = { ...prev };
         results.forEach(([id, detail]) => {
-          next[id] = detail;
+          if (detail) {
+            next[id] = detail;
+          }
         });
         Object.keys(next).forEach(id => {
           if (!ids.includes(id)) delete next[id];
         });
         return next;
       });
+      if (failedIds.length > 0) {
+        setDetailsError(`Failed to load details for ${failedIds.length} device(s)`);
+      }
     } catch (err) {
       setDetailsError(err instanceof Error ? err.message : 'Failed to load device details');
     } finally {
@@ -1015,8 +879,18 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       </div>
 
       {listError && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-          {listError}
+        <div className="flex items-center justify-between rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>Failed to load devices. {listError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={fetchAvailableDevices}
+            className="shrink-0 rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium hover:bg-destructive/10"
+          >
+            Retry
+          </button>
         </div>
       )}
 

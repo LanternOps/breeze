@@ -70,14 +70,12 @@ function formatDate(dateString?: string | null): string {
   });
 }
 
-// Fixed reference date for SSR hydration consistency
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 function formatRelativeDate(dateString?: string | null): string {
   if (!dateString) return 'Never';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return '-';
-  const diffMs = REFERENCE_DATE.getTime() - date.getTime();
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
   if (diffMs < dayMs) return 'Today';
   const days = Math.floor(diffMs / dayMs);
   if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
@@ -92,7 +90,8 @@ function getDeadlineStatus(dueDate?: string | null): DeadlineStatus {
   if (Number.isNaN(due.getTime())) {
     return { label: 'No deadline', isOverdue: false };
   }
-  const diffMs = due.getTime() - REFERENCE_DATE.getTime();
+  const now = new Date();
+  const diffMs = due.getTime() - now.getTime();
   if (diffMs < 0) {
     const overdueDays = Math.ceil(Math.abs(diffMs) / dayMs);
     return {

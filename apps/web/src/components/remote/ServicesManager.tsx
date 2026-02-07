@@ -44,175 +44,6 @@ export type ServicesManagerProps = {
 type SortField = 'name' | 'displayName' | 'status' | 'startupType' | 'account';
 type SortDirection = 'asc' | 'desc';
 
-// Mock data with common Windows services
-const mockServices: WindowsService[] = [
-  {
-    name: 'wuauserv',
-    displayName: 'Windows Update',
-    status: 'Running',
-    startupType: 'Automatic (Delayed)',
-    account: 'LocalSystem',
-    description: 'Enables the detection, download, and installation of updates for Windows and other programs.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k netsvcs -p',
-    dependencies: ['rpcss'],
-    dependentServices: []
-  },
-  {
-    name: 'Spooler',
-    displayName: 'Print Spooler',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'LocalSystem',
-    description: 'Loads files to memory for later printing.',
-    path: 'C:\\Windows\\System32\\spoolsv.exe',
-    dependencies: ['RPCSS', 'http'],
-    dependentServices: ['Fax']
-  },
-  {
-    name: 'BITS',
-    displayName: 'Background Intelligent Transfer Service',
-    status: 'Running',
-    startupType: 'Automatic (Delayed)',
-    account: 'LocalSystem',
-    description: 'Transfers files in the background using idle network bandwidth.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k netsvcs -p',
-    dependencies: ['RpcSs'],
-    dependentServices: ['QWAVE']
-  },
-  {
-    name: 'W32Time',
-    displayName: 'Windows Time',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'LocalService',
-    description: 'Maintains date and time synchronization on all clients and servers in the network.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k LocalService',
-    dependencies: [],
-    dependentServices: []
-  },
-  {
-    name: 'Dnscache',
-    displayName: 'DNS Client',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'Network Service',
-    description: 'Caches Domain Name System (DNS) names and registers the full computer name.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k NetworkService -p',
-    dependencies: ['nsi'],
-    dependentServices: []
-  },
-  {
-    name: 'TermService',
-    displayName: 'Remote Desktop Services',
-    status: 'Running',
-    startupType: 'Manual',
-    account: 'NetworkService',
-    description: 'Allows users to connect interactively to a remote computer.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k termsvcs',
-    dependencies: ['RpcSs'],
-    dependentServices: ['UmRdpService', 'SessionEnv']
-  },
-  {
-    name: 'WinDefend',
-    displayName: 'Microsoft Defender Antivirus Service',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'LocalSystem',
-    description: 'Helps protect users from malware and other potentially unwanted software.',
-    path: 'C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\MsMpEng.exe',
-    dependencies: ['RpcSs'],
-    dependentServices: []
-  },
-  {
-    name: 'WSearch',
-    displayName: 'Windows Search',
-    status: 'Running',
-    startupType: 'Automatic (Delayed)',
-    account: 'LocalSystem',
-    description: 'Provides content indexing, property caching, and search results for files, e-mail, and other content.',
-    path: 'C:\\Windows\\System32\\SearchIndexer.exe /Embedding',
-    dependencies: ['RPCSS'],
-    dependentServices: []
-  },
-  {
-    name: 'Themes',
-    displayName: 'Themes',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'LocalSystem',
-    description: 'Provides user experience theme management.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k netsvcs -p',
-    dependencies: [],
-    dependentServices: []
-  },
-  {
-    name: 'EventLog',
-    displayName: 'Windows Event Log',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'LocalService',
-    description: 'Manages events and event logs. Supports logging, querying, subscribing to, and archiving events.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p',
-    dependencies: [],
-    dependentServices: ['Wecsvc']
-  },
-  {
-    name: 'Schedule',
-    displayName: 'Task Scheduler',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'LocalSystem',
-    description: 'Enables a user to configure and schedule automated tasks on this computer.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k netsvcs -p',
-    dependencies: ['RPCSS', 'SystemEventsBroker'],
-    dependentServices: []
-  },
-  {
-    name: 'LanmanWorkstation',
-    displayName: 'Workstation',
-    status: 'Running',
-    startupType: 'Automatic',
-    account: 'NetworkService',
-    description: 'Creates and maintains client network connections to remote servers using the SMB protocol.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k NetworkService -p',
-    dependencies: ['Bowser', 'MRxSmb20', 'NSI'],
-    dependentServices: ['SessionEnv', 'Netlogon', 'Browser']
-  },
-  {
-    name: 'RemoteRegistry',
-    displayName: 'Remote Registry',
-    status: 'Stopped',
-    startupType: 'Disabled',
-    account: 'LocalService',
-    description: 'Enables remote users to modify registry settings on this computer.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k localService -p',
-    dependencies: ['RPCSS'],
-    dependentServices: []
-  },
-  {
-    name: 'Fax',
-    displayName: 'Fax',
-    status: 'Stopped',
-    startupType: 'Manual',
-    account: 'LocalService',
-    description: 'Enables you to send and receive faxes.',
-    path: 'C:\\Windows\\System32\\fxssvc.exe',
-    dependencies: ['Spooler', 'RpcSs', 'TapiSrv'],
-    dependentServices: []
-  },
-  {
-    name: 'TapiSrv',
-    displayName: 'Telephony',
-    status: 'Stopped',
-    startupType: 'Manual',
-    account: 'NetworkService',
-    description: 'Provides Telephony API (TAPI) support for programs that control telephony devices.',
-    path: 'C:\\Windows\\System32\\svchost.exe -k tapisrv',
-    dependencies: ['PlugPlay', 'RpcSs'],
-    dependentServices: ['Fax', 'RasAuto', 'RasMan']
-  }
-];
-
 const statusColors: Record<ServiceStatus, string> = {
   Running: 'bg-green-500/20 text-green-700 border-green-500/40',
   Stopped: 'bg-red-500/20 text-red-700 border-red-500/40',
@@ -234,7 +65,7 @@ export default function ServicesManager({
   deviceId,
   deviceName = 'Unknown Device',
   deviceOs = 'windows',
-  services = mockServices,
+  services = [],
   loading = false,
   onRefresh,
   onStartService,
@@ -510,8 +341,18 @@ export default function ServicesManager({
               </tr>
             ) : paginatedServices.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No services found. Try adjusting your search or filters.
+                <td colSpan={7} className="px-4 py-12 text-center">
+                  <Monitor className="mx-auto h-8 w-8 text-muted-foreground/50" />
+                  <p className="mt-2 text-sm font-medium text-muted-foreground">
+                    {services.length === 0
+                      ? 'No services available'
+                      : 'No services found'}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground/70">
+                    {services.length === 0
+                      ? 'Click Refresh to load services from the device.'
+                      : 'Try adjusting your search or filters.'}
+                  </p>
                 </td>
               </tr>
             ) : (
