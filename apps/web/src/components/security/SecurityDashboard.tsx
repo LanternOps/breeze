@@ -22,6 +22,7 @@ import {
   YAxis
 } from 'recharts';
 import { cn, formatNumber } from '@/lib/utils';
+import { fetchWithAuth } from '@/stores/auth';
 
 type Priority = 'critical' | 'high' | 'medium' | 'low';
 
@@ -461,7 +462,7 @@ const normalizeVulnerabilities = (raw: unknown): VulnerabilitySummary => {
 };
 
 const fetchJson = async (url: string) => {
-  const response = await fetch(url);
+  const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
@@ -493,7 +494,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
     await Promise.all([
       (async () => {
         try {
-          const overviewData = await fetchJson('/api/security/overview');
+          const overviewData = await fetchJson('/security/dashboard');
           setOverview(normalizeOverview(overviewData));
         } catch (err) {
           errors.push('overview');
@@ -502,7 +503,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
       })(),
       (async () => {
         try {
-          const vulnerabilityData = await fetchJson('/api/security/vulnerabilities');
+          const vulnerabilityData = await fetchJson('/security/threats');
           setVulnerabilities(normalizeVulnerabilities(vulnerabilityData));
         } catch (err) {
           errors.push('vulnerabilities');
@@ -515,7 +516,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
       setError(`Unable to load: ${errors.join(', ')}`);
     }
 
-    setLastUpdated(new Date('2024-01-15T12:00:00.000Z'));
+    setLastUpdated(new Date());
     setLoading(false);
   }, []);
 

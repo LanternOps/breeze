@@ -21,6 +21,25 @@ export function formatBytes(bytes: number, decimals = 2): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+export function formatSafeDate(value: string | null | undefined, fallback = '-'): string {
+  if (!value) return fallback;
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return fallback;
+  return d.toLocaleDateString();
+}
+
+export function friendlyFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return 'An unexpected error occurred. Please try again.';
+  const msg = err.message;
+  if (msg === 'Failed to fetch' || msg.includes('NetworkError')) return 'Network error — check your connection and try again.';
+  if (msg.startsWith('401')) return 'Session expired — please log in again.';
+  if (msg.startsWith('403')) return 'You do not have permission to view this data.';
+  if (msg.startsWith('429')) return 'Too many requests — please wait a moment and retry.';
+  if (msg.startsWith('5') && msg.length <= 20) return 'Server error — please try again later.';
+  if (msg.includes('Unexpected token') || msg.includes('JSON')) return 'Received an invalid response from the server.';
+  return msg;
+}
+
 export function formatRelativeTime(date: Date): string {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();

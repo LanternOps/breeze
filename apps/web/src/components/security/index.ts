@@ -1,6 +1,17 @@
+export { default as AdminAuditPage } from './AdminAuditPage';
+export { default as AntivirusPage } from './AntivirusPage';
 export { default as DeviceSecurityStatus } from './DeviceSecurityStatus';
+export { default as EncryptionPage } from './EncryptionPage';
+export { default as FirewallPage } from './FirewallPage';
+export { default as PasswordPolicyPage } from './PasswordPolicyPage';
+export { default as RecommendationsPage } from './RecommendationsPage';
+export { default as ScoreDetailPage } from './ScoreDetailPage';
 export { default as SecurityDashboard } from './SecurityDashboard';
+export { default as SecurityPageHeader } from './SecurityPageHeader';
 export { default as SecurityPolicyEditor } from './SecurityPolicyEditor';
 export { default as SecurityScanManager } from './SecurityScanManager';
+export { default as SecurityStatCard } from './SecurityStatCard';
 export { default as ThreatDetail } from './ThreatDetail';
 export { default as ThreatList } from './ThreatList';
+export { default as TrendsPage } from './TrendsPage';
+export { default as VulnerabilitiesPage } from './VulnerabilitiesPage';
