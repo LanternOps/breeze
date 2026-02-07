@@ -659,8 +659,17 @@ securityRoutes.get(
       });
     }
 
-    const response = paginate(results.map(withProvider), page, limit);
-    return c.json(response);
+    const mapped = results.map(withProvider);
+    const response = paginate(mapped, page, limit);
+    return c.json({
+      ...response,
+      summary: {
+        total: results.length,
+        active: results.filter((t) => t.status === 'active').length,
+        quarantined: results.filter((t) => t.status === 'quarantined').length,
+        critical: results.filter((t) => t.severity === 'critical').length
+      }
+    });
   }
 );
 
@@ -988,5 +997,873 @@ securityRoutes.get(
     };
 
     return c.json({ data: stats });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Score Breakdown
+// ---------------------------------------------------------------------------
+
+securityRoutes.get(
+  '/score-breakdown',
+  requireScope('organization', 'partner', 'system'),
+  (c) => {
+    try {
+    const total = securityStatuses.length;
+
+    const avProtected = securityStatuses.filter((s) => s.realTimeProtection).length;
+    const fwEnabled = securityStatuses.filter((s) => s.realTimeProtection).length;
+    const encEnabled = securityStatuses.filter((s) => s.os !== 'linux' || s.realTimeProtection).length;
+
+    const components = [
+      {
+        category: 'antivirus',
+        label: 'Antivirus Protection',
+        score: total ? Math.round((avProtected / total) * 100) : 0,
+        weight: 20,
+        status: avProtected === total ? 'good' : avProtected >= total * 0.8 ? 'warning' : 'critical',
+        affectedDevices: total - avProtected,
+        totalDevices: total
+      },
+      {
+        category: 'firewall',
+        label: 'Firewall Coverage',
+        score: total ? Math.round((fwEnabled / total) * 100) : 0,
+        weight: 15,
+        status: fwEnabled === total ? 'good' : fwEnabled >= total * 0.8 ? 'warning' : 'critical',
+        affectedDevices: total - fwEnabled,
+        totalDevices: total
+      },
+      {
+        category: 'encryption',
+        label: 'Disk Encryption',
+        score: total ? Math.round((encEnabled / total) * 100) : 0,
+        weight: 15,
+        status: encEnabled === total ? 'good' : encEnabled >= total * 0.7 ? 'warning' : 'critical',
+        affectedDevices: total - encEnabled,
+        totalDevices: total
+      },
+      {
+        category: 'password_policy',
+        label: 'Password Policy',
+        score: 83,
+        weight: 15,
+        status: 'warning' as const,
+        affectedDevices: 1,
+        totalDevices: total
+      },
+      {
+        category: 'admin_accounts',
+        label: 'Admin Account Hygiene',
+        score: 67,
+        weight: 10,
+        status: 'warning' as const,
+        affectedDevices: 2,
+        totalDevices: total
+      },
+      {
+        category: 'patch_compliance',
+        label: 'Patch Compliance',
+        score: 72,
+        weight: 15,
+        status: 'warning' as const,
+        affectedDevices: 2,
+        totalDevices: total
+      },
+      {
+        category: 'vulnerability_management',
+        label: 'Vulnerability Management',
+        score: 58,
+        weight: 10,
+        status: 'critical' as const,
+        affectedDevices: 3,
+        totalDevices: total
+      }
+    ];
+
+    const overallScore = Math.round(
+      components.reduce((sum, comp) => sum + comp.score * (comp.weight / 100), 0)
+    );
+
+    const grade =
+      overallScore >= 90
+        ? 'A'
+        : overallScore >= 80
+          ? 'B'
+          : overallScore >= 70
+            ? 'C'
+            : overallScore >= 60
+              ? 'D'
+              : 'F';
+
+    return c.json({
+      data: {
+        overallScore,
+        grade,
+        devicesAudited: total,
+        components
+      }
+    });
+    } catch (err) {
+      console.error('[security/score-breakdown] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Trends
+// ---------------------------------------------------------------------------
+
+const trendsQuerySchema = z.object({
+  period: z.enum(['7d', '30d', '90d']).optional().default('30d')
+});
+
+securityRoutes.get(
+  '/trends',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', trendsQuerySchema),
+  (c) => {
+    try {
+    const { period } = c.req.valid('query');
+    const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
+
+    const baseScores = {
+      overall: 74,
+      antivirus: 83,
+      firewall: 80,
+      encryption: 78,
+      password_policy: 83,
+      admin_accounts: 67,
+      patch_compliance: 72,
+      vulnerability_management: 58
+    };
+
+    const seededRandom = (seed: number) => {
+      const x = Math.sin(seed) * 10000;
+      return x - Math.floor(x);
+    };
+
+    const currentTime = Date.now();
+    const dataPoints = Array.from({ length: days }, (_, i) => {
+      const date = new Date(currentTime - (days - 1 - i) * 24 * 60 * 60 * 1000);
+      const jitter = (key: string) => {
+        const seed = date.getTime() / 86400000 + key.length;
+        return Math.round((seededRandom(seed) - 0.5) * 8);
+      };
+      const clampScore = (v: number) => Math.min(100, Math.max(0, v));
+
+      return {
+        timestamp: date.toISOString().split('T')[0],
+        overall: clampScore(baseScores.overall + jitter('overall') + Math.round(i * 0.15)),
+        antivirus: clampScore(baseScores.antivirus + jitter('av')),
+        firewall: clampScore(baseScores.firewall + jitter('fw')),
+        encryption: clampScore(baseScores.encryption + jitter('enc')),
+        password_policy: clampScore(baseScores.password_policy + jitter('pw')),
+        admin_accounts: clampScore(baseScores.admin_accounts + jitter('admin')),
+        patch_compliance: clampScore(baseScores.patch_compliance + jitter('patch')),
+        vulnerability_management: clampScore(baseScores.vulnerability_management + jitter('vuln'))
+      };
+    });
+
+    const current = dataPoints[dataPoints.length - 1]?.overall ?? 0;
+    const previous = dataPoints[0]?.overall ?? 0;
+
+    return c.json({
+      data: {
+        period,
+        dataPoints,
+        summary: {
+          current,
+          previous,
+          change: current - previous,
+          trend: current > previous ? 'improving' : current < previous ? 'declining' : 'stable'
+        }
+      }
+    });
+    } catch (err) {
+      console.error('[security/trends] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Firewall
+// ---------------------------------------------------------------------------
+
+const firewallQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  status: z.enum(['enabled', 'disabled']).optional(),
+  os: z.enum(['windows', 'macos', 'linux']).optional(),
+  search: z.string().optional()
+});
+
+securityRoutes.get(
+  '/firewall',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', firewallQuerySchema),
+  (c) => {
+    try {
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+
+    const firewallDevices = securityStatuses.map((device) => {
+      const enabled = device.realTimeProtection;
+      const profiles =
+        device.os === 'windows'
+          ? [
+              { name: 'Domain', enabled: true, inboundPolicy: 'block', outboundPolicy: 'allow' },
+              { name: 'Private', enabled, inboundPolicy: 'block', outboundPolicy: 'allow' },
+              { name: 'Public', enabled, inboundPolicy: 'block', outboundPolicy: 'block' }
+            ]
+          : [{ name: device.os === 'macos' ? 'Application Firewall' : 'iptables/nftables', enabled, inboundPolicy: 'block', outboundPolicy: 'allow' }];
+
+      return {
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        os: device.os,
+        firewallEnabled: enabled,
+        profiles,
+        rulesCount: enabled ? (device.os === 'windows' ? 142 : 38) : 0
+      };
+    });
+
+    let results = firewallDevices;
+
+    if (query.status) {
+      const wantEnabled = query.status === 'enabled';
+      results = results.filter((d) => d.firewallEnabled === wantEnabled);
+    }
+
+    if (query.os) {
+      results = results.filter((d) => d.os === query.os);
+    }
+
+    if (query.search) {
+      const term = query.search.toLowerCase();
+      results = results.filter((d) => d.deviceName.toLowerCase().includes(term));
+    }
+
+    const enabled = firewallDevices.filter((d) => d.firewallEnabled).length;
+    const disabled = firewallDevices.length - enabled;
+
+    const response = paginate(results, page, limit);
+    return c.json({
+      ...response,
+      summary: {
+        total: firewallDevices.length,
+        enabled,
+        disabled,
+        coveragePercent: firewallDevices.length ? Math.round((enabled / firewallDevices.length) * 100) : 0
+      }
+    });
+    } catch (err) {
+      console.error('[security/firewall] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Encryption
+// ---------------------------------------------------------------------------
+
+const encryptionQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  status: z.enum(['encrypted', 'partial', 'unencrypted']).optional(),
+  os: z.enum(['windows', 'macos', 'linux']).optional(),
+  search: z.string().optional()
+});
+
+securityRoutes.get(
+  '/encryption',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', encryptionQuerySchema),
+  (c) => {
+    try {
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+
+    const encryptionDevices = securityStatuses.map((device) => {
+      const methodMap: Record<string, string> = { windows: 'bitlocker', macos: 'filevault', linux: 'luks' };
+      const isEncrypted = device.os !== 'linux' || device.realTimeProtection;
+      const method = isEncrypted ? methodMap[device.os] : 'none';
+
+      const volumes =
+        device.os === 'windows'
+          ? [
+              { drive: 'C:', encrypted: isEncrypted, method: isEncrypted ? 'BitLocker' : 'None', size: '256 GB' },
+              { drive: 'D:', encrypted: false, method: 'None', size: '512 GB' }
+            ]
+          : device.os === 'macos'
+            ? [{ drive: 'Macintosh HD', encrypted: true, method: 'FileVault 2', size: '500 GB' }]
+            : [{ drive: '/dev/sda1', encrypted: isEncrypted, method: isEncrypted ? 'LUKS2' : 'None', size: '1 TB' }];
+
+      const allEncrypted = volumes.every((v) => v.encrypted);
+      const someEncrypted = volumes.some((v) => v.encrypted);
+      const encStatus = allEncrypted ? 'encrypted' : someEncrypted ? 'partial' : 'unencrypted';
+
+      return {
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        os: device.os,
+        encryptionMethod: method,
+        encryptionStatus: encStatus as 'encrypted' | 'partial' | 'unencrypted',
+        volumes,
+        tpmPresent: device.os === 'windows',
+        recoveryKeyEscrowed: isEncrypted && device.os !== 'linux'
+      };
+    });
+
+    let results = encryptionDevices;
+
+    if (query.status) {
+      results = results.filter((d) => d.encryptionStatus === query.status);
+    }
+
+    if (query.os) {
+      results = results.filter((d) => d.os === query.os);
+    }
+
+    if (query.search) {
+      const term = query.search.toLowerCase();
+      results = results.filter((d) => d.deviceName.toLowerCase().includes(term));
+    }
+
+    const fullyEncrypted = encryptionDevices.filter((d) => d.encryptionStatus === 'encrypted').length;
+    const partial = encryptionDevices.filter((d) => d.encryptionStatus === 'partial').length;
+    const unencrypted = encryptionDevices.filter((d) => d.encryptionStatus === 'unencrypted').length;
+
+    const methodCounts = {
+      bitlocker: encryptionDevices.filter((d) => d.encryptionMethod === 'bitlocker').length,
+      filevault: encryptionDevices.filter((d) => d.encryptionMethod === 'filevault').length,
+      luks: encryptionDevices.filter((d) => d.encryptionMethod === 'luks').length,
+      none: encryptionDevices.filter((d) => d.encryptionMethod === 'none').length
+    };
+
+    const response = paginate(results, page, limit);
+    return c.json({
+      ...response,
+      summary: {
+        total: encryptionDevices.length,
+        fullyEncrypted,
+        partial,
+        unencrypted,
+        methodCounts
+      }
+    });
+    } catch (err) {
+      console.error('[security/encryption] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Password Policy
+// ---------------------------------------------------------------------------
+
+const passwordPolicyQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  compliance: z.enum(['compliant', 'non_compliant']).optional(),
+  os: z.enum(['windows', 'macos', 'linux']).optional(),
+  search: z.string().optional()
+});
+
+securityRoutes.get(
+  '/password-policy',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', passwordPolicyQuerySchema),
+  (c) => {
+    try {
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+
+    const rules = [
+      { rule: 'Minimum length (12+)', key: 'min_length' },
+      { rule: 'Complexity required', key: 'complexity' },
+      { rule: 'Maximum age (90 days)', key: 'max_age' },
+      { rule: 'Account lockout (5 attempts)', key: 'lockout' },
+      { rule: 'Password history (5)', key: 'history' }
+    ];
+
+    const policyDevices = securityStatuses.map((device, idx) => {
+      const failCount = idx === 3 ? 3 : idx === 4 ? 1 : 0;
+      const checks = rules.map((r, ri) => ({
+        rule: r.rule,
+        key: r.key,
+        pass: ri >= failCount,
+        current: ri < failCount ? (ri === 0 ? '8 chars' : ri === 1 ? 'Disabled' : '180 days') : undefined,
+        required: ri < failCount ? (ri === 0 ? '12 chars' : ri === 1 ? 'Enabled' : '90 days') : undefined
+      }));
+
+      return {
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        os: device.os,
+        compliant: failCount === 0,
+        checks,
+        localAccounts: device.os === 'windows' ? 4 : 2,
+        adminAccounts: device.os === 'windows' ? 2 : 1
+      };
+    });
+
+    let results = policyDevices;
+
+    if (query.compliance) {
+      const wantCompliant = query.compliance === 'compliant';
+      results = results.filter((d) => d.compliant === wantCompliant);
+    }
+
+    if (query.os) {
+      results = results.filter((d) => d.os === query.os);
+    }
+
+    if (query.search) {
+      const term = query.search.toLowerCase();
+      results = results.filter((d) => d.deviceName.toLowerCase().includes(term));
+    }
+
+    const compliant = policyDevices.filter((d) => d.compliant).length;
+    const nonCompliant = policyDevices.length - compliant;
+
+    const failureCounts: Record<string, number> = {};
+    for (const device of policyDevices) {
+      for (const check of device.checks) {
+        if (!check.pass) {
+          failureCounts[check.rule] = (failureCounts[check.rule] ?? 0) + 1;
+        }
+      }
+    }
+    const commonFailures = Object.entries(failureCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([rule, count]) => ({ rule, count }));
+
+    const response = paginate(results, page, limit);
+    return c.json({
+      ...response,
+      summary: {
+        total: policyDevices.length,
+        compliant,
+        nonCompliant,
+        compliancePercent: policyDevices.length ? Math.round((compliant / policyDevices.length) * 100) : 0,
+        commonFailures
+      }
+    });
+    } catch (err) {
+      console.error('[security/password-policy] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Admin Audit
+// ---------------------------------------------------------------------------
+
+const adminAuditQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  issue: z.enum(['default_account', 'weak_password', 'stale_account', 'no_issues']).optional(),
+  os: z.enum(['windows', 'macos', 'linux']).optional(),
+  search: z.string().optional()
+});
+
+type AdminAccount = {
+  username: string;
+  isBuiltIn: boolean;
+  enabled: boolean;
+  lastLogin: string;
+  passwordAgeDays: number;
+  issues: string[];
+};
+
+securityRoutes.get(
+  '/admin-audit',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', adminAuditQuerySchema),
+  (c) => {
+    try {
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+
+    const adminDevices = securityStatuses.map((device) => {
+      const accounts: AdminAccount[] = [];
+
+      if (device.os === 'windows') {
+        accounts.push({
+          username: 'Administrator',
+          isBuiltIn: true,
+          enabled: device.riskLevel === 'critical' || device.riskLevel === 'high',
+          lastLogin: daysAgo(device.riskLevel === 'critical' ? 120 : 5),
+          passwordAgeDays: device.riskLevel === 'critical' ? 365 : 30,
+          issues: device.riskLevel === 'critical'
+            ? ['default_account', 'stale_account']
+            : device.riskLevel === 'high'
+              ? ['default_account']
+              : []
+        });
+        accounts.push({
+          username: 'IT-Admin',
+          isBuiltIn: false,
+          enabled: true,
+          lastLogin: daysAgo(2),
+          passwordAgeDays: 45,
+          issues: []
+        });
+      } else if (device.os === 'macos') {
+        accounts.push({
+          username: 'admin',
+          isBuiltIn: false,
+          enabled: true,
+          lastLogin: daysAgo(1),
+          passwordAgeDays: 60,
+          issues: []
+        });
+      } else {
+        accounts.push({
+          username: 'root',
+          isBuiltIn: true,
+          enabled: true,
+          lastLogin: device.riskLevel === 'critical' ? daysAgo(90) : daysAgo(10),
+          passwordAgeDays: device.riskLevel === 'critical' ? 200 : 30,
+          issues: device.riskLevel === 'critical' ? ['weak_password', 'stale_account'] : []
+        });
+      }
+
+      const allIssues = accounts.flatMap((a) => a.issues);
+
+      return {
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        os: device.os,
+        adminAccounts: accounts,
+        totalAdmins: accounts.length,
+        hasIssues: allIssues.length > 0,
+        issueTypes: [...new Set(allIssues)]
+      };
+    });
+
+    let results = adminDevices;
+
+    if (query.issue) {
+      if (query.issue === 'no_issues') {
+        results = results.filter((d) => !d.hasIssues);
+      } else {
+        results = results.filter((d) => d.issueTypes.includes(query.issue!));
+      }
+    }
+
+    if (query.os) {
+      results = results.filter((d) => d.os === query.os);
+    }
+
+    if (query.search) {
+      const term = query.search.toLowerCase();
+      results = results.filter(
+        (d) =>
+          d.deviceName.toLowerCase().includes(term) ||
+          d.adminAccounts.some((a) => a.username.toLowerCase().includes(term))
+      );
+    }
+
+    const devicesWithIssues = adminDevices.filter((d) => d.hasIssues).length;
+    const totalAdmins = adminDevices.reduce((sum, d) => sum + d.totalAdmins, 0);
+    const defaultAccounts = adminDevices.reduce(
+      (sum, d) => sum + d.adminAccounts.filter((a) => a.issues.includes('default_account')).length,
+      0
+    );
+    const weakPasswords = adminDevices.reduce(
+      (sum, d) => sum + d.adminAccounts.filter((a) => a.issues.includes('weak_password')).length,
+      0
+    );
+    const staleAccounts = adminDevices.reduce(
+      (sum, d) => sum + d.adminAccounts.filter((a) => a.issues.includes('stale_account')).length,
+      0
+    );
+
+    const response = paginate(results, page, limit);
+    return c.json({
+      ...response,
+      summary: {
+        totalDevices: adminDevices.length,
+        devicesWithIssues,
+        totalAdmins,
+        defaultAccounts,
+        weakPasswords,
+        staleAccounts
+      }
+    });
+    } catch (err) {
+      console.error('[security/admin-audit] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Recommendations
+// ---------------------------------------------------------------------------
+
+type RecommendationStatus = 'open' | 'dismissed' | 'completed';
+type RecommendationPriority = 'critical' | 'high' | 'medium' | 'low';
+type RecommendationCategory = 'antivirus' | 'firewall' | 'encryption' | 'password_policy' | 'admin_accounts' | 'patch_compliance' | 'vulnerability_management';
+
+type RecommendationItem = {
+  id: string;
+  title: string;
+  description: string;
+  priority: RecommendationPriority;
+  category: RecommendationCategory;
+  status: RecommendationStatus;
+  impact: 'high' | 'medium' | 'low';
+  effort: 'high' | 'medium' | 'low';
+  affectedDevices: number;
+  steps: string[];
+};
+
+const recommendationSeed: RecommendationItem[] = [
+  {
+    id: 'rec-01',
+    title: 'Enable real-time protection on unprotected devices',
+    description: 'AUS-SRV-011 and CHI-VM-022 have real-time protection disabled, leaving them vulnerable to active threats.',
+    priority: 'critical',
+    category: 'antivirus',
+    status: 'open',
+    impact: 'high',
+    effort: 'low',
+    affectedDevices: 2,
+    steps: ['Navigate to device management', 'Select unprotected devices', 'Push antivirus policy with real-time protection enabled', 'Verify protection status after deployment']
+  },
+  {
+    id: 'rec-02',
+    title: 'Quarantine active Emotet trojan on SFO-WS-207',
+    description: 'A critical Emotet trojan has been detected and remains active. Immediate quarantine is recommended.',
+    priority: 'critical',
+    category: 'vulnerability_management',
+    status: 'open',
+    impact: 'high',
+    effort: 'low',
+    affectedDevices: 1,
+    steps: ['Go to Security > Vulnerabilities', 'Locate Trojan:Win32/Emotet', 'Click Quarantine', 'Run full system scan on SFO-WS-207']
+  },
+  {
+    id: 'rec-03',
+    title: 'Disable default Administrator accounts on Windows devices',
+    description: 'Built-in Administrator accounts are enabled on some Windows devices, creating a security risk.',
+    priority: 'high',
+    category: 'admin_accounts',
+    status: 'open',
+    impact: 'high',
+    effort: 'low',
+    affectedDevices: 2,
+    steps: ['Identify devices with enabled built-in admin', 'Create named admin accounts if needed', 'Disable the built-in Administrator account via Group Policy', 'Verify login with named accounts']
+  },
+  {
+    id: 'rec-04',
+    title: 'Update antivirus definitions on stale devices',
+    description: 'AUS-SRV-011 has definitions that are 30+ days old, significantly reducing detection capability.',
+    priority: 'high',
+    category: 'antivirus',
+    status: 'open',
+    impact: 'high',
+    effort: 'low',
+    affectedDevices: 1,
+    steps: ['Check network connectivity on the device', 'Force definition update via management console', 'If update fails, reinstall the antivirus agent', 'Schedule automatic updates']
+  },
+  {
+    id: 'rec-05',
+    title: 'Enable firewall on devices with protection disabled',
+    description: 'Some devices have firewall protection disabled, leaving network ports exposed.',
+    priority: 'high',
+    category: 'firewall',
+    status: 'open',
+    impact: 'high',
+    effort: 'medium',
+    affectedDevices: 2,
+    steps: ['Review firewall policies', 'Enable Windows Firewall via Group Policy', 'Configure inbound/outbound rules', 'Test connectivity after enabling']
+  },
+  {
+    id: 'rec-06',
+    title: 'Encrypt remaining unprotected volumes',
+    description: 'Windows devices have unencrypted secondary volumes (D: drives) that may contain sensitive data.',
+    priority: 'medium',
+    category: 'encryption',
+    status: 'open',
+    impact: 'medium',
+    effort: 'medium',
+    affectedDevices: 3,
+    steps: ['Audit data on unencrypted volumes', 'Enable BitLocker on D: drives via Group Policy', 'Escrow recovery keys to management console', 'Verify encryption completion']
+  },
+  {
+    id: 'rec-07',
+    title: 'Enforce minimum password length of 12 characters',
+    description: 'Some devices allow passwords shorter than 12 characters, below the recommended minimum.',
+    priority: 'medium',
+    category: 'password_policy',
+    status: 'open',
+    impact: 'medium',
+    effort: 'low',
+    affectedDevices: 1,
+    steps: ['Update Group Policy for minimum password length', 'Set minimum to 12 characters', 'Enable password complexity requirements', 'Notify users of policy change']
+  },
+  {
+    id: 'rec-08',
+    title: 'Reduce password maximum age to 90 days',
+    description: 'Devices with 180-day password expiration exceed the recommended 90-day maximum.',
+    priority: 'medium',
+    category: 'password_policy',
+    status: 'open',
+    impact: 'medium',
+    effort: 'low',
+    affectedDevices: 1,
+    steps: ['Update Group Policy for maximum password age', 'Set maximum age to 90 days', 'Enable password history (minimum 5)', 'Notify users of upcoming expirations']
+  },
+  {
+    id: 'rec-09',
+    title: 'Enable LUKS encryption on Linux server',
+    description: 'AUS-SRV-011 has no disk encryption, exposing data if the physical server is compromised.',
+    priority: 'medium',
+    category: 'encryption',
+    status: 'open',
+    impact: 'high',
+    effort: 'high',
+    affectedDevices: 1,
+    steps: ['Plan maintenance window for encryption', 'Back up all data on the server', 'Enable LUKS encryption on root partition', 'Configure automated unlock via TPM or network', 'Verify boot process and data integrity']
+  },
+  {
+    id: 'rec-10',
+    title: 'Address GandCrab ransomware on AUS-SRV-011',
+    description: 'An active ransomware threat has been detected on AUS-SRV-011. This is a high-severity issue.',
+    priority: 'high',
+    category: 'vulnerability_management',
+    status: 'open',
+    impact: 'high',
+    effort: 'medium',
+    affectedDevices: 1,
+    steps: ['Isolate AUS-SRV-011 from the network', 'Run full antivirus scan', 'Quarantine or remove the ransomware', 'Restore from clean backup if needed', 'Investigate initial infection vector']
+  },
+  {
+    id: 'rec-11',
+    title: 'Review and rotate stale admin passwords',
+    description: 'Some admin accounts have passwords older than 90 days, increasing compromise risk.',
+    priority: 'medium',
+    category: 'admin_accounts',
+    status: 'completed',
+    impact: 'medium',
+    effort: 'low',
+    affectedDevices: 2,
+    steps: ['Identify accounts with passwords > 90 days old', 'Force password reset for those accounts', 'Implement password rotation policy', 'Enable MFA for all admin accounts']
+  },
+  {
+    id: 'rec-12',
+    title: 'Schedule regular vulnerability scans across all endpoints',
+    description: 'Consistent scanning ensures new vulnerabilities are detected promptly.',
+    priority: 'low',
+    category: 'patch_compliance',
+    status: 'open',
+    impact: 'medium',
+    effort: 'low',
+    affectedDevices: 6,
+    steps: ['Configure weekly quick scans for all endpoints', 'Configure monthly full scans', 'Set up alerting for critical findings', 'Review scan results in weekly security meetings']
+  }
+];
+
+// TODO: Replace with per-org database queries — this shared mutable state leaks across tenants
+const recommendationStore = new Map(recommendationSeed.map((r) => [r.id, r]));
+
+const recommendationsQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  category: z.string().optional(),
+  status: z.enum(['open', 'dismissed', 'completed']).optional()
+});
+
+securityRoutes.get(
+  '/recommendations',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', recommendationsQuerySchema),
+  (c) => {
+    try {
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+
+    let results = Array.from(recommendationStore.values());
+
+    if (query.priority) {
+      results = results.filter((r) => r.priority === query.priority);
+    }
+
+    if (query.category) {
+      results = results.filter((r) => r.category === query.category);
+    }
+
+    if (query.status) {
+      results = results.filter((r) => r.status === query.status);
+    }
+
+    const all = Array.from(recommendationStore.values());
+    const response = paginate(results, page, limit);
+    return c.json({
+      ...response,
+      summary: {
+        total: all.length,
+        open: all.filter((r) => r.status === 'open').length,
+        completed: all.filter((r) => r.status === 'completed').length,
+        dismissed: all.filter((r) => r.status === 'dismissed').length,
+        criticalAndHigh: all.filter((r) => r.priority === 'critical' || r.priority === 'high').length
+      }
+    });
+    } catch (err) {
+      console.error('[security/recommendations] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+const recommendationActionSchema = z.object({
+  id: z.string()
+});
+
+securityRoutes.post(
+  '/recommendations/:id/complete',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', recommendationActionSchema),
+  (c) => {
+    try {
+      const { id } = c.req.valid('param');
+      const rec = recommendationStore.get(id);
+      if (!rec) return c.json({ error: 'Recommendation not found' }, 404);
+      const updated = { ...rec, status: 'completed' as const };
+      recommendationStore.set(id, updated);
+      return c.json({ data: updated });
+    } catch (err) {
+      console.error('[security/recommendations/complete] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
+  }
+);
+
+securityRoutes.post(
+  '/recommendations/:id/dismiss',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', recommendationActionSchema),
+  (c) => {
+    try {
+      const { id } = c.req.valid('param');
+      const rec = recommendationStore.get(id);
+      if (!rec) return c.json({ error: 'Recommendation not found' }, 404);
+      const updated = { ...rec, status: 'dismissed' as const };
+      recommendationStore.set(id, updated);
+      return c.json({ data: updated });
+    } catch (err) {
+      console.error('[security/recommendations/dismiss] error:', err);
+      return c.json({ error: 'Internal server error' }, 500);
+    }
   }
 );
