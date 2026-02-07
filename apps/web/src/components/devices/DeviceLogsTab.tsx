@@ -27,9 +27,12 @@ type DeviceLog = {
   createdAt: string;
 };
 
+type OSType = 'windows' | 'macos' | 'linux';
+
 type DeviceLogsTabProps = {
   deviceId: string;
   timezone?: string;
+  osType?: OSType;
 };
 
 const levelConfig: Record<LogLevel, { label: string; icon: typeof Info; badge: string }> = {
@@ -68,9 +71,54 @@ function formatDateTime(value: string, timezone?: string) {
   return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
 }
 
+const osSourcePresets: Record<OSType, { label: string; value: string }[]> = {
+  windows: [
+    { label: 'Security', value: 'Microsoft-Windows-Security-Auditing' },
+    { label: 'System', value: 'Microsoft-Windows-Kernel-Power' },
+    { label: 'Application', value: 'Application Error' },
+    { label: 'Disk', value: 'disk' },
+    { label: 'NTFS', value: 'Ntfs' },
+  ],
+  macos: [
+    { label: 'Unified Log', value: 'com.apple' },
+    { label: 'Security', value: 'com.apple.opendirectoryd' },
+    { label: 'IOKit', value: 'com.apple.iokit' },
+    { label: 'Crash Reports', value: 'crash:' },
+    { label: 'Power (pmset)', value: 'pmset' },
+  ],
+  linux: [
+    { label: 'sshd', value: 'sshd' },
+    { label: 'Kernel', value: 'kernel' },
+    { label: 'systemd', value: 'systemd' },
+    { label: 'PAM', value: 'pam' },
+    { label: 'journald', value: 'systemd-journald' },
+  ],
+};
+
+const osCategoryHints: Record<OSType, Record<string, string>> = {
+  windows: {
+    security: 'Windows Security Event Log (logon failures, privilege changes)',
+    hardware: 'System log (disk, driver, WHEA errors)',
+    application: 'Application log (crashes, .NET exceptions, WER)',
+    system: 'Power events (shutdown, restart, boot)',
+  },
+  macos: {
+    security: 'Unified log (opendirectoryd, TCC, auth events)',
+    hardware: 'IOKit errors, thermal events, kernel panics',
+    application: 'Crash reports (.ips/.crash files)',
+    system: 'Power events (sleep, wake, shutdown via pmset)',
+  },
+  linux: {
+    security: 'Auth events (sshd, PAM, sudo)',
+    hardware: 'Kernel messages (disk I/O, OOM, hardware errors)',
+    application: 'Service failures and coredumps',
+    system: 'Boot, shutdown, and systemd unit events',
+  },
+};
+
 const PAGE_SIZE = 50;
 
-export default function DeviceLogsTab({ deviceId, timezone }: DeviceLogsTabProps) {
+export default function DeviceLogsTab({ deviceId, timezone, osType }: DeviceLogsTabProps) {
   const [logs, setLogs] = useState<DeviceLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -191,9 +239,14 @@ export default function DeviceLogsTab({ deviceId, timezone }: DeviceLogsTabProps
               className="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             >
               <option value="">All categories</option>
-              {(Object.keys(categoryConfig) as LogCategory[]).map((c) => (
-                <option key={c} value={c}>{categoryConfig[c].label}</option>
-              ))}
+              {(Object.keys(categoryConfig) as LogCategory[]).map((c) => {
+                const hint = osType ? osCategoryHints[osType]?.[c] : undefined;
+                return (
+                  <option key={c} value={c}>
+                    {categoryConfig[c].label}{hint ? ` — ${hint}` : ''}
+                  </option>
+                );
+              })}
             </select>
           </div>
           <div>
@@ -204,9 +257,27 @@ export default function DeviceLogsTab({ deviceId, timezone }: DeviceLogsTabProps
               onChange={(e) => setSourceFilter(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') setPage(1); }}
               onBlur={() => setPage(1)}
-              placeholder="e.g. Windows Event Log"
+              placeholder={osType === 'windows' ? 'e.g. Microsoft-Windows-Security-Auditing' : osType === 'macos' ? 'e.g. com.apple.opendirectoryd' : osType === 'linux' ? 'e.g. sshd' : 'e.g. source name'}
               className="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             />
+            {osType && osSourcePresets[osType] && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {osSourcePresets[osType].map((preset) => (
+                  <button
+                    key={preset.value}
+                    type="button"
+                    onClick={() => { setSourceFilter(preset.value); setPage(1); }}
+                    className={`rounded-full border px-2 py-0.5 text-xs transition ${
+                      sourceFilter === preset.value
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-muted text-muted-foreground hover:border-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">Start Date</label>

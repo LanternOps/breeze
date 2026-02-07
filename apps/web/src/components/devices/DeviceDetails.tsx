@@ -9,6 +9,7 @@ import {
   Package,
   Activity,
   FileText,
+  ScrollText,
   Network,
   CheckCircle,
   Info,
@@ -25,6 +26,7 @@ import DeviceAlertHistory from './DeviceAlertHistory';
 import DeviceScriptHistory from './DeviceScriptHistory';
 import DevicePerformanceGraphs from './DevicePerformanceGraphs';
 import DeviceEventLogViewer from './DeviceEventLogViewer';
+import DeviceLogsTab from './DeviceLogsTab';
 import DeviceNetworkConnections from './DeviceNetworkConnections';
 
 type Tab =
@@ -38,6 +40,7 @@ type Tab =
   | 'scripts'
   | 'performance'
   | 'eventlog'
+  | 'activities'
   | 'connections';
 
 type DeviceDetailsProps = {
@@ -98,7 +101,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'alerts', label: 'Alert History', icon: <AlertTriangle className="h-4 w-4" /> },
     { id: 'scripts', label: 'Script History', icon: <Terminal className="h-4 w-4" /> },
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" /> },
-    { id: 'eventlog', label: 'Event Logs', icon: <FileText className="h-4 w-4" /> },
+    { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" /> },
+    { id: 'activities', label: 'Activities', icon: <ScrollText className="h-4 w-4" /> },
     { id: 'connections', label: 'Network Connections', icon: <Network className="h-4 w-4" /> }
   ];
 
@@ -215,6 +219,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       )}
 
       {activeTab === 'eventlog' && (
+        <DeviceLogsTab deviceId={device.id} timezone={effectiveTimezone} osType={device.os} />
+      )}
+
+      {activeTab === 'activities' && (
         <DeviceEventLogViewer deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
