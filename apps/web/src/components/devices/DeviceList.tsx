@@ -327,6 +327,14 @@ export default function DeviceList({
                 >
                   Disable Maintenance
                 </button>
+                <hr className="my-1" />
+                <button
+                  type="button"
+                  onClick={() => handleBulkAction('decommission')}
+                  className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                >
+                  Decommission Selected
+                </button>
               </div>
             )}
           </div>

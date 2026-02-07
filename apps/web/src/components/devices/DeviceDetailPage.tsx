@@ -5,7 +5,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import ScriptPickerModal, { type Script } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, executeScript, toggleMaintenanceMode } from '../../services/deviceActions';
+import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 
 type DeviceDetailPageProps = {
@@ -141,6 +141,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setSettingsOpen(true);
           break;
 
+        case 'decommission':
+          await decommissionDevice(device.id);
+          showToast('success', `${device.hostname} has been decommissioned`);
+          window.location.href = '/devices';
+          return;
+
         default:
           showToast('error', `Unknown action: ${action}`);
       }
@@ -238,6 +244,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onSaved={fetchDevice}
+        onAction={handleAction}
       />
       <ScriptPickerModal
         isOpen={scriptPickerOpen}

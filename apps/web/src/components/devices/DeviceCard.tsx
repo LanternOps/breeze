@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Monitor, MoreVertical, Terminal, RotateCcw, FileCode, Settings } from 'lucide-react';
+import { Monitor, MoreVertical, Terminal, RotateCcw, FileCode, Settings, Trash2 } from 'lucide-react';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 
 type DeviceCardProps = {
@@ -164,6 +164,19 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
               >
                 <Settings className="h-4 w-4" />
                 Settings
+              </button>
+              <hr className="my-1" />
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  onAction?.('decommission', device);
+                  setMenuOpen(false);
+                }}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="h-4 w-4" />
+                Decommission
               </button>
             </div>
           )}

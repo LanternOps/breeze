@@ -88,6 +88,37 @@ export async function executeScript(
   return await response.json();
 }
 
+export async function decommissionDevice(deviceId: string): Promise<{ success: boolean }> {
+  const response = await fetchWithAuth(`/devices/${deviceId}`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to decommission device'));
+  }
+
+  const data = await response.json();
+  return data.data ?? data;
+}
+
+export async function bulkDecommissionDevices(
+  deviceIds: string[]
+): Promise<{ succeeded: number; failed: number }> {
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const id of deviceIds) {
+    try {
+      await decommissionDevice(id);
+      succeeded++;
+    } catch {
+      failed++;
+    }
+  }
+
+  return { succeeded, failed };
+}
+
 export async function toggleMaintenanceMode(
   deviceId: string,
   enable: boolean,

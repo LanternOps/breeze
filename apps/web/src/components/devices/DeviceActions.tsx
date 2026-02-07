@@ -9,7 +9,8 @@ import {
   MoreHorizontal,
   X,
   AlertTriangle,
-  Wrench
+  Wrench,
+  Trash2
 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -20,7 +21,7 @@ type DeviceActionsProps = {
   compact?: boolean;
 };
 
-type ModalType = 'none' | 'reboot' | 'shutdown' | 'maintenance';
+type ModalType = 'none' | 'reboot' | 'shutdown' | 'maintenance' | 'decommission';
 
 export default function DeviceActions({ device, onAction, compact = false }: DeviceActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -28,7 +29,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
   const [loading, setLoading] = useState(false);
 
   const handleAction = async (action: string) => {
-    if (action === 'reboot' || action === 'shutdown' || action === 'maintenance') {
+    if (action === 'reboot' || action === 'shutdown' || action === 'maintenance' || action === 'decommission') {
       setModalType(action);
       setMenuOpen(false);
       return;
@@ -110,6 +111,15 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               >
                 <Shield className="h-4 w-4" />
                 {device.status === 'maintenance' ? 'Exit Maintenance' : 'Enter Maintenance'}
+              </button>
+              <hr className="my-1" />
+              <button
+                type="button"
+                onClick={() => handleAction('decommission')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="h-4 w-4" />
+                Decommission
               </button>
             </div>
           )}
@@ -197,6 +207,15 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Settings className="h-4 w-4" />
                 Device Settings
               </button>
+              <hr className="my-1" />
+              <button
+                type="button"
+                onClick={() => handleAction('decommission')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="h-4 w-4" />
+                Decommission
+              </button>
             </div>
           )}
         </div>
@@ -246,6 +265,12 @@ function ConfirmationModal({ type, device, loading, onConfirm, onCancel }: Confi
       confirmLabel: device.status === 'maintenance' ? 'Exit Maintenance' : 'Enter Maintenance',
       confirmClass: 'bg-primary text-primary-foreground hover:opacity-90'
     },
+    decommission: {
+      title: 'Decommission Device',
+      description: `Are you sure you want to decommission ${device.hostname}? This will permanently remove the device from your fleet. The agent will stop reporting and the device will no longer be monitored.`,
+      confirmLabel: 'Decommission',
+      confirmClass: 'bg-destructive text-destructive-foreground hover:opacity-90'
+    },
     none: {
       title: '',
       description: '',
@@ -262,10 +287,10 @@ function ConfirmationModal({ type, device, loading, onConfirm, onCancel }: Confi
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
             <div className={`flex h-10 w-10 items-center justify-center rounded-full ${
-              type === 'shutdown' ? 'bg-destructive/10' : 'bg-yellow-500/10'
+              type === 'shutdown' || type === 'decommission' ? 'bg-destructive/10' : 'bg-yellow-500/10'
             }`}>
               <AlertTriangle className={`h-5 w-5 ${
-                type === 'shutdown' ? 'text-destructive' : 'text-yellow-600'
+                type === 'shutdown' || type === 'decommission' ? 'text-destructive' : 'text-yellow-600'
               }`} />
             </div>
             <h2 className="text-lg font-semibold">{config.title}</h2>

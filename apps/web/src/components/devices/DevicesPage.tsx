@@ -7,7 +7,7 @@ import ScriptPickerModal, { type Script } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices } from '../../services/deviceActions';
 
 type ViewMode = 'list' | 'grid';
 
@@ -26,6 +26,21 @@ type Toast = {
   type: 'success' | 'error';
   message: string;
 };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function toPercent(value: unknown): number {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : NaN;
+
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(100, Math.max(0, Number(parsed.toFixed(1))));
+}
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -86,26 +101,27 @@ export default function DevicesPage() {
       const deviceList = devicesData.data ?? devicesData.devices ?? devicesData ?? [];
 
       // Transform API response to match Device type
-      const transformedDevices: Device[] = deviceList.map((d: Record<string, unknown>) => ({
-        id: d.id as string,
-        hostname: (d.hostname ?? d.displayName ?? 'Unknown') as string,
-        os: (d.osType ?? d.os ?? 'windows') as OSType,
-        osVersion: (d.osVersion ?? '') as string,
-        status: (d.status ?? 'offline') as DeviceStatus,
-        cpuPercent: typeof d.hardware === 'object' && d.hardware !== null
-          ? ((d.hardware as Record<string, unknown>).cpuPercent as number ?? 0)
-          : 0,
-        ramPercent: typeof d.hardware === 'object' && d.hardware !== null
-          ? ((d.hardware as Record<string, unknown>).ramPercent as number ?? 0)
-          : 0,
-        lastSeen: (d.lastSeenAt ?? d.lastSeen ?? '') as string,
-        orgId: (d.orgId ?? '') as string,
-        orgName: '', // Will be resolved from orgs
-        siteId: (d.siteId ?? '') as string,
-        siteName: '', // Will be resolved from sites
-        agentVersion: (d.agentVersion ?? '') as string,
-        tags: (d.tags ?? []) as string[]
-      }));
+      const transformedDevices: Device[] = deviceList.map((d: Record<string, unknown>) => {
+        const metrics = asRecord(d.metrics);
+        const hardware = asRecord(d.hardware);
+
+        return {
+          id: d.id as string,
+          hostname: (d.hostname ?? d.displayName ?? 'Unknown') as string,
+          os: (d.osType ?? d.os ?? 'windows') as OSType,
+          osVersion: (d.osVersion ?? '') as string,
+          status: (d.status ?? 'offline') as DeviceStatus,
+          cpuPercent: toPercent(metrics?.cpuPercent ?? d.cpuPercent ?? hardware?.cpuPercent),
+          ramPercent: toPercent(metrics?.ramPercent ?? d.ramPercent ?? hardware?.ramPercent),
+          lastSeen: (d.lastSeenAt ?? d.lastSeen ?? '') as string,
+          orgId: (d.orgId ?? '') as string,
+          orgName: '', // Will be resolved from orgs
+          siteId: (d.siteId ?? '') as string,
+          siteName: '', // Will be resolved from sites
+          agentVersion: (d.agentVersion ?? '') as string,
+          tags: (d.tags ?? []) as string[]
+        };
+      });
 
       // Fetch orgs for org name lookup
       let orgsList: Org[] = [];
@@ -292,6 +308,12 @@ export default function DevicesPage() {
           setSettingsDevice(device);
           break;
 
+        case 'decommission':
+          await decommissionDevice(device.id);
+          showToast('success', `${device.hostname} has been decommissioned`);
+          await fetchDevices();
+          break;
+
         default:
           showToast('error', `Unknown action: ${action}`);
       }
@@ -347,6 +369,17 @@ export default function DevicesPage() {
           showToast('success', `${deviceCount} devices taken out of maintenance mode`);
           await fetchDevices();
           break;
+
+        case 'decommission': {
+          const result = await bulkDecommissionDevices(deviceIds);
+          if (result.failed === 0) {
+            showToast('success', `${result.succeeded} devices decommissioned`);
+          } else {
+            showToast('error', `${result.succeeded} decommissioned, ${result.failed} failed`);
+          }
+          await fetchDevices();
+          break;
+        }
 
         default:
           showToast('error', `Unknown bulk action: ${action}`);
@@ -606,6 +639,7 @@ export default function DevicesPage() {
           isOpen={!!settingsDevice}
           onClose={() => setSettingsDevice(null)}
           onSaved={fetchDevices}
+          onAction={handleDeviceAction}
         />
       )}
     </div>

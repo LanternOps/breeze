@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Loader2, Plus, Tag } from 'lucide-react';
+import { X, Loader2, Plus, Tag, Trash2 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -13,9 +13,10 @@ type DeviceSettingsModalProps = {
   isOpen: boolean;
   onClose: () => void;
   onSaved: () => void;
+  onAction?: (action: string, device: Device) => void;
 };
 
-export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved }: DeviceSettingsModalProps) {
+export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, onAction }: DeviceSettingsModalProps) {
   const [displayName, setDisplayName] = useState(device.hostname);
   const [siteId, setSiteId] = useState(device.siteId);
   const [tags, setTags] = useState<string[]>(device.tags ?? []);
@@ -196,6 +197,28 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved }
           {error && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
               {error}
+            </div>
+          )}
+
+          {/* Danger Zone */}
+          {onAction && (
+            <div className="rounded-md border border-destructive/40 p-4">
+              <h3 className="text-sm font-semibold text-destructive">Danger Zone</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Decommissioning will permanently remove this device from your fleet.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onAction('decommission', device);
+                }}
+                disabled={saving}
+                className="mt-3 inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Trash2 className="h-4 w-4" />
+                Decommission Device
+              </button>
             </div>
           )}
         </div>

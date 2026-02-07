@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, gte, like, sql, desc } from 'drizzle-orm';
+import { and, eq, gte, like, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { randomBytes } from 'crypto';
 import {
@@ -13,7 +13,8 @@ import {
   sites,
   enrollmentKeys
 } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -156,33 +157,92 @@ coreRoutes.get(
       .limit(limit)
       .offset(offset);
 
-    // Transform to include hardware as nested object
-    const data = deviceList.map(d => ({
-      id: d.id,
-      orgId: d.orgId,
-      siteId: d.siteId,
-      agentId: d.agentId,
-      hostname: d.hostname,
-      displayName: d.displayName,
-      osType: d.osType,
-      osVersion: d.osVersion,
-      osBuild: d.osBuild,
-      architecture: d.architecture,
-      agentVersion: d.agentVersion,
-      status: d.status,
-      lastSeenAt: d.lastSeenAt,
-      enrolledAt: d.enrolledAt,
-      tags: d.tags,
-      customFields: d.customFields,
-      createdAt: d.createdAt,
-      updatedAt: d.updatedAt,
-      hardware: {
-        cpuModel: d.cpuModel,
-        cpuCores: d.cpuCores,
-        ramTotalMb: d.ramTotalMb,
-        diskTotalGb: d.diskTotalGb
+    const deviceIds = deviceList.map(d => d.id);
+
+    const latestMetricsByDevice = new Map<string, {
+      cpuPercent: number;
+      ramPercent: number;
+      timestamp: Date;
+    }>();
+
+    if (deviceIds.length > 0) {
+      const latestMetricTimestamps = db
+        .select({
+          deviceId: deviceMetrics.deviceId,
+          latestTimestamp: sql<Date>`max(${deviceMetrics.timestamp})`.as('latest_timestamp')
+        })
+        .from(deviceMetrics)
+        .where(inArray(deviceMetrics.deviceId, deviceIds))
+        .groupBy(deviceMetrics.deviceId)
+        .as('latest_metric_timestamps');
+
+      const latestMetrics = await db
+        .select({
+          deviceId: deviceMetrics.deviceId,
+          cpuPercent: deviceMetrics.cpuPercent,
+          ramPercent: deviceMetrics.ramPercent,
+          timestamp: deviceMetrics.timestamp
+        })
+        .from(deviceMetrics)
+        .innerJoin(
+          latestMetricTimestamps,
+          and(
+            eq(deviceMetrics.deviceId, latestMetricTimestamps.deviceId),
+            eq(deviceMetrics.timestamp, latestMetricTimestamps.latestTimestamp)
+          )
+        );
+
+      for (const metric of latestMetrics) {
+        if (!latestMetricsByDevice.has(metric.deviceId)) {
+          latestMetricsByDevice.set(metric.deviceId, {
+            cpuPercent: metric.cpuPercent,
+            ramPercent: metric.ramPercent,
+            timestamp: metric.timestamp
+          });
+        }
       }
-    }));
+    }
+
+    // Transform to include hardware and latest metrics as nested objects
+    const data = deviceList.map(d => {
+      const latestMetrics = latestMetricsByDevice.get(d.id);
+
+      return {
+        id: d.id,
+        orgId: d.orgId,
+        siteId: d.siteId,
+        agentId: d.agentId,
+        hostname: d.hostname,
+        displayName: d.displayName,
+        osType: d.osType,
+        osVersion: d.osVersion,
+        osBuild: d.osBuild,
+        architecture: d.architecture,
+        agentVersion: d.agentVersion,
+        status: d.status,
+        lastSeenAt: d.lastSeenAt,
+        enrolledAt: d.enrolledAt,
+        tags: d.tags,
+        customFields: d.customFields,
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
+        cpuPercent: latestMetrics?.cpuPercent ?? 0,
+        ramPercent: latestMetrics?.ramPercent ?? 0,
+        hardware: {
+          cpuModel: d.cpuModel,
+          cpuCores: d.cpuCores,
+          ramTotalMb: d.ramTotalMb,
+          diskTotalGb: d.diskTotalGb
+        },
+        metrics: latestMetrics
+          ? {
+            cpuPercent: latestMetrics.cpuPercent,
+            ramPercent: latestMetrics.ramPercent,
+            timestamp: latestMetrics.timestamp
+          }
+          : null
+      };
+    });
 
     return c.json({
       data,
@@ -343,7 +403,7 @@ coreRoutes.patch(
 // DELETE /devices/:id - Decommission device (soft delete)
 coreRoutes.delete(
   '/:id',
-  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id');
