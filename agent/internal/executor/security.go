@@ -125,7 +125,7 @@ func (v *SecurityValidator) initPatterns() {
 	for _, p := range basicPatterns {
 		regex, err := regexp.Compile("(?i)" + p.pattern)
 		if err != nil {
-			fmt.Printf("[security] failed to compile basic pattern %q: %v\n", p.pattern, err)
+			log.Warn("failed to compile security pattern", "pattern", p.pattern, "error", err)
 			continue
 		}
 		v.patterns = append(v.patterns, &dangerPattern{
@@ -139,7 +139,7 @@ func (v *SecurityValidator) initPatterns() {
 	for _, p := range strictPatterns {
 		regex, err := regexp.Compile("(?i)" + p.pattern)
 		if err != nil {
-			fmt.Printf("[security] failed to compile strict pattern %q: %v\n", p.pattern, err)
+			log.Warn("failed to compile security pattern", "pattern", p.pattern, "error", err)
 			continue
 		}
 		v.patterns = append(v.patterns, &dangerPattern{

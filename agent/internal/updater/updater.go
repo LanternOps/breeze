@@ -9,7 +9,11 @@ import (
 	"os"
 	"runtime"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("updater")
 
 // Config holds updater configuration
 type Config struct {

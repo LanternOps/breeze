@@ -1,17 +1,20 @@
 package heartbeat
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/collectors"
@@ -19,7 +22,11 @@ import (
 	"github.com/breeze-rmm/agent/internal/discovery"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/filetransfer"
+	"github.com/breeze-rmm/agent/internal/health"
+	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/patching"
+	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/security"
@@ -27,7 +34,10 @@ import (
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
+	"github.com/breeze-rmm/agent/internal/workerpool"
 )
+
+var log = logging.L("heartbeat")
 
 type HeartbeatPayload struct {
 	Metrics       *collectors.SystemMetrics `json:"metrics"`
@@ -35,6 +45,7 @@ type HeartbeatPayload struct {
 	AgentVersion  string                    `json:"agentVersion"`
 	PendingReboot bool                      `json:"pendingReboot,omitempty"`
 	LastUser      string                    `json:"lastUser,omitempty"`
+	HealthStatus  map[string]any            `json:"healthStatus,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -74,6 +85,15 @@ type Heartbeat struct {
 	lastInventoryUpdate time.Time
 	lastEventLogUpdate  time.Time
 	lastSecurityUpdate  time.Time
+
+	// Resilience & observability
+	pool       *workerpool.Pool
+	healthMon  *health.Monitor
+	auditLog   *audit.Logger
+	accepting  atomic.Bool
+	wg         sync.WaitGroup
+	retryCfg   httputil.RetryConfig
+	stopOnce   sync.Once
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -106,6 +126,20 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
 		securityScanner: &security.SecurityScanner{Config: cfg},
+		pool:            workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
+		healthMon:       health.NewMonitor(),
+		retryCfg:        httputil.DefaultRetryConfig(),
+	}
+	h.accepting.Store(true)
+
+	// Initialize audit logger if enabled
+	if cfg.AuditEnabled {
+		auditLogger, err := audit.NewLogger(cfg)
+		if err != nil {
+			log.Error("failed to start audit logger", "error", err)
+		} else {
+			h.auditLog = auditLogger
+		}
 	}
 
 	// Initialize backup manager if enabled
@@ -123,7 +157,8 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		}
 		schedule, parseErr := time.ParseDuration(cfg.BackupSchedule)
 		if parseErr != nil && cfg.BackupSchedule != "" {
-			fmt.Printf("Warning: invalid backup schedule %q: %v, using default 24h\n", cfg.BackupSchedule, parseErr)
+			log.Warn("invalid backup schedule, using default 24h",
+				"schedule", cfg.BackupSchedule, "error", parseErr)
 		}
 		if schedule <= 0 {
 			schedule = 24 * time.Hour
@@ -148,11 +183,21 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	h.wsClient = ws
 }
 
+// AuditLog returns the audit logger for use by other components.
+func (h *Heartbeat) AuditLog() *audit.Logger {
+	return h.auditLog
+}
+
+// HealthMonitor returns the health monitor for use by other components.
+func (h *Heartbeat) HealthMonitor() *health.Monitor {
+	return h.healthMon
+}
+
 // sendTerminalOutput streams terminal output via WebSocket
 func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 	if h.wsClient != nil {
 		if err := h.wsClient.SendTerminalOutput(sessionId, data); err != nil {
-			fmt.Printf("Warning: terminal output dropped for session %s: %v\n", sessionId, err)
+			log.Warn("terminal output dropped", "sessionId", sessionId, "error", err)
 		}
 	}
 }
@@ -161,14 +206,25 @@ func (h *Heartbeat) Start() {
 	// Start backup scheduler if configured
 	if h.backupMgr != nil {
 		if err := h.backupMgr.Start(); err != nil {
-			fmt.Printf("Failed to start backup manager: %v\n", err)
+			log.Error("failed to start backup manager", "error", err)
 		}
 	}
 
-	ticker := time.NewTicker(time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second)
+	// Jitter: random delay before first heartbeat to avoid thundering herd
+	// after mass restart of agents
+	interval := time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second
+	jitter := time.Duration(rand.Int64N(int64(interval)))
+	log.Info("initial heartbeat jitter", "delay", jitter)
+	select {
+	case <-time.After(jitter):
+	case <-h.stopChan:
+		return
+	}
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Send initial heartbeat immediately
+	// Send initial heartbeat after jitter
 	h.sendHeartbeat()
 
 	// Send initial inventory in background
@@ -210,11 +266,31 @@ func (h *Heartbeat) Start() {
 	}
 }
 
+// StopAcceptingCommands prevents new commands from being dispatched.
+func (h *Heartbeat) StopAcceptingCommands() {
+	h.accepting.Store(false)
+	h.pool.StopAccepting()
+}
+
+// DrainAndWait waits for all in-flight commands to complete, respecting ctx deadline.
+func (h *Heartbeat) DrainAndWait(ctx context.Context) {
+	log.Info("draining in-flight commands")
+	h.pool.Drain(ctx)
+	h.wg.Wait()
+	log.Info("all commands drained")
+}
+
 func (h *Heartbeat) Stop() {
-	if h.backupMgr != nil {
-		h.backupMgr.Stop()
-	}
-	close(h.stopChan)
+	h.stopOnce.Do(func() {
+		if h.backupMgr != nil {
+			h.backupMgr.Stop()
+		}
+		if h.auditLog != nil {
+			h.auditLog.Log(audit.EventAgentStop, "", nil)
+			h.auditLog.Close()
+		}
+		close(h.stopChan)
+	})
 }
 
 // sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory
@@ -232,47 +308,46 @@ func (h *Heartbeat) sendInventory() {
 func (h *Heartbeat) sendInventoryData(endpoint string, payload interface{}, label string) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Printf("Error marshaling %s: %v\n", label, err)
+		log.Error("failed to marshal inventory", "label", label, "error", err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/%s", h.config.ServerURL, h.config.AgentID, endpoint)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating %s request: %v\n", label, err)
-		return
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {"Bearer " + h.config.AuthToken},
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	resp, err := h.client.Do(req)
+	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
-		fmt.Printf("Error sending %s: %v\n", label, err)
+		log.Error("failed to send inventory", "label", label, "error", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("%s sent\n", label)
+		log.Debug("inventory sent", "label", label)
 	} else {
-		fmt.Printf("%s failed with status %d\n", label, resp.StatusCode)
+		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
 	}
 }
 
 func (h *Heartbeat) sendHardwareInventory() {
 	hw, err := h.hardwareCol.CollectHardware()
 	if err != nil {
-		fmt.Printf("Error collecting hardware info: %v\n", err)
+		log.Error("failed to collect hardware info", "error", err)
 		return
 	}
-	h.sendInventoryData("hardware", hw, "Hardware info")
+	h.sendInventoryData("hardware", hw, "hardware")
 }
 
 func (h *Heartbeat) sendSoftwareInventory() {
 	software, err := h.softwareCol.Collect()
 	if err != nil {
-		fmt.Printf("Error collecting software inventory: %v\n", err)
+		log.Error("failed to collect software inventory", "error", err)
 		return
 	}
 
@@ -288,44 +363,44 @@ func (h *Heartbeat) sendSoftwareInventory() {
 		}
 	}
 
-	h.sendInventoryData("software", map[string]interface{}{"software": items}, fmt.Sprintf("Software inventory (%d items)", len(software)))
+	h.sendInventoryData("software", map[string]interface{}{"software": items}, fmt.Sprintf("software (%d items)", len(software)))
 }
 
 func (h *Heartbeat) sendDiskInventory() {
 	disks, err := h.inventoryCol.CollectDisks()
 	if err != nil {
-		fmt.Printf("Error collecting disk inventory: %v\n", err)
+		log.Error("failed to collect disk inventory", "error", err)
 		return
 	}
 
-	h.sendInventoryData("disks", map[string]interface{}{"disks": disks}, fmt.Sprintf("Disk inventory (%d disks)", len(disks)))
+	h.sendInventoryData("disks", map[string]interface{}{"disks": disks}, fmt.Sprintf("disks (%d)", len(disks)))
 }
 
 func (h *Heartbeat) sendNetworkInventory() {
 	adapters, err := h.inventoryCol.CollectNetworkAdapters()
 	if err != nil {
-		fmt.Printf("Error collecting network inventory: %v\n", err)
+		log.Error("failed to collect network inventory", "error", err)
 		return
 	}
 
-	h.sendInventoryData("network", map[string]interface{}{"adapters": adapters}, fmt.Sprintf("Network inventory (%d adapters)", len(adapters)))
+	h.sendInventoryData("network", map[string]interface{}{"adapters": adapters}, fmt.Sprintf("network (%d adapters)", len(adapters)))
 }
 
 func (h *Heartbeat) sendPatchInventory() {
 	pendingItems, installedItems, err := h.collectPatchInventory()
 	if err != nil {
-		fmt.Printf("Error collecting patch inventory: %v\n", err)
+		log.Warn("patch inventory collection warning", "error", err)
 	}
 
 	if len(pendingItems) == 0 && len(installedItems) == 0 {
-		fmt.Println("No patches found")
+		log.Debug("no patches found")
 		return
 	}
 
 	h.sendInventoryData("patches", map[string]interface{}{
 		"patches":   pendingItems,
 		"installed": installedItems,
-	}, fmt.Sprintf("Patch inventory (%d pending, %d installed)", len(pendingItems), len(installedItems)))
+	}, fmt.Sprintf("patches (%d pending, %d installed)", len(pendingItems), len(installedItems)))
 }
 
 func (h *Heartbeat) collectPatchInventory() ([]map[string]interface{}, []map[string]interface{}, error) {
@@ -472,12 +547,12 @@ func (h *Heartbeat) mapPatchSeverity(severity string) string {
 func (h *Heartbeat) sendConnectionsInventory() {
 	connections, err := h.connectionsCol.Collect()
 	if err != nil {
-		fmt.Printf("Error collecting connections: %v\n", err)
+		log.Error("failed to collect connections", "error", err)
 		return
 	}
 
 	if len(connections) == 0 {
-		fmt.Println("No active connections found")
+		log.Debug("no active connections found")
 		return
 	}
 
@@ -495,13 +570,13 @@ func (h *Heartbeat) sendConnectionsInventory() {
 		}
 	}
 
-	h.sendInventoryData("connections", map[string]interface{}{"connections": items}, fmt.Sprintf("Connections inventory (%d active)", len(connections)))
+	h.sendInventoryData("connections", map[string]interface{}{"connections": items}, fmt.Sprintf("connections (%d active)", len(connections)))
 }
 
 func (h *Heartbeat) sendEventLogs() {
 	events, err := h.eventLogCol.Collect()
 	if err != nil {
-		fmt.Printf("Error collecting event logs: %v\n", err)
+		log.Error("failed to collect event logs", "error", err)
 		return
 	}
 
@@ -509,24 +584,26 @@ func (h *Heartbeat) sendEventLogs() {
 		return
 	}
 
-	h.sendInventoryData("eventlogs", map[string]interface{}{"events": events}, fmt.Sprintf("Event logs (%d events)", len(events)))
+	h.sendInventoryData("eventlogs", map[string]interface{}{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
 }
 
 func (h *Heartbeat) sendSecurityStatus() {
 	status, err := security.CollectStatus(h.config)
 	if err != nil {
-		// Partial collection is expected on some platforms/hosts; still submit what we have.
-		fmt.Printf("Security status collection warning: %v\n", err)
+		log.Warn("security status collection warning", "error", err)
 	}
 
-	h.sendInventoryData("security/status", status, "Security status")
+	h.sendInventoryData("security/status", status, "security status")
 }
 
 func (h *Heartbeat) sendHeartbeat() {
 	metrics, err := h.metricsCol.Collect()
 	if err != nil {
-		fmt.Printf("Error collecting metrics: %v\n", err)
+		log.Error("failed to collect metrics", "error", err)
+		h.healthMon.Update("metrics", health.Degraded, err.Error())
 		metrics = &collectors.SystemMetrics{}
+	} else {
+		h.healthMon.Update("metrics", health.Healthy, "")
 	}
 
 	status := "ok"
@@ -538,45 +615,56 @@ func (h *Heartbeat) sendHeartbeat() {
 		Metrics:      metrics,
 		Status:       status,
 		AgentVersion: h.agentVersion,
+		HealthStatus: h.healthMon.Summary(),
 	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Printf("Error marshaling heartbeat: %v\n", err)
+		log.Error("failed to marshal heartbeat", "error", err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", h.config.ServerURL, h.config.AgentID)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	if err != nil {
-		fmt.Printf("Error creating heartbeat request: %v\n", err)
-		return
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {"Bearer " + h.config.AuthToken},
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	resp, err := h.client.Do(req)
+	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
 	if err != nil {
-		fmt.Printf("Error sending heartbeat: %v\n", err)
+		log.Error("failed to send heartbeat", "error", err)
+		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Heartbeat returned status %d\n", resp.StatusCode)
+		log.Warn("heartbeat returned non-OK status", "status", resp.StatusCode)
+		h.healthMon.Update("heartbeat", health.Degraded, fmt.Sprintf("status %d", resp.StatusCode))
 		return
 	}
+
+	h.healthMon.Update("heartbeat", health.Healthy, "")
 
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		fmt.Printf("Error decoding heartbeat response: %v\n", err)
+		log.Error("failed to decode heartbeat response", "error", err)
 		return
 	}
 
-	// Process any commands
+	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
-		go h.processCommand(cmd)
+		if !h.accepting.Load() {
+			log.Warn("rejecting command, agent shutting down", logging.KeyCommandID, cmd.ID)
+			break
+		}
+		c := cmd // capture
+		if !h.pool.Submit(func() { h.processCommand(c) }) {
+			log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID)
+		}
 	}
 
 	// Handle upgrade if requested
@@ -590,7 +678,7 @@ func (h *Heartbeat) processCommand(cmd Command) {
 
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
-		fmt.Printf("Error submitting command result: %v\n", err)
+		log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err)
 	}
 }
 
@@ -601,15 +689,15 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 	}
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/commands/%s/result", h.config.ServerURL, h.config.AgentID, commandID)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {"Bearer " + h.config.AuthToken},
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.config.AuthToken)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	resp, err := h.client.Do(req)
+	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
@@ -619,24 +707,28 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 		return fmt.Errorf("submit result failed with status %d", resp.StatusCode)
 	}
 
-	fmt.Printf("Command %s completed with status: %s\n", commandID, result.Status)
+	log.Info("command completed", logging.KeyCommandID, commandID, "status", result.Status)
 	return nil
 }
 
 // HandleCommand processes a command from WebSocket and returns a result
-// This is used by the WebSocket client to process commands
 func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResult {
-	// Convert websocket.Command to internal Command
+	if !h.accepting.Load() {
+		return websocket.CommandResult{
+			CommandID: wsCmd.ID,
+			Status:    "failed",
+			Error:     "agent is shutting down",
+		}
+	}
+
 	cmd := Command{
 		ID:      wsCmd.ID,
 		Type:    wsCmd.Type,
 		Payload: wsCmd.Payload,
 	}
 
-	// Process the command
 	result := h.executeCommand(cmd)
 
-	// Convert result to websocket.CommandResult
 	wsResult := websocket.CommandResult{
 		CommandID: cmd.ID,
 		Status:    result.Status,
@@ -645,7 +737,6 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 	if result.Error != "" {
 		wsResult.Error = result.Error
 	} else if result.Stdout != "" {
-		// Try to parse stdout as JSON for structured results
 		var jsonResult any
 		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
 			wsResult.Result = jsonResult
@@ -654,8 +745,6 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 		}
 	}
 
-	// Submit result via HTTP to keep database in sync (skip ephemeral commands
-	// like terminal and desktop which use ephemeral IDs not stored in the database)
 	if !isEphemeralCommand(cmd.Type) {
 		go h.submitCommandResult(cmd.ID, result)
 	}
@@ -663,9 +752,6 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 	return wsResult
 }
 
-// isEphemeralCommand returns true for command types that use ephemeral IDs
-// (not stored in the database) and should not be submitted via HTTP.
-// This includes terminal and desktop streaming commands.
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
@@ -677,11 +763,23 @@ func isEphemeralCommand(cmdType string) bool {
 
 // executeCommand runs a command and returns the result
 func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
-	fmt.Printf("Processing command: %s (type: %s)\n", cmd.ID, cmd.Type)
+	cmdLog := logging.WithCommand(log, cmd.ID, cmd.Type)
+	cmdLog.Info("processing command")
+
+	// Audit: command received
+	if h.auditLog != nil {
+		h.auditLog.Log(audit.EventCommandReceived, cmd.ID, map[string]any{
+			"type": cmd.Type,
+		})
+	}
+
+	// Privilege check (warn-only for now)
+	if privilege.RequiresElevation(cmd.Type) && !privilege.IsRunningAsRoot() {
+		cmdLog.Warn("command requires elevated privileges but agent is not running as root")
+	}
 
 	var result tools.CommandResult
 
-	// Dispatch to appropriate handler based on command type
 	switch cmd.Type {
 	// Process management
 	case tools.CmdListProcesses:
@@ -958,7 +1056,6 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 			Timeout:    tools.GetPayloadInt(cmd.Payload, "timeoutSeconds", 300),
 			RunAs:      tools.GetPayloadString(cmd.Payload, "runAs", ""),
 		}
-		// Extract parameters if present
 		if params, ok := cmd.Payload["parameters"].(map[string]any); ok {
 			script.Parameters = make(map[string]string, len(params))
 			for k, v := range params {
@@ -1087,7 +1184,7 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 		h.sendInventoryData("patches", map[string]interface{}{
 			"patches":   pendingItems,
 			"installed": installedItems,
-		}, fmt.Sprintf("Patch inventory (%d pending, %d installed)", len(pendingItems), len(installedItems)))
+		}, fmt.Sprintf("patches (%d pending, %d installed)", len(pendingItems), len(installedItems)))
 
 		result = tools.NewSuccessResult(map[string]any{
 			"pendingCount":   len(pendingItems),
@@ -1106,7 +1203,6 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 		start := time.Now()
 		status, err := security.CollectStatus(h.config)
 		if err != nil {
-			// Return partial status when available, with the collection warning.
 			result = tools.NewSuccessResult(map[string]any{
 				"status":  status,
 				"warning": err.Error(),
@@ -1150,10 +1246,9 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 			break
 		}
 
-		// Optionally trigger Defender native scan on Windows for quick/full requests.
 		if runtime.GOOS == "windows" && tools.GetPayloadBool(cmd.Payload, "triggerDefender", false) && scanType != "custom" {
 			if defErr := security.TriggerDefenderScan(scanType); defErr != nil {
-				fmt.Printf("Defender scan trigger warning: %v\n", defErr)
+				cmdLog.Warn("defender scan trigger warning", "error", defErr)
 			}
 		}
 
@@ -1292,11 +1387,11 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 			var snmpVersion snmppoll.SNMPVersion
 			switch version {
 			case "v1":
-				snmpVersion = 0x00 // gosnmp.Version1
+				snmpVersion = 0x00
 			case "v3":
-				snmpVersion = 0x03 // gosnmp.Version3
+				snmpVersion = 0x03
 			default:
-				snmpVersion = 0x01 // gosnmp.Version2c
+				snmpVersion = 0x01
 			}
 
 			device := snmppoll.SNMPDevice{
@@ -1328,6 +1423,15 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 			Status: "failed",
 			Error:  fmt.Sprintf("unknown command type: %s", cmd.Type),
 		}
+	}
+
+	// Audit: command executed
+	if h.auditLog != nil {
+		h.auditLog.Log(audit.EventCommandExecuted, cmd.ID, map[string]any{
+			"type":       cmd.Type,
+			"status":     result.Status,
+			"durationMs": result.DurationMs,
+		})
 	}
 
 	return result
@@ -1482,14 +1586,12 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 		return "", fmt.Errorf("patch manager unavailable")
 	}
 
-	// Use explicit provider-prefixed IDs directly.
 	if provider, local, ok := splitPatchID(ref.ID); ok && h.patchMgr.HasProvider(provider) {
 		return provider + ":" + local, nil
 	}
 	if provider, local, ok := splitPatchID(ref.ExternalID); ok {
 		switch provider {
 		case "microsoft", "apple", "linux", "third_party", "custom":
-			// handled by source mapping below
 		case "dnf":
 			if h.patchMgr.HasProvider("yum") {
 				return "yum:" + local, nil
@@ -1616,26 +1718,22 @@ func errorString(err error) string {
 
 // handleUpgrade performs an auto-update to the specified version
 func (h *Heartbeat) handleUpgrade(targetVersion string) {
-	fmt.Printf("Upgrade requested to version %s\n", targetVersion)
+	log.Info("upgrade requested", "targetVersion", targetVersion)
 
-	// Get current binary path
 	binaryPath, err := os.Executable()
 	if err != nil {
-		fmt.Printf("Failed to get executable path: %v\n", err)
+		log.Error("failed to get executable path", "error", err)
 		return
 	}
 
-	// Resolve any symlinks
 	binaryPath, err = filepath.EvalSymlinks(binaryPath)
 	if err != nil {
-		fmt.Printf("Failed to resolve symlinks: %v\n", err)
+		log.Error("failed to resolve symlinks", "error", err)
 		return
 	}
 
-	// Create backup path
 	backupPath := binaryPath + ".backup"
 
-	// Create updater config
 	updaterCfg := &updater.Config{
 		ServerURL:      h.config.ServerURL,
 		AuthToken:      h.config.AuthToken,
@@ -1644,12 +1742,12 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 		BackupPath:     backupPath,
 	}
 
-	// Create updater and perform update
 	u := updater.New(updaterCfg)
 	if err := u.UpdateTo(targetVersion); err != nil {
-		fmt.Printf("Failed to update to version %s: %v\n", targetVersion, err)
+		log.Error("failed to update", "targetVersion", targetVersion, "error", err)
 		return
 	}
 
-	fmt.Printf("Successfully updated to version %s\n", targetVersion)
+	log.Info("update successful", "targetVersion", targetVersion)
 }
+

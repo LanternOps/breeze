@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
@@ -19,6 +25,8 @@ var (
 	cfgFile   string
 	serverURL string
 )
+
+var log = logging.L("main")
 
 var rootCmd = &cobra.Command{
 	Use:   "breeze-agent",
@@ -76,6 +84,24 @@ func main() {
 	}
 }
 
+// initLogging sets up structured logging from config. Call after config.Load().
+func initLogging(cfg *config.Config) {
+	var output io.Writer = os.Stdout
+
+	if cfg.LogFile != "" {
+		rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v (logging to stdout)\n", cfg.LogFile, err)
+		} else {
+			output = logging.TeeWriter(os.Stdout, rw)
+		}
+	}
+
+	logging.Init(cfg.LogFormat, cfg.LogLevel, output)
+	// Re-bind package-level logger after Init
+	log = logging.L("main")
+}
+
 // runAgent starts the main agent run loop. The heartbeat module handles:
 // - Periodic heartbeat calls to the API endpoint
 // - Receiving pending commands from the server via heartbeat response
@@ -92,17 +118,29 @@ func runAgent() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Starting Breeze Agent v%s\n", version)
-	fmt.Printf("Server: %s\n", cfg.ServerURL)
-	fmt.Printf("Agent ID: %s\n", cfg.AgentID)
+	initLogging(cfg)
 
-	// Start heartbeat - this implements the main agent run loop:
-	// 1. Periodically calls the heartbeat API endpoint (configurable interval)
-	// 2. Sends system metrics (CPU, RAM, disk usage) with each heartbeat
-	// 3. Receives pending commands from server in the heartbeat response
-	// 4. Executes received commands asynchronously (process, service, registry, etc.)
-	// 5. Reports command results back to the server
+	// Wrap auth token in SecureString for defense-in-depth
+	secureToken := secmem.NewSecureString(cfg.AuthToken)
+	defer secureToken.Zero()
+
+	log.Info("starting agent",
+		"version", version,
+		"server", cfg.ServerURL,
+		"agentId", cfg.AgentID,
+	)
+
+	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version)
+
+	// Log agent start audit event
+	if al := hb.AuditLog(); al != nil {
+		al.Log(audit.EventAgentStart, "", map[string]any{
+			"version": version,
+			"agentId": cfg.AgentID,
+		})
+	}
+
 	go hb.Start()
 
 	// Start WebSocket client for real-time command delivery
@@ -112,24 +150,31 @@ func runAgent() {
 		AuthToken: cfg.AuthToken,
 	}
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
-	hb.SetWebSocketClient(wsClient) // Wire terminal output streaming
+	hb.SetWebSocketClient(wsClient)
 	go wsClient.Start()
 
-	fmt.Println("Agent is running. Press Ctrl+C to stop.")
+	log.Info("agent is running")
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
-	fmt.Println("\nShutting down agent...")
+	log.Info("shutting down agent")
+
+	// Graceful shutdown: stop accepting, drain in-flight commands, then stop
+	hb.StopAcceptingCommands()
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer drainCancel()
+	hb.DrainAndWait(drainCtx)
+
 	wsClient.Stop()
 	hb.Stop()
-	fmt.Println("Agent stopped.")
+	log.Info("agent stopped")
 }
 
 // enrollDevice handles the enrollment process to register this agent with the Breeze server.
-// It collects device information, calls the enrollment API, and saves the returned credentials.
 func enrollDevice(enrollmentKey string) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -145,7 +190,6 @@ func enrollDevice(enrollmentKey string) {
 		os.Exit(1)
 	}
 
-	// Check if already enrolled
 	if cfg.AgentID != "" {
 		fmt.Fprintf(os.Stderr, "Agent is already enrolled with ID: %s\n", cfg.AgentID)
 		fmt.Fprintln(os.Stderr, "To re-enroll, delete the config file first.")
@@ -154,7 +198,6 @@ func enrollDevice(enrollmentKey string) {
 
 	fmt.Printf("Enrolling with server: %s\n", cfg.ServerURL)
 
-	// Collect device information for enrollment
 	hwCollector := collectors.NewHardwareCollector()
 
 	systemInfo, err := hwCollector.CollectSystemInfo()
@@ -172,7 +215,6 @@ func enrollDevice(enrollmentKey string) {
 	fmt.Printf("Hostname: %s\n", systemInfo.Hostname)
 	fmt.Printf("OS: %s (%s)\n", systemInfo.OSVersion, systemInfo.Architecture)
 
-	// Create API client and make enrollment request
 	client := api.NewClient(cfg.ServerURL, "", "")
 
 	enrollReq := &api.EnrollRequest{
@@ -204,13 +246,11 @@ func enrollDevice(enrollmentKey string) {
 		os.Exit(1)
 	}
 
-	// Update config with enrollment response
 	cfg.AgentID = enrollResp.AgentID
 	cfg.AuthToken = enrollResp.AuthToken
 	cfg.OrgID = enrollResp.OrgID
 	cfg.SiteID = enrollResp.SiteID
 
-	// Apply server-provided configuration if present
 	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
 		cfg.HeartbeatIntervalSeconds = enrollResp.Config.HeartbeatIntervalSeconds
 	}
@@ -221,7 +261,6 @@ func enrollDevice(enrollmentKey string) {
 		cfg.EnabledCollectors = enrollResp.Config.EnabledCollectors
 	}
 
-	// Save the updated configuration
 	if err := config.SaveTo(cfg, cfgFile); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to save config: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Agent ID: %s\n", cfg.AgentID)

@@ -6,7 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("terminal")
 
 // Session represents an active terminal session
 type Session struct {
@@ -65,7 +69,7 @@ func (m *Manager) StartSession(id string, cols, rows uint16, shell string, onOut
 	}
 
 	m.sessions[id] = session
-	fmt.Printf("Terminal session %s started with shell %s (%dx%d)\n", id, shell, cols, rows)
+	log.Info("session started", "sessionId", id, "shell", shell, "cols", cols, "rows", rows)
 
 	return nil
 }
@@ -184,7 +188,7 @@ func (s *Session) close() error {
 		s.cmd.Wait()
 	}
 
-	fmt.Printf("Terminal session %s closed\n", s.ID)
+	log.Debug("session closed", "sessionId", s.ID)
 
 	return closeErr
 }
@@ -197,7 +201,7 @@ func (s *Session) readLoop() {
 		n, err := s.pty.Read(buf)
 		if err != nil {
 			if err != io.EOF {
-				fmt.Printf("Terminal session %s read error: %v\n", s.ID, err)
+				log.Warn("session read error", "sessionId", s.ID, "error", err)
 			}
 			if s.onClose != nil {
 				s.onClose(err)

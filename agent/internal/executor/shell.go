@@ -133,7 +133,7 @@ func CleanupScript(path string) {
 
 	// Remove the file
 	if err := os.Remove(path); err != nil {
-		fmt.Printf("[executor] failed to cleanup script file %s: %v\n", path, err)
+		log.Warn("failed to cleanup script file", "path", path, "error", err)
 	}
 }
 

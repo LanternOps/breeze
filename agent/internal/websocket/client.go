@@ -9,7 +9,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("websocket")
 
 const (
 	writeWait      = 10 * time.Second
@@ -107,7 +111,7 @@ func (c *Client) Stop() {
 		}
 		c.connMu.Unlock()
 
-		fmt.Println("WebSocket client stopped")
+		log.Info("client stopped")
 	})
 }
 
@@ -128,7 +132,7 @@ func (c *Client) connect() error {
 	c.connMu.Unlock()
 
 	conn.SetReadLimit(maxMessageSize)
-	fmt.Printf("WebSocket connected to %s\n", c.config.ServerURL)
+	log.Info("connected", "server", c.config.ServerURL)
 	return nil
 }
 
@@ -164,7 +168,7 @@ func (c *Client) reconnectLoop() {
 		}
 
 		if err := c.connect(); err != nil {
-			fmt.Printf("WebSocket connection failed: %v\n", err)
+			log.Warn("connection failed", "error", err)
 
 			jitter := time.Duration(float64(backoff) * jitterFactor * (rand.Float64()*2 - 1))
 			sleep := backoff + jitter
@@ -172,7 +176,7 @@ func (c *Client) reconnectLoop() {
 				sleep = backoff
 			}
 
-			fmt.Printf("Retrying in %v...\n", sleep)
+			log.Info("retrying", "delay", sleep)
 			select {
 			case <-c.done:
 				return
@@ -224,7 +228,7 @@ func (c *Client) readPump() {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				fmt.Printf("WebSocket read error: %v\n", err)
+				log.Warn("read error", "error", err)
 			}
 			return
 		}
@@ -235,7 +239,7 @@ func (c *Client) readPump() {
 			ID   string `json:"id"`
 		}
 		if err := json.Unmarshal(message, &msg); err != nil {
-			fmt.Printf("Failed to parse message: %v\n", err)
+			log.Warn("failed to parse message", "error", err)
 			continue
 		}
 
@@ -248,7 +252,7 @@ func (c *Client) readPump() {
 
 		var cmd Command
 		if err := json.Unmarshal(message, &cmd); err != nil {
-			fmt.Printf("Failed to parse command: %v\n", err)
+			log.Warn("failed to parse command", "error", err)
 			continue
 		}
 
@@ -278,7 +282,7 @@ func (c *Client) writePump(done chan struct{}) {
 
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				fmt.Printf("WebSocket write error: %v\n", err)
+				log.Warn("write error", "error", err)
 				return
 			}
 
@@ -293,7 +297,7 @@ func (c *Client) writePump(done chan struct{}) {
 
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-				fmt.Printf("WebSocket binary write error: %v\n", err)
+				log.Warn("binary write error", "error", err)
 				return
 			}
 
@@ -315,14 +319,14 @@ func (c *Client) writePump(done chan struct{}) {
 }
 
 func (c *Client) processCommand(cmd Command) {
-	fmt.Printf("Processing WebSocket command: %s (type: %s)\n", cmd.ID, cmd.Type)
+	log.Info("processing command", "commandId", cmd.ID, "commandType", cmd.Type)
 
 	result := c.cmdHandler(cmd)
 	result.Type = "command_result"
 	result.CommandID = cmd.ID
 
 	if err := c.SendResult(result); err != nil {
-		fmt.Printf("Failed to send command result: %v\n", err)
+		log.Error("failed to send command result", "error", err)
 	}
 }
 

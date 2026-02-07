@@ -25,6 +25,22 @@ type Config struct {
 	BackupLocalPath          string   `mapstructure:"backup_local_path"`
 	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
+
+	// Logging configuration
+	LogLevel      string `mapstructure:"log_level"`
+	LogFormat     string `mapstructure:"log_format"`
+	LogFile       string `mapstructure:"log_file"`
+	LogMaxSizeMB  int    `mapstructure:"log_max_size_mb"`
+	LogMaxBackups int    `mapstructure:"log_max_backups"`
+
+	// Concurrency limits
+	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
+	CommandQueueSize      int `mapstructure:"command_queue_size"`
+
+	// Audit configuration
+	AuditEnabled    bool `mapstructure:"audit_enabled"`
+	AuditMaxSizeMB  int  `mapstructure:"audit_max_size_mb"`
+	AuditMaxBackups int  `mapstructure:"audit_max_backups"`
 }
 
 func Default() *Config {
@@ -32,6 +48,15 @@ func Default() *Config {
 		HeartbeatIntervalSeconds: 60,
 		MetricsIntervalSeconds:   30,
 		EnabledCollectors:        []string{"hardware", "software", "metrics", "network"},
+		LogLevel:                 "info",
+		LogFormat:                "text",
+		LogMaxSizeMB:             50,
+		LogMaxBackups:            3,
+		MaxConcurrentCommands:    10,
+		CommandQueueSize:         100,
+		AuditEnabled:             true,
+		AuditMaxSizeMB:           50,
+		AuditMaxBackups:          3,
 	}
 }
 
@@ -59,6 +84,9 @@ func Load(cfgFile string) (*Config, error) {
 	if err := viper.Unmarshal(cfg); err != nil {
 		return nil, err
 	}
+
+	// Warn-only validation (does not block startup)
+	cfg.Validate()
 
 	return cfg, nil
 }

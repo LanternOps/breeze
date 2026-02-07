@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -13,7 +12,10 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("executor")
 
 const (
 	// DefaultTimeout is the default execution timeout in seconds
@@ -91,8 +93,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 		StartedAt:   startTime.UTC().Format(time.RFC3339),
 	}
 
-	log.Printf("[executor] starting execution %s (script=%s type=%s timeout=%d)",
-		script.ID, script.ScriptID, script.ScriptType, script.Timeout)
+	log.Info("starting execution", "executionId", script.ID, "scriptId", script.ScriptID, "scriptType", script.ScriptType, "timeout", script.Timeout)
 
 	// Validate script type
 	if !IsSupportedScriptType(script.ScriptType) {
@@ -117,7 +118,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 
 	// Validate script content for security (after parameter substitution)
 	if err := e.validateScript(scriptContent); err != nil {
-		log.Printf("[executor] script validation failed for %s: %v", script.ID, err)
+		log.Warn("script validation failed", "executionId", script.ID, "error", err)
 		result.ExitCode = -1
 		result.Error = fmt.Sprintf("script validation failed: %v", err)
 		result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
@@ -127,7 +128,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	// Write script to temp file
 	scriptPath, err := WriteScriptFile(scriptContent, script.ScriptType)
 	if err != nil {
-		log.Printf("[executor] failed to write script file for %s: %v", script.ID, err)
+		log.Error("failed to write script file", "executionId", script.ID, "error", err)
 		result.ExitCode = -1
 		result.Error = fmt.Sprintf("failed to write script: %v", err)
 		result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
@@ -172,11 +173,13 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	// Configure environment
 	cmd.Env = e.buildEnvironment(script)
 
+	// Set process group so children are killed on timeout
+	setProcessGroup(cmd)
+
 	// Handle runAs for elevated execution
 	if script.RunAs != "" {
 		if err := e.configureRunAs(cmd, script.RunAs); err != nil {
-			log.Printf("[executor] failed to configure runAs for %s (user=%s): %v",
-				script.ID, script.RunAs, err)
+			log.Error("failed to configure runAs", "executionId", script.ID, "user", script.RunAs, "error", err)
 			result.ExitCode = -1
 			result.Error = fmt.Sprintf("failed to configure runAs: %v", err)
 			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
@@ -209,20 +212,24 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			log.Printf("[executor] execution %s timed out after %ds", script.ID, timeout)
+			// Kill the entire process group on timeout
+			if killErr := killProcessGroup(cmd); killErr != nil {
+				log.Warn("failed to kill process group", "executionId", script.ID, "error", killErr)
+			}
+			log.Warn("execution timed out", "executionId", script.ID, "timeoutSeconds", timeout)
 			result.ExitCode = -1
 			result.Error = fmt.Sprintf("execution timed out after %d seconds", timeout)
 		} else if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
-			log.Printf("[executor] execution %s completed with exit code %d", script.ID, result.ExitCode)
+			log.Info("execution completed", "executionId", script.ID, "exitCode", result.ExitCode)
 		} else {
 			result.ExitCode = -1
 			result.Error = err.Error()
-			log.Printf("[executor] execution %s failed: %v", script.ID, err)
+			log.Error("execution failed", "executionId", script.ID, "error", err)
 		}
 	} else {
 		result.ExitCode = 0
-		log.Printf("[executor] execution %s completed successfully (%v)", script.ID, time.Since(startTime))
+		log.Info("execution completed successfully", "executionId", script.ID, "duration", time.Since(startTime))
 	}
 
 	return result, nil
@@ -238,16 +245,14 @@ func (e *Executor) Cancel(executionID string) error {
 		return fmt.Errorf("execution %s not found or already completed", executionID)
 	}
 
-	log.Printf("[executor] cancelling execution %s", executionID)
+	log.Info("cancelling execution", "executionId", executionID)
 
 	// Cancel the context to terminate the process
 	running.cancel()
 
-	// On Windows, we may need to forcefully kill the process
-	if runtime.GOOS == "windows" && running.cmd.Process != nil {
-		if err := running.cmd.Process.Kill(); err != nil {
-			log.Printf("[executor] failed to kill process for %s: %v", executionID, err)
-		}
+	// Kill the entire process group to prevent orphaned children
+	if err := killProcessGroup(running.cmd); err != nil {
+		log.Warn("failed to kill process group", "executionId", executionID, "error", err)
 	}
 
 	return nil
