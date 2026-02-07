@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   Play,
   RotateCcw,
-  Terminal,
+  Monitor,
   Settings,
   Power,
   Shield,
@@ -12,6 +12,7 @@ import {
   Wrench
 } from 'lucide-react';
 import type { Device } from './DeviceList';
+import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 
 type DeviceActionsProps = {
   device: Device;
@@ -82,15 +83,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Play className="h-4 w-4" />
                 Run Script
               </button>
-              <button
-                type="button"
-                onClick={() => handleAction('terminal')}
-                disabled={device.status === 'offline'}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Terminal className="h-4 w-4" />
-                Remote Terminal
-              </button>
+              <ConnectDesktopButton deviceId={device.id} compact />
               <button
                 type="button"
                 onClick={() => handleAction('remote-tools')}
@@ -148,15 +141,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <Play className="h-4 w-4" />
           Run Script
         </button>
-        <button
-          type="button"
-          onClick={() => handleAction('terminal')}
-          disabled={device.status === 'offline' || loading}
-          className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <Terminal className="h-4 w-4" />
-          Remote Terminal
-        </button>
+        <ConnectDesktopButton deviceId={device.id} />
         <button
           type="button"
           onClick={() => handleAction('remote-tools')}

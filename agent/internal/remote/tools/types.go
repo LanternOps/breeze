@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -50,9 +51,15 @@ const (
 	CmdFileTransfer   = "file_transfer"
 	CmdCancelTransfer = "cancel_transfer"
 
-	// Remote desktop
+	// Remote desktop (WebRTC - legacy)
 	CmdStartDesktop = "start_desktop"
 	CmdStopDesktop  = "stop_desktop"
+
+	// Remote desktop (WebSocket streaming)
+	CmdDesktopStreamStart = "desktop_stream_start"
+	CmdDesktopStreamStop  = "desktop_stream_stop"
+	CmdDesktopInput       = "desktop_input"
+	CmdDesktopConfig      = "desktop_config"
 
 	// Terminal commands
 	CmdTerminalStart  = "terminal_start"
@@ -70,6 +77,12 @@ const (
 	CmdFileDelete = "file_delete"
 	CmdFileMkdir  = "file_mkdir"
 	CmdFileRename = "file_rename"
+
+	// Network discovery
+	CmdNetworkDiscovery = "network_discovery"
+
+	// SNMP polling
+	CmdSnmpPoll = "snmp_poll"
 )
 
 // CommandResult represents the result of a command execution
@@ -84,7 +97,15 @@ type CommandResult struct {
 
 // NewSuccessResult creates a successful command result with data
 func NewSuccessResult(data interface{}, durationMs int64) CommandResult {
-	jsonData, _ := json.Marshal(data)
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return CommandResult{
+			Status:     "failed",
+			ExitCode:   1,
+			Error:      fmt.Sprintf("failed to marshal result: %v", err),
+			DurationMs: durationMs,
+		}
+	}
 	return CommandResult{
 		Status:     "completed",
 		ExitCode:   0,
@@ -273,4 +294,22 @@ func GetPayloadBool(payload map[string]any, key string, defaultVal bool) bool {
 		}
 	}
 	return defaultVal
+}
+
+func GetPayloadStringSlice(payload map[string]any, key string) []string {
+	raw, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	slice, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(slice))
+	for _, v := range slice {
+		if s, ok := v.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }

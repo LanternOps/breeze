@@ -12,10 +12,12 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/discovery"
 	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/scripts"
+	"github.com/breeze-rmm/agent/internal/snmppoll"
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -55,6 +57,7 @@ type Heartbeat struct {
 	agentVersion        string
 	fileTransferMgr     *filetransfer.Manager
 	desktopMgr          *desktop.SessionManager
+	wsDesktopMgr        *desktop.WsSessionManager
 	terminalMgr         *terminal.Manager
 	wsClient            *websocket.Client
 	mu                  sync.Mutex
@@ -87,6 +90,7 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		agentVersion:    version,
 		fileTransferMgr: filetransfer.NewManager(ftConfig),
 		desktopMgr:      desktop.NewSessionManager(),
+		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
 	}
 }
@@ -491,19 +495,22 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 		}
 	}
 
-	// Submit result via HTTP to keep database in sync (skip terminal commands
-	// which use ephemeral IDs not stored in the database)
-	if !isTerminalCommand(cmd.Type) {
+	// Submit result via HTTP to keep database in sync (skip ephemeral commands
+	// like terminal and desktop which use ephemeral IDs not stored in the database)
+	if !isEphemeralCommand(cmd.Type) {
 		go h.submitCommandResult(cmd.ID, result)
 	}
 
 	return wsResult
 }
 
-// isTerminalCommand returns true for terminal-related command types
-func isTerminalCommand(cmdType string) bool {
+// isEphemeralCommand returns true for command types that use ephemeral IDs
+// (not stored in the database) and should not be submitted via HTTP.
+// This includes terminal and desktop streaming commands.
+func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
-	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop:
+	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
+		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig:
 		return true
 	}
 	return false
@@ -652,6 +659,125 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 			}
 		}
 
+	// Remote desktop (WebSocket streaming)
+	case tools.CmdDesktopStreamStart:
+		start := time.Now()
+		sessionID, _ := cmd.Payload["sessionId"].(string)
+		if sessionID == "" {
+			result = tools.CommandResult{
+				Status:     "failed",
+				Error:      "missing sessionId",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		} else {
+			config := desktop.DefaultStreamConfig()
+			if q, ok := cmd.Payload["quality"].(float64); ok && q >= 1 && q <= 100 {
+				config.Quality = int(q)
+			}
+			if s, ok := cmd.Payload["scaleFactor"].(float64); ok && s > 0 && s <= 1.0 {
+				config.ScaleFactor = s
+			}
+			if f, ok := cmd.Payload["maxFps"].(float64); ok && f >= 1 && f <= 30 {
+				config.MaxFPS = int(f)
+			}
+
+			w, h2, err := h.wsDesktopMgr.StartSession(sessionID, config, func(sid string, data []byte) error {
+				if h.wsClient != nil {
+					return h.wsClient.SendDesktopFrame(sid, data)
+				}
+				return fmt.Errorf("ws client not available")
+			})
+			if err != nil {
+				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			} else {
+				result = tools.NewSuccessResult(map[string]any{
+					"sessionId":    sessionID,
+					"screenWidth":  w,
+					"screenHeight": h2,
+				}, time.Since(start).Milliseconds())
+			}
+		}
+
+	case tools.CmdDesktopStreamStop:
+		start := time.Now()
+		sessionID, _ := cmd.Payload["sessionId"].(string)
+		if sessionID == "" {
+			result = tools.CommandResult{
+				Status:     "failed",
+				Error:      "missing sessionId",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		} else {
+			h.wsDesktopMgr.StopSession(sessionID)
+			result = tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
+		}
+
+	case tools.CmdDesktopInput:
+		start := time.Now()
+		sessionID, _ := cmd.Payload["sessionId"].(string)
+		if sessionID == "" {
+			result = tools.CommandResult{
+				Status:     "failed",
+				Error:      "missing sessionId",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		} else {
+			event := desktop.InputEvent{}
+			if e, ok := cmd.Payload["event"].(map[string]any); ok {
+				event.Type, _ = e["type"].(string)
+				if x, ok := e["x"].(float64); ok {
+					event.X = int(x)
+				}
+				if y, ok := e["y"].(float64); ok {
+					event.Y = int(y)
+				}
+				event.Button, _ = e["button"].(string)
+				event.Key, _ = e["key"].(string)
+				if d, ok := e["delta"].(float64); ok {
+					event.Delta = int(d)
+				}
+				if mods, ok := e["modifiers"].([]any); ok {
+					for _, m := range mods {
+						if ms, ok := m.(string); ok {
+							event.Modifiers = append(event.Modifiers, ms)
+						}
+					}
+				}
+			}
+			if err := h.wsDesktopMgr.HandleInput(sessionID, event); err != nil {
+				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			} else {
+				result = tools.NewSuccessResult(map[string]any{"ok": true}, time.Since(start).Milliseconds())
+			}
+		}
+
+	case tools.CmdDesktopConfig:
+		start := time.Now()
+		sessionID, _ := cmd.Payload["sessionId"].(string)
+		if sessionID == "" {
+			result = tools.CommandResult{
+				Status:     "failed",
+				Error:      "missing sessionId",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		} else {
+			config := desktop.StreamConfig{}
+			if q, ok := cmd.Payload["quality"].(float64); ok {
+				config.Quality = int(q)
+			}
+			if s, ok := cmd.Payload["scaleFactor"].(float64); ok {
+				config.ScaleFactor = s
+			}
+			if f, ok := cmd.Payload["maxFps"].(float64); ok {
+				config.MaxFPS = int(f)
+			}
+			if err := h.wsDesktopMgr.UpdateConfig(sessionID, config); err != nil {
+				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			} else {
+				result = tools.NewSuccessResult(map[string]any{"ok": true}, time.Since(start).Milliseconds())
+			}
+		}
+
 	// Terminal commands
 	case tools.CmdTerminalStart:
 		result = tools.StartTerminal(h.terminalMgr, cmd.Payload, h.sendTerminalOutput)
@@ -698,6 +824,80 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 		result = tools.MakeDirectory(cmd.Payload)
 	case tools.CmdFileRename:
 		result = tools.RenameFile(cmd.Payload)
+
+	// Network discovery
+	case tools.CmdNetworkDiscovery:
+		start := time.Now()
+		scanConfig := discovery.ScanConfig{
+			Subnets:          tools.GetPayloadStringSlice(cmd.Payload, "subnets"),
+			ExcludeIPs:       tools.GetPayloadStringSlice(cmd.Payload, "excludeIps"),
+			Methods:          tools.GetPayloadStringSlice(cmd.Payload, "methods"),
+			PortRanges:       tools.GetPayloadStringSlice(cmd.Payload, "portRanges"),
+			SNMPCommunities:  tools.GetPayloadStringSlice(cmd.Payload, "snmpCommunities"),
+			Timeout:          time.Duration(tools.GetPayloadInt(cmd.Payload, "timeout", 2)) * time.Second,
+			Concurrency:      tools.GetPayloadInt(cmd.Payload, "concurrency", 128),
+			DeepScan:         tools.GetPayloadBool(cmd.Payload, "deepScan", false),
+			IdentifyOS:       tools.GetPayloadBool(cmd.Payload, "identifyOS", false),
+			ResolveHostnames: tools.GetPayloadBool(cmd.Payload, "resolveHostnames", false),
+		}
+		scanner := discovery.NewScanner(scanConfig)
+		hosts, err := scanner.Scan()
+		if err != nil {
+			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		} else {
+			result = tools.NewSuccessResult(map[string]any{
+				"jobId":           tools.GetPayloadString(cmd.Payload, "jobId", ""),
+				"hosts":           hosts,
+				"hostsScanned":    0,
+				"hostsDiscovered": len(hosts),
+			}, time.Since(start).Milliseconds())
+		}
+
+	// SNMP polling
+	case tools.CmdSnmpPoll:
+		start := time.Now()
+		target := tools.GetPayloadString(cmd.Payload, "target", "")
+		if target == "" {
+			result = tools.CommandResult{
+				Status:     "failed",
+				Error:      "missing SNMP target",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		} else {
+			version := tools.GetPayloadString(cmd.Payload, "version", "v2c")
+			var snmpVersion snmppoll.SNMPVersion
+			switch version {
+			case "v1":
+				snmpVersion = 0x00 // gosnmp.Version1
+			case "v3":
+				snmpVersion = 0x03 // gosnmp.Version3
+			default:
+				snmpVersion = 0x01 // gosnmp.Version2c
+			}
+
+			device := snmppoll.SNMPDevice{
+				IP:      target,
+				Port:    uint16(tools.GetPayloadInt(cmd.Payload, "port", 161)),
+				Version: snmpVersion,
+				Auth: snmppoll.SNMPAuth{
+					Community: tools.GetPayloadString(cmd.Payload, "community", "public"),
+					Username:  tools.GetPayloadString(cmd.Payload, "username", ""),
+				},
+				OIDs:    tools.GetPayloadStringSlice(cmd.Payload, "oids"),
+				Timeout: time.Duration(tools.GetPayloadInt(cmd.Payload, "timeout", 2)) * time.Second,
+				Retries: tools.GetPayloadInt(cmd.Payload, "retries", 1),
+			}
+
+			metrics, err := snmppoll.CollectMetrics(device)
+			if err != nil {
+				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			} else {
+				result = tools.NewSuccessResult(map[string]any{
+					"deviceId": tools.GetPayloadString(cmd.Payload, "deviceId", ""),
+					"metrics":  metrics,
+				}, time.Since(start).Milliseconds())
+			}
+		}
 
 	default:
 		result = tools.CommandResult{

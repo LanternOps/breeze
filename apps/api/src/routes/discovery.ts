@@ -1,121 +1,21 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { and, eq, desc, sql } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { db } from '../db';
+import {
+  discoveryProfiles,
+  discoveryJobs,
+  discoveredAssets,
+  networkTopology
+} from '../db/schema';
+import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
+import { isRedisAvailable } from '../services/redis';
 
 export const discoveryRoutes = new Hono();
 
-type DiscoveryProfile = {
-  id: string;
-  orgId: string;
-  name: string;
-  subnets: string[];
-  methods: string[];
-  schedule: {
-    type: 'manual' | 'cron' | 'interval';
-    cron?: string;
-    intervalMinutes?: number;
-  };
-  createdAt: string;
-  updatedAt: string;
-};
-
-type DiscoveryJob = {
-  id: string;
-  orgId: string;
-  profileId: string;
-  agentId: string | null;
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  createdAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-  results: Array<{
-    assetId: string;
-    status: 'new' | 'linked' | 'ignored';
-    assetType: string;
-  }>;
-};
-
-type DiscoveryAsset = {
-  id: string;
-  orgId: string;
-  assetType: 'device' | 'printer' | 'router' | 'switch' | 'unknown';
-  status: 'new' | 'linked' | 'ignored';
-  hostname: string | null;
-  ipAddress: string | null;
-  macAddress: string | null;
-  linkedDeviceId: string | null;
-  ignoredReason: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-const discoveryProfiles: DiscoveryProfile[] = [
-  {
-    id: 'profile-001',
-    orgId: '00000000-0000-0000-0000-000000000000',
-    name: 'Default Discovery',
-    subnets: ['10.0.0.0/24', '10.0.1.0/24'],
-    methods: ['ping', 'arp'],
-    schedule: { type: 'interval', intervalMinutes: 60 },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  }
-];
-
-const discoveryAssets: DiscoveryAsset[] = [
-  {
-    id: 'asset-001',
-    orgId: '00000000-0000-0000-0000-000000000000',
-    assetType: 'device',
-    status: 'new',
-    hostname: 'printer-01',
-    ipAddress: '10.0.0.42',
-    macAddress: 'AA:BB:CC:DD:EE:01',
-    linkedDeviceId: null,
-    ignoredReason: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'asset-002',
-    orgId: '00000000-0000-0000-0000-000000000000',
-    assetType: 'router',
-    status: 'linked',
-    hostname: 'core-router',
-    ipAddress: '10.0.0.1',
-    macAddress: 'AA:BB:CC:DD:EE:02',
-    linkedDeviceId: 'device-123',
-    ignoredReason: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  }
-];
-
-const discoveryJobs: DiscoveryJob[] = [
-  {
-    id: 'job-001',
-    orgId: '00000000-0000-0000-0000-000000000000',
-    profileId: 'profile-001',
-    agentId: null,
-    status: 'completed',
-    createdAt: new Date().toISOString(),
-    startedAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
-    results: [
-      { assetId: 'asset-001', status: 'new', assetType: 'device' },
-      { assetId: 'asset-002', status: 'linked', assetType: 'router' }
-    ]
-  }
-];
-
-function canAccessOrg(auth: { scope: string; orgId: string | null }, orgId: string) {
-  if (auth.scope === 'organization') {
-    return auth.orgId === orgId;
-  }
-
-  return true;
-}
+// --- Helpers ---
 
 function resolveOrgId(
   auth: { scope: string; orgId: string | null },
@@ -123,23 +23,15 @@ function resolveOrgId(
   requireForNonOrg = false
 ) {
   if (auth.scope === 'organization') {
-    if (!auth.orgId) {
-      return { error: 'Organization context required', status: 403 } as const;
-    }
-
-    if (requestedOrgId && requestedOrgId !== auth.orgId) {
-      return { error: 'Access to this organization denied', status: 403 } as const;
-    }
-
+    if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
+    if (requestedOrgId && requestedOrgId !== auth.orgId) return { error: 'Access to this organization denied', status: 403 } as const;
     return { orgId: auth.orgId } as const;
   }
-
-  if (requireForNonOrg && !requestedOrgId) {
-    return { error: 'orgId is required', status: 400 } as const;
-  }
-
+  if (requireForNonOrg && !requestedOrgId) return { error: 'orgId is required', status: 400 } as const;
   return { orgId: requestedOrgId ?? null } as const;
 }
+
+// --- Zod Schemas ---
 
 const listProfilesSchema = z.object({
   orgId: z.string().uuid().optional()
@@ -157,22 +49,44 @@ const scheduleSchema = z.object({
 
 const createProfileSchema = z.object({
   orgId: z.string().uuid().optional(),
-  name: z.string().min(1).max(255).optional(),
+  siteId: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  description: z.string().optional(),
   subnets: z.array(z.string().min(1)).min(1),
+  excludeIps: z.array(z.string()).optional(),
   methods: z.array(z.string().min(1)).min(1),
-  schedule: scheduleSchema
+  portRanges: z.any().optional(),
+  snmpCommunities: z.array(z.string()).optional(),
+  snmpCredentials: z.any().optional(),
+  schedule: scheduleSchema,
+  deepScan: z.boolean().optional(),
+  identifyOS: z.boolean().optional(),
+  resolveHostnames: z.boolean().optional(),
+  timeout: z.number().int().positive().optional(),
+  concurrency: z.number().int().positive().optional()
 });
 
 const updateProfileSchema = z.object({
   name: z.string().min(1).max(255).optional(),
+  description: z.string().optional(),
   subnets: z.array(z.string().min(1)).min(1).optional(),
+  excludeIps: z.array(z.string()).optional(),
   methods: z.array(z.string().min(1)).min(1).optional(),
-  schedule: scheduleSchema.optional()
+  portRanges: z.any().optional(),
+  snmpCommunities: z.array(z.string()).optional(),
+  snmpCredentials: z.any().optional(),
+  schedule: scheduleSchema.optional(),
+  enabled: z.boolean().optional(),
+  deepScan: z.boolean().optional(),
+  identifyOS: z.boolean().optional(),
+  resolveHostnames: z.boolean().optional(),
+  timeout: z.number().int().positive().optional(),
+  concurrency: z.number().int().positive().optional()
 });
 
 const scanSchema = z.object({
-  profileId: z.string().min(1),
-  agentId: z.string().uuid().optional()
+  profileId: z.string().uuid(),
+  agentId: z.string().optional()
 });
 
 const listJobsSchema = z.object({
@@ -181,8 +95,11 @@ const listJobsSchema = z.object({
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
-  status: z.enum(['new', 'linked', 'ignored']).optional(),
-  assetType: z.enum(['device', 'printer', 'router', 'switch', 'unknown']).optional()
+  status: z.enum(['new', 'identified', 'managed', 'ignored', 'offline']).optional(),
+  assetType: z.enum([
+    'workstation', 'server', 'printer', 'router', 'switch',
+    'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
+  ]).optional()
 });
 
 const linkAssetSchema = z.object({
@@ -197,9 +114,12 @@ const topologyQuerySchema = z.object({
   orgId: z.string().uuid().optional()
 });
 
+// --- Routes ---
+
 discoveryRoutes.use('*', authMiddleware);
 
-// GET /profiles - List discovery profiles for org
+// ==================== PROFILE ROUTES ====================
+
 discoveryRoutes.get(
   '/profiles',
   requireScope('organization', 'partner', 'system'),
@@ -207,28 +127,34 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId, false);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    // Filter profiles based on org access
-    let data;
-    if (orgResult.orgId) {
-      // Specific org requested
-      data = discoveryProfiles.filter(profile => profile.orgId === orgResult.orgId);
-    } else if (auth.scope === 'organization' && auth.orgId) {
-      // Org-scoped user - show their org's profiles
-      data = discoveryProfiles.filter(profile => profile.orgId === auth.orgId);
-    } else {
-      // Partner/system - show all accessible profiles (for now, all of them)
-      data = discoveryProfiles;
-    }
-    return c.json({ data });
+    const where = orgResult.orgId ? eq(discoveryProfiles.orgId, orgResult.orgId) : undefined;
+    const results = await db.select().from(discoveryProfiles)
+      .where(where)
+      .orderBy(desc(discoveryProfiles.createdAt));
+
+    return c.json({
+      data: results.map((p) => ({
+        id: p.id,
+        orgId: p.orgId,
+        siteId: p.siteId,
+        name: p.name,
+        description: p.description,
+        enabled: p.enabled,
+        subnets: p.subnets,
+        methods: p.methods,
+        schedule: p.schedule,
+        deepScan: p.deepScan,
+        resolveHostnames: p.resolveHostnames,
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString()
+      }))
+    });
   }
 );
 
-// POST /profiles - Create profile with subnets, methods, schedule
 discoveryRoutes.post(
   '/profiles',
   requireScope('organization', 'partner', 'system'),
@@ -237,45 +163,52 @@ discoveryRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
     const orgResult = resolveOrgId(auth, body.orgId, true);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const now = new Date().toISOString();
-    const profile: DiscoveryProfile = {
-      id: `profile-${Date.now()}`,
-      orgId: orgResult.orgId as string,
-      name: body.name ?? `Discovery Profile ${discoveryProfiles.length + 1}`,
+    const [profile] = await db.insert(discoveryProfiles).values({
+      orgId: orgResult.orgId!,
+      siteId: body.siteId,
+      name: body.name,
+      description: body.description ?? null,
       subnets: body.subnets,
-      methods: body.methods,
+      excludeIps: body.excludeIps ?? [],
+      methods: body.methods as any,
+      portRanges: body.portRanges ?? null,
+      snmpCommunities: body.snmpCommunities ?? [],
+      snmpCredentials: body.snmpCredentials ?? null,
       schedule: body.schedule,
-      createdAt: now,
-      updatedAt: now
-    };
+      deepScan: body.deepScan ?? false,
+      identifyOS: body.identifyOS ?? false,
+      resolveHostnames: body.resolveHostnames ?? false,
+      timeout: body.timeout ?? null,
+      concurrency: body.concurrency ?? null,
+      createdBy: auth.user?.id ?? null
+    }).returning();
 
-    discoveryProfiles.push(profile);
     return c.json(profile, 201);
   }
 );
 
-// GET /profiles/:id - Get profile details
 discoveryRoutes.get(
   '/profiles/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id');
-    const profile = discoveryProfiles.find(item => item.id === profileId);
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (!profile || !canAccessOrg(auth, profile.orgId)) {
-      return c.json({ error: 'Profile not found' }, 404);
-    }
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
+    if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
+
+    const [profile] = await db.select().from(discoveryProfiles)
+      .where(and(...conditions)).limit(1);
+    if (!profile) return c.json({ error: 'Profile not found' }, 404);
 
     return c.json(profile);
   }
 );
 
-// PATCH /profiles/:id - Update profile
 discoveryRoutes.patch(
   '/profiles/:id',
   requireScope('organization', 'partner', 'system'),
@@ -284,54 +217,72 @@ discoveryRoutes.patch(
     const auth = c.get('auth');
     const profileId = c.req.param('id');
     const updates = c.req.valid('json');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const profile = discoveryProfiles.find(item => item.id === profileId);
-    if (!profile || !canAccessOrg(auth, profile.orgId)) {
-      return c.json({ error: 'Profile not found' }, 404);
-    }
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
+    if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
 
-    const profileIndex = discoveryProfiles.indexOf(profile);
-    const now = new Date().toISOString();
-    const updated: DiscoveryProfile = {
-      id: profile.id,
-      orgId: profile.orgId,
-      createdAt: profile.createdAt,
-      name: updates.name ?? profile.name,
-      subnets: updates.subnets ?? profile.subnets,
-      methods: updates.methods ?? profile.methods,
-      schedule: updates.schedule ?? profile.schedule,
-      updatedAt: now
-    };
+    const [existing] = await db.select({ id: discoveryProfiles.id }).from(discoveryProfiles)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Profile not found' }, 404);
 
-    discoveryProfiles[profileIndex] = updated;
+    const setValues: Record<string, unknown> = { updatedAt: new Date() };
+    if (updates.name !== undefined) setValues.name = updates.name;
+    if (updates.description !== undefined) setValues.description = updates.description;
+    if (updates.subnets !== undefined) setValues.subnets = updates.subnets;
+    if (updates.excludeIps !== undefined) setValues.excludeIps = updates.excludeIps;
+    if (updates.methods !== undefined) setValues.methods = updates.methods;
+    if (updates.portRanges !== undefined) setValues.portRanges = updates.portRanges;
+    if (updates.snmpCommunities !== undefined) setValues.snmpCommunities = updates.snmpCommunities;
+    if (updates.snmpCredentials !== undefined) setValues.snmpCredentials = updates.snmpCredentials;
+    if (updates.schedule !== undefined) setValues.schedule = updates.schedule;
+    if (updates.enabled !== undefined) setValues.enabled = updates.enabled;
+    if (updates.deepScan !== undefined) setValues.deepScan = updates.deepScan;
+    if (updates.identifyOS !== undefined) setValues.identifyOS = updates.identifyOS;
+    if (updates.resolveHostnames !== undefined) setValues.resolveHostnames = updates.resolveHostnames;
+    if (updates.timeout !== undefined) setValues.timeout = updates.timeout;
+    if (updates.concurrency !== undefined) setValues.concurrency = updates.concurrency;
+
+    const [updated] = await db.update(discoveryProfiles)
+      .set(setValues)
+      .where(eq(discoveryProfiles.id, profileId))
+      .returning();
+
     return c.json(updated);
   }
 );
 
-// DELETE /profiles/:id - Delete profile
 discoveryRoutes.delete(
   '/profiles/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id');
-    const profile = discoveryProfiles.find(item => item.id === profileId);
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (!profile || !canAccessOrg(auth, profile.orgId)) {
-      return c.json({ error: 'Profile not found' }, 404);
-    }
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
+    if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
 
-    const profileIndex = discoveryProfiles.indexOf(profile);
-    discoveryProfiles.splice(profileIndex, 1);
+    const [existing] = await db.select({ id: discoveryProfiles.id }).from(discoveryProfiles)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Profile not found' }, 404);
+
+    // Delete related jobs first
+    await db.delete(discoveryJobs).where(eq(discoveryJobs.profileId, profileId));
+    await db.delete(discoveryProfiles).where(eq(discoveryProfiles.id, profileId));
+
     return c.json({ success: true });
   }
 );
 
-// POST /scan - Trigger discovery scan with profileId, optional agentId
+// ==================== SCAN / JOB ROUTES ====================
+
 discoveryRoutes.post(
   '/scan',
   requireScope('organization', 'partner', 'system'),
@@ -339,31 +290,61 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const profile = discoveryProfiles.find(item => item.id === body.profileId);
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (!profile || !canAccessOrg(auth, profile.orgId)) {
-      return c.json({ error: 'Profile not found' }, 404);
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, body.profileId)];
+    if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
+
+    const [profile] = await db.select().from(discoveryProfiles)
+      .where(and(...conditions)).limit(1);
+    if (!profile) return c.json({ error: 'Profile not found' }, 404);
+
+    const rows = await db.insert(discoveryJobs).values({
+      profileId: profile.id,
+      orgId: profile.orgId,
+      siteId: profile.siteId,
+      agentId: body.agentId ?? null,
+      status: 'scheduled',
+      scheduledAt: new Date()
+    }).returning();
+    const job = rows[0];
+    if (!job) return c.json({ error: 'Failed to create job' }, 500);
+
+    // Enqueue scan dispatch via BullMQ
+    if (!isRedisAvailable()) {
+      await db.update(discoveryJobs).set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: { message: 'Background job service unavailable' },
+        updatedAt: new Date()
+      }).where(eq(discoveryJobs.id, job.id));
+      return c.json({ error: 'Background job service unavailable. Redis is required for scan dispatch.' }, 503);
     }
 
-    const now = new Date().toISOString();
-    const job: DiscoveryJob = {
-      id: `job-${Date.now()}`,
-      orgId: profile.orgId,
-      profileId: profile.id,
-      agentId: body.agentId ?? null,
-      status: 'queued',
-      createdAt: now,
-      startedAt: null,
-      completedAt: null,
-      results: []
-    };
+    try {
+      await enqueueDiscoveryScan(
+        job.id,
+        profile.id,
+        profile.orgId,
+        profile.siteId,
+        body.agentId
+      );
+    } catch (err) {
+      console.error('[Discovery] Failed to enqueue scan:', err);
+      await db.update(discoveryJobs).set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: { message: 'Failed to enqueue scan job' },
+        updatedAt: new Date()
+      }).where(eq(discoveryJobs.id, job.id));
+      return c.json({ error: 'Failed to enqueue scan job' }, 503);
+    }
 
-    discoveryJobs.push(job);
     return c.json(job, 201);
   }
 );
 
-// GET /jobs - List discovery jobs
 discoveryRoutes.get(
   '/jobs',
   requireScope('organization', 'partner', 'system'),
@@ -371,37 +352,77 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId, true);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const data = discoveryJobs.filter(job => job.orgId === orgResult.orgId);
-    return c.json({ data });
+    const where = orgResult.orgId ? eq(discoveryJobs.orgId, orgResult.orgId) : undefined;
+
+    const results = await db
+      .select({
+        id: discoveryJobs.id,
+        orgId: discoveryJobs.orgId,
+        profileId: discoveryJobs.profileId,
+        profileName: discoveryProfiles.name,
+        agentId: discoveryJobs.agentId,
+        status: discoveryJobs.status,
+        scheduledAt: discoveryJobs.scheduledAt,
+        startedAt: discoveryJobs.startedAt,
+        completedAt: discoveryJobs.completedAt,
+        hostsScanned: discoveryJobs.hostsScanned,
+        hostsDiscovered: discoveryJobs.hostsDiscovered,
+        newAssets: discoveryJobs.newAssets,
+        errors: discoveryJobs.errors,
+        createdAt: discoveryJobs.createdAt
+      })
+      .from(discoveryJobs)
+      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      .where(where)
+      .orderBy(desc(discoveryJobs.createdAt));
+
+    return c.json({
+      data: results.map((j) => ({
+        ...j,
+        createdAt: j.createdAt.toISOString(),
+        scheduledAt: j.scheduledAt?.toISOString() ?? null,
+        startedAt: j.startedAt?.toISOString() ?? null,
+        completedAt: j.completedAt?.toISOString() ?? null
+      }))
+    });
   }
 );
 
-// GET /jobs/:id - Get job details with results
 discoveryRoutes.get(
   '/jobs/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('id');
-    const job = discoveryJobs.find(item => item.id === jobId);
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (!job || !canAccessOrg(auth, job.orgId)) {
-      return c.json({ error: 'Job not found' }, 404);
-    }
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveryJobs.id, jobId)];
+    if (orgResult.orgId) conditions.push(eq(discoveryJobs.orgId, orgResult.orgId));
+
+    const [job] = await db.select().from(discoveryJobs)
+      .where(and(...conditions)).limit(1);
+    if (!job) return c.json({ error: 'Job not found' }, 404);
+
+    const assets = await db.select().from(discoveredAssets)
+      .where(eq(discoveredAssets.lastJobId, jobId));
 
     return c.json({
       ...job,
-      assets: job.results.map(result => discoveryAssets.find(asset => asset.id === result.assetId)).filter(Boolean)
+      createdAt: job.createdAt.toISOString(),
+      scheduledAt: job.scheduledAt?.toISOString() ?? null,
+      startedAt: job.startedAt?.toISOString() ?? null,
+      completedAt: job.completedAt?.toISOString() ?? null,
+      assets
     });
   }
 );
 
-// GET /assets - List discovered assets with filters (status, assetType)
+// ==================== ASSET ROUTES ====================
+
 discoveryRoutes.get(
   '/assets',
   requireScope('organization', 'partner', 'system'),
@@ -409,22 +430,41 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId, true);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const data = discoveryAssets.filter(asset => asset.orgId === orgResult.orgId).filter(asset => {
-      if (query.status && asset.status !== query.status) return false;
-      if (query.assetType && asset.assetType !== query.assetType) return false;
-      return true;
+    const conditions: ReturnType<typeof eq>[] = [];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+    if (query.status) conditions.push(eq(discoveredAssets.status, query.status));
+    if (query.assetType) conditions.push(eq(discoveredAssets.assetType, query.assetType));
+
+    const where = conditions.length ? and(...conditions) : undefined;
+    const results = await db.select().from(discoveredAssets)
+      .where(where)
+      .orderBy(desc(discoveredAssets.lastSeenAt));
+
+    return c.json({
+      data: results.map((a) => ({
+        id: a.id,
+        orgId: a.orgId,
+        assetType: a.assetType,
+        status: a.status,
+        hostname: a.hostname,
+        ipAddress: a.ipAddress,
+        macAddress: a.macAddress,
+        manufacturer: a.manufacturer,
+        model: a.model,
+        openPorts: a.openPorts,
+        linkedDeviceId: a.linkedDeviceId,
+        firstSeenAt: a.firstSeenAt.toISOString(),
+        lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
+        createdAt: a.createdAt.toISOString(),
+        updatedAt: a.updatedAt.toISOString()
+      }))
     });
-
-    return c.json({ data });
   }
 );
 
-// POST /assets/:id/link - Link asset to managed device
 discoveryRoutes.post(
   '/assets/:id/link',
   requireScope('organization', 'partner', 'system'),
@@ -433,28 +473,29 @@ discoveryRoutes.post(
     const auth = c.get('auth');
     const assetId = c.req.param('id');
     const body = c.req.valid('json');
-    const asset = discoveryAssets.find(item => item.id === assetId);
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (!asset || !canAccessOrg(auth, asset.orgId)) {
-      return c.json({ error: 'Asset not found' }, 404);
-    }
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
 
-    const assetIndex = discoveryAssets.indexOf(asset);
-    const now = new Date().toISOString();
-    const updated: DiscoveryAsset = {
-      ...asset,
-      status: 'linked',
-      linkedDeviceId: body.deviceId,
-      ignoredReason: null,
-      updatedAt: now
-    };
+    const [existing] = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Asset not found' }, 404);
 
-    discoveryAssets[assetIndex] = updated;
+    const [updated] = await db.update(discoveredAssets)
+      .set({
+        status: 'managed',
+        linkedDeviceId: body.deviceId,
+        updatedAt: new Date()
+      })
+      .where(eq(discoveredAssets.id, assetId))
+      .returning();
+
     return c.json(updated);
   }
 );
 
-// POST /assets/:id/ignore - Ignore asset
 discoveryRoutes.post(
   '/assets/:id/ignore',
   requireScope('organization', 'partner', 'system'),
@@ -463,28 +504,34 @@ discoveryRoutes.post(
     const auth = c.get('auth');
     const assetId = c.req.param('id');
     const body = c.req.valid('json');
-    const asset = discoveryAssets.find(item => item.id === assetId);
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (!asset || !canAccessOrg(auth, asset.orgId)) {
-      return c.json({ error: 'Asset not found' }, 404);
-    }
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
 
-    const assetIndex = discoveryAssets.indexOf(asset);
-    const now = new Date().toISOString();
-    const updated: DiscoveryAsset = {
-      ...asset,
-      status: 'ignored',
-      linkedDeviceId: null,
-      ignoredReason: body.reason ?? asset.ignoredReason,
-      updatedAt: now
-    };
+    const [existing] = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Asset not found' }, 404);
 
-    discoveryAssets[assetIndex] = updated;
+    const [updated] = await db.update(discoveredAssets)
+      .set({
+        status: 'ignored',
+        linkedDeviceId: null,
+        notes: body.reason ?? null,
+        ignoredBy: auth.user?.id ?? null,
+        ignoredAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(discoveredAssets.id, assetId))
+      .returning();
+
     return c.json(updated);
   }
 );
 
-// GET /topology - Get network topology nodes and edges
+// ==================== TOPOLOGY ROUTE ====================
+
 discoveryRoutes.get(
   '/topology',
   requireScope('organization', 'partner', 'system'),
@@ -492,18 +539,38 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId, true);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const assets = discoveryAssets.filter(asset => asset.orgId === orgResult.orgId);
-    const nodes = assets.map(asset => ({
-      id: asset.id,
-      type: asset.assetType,
-      label: asset.hostname ?? asset.ipAddress ?? asset.id
+    const orgFilter = orgResult.orgId ? eq(discoveredAssets.orgId, orgResult.orgId) : undefined;
+
+    const assets = await db.select().from(discoveredAssets).where(orgFilter);
+
+    const edges = orgResult.orgId
+      ? await db.select().from(networkTopology).where(eq(networkTopology.orgId, orgResult.orgId))
+      : await db.select().from(networkTopology);
+
+    const nodes = assets.map((a) => ({
+      id: a.id,
+      type: a.assetType,
+      label: a.hostname ?? a.ipAddress ?? a.id,
+      status: a.status,
+      ipAddress: a.ipAddress,
+      macAddress: a.macAddress
     }));
 
-    return c.json({ nodes, edges: [] });
+    return c.json({
+      nodes,
+      edges: edges.map((e) => ({
+        id: e.id,
+        sourceId: e.sourceId,
+        targetId: e.targetId,
+        sourceType: e.sourceType,
+        targetType: e.targetType,
+        connectionType: e.connectionType,
+        bandwidth: e.bandwidth,
+        latency: e.latency
+      }))
+    });
   }
 );

@@ -43,3 +43,16 @@ agent/agent.yaml
 # Temporary
 tmp/
 temp/
+
+# Rust / Tauri
+target/
+
+# Playwright MCP screenshots
+.playwright-mcp/
+
+# Claude Code
+.claude/plans/
+.claude/skills/
+
+# Stray screenshots
+*.png

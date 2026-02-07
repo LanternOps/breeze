@@ -106,10 +106,6 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           break;
         }
 
-        case 'terminal':
-          window.location.href = `/remote/terminal/${device.id}`;
-          return;
-
         case 'files':
           window.location.href = `/remote/files/${device.id}`;
           return;

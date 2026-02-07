@@ -50,24 +50,26 @@ type CommandHandler func(cmd Command) CommandResult
 
 // Client manages the WebSocket connection to the server
 type Client struct {
-	config     *Config
-	conn       *websocket.Conn
-	connMu     sync.RWMutex
-	cmdHandler CommandHandler
-	done       chan struct{}
-	sendChan   chan []byte
-	stopOnce   sync.Once
-	isRunning  bool
-	runningMu  sync.RWMutex
+	config          *Config
+	conn            *websocket.Conn
+	connMu          sync.RWMutex
+	cmdHandler      CommandHandler
+	done            chan struct{}
+	sendChan        chan []byte
+	binaryFrameChan chan []byte
+	stopOnce        sync.Once
+	isRunning       bool
+	runningMu       sync.RWMutex
 }
 
 // New creates a new WebSocket client
 func New(cfg *Config, handler CommandHandler) *Client {
 	return &Client{
-		config:     cfg,
-		cmdHandler: handler,
-		done:       make(chan struct{}),
-		sendChan:   make(chan []byte, 256),
+		config:          cfg,
+		cmdHandler:      handler,
+		done:            make(chan struct{}),
+		sendChan:        make(chan []byte, 256),
+		binaryFrameChan: make(chan []byte, 30),
 	}
 }
 
@@ -280,6 +282,21 @@ func (c *Client) writePump(done chan struct{}) {
 				return
 			}
 
+		case frame := <-c.binaryFrameChan:
+			c.connMu.RLock()
+			conn := c.conn
+			c.connMu.RUnlock()
+
+			if conn == nil {
+				continue
+			}
+
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				fmt.Printf("WebSocket binary write error: %v\n", err)
+				return
+			}
+
 		case <-ticker.C:
 			c.connMu.RLock()
 			conn := c.conn
@@ -323,6 +340,26 @@ func (c *Client) SendResult(result CommandResult) error {
 		return fmt.Errorf("client is stopped")
 	default:
 		return fmt.Errorf("send channel is full")
+	}
+}
+
+// SendDesktopFrame sends a binary JPEG frame to the server.
+// Format: [0x02][36-byte sessionId UTF-8][JPEG data]
+// Non-blocking: drops frame if channel is full.
+func (c *Client) SendDesktopFrame(sessionId string, data []byte) error {
+	// Build binary message: 1 byte type + 36 byte session ID + frame data
+	msg := make([]byte, 1+36+len(data))
+	msg[0] = 0x02
+	copy(msg[1:37], []byte(sessionId))
+	copy(msg[37:], data)
+
+	select {
+	case c.binaryFrameChan <- msg:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("frame channel full, dropping frame")
 	}
 }
 

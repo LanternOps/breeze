@@ -82,6 +82,8 @@ export interface User {
   updatedAt: Date;
 }
 
+export type UserPublic = Omit<User, 'passwordHash' | 'mfaSecret'>;
+
 export interface Role {
   id: string;
   partnerId: string | null;
@@ -405,6 +407,18 @@ export interface PartnerSettings {
     website?: string;
   };
 }
+
+// ============================================
+// SNMP Types
+// ============================================
+
+export * from './snmp';
+
+// ============================================
+// Network Discovery Types
+// ============================================
+
+export * from './discovery';
 
 // ============================================
 // Filter System Types

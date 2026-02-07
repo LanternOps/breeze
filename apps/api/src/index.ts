@@ -52,6 +52,7 @@ import { filterRoutes } from './routes/filters';
 import { deploymentRoutes } from './routes/deployments';
 import { createAgentWsRoutes } from './routes/agentWs';
 import { createTerminalWsRoutes } from './routes/terminalWs';
+import { createDesktopWsRoutes } from './routes/desktopWs';
 import { agentVersionRoutes } from './routes/agentVersions';
 
 // Workers
@@ -59,6 +60,9 @@ import { initializeAlertWorkers } from './jobs/alertWorker';
 import { initializeOfflineDetector } from './jobs/offlineDetector';
 import { initializeNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention } from './jobs/eventLogRetention';
+import { initializeDiscoveryWorker } from './jobs/discoveryWorker';
+import { initializeSnmpWorker } from './jobs/snmpWorker';
+import { initializeSnmpRetention } from './jobs/snmpRetention';
 import { isRedisAvailable } from './services/redis';
 
 const app = new Hono();
@@ -74,7 +78,7 @@ app.use(
   '*',
   cors({
     origin: (origin) => {
-      const allowedOrigins = ['http://localhost:4321', 'http://localhost:4322'];
+      const allowedOrigins = ['http://localhost:4321', 'http://localhost:4322', 'http://localhost:1420', 'tauri://localhost'];
       return allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
     },
     credentials: true,
@@ -116,6 +120,7 @@ api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
+api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/sso', ssoRoutes);
@@ -192,8 +197,11 @@ console.log(`Breeze API running at http://localhost:${port}`);
 console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
 
 // Initialize background workers (only if Redis is available)
-let workersHealthy = false;
-export function areWorkersHealthy(): boolean { return workersHealthy; }
+const workerStatus: Record<string, boolean> = {};
+export function areWorkersHealthy(): boolean {
+  return Object.keys(workerStatus).length > 0 && Object.values(workerStatus).every(Boolean);
+}
+export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
 
 async function initializeWorkers(): Promise<void> {
   if (!isRedisAvailable()) {
@@ -201,18 +209,36 @@ async function initializeWorkers(): Promise<void> {
     return;
   }
 
-  try {
-    await initializeAlertWorkers();
-    await initializeOfflineDetector();
-    await initializeNotificationDispatcher();
-    await initializeEventLogRetention();
-    workersHealthy = true;
-    console.log('Background workers initialized');
-  } catch (error) {
-    workersHealthy = false;
-    console.error('[CRITICAL] Failed to initialize background workers:', error);
+  const workers: Array<[string, () => Promise<void>]> = [
+    ['alertWorkers', initializeAlertWorkers],
+    ['offlineDetector', initializeOfflineDetector],
+    ['notificationDispatcher', initializeNotificationDispatcher],
+    ['eventLogRetention', initializeEventLogRetention],
+    ['discoveryWorker', initializeDiscoveryWorker],
+    ['snmpWorker', initializeSnmpWorker],
+    ['snmpRetention', initializeSnmpRetention],
+  ];
+
+  for (const [name, init] of workers) {
+    try {
+      await init();
+      workerStatus[name] = true;
+    } catch (error) {
+      workerStatus[name] = false;
+      console.error(`[CRITICAL] Failed to initialize ${name}:`, error);
+    }
+  }
+
+  const failed = Object.entries(workerStatus).filter(([, ok]) => !ok).map(([n]) => n);
+  if (failed.length === 0) {
+    console.log('All background workers initialized');
+  } else {
+    console.error(`[WARN] ${failed.length} worker(s) failed to initialize: ${failed.join(', ')}`);
   }
 }
 
 // Run worker initialization
-initializeWorkers();
+initializeWorkers().catch((err) => {
+  console.error('[CRITICAL] Worker initialization failed unexpectedly:', err);
+});
+

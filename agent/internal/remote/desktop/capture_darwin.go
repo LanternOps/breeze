@@ -3,17 +3,14 @@
 package desktop
 
 /*
-#cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit -framework ScreenCaptureKit -framework CoreMedia -framework CoreVideo
+#cgo CFLAGS: -x objective-c -fobjc-arc
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit -framework ScreenCaptureKit
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <AppKit/AppKit.h>
 #include <ScreenCaptureKit/ScreenCaptureKit.h>
-#include <CoreMedia/CoreMedia.h>
-#include <CoreVideo/CoreVideo.h>
 #include <stdlib.h>
-#include <dispatch/dispatch.h>
 
 // ScreenCaptureResult holds the capture result
 typedef struct {
@@ -24,164 +21,93 @@ typedef struct {
     int error;
 } ScreenCaptureResult;
 
-// Semaphore for synchronous capture
-static dispatch_semaphore_t g_semaphore = NULL;
-static ScreenCaptureResult g_result = {0};
-static int g_displayIndex = 0;
-
-// StreamOutput delegate for receiving frames
-@interface StreamOutput : NSObject <SCStreamOutput>
-@property (nonatomic, assign) BOOL frameReceived;
-@end
-
-@implementation StreamOutput
-
-- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
-    if (type != SCStreamOutputTypeScreen || self.frameReceived) {
-        return;
-    }
-
-    CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (imageBuffer == NULL) {
-        g_result.error = 5;
-        self.frameReceived = YES;
-        dispatch_semaphore_signal(g_semaphore);
-        return;
-    }
-
-    CVPixelBufferLockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
-
-    g_result.width = (int)CVPixelBufferGetWidth(imageBuffer);
-    g_result.height = (int)CVPixelBufferGetHeight(imageBuffer);
-    g_result.bytesPerRow = g_result.width * 4;
-
-    size_t srcBytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer);
-    void* srcData = CVPixelBufferGetBaseAddress(imageBuffer);
-
-    size_t dataSize = g_result.bytesPerRow * g_result.height;
-    g_result.data = malloc(dataSize);
-
-    if (g_result.data == NULL) {
-        g_result.error = 4;
-        CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
-        self.frameReceived = YES;
-        dispatch_semaphore_signal(g_semaphore);
-        return;
-    }
-
-    // Copy and convert BGRA to RGBA
-    unsigned char* src = (unsigned char*)srcData;
-    unsigned char* dst = (unsigned char*)g_result.data;
-
-    for (int y = 0; y < g_result.height; y++) {
-        for (int x = 0; x < g_result.width; x++) {
-            int srcIdx = y * srcBytesPerRow + x * 4;
-            int dstIdx = y * g_result.bytesPerRow + x * 4;
-            dst[dstIdx + 0] = src[srcIdx + 2]; // R
-            dst[dstIdx + 1] = src[srcIdx + 1]; // G
-            dst[dstIdx + 2] = src[srcIdx + 0]; // B
-            dst[dstIdx + 3] = src[srcIdx + 3]; // A
-        }
-    }
-
-    CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
-    self.frameReceived = YES;
-    dispatch_semaphore_signal(g_semaphore);
-}
-
-@end
-
-static StreamOutput* g_streamOutput = nil;
-
-// captureScreen captures the main display using ScreenCaptureKit
+// captureScreen captures using SCScreenshotManager (macOS 14+, synchronous via semaphore)
 ScreenCaptureResult captureScreen(int displayIndex) {
-    memset(&g_result, 0, sizeof(g_result));
-    g_displayIndex = displayIndex;
+    __block ScreenCaptureResult result = {0};
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block SCDisplay* targetDisplay = nil;
 
-    if (g_semaphore == NULL) {
-        g_semaphore = dispatch_semaphore_create(0);
-    }
-
-    __block BOOL setupComplete = NO;
-    __block int setupError = 0;
-
-    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent * _Nullable content, NSError * _Nullable error) {
-        if (error != nil || content == nil) {
-            setupError = 1;
-            dispatch_semaphore_signal(g_semaphore);
+    // Step 1: Get shareable content (display list)
+    [SCShareableContent getShareableContentExcludingDesktopWindows:NO
+                                             onScreenWindowsOnly:YES
+                                             completionHandler:^(SCShareableContent* _Nullable content, NSError* _Nullable error) {
+        if (error != nil || content == nil || content.displays.count == 0) {
+            result.error = 2;
+            dispatch_semaphore_signal(sem);
             return;
         }
-
-        NSArray<SCDisplay *>* displays = content.displays;
-        if (displays.count == 0) {
-            setupError = 2;
-            dispatch_semaphore_signal(g_semaphore);
-            return;
-        }
-
         NSUInteger idx = (NSUInteger)displayIndex;
-        if (idx >= displays.count) {
-            idx = 0;
-        }
-
-        SCDisplay* display = displays[idx];
-
-        // Create content filter for just the display
-        SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
-
-        // Configure stream
-        SCStreamConfiguration* config = [[SCStreamConfiguration alloc] init];
-        config.width = display.width * 2;  // Retina scale
-        config.height = display.height * 2;
-        config.minimumFrameInterval = CMTimeMake(1, 60);
-        config.pixelFormat = kCVPixelFormatType_32BGRA;
-        config.showsCursor = YES;
-
-        // Create stream
-        SCStream* stream = [[SCStream alloc] initWithFilter:filter configuration:config delegate:nil];
-
-        // Add output handler
-        if (g_streamOutput == nil) {
-            g_streamOutput = [[StreamOutput alloc] init];
-        }
-        g_streamOutput.frameReceived = NO;
-
-        NSError* addError = nil;
-        [stream addStreamOutput:g_streamOutput type:SCStreamOutputTypeScreen sampleHandlerQueue:dispatch_get_main_queue() error:&addError];
-
-        if (addError != nil) {
-            setupError = 3;
-            dispatch_semaphore_signal(g_semaphore);
-            return;
-        }
-
-        // Start capturing
-        [stream startCaptureWithCompletionHandler:^(NSError * _Nullable startError) {
-            if (startError != nil) {
-                setupError = 3;
-                dispatch_semaphore_signal(g_semaphore);
-                return;
-            }
-
-            setupComplete = YES;
-
-            // Wait for frame then stop
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [stream stopCaptureWithCompletionHandler:^(NSError * _Nullable stopError) {
-                    // Capture complete
-                }];
-            });
-        }];
+        if (idx >= content.displays.count) idx = 0;
+        targetDisplay = content.displays[idx];
+        dispatch_semaphore_signal(sem);
     }];
 
-    // Wait for result with timeout
-    dispatch_semaphore_wait(g_semaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)));
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    if (result.error != 0 || targetDisplay == nil) return result;
 
-    if (setupError != 0) {
-        g_result.error = setupError;
+    // Step 2: Capture a single screenshot
+    SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
+    SCStreamConfiguration* config = [[SCStreamConfiguration alloc] init];
+    config.width = targetDisplay.width;
+    config.height = targetDisplay.height;
+    config.showsCursor = YES;
+
+    __block CGImageRef capturedImage = NULL;
+
+    [SCScreenshotManager captureImageWithFilter:filter
+                                  configuration:config
+                              completionHandler:^(CGImageRef _Nullable image, NSError* _Nullable error) {
+        if (error != nil || image == NULL) {
+            result.error = 3; // Permission denied or capture failed
+        } else {
+            capturedImage = CGImageRetain(image);
+        }
+        dispatch_semaphore_signal(sem);
+    }];
+
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    if (result.error != 0 || capturedImage == NULL) return result;
+
+    // Step 3: Convert CGImage to RGBA pixel data
+    result.width = (int)CGImageGetWidth(capturedImage);
+    result.height = (int)CGImageGetHeight(capturedImage);
+    result.bytesPerRow = result.width * 4;
+
+    size_t dataSize = (size_t)result.bytesPerRow * (size_t)result.height;
+    result.data = malloc(dataSize);
+    if (result.data == NULL) {
+        CGImageRelease(capturedImage);
+        result.error = 4;
+        return result;
     }
 
-    return g_result;
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(
+        result.data,
+        result.width,
+        result.height,
+        8,
+        result.bytesPerRow,
+        colorSpace,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big  // RGBA
+    );
+
+    if (ctx == NULL) {
+        free(result.data);
+        result.data = NULL;
+        CGColorSpaceRelease(colorSpace);
+        CGImageRelease(capturedImage);
+        result.error = 5;
+        return result;
+    }
+
+    CGContextDrawImage(ctx, CGRectMake(0, 0, result.width, result.height), capturedImage);
+
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(colorSpace);
+    CGImageRelease(capturedImage);
+
+    return result;
 }
 
 // getScreenBounds returns the bounds of the specified display
@@ -255,16 +181,13 @@ func (c *darwinCapturer) Capture() (*image.RGBA, error) {
 
 // CaptureRegion captures a specific region of the screen
 func (c *darwinCapturer) CaptureRegion(x, y, width, height int) (*image.RGBA, error) {
-	// Capture full screen then crop
 	fullImg, err := c.Capture()
 	if err != nil {
 		return nil, err
 	}
 
-	// Create cropped image
 	bounds := image.Rect(x, y, x+width, y+height)
 	if !bounds.In(fullImg.Bounds()) {
-		// Adjust to fit
 		if x+width > fullImg.Bounds().Dx() {
 			width = fullImg.Bounds().Dx() - x
 		}
@@ -307,14 +230,11 @@ func (c *darwinCapturer) createImage(result C.ScreenCaptureResult) (*image.RGBA,
 	height := int(result.height)
 	bytesPerRow := int(result.bytesPerRow)
 
-	// Create the image
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	// Copy data from C memory to Go image
 	dataSize := bytesPerRow * height
 	cData := C.GoBytes(result.data, C.int(dataSize))
 
-	// The data is in RGBA format, handle stride differences
 	for y := 0; y < height; y++ {
 		srcStart := y * bytesPerRow
 		dstStart := y * img.Stride
@@ -328,7 +248,7 @@ func (c *darwinCapturer) createImage(result C.ScreenCaptureResult) (*image.RGBA,
 func (c *darwinCapturer) translateError(code int) error {
 	switch code {
 	case 1:
-		return fmt.Errorf("failed to get shareable content")
+		return fmt.Errorf("failed to get display list")
 	case 2:
 		return ErrDisplayNotFound
 	case 3:
@@ -336,11 +256,10 @@ func (c *darwinCapturer) translateError(code int) error {
 	case 4:
 		return fmt.Errorf("memory allocation failed")
 	case 5:
-		return fmt.Errorf("failed to get image buffer")
+		return fmt.Errorf("failed to create bitmap context")
 	default:
 		return fmt.Errorf("unknown error: %d", code)
 	}
 }
 
-// Ensure darwinCapturer implements ScreenCapturer
 var _ ScreenCapturer = (*darwinCapturer)(nil)
