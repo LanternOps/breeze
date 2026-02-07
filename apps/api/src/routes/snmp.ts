@@ -1,464 +1,61 @@
-import { randomUUID } from 'crypto';
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { and, eq, like, desc, sql, gte, lte, or } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { db } from '../db';
+import { snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds, devices } from '../db/schema';
+import { enqueueSnmpPoll, buildSnmpPollCommand } from '../jobs/snmpWorker';
+import { isRedisAvailable } from '../services/redis';
+import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 
-type SnmpOid = {
-  id: string;
-  oid: string;
-  name: string;
-  label: string;
-  unit?: string;
-  type: string;
-  description?: string;
-};
+// --- Helpers ---
 
-type SnmpTemplate = {
-  id: string;
-  name: string;
-  description: string;
-  source: 'builtin' | 'custom';
-  vendor?: string;
-  deviceClass?: string;
-  tags: string[];
-  oids: SnmpOid[];
-  createdAt: string;
-  updatedAt: string;
-};
+function escapeLikePattern(input: string): string {
+  return input.replace(/[%_\\]/g, (ch) => `\\${ch}`);
+}
 
-type SnmpDevice = {
-  id: string;
-  name: string;
-  ipAddress: string;
-  status: 'online' | 'offline' | 'warning' | 'maintenance';
-  templateId: string;
-  snmpVersion: 'v1' | 'v2c' | 'v3';
-  community?: string;
-  location?: string;
-  tags: string[];
-  lastPolledAt: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type MetricSample = {
-  oid: string;
-  name: string;
-  value: number | string;
-  unit?: string;
-  recordedAt: string;
-};
-
-type DeviceMetrics = {
-  deviceId: string;
-  capturedAt: string;
-  metrics: MetricSample[];
-};
-
-type Threshold = {
-  id: string;
-  deviceId: string;
-  oid: string;
-  name: string;
-  condition: 'gt' | 'gte' | 'lt' | 'lte' | 'eq';
-  value: number;
-  severity: 'info' | 'warning' | 'critical';
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-const nowIso = () => new Date().toISOString();
-const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60 * 1000).toISOString();
-const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-
-const builtInOids: SnmpOid[] = [
-  {
-    id: 'oid-sysuptime',
-    oid: '1.3.6.1.2.1.1.3.0',
-    name: 'sysUpTime',
-    label: 'System Uptime',
-    unit: 'centiseconds',
-    type: 'TimeTicks',
-    description: 'Time since last restart.'
-  },
-  {
-    id: 'oid-sysname',
-    oid: '1.3.6.1.2.1.1.5.0',
-    name: 'sysName',
-    label: 'System Name',
-    type: 'OctetString',
-    description: 'User-friendly device name.'
-  },
-  {
-    id: 'oid-sysdescr',
-    oid: '1.3.6.1.2.1.1.1.0',
-    name: 'sysDescr',
-    label: 'System Description',
-    type: 'OctetString',
-    description: 'System description string.'
-  },
-  {
-    id: 'oid-ifinoctets',
-    oid: '1.3.6.1.2.1.2.2.1.10',
-    name: 'ifInOctets',
-    label: 'Interface In Octets',
-    unit: 'octets',
-    type: 'Counter32',
-    description: 'Total bytes received on an interface.'
-  },
-  {
-    id: 'oid-ifoutoctets',
-    oid: '1.3.6.1.2.1.2.2.1.16',
-    name: 'ifOutOctets',
-    label: 'Interface Out Octets',
-    unit: 'octets',
-    type: 'Counter32',
-    description: 'Total bytes sent on an interface.'
-  },
-  {
-    id: 'oid-ifoperstatus',
-    oid: '1.3.6.1.2.1.2.2.1.8',
-    name: 'ifOperStatus',
-    label: 'Interface Operational Status',
-    type: 'Integer',
-    description: 'Operational state of an interface.'
-  },
-  {
-    id: 'oid-hrprocessorload',
-    oid: '1.3.6.1.2.1.25.3.3.1.2',
-    name: 'hrProcessorLoad',
-    label: 'CPU Load',
-    unit: 'percent',
-    type: 'Integer',
-    description: 'CPU load percentage.'
+function resolveOrgId(
+  auth: { scope: string; orgId: string | null },
+  requestedOrgId?: string,
+  requireForNonOrg = false
+) {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
+    if (requestedOrgId && requestedOrgId !== auth.orgId) return { error: 'Access denied', status: 403 } as const;
+    return { orgId: auth.orgId } as const;
   }
-];
+  if (requireForNonOrg && !requestedOrgId) return { error: 'orgId is required', status: 400 } as const;
+  return { orgId: requestedOrgId ?? null } as const;
+}
 
-const ciscoCpuOid: SnmpOid = {
-  id: 'oid-cisco-cpu-5m',
-  oid: '1.3.6.1.4.1.9.2.1.57.0',
-  name: 'cpmCPUTotal5min',
-  label: 'CPU 5 Minute Average',
-  unit: 'percent',
-  type: 'Gauge32',
-  description: 'Cisco CPU utilization (5 min).'
-};
-
-const hpSwitchCpuOid: SnmpOid = {
-  id: 'oid-hp-switch-cpu',
-  oid: '1.3.6.1.4.1.11.2.14.11.1.2.6.1.0',
-  name: 'hpSwitchCpu',
-  label: 'Switch CPU Utilization',
-  unit: 'percent',
-  type: 'Gauge32',
-  description: 'HP switch CPU utilization.'
-};
-
-const printerSuppliesLevelOid: SnmpOid = {
-  id: 'oid-prt-supply-level',
-  oid: '1.3.6.1.2.1.43.11.1.1.9.1',
-  name: 'prtMarkerSuppliesLevel',
-  label: 'Toner Level',
-  unit: 'percent',
-  type: 'Integer',
-  description: 'Remaining printer supply level.'
-};
-
-const printerStatusOid: SnmpOid = {
-  id: 'oid-prt-status',
-  oid: '1.3.6.1.2.1.43.5.1.1.1.1',
-  name: 'prtGeneralPrinterStatus',
-  label: 'Printer Status',
-  type: 'Integer',
-  description: 'Overall printer status.'
-};
-
-const allOids = [
-  ...builtInOids,
-  ciscoCpuOid,
-  hpSwitchCpuOid,
-  printerSuppliesLevelOid,
-  printerStatusOid
-];
-
-const oidByName = new Map(allOids.map((oid) => [oid.name, oid]));
-const oidByOid = new Map(allOids.map((oid) => [oid.oid, oid]));
-
-const templates: SnmpTemplate[] = [
-  {
-    id: 'tmpl-cisco-router',
-    name: 'Cisco Router',
-    description: 'Core router template with interface and CPU metrics.',
-    source: 'builtin',
-    vendor: 'Cisco',
-    deviceClass: 'router',
-    tags: ['router', 'cisco', 'wan'],
-    oids: [
-      oidByName.get('sysUpTime')!,
-      oidByName.get('ifInOctets')!,
-      oidByName.get('ifOutOctets')!,
-      oidByName.get('ifOperStatus')!,
-      ciscoCpuOid
-    ],
-    createdAt: daysAgo(90),
-    updatedAt: daysAgo(10)
-  },
-  {
-    id: 'tmpl-hp-switch',
-    name: 'HP Switch',
-    description: 'Switch monitoring for ports, CPU, and uptime.',
-    source: 'builtin',
-    vendor: 'HP',
-    deviceClass: 'switch',
-    tags: ['switch', 'hp', 'lan'],
-    oids: [
-      oidByName.get('sysUpTime')!,
-      oidByName.get('ifInOctets')!,
-      oidByName.get('ifOutOctets')!,
-      oidByName.get('ifOperStatus')!,
-      hpSwitchCpuOid
-    ],
-    createdAt: daysAgo(120),
-    updatedAt: daysAgo(14)
-  },
-  {
-    id: 'tmpl-network-printer',
-    name: 'Network Printer',
-    description: 'Printer health and supply level monitoring.',
-    source: 'builtin',
-    vendor: 'Generic',
-    deviceClass: 'printer',
-    tags: ['printer', 'office'],
-    oids: [
-      oidByName.get('sysUpTime')!,
-      oidByName.get('sysName')!,
-      printerSuppliesLevelOid,
-      printerStatusOid
-    ],
-    createdAt: daysAgo(150),
-    updatedAt: daysAgo(20)
-  },
-  {
-    id: 'tmpl-custom-ups',
-    name: 'Custom UPS',
-    description: 'Custom UPS monitoring pack.',
-    source: 'custom',
-    vendor: 'APC',
-    deviceClass: 'ups',
-    tags: ['ups', 'power'],
-    oids: [
-      oidByName.get('sysUpTime')!,
-      oidByName.get('hrProcessorLoad')!,
-      oidByName.get('ifInOctets')!
-    ],
-    createdAt: daysAgo(12),
-    updatedAt: daysAgo(3)
-  }
-];
-
-const devices: SnmpDevice[] = [
-  {
-    id: 'snmp-dev-001',
-    name: 'Edge Router 01',
-    ipAddress: '10.40.12.1',
-    status: 'online',
-    templateId: 'tmpl-cisco-router',
-    snmpVersion: 'v2c',
-    community: 'public',
-    location: 'DC-1 Row A',
-    tags: ['core', 'wan'],
-    lastPolledAt: minutesAgo(6),
-    createdAt: daysAgo(40),
-    updatedAt: hoursAgo(6)
-  },
-  {
-    id: 'snmp-dev-002',
-    name: 'HQ Switch 24',
-    ipAddress: '10.50.4.10',
-    status: 'warning',
-    templateId: 'tmpl-hp-switch',
-    snmpVersion: 'v2c',
-    community: 'public',
-    location: 'HQ MDF',
-    tags: ['access', 'lan'],
-    lastPolledAt: minutesAgo(8),
-    createdAt: daysAgo(60),
-    updatedAt: hoursAgo(8)
-  },
-  {
-    id: 'snmp-dev-003',
-    name: 'Finance Printer',
-    ipAddress: '10.20.8.55',
-    status: 'online',
-    templateId: 'tmpl-network-printer',
-    snmpVersion: 'v1',
-    community: 'public',
-    location: 'Floor 3 West',
-    tags: ['printer', 'finance'],
-    lastPolledAt: minutesAgo(12),
-    createdAt: daysAgo(25),
-    updatedAt: hoursAgo(2)
-  }
-];
-
-const metricsByDevice: Record<string, DeviceMetrics> = {
-  'snmp-dev-001': {
-    deviceId: 'snmp-dev-001',
-    capturedAt: minutesAgo(6),
-    metrics: [
-      {
-        oid: oidByName.get('sysUpTime')!.oid,
-        name: 'sysUpTime',
-        value: 98324567,
-        unit: 'centiseconds',
-        recordedAt: minutesAgo(6)
-      },
-      {
-        oid: oidByName.get('ifInOctets')!.oid,
-        name: 'ifInOctets',
-        value: 829452934,
-        unit: 'octets',
-        recordedAt: minutesAgo(6)
-      },
-      {
-        oid: oidByName.get('ifOutOctets')!.oid,
-        name: 'ifOutOctets',
-        value: 776302112,
-        unit: 'octets',
-        recordedAt: minutesAgo(6)
-      },
-      {
-        oid: ciscoCpuOid.oid,
-        name: 'cpmCPUTotal5min',
-        value: 41,
-        unit: 'percent',
-        recordedAt: minutesAgo(6)
-      }
-    ]
-  },
-  'snmp-dev-002': {
-    deviceId: 'snmp-dev-002',
-    capturedAt: minutesAgo(8),
-    metrics: [
-      {
-        oid: oidByName.get('sysUpTime')!.oid,
-        name: 'sysUpTime',
-        value: 55234112,
-        unit: 'centiseconds',
-        recordedAt: minutesAgo(8)
-      },
-      {
-        oid: oidByName.get('ifInOctets')!.oid,
-        name: 'ifInOctets',
-        value: 433221900,
-        unit: 'octets',
-        recordedAt: minutesAgo(8)
-      },
-      {
-        oid: oidByName.get('ifOutOctets')!.oid,
-        name: 'ifOutOctets',
-        value: 291229100,
-        unit: 'octets',
-        recordedAt: minutesAgo(8)
-      },
-      {
-        oid: hpSwitchCpuOid.oid,
-        name: 'hpSwitchCpu',
-        value: 78,
-        unit: 'percent',
-        recordedAt: minutesAgo(8)
-      }
-    ]
-  },
-  'snmp-dev-003': {
-    deviceId: 'snmp-dev-003',
-    capturedAt: minutesAgo(12),
-    metrics: [
-      {
-        oid: oidByName.get('sysUpTime')!.oid,
-        name: 'sysUpTime',
-        value: 12302211,
-        unit: 'centiseconds',
-        recordedAt: minutesAgo(12)
-      },
-      {
-        oid: printerSuppliesLevelOid.oid,
-        name: 'prtMarkerSuppliesLevel',
-        value: 32,
-        unit: 'percent',
-        recordedAt: minutesAgo(12)
-      },
-      {
-        oid: printerStatusOid.oid,
-        name: 'prtGeneralPrinterStatus',
-        value: 4,
-        recordedAt: minutesAgo(12)
-      }
-    ]
-  }
-};
-
-const thresholds: Threshold[] = [
-  {
-    id: 'snmp-thresh-001',
-    deviceId: 'snmp-dev-001',
-    oid: ciscoCpuOid.oid,
-    name: 'Router CPU High',
-    condition: 'gt',
-    value: 80,
-    severity: 'critical',
-    enabled: true,
-    createdAt: daysAgo(30),
-    updatedAt: daysAgo(2)
-  },
-  {
-    id: 'snmp-thresh-002',
-    deviceId: 'snmp-dev-002',
-    oid: hpSwitchCpuOid.oid,
-    name: 'Switch CPU Warning',
-    condition: 'gt',
-    value: 70,
-    severity: 'warning',
-    enabled: true,
-    createdAt: daysAgo(25),
-    updatedAt: daysAgo(1)
-  },
-  {
-    id: 'snmp-thresh-003',
-    deviceId: 'snmp-dev-003',
-    oid: printerSuppliesLevelOid.oid,
-    name: 'Toner Low',
-    condition: 'lt',
-    value: 20,
-    severity: 'warning',
-    enabled: true,
-    createdAt: daysAgo(18),
-    updatedAt: daysAgo(3)
-  }
-];
+// --- Zod Schemas ---
 
 const listDevicesSchema = z.object({
+  orgId: z.string().uuid().optional(),
   status: z.enum(['online', 'offline', 'warning', 'maintenance']).optional(),
-  templateId: z.string().optional(),
-  location: z.string().optional(),
-  tag: z.string().optional(),
+  templateId: z.string().uuid().optional(),
   search: z.string().optional()
 });
 
 const createDeviceSchema = z.object({
+  orgId: z.string().uuid().optional(),
   name: z.string().min(1),
   ipAddress: z.string().min(1),
   snmpVersion: z.enum(['v1', 'v2c', 'v3']),
+  port: z.number().int().positive().optional(),
   community: z.string().optional(),
-  templateId: z.string().min(1),
-  location: z.string().optional(),
+  username: z.string().optional(),
+  authProtocol: z.string().optional(),
+  authPassword: z.string().optional(),
+  privProtocol: z.string().optional(),
+  privPassword: z.string().optional(),
+  templateId: z.string().uuid().optional(),
+  pollingInterval: z.number().int().positive().optional(),
   tags: z.array(z.string()).optional()
 });
 
-const updateDeviceSchema = createDeviceSchema.partial();
+const updateDeviceSchema = createDeviceSchema.partial().omit({ orgId: true });
 
 const listTemplatesSchema = z.object({
   source: z.enum(['builtin', 'custom']).optional(),
@@ -466,7 +63,6 @@ const listTemplatesSchema = z.object({
 });
 
 const oidSchema = z.object({
-  id: z.string().optional(),
   oid: z.string().min(1),
   name: z.string().min(1),
   label: z.string().optional(),
@@ -479,8 +75,7 @@ const createTemplateSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   vendor: z.string().optional(),
-  deviceClass: z.string().optional(),
-  tags: z.array(z.string()).optional(),
+  deviceType: z.string().optional(),
   oids: z.array(oidSchema)
 });
 
@@ -493,129 +88,92 @@ const metricsHistorySchema = z.object({
 });
 
 const createThresholdSchema = z.object({
-  deviceId: z.string().min(1),
+  deviceId: z.string().uuid(),
   oid: z.string().min(1),
-  name: z.string().min(1),
-  condition: z.enum(['gt', 'gte', 'lt', 'lte', 'eq']),
-  value: z.number(),
-  severity: z.enum(['info', 'warning', 'critical']),
-  enabled: z.boolean().optional()
+  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq']),
+  threshold: z.string().min(1),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
+  message: z.string().optional(),
+  isActive: z.boolean().optional()
 });
 
-const updateThresholdSchema = createThresholdSchema.partial();
+const updateThresholdSchema = createThresholdSchema.partial().omit({ deviceId: true });
 
-const intervalMsMap: Record<string, number> = {
-  '5m': 5 * 60 * 1000,
-  '15m': 15 * 60 * 1000,
-  '1h': 60 * 60 * 1000,
-  '6h': 6 * 60 * 60 * 1000,
-  '1d': 24 * 60 * 60 * 1000
-};
+// --- Router ---
 
 const snmpRoutes = new Hono();
-
 snmpRoutes.use('*', authMiddleware);
 
-function getDeviceById(deviceId: string) {
-  return devices.find((device) => device.id === deviceId) ?? null;
-}
+// ==================== DEVICE ROUTES ====================
 
-function getTemplateById(templateId: string) {
-  return templates.find((template) => template.id === templateId) ?? null;
-}
-
-function normalizeDate(value: string | undefined, fallback: Date) {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return fallback;
-  }
-  return parsed;
-}
-
-function resolveOid(oid: string) {
-  return oidByOid.get(oid) ?? oidByName.get(oid) ?? null;
-}
-
-function buildSeries(metrics: MetricSample[], start: Date, end: Date, intervalMs: number) {
-  return metrics.map((metric) => {
-    const points: Array<{ timestamp: string; value: number | string }> = [];
-    for (let ts = start.getTime(); ts <= end.getTime(); ts += intervalMs) {
-      if (typeof metric.value === 'number') {
-        const variance = Math.max(1, Math.round(metric.value * 0.06));
-        const wave = Math.sin(ts / (intervalMs * 2));
-        const value = Math.max(0, Math.round(metric.value + wave * variance));
-        points.push({ timestamp: new Date(ts).toISOString(), value });
-      } else {
-        points.push({ timestamp: new Date(ts).toISOString(), value: metric.value });
-      }
-    }
-    return {
-      oid: metric.oid,
-      name: metric.name,
-      unit: metric.unit,
-      points
-    };
-  });
-}
-
-function refreshDeviceMetrics(deviceId: string) {
-  const current = metricsByDevice[deviceId];
-  if (!current) {
-    return null;
-  }
-  const capturedAt = nowIso();
-  const metrics = current.metrics.map((metric) => {
-    if (typeof metric.value === 'number') {
-      const variance = Math.max(1, Math.round(metric.value * 0.04));
-      const value = Math.max(0, Math.round(metric.value + (Math.random() - 0.5) * variance));
-      return { ...metric, value, recordedAt: capturedAt };
-    }
-    return { ...metric, recordedAt: capturedAt };
-  });
-  const updated = { ...current, capturedAt, metrics };
-  metricsByDevice[deviceId] = updated;
-  return updated;
-}
-
-// Device routes
 snmpRoutes.get(
   '/devices',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listDevicesSchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
-    let results = devices.slice();
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    if (query.status) {
-      results = results.filter((device) => device.status === query.status);
-    }
-    if (query.templateId) {
-      results = results.filter((device) => device.templateId === query.templateId);
-    }
-    if (query.location) {
-      results = results.filter((device) =>
-        device.location?.toLowerCase().includes(query.location!.toLowerCase())
-      );
-    }
-    if (query.tag) {
-      results = results.filter((device) => device.tags.includes(query.tag!));
-    }
+    const conditions: ReturnType<typeof eq>[] = [];
+    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+    if (query.status) conditions.push(eq(snmpDevices.lastStatus, query.status));
+    if (query.templateId) conditions.push(eq(snmpDevices.templateId, query.templateId));
     if (query.search) {
-      const term = query.search.toLowerCase();
-      results = results.filter((device) =>
-        [device.name, device.ipAddress, device.location ?? ''].some((value) =>
-          value.toLowerCase().includes(term)
-        )
+      const escaped = escapeLikePattern(query.search);
+      conditions.push(
+        or(
+          like(snmpDevices.name, `%${escaped}%`),
+          like(snmpDevices.ipAddress, `%${escaped}%`)
+        )!
       );
     }
+
+    const where = conditions.length ? and(...conditions) : undefined;
+
+    const results = await db
+      .select({
+        id: snmpDevices.id,
+        orgId: snmpDevices.orgId,
+        name: snmpDevices.name,
+        ipAddress: snmpDevices.ipAddress,
+        snmpVersion: snmpDevices.snmpVersion,
+        port: snmpDevices.port,
+        templateId: snmpDevices.templateId,
+        isActive: snmpDevices.isActive,
+        lastPolled: snmpDevices.lastPolled,
+        lastStatus: snmpDevices.lastStatus,
+        pollingInterval: snmpDevices.pollingInterval,
+        createdAt: snmpDevices.createdAt,
+        templateName: snmpTemplates.name
+      })
+      .from(snmpDevices)
+      .leftJoin(snmpTemplates, eq(snmpDevices.templateId, snmpTemplates.id))
+      .where(where)
+      .orderBy(desc(snmpDevices.createdAt));
+
+    const total = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(snmpDevices)
+      .where(where);
 
     return c.json({
-      data: results,
-      filters: query,
-      total: results.length
+      data: results.map((d) => ({
+        id: d.id,
+        name: d.name,
+        ipAddress: d.ipAddress,
+        status: d.lastStatus ?? 'offline',
+        templateId: d.templateId,
+        templateName: d.templateName,
+        snmpVersion: d.snmpVersion,
+        port: d.port,
+        isActive: d.isActive,
+        pollingInterval: d.pollingInterval,
+        lastPolledAt: d.lastPolled?.toISOString() ?? null,
+        createdAt: d.createdAt.toISOString()
+      })),
+      total: Number(total[0]?.count ?? 0)
     });
   }
 );
@@ -625,40 +183,34 @@ snmpRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createDeviceSchema),
   async (c) => {
+    const auth = c.get('auth');
     const payload = c.req.valid('json');
-    const template = getTemplateById(payload.templateId);
-    if (!template) {
-      return c.json({ error: 'Template not found.' }, 400);
+    const orgResult = resolveOrgId(auth, payload.orgId, true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    if (payload.templateId) {
+      const [tmpl] = await db.select({ id: snmpTemplates.id }).from(snmpTemplates)
+        .where(eq(snmpTemplates.id, payload.templateId)).limit(1);
+      if (!tmpl) return c.json({ error: 'Template not found.' }, 400);
     }
 
-    const device: SnmpDevice = {
-      id: `snmp-dev-${randomUUID()}`,
+    const [device] = await db.insert(snmpDevices).values({
+      orgId: orgResult.orgId!,
       name: payload.name,
       ipAddress: payload.ipAddress,
-      status: 'online',
-      templateId: payload.templateId,
       snmpVersion: payload.snmpVersion,
-      community: payload.community ?? 'public',
-      location: payload.location ?? 'Unassigned',
-      tags: payload.tags ?? [],
-      lastPolledAt: nowIso(),
-      createdAt: nowIso(),
-      updatedAt: nowIso()
-    };
-    devices.push(device);
-
-    const templateMetrics = template.oids.map((oid) => ({
-      oid: oid.oid,
-      name: oid.name,
-      unit: oid.unit,
-      value: oid.unit === 'percent' ? 10 : 1,
-      recordedAt: nowIso()
-    }));
-    metricsByDevice[device.id] = {
-      deviceId: device.id,
-      capturedAt: nowIso(),
-      metrics: templateMetrics
-    };
+      port: payload.port ?? 161,
+      community: payload.community,
+      username: payload.username,
+      authProtocol: payload.authProtocol,
+      authPassword: payload.authPassword,
+      privProtocol: payload.privProtocol,
+      privPassword: payload.privPassword,
+      templateId: payload.templateId ?? null,
+      pollingInterval: payload.pollingInterval ?? 300,
+      isActive: true,
+      lastStatus: 'offline'
+    }).returning();
 
     return c.json({ data: device }, 201);
   }
@@ -667,20 +219,53 @@ snmpRoutes.post(
 snmpRoutes.get(
   '/devices/:id',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
-    const device = getDeviceById(c.req.param('id'));
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const template = getTemplateById(device.templateId);
-    const metrics = metricsByDevice[device.id] ?? null;
+    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select().from(snmpDevices)
+      .where(and(...conditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    const template = device.templateId
+      ? (await db.select().from(snmpTemplates).where(eq(snmpTemplates.id, device.templateId)).limit(1))[0] ?? null
+      : null;
+
+    const recentMetrics = await db.select().from(snmpMetrics)
+      .where(eq(snmpMetrics.deviceId, deviceId))
+      .orderBy(desc(snmpMetrics.timestamp))
+      .limit(20);
 
     return c.json({
       data: {
         ...device,
-        template,
-        recentMetrics: metrics
+        lastPolledAt: device.lastPolled?.toISOString() ?? null,
+        status: device.lastStatus ?? 'offline',
+        createdAt: device.createdAt.toISOString(),
+        template: template ? {
+          id: template.id,
+          name: template.name,
+          description: template.description,
+          vendor: template.vendor,
+          deviceType: template.deviceType,
+          oids: template.oids,
+          isBuiltIn: template.isBuiltIn
+        } : null,
+        recentMetrics: recentMetrics.length > 0 ? {
+          deviceId,
+          capturedAt: recentMetrics[0].timestamp.toISOString(),
+          metrics: recentMetrics.map((m) => ({
+            oid: m.oid,
+            name: m.name,
+            value: m.value,
+            recordedAt: m.timestamp.toISOString()
+          }))
+        } : null
       }
     });
   }
@@ -690,38 +275,55 @@ snmpRoutes.patch(
   '/devices/:id',
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateDeviceSchema),
-  (c) => {
-    const device = getDeviceById(c.req.param('id'));
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
-
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
     const payload = c.req.valid('json');
-    if (payload.templateId && !getTemplateById(payload.templateId)) {
-      return c.json({ error: 'Template not found.' }, 400);
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [existing] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Device not found.' }, 404);
+
+    if (payload.templateId) {
+      const [tmpl] = await db.select({ id: snmpTemplates.id }).from(snmpTemplates)
+        .where(eq(snmpTemplates.id, payload.templateId)).limit(1);
+      if (!tmpl) return c.json({ error: 'Template not found.' }, 400);
     }
 
-    Object.assign(device, {
-      ...payload,
-      updatedAt: nowIso()
-    });
+    const [updated] = await db.update(snmpDevices)
+      .set(payload)
+      .where(eq(snmpDevices.id, deviceId))
+      .returning();
 
-    return c.json({ data: device });
+    return c.json({ data: updated });
   }
 );
 
 snmpRoutes.delete(
   '/devices/:id',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const deviceId = c.req.param('id');
-    const index = devices.findIndex((device) => device.id === deviceId);
-    if (index === -1) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const [removed] = devices.splice(index, 1);
-    delete metricsByDevice[deviceId];
+    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [existing] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Device not found.' }, 404);
+
+    // Delete related data first
+    await db.delete(snmpMetrics).where(eq(snmpMetrics.deviceId, deviceId));
+    await db.delete(snmpAlertThresholds).where(eq(snmpAlertThresholds.deviceId, deviceId));
+    const [removed] = await db.delete(snmpDevices).where(eq(snmpDevices.id, deviceId)).returning();
 
     return c.json({ data: removed });
   }
@@ -730,21 +332,30 @@ snmpRoutes.delete(
 snmpRoutes.post(
   '/devices/:id/poll',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
-    const device = getDeviceById(c.req.param('id'));
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select({ id: snmpDevices.id, orgId: snmpDevices.orgId }).from(snmpDevices)
+      .where(and(...conditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    if (!isRedisAvailable()) {
+      return c.json({ error: 'Polling service unavailable. Redis is required for job queuing.' }, 503);
     }
 
-    const metrics = refreshDeviceMetrics(device.id);
-    device.lastPolledAt = nowIso();
-    device.updatedAt = nowIso();
+    await enqueueSnmpPoll(deviceId, device.orgId);
 
     return c.json({
       data: {
-        deviceId: device.id,
-        polledAt: device.lastPolledAt,
-        metrics
+        deviceId,
+        status: 'queued',
+        message: 'Poll request queued'
       }
     });
   }
@@ -753,52 +364,103 @@ snmpRoutes.post(
 snmpRoutes.post(
   '/devices/:id/test',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
-    const device = getDeviceById(c.req.param('id'));
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select().from(snmpDevices)
+      .where(and(...conditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    // Load template OIDs for the test (use sysDescr as a basic check)
+    let testOids = ['1.3.6.1.2.1.1.1.0']; // sysDescr
+    if (device.templateId) {
+      const [tmpl] = await db.select({ oids: snmpTemplates.oids }).from(snmpTemplates)
+        .where(eq(snmpTemplates.id, device.templateId)).limit(1);
+      if (tmpl && Array.isArray(tmpl.oids)) {
+        const templateOids = (tmpl.oids as Array<{ oid: string }>).map((o) => o.oid).slice(0, 3);
+        if (templateOids.length > 0) testOids = templateOids;
+      }
     }
 
-    const ok = device.status !== 'offline';
-    const latencyMs = ok ? 12 + Math.floor(Math.random() * 60) : null;
+    // Find an online agent for this org
+    const [onlineAgent] = await db
+      .select({ agentId: devices.agentId })
+      .from(devices)
+      .where(and(eq(devices.orgId, device.orgId), eq(devices.status, 'online')))
+      .limit(1);
+
+    const agentId = onlineAgent?.agentId ?? null;
+    if (!agentId || !isAgentConnected(agentId)) {
+      return c.json({
+        data: {
+          deviceId,
+          status: 'failed',
+          error: 'No online agent available',
+          snmpVersion: device.snmpVersion,
+          testedAt: new Date().toISOString()
+        }
+      });
+    }
+
+    const command = buildSnmpPollCommand(deviceId, device, testOids, 'snmp-test');
+    const sent = sendCommandToAgent(agentId, command);
+
     return c.json({
       data: {
-        deviceId: device.id,
-        ok,
-        latencyMs,
+        deviceId,
+        status: sent ? 'queued' : 'failed',
+        error: sent ? undefined : 'Failed to send test command to agent',
         snmpVersion: device.snmpVersion,
-        testedAt: nowIso()
+        testedAt: new Date().toISOString()
       }
     });
   }
 );
 
-// Template routes
+// ==================== TEMPLATE ROUTES ====================
+
 snmpRoutes.get(
   '/templates',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listTemplatesSchema),
-  (c) => {
+  async (c) => {
     const query = c.req.valid('query');
-    let results = templates.slice();
+    const conditions: ReturnType<typeof eq>[] = [];
 
-    if (query.source) {
-      results = results.filter((template) => template.source === query.source);
-    }
+    if (query.source === 'builtin') conditions.push(eq(snmpTemplates.isBuiltIn, true));
+    else if (query.source === 'custom') conditions.push(eq(snmpTemplates.isBuiltIn, false));
+
     if (query.search) {
-      const term = query.search.toLowerCase();
-      results = results.filter((template) =>
-        [template.name, template.vendor ?? '', template.deviceClass ?? '']
-          .join(' ')
-          .toLowerCase()
-          .includes(term)
+      const escaped = escapeLikePattern(query.search);
+      conditions.push(
+        or(
+          like(snmpTemplates.name, `%${escaped}%`),
+          like(snmpTemplates.vendor, `%${escaped}%`),
+          like(snmpTemplates.deviceType, `%${escaped}%`)
+        )!
       );
     }
 
+    const where = conditions.length ? and(...conditions) : undefined;
+    const results = await db.select().from(snmpTemplates).where(where).orderBy(desc(snmpTemplates.createdAt));
+
     return c.json({
-      data: results.map((template) => ({
-        ...template,
-        oidCount: template.oids.length
+      data: results.map((t) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        source: t.isBuiltIn ? 'builtin' : 'custom',
+        vendor: t.vendor,
+        deviceClass: t.deviceType,
+        oids: t.oids as any[],
+        oidCount: Array.isArray(t.oids) ? (t.oids as any[]).length : 0,
+        createdAt: t.createdAt.toISOString()
       }))
     });
   }
@@ -808,47 +470,54 @@ snmpRoutes.post(
   '/templates',
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createTemplateSchema),
-  (c) => {
+  async (c) => {
     const payload = c.req.valid('json');
-    const createdAt = nowIso();
-    const oids: SnmpOid[] = payload.oids.map((oid) => ({
-      id: oid.id ?? `oid-custom-${randomUUID()}`,
-      oid: oid.oid,
-      name: oid.name,
-      label: oid.label ?? oid.name,
-      unit: oid.unit,
-      type: oid.type ?? 'Gauge32',
-      description: oid.description
-    }));
 
-    const template: SnmpTemplate = {
-      id: `tmpl-custom-${randomUUID()}`,
+    const [template] = await db.insert(snmpTemplates).values({
       name: payload.name,
-      description: payload.description ?? 'Custom SNMP template.',
-      source: 'custom',
-      vendor: payload.vendor,
-      deviceClass: payload.deviceClass,
-      tags: payload.tags ?? [],
-      oids,
-      createdAt,
-      updatedAt: createdAt
-    };
+      description: payload.description ?? null,
+      vendor: payload.vendor ?? null,
+      deviceType: payload.deviceType ?? null,
+      oids: payload.oids,
+      isBuiltIn: false
+    }).returning();
 
-    templates.push(template);
-    return c.json({ data: template }, 201);
+    return c.json({
+      data: {
+        id: template.id,
+        name: template.name,
+        description: template.description,
+        source: 'custom',
+        vendor: template.vendor,
+        deviceClass: template.deviceType,
+        oids: template.oids,
+        createdAt: template.createdAt.toISOString()
+      }
+    }, 201);
   }
 );
 
 snmpRoutes.get(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
-    const template = getTemplateById(c.req.param('id'));
-    if (!template) {
-      return c.json({ error: 'Template not found.' }, 404);
-    }
+  async (c) => {
+    const templateId = c.req.param('id');
+    const [template] = await db.select().from(snmpTemplates)
+      .where(eq(snmpTemplates.id, templateId)).limit(1);
+    if (!template) return c.json({ error: 'Template not found.' }, 404);
 
-    return c.json({ data: template });
+    return c.json({
+      data: {
+        id: template.id,
+        name: template.name,
+        description: template.description,
+        source: template.isBuiltIn ? 'builtin' : 'custom',
+        vendor: template.vendor,
+        deviceClass: template.deviceType,
+        oids: template.oids,
+        createdAt: template.createdAt.toISOString()
+      }
+    });
   }
 );
 
@@ -856,75 +525,102 @@ snmpRoutes.patch(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateTemplateSchema),
-  (c) => {
-    const template = getTemplateById(c.req.param('id'));
-    if (!template) {
-      return c.json({ error: 'Template not found.' }, 404);
-    }
-    if (template.source === 'builtin') {
-      return c.json({ error: 'Built-in templates cannot be modified.' }, 400);
-    }
-
+  async (c) => {
+    const templateId = c.req.param('id');
     const payload = c.req.valid('json');
-    const { oids: payloadOids, ...templateUpdates } = payload;
-    const nextTemplate: Partial<SnmpTemplate> = { ...templateUpdates };
-    if (payloadOids) {
-      template.oids = payloadOids.map((oid) => ({
-        id: oid.id ?? `oid-custom-${randomUUID()}`,
-        oid: oid.oid,
-        name: oid.name,
-        label: oid.label ?? oid.name,
-        unit: oid.unit,
-        type: oid.type ?? 'Gauge32',
-        description: oid.description
-      }));
-    }
 
-    Object.assign(template, nextTemplate, {
-      updatedAt: nowIso()
+    const [template] = await db.select().from(snmpTemplates)
+      .where(eq(snmpTemplates.id, templateId)).limit(1);
+    if (!template) return c.json({ error: 'Template not found.' }, 404);
+    if (template.isBuiltIn) return c.json({ error: 'Built-in templates cannot be modified.' }, 400);
+
+    const updates: Record<string, unknown> = {};
+    if (payload.name !== undefined) updates.name = payload.name;
+    if (payload.description !== undefined) updates.description = payload.description;
+    if (payload.vendor !== undefined) updates.vendor = payload.vendor;
+    if (payload.deviceType !== undefined) updates.deviceType = payload.deviceType;
+    if (payload.oids !== undefined) updates.oids = payload.oids;
+
+    const [updated] = await db.update(snmpTemplates)
+      .set(updates)
+      .where(eq(snmpTemplates.id, templateId))
+      .returning();
+
+    return c.json({
+      data: {
+        id: updated.id,
+        name: updated.name,
+        description: updated.description,
+        source: 'custom',
+        vendor: updated.vendor,
+        deviceClass: updated.deviceType,
+        oids: updated.oids,
+        createdAt: updated.createdAt.toISOString()
+      }
     });
-
-    return c.json({ data: template });
   }
 );
 
 snmpRoutes.delete(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
+  async (c) => {
     const templateId = c.req.param('id');
-    const template = getTemplateById(templateId);
-    if (!template) {
-      return c.json({ error: 'Template not found.' }, 404);
-    }
-    if (template.source === 'builtin') {
-      return c.json({ error: 'Built-in templates cannot be deleted.' }, 400);
-    }
 
-    const index = templates.findIndex((item) => item.id === templateId);
-    templates.splice(index, 1);
+    const [template] = await db.select().from(snmpTemplates)
+      .where(eq(snmpTemplates.id, templateId)).limit(1);
+    if (!template) return c.json({ error: 'Template not found.' }, 404);
+    if (template.isBuiltIn) return c.json({ error: 'Built-in templates cannot be deleted.' }, 400);
 
-    return c.json({ data: template });
+    const [removed] = await db.delete(snmpTemplates)
+      .where(eq(snmpTemplates.id, templateId)).returning();
+
+    return c.json({ data: removed });
   }
 );
 
-// Metric routes
+// ==================== METRIC ROUTES ====================
+
 snmpRoutes.get(
   '/metrics/:deviceId',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const deviceId = c.req.param('deviceId');
-    const device = getDeviceById(deviceId);
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const metrics = metricsByDevice[deviceId];
+    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
+      .where(and(...deviceConditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    // Get the most recent metrics (one per OID)
+    const metrics = await db.select().from(snmpMetrics)
+      .where(eq(snmpMetrics.deviceId, deviceId))
+      .orderBy(desc(snmpMetrics.timestamp))
+      .limit(50);
+
+    // Deduplicate by OID to show latest value per OID
+    const seen = new Set<string>();
+    const latest = metrics.filter((m) => {
+      if (seen.has(m.oid)) return false;
+      seen.add(m.oid);
+      return true;
+    });
+
     return c.json({
-      data: metrics ?? {
+      data: {
         deviceId,
-        capturedAt: nowIso(),
-        metrics: []
+        capturedAt: latest[0]?.timestamp.toISOString() ?? new Date().toISOString(),
+        metrics: latest.map((m) => ({
+          oid: m.oid,
+          name: m.name,
+          value: m.value,
+          recordedAt: m.timestamp.toISOString()
+        }))
       }
     });
   }
@@ -934,19 +630,43 @@ snmpRoutes.get(
   '/metrics/:deviceId/history',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', metricsHistorySchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const deviceId = c.req.param('deviceId');
-    const device = getDeviceById(deviceId);
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
-
     const query = c.req.valid('query');
-    const end = normalizeDate(query.end, new Date());
-    const start = normalizeDate(query.start, new Date(end.getTime() - 24 * 60 * 60 * 1000));
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
+      .where(and(...deviceConditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    const end = query.end ? new Date(query.end) : new Date();
+    const start = query.start ? new Date(query.start) : new Date(end.getTime() - 24 * 60 * 60 * 1000);
     const interval = query.interval ?? '1h';
-    const intervalMs = intervalMsMap[interval] ?? 0;
-    const metrics = metricsByDevice[deviceId]?.metrics ?? [];
+
+    const metrics = await db.select().from(snmpMetrics)
+      .where(and(
+        eq(snmpMetrics.deviceId, deviceId),
+        gte(snmpMetrics.timestamp, start),
+        lte(snmpMetrics.timestamp, end)
+      ))
+      .orderBy(snmpMetrics.timestamp);
+
+    // Group by OID into series
+    const seriesMap = new Map<string, { oid: string; name: string; points: Array<{ timestamp: string; value: string | null }> }>();
+    for (const m of metrics) {
+      if (!seriesMap.has(m.oid)) {
+        seriesMap.set(m.oid, { oid: m.oid, name: m.name, points: [] });
+      }
+      seriesMap.get(m.oid)!.points.push({
+        timestamp: m.timestamp.toISOString(),
+        value: m.value
+      });
+    }
 
     return c.json({
       data: {
@@ -954,7 +674,7 @@ snmpRoutes.get(
         start: start.toISOString(),
         end: end.toISOString(),
         interval,
-        series: buildSeries(metrics, start, end, intervalMs)
+        series: Array.from(seriesMap.values())
       }
     });
   }
@@ -964,67 +684,73 @@ snmpRoutes.get(
   '/metrics/:deviceId/:oid',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', metricsHistorySchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const deviceId = c.req.param('deviceId');
     const oid = c.req.param('oid');
-    const device = getDeviceById(deviceId);
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
-
     const query = c.req.valid('query');
-    const end = normalizeDate(query.end, new Date());
-    const start = normalizeDate(query.start, new Date(end.getTime() - 24 * 60 * 60 * 1000));
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
+      .where(and(...deviceConditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    const end = query.end ? new Date(query.end) : new Date();
+    const start = query.start ? new Date(query.start) : new Date(end.getTime() - 24 * 60 * 60 * 1000);
     const interval = query.interval ?? '1h';
-    const intervalMs = intervalMsMap[interval] ?? 0;
-    const metrics = metricsByDevice[deviceId]?.metrics ?? [];
-    const metric = metrics.find((entry) => entry.oid === oid || entry.name === oid);
 
-    if (!metric) {
-      const resolved = resolveOid(oid);
-      return c.json(
-        {
-          data: {
-            deviceId,
-            oid,
-            name: resolved?.name ?? oid,
-            series: []
-          }
-        },
-        200
-      );
-    }
+    const metrics = await db.select().from(snmpMetrics)
+      .where(and(
+        eq(snmpMetrics.deviceId, deviceId),
+        or(eq(snmpMetrics.oid, oid), eq(snmpMetrics.name, oid)),
+        gte(snmpMetrics.timestamp, start),
+        lte(snmpMetrics.timestamp, end)
+      ))
+      .orderBy(snmpMetrics.timestamp);
 
-    const series = buildSeries([metric], start, end, intervalMs);
     return c.json({
       data: {
         deviceId,
-        oid: metric.oid,
-        name: metric.name,
-        unit: metric.unit,
+        oid: metrics[0]?.oid ?? oid,
+        name: metrics[0]?.name ?? oid,
         interval,
         start: start.toISOString(),
         end: end.toISOString(),
-        series: series[0]?.points ?? []
+        series: metrics.map((m) => ({
+          timestamp: m.timestamp.toISOString(),
+          value: m.value
+        }))
       }
     });
   }
 );
 
-// Threshold routes
+// ==================== THRESHOLD ROUTES ====================
+
 snmpRoutes.get(
   '/thresholds/:deviceId',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const deviceId = c.req.param('deviceId');
-    const device = getDeviceById(deviceId);
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    return c.json({
-      data: thresholds.filter((threshold) => threshold.deviceId === deviceId)
-    });
+    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
+    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
+      .where(and(...deviceConditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    const results = await db.select().from(snmpAlertThresholds)
+      .where(eq(snmpAlertThresholds.deviceId, deviceId));
+
+    return c.json({ data: results });
   }
 );
 
@@ -1032,28 +758,29 @@ snmpRoutes.post(
   '/thresholds',
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createThresholdSchema),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const payload = c.req.valid('json');
-    const device = getDeviceById(payload.deviceId);
-    if (!device) {
-      return c.json({ error: 'Device not found.' }, 404);
-    }
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const createdAt = nowIso();
-    const threshold: Threshold = {
-      id: `snmp-thresh-${randomUUID()}`,
+    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, payload.deviceId)];
+    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
+
+    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
+      .where(and(...deviceConditions)).limit(1);
+    if (!device) return c.json({ error: 'Device not found.' }, 404);
+
+    const [threshold] = await db.insert(snmpAlertThresholds).values({
       deviceId: payload.deviceId,
       oid: payload.oid,
-      name: payload.name,
-      condition: payload.condition,
-      value: payload.value,
+      operator: payload.operator,
+      threshold: payload.threshold,
       severity: payload.severity,
-      enabled: payload.enabled ?? true,
-      createdAt,
-      updatedAt: createdAt
-    };
+      message: payload.message ?? null,
+      isActive: payload.isActive ?? true
+    }).returning();
 
-    thresholds.push(threshold);
     return c.json({ data: threshold }, 201);
   }
 );
@@ -1062,87 +789,153 @@ snmpRoutes.patch(
   '/thresholds/:id',
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateThresholdSchema),
-  (c) => {
-    const threshold = thresholds.find((item) => item.id === c.req.param('id'));
-    if (!threshold) {
-      return c.json({ error: 'Threshold not found.' }, 404);
-    }
-
+  async (c) => {
+    const auth = c.get('auth');
+    const thresholdId = c.req.param('id');
     const payload = c.req.valid('json');
-    Object.assign(threshold, {
-      ...payload,
-      updatedAt: nowIso()
-    });
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    return c.json({ data: threshold });
+    // Verify threshold exists and its device belongs to the caller's org
+    const query = orgResult.orgId
+      ? db.select().from(snmpAlertThresholds)
+          .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
+          .where(and(eq(snmpAlertThresholds.id, thresholdId), eq(snmpDevices.orgId, orgResult.orgId)))
+      : db.select().from(snmpAlertThresholds)
+          .where(eq(snmpAlertThresholds.id, thresholdId));
+
+    const [existing] = await query.limit(1);
+    if (!existing) return c.json({ error: 'Threshold not found.' }, 404);
+
+    const [updated] = await db.update(snmpAlertThresholds)
+      .set(payload)
+      .where(eq(snmpAlertThresholds.id, thresholdId))
+      .returning();
+
+    return c.json({ data: updated });
   }
 );
 
 snmpRoutes.delete(
   '/thresholds/:id',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
+  async (c) => {
+    const auth = c.get('auth');
     const thresholdId = c.req.param('id');
-    const index = thresholds.findIndex((item) => item.id === thresholdId);
-    if (index === -1) {
-      return c.json({ error: 'Threshold not found.' }, 404);
-    }
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const [removed] = thresholds.splice(index, 1);
+    // Verify threshold exists and its device belongs to the caller's org
+    const query = orgResult.orgId
+      ? db.select({ id: snmpAlertThresholds.id }).from(snmpAlertThresholds)
+          .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
+          .where(and(eq(snmpAlertThresholds.id, thresholdId), eq(snmpDevices.orgId, orgResult.orgId)))
+      : db.select({ id: snmpAlertThresholds.id }).from(snmpAlertThresholds)
+          .where(eq(snmpAlertThresholds.id, thresholdId));
+
+    const [existing] = await query.limit(1);
+    if (!existing) return c.json({ error: 'Threshold not found.' }, 404);
+
+    const [removed] = await db.delete(snmpAlertThresholds)
+      .where(eq(snmpAlertThresholds.id, thresholdId)).returning();
+
     return c.json({ data: removed });
   }
 );
 
-// Dashboard route
+// ==================== DASHBOARD ROUTE ====================
+
 snmpRoutes.get(
   '/dashboard',
   requireScope('organization', 'partner', 'system'),
-  (c) => {
-    const statusCounts = devices.reduce<Record<string, number>>((acc, device) => {
-      acc[device.status] = (acc[device.status] ?? 0) + 1;
-      return acc;
-    }, {});
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const templateUsage = templates.map((template) => ({
-      templateId: template.id,
-      name: template.name,
-      deviceCount: devices.filter((device) => device.templateId === template.id).length
-    }));
+    const orgFilter = orgResult.orgId ? eq(snmpDevices.orgId, orgResult.orgId) : undefined;
 
-    const topInterfaces = devices.map((device) => {
-      const metrics = metricsByDevice[device.id]?.metrics ?? [];
-      const inOctets = metrics.find((metric) => metric.name === 'ifInOctets')?.value ?? 0;
-      const outOctets = metrics.find((metric) => metric.name === 'ifOutOctets')?.value ?? 0;
-      return {
-        deviceId: device.id,
-        name: device.name,
-        inOctets,
-        outOctets,
-        totalOctets: Number(inOctets) + Number(outOctets)
-      };
-    });
+    // Device count
+    const [deviceCount] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(snmpDevices)
+      .where(orgFilter);
 
-    topInterfaces.sort((a, b) => b.totalOctets - a.totalOctets);
+    // Template count
+    const [templateCount] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(snmpTemplates);
+
+    // Threshold count
+    const thresholdCountQuery = orgFilter
+      ? db
+          .select({ count: sql<number>`count(*)` })
+          .from(snmpAlertThresholds)
+          .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
+          .where(orgFilter)
+      : db.select({ count: sql<number>`count(*)` }).from(snmpAlertThresholds);
+    const [thresholdCount] = await thresholdCountQuery;
+
+    // Status counts
+    const statusCounts = await db
+      .select({
+        status: snmpDevices.lastStatus,
+        count: sql<number>`count(*)`
+      })
+      .from(snmpDevices)
+      .where(orgFilter)
+      .groupBy(snmpDevices.lastStatus);
+
+    const status: Record<string, number> = {};
+    for (const row of statusCounts) {
+      status[row.status ?? 'unknown'] = Number(row.count);
+    }
+
+    // Template usage
+    const templateUsage = await db
+      .select({
+        templateId: snmpDevices.templateId,
+        name: snmpTemplates.name,
+        deviceCount: sql<number>`count(*)`
+      })
+      .from(snmpDevices)
+      .leftJoin(snmpTemplates, eq(snmpDevices.templateId, snmpTemplates.id))
+      .where(orgFilter)
+      .groupBy(snmpDevices.templateId, snmpTemplates.name);
+
+    // Recent polls
+    const recentPolls = await db
+      .select({
+        deviceId: snmpDevices.id,
+        name: snmpDevices.name,
+        lastPolledAt: snmpDevices.lastPolled,
+        status: snmpDevices.lastStatus
+      })
+      .from(snmpDevices)
+      .where(orgFilter)
+      .orderBy(desc(snmpDevices.lastPolled))
+      .limit(5);
 
     return c.json({
       data: {
         totals: {
-          devices: devices.length,
-          templates: templates.length,
-          thresholds: thresholds.length
+          devices: Number(deviceCount?.count ?? 0),
+          templates: Number(templateCount?.count ?? 0),
+          thresholds: Number(thresholdCount?.count ?? 0)
         },
-        status: statusCounts,
-        templateUsage,
-        topInterfaces: topInterfaces.slice(0, 5),
-        recentPolls: devices
-          .map((device) => ({
-            deviceId: device.id,
-            name: device.name,
-            lastPolledAt: device.lastPolledAt,
-            status: device.status
-          }))
-          .sort((a, b) => b.lastPolledAt.localeCompare(a.lastPolledAt))
-          .slice(0, 5)
+        status,
+        templateUsage: templateUsage.map((t) => ({
+          templateId: t.templateId,
+          name: t.name ?? 'Unassigned',
+          deviceCount: Number(t.deviceCount)
+        })),
+        topInterfaces: [],
+        recentPolls: recentPolls.map((p) => ({
+          deviceId: p.deviceId,
+          name: p.name,
+          lastPolledAt: p.lastPolledAt?.toISOString() ?? null,
+          status: p.status ?? 'offline'
+        }))
       }
     });
   }

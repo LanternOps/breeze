@@ -81,35 +81,57 @@ export default function SNMPDashboard() {
       setLoading(true);
       setError(undefined);
 
-      const [statsRes, devicesRes, metricsRes] = await Promise.all([
-        fetchWithAuth('/snmp'),
-        fetchWithAuth('/snmp/devices'),
-        fetchWithAuth('/snmp/metrics')
+      const [dashRes, devicesRes] = await Promise.all([
+        fetchWithAuth('/snmp/dashboard'),
+        fetchWithAuth('/snmp/devices')
       ]);
 
-      if (statsRes.status === 401 || devicesRes.status === 401 || metricsRes.status === 401) {
+      if (dashRes.status === 401 || devicesRes.status === 401) {
         window.location.href = '/login';
         return;
       }
 
-      if (!statsRes.ok) {
-        throw new Error('Failed to fetch SNMP stats');
+      if (!dashRes.ok) {
+        throw new Error('Failed to fetch SNMP dashboard');
       }
       if (!devicesRes.ok) {
         throw new Error('Failed to fetch SNMP devices');
       }
 
-      const statsData = await statsRes.json();
+      const dashData = await dashRes.json();
       const devicesData = await devicesRes.json();
+      const dash = dashData.data ?? dashData;
 
-      setStats(statsData.stats ?? statsData);
-      setDevices(devicesData.data ?? devicesData.devices ?? (Array.isArray(devicesData) ? devicesData : []));
-      setAlerts(statsData.alerts ?? []);
+      const onlineCount = dash.status?.online ?? 0;
+      const totalDevices = dash.totals?.devices ?? 0;
+      setStats({
+        monitoredDevices: totalDevices,
+        activeAlerts: dash.totals?.thresholds ?? 0,
+        pollingStatus: totalDevices > 0 ? 'Active' : 'Idle',
+        lastPoll: dash.recentPolls?.[0]?.lastPolledAt ?? 'N/A',
+        successRate: totalDevices > 0 ? `${Math.round((onlineCount / totalDevices) * 100)}%` : '0%'
+      });
 
-      if (metricsRes.ok) {
-        const metricsData = await metricsRes.json();
-        setBandwidthConsumers(metricsData.bandwidthConsumers ?? metricsData.topConsumers ?? []);
-      }
+      const rawDevices = devicesData.data ?? devicesData.devices ?? (Array.isArray(devicesData) ? devicesData : []);
+      setDevices(rawDevices.map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        ip: d.ipAddress ?? d.ip,
+        status: d.status === 'online' ? 'up' : d.status === 'offline' ? 'down' : 'degraded',
+        template: d.templateId ?? d.template,
+        lastPolled: d.lastPolledAt ?? d.lastPolled
+      })));
+
+      setAlerts([]);
+
+      const topIfaces = dash.topInterfaces ?? [];
+      setBandwidthConsumers(topIfaces.map((iface: any) => ({
+        id: iface.deviceId,
+        name: iface.name,
+        value: Math.round(iface.totalOctets / 1_000_000),
+        unit: 'MB',
+        delta: 0
+      })));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -135,9 +157,9 @@ export default function SNMPDashboard() {
         method: 'POST',
         body: JSON.stringify({
           name: newDevice.name,
-          ip: newDevice.ip,
+          ipAddress: newDevice.ip,
           snmpVersion: newDevice.snmpVersion,
-          communityString: newDevice.communityString
+          community: newDevice.communityString
         })
       });
 
@@ -218,7 +240,6 @@ export default function SNMPDashboard() {
             <span className="text-xs text-muted-foreground">All sites</span>
           </div>
           <p className="mt-3 text-3xl font-semibold">{stats?.monitoredDevices ?? 0}</p>
-          <p className="mt-1 text-sm text-muted-foreground">+3 added this week</p>
         </div>
 
         <div className="rounded-lg border bg-card p-5 shadow-sm">
@@ -232,7 +253,6 @@ export default function SNMPDashboard() {
             </span>
           </div>
           <p className="mt-3 text-3xl font-semibold">{stats?.activeAlerts ?? 0}</p>
-          <p className="mt-1 text-sm text-muted-foreground">2 critical, 4 warnings</p>
         </div>
 
         <div className="rounded-lg border bg-card p-5 shadow-sm">
@@ -366,9 +386,11 @@ export default function SNMPDashboard() {
             )}
           </div>
 
-          <div className="mt-6 rounded-md border border-dashed bg-muted/40 p-4 text-center text-sm text-muted-foreground">
-            Chart placeholder for interface utilization trends
-          </div>
+          {bandwidthConsumers.length === 0 && (
+            <div className="mt-6 rounded-md border border-dashed bg-muted/40 p-4 text-center text-sm text-muted-foreground">
+              No interface data available yet
+            </div>
+          )}
         </div>
       </div>
 

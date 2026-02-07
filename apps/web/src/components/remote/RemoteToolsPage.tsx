@@ -19,6 +19,7 @@ import ScheduledTasks, { type ScheduledTask, type TaskDetails, type TaskHistory,
 import RegistryEditor from './RegistryEditor';
 import RemoteTerminal from './RemoteTerminal';
 import FileManager from './FileManager';
+import ConnectDesktopButton from './ConnectDesktopButton';
 
 type RemoteToolsPageProps = {
   deviceId: string;
@@ -702,14 +703,17 @@ export default function RemoteToolsPage({
             </p>
           </div>
         </div>
-        {shouldShowClose && (
-          <button
-            onClick={handleClose}
-            className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted"
+        <div className="flex items-center gap-2">
+          <ConnectDesktopButton deviceId={deviceId} />
+          {shouldShowClose && (
+            <button
+              onClick={handleClose}
+              className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted"
           >
             Close
           </button>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Tab Navigation */}

@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"time"
 
@@ -37,7 +38,7 @@ func ScanARP(subnets []*net.IPNet, exclude map[string]struct{}, timeout time.Dur
 
 		ifaceSubnets, err := interfaceSubnets(iface)
 		if err != nil {
-			fmt.Printf("[Discovery] Failed to read interface addresses for %s: %v\n", iface.Name, err)
+			slog.Warn("Failed to read interface addresses", "interface", iface.Name, "error", err)
 			continue
 		}
 
@@ -59,13 +60,14 @@ func ScanARP(subnets []*net.IPNet, exclude map[string]struct{}, timeout time.Dur
 func scanARPOnInterface(iface net.Interface, ifaceSubnet *net.IPNet, matchingSubnets []*net.IPNet, exclude map[string]struct{}, timeout time.Duration, results map[string]string) error {
 	handle, err := pcap.OpenLive(iface.Name, 65536, true, timeout)
 	if err != nil {
-		fmt.Printf("[Discovery] Failed to open interface %s for ARP scan: %v\n", iface.Name, err)
+		slog.Warn("Failed to open interface for ARP scan", "interface", iface.Name, "error", err)
 		return err
 	}
 	defer handle.Close()
 
 	if err := handle.SetBPFFilter("arp"); err != nil {
-		fmt.Printf("[Discovery] Failed to set ARP filter on %s: %v\n", iface.Name, err)
+		slog.Warn("Failed to set ARP filter, skipping interface", "interface", iface.Name, "error", err)
+		return fmt.Errorf("BPF filter failed on %s: %w", iface.Name, err)
 	}
 
 	for _, subnet := range matchingSubnets {
@@ -173,7 +175,7 @@ func sendARPRequests(handle *pcap.Handle, iface net.Interface, sourceIP net.IP, 
 		}
 
 		if err := handle.WritePacketData(buffer.Bytes()); err != nil {
-			fmt.Printf("[Discovery] Failed to send ARP request: %v\n", err)
+			slog.Debug("Failed to send ARP request", "error", err)
 		}
 	}
 }
