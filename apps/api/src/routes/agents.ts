@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   devices,
@@ -15,7 +15,10 @@ import {
   softwareInventory,
   patches,
   devicePatches,
-  deviceEventLogs
+  deviceEventLogs,
+  securityStatus,
+  securityThreats,
+  securityScans
 } from '../db/schema';
 import { createHash, randomBytes } from 'crypto';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
@@ -86,6 +89,328 @@ const commandResultSchema = z.object({
   durationMs: z.number().int(),
   error: z.string().optional()
 });
+
+const securityProviderValues = [
+  'windows_defender',
+  'bitdefender',
+  'sophos',
+  'sentinelone',
+  'crowdstrike',
+  'malwarebytes',
+  'eset',
+  'kaspersky',
+  'other'
+] as const;
+
+type SecurityProviderValue = (typeof securityProviderValues)[number];
+
+const securityStatusIngestSchema = z.object({
+  provider: z.string().optional(),
+  providerVersion: z.string().optional(),
+  definitionsVersion: z.string().optional(),
+  definitionsDate: z.string().optional(),
+  lastScan: z.string().optional(),
+  lastScanType: z.string().optional(),
+  realTimeProtection: z.boolean().optional(),
+  threatCount: z.number().int().min(0).optional(),
+  firewallEnabled: z.boolean().optional(),
+  encryptionStatus: z.string().optional(),
+  windowsSecurityCenterAvailable: z.boolean().optional(),
+  avProducts: z.array(
+    z.object({
+      displayName: z.string().optional(),
+      provider: z.string().optional(),
+      realTimeProtection: z.boolean().optional(),
+      definitionsUpToDate: z.boolean().optional(),
+      productState: z.number().int().optional()
+    }).passthrough()
+  ).optional()
+}).passthrough();
+
+type SecurityStatusPayload = z.infer<typeof securityStatusIngestSchema>;
+
+const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const securityCommandTypes = {
+  collectStatus: 'security_collect_status',
+  scan: 'security_scan',
+  quarantine: 'security_threat_quarantine',
+  remove: 'security_threat_remove',
+  restore: 'security_threat_restore'
+} as const;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function parseDate(value: unknown): Date | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeProvider(raw: unknown): SecurityProviderValue {
+  if (typeof raw !== 'string') return 'other';
+  const value = raw.trim().toLowerCase();
+  switch (value) {
+    case 'windows_defender':
+    case 'microsoft_defender':
+    case 'defender':
+    case 'prov-defender':
+      return 'windows_defender';
+    case 'bitdefender':
+    case 'prov-bitdefender':
+      return 'bitdefender';
+    case 'sophos':
+      return 'sophos';
+    case 'sentinelone':
+    case 'sentinel_one':
+    case 'sentinel':
+    case 'prov-sentinelone':
+      return 'sentinelone';
+    case 'crowdstrike':
+    case 'prov-crowdstrike':
+      return 'crowdstrike';
+    case 'malwarebytes':
+      return 'malwarebytes';
+    case 'eset':
+      return 'eset';
+    case 'kaspersky':
+      return 'kaspersky';
+    default:
+      return 'other';
+  }
+}
+
+function normalizeEncryptionStatus(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim().toLowerCase();
+  if (value === '') return null;
+  if (value === 'encrypted' || value === 'partial' || value === 'unencrypted' || value === 'unknown') {
+    return value;
+  }
+  if (value.includes('encrypt')) return 'encrypted';
+  if (value.includes('unencrypt')) return 'unencrypted';
+  return value.slice(0, 50);
+}
+
+function normalizeSeverity(raw: unknown): 'low' | 'medium' | 'high' | 'critical' {
+  if (typeof raw !== 'string') return 'medium';
+  const value = raw.trim().toLowerCase();
+  if (value === 'critical') return 'critical';
+  if (value === 'high') return 'high';
+  if (value === 'low') return 'low';
+  return 'medium';
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && uuidRegex.test(value);
+}
+
+function parseResultJson(stdout: string | undefined): Record<string, unknown> | undefined {
+  if (!stdout) return undefined;
+  try {
+    const parsed = JSON.parse(stdout);
+    return isObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getSecurityStatusFromResult(resultData: Record<string, unknown> | undefined): SecurityStatusPayload | undefined {
+  if (!resultData) return undefined;
+
+  const nested = isObject(resultData.status) ? resultData.status : undefined;
+  const candidate = nested ?? resultData;
+  const parsed = securityStatusIngestSchema.safeParse(candidate);
+  if (!parsed.success) return undefined;
+  return parsed.data;
+}
+
+async function upsertSecurityStatusForDevice(deviceId: string, payload: SecurityStatusPayload): Promise<void> {
+  const avProducts = Array.isArray(payload.avProducts) ? payload.avProducts : [];
+  const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
+  const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
+
+  await db
+    .insert(securityStatus)
+    .values({
+      deviceId,
+      provider,
+      providerVersion: asString(payload.providerVersion) ?? null,
+      definitionsVersion: asString(payload.definitionsVersion) ?? null,
+      definitionsDate: parseDate(payload.definitionsDate),
+      realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
+      lastScan: parseDate(payload.lastScan),
+      lastScanType: asString(payload.lastScanType) ?? null,
+      threatCount: payload.threatCount ?? 0,
+      firewallEnabled: payload.firewallEnabled ?? null,
+      encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
+      updatedAt: new Date()
+    })
+    .onConflictDoUpdate({
+      target: securityStatus.deviceId,
+      set: {
+        provider,
+        providerVersion: asString(payload.providerVersion) ?? null,
+        definitionsVersion: asString(payload.definitionsVersion) ?? null,
+        definitionsDate: parseDate(payload.definitionsDate),
+        realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
+        lastScan: parseDate(payload.lastScan),
+        lastScanType: asString(payload.lastScanType) ?? null,
+        threatCount: payload.threatCount ?? 0,
+        firewallEnabled: payload.firewallEnabled ?? null,
+        encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
+        updatedAt: new Date()
+      }
+    });
+}
+
+async function updateThreatStatusForAction(command: typeof deviceCommands.$inferSelect): Promise<void> {
+  const payload = isObject(command.payload) ? command.payload : {};
+  const threatId = payload.threatId;
+  const threatPath = asString(payload.path);
+
+  let targetId: string | undefined;
+  if (isUuid(threatId)) {
+    targetId = threatId;
+  } else if (threatPath) {
+    const [threat] = await db
+      .select({ id: securityThreats.id })
+      .from(securityThreats)
+      .where(and(eq(securityThreats.deviceId, command.deviceId), eq(securityThreats.filePath, threatPath)))
+      .orderBy(desc(securityThreats.detectedAt))
+      .limit(1);
+    targetId = threat?.id;
+  }
+
+  if (!targetId) return;
+
+  const now = new Date();
+  if (command.type === securityCommandTypes.quarantine) {
+    await db
+      .update(securityThreats)
+      .set({ status: 'quarantined', resolvedAt: null, resolvedBy: null })
+      .where(eq(securityThreats.id, targetId));
+    return;
+  }
+
+  if (command.type === securityCommandTypes.remove) {
+    await db
+      .update(securityThreats)
+      .set({ status: 'removed', resolvedAt: now, resolvedBy: 'agent' })
+      .where(eq(securityThreats.id, targetId));
+    return;
+  }
+
+  if (command.type === securityCommandTypes.restore) {
+    await db
+      .update(securityThreats)
+      .set({ status: 'allowed', resolvedAt: now, resolvedBy: 'agent' })
+      .where(eq(securityThreats.id, targetId));
+  }
+}
+
+async function handleSecurityCommandResult(
+  command: typeof deviceCommands.$inferSelect,
+  resultData: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  const resultJson = parseResultJson(resultData.stdout);
+  const parsedStatus = getSecurityStatusFromResult(resultJson);
+  if (parsedStatus) {
+    await upsertSecurityStatusForDevice(command.deviceId, parsedStatus);
+  }
+
+  if (command.type === securityCommandTypes.collectStatus) {
+    return;
+  }
+
+  if (command.type === securityCommandTypes.scan) {
+    const payload = isObject(command.payload) ? command.payload : {};
+    const scanType = asString(resultJson?.scanType) ?? asString(payload.scanType) ?? 'quick';
+    const scanRecordId = asString(resultJson?.scanRecordId) ?? asString(payload.scanRecordId);
+    const threatsValue = Array.isArray(resultJson?.threats) ? resultJson.threats : [];
+    const threatsFoundRaw = resultJson?.threatsFound;
+    const threatsFound = typeof threatsFoundRaw === 'number'
+      ? Math.max(0, Math.floor(threatsFoundRaw))
+      : threatsValue.length;
+    const completedAt = new Date();
+    const durationSeconds = Math.max(0, Math.round(resultData.durationMs / 1000));
+
+    let existingScan: { id: string } | undefined;
+    if (isUuid(scanRecordId)) {
+      [existingScan] = await db
+        .select({ id: securityScans.id })
+        .from(securityScans)
+        .where(and(eq(securityScans.id, scanRecordId), eq(securityScans.deviceId, command.deviceId)))
+        .limit(1);
+    }
+
+    if (existingScan) {
+      await db
+        .update(securityScans)
+        .set({
+          status: resultData.status === 'completed' ? 'completed' : 'failed',
+          completedAt,
+          duration: durationSeconds,
+          threatsFound
+        })
+        .where(eq(securityScans.id, existingScan.id));
+    } else {
+      await db.insert(securityScans).values({
+        ...(isUuid(scanRecordId) ? { id: scanRecordId } : {}),
+        deviceId: command.deviceId,
+        scanType,
+        status: resultData.status === 'completed' ? 'completed' : 'failed',
+        startedAt: command.createdAt ?? new Date(),
+        completedAt,
+        threatsFound,
+        duration: durationSeconds
+      });
+    }
+
+    if (resultData.status === 'completed' && threatsValue.length > 0) {
+      const provider = normalizeProvider(parsedStatus?.provider);
+      const inserts: Array<typeof securityThreats.$inferInsert> = [];
+
+      for (const threat of threatsValue) {
+        if (!isObject(threat)) continue;
+        inserts.push({
+          deviceId: command.deviceId,
+          provider,
+          threatName: asString(threat.name) ?? asString(threat.threatName) ?? 'Unknown Threat',
+          threatType: asString(threat.type) ?? asString(threat.threatType) ?? asString(threat.category) ?? null,
+          severity: normalizeSeverity(threat.severity),
+          status: 'detected',
+          filePath: asString(threat.path) ?? asString(threat.filePath) ?? null,
+          processName: asString(threat.processName) ?? null,
+          detectedAt: completedAt,
+          details: threat
+        });
+      }
+
+      if (inserts.length > 0) {
+        await db.insert(securityThreats).values(inserts);
+      }
+    }
+
+    return;
+  }
+
+  if (
+    command.type === securityCommandTypes.quarantine ||
+    command.type === securityCommandTypes.remove ||
+    command.type === securityCommandTypes.restore
+  ) {
+    if (resultData.status === 'completed') {
+      await updateThreatStatusForAction(command);
+    }
+  }
+}
 
 // Generate a unique agent ID
 function generateAgentId(): string {
@@ -348,6 +673,25 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
   });
 });
 
+// Submit device security status
+agentRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const payload = c.req.valid('json');
+
+  const [device] = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  await upsertSecurityStatusForDevice(device.id, payload);
+  return c.json({ success: true });
+});
+
 // Submit command result
 agentRoutes.post(
   '/:id/commands/:commandId/result',
@@ -380,6 +724,20 @@ agentRoutes.post(
         }
       })
       .where(eq(deviceCommands.id, commandId));
+
+    if (
+      command.type === securityCommandTypes.collectStatus ||
+      command.type === securityCommandTypes.scan ||
+      command.type === securityCommandTypes.quarantine ||
+      command.type === securityCommandTypes.remove ||
+      command.type === securityCommandTypes.restore
+    ) {
+      try {
+        await handleSecurityCommandResult(command, data);
+      } catch (err) {
+        console.error(`[agents] security command post-processing failed for ${commandId}:`, err);
+      }
+    }
 
     return c.json({ success: true });
   }

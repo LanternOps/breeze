@@ -14,6 +14,7 @@ import {
   organizations
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { setCooldown } from '../services/alertCooldown';
 
 export const alertRoutes = new Hono();
 
@@ -1204,6 +1205,26 @@ alertRoutes.post(
       })
       .where(eq(alerts.id, alertId))
       .returning();
+
+    // Set cooldown to prevent immediate re-trigger by the evaluation worker
+    const [rule] = await db
+      .select()
+      .from(alertRules)
+      .where(eq(alertRules.id, alert.ruleId))
+      .limit(1);
+
+    if (rule) {
+      const [template] = await db
+        .select()
+        .from(alertTemplates)
+        .where(eq(alertTemplates.id, rule.templateId))
+        .limit(1);
+
+      const overrides = rule.overrideSettings as Record<string, unknown> | null;
+      const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
+        template?.cooldownMinutes ?? 15;
+      await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+    }
 
     return c.json(updated);
   }

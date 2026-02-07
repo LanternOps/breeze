@@ -52,6 +52,18 @@ export const CommandTypes = {
 
   // Script execution
   SCRIPT: 'script',
+
+  // Patch management
+  PATCH_SCAN: 'patch_scan',
+  INSTALL_PATCHES: 'install_patches',
+  ROLLBACK_PATCHES: 'rollback_patches',
+
+  // Security
+  SECURITY_COLLECT_STATUS: 'security_collect_status',
+  SECURITY_SCAN: 'security_scan',
+  SECURITY_THREAT_QUARANTINE: 'security_threat_quarantine',
+  SECURITY_THREAT_REMOVE: 'security_threat_remove',
+  SECURITY_THREAT_RESTORE: 'security_threat_restore',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -100,6 +112,13 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.FILE_RENAME,
   CommandTypes.TERMINAL_START,
   CommandTypes.SCRIPT,
+  CommandTypes.PATCH_SCAN,
+  CommandTypes.INSTALL_PATCHES,
+  CommandTypes.ROLLBACK_PATCHES,
+  CommandTypes.SECURITY_SCAN,
+  CommandTypes.SECURITY_THREAT_QUARANTINE,
+  CommandTypes.SECURITY_THREAT_REMOVE,
+  CommandTypes.SECURITY_THREAT_RESTORE,
 ]);
 
 /**

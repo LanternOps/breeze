@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,9 +16,11 @@ import (
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/discovery"
 	"github.com/breeze-rmm/agent/internal/filetransfer"
+	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/scripts"
+	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/snmppoll"
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/updater"
@@ -24,17 +28,17 @@ import (
 )
 
 type HeartbeatPayload struct {
-	Metrics      *collectors.SystemMetrics `json:"metrics"`
-	Status       string                    `json:"status"`
-	AgentVersion string                    `json:"agentVersion"`
-	PendingReboot bool                     `json:"pendingReboot,omitempty"`
-	LastUser     string                    `json:"lastUser,omitempty"`
+	Metrics       *collectors.SystemMetrics `json:"metrics"`
+	Status        string                    `json:"status"`
+	AgentVersion  string                    `json:"agentVersion"`
+	PendingReboot bool                      `json:"pendingReboot,omitempty"`
+	LastUser      string                    `json:"lastUser,omitempty"`
 }
 
 type HeartbeatResponse struct {
-	Commands     []Command          `json:"commands"`
-	ConfigUpdate map[string]any     `json:"configUpdate,omitempty"`
-	UpgradeTo    string             `json:"upgradeTo,omitempty"`
+	Commands     []Command      `json:"commands"`
+	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
+	UpgradeTo    string         `json:"upgradeTo,omitempty"`
 }
 
 type Command struct {
@@ -52,6 +56,7 @@ type Heartbeat struct {
 	softwareCol         *collectors.SoftwareCollector
 	inventoryCol        *collectors.InventoryCollector
 	patchCol            *collectors.PatchCollector
+	patchMgr            *patching.PatchManager
 	connectionsCol      *collectors.ConnectionsCollector
 	eventLogCol         *collectors.EventLogCollector
 	agentVersion        string
@@ -59,10 +64,12 @@ type Heartbeat struct {
 	desktopMgr          *desktop.SessionManager
 	wsDesktopMgr        *desktop.WsSessionManager
 	terminalMgr         *terminal.Manager
+	securityScanner     *security.SecurityScanner
 	wsClient            *websocket.Client
 	mu                  sync.Mutex
-	lastInventoryUpdate  time.Time
-	lastEventLogUpdate   time.Time
+	lastInventoryUpdate time.Time
+	lastEventLogUpdate  time.Time
+	lastSecurityUpdate  time.Time
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -85,6 +92,7 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		softwareCol:     collectors.NewSoftwareCollector(),
 		inventoryCol:    collectors.NewInventoryCollector(),
 		patchCol:        collectors.NewPatchCollector(),
+		patchMgr:        patching.NewDefaultManager(),
 		connectionsCol:  collectors.NewConnectionsCollector(),
 		eventLogCol:     collectors.NewEventLogCollector(),
 		agentVersion:    version,
@@ -92,6 +100,7 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		desktopMgr:      desktop.NewSessionManager(),
 		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
+		securityScanner: &security.SecurityScanner{Config: cfg},
 	}
 }
 
@@ -133,6 +142,10 @@ func (h *Heartbeat) Start() {
 			if shouldSendEventLogs {
 				h.lastEventLogUpdate = time.Now()
 			}
+			shouldSendSecurity := time.Since(h.lastSecurityUpdate) > 5*time.Minute
+			if shouldSendSecurity {
+				h.lastSecurityUpdate = time.Now()
+			}
 			h.mu.Unlock()
 			if shouldSendInventory {
 				go h.sendInventory()
@@ -140,6 +153,10 @@ func (h *Heartbeat) Start() {
 			// Send event logs every 5 minutes
 			if shouldSendEventLogs {
 				go h.sendEventLogs()
+			}
+			// Send security status every 5 minutes
+			if shouldSendSecurity {
+				go h.sendSecurityStatus()
 			}
 		case <-h.stopChan:
 			return
@@ -159,6 +176,7 @@ func (h *Heartbeat) sendInventory() {
 	go h.sendNetworkInventory()
 	go h.sendConnectionsInventory()
 	go h.sendPatchInventory()
+	go h.sendSecurityStatus()
 }
 
 // sendInventoryData marshals the payload and sends it to the given endpoint via PUT.
@@ -245,24 +263,70 @@ func (h *Heartbeat) sendNetworkInventory() {
 }
 
 func (h *Heartbeat) sendPatchInventory() {
-	// Collect available (pending) patches
-	patches, err := h.patchCol.Collect()
+	pendingItems, installedItems, err := h.collectPatchInventory()
 	if err != nil {
 		fmt.Printf("Error collecting patch inventory: %v\n", err)
 	}
 
-	// Collect recently installed patches (last 90 days)
-	installedPatches, err := h.patchCol.CollectInstalled(90 * 24 * time.Hour)
-	if err != nil {
-		fmt.Printf("Error collecting installed patches: %v\n", err)
-	}
-
-	if len(patches) == 0 && len(installedPatches) == 0 {
+	if len(pendingItems) == 0 && len(installedItems) == 0 {
 		fmt.Println("No patches found")
 		return
 	}
 
-	// Build pending patches array
+	h.sendInventoryData("patches", map[string]interface{}{
+		"patches":   pendingItems,
+		"installed": installedItems,
+	}, fmt.Sprintf("Patch inventory (%d pending, %d installed)", len(pendingItems), len(installedItems)))
+}
+
+func (h *Heartbeat) collectPatchInventory() ([]map[string]interface{}, []map[string]interface{}, error) {
+	if h.patchMgr != nil && len(h.patchMgr.ProviderIDs()) > 0 {
+		available, scanErr := h.patchMgr.Scan()
+		installed, installedErr := h.patchMgr.GetInstalled()
+
+		pendingItems := make([]map[string]interface{}, len(available))
+		for i, patch := range available {
+			pendingItems[i] = map[string]interface{}{
+				"name":        patch.Title,
+				"version":     patch.Version,
+				"category":    h.mapPatchProviderCategory(patch.Provider),
+				"severity":    "unknown",
+				"description": patch.Description,
+				"source":      h.mapPatchProviderSource(patch.Provider),
+			}
+		}
+
+		installedItems := make([]map[string]interface{}, len(installed))
+		for i, patch := range installed {
+			installedItems[i] = map[string]interface{}{
+				"name":        patch.Title,
+				"version":     patch.Version,
+				"category":    h.mapPatchProviderCategory(patch.Provider),
+				"source":      h.mapPatchProviderSource(patch.Provider),
+				"installedAt": "",
+			}
+		}
+
+		if scanErr != nil && installedErr != nil {
+			return pendingItems, installedItems, fmt.Errorf("patch scan failed: %v; installed scan failed: %v", scanErr, installedErr)
+		}
+		if scanErr != nil {
+			return pendingItems, installedItems, scanErr
+		}
+		if installedErr != nil {
+			return pendingItems, installedItems, installedErr
+		}
+
+		return pendingItems, installedItems, nil
+	}
+
+	return h.collectPatchInventoryFromCollectors()
+}
+
+func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]interface{}, []map[string]interface{}, error) {
+	patches, collectErr := h.patchCol.Collect()
+	installedPatches, installedErr := h.patchCol.CollectInstalled(90 * 24 * time.Hour)
+
 	pendingItems := make([]map[string]interface{}, len(patches))
 	for i, patch := range patches {
 		pendingItems[i] = map[string]interface{}{
@@ -280,7 +344,6 @@ func (h *Heartbeat) sendPatchInventory() {
 		}
 	}
 
-	// Build installed patches array
 	installedItems := make([]map[string]interface{}, len(installedPatches))
 	for i, patch := range installedPatches {
 		installedItems[i] = map[string]interface{}{
@@ -292,10 +355,17 @@ func (h *Heartbeat) sendPatchInventory() {
 		}
 	}
 
-	h.sendInventoryData("patches", map[string]interface{}{
-		"patches":   pendingItems,
-		"installed": installedItems,
-	}, fmt.Sprintf("Patch inventory (%d pending, %d installed)", len(patches), len(installedPatches)))
+	if collectErr != nil && installedErr != nil {
+		return pendingItems, installedItems, fmt.Errorf("patch collect failed: %v; installed collect failed: %v", collectErr, installedErr)
+	}
+	if collectErr != nil {
+		return pendingItems, installedItems, collectErr
+	}
+	if installedErr != nil {
+		return pendingItems, installedItems, installedErr
+	}
+
+	return pendingItems, installedItems, nil
 }
 
 func (h *Heartbeat) mapPatchSource(source string) string {
@@ -308,6 +378,36 @@ func (h *Heartbeat) mapPatchSource(source string) string {
 		return "linux"
 	default:
 		return "custom"
+	}
+}
+
+func (h *Heartbeat) mapPatchProviderSource(provider string) string {
+	switch provider {
+	case "windows-update":
+		return "microsoft"
+	case "apple-softwareupdate":
+		return "apple"
+	case "homebrew":
+		return "third_party"
+	case "chocolatey":
+		return "third_party"
+	case "apt", "yum":
+		return "linux"
+	default:
+		return "custom"
+	}
+}
+
+func (h *Heartbeat) mapPatchProviderCategory(provider string) string {
+	switch provider {
+	case "windows-update", "apple-softwareupdate":
+		return "system"
+	case "homebrew", "chocolatey":
+		return "application"
+	case "apt", "yum":
+		return "system"
+	default:
+		return "application"
 	}
 }
 
@@ -361,6 +461,16 @@ func (h *Heartbeat) sendEventLogs() {
 	}
 
 	h.sendInventoryData("eventlogs", map[string]interface{}{"events": events}, fmt.Sprintf("Event logs (%d events)", len(events)))
+}
+
+func (h *Heartbeat) sendSecurityStatus() {
+	status, err := security.CollectStatus(h.config)
+	if err != nil {
+		// Partial collection is expected on some platforms/hosts; still submit what we have.
+		fmt.Printf("Security status collection warning: %v\n", err)
+	}
+
+	h.sendInventoryData("security/status", status, "Security status")
 }
 
 func (h *Heartbeat) sendHeartbeat() {
@@ -789,7 +899,7 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 		result = tools.StopTerminal(h.terminalMgr, cmd.Payload)
 
 	// Script execution
-	case tools.CmdScript:
+	case tools.CmdScript, tools.CmdRunScript:
 		language := tools.GetPayloadString(cmd.Payload, "language", "bash")
 		content := tools.GetPayloadString(cmd.Payload, "content", "")
 		timeoutSec := tools.GetPayloadInt(cmd.Payload, "timeoutSeconds", 300)
@@ -809,6 +919,166 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 				Error:      scriptResult.ErrorMsg,
 				DurationMs: scriptResult.DurationMs,
 			}
+		}
+
+	// Patch management
+	case tools.CmdPatchScan:
+		start := time.Now()
+		pendingItems, installedItems, err := h.collectPatchInventory()
+		if err != nil && len(pendingItems) == 0 && len(installedItems) == 0 {
+			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			break
+		}
+
+		h.sendInventoryData("patches", map[string]interface{}{
+			"patches":   pendingItems,
+			"installed": installedItems,
+		}, fmt.Sprintf("Patch inventory (%d pending, %d installed)", len(pendingItems), len(installedItems)))
+
+		result = tools.NewSuccessResult(map[string]any{
+			"pendingCount":   len(pendingItems),
+			"installedCount": len(installedItems),
+			"warning":        errorString(err),
+		}, time.Since(start).Milliseconds())
+
+	case tools.CmdInstallPatches:
+		result = h.executePatchInstallCommand(cmd.Payload, false)
+
+	case tools.CmdRollbackPatches:
+		result = h.executePatchInstallCommand(cmd.Payload, true)
+
+	// Security status collection
+	case tools.CmdSecurityCollectStatus:
+		start := time.Now()
+		status, err := security.CollectStatus(h.config)
+		if err != nil {
+			// Return partial status when available, with the collection warning.
+			result = tools.NewSuccessResult(map[string]any{
+				"status":  status,
+				"warning": err.Error(),
+			}, time.Since(start).Milliseconds())
+		} else {
+			result = tools.NewSuccessResult(status, time.Since(start).Milliseconds())
+		}
+
+	// Security scan execution
+	case tools.CmdSecurityScan:
+		start := time.Now()
+		scanType := strings.ToLower(tools.GetPayloadString(cmd.Payload, "scanType", "quick"))
+		scanRecordID := tools.GetPayloadString(cmd.Payload, "scanRecordId", "")
+		paths := tools.GetPayloadStringSlice(cmd.Payload, "paths")
+
+		if h.securityScanner == nil {
+			h.securityScanner = &security.SecurityScanner{Config: h.config}
+		}
+
+		var (
+			scanResult security.ScanResult
+			err        error
+		)
+		switch scanType {
+		case "quick":
+			scanResult, err = h.securityScanner.QuickScan()
+		case "full":
+			scanResult, err = h.securityScanner.FullScan()
+		case "custom":
+			if len(paths) == 0 {
+				err = fmt.Errorf("custom scan requires one or more paths")
+			} else {
+				scanResult, err = h.securityScanner.CustomScan(paths)
+			}
+		default:
+			err = fmt.Errorf("unsupported scanType: %s", scanType)
+		}
+
+		if err != nil {
+			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			break
+		}
+
+		// Optionally trigger Defender native scan on Windows for quick/full requests.
+		if runtime.GOOS == "windows" && tools.GetPayloadBool(cmd.Payload, "triggerDefender", false) && scanType != "custom" {
+			if defErr := security.TriggerDefenderScan(scanType); defErr != nil {
+				fmt.Printf("Defender scan trigger warning: %v\n", defErr)
+			}
+		}
+
+		result = tools.NewSuccessResult(map[string]any{
+			"scanRecordId": scanRecordID,
+			"scanType":     scanType,
+			"durationMs":   scanResult.Duration.Milliseconds(),
+			"threatsFound": len(scanResult.Threats),
+			"threats":      scanResult.Threats,
+			"status":       scanResult.Status,
+		}, time.Since(start).Milliseconds())
+
+	// Threat actions
+	case tools.CmdSecurityThreatQuarantine:
+		start := time.Now()
+		path := tools.GetPayloadString(cmd.Payload, "path", "")
+		if path == "" {
+			result = tools.NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
+			break
+		}
+		quarantineDir := tools.GetPayloadString(cmd.Payload, "quarantineDir", security.DefaultQuarantineDir())
+		dest, err := security.QuarantineThreat(security.Threat{
+			Name:     tools.GetPayloadString(cmd.Payload, "name", ""),
+			Type:     tools.GetPayloadString(cmd.Payload, "threatType", "malware"),
+			Severity: tools.GetPayloadString(cmd.Payload, "severity", "medium"),
+			Path:     path,
+		}, quarantineDir)
+		if err != nil {
+			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		} else {
+			result = tools.NewSuccessResult(map[string]any{
+				"path":          path,
+				"quarantinedTo": dest,
+				"status":        "quarantined",
+			}, time.Since(start).Milliseconds())
+		}
+
+	case tools.CmdSecurityThreatRemove:
+		start := time.Now()
+		path := tools.GetPayloadString(cmd.Payload, "path", "")
+		if path == "" {
+			result = tools.NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
+			break
+		}
+		err := security.RemoveThreat(security.Threat{
+			Name:     tools.GetPayloadString(cmd.Payload, "name", ""),
+			Type:     tools.GetPayloadString(cmd.Payload, "threatType", "malware"),
+			Severity: tools.GetPayloadString(cmd.Payload, "severity", "medium"),
+			Path:     path,
+		})
+		if err != nil {
+			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		} else {
+			result = tools.NewSuccessResult(map[string]any{
+				"path":   path,
+				"status": "removed",
+			}, time.Since(start).Milliseconds())
+		}
+
+	case tools.CmdSecurityThreatRestore:
+		start := time.Now()
+		source := tools.GetPayloadString(cmd.Payload, "quarantinedPath", "")
+		originalPath := tools.GetPayloadString(cmd.Payload, "originalPath", "")
+		if source == "" || originalPath == "" {
+			result = tools.NewErrorResult(fmt.Errorf("quarantinedPath and originalPath are required"), time.Since(start).Milliseconds())
+			break
+		}
+		if err := os.MkdirAll(filepath.Dir(originalPath), 0755); err != nil {
+			result = tools.NewErrorResult(fmt.Errorf("failed to create restore directory: %w", err), time.Since(start).Milliseconds())
+			break
+		}
+		if err := os.Rename(source, originalPath); err != nil {
+			result = tools.NewErrorResult(fmt.Errorf("failed to restore file: %w", err), time.Since(start).Milliseconds())
+		} else {
+			result = tools.NewSuccessResult(map[string]any{
+				"quarantinedPath": source,
+				"originalPath":    originalPath,
+				"status":          "restored",
+			}, time.Since(start).Milliseconds())
 		}
 
 	// File operations
@@ -907,6 +1177,287 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	}
 
 	return result
+}
+
+type patchCommandRef struct {
+	ID         string
+	Source     string
+	ExternalID string
+	Title      string
+}
+
+func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback bool) tools.CommandResult {
+	start := time.Now()
+	if h.patchMgr == nil || len(h.patchMgr.ProviderIDs()) == 0 {
+		return tools.NewErrorResult(fmt.Errorf("no patch providers available"), time.Since(start).Milliseconds())
+	}
+
+	refs := h.patchRefsFromPayload(payload)
+	if len(refs) == 0 {
+		return tools.NewErrorResult(fmt.Errorf("no patches provided"), time.Since(start).Milliseconds())
+	}
+
+	results := make([]map[string]any, 0, len(refs))
+	successCount := 0
+	failedCount := 0
+	rebootRequired := false
+
+	for _, ref := range refs {
+		installID, resolveErr := h.resolvePatchInstallID(ref)
+		if resolveErr != nil {
+			failedCount++
+			results = append(results, map[string]any{
+				"id":     ref.ID,
+				"status": "failed",
+				"error":  resolveErr.Error(),
+			})
+			continue
+		}
+
+		if rollback {
+			if err := h.patchMgr.Uninstall(installID); err != nil {
+				failedCount++
+				results = append(results, map[string]any{
+					"id":        ref.ID,
+					"installId": installID,
+					"status":    "failed",
+					"error":     err.Error(),
+				})
+				continue
+			}
+			successCount++
+			results = append(results, map[string]any{
+				"id":        ref.ID,
+				"installId": installID,
+				"status":    "rolled_back",
+			})
+			continue
+		}
+
+		installResult, err := h.patchMgr.Install(installID)
+		if err != nil {
+			failedCount++
+			results = append(results, map[string]any{
+				"id":        ref.ID,
+				"installId": installID,
+				"status":    "failed",
+				"error":     err.Error(),
+			})
+			continue
+		}
+
+		successCount++
+		rebootRequired = rebootRequired || installResult.RebootRequired
+		results = append(results, map[string]any{
+			"id":             ref.ID,
+			"installId":      installID,
+			"status":         "installed",
+			"rebootRequired": installResult.RebootRequired,
+			"message":        installResult.Message,
+		})
+	}
+
+	summary := map[string]any{
+		"success":        failedCount == 0,
+		"installedCount": successCount,
+		"failedCount":    failedCount,
+		"rebootRequired": rebootRequired,
+		"results":        results,
+	}
+	if rollback {
+		summary["rolledBackCount"] = successCount
+	}
+
+	durationMs := time.Since(start).Milliseconds()
+	if failedCount > 0 {
+		stdout, _ := json.Marshal(summary)
+		return tools.CommandResult{
+			Status:     "failed",
+			ExitCode:   1,
+			Stdout:     string(stdout),
+			Error:      fmt.Sprintf("%d patch operations failed", failedCount),
+			DurationMs: durationMs,
+		}
+	}
+
+	return tools.NewSuccessResult(summary, durationMs)
+}
+
+func (h *Heartbeat) patchRefsFromPayload(payload map[string]any) []patchCommandRef {
+	refs := make([]patchCommandRef, 0)
+	seen := map[string]struct{}{}
+
+	if rawPatches, ok := payload["patches"].([]any); ok {
+		for _, item := range rawPatches {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			ref := patchCommandRef{
+				ID:         tools.GetPayloadString(obj, "id", tools.GetPayloadString(obj, "patchId", "")),
+				Source:     tools.GetPayloadString(obj, "source", ""),
+				ExternalID: tools.GetPayloadString(obj, "externalId", ""),
+				Title:      tools.GetPayloadString(obj, "title", ""),
+			}
+			key := fmt.Sprintf("%s|%s|%s", ref.ID, ref.Source, ref.ExternalID)
+			if key == "||" {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			refs = append(refs, ref)
+		}
+	}
+
+	for _, id := range tools.GetPayloadStringSlice(payload, "patchIds") {
+		key := fmt.Sprintf("%s||", id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, patchCommandRef{ID: id})
+	}
+
+	return refs
+}
+
+func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
+	if h.patchMgr == nil {
+		return "", fmt.Errorf("patch manager unavailable")
+	}
+
+	// Use explicit provider-prefixed IDs directly.
+	if provider, local, ok := splitPatchID(ref.ID); ok && h.patchMgr.HasProvider(provider) {
+		return provider + ":" + local, nil
+	}
+	if provider, local, ok := splitPatchID(ref.ExternalID); ok {
+		switch provider {
+		case "microsoft", "apple", "linux", "third_party", "custom":
+			// handled by source mapping below
+		case "dnf":
+			if h.patchMgr.HasProvider("yum") {
+				return "yum:" + local, nil
+			}
+		default:
+			if h.patchMgr.HasProvider(provider) {
+				return provider + ":" + local, nil
+			}
+		}
+	}
+
+	providerID := h.providerForPatchRef(ref)
+	if providerID == "" {
+		providerID = h.patchMgr.DefaultProviderID()
+	}
+	if providerID == "" {
+		return "", fmt.Errorf("no provider available for patch %q", ref.ID)
+	}
+
+	localID := patchLocalID(ref)
+	if localID == "" {
+		return "", fmt.Errorf("unable to resolve local patch identifier for %q", ref.ID)
+	}
+
+	return providerID + ":" + localID, nil
+}
+
+func (h *Heartbeat) providerForPatchRef(ref patchCommandRef) string {
+	source := strings.ToLower(strings.TrimSpace(ref.Source))
+	switch source {
+	case "microsoft":
+		if h.patchMgr.HasProvider("windows-update") {
+			return "windows-update"
+		}
+		if h.patchMgr.HasProvider("chocolatey") {
+			return "chocolatey"
+		}
+	case "apple":
+		if externalLooksLikeHomebrew(ref.ExternalID) && h.patchMgr.HasProvider("homebrew") {
+			return "homebrew"
+		}
+		if h.patchMgr.HasProvider("apple-softwareupdate") {
+			return "apple-softwareupdate"
+		}
+		if h.patchMgr.HasProvider("homebrew") {
+			return "homebrew"
+		}
+	case "linux":
+		if h.patchMgr.HasProvider("apt") {
+			return "apt"
+		}
+		if h.patchMgr.HasProvider("yum") {
+			return "yum"
+		}
+	case "third_party":
+		for _, providerID := range []string{"homebrew", "chocolatey", "apt", "yum"} {
+			if h.patchMgr.HasProvider(providerID) {
+				return providerID
+			}
+		}
+	}
+
+	if provider, _, ok := splitPatchID(ref.ExternalID); ok && h.patchMgr.HasProvider(provider) {
+		return provider
+	}
+	if provider, _, ok := splitPatchID(ref.ID); ok && h.patchMgr.HasProvider(provider) {
+		return provider
+	}
+
+	return ""
+}
+
+func splitPatchID(value string) (string, string, bool) {
+	parts := strings.SplitN(strings.TrimSpace(value), ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func patchLocalID(ref patchCommandRef) string {
+	if _, local, ok := splitPatchID(ref.ExternalID); ok {
+		parts := strings.SplitN(ref.ExternalID, ":", 3)
+		if len(parts) == 3 && isSourcePrefix(parts[0]) && parts[1] != "" {
+			return parts[1]
+		}
+		return local
+	}
+	if _, local, ok := splitPatchID(ref.ID); ok {
+		return local
+	}
+	if ref.ExternalID != "" {
+		return ref.ExternalID
+	}
+	if ref.ID != "" {
+		return ref.ID
+	}
+	return ref.Title
+}
+
+func externalLooksLikeHomebrew(externalID string) bool {
+	prefix, _, ok := splitPatchID(externalID)
+	if !ok {
+		return false
+	}
+	return prefix == "homebrew" || prefix == "brew" || prefix == "cask"
+}
+
+func isSourcePrefix(prefix string) bool {
+	switch strings.ToLower(prefix) {
+	case "microsoft", "apple", "linux", "third_party", "custom":
+		return true
+	default:
+		return false
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // handleUpgrade performs an auto-update to the specified version

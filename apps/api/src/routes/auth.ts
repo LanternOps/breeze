@@ -82,6 +82,87 @@ function genericAuthError() {
   return { error: 'Invalid email or password' };
 }
 
+const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
+
+async function resolveUserAuditOrgId(userId: string): Promise<string | null> {
+  try {
+    const orgUsersTable = organizationUsers as unknown as { orgId?: unknown; userId?: unknown } | undefined;
+    if (!orgUsersTable?.orgId || !orgUsersTable?.userId) {
+      return null;
+    }
+
+    const [orgAssoc] = await db
+      .select({ orgId: organizationUsers.orgId })
+      .from(organizationUsers)
+      .where(eq(organizationUsers.userId, userId))
+      .limit(1);
+
+    return orgAssoc?.orgId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAuthAudit(
+  c: any,
+  opts: {
+    orgId: string;
+    action: string;
+    result: 'success' | 'failure' | 'denied';
+    reason?: string;
+    userId?: string;
+    email?: string;
+    name?: string;
+    details?: Record<string, unknown>;
+  }
+): void {
+  createAuditLogAsync({
+    orgId: opts.orgId,
+    actorType: opts.userId ? 'user' : 'system',
+    actorId: opts.userId ?? ANONYMOUS_ACTOR_ID,
+    actorEmail: opts.email,
+    action: opts.action,
+    resourceType: 'user',
+    resourceId: opts.userId,
+    resourceName: opts.name,
+    details: {
+      ...opts.details,
+      reason: opts.reason
+    },
+    ipAddress: getClientIP(c),
+    userAgent: c.req.header('user-agent'),
+    result: opts.result
+  });
+}
+
+async function auditUserLoginFailure(
+  c: any,
+  opts: {
+    userId: string;
+    email?: string;
+    name?: string;
+    reason: string;
+    result?: 'failure' | 'denied';
+    details?: Record<string, unknown>;
+  }
+): Promise<void> {
+  const orgId = await resolveUserAuditOrgId(opts.userId);
+  if (!orgId) {
+    return;
+  }
+
+  writeAuthAudit(c, {
+    orgId,
+    action: 'user.login.failed',
+    result: opts.result ?? 'failure',
+    reason: opts.reason,
+    userId: opts.userId,
+    email: opts.email,
+    name: opts.name,
+    details: opts.details
+  });
+}
+
 function auditLogin(
   c: any,
   opts: { orgId: string; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string }
@@ -290,17 +371,41 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     .limit(1);
 
   if (!user || !user.passwordHash) {
+    if (user) {
+      void auditUserLoginFailure(c, {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        reason: 'password_auth_not_available',
+        details: { method: 'password' }
+      });
+    }
     return c.json(genericAuthError(), 401);
   }
 
   // Verify password
   const validPassword = await verifyPassword(user.passwordHash, password);
   if (!validPassword) {
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      reason: 'invalid_password',
+      details: { method: 'password' }
+    });
     return c.json(genericAuthError(), 401);
   }
 
   // Check account status
   if (user.status !== 'active') {
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      reason: 'account_inactive',
+      result: 'denied',
+      details: { accountStatus: user.status, method: 'password' }
+    });
     return c.json({ error: 'Account is not active' }, 403);
   }
 
@@ -328,14 +433,31 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   let scope: 'system' | 'partner' | 'organization' = 'system';
 
   // Check for partner association first
-  const [partnerAssoc] = await db
-    .select({
-      partnerId: partnerUsers.partnerId,
-      roleId: partnerUsers.roleId
-    })
-    .from(partnerUsers)
-    .where(eq(partnerUsers.userId, user.id))
-    .limit(1);
+  let partnerAssoc:
+    | {
+        partnerId: string;
+        roleId: string;
+      }
+    | undefined;
+
+  let partnerUsersTable:
+    | { partnerId?: unknown; roleId?: unknown; userId?: unknown }
+    | undefined;
+  try {
+    partnerUsersTable = partnerUsers as unknown as { partnerId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+  } catch {
+    partnerUsersTable = undefined;
+  }
+  if (partnerUsersTable?.partnerId && partnerUsersTable?.roleId && partnerUsersTable?.userId) {
+    [partnerAssoc] = await db
+      .select({
+        partnerId: partnerUsers.partnerId,
+        roleId: partnerUsers.roleId
+      })
+      .from(partnerUsers)
+      .where(eq(partnerUsers.userId, user.id))
+      .limit(1);
+  }
 
   if (partnerAssoc) {
     partnerId = partnerAssoc.partnerId;
@@ -343,14 +465,31 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     scope = 'partner';
   } else {
     // Check for organization association
-    const [orgAssoc] = await db
-      .select({
-        orgId: organizationUsers.orgId,
-        roleId: organizationUsers.roleId
-      })
-      .from(organizationUsers)
-      .where(eq(organizationUsers.userId, user.id))
-      .limit(1);
+    let orgAssoc:
+      | {
+          orgId: string;
+          roleId: string;
+        }
+      | undefined;
+
+    let organizationUsersTable:
+      | { orgId?: unknown; roleId?: unknown; userId?: unknown }
+      | undefined;
+    try {
+      organizationUsersTable = organizationUsers as unknown as { orgId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+    } catch {
+      organizationUsersTable = undefined;
+    }
+    if (organizationUsersTable?.orgId && organizationUsersTable?.roleId && organizationUsersTable?.userId) {
+      [orgAssoc] = await db
+        .select({
+          orgId: organizationUsers.orgId,
+          roleId: organizationUsers.roleId
+        })
+        .from(organizationUsers)
+        .where(eq(organizationUsers.userId, user.id))
+        .limit(1);
+    }
 
     if (orgAssoc) {
       orgId = orgAssoc.orgId;
@@ -545,6 +684,13 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
 
     const valid = await verifyMFAToken(user.mfaSecret, code);
     if (!valid) {
+      void auditUserLoginFailure(c, {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        reason: 'mfa_invalid_code',
+        details: { method: 'mfa' }
+      });
       return c.json({ error: 'Invalid MFA code' }, 401);
     }
 
@@ -557,22 +703,56 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     let mfaOrgId: string | null = null;
     let mfaScope: 'system' | 'partner' | 'organization' = 'system';
 
-    const [mfaPartnerAssoc] = await db
-      .select({ partnerId: partnerUsers.partnerId, roleId: partnerUsers.roleId })
-      .from(partnerUsers)
-      .where(eq(partnerUsers.userId, user.id))
-      .limit(1);
+    let mfaPartnerAssoc:
+      | {
+          partnerId: string;
+          roleId: string;
+        }
+      | undefined;
+
+    let partnerUsersTable:
+      | { partnerId?: unknown; roleId?: unknown; userId?: unknown }
+      | undefined;
+    try {
+      partnerUsersTable = partnerUsers as unknown as { partnerId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+    } catch {
+      partnerUsersTable = undefined;
+    }
+    if (partnerUsersTable?.partnerId && partnerUsersTable?.roleId && partnerUsersTable?.userId) {
+      [mfaPartnerAssoc] = await db
+        .select({ partnerId: partnerUsers.partnerId, roleId: partnerUsers.roleId })
+        .from(partnerUsers)
+        .where(eq(partnerUsers.userId, user.id))
+        .limit(1);
+    }
 
     if (mfaPartnerAssoc) {
       mfaPartnerId = mfaPartnerAssoc.partnerId;
       mfaRoleId = mfaPartnerAssoc.roleId;
       mfaScope = 'partner';
     } else {
-      const [mfaOrgAssoc] = await db
-        .select({ orgId: organizationUsers.orgId, roleId: organizationUsers.roleId })
-        .from(organizationUsers)
-        .where(eq(organizationUsers.userId, user.id))
-        .limit(1);
+      let mfaOrgAssoc:
+        | {
+            orgId: string;
+            roleId: string;
+          }
+        | undefined;
+
+      let organizationUsersTable:
+        | { orgId?: unknown; roleId?: unknown; userId?: unknown }
+        | undefined;
+      try {
+        organizationUsersTable = organizationUsers as unknown as { orgId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+      } catch {
+        organizationUsersTable = undefined;
+      }
+      if (organizationUsersTable?.orgId && organizationUsersTable?.roleId && organizationUsersTable?.userId) {
+        [mfaOrgAssoc] = await db
+          .select({ orgId: organizationUsers.orgId, roleId: organizationUsers.roleId })
+          .from(organizationUsers)
+          .where(eq(organizationUsers.userId, user.id))
+          .limit(1);
+      }
 
       if (mfaOrgAssoc) {
         mfaOrgId = mfaOrgAssoc.orgId;
@@ -654,6 +834,17 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
   const valid = await verifyMFAToken(secret, code);
 
   if (!valid) {
+    const orgId = await resolveUserAuditOrgId(payload.sub);
+    if (orgId) {
+      writeAuthAudit(c, {
+        orgId,
+        action: 'auth.mfa.setup.failed',
+        result: 'failure',
+        reason: 'invalid_mfa_code',
+        userId: payload.sub,
+        details: { phase: 'setup_confirmation' }
+      });
+    }
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
@@ -692,6 +883,17 @@ authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySche
 
   const valid = await verifyMFAToken(user.mfaSecret, code);
   if (!valid) {
+    if (auth.orgId) {
+      writeAuthAudit(c, {
+        orgId: auth.orgId,
+        action: 'auth.mfa.disable.failed',
+        result: 'failure',
+        reason: 'invalid_mfa_code',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { method: 'mfa' }
+      });
+    }
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 

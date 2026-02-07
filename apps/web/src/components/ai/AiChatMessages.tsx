@@ -1,0 +1,144 @@
+import { useEffect, useRef } from 'react';
+import { Bot, User } from 'lucide-react';
+import AiToolCallCard from './AiToolCallCard';
+import AiApprovalDialog from './AiApprovalDialog';
+
+interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
+  content: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  toolOutput?: unknown;
+  toolUseId?: string;
+  isError?: boolean;
+  isStreaming?: boolean;
+}
+
+interface PendingApproval {
+  executionId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  description: string;
+}
+
+const QUICK_ACTIONS = [
+  { label: 'Check server health', prompt: 'Check the health status of all Windows servers — show CPU, RAM, disk usage and any alerts' },
+  { label: 'Show critical alerts', prompt: 'List all critical and high severity alerts from the last 24 hours with device details' },
+  { label: 'Find offline devices', prompt: 'Show me all devices that are currently offline and when they were last seen' },
+  { label: 'Security overview', prompt: 'Give me a security overview — any active threats, recent scans, and devices needing attention' },
+  { label: 'Disk space report', prompt: 'Which devices are running low on disk space? Show devices with over 80% disk usage' },
+  { label: 'Recent activity', prompt: 'Show me the most recent audit log entries — what actions were taken in the last few hours?' }
+];
+
+interface AiChatMessagesProps {
+  messages: Message[];
+  pendingApproval: PendingApproval | null;
+  onApprove: (executionId: string) => void;
+  onReject: (executionId: string) => void;
+  onSendQuickAction?: (prompt: string) => void;
+}
+
+export default function AiChatMessages({ messages, pendingApproval, onApprove, onReject, onSendQuickAction }: AiChatMessagesProps) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, pendingApproval]);
+
+  if (messages.length === 0) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center p-6">
+        <Bot className="h-10 w-10 text-gray-600" />
+        <h3 className="mt-3 text-sm font-medium text-gray-300">Breeze AI Assistant</h3>
+        <p className="mt-1 text-xs text-gray-500">
+          Ask about your devices, alerts, metrics, or troubleshoot issues.
+        </p>
+        <div className="mt-4 w-full space-y-1.5">
+          {QUICK_ACTIONS.map((action) => (
+            <button
+              key={action.label}
+              onClick={() => onSendQuickAction?.(action.prompt)}
+              className="w-full rounded-md border border-gray-700 bg-gray-800/50 px-3 py-2 text-left text-xs text-gray-400 transition-colors hover:border-purple-600/50 hover:bg-gray-800 hover:text-gray-200"
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      {messages.map((msg) => {
+        if (msg.role === 'user') {
+          return (
+            <div key={msg.id} className="flex gap-2">
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600">
+                <User className="h-3.5 w-3.5 text-white" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-gray-200 whitespace-pre-wrap">{msg.content}</p>
+              </div>
+            </div>
+          );
+        }
+
+        if (msg.role === 'assistant') {
+          return (
+            <div key={msg.id} className="flex gap-2">
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-600">
+                <Bot className="h-3.5 w-3.5 text-white" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="prose prose-sm prose-invert max-w-none text-sm text-gray-200">
+                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                  {msg.isStreaming && (
+                    <span className="inline-block h-4 w-1 animate-pulse bg-gray-400" />
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        if (msg.role === 'tool_use') {
+          return (
+            <AiToolCallCard
+              key={msg.id}
+              toolName={msg.toolName ?? 'Unknown tool'}
+              input={msg.toolInput}
+              isExecuting={!messages.some(m => m.role === 'tool_result' && m.toolUseId === msg.toolUseId)}
+            />
+          );
+        }
+
+        if (msg.role === 'tool_result') {
+          return (
+            <AiToolCallCard
+              key={msg.id}
+              toolName={msg.toolName ?? 'Tool result'}
+              output={msg.toolOutput ?? msg.content}
+              isError={msg.isError}
+            />
+          );
+        }
+
+        return null;
+      })}
+
+      {pendingApproval && (
+        <AiApprovalDialog
+          toolName={pendingApproval.toolName}
+          description={pendingApproval.description}
+          input={pendingApproval.input}
+          onApprove={() => onApprove(pendingApproval.executionId)}
+          onReject={() => onReject(pendingApproval.executionId)}
+        />
+      )}
+
+      <div ref={bottomRef} />
+    </div>
+  );
+}

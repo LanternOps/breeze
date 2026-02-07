@@ -29,3 +29,4 @@ export * from './filters';
 export * from './customFields';
 export * from './agentVersions';
 export * from './eventLogs';
+export * from './ai';

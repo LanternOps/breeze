@@ -7,6 +7,7 @@ import { db } from '../db';
 import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { createAuditLogAsync } from '../services/auditService';
 
 export const roleRoutes = new Hono();
 
@@ -61,6 +62,44 @@ function getScopeContext(auth: { scope: string; partnerId: string | null; orgId:
   }
 
   throw new HTTPException(403, { message: 'Partner or organization context required' });
+}
+
+function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeContext): string | null {
+  if (scopeContext.scope === 'organization') {
+    return scopeContext.orgId;
+  }
+  return auth.orgId ?? null;
+}
+
+function writeRoleAudit(
+  c: any,
+  auth: { orgId: string | null; user: { id: string; email?: string } },
+  scopeContext: ScopeContext,
+  event: {
+    action: string;
+    roleId?: string;
+    roleName?: string;
+    details?: Record<string, unknown>;
+  }
+): void {
+  const orgId = resolveAuditOrgId(auth, scopeContext);
+  if (!orgId) {
+    return;
+  }
+
+  createAuditLogAsync({
+    orgId,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: event.action,
+    resourceType: 'role',
+    resourceId: event.roleId,
+    resourceName: event.roleName,
+    details: event.details,
+    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
 }
 
 // Helper to get or create permission by resource/action
@@ -433,6 +472,17 @@ roleRoutes.post(
       parentRoleName = parent?.name || null;
     }
 
+    writeRoleAudit(c, auth, scopeContext, {
+      action: 'role.create',
+      roleId: result.id,
+      roleName: result.name,
+      details: {
+        scope: scopeContext.scope,
+        permissionCount: body.permissions.length,
+        parentRoleId: result.parentRoleId ?? null
+      }
+    });
+
     return c.json(
       {
         id: result.id,
@@ -688,6 +738,18 @@ roleRoutes.patch(
       parentRoleName = parent?.name || null;
     }
 
+    writeRoleAudit(c, auth, scopeContext, {
+      action: 'role.update',
+      roleId: result.id,
+      roleName: result.name,
+      details: {
+        scope: scopeContext.scope,
+        changedFields: Object.keys(body),
+        permissionCount: rolePerms.length,
+        parentRoleId: result.parentRoleId ?? null
+      }
+    });
+
     return c.json({
       id: result.id,
       name: result.name,
@@ -787,6 +849,14 @@ roleRoutes.delete(
     await db.transaction(async (tx) => {
       await tx.delete(rolePermissions).where(eq(rolePermissions.roleId, roleId));
       await tx.delete(roles).where(eq(roles.id, roleId));
+    });
+
+    writeRoleAudit(c, auth, scopeContext, {
+      action: 'role.delete',
+      roleId,
+      details: {
+        scope: scopeContext.scope
+      }
     });
 
     return c.json({ success: true });
@@ -898,6 +968,18 @@ roleRoutes.post(
       .from(rolePermissions)
       .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
       .where(eq(rolePermissions.roleId, result.id));
+
+    writeRoleAudit(c, auth, scopeContext, {
+      action: 'role.clone',
+      roleId: result.id,
+      roleName: result.name,
+      details: {
+        sourceRoleId: sourceRole.id,
+        sourceRoleName: sourceRole.name,
+        scope: scopeContext.scope,
+        permissionCount: rolePerms.length
+      }
+    });
 
     return c.json(
       {

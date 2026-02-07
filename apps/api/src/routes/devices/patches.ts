@@ -1,13 +1,25 @@
 import { Hono } from 'hono';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, inArray } from 'drizzle-orm';
+import { z } from 'zod';
+import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
 import { patches, devicePatches } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck } from './helpers';
+import { queueCommand } from '../../services/commandQueue';
 
 export const patchesRoutes = new Hono();
 
 patchesRoutes.use('*', authMiddleware);
+
+const installPatchesSchema = z.object({
+  patchIds: z.array(z.string().uuid()).min(1)
+});
+
+const rollbackPatchParamsSchema = z.object({
+  id: z.string().uuid(),
+  patchId: z.string().uuid()
+});
 
 // GET /devices/:id/patches - Get patch status for a device
 patchesRoutes.get(
@@ -107,6 +119,100 @@ patchesRoutes.get(
           installedAt: p.installedAt
         }))
       }
+    });
+  }
+);
+
+// POST /devices/:id/patches/install - Queue patch install command for a device
+patchesRoutes.post(
+  '/:id/patches/install',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', installPatchesSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+    const data = c.req.valid('json');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const patchRefs = await db
+      .select({
+        id: patches.id,
+        source: patches.source,
+        externalId: patches.externalId,
+        title: patches.title
+      })
+      .from(patches)
+      .where(inArray(patches.id, data.patchIds));
+
+    if (patchRefs.length === 0) {
+      return c.json({ error: 'No matching patches found' }, 404);
+    }
+
+    const command = await queueCommand(
+      deviceId,
+      'install_patches',
+      {
+        patchIds: data.patchIds,
+        patches: patchRefs
+      },
+      auth.user.id
+    );
+
+    return c.json({
+      success: true,
+      commandId: command.id,
+      patchCount: data.patchIds.length
+    });
+  }
+);
+
+// POST /devices/:id/patches/:patchId/rollback - Queue patch rollback command for a device
+patchesRoutes.post(
+  '/:id/patches/:patchId/rollback',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', rollbackPatchParamsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId, patchId } = c.req.valid('param');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const [patch] = await db
+      .select({
+        id: patches.id,
+        source: patches.source,
+        externalId: patches.externalId,
+        title: patches.title
+      })
+      .from(patches)
+      .where(eq(patches.id, patchId))
+      .limit(1);
+
+    if (!patch) {
+      return c.json({ error: 'Patch not found' }, 404);
+    }
+
+    const command = await queueCommand(
+      deviceId,
+      'rollback_patches',
+      {
+        patchIds: [patchId],
+        patches: [patch]
+      },
+      auth.user.id
+    );
+
+    return c.json({
+      success: true,
+      commandId: command.id,
+      patchId
     });
   }
 );

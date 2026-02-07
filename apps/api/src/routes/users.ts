@@ -7,6 +7,7 @@ import { db } from '../db';
 import { users, partnerUsers, organizationUsers, roles } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { createAuditLogAsync } from '../services/auditService';
 
 export const userRoutes = new Hono();
 
@@ -127,6 +128,44 @@ async function getScopedUser(userId: string, scopeContext: ScopeContext) {
   return record || null;
 }
 
+function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeContext): string | null {
+  if (scopeContext.scope === 'organization') {
+    return scopeContext.orgId;
+  }
+  return auth.orgId ?? null;
+}
+
+function writeUserAudit(
+  c: any,
+  auth: { orgId: string | null; user: { id: string; email?: string; name?: string } },
+  scopeContext: ScopeContext,
+  event: {
+    action: string;
+    resourceId?: string;
+    resourceName?: string;
+    details?: Record<string, unknown>;
+  }
+): void {
+  const orgId = resolveAuditOrgId(auth, scopeContext);
+  if (!orgId) {
+    return;
+  }
+
+  createAuditLogAsync({
+    orgId,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: event.action,
+    resourceType: 'user',
+    resourceId: event.resourceId,
+    resourceName: event.resourceName,
+    details: event.details,
+    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
+}
+
 // --- Users ---
 
 // Get current user's profile (no special permissions needed - just auth)
@@ -196,6 +235,24 @@ userRoutes.patch('/me', async (c) => {
 
   if (!updated) {
     return c.json({ error: 'Failed to update profile' }, 500);
+  }
+
+  if (auth.orgId) {
+    createAuditLogAsync({
+      orgId: auth.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'user.profile.update',
+      resourceType: 'user',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
+      },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      userAgent: c.req.header('user-agent'),
+      result: 'success'
+    });
   }
 
   return c.json(updated);
@@ -430,6 +487,21 @@ userRoutes.post(
       return c.json({ error: 'User already exists in this scope' }, 409);
     }
 
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.invite',
+      resourceId: result.user.id,
+      resourceName: result.user.name,
+      details: {
+        invitedEmail: result.user.email,
+        roleId: data.roleId,
+        scope: scopeContext.scope,
+        orgAccess: scopeContext.scope === 'partner' ? data.orgAccess ?? 'none' : undefined,
+        orgIds: scopeContext.scope === 'partner' ? data.orgIds ?? [] : undefined,
+        siteIds: scopeContext.scope === 'organization' ? data.siteIds ?? [] : undefined,
+        deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined
+      }
+    });
+
     return c.json(
       {
         id: result.user.id,
@@ -463,6 +535,16 @@ userRoutes.post(
     }
 
     // TODO: Send invitation email
+
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.invite.resend',
+      resourceId: record.id,
+      resourceName: record.name,
+      details: {
+        invitedEmail: record.email,
+        scope: scopeContext.scope
+      }
+    });
 
     return c.json({ success: true });
   }
@@ -515,6 +597,18 @@ userRoutes.patch(
       return c.json({ error: 'Failed to update user' }, 500);
     }
 
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.update',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        changedFields: Object.keys(data),
+        previousStatus: record.status,
+        newStatus: updated.status,
+        scope: scopeContext.scope
+      }
+    });
+
     return c.json(updated);
   }
 );
@@ -537,6 +631,12 @@ userRoutes.delete(
         return c.json({ error: 'User not found' }, 404);
       }
 
+      writeUserAudit(c, auth, scopeContext, {
+        action: 'user.remove',
+        resourceId: userId,
+        details: { scope: 'partner' }
+      });
+
       return c.json({ success: true });
     }
 
@@ -548,6 +648,12 @@ userRoutes.delete(
     if (deleted.length === 0) {
       return c.json({ error: 'User not found' }, 404);
     }
+
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.remove',
+      resourceId: userId,
+      details: { scope: 'organization' }
+    });
 
     return c.json({ success: true });
   }
@@ -579,6 +685,16 @@ userRoutes.post(
         return c.json({ error: 'User not found' }, 404);
       }
 
+      writeUserAudit(c, auth, scopeContext, {
+        action: 'user.role.assign',
+        resourceId: userId,
+        details: {
+          roleId,
+          roleName: role.name,
+          scope: 'partner'
+        }
+      });
+
       return c.json({ success: true });
     }
 
@@ -591,6 +707,16 @@ userRoutes.post(
     if (updated.length === 0) {
       return c.json({ error: 'User not found' }, 404);
     }
+
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.role.assign',
+      resourceId: userId,
+      details: {
+        roleId,
+        roleName: role.name,
+        scope: 'organization'
+      }
+    });
 
     return c.json({ success: true });
   }

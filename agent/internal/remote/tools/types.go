@@ -26,11 +26,11 @@ const (
 	CmdEventLogGet    = "event_log_get"
 
 	// Scheduled tasks (Windows)
-	CmdTasksList    = "tasks_list"
-	CmdTaskGet      = "task_get"
-	CmdTaskRun      = "task_run"
-	CmdTaskEnable   = "task_enable"
-	CmdTaskDisable  = "task_disable"
+	CmdTasksList   = "tasks_list"
+	CmdTaskGet     = "task_get"
+	CmdTaskRun     = "task_run"
+	CmdTaskEnable  = "task_enable"
+	CmdTaskDisable = "task_disable"
 
 	// Registry (Windows)
 	CmdRegistryKeys   = "registry_keys"
@@ -68,7 +68,20 @@ const (
 	CmdTerminalStop   = "terminal_stop"
 
 	// Script execution
-	CmdScript = "script"
+	CmdScript    = "script"
+	CmdRunScript = "run_script"
+
+	// Patching
+	CmdPatchScan       = "patch_scan"
+	CmdInstallPatches  = "install_patches"
+	CmdRollbackPatches = "rollback_patches"
+
+	// Security
+	CmdSecurityCollectStatus    = "security_collect_status"
+	CmdSecurityScan             = "security_scan"
+	CmdSecurityThreatQuarantine = "security_threat_quarantine"
+	CmdSecurityThreatRemove     = "security_threat_remove"
+	CmdSecurityThreatRestore    = "security_threat_restore"
 
 	// File operations
 	CmdFileList   = "file_list"
@@ -150,7 +163,7 @@ type ProcessListResponse struct {
 type ServiceInfo struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
-	Status      string `json:"status"` // Running, Stopped, Paused, etc.
+	Status      string `json:"status"`      // Running, Stopped, Paused, etc.
 	StartupType string `json:"startupType"` // Automatic, Manual, Disabled
 	Account     string `json:"account,omitempty"`
 	Path        string `json:"path,omitempty"`

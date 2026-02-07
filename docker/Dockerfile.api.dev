@@ -28,5 +28,5 @@ WORKDIR /app/apps/api
 # Expose port
 EXPOSE 3001
 
-# Run in development mode with hot-reloading (tsx watch)
-CMD ["pnpm", "dev"]
+# Sync dependencies on container start so package.json changes don't crash hot-reload.
+CMD ["sh", "-lc", "pnpm install --prefer-offline --no-frozen-lockfile && pnpm dev"]

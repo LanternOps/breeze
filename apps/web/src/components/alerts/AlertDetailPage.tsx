@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, AlertTriangle, CheckCircle, XCircle, Clock, ExternalLink, User, Bell } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { cn } from '@/lib/utils';
+import { useAiStore } from '@/stores/aiStore';
 
 type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
@@ -86,6 +87,21 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   useEffect(() => {
     fetchAlert();
   }, [fetchAlert]);
+
+  // Inject AI context when alert data is available
+  const setPageContext = useAiStore((s) => s.setPageContext);
+  useEffect(() => {
+    if (alert) {
+      setPageContext({
+        type: 'alert',
+        id: alert.id,
+        title: alert.title,
+        severity: alert.severity,
+        deviceHostname: alert.deviceName
+      });
+    }
+    return () => setPageContext(null);
+  }, [alert, setPageContext]);
 
   const handleBack = () => {
     window.location.href = '/alerts';

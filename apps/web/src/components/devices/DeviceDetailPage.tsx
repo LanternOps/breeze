@@ -6,6 +6,7 @@ import ScriptPickerModal, { type Script } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, executeScript, toggleMaintenanceMode } from '../../services/deviceActions';
+import { useAiStore } from '@/stores/aiStore';
 
 type DeviceDetailPageProps = {
   deviceId: string;
@@ -79,6 +80,22 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   useEffect(() => {
     fetchDevice();
   }, [fetchDevice]);
+
+  // Inject AI context when device data is available
+  const setPageContext = useAiStore((s) => s.setPageContext);
+  useEffect(() => {
+    if (device) {
+      setPageContext({
+        type: 'device',
+        id: device.id,
+        hostname: device.hostname,
+        os: device.os,
+        status: device.status,
+        ip: undefined
+      });
+    }
+    return () => setPageContext(null);
+  }, [device, setPageContext]);
 
   const handleBack = () => {
     window.location.href = '/devices';

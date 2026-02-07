@@ -283,3 +283,9 @@ export const auditQuerySchema = paginationSchema.merge(dateRangeSchema).extend({
   resourceId: z.string().uuid().optional(),
   result: z.enum(['success', 'failure', 'denied']).optional()
 });
+
+// ============================================
+// AI Validators
+// ============================================
+
+export * from './ai';

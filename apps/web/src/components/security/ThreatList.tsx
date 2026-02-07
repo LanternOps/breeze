@@ -1,113 +1,23 @@
-import { useMemo, useState } from 'react';
-import { Filter, MoreHorizontal, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Filter, Loader2, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
+
+import { cn, friendlyFetchError } from '@/lib/utils';
+import { fetchWithAuth } from '@/stores/auth';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
-type ThreatStatus = 'active' | 'quarantined' | 'removed' | 'resolved';
+type ThreatStatus = 'active' | 'quarantined' | 'removed';
 
 type Threat = {
   id: string;
-  device: string;
+  deviceId: string;
+  deviceName: string;
   name: string;
-  type: string;
+  category: string;
   severity: ThreatSeverity;
   status: ThreatStatus;
   detectedAt: string;
+  filePath: string;
 };
-
-const threats: Threat[] = [
-  {
-    id: 'threat-1',
-    device: 'FIN-WS-014',
-    name: 'Ransom.Win32.Korvax',
-    type: 'Ransomware',
-    severity: 'critical',
-    status: 'active',
-    detectedAt: '2024-02-26T09:22:00Z'
-  },
-  {
-    id: 'threat-2',
-    device: 'ENG-MBP-201',
-    name: 'Trojan.MSIL.Agent',
-    type: 'Trojan',
-    severity: 'high',
-    status: 'quarantined',
-    detectedAt: '2024-02-26T08:54:00Z'
-  },
-  {
-    id: 'threat-3',
-    device: 'MKT-WS-102',
-    name: 'Adware.Generic.554',
-    type: 'Adware',
-    severity: 'medium',
-    status: 'resolved',
-    detectedAt: '2024-02-26T07:40:00Z'
-  },
-  {
-    id: 'threat-4',
-    device: 'HR-LTP-033',
-    name: 'Exploit.Doc.Dropper',
-    type: 'Exploit',
-    severity: 'high',
-    status: 'removed',
-    detectedAt: '2024-02-26T06:11:00Z'
-  },
-  {
-    id: 'threat-5',
-    device: 'SALES-WS-018',
-    name: 'PUA.Toolbar.Monitor',
-    type: 'Potentially Unwanted',
-    severity: 'low',
-    status: 'resolved',
-    detectedAt: '2024-02-25T23:04:00Z'
-  },
-  {
-    id: 'threat-6',
-    device: 'IT-WS-004',
-    name: 'Backdoor.Win32.Qakbot',
-    type: 'Backdoor',
-    severity: 'critical',
-    status: 'active',
-    detectedAt: '2024-02-25T21:18:00Z'
-  },
-  {
-    id: 'threat-7',
-    device: 'ENG-LTP-071',
-    name: 'Worm.AutoRun.985',
-    type: 'Worm',
-    severity: 'medium',
-    status: 'quarantined',
-    detectedAt: '2024-02-25T19:40:00Z'
-  },
-  {
-    id: 'threat-8',
-    device: 'OPS-WS-041',
-    name: 'Trojan.Script.Injector',
-    type: 'Trojan',
-    severity: 'high',
-    status: 'active',
-    detectedAt: '2024-02-25T17:12:00Z'
-  },
-  {
-    id: 'threat-9',
-    device: 'FIN-WS-020',
-    name: 'Spyware.Chrome.Passgrab',
-    type: 'Spyware',
-    severity: 'medium',
-    status: 'quarantined',
-    detectedAt: '2024-02-25T16:27:00Z'
-  },
-  {
-    id: 'threat-10',
-    device: 'HQ-SRV-07',
-    name: 'Rootkit.Driver.ZeroAccess',
-    type: 'Rootkit',
-    severity: 'critical',
-    status: 'active',
-    detectedAt: '2024-02-25T14:50:00Z'
-  }
-];
-
-const deviceOptions = Array.from(new Set(threats.map(threat => threat.device))).sort();
 
 const severityBadge: Record<ThreatSeverity, string> = {
   low: 'bg-blue-500/20 text-blue-700 border-blue-500/30',
@@ -119,8 +29,7 @@ const severityBadge: Record<ThreatSeverity, string> = {
 const statusBadge: Record<ThreatStatus, string> = {
   active: 'bg-red-500/15 text-red-700 border-red-500/30',
   quarantined: 'bg-amber-500/20 text-amber-800 border-amber-500/40',
-  removed: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40',
-  resolved: 'bg-slate-500/20 text-slate-700 border-slate-500/40'
+  removed: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40'
 };
 
 function formatDetectedAt(value: string, timezone?: string): string {
@@ -141,31 +50,65 @@ export default function ThreatList({ timezone }: ThreatListProps) {
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [threats, setThreats] = useState<Threat[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [acting, setActing] = useState(false);
+  const [error, setError] = useState<string>();
+  const abortRef = useRef<AbortController>();
 
-  const filteredThreats = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    const start = startDate ? new Date(startDate) : null;
-    const end = endDate ? new Date(endDate) : null;
-    if (end) end.setHours(23, 59, 59, 999);
+  const fetchThreats = useCallback(async () => {
+    setError(undefined);
+    setLoading(true);
 
-    return threats.filter(threat => {
-      const matchesQuery = normalizedQuery.length === 0
-        ? true
-        : threat.name.toLowerCase().includes(normalizedQuery);
-      const matchesSeverity = severityFilter === 'all' ? true : threat.severity === severityFilter;
-      const matchesStatus = statusFilter === 'all' ? true : threat.status === statusFilter;
-      const matchesDevice = deviceFilter === 'all' ? true : threat.device === deviceFilter;
-      const detected = new Date(threat.detectedAt);
-      const matchesStart = start ? detected >= start : true;
-      const matchesEnd = end ? detected <= end : true;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-      return matchesQuery && matchesSeverity && matchesStatus && matchesDevice && matchesStart && matchesEnd;
-    });
-  }, [query, severityFilter, statusFilter, deviceFilter, startDate, endDate]);
+    try {
+      const params = new URLSearchParams({ limit: '100' });
+      if (query.trim()) params.set('search', query.trim());
+      if (severityFilter !== 'all') params.set('severity', severityFilter);
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (startDate) params.set('startDate', new Date(startDate).toISOString());
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        params.set('endDate', end.toISOString());
+      }
+
+      const response = await fetchWithAuth(`/security/threats?${params.toString()}`, { signal: controller.signal });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+
+      const payload = await response.json();
+      let nextThreats: Threat[] = Array.isArray(payload.data) ? payload.data : [];
+
+      if (deviceFilter !== 'all') {
+        nextThreats = nextThreats.filter((threat) => threat.deviceName === deviceFilter);
+      }
+
+      setThreats(nextThreats);
+      setSelectedIds(new Set());
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      setError(friendlyFetchError(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [deviceFilter, endDate, query, severityFilter, startDate, statusFilter]);
+
+  useEffect(() => {
+    fetchThreats();
+    return () => abortRef.current?.abort();
+  }, [fetchThreats]);
+
+  const deviceOptions = useMemo(
+    () => Array.from(new Set(threats.map((threat) => threat.deviceName))).sort(),
+    [threats]
+  );
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds(new Set(filteredThreats.map(threat => threat.id)));
+      setSelectedIds(new Set(threats.map((threat) => threat.id)));
     } else {
       setSelectedIds(new Set());
     }
@@ -173,30 +116,49 @@ export default function ThreatList({ timezone }: ThreatListProps) {
 
   const handleSelectOne = (id: string, checked: boolean) => {
     const next = new Set(selectedIds);
-    if (checked) {
-      next.add(id);
-    } else {
-      next.delete(id);
-    }
+    if (checked) next.add(id);
+    else next.delete(id);
     setSelectedIds(next);
   };
 
-  const handleBulkAction = (_action: 'quarantine' | 'remove') => {
+  const handleBulkAction = async (action: 'quarantine' | 'remove') => {
     if (selectedIds.size === 0) return;
-    setSelectedIds(new Set());
+
+    setActing(true);
+    setError(undefined);
+
+    try {
+      const requests = Array.from(selectedIds).map((id) =>
+        fetchWithAuth(`/security/threats/${id}/${action}`, { method: 'POST' })
+      );
+
+      const responses = await Promise.all(requests);
+      const failed = responses.find((response) => !response.ok);
+      if (failed) throw new Error(`${failed.status} ${failed.statusText}`);
+
+      await fetchThreats();
+    } catch (err) {
+      setError(friendlyFetchError(err));
+    } finally {
+      setActing(false);
+    }
   };
 
-  const allSelected = filteredThreats.length > 0 && filteredThreats.every(threat => selectedIds.has(threat.id));
-  const someSelected = filteredThreats.some(threat => selectedIds.has(threat.id));
+  const allSelected = threats.length > 0 && threats.every((threat) => selectedIds.has(threat.id));
+  const someSelected = threats.some((threat) => selectedIds.has(threat.id));
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
+      {error && (
+        <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Threats</h2>
-          <p className="text-sm text-muted-foreground">
-            {filteredThreats.length} threats match your filters
-          </p>
+          <p className="text-sm text-muted-foreground">{threats.length} threats match your filters</p>
         </div>
         <div className="flex flex-1 flex-col gap-2 lg:flex-row lg:items-center lg:justify-end">
           <div className="relative w-full lg:w-64">
@@ -205,14 +167,14 @@ export default function ThreatList({ timezone }: ThreatListProps) {
               type="search"
               placeholder="Search by threat name"
               value={query}
-              onChange={event => setQuery(event.target.value)}
+              onChange={(event) => setQuery(event.target.value)}
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
           <div className="flex flex-wrap gap-2">
             <select
               value={severityFilter}
-              onChange={event => setSeverityFilter(event.target.value)}
+              onChange={(event) => setSeverityFilter(event.target.value)}
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="all">All severities</option>
@@ -223,22 +185,21 @@ export default function ThreatList({ timezone }: ThreatListProps) {
             </select>
             <select
               value={statusFilter}
-              onChange={event => setStatusFilter(event.target.value)}
+              onChange={(event) => setStatusFilter(event.target.value)}
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="all">All statuses</option>
               <option value="active">Active</option>
               <option value="quarantined">Quarantined</option>
               <option value="removed">Removed</option>
-              <option value="resolved">Resolved</option>
             </select>
             <select
               value={deviceFilter}
-              onChange={event => setDeviceFilter(event.target.value)}
+              onChange={(event) => setDeviceFilter(event.target.value)}
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="all">All devices</option>
-              {deviceOptions.map(device => (
+              {deviceOptions.map((device) => (
                 <option key={device} value={device}>
                   {device}
                 </option>
@@ -249,17 +210,24 @@ export default function ThreatList({ timezone }: ThreatListProps) {
               <input
                 type="date"
                 value={startDate}
-                onChange={event => setStartDate(event.target.value)}
+                onChange={(event) => setStartDate(event.target.value)}
                 className="bg-transparent text-sm focus:outline-none"
               />
               <span className="text-muted-foreground">to</span>
               <input
                 type="date"
                 value={endDate}
-                onChange={event => setEndDate(event.target.value)}
+                onChange={(event) => setEndDate(event.target.value)}
                 className="bg-transparent text-sm focus:outline-none"
               />
             </div>
+            <button
+              type="button"
+              onClick={fetchThreats}
+              className="h-10 rounded-md border bg-background px-3 text-sm hover:bg-muted"
+            >
+              Refresh
+            </button>
           </div>
         </div>
       </div>
@@ -270,15 +238,17 @@ export default function ThreatList({ timezone }: ThreatListProps) {
           <button
             type="button"
             onClick={() => handleBulkAction('quarantine')}
-            className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            disabled={acting}
+            className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-60"
           >
-            <ShieldAlert className="h-4 w-4" />
+            {acting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldAlert className="h-4 w-4" />}
             Quarantine selected
           </button>
           <button
             type="button"
             onClick={() => handleBulkAction('remove')}
-            className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            disabled={acting}
+            className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-60"
           >
             <ShieldCheck className="h-4 w-4" />
             Remove selected
@@ -301,67 +271,60 @@ export default function ThreatList({ timezone }: ThreatListProps) {
                 <input
                   type="checkbox"
                   checked={allSelected}
-                  ref={el => {
-                    if (el) el.indeterminate = someSelected && !allSelected;
+                  ref={(element) => {
+                    if (element) element.indeterminate = someSelected && !allSelected;
                   }}
-                  onChange={event => handleSelectAll(event.target.checked)}
+                  onChange={(event) => handleSelectAll(event.target.checked)}
                   className="h-4 w-4 rounded border-gray-300"
                 />
               </th>
               <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Threat name</th>
+              <th className="px-4 py-3">Threat</th>
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Severity</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Detected</th>
-              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
-            {filteredThreats.length === 0 ? (
+            {loading ? (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No threats found. Adjust filters or search to see results.
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading threats...
+                  </span>
                 </td>
               </tr>
+            ) : threats.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No threats found.</td>
+              </tr>
             ) : (
-              filteredThreats.map(threat => (
-                <tr key={threat.id} className="transition hover:bg-muted/40">
+              threats.map((threat) => (
+                <tr key={threat.id} className="text-sm">
                   <td className="px-4 py-3">
                     <input
                       type="checkbox"
                       checked={selectedIds.has(threat.id)}
-                      onChange={event => handleSelectOne(threat.id, event.target.checked)}
+                      onChange={(event) => handleSelectOne(threat.id, event.target.checked)}
                       className="h-4 w-4 rounded border-gray-300"
                     />
                   </td>
-                  <td className="px-4 py-3 text-sm font-medium">{threat.device}</td>
-                  <td className="px-4 py-3 text-sm">{threat.name}</td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{threat.type}</td>
-                  <td className="px-4 py-3 text-sm">
-                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${severityBadge[threat.severity]}`}>
+                  <td className="px-4 py-3 font-medium">{threat.deviceName}</td>
+                  <td className="px-4 py-3">{threat.name}</td>
+                  <td className="px-4 py-3 capitalize text-muted-foreground">{threat.category}</td>
+                  <td className="px-4 py-3">
+                    <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', severityBadge[threat.severity])}>
                       {threat.severity}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm">
-                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${statusBadge[threat.status]}`}>
+                  <td className="px-4 py-3">
+                    <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', statusBadge[threat.status])}>
                       {threat.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{formatDetectedAt(threat.detectedAt, timezone)}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-2">
-                      <button type="button" className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted">
-                        View
-                      </button>
-                      <button type="button" className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted">
-                        Resolve
-                      </button>
-                      <button type="button" className="rounded-md border p-2 hover:bg-muted">
-                        <MoreHorizontal className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">{formatDetectedAt(threat.detectedAt, timezone)}</td>
                 </tr>
               ))
             )}

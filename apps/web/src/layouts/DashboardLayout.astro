@@ -3,6 +3,7 @@ import Layout from './Layout.astro';
 import Sidebar from '../components/layout/Sidebar';
 import Header from '../components/layout/Header';
 import AuthOverlay from '../components/auth/AuthOverlay';
+import AiChatSidebar from '../components/ai/AiChatSidebar';
 
 interface Props {
   title: string;
@@ -23,4 +24,5 @@ const currentPath = Astro.url.pathname;
       </main>
     </div>
   </div>
+  <AiChatSidebar client:load />
 </Layout>
