@@ -112,6 +112,8 @@ export default function DevicesPage() {
       if (orgsResponse.ok) {
         const orgsData = await orgsResponse.json();
         orgsList = orgsData.data ?? orgsData.orgs ?? orgsData ?? [];
+      } else {
+        console.warn('Failed to fetch orgs:', orgsResponse.status);
       }
 
       // Fetch sites for site name lookup
@@ -119,6 +121,8 @@ export default function DevicesPage() {
       if (sitesResponse.ok) {
         const sitesData = await sitesResponse.json();
         sitesList = sitesData.data ?? sitesData.sites ?? sitesData ?? [];
+      } else {
+        console.warn('Failed to fetch sites:', sitesResponse.status);
       }
 
       // Create lookup maps

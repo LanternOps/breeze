@@ -65,6 +65,7 @@ services:
       S3_BUCKET: breeze
       LOG_LEVEL: debug
       ENABLE_API_DOCS: "true"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     ports:
       - "3001:3001"
     volumes:

@@ -27,8 +27,6 @@ import DevicePerformanceGraphs from './DevicePerformanceGraphs';
 import DeviceEventLogViewer from './DeviceEventLogViewer';
 import DeviceNetworkConnections from './DeviceNetworkConnections';
 
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 type Tab =
   | 'overview'
   | 'details'
@@ -71,7 +69,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = REFERENCE_DATE;
+  const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));

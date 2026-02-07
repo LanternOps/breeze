@@ -3,8 +3,6 @@ import { Search, ChevronLeft, ChevronRight, MoreHorizontal, Filter } from 'lucid
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 export type DeviceStatus = 'online' | 'offline' | 'maintenance';
 export type OSType = 'windows' | 'macos' | 'linux';
 
@@ -58,7 +56,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = REFERENCE_DATE;
+  const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));

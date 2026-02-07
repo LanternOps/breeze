@@ -30,6 +30,7 @@ export default function EnableMonitoringForm({
   const [templateId, setTemplateId] = useState('');
   const [pollingInterval, setPollingInterval] = useState(300);
   const [templates, setTemplates] = useState<SNMPTemplate[]>([]);
+  const [templateError, setTemplateError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -39,15 +40,30 @@ export default function EnableMonitoringForm({
         if (res.ok) {
           const data = await res.json();
           setTemplates(data.data ?? data.templates ?? data ?? []);
+        } else {
+          setTemplateError('Failed to load templates');
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        setTemplateError('Failed to load templates');
+      });
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
     setError(undefined);
+
+    // Frontend validation matching API requirements
+    if ((snmpVersion === 'v1' || snmpVersion === 'v2c') && !community.trim()) {
+      setError('Community string is required for SNMP v1/v2c');
+      return;
+    }
+    if (snmpVersion === 'v3' && !username.trim()) {
+      setError('Username is required for SNMP v3');
+      return;
+    }
+
+    setSaving(true);
 
     try {
       const payload: Record<string, unknown> = {
@@ -177,18 +193,22 @@ export default function EnableMonitoringForm({
 
       <div>
         <label className="block text-xs font-medium text-muted-foreground mb-1">Template</label>
-        <select
-          value={templateId}
-          onChange={(e) => setTemplateId(e.target.value)}
-          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <option value="">No template</option>
-          {templates.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}{t.vendor ? ` (${t.vendor})` : ''}
-            </option>
-          ))}
-        </select>
+        {templateError ? (
+          <p className="text-xs text-yellow-600">{templateError}</p>
+        ) : (
+          <select
+            value={templateId}
+            onChange={(e) => setTemplateId(e.target.value)}
+            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="">No template</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}{t.vendor ? ` (${t.vendor})` : ''}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div>

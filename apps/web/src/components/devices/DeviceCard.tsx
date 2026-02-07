@@ -2,8 +2,6 @@ import { useState } from 'react';
 import { Monitor, MoreVertical, Terminal, RotateCcw, FileCode, Settings } from 'lucide-react';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 
-const REFERENCE_DATE = new Date('2024-01-15T12:00:00.000Z');
-
 type DeviceCardProps = {
   device: Device;
   timezone?: string;
@@ -39,7 +37,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
-  const now = REFERENCE_DATE;
+  const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));

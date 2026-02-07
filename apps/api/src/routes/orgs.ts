@@ -117,6 +117,28 @@ async function resolveAuditOrgIdForPartner(partnerId: string | null): Promise<st
 
 orgRoutes.use('*', authMiddleware);
 
+// GET / - List organizations accessible to the current user
+orgRoutes.get('/', requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth');
+
+  const conditions = [isNull(organizations.deletedAt)];
+
+  if (auth.scope === 'organization' && auth.orgId) {
+    conditions.push(eq(organizations.id, auth.orgId));
+  } else if (auth.scope === 'partner' && auth.partnerId) {
+    conditions.push(eq(organizations.partnerId, auth.partnerId));
+  }
+  // system scope: no extra filter
+
+  const data = await db
+    .select()
+    .from(organizations)
+    .where(and(...conditions))
+    .orderBy(organizations.name);
+
+  return c.json({ data });
+});
+
 // --- Partners (system admins) ---
 
 orgRoutes.get('/partners', requireScope('system'), zValidator('query', paginationSchema), async (c) => {

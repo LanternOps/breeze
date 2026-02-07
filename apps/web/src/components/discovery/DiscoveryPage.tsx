@@ -10,7 +10,8 @@ import SNMPTemplateList from '../snmp/SNMPTemplateList';
 import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
 import { fetchWithAuth } from '../../stores/auth';
 
-type DiscoveryTab = 'profiles' | 'jobs' | 'assets' | 'topology' | 'monitoring' | 'templates';
+const DISCOVERY_TABS = ['profiles', 'jobs', 'assets', 'topology', 'monitoring', 'templates'] as const;
+type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
 
 type ApiDiscoverySchedule = {
   type: 'manual' | 'cron' | 'interval';
@@ -171,7 +172,7 @@ export default function DiscoveryPage() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get('tab');
-      if (tab && ['profiles', 'jobs', 'assets', 'topology', 'monitoring', 'templates'].includes(tab)) {
+      if (tab && (DISCOVERY_TABS as readonly string[]).includes(tab)) {
         return tab as DiscoveryTab;
       }
     }
@@ -183,14 +184,15 @@ export default function DiscoveryPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ApiDiscoveryProfile | null>(null);
 
-  const tabButtons: { id: DiscoveryTab; label: string }[] = [
-    { id: 'profiles', label: 'Profiles' },
-    { id: 'jobs', label: 'Jobs' },
-    { id: 'assets', label: 'Assets' },
-    { id: 'topology', label: 'Topology' },
-    { id: 'monitoring', label: 'Monitoring' },
-    { id: 'templates', label: 'Templates' }
-  ];
+  const tabLabels: Record<DiscoveryTab, string> = {
+    profiles: 'Profiles',
+    jobs: 'Jobs',
+    assets: 'Assets',
+    topology: 'Topology',
+    monitoring: 'Monitoring',
+    templates: 'Templates'
+  };
+  const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
   const fetchProfiles = useCallback(async () => {
     try {

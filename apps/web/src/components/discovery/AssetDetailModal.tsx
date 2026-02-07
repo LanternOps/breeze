@@ -42,8 +42,10 @@ export default function AssetDetailModal({
   const [linkError, setLinkError] = useState<string>();
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [monitoringLoading, setMonitoringLoading] = useState(false);
+  const [monitoringError, setMonitoringError] = useState<string>();
   const [showEnableForm, setShowEnableForm] = useState(false);
   const [disabling, setDisabling] = useState(false);
+  const [disableError, setDisableError] = useState<string>();
 
   useEffect(() => {
     if (asset?.linkedDeviceId) {
@@ -58,30 +60,37 @@ export default function AssetDetailModal({
   useEffect(() => {
     if (!asset || !open) {
       setMonitoring(null);
+      setMonitoringError(undefined);
       return;
     }
     setMonitoringLoading(true);
+    setMonitoringError(undefined);
     fetchWithAuth(`/discovery/assets/${asset.id}/monitoring`)
       .then(async (res) => {
         if (res.ok) {
           setMonitoring(await res.json());
+        } else {
+          setMonitoringError('Failed to load monitoring status');
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        setMonitoringError('Failed to load monitoring status');
+      })
       .finally(() => setMonitoringLoading(false));
   }, [asset, open]);
 
   const handleDisableMonitoring = async () => {
     if (!asset) return;
     setDisabling(true);
+    setDisableError(undefined);
     try {
       const res = await fetchWithAuth(`/discovery/assets/${asset.id}/disable-monitoring`, {
         method: 'DELETE'
       });
       if (!res.ok) throw new Error('Failed to disable monitoring');
       setMonitoring({ enabled: false, snmpDevice: null });
-    } catch {
-      // Keep current state on failure
+    } catch (err) {
+      setDisableError(err instanceof Error ? err.message : 'Failed to disable monitoring');
     } finally {
       setDisabling(false);
     }
@@ -198,6 +207,16 @@ export default function AssetDetailModal({
 
             <div className="rounded-md border bg-muted/30 p-4">
               <h3 className="text-sm font-semibold">SNMP Monitoring</h3>
+              {monitoringError && (
+                <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {monitoringError}
+                </div>
+              )}
+              {disableError && (
+                <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {disableError}
+                </div>
+              )}
               {monitoringLoading ? (
                 <div className="mt-3 text-xs text-muted-foreground">Loading monitoring status...</div>
               ) : monitoring?.enabled && monitoring.snmpDevice ? (
@@ -231,12 +250,14 @@ export default function AssetDetailModal({
                     onEnabled={() => {
                       setShowEnableForm(false);
                       setMonitoring({ enabled: true, snmpDevice: null });
-                      // Refetch monitoring status
+                      // Refetch monitoring status to get full details
                       fetchWithAuth(`/discovery/assets/${asset.id}/monitoring`)
                         .then(async (res) => {
                           if (res.ok) setMonitoring(await res.json());
                         })
-                        .catch(() => {});
+                        .catch(() => {
+                          // Keep the { enabled: true } state — user sees "Active" even if refetch fails
+                        });
                     }}
                     onCancel={() => setShowEnableForm(false)}
                   />

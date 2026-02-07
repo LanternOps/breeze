@@ -7,7 +7,6 @@ type MonitoredAsset = {
   hostname: string;
   ipAddress: string;
   assetType: string;
-  monitoringEnabled: boolean;
   lastSeenAt: string | null;
 };
 
@@ -51,6 +50,7 @@ export default function DiscoveryMonitoringDashboard() {
   const [monitoringMap, setMonitoringMap] = useState<Map<string, MonitoringStatus>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [fetchFailures, setFetchFailures] = useState(0);
 
   const fetchMonitoredAssets = useCallback(async () => {
     try {
@@ -68,7 +68,6 @@ export default function DiscoveryMonitoringDashboard() {
           hostname: (a.hostname ?? '') as string,
           ipAddress: (a.ipAddress ?? '') as string,
           assetType: (a.assetType ?? 'unknown') as string,
-          monitoringEnabled: true,
           lastSeenAt: (a.lastSeenAt ?? null) as string | null
         }));
 
@@ -76,20 +75,24 @@ export default function DiscoveryMonitoringDashboard() {
 
       // Fetch monitoring details for each asset
       const statusMap = new Map<string, MonitoringStatus>();
+      let failures = 0;
       const monitoringPromises = monitored.map(async (asset: MonitoredAsset) => {
         try {
           const res = await fetchWithAuth(`/discovery/assets/${asset.id}/monitoring`);
           if (res.ok) {
             const status = await res.json();
             statusMap.set(asset.id, status);
+          } else {
+            failures++;
           }
         } catch {
-          // Silently skip individual failures
+          failures++;
         }
       });
 
       await Promise.all(monitoringPromises);
       setMonitoringMap(statusMap);
+      setFetchFailures(failures);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -183,6 +186,12 @@ export default function DiscoveryMonitoringDashboard() {
           </div>
         </div>
       </div>
+
+      {fetchFailures > 0 && (
+        <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-700">
+          Failed to load monitoring details for {fetchFailures} asset{fetchFailures > 1 ? 's' : ''}. Status may be incomplete.
+        </div>
+      )}
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <h2 className="text-lg font-semibold">Monitored Assets</h2>

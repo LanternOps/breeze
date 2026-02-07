@@ -486,7 +486,7 @@ discoveryRoutes.get(
         snmpIsActive: snmpDevices.isActive
       })
       .from(discoveredAssets)
-      .leftJoin(snmpDevices, eq(discoveredAssets.id, snmpDevices.assetId))
+      .leftJoin(snmpDevices, and(eq(discoveredAssets.id, snmpDevices.assetId), eq(snmpDevices.isActive, true)))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
@@ -605,13 +605,21 @@ const enableMonitoringSchema = z.object({
   snmpVersion: z.enum(['v1', 'v2c', 'v3']),
   community: z.string().optional(),
   username: z.string().optional(),
-  authProtocol: z.string().optional(),
+  authProtocol: z.enum(['md5', 'sha', 'sha256']).optional(),
   authPassword: z.string().optional(),
-  privProtocol: z.string().optional(),
+  privProtocol: z.enum(['des', 'aes', 'aes256']).optional(),
   privPassword: z.string().optional(),
   templateId: z.string().uuid().optional(),
   pollingInterval: z.number().int().positive().optional()
-});
+}).refine((data) => {
+  if (data.snmpVersion === 'v1' || data.snmpVersion === 'v2c') {
+    return Boolean(data.community);
+  }
+  if (data.snmpVersion === 'v3') {
+    return Boolean(data.username);
+  }
+  return true;
+}, { message: 'Community string required for v1/v2c; username required for v3' });
 
 discoveryRoutes.post(
   '/assets/:id/enable-monitoring',
@@ -634,7 +642,7 @@ discoveryRoutes.post(
     // Check if monitoring is already enabled
     const [existing] = await db.select({ id: snmpDevices.id })
       .from(snmpDevices)
-      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.isActive, true)))
+      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), eq(snmpDevices.isActive, true)))
       .limit(1);
     if (existing) return c.json({ error: 'Monitoring already enabled for this asset' }, 409);
 
@@ -664,7 +672,16 @@ discoveryRoutes.post(
       details: { snmpDeviceId: snmpDevice?.id, snmpVersion: body.snmpVersion }
     });
 
-    return c.json({ success: true, snmpDevice }, 201);
+    return c.json({
+      success: true,
+      snmpDevice: snmpDevice ? {
+        id: snmpDevice.id,
+        snmpVersion: snmpDevice.snmpVersion,
+        pollingInterval: snmpDevice.pollingInterval,
+        isActive: snmpDevice.isActive,
+        templateId: snmpDevice.templateId
+      } : null
+    }, 201);
   }
 );
 
@@ -687,7 +704,7 @@ discoveryRoutes.delete(
 
     const [updated] = await db.update(snmpDevices)
       .set({ isActive: false })
-      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.isActive, true)))
+      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), eq(snmpDevices.isActive, true)))
       .returning();
 
     if (!updated) return c.json({ error: 'No active monitoring found for this asset' }, 404);
