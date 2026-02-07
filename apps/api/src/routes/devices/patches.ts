@@ -7,6 +7,7 @@ import { patches, devicePatches } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck } from './helpers';
 import { queueCommand } from '../../services/commandQueue';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 export const patchesRoutes = new Hono();
 
@@ -162,6 +163,18 @@ patchesRoutes.post(
       auth.user.id
     );
 
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.patch.install.queue',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname,
+      details: {
+        commandId: command.id,
+        patchCount: data.patchIds.length
+      }
+    });
+
     return c.json({
       success: true,
       commandId: command.id,
@@ -208,6 +221,18 @@ patchesRoutes.post(
       },
       auth.user.id
     );
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.patch.rollback.queue',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname,
+      details: {
+        commandId: command.id,
+        patchId
+      }
+    });
 
     return c.json({
       success: true,

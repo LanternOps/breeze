@@ -16,6 +16,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const accessReviewRoutes = new Hono();
 
@@ -149,6 +150,15 @@ accessReviewRoutes.post(
       }
 
       return { review, itemCount: usersInScope.length };
+    });
+
+    writeRouteAudit(c, {
+      orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,
+      action: 'access_review.create',
+      resourceType: 'access_review',
+      resourceId: result.review.id,
+      resourceName: result.review.name,
+      details: { itemCount: result.itemCount }
     });
 
     return c.json(
@@ -331,6 +341,17 @@ accessReviewRoutes.patch(
         .where(eq(accessReviews.id, reviewId));
     }
 
+    writeRouteAudit(c, {
+      orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,
+      action: 'access_review.item.update',
+      resourceType: 'access_review_item',
+      resourceId: updated.id,
+      details: {
+        reviewId,
+        decision: data.decision
+      }
+    });
+
     return c.json(updated);
   }
 );
@@ -450,6 +471,14 @@ accessReviewRoutes.post(
         review: updatedReview,
         revokedCount: revokedItems.length
       };
+    });
+
+    writeRouteAudit(c, {
+      orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,
+      action: 'access_review.complete',
+      resourceType: 'access_review',
+      resourceId: result.review.id,
+      details: { revokedCount: result.revokedCount }
     });
 
     return c.json({

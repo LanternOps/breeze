@@ -723,7 +723,7 @@ registerTool({
   handler: async (input, auth) => {
     const { automations } = await import('../db/schema');
 
-    const orgId = auth.orgId;
+    const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
     if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
     const [automation] = await db

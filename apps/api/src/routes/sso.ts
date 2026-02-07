@@ -27,6 +27,7 @@ import {
   type OIDCConfig
 } from '../services/sso';
 import { createTokenPair, createSession } from '../services';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const ssoRoutes = new Hono();
 
@@ -208,6 +209,15 @@ ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partn
     return c.json({ error: 'Failed to create provider' }, 500);
   }
 
+  writeRouteAudit(c, {
+    orgId: provider.orgId,
+    action: 'sso.provider.create',
+    resourceType: 'sso_provider',
+    resourceId: provider.id,
+    resourceName: provider.name,
+    details: { type: provider.type, status: provider.status }
+  });
+
   return c.json({ data: provider }, 201);
 });
 
@@ -229,6 +239,15 @@ ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', '
     return c.json({ error: 'Provider not found' }, 404);
   }
 
+  writeRouteAudit(c, {
+    orgId: updated.orgId,
+    action: 'sso.provider.update',
+    resourceType: 'sso_provider',
+    resourceId: updated.id,
+    resourceName: updated.name,
+    details: { changedFields: Object.keys(body) }
+  });
+
   return c.json({ data: updated });
 });
 
@@ -249,6 +268,14 @@ ssoRoutes.delete('/providers/:id', authMiddleware, requireScope('organization', 
     return c.json({ error: 'Provider not found' }, 404);
   }
 
+  writeRouteAudit(c, {
+    orgId: deleted.orgId,
+    action: 'sso.provider.delete',
+    resourceType: 'sso_provider',
+    resourceId: deleted.id,
+    resourceName: deleted.name
+  });
+
   return c.json({ success: true });
 });
 
@@ -266,6 +293,15 @@ ssoRoutes.post('/providers/:id/status', authMiddleware, requireScope('organizati
   if (!updated) {
     return c.json({ error: 'Provider not found' }, 404);
   }
+
+  writeRouteAudit(c, {
+    orgId: updated.orgId,
+    action: 'sso.provider.status.update',
+    resourceType: 'sso_provider',
+    resourceId: updated.id,
+    resourceName: updated.name,
+    details: { status }
+  });
 
   return c.json({ data: updated });
 });
@@ -292,6 +328,13 @@ ssoRoutes.post('/providers/:id/test', authMiddleware, requireScope('organization
     // Test discovery
     if (provider.issuer) {
       const discovery = await discoverOIDCConfig(provider.issuer);
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.provider.test',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name
+      });
       return c.json({
         success: true,
         message: 'Provider configuration is valid',
@@ -303,6 +346,14 @@ ssoRoutes.post('/providers/:id/test', authMiddleware, requireScope('organization
         }
       });
     }
+
+    writeRouteAudit(c, {
+      orgId: provider.orgId,
+      action: 'sso.provider.test',
+      resourceType: 'sso_provider',
+      resourceId: provider.id,
+      resourceName: provider.name
+    });
 
     return c.json({ success: true, message: 'Provider configuration appears valid' });
   } catch (error: any) {

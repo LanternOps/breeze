@@ -2,12 +2,14 @@ package security
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +50,8 @@ type SecurityStatus struct {
 	ThreatCount                    int         `json:"threatCount"`
 	FirewallEnabled                bool        `json:"firewallEnabled"`
 	EncryptionStatus               string      `json:"encryptionStatus"`
+	GatekeeperEnabled              *bool       `json:"gatekeeperEnabled,omitempty"`
+	GuardianEnabled                *bool       `json:"guardianEnabled,omitempty"`
 	WindowsSecurityCenterAvailable bool        `json:"windowsSecurityCenterAvailable,omitempty"`
 	AVProducts                     []AVProduct `json:"avProducts,omitempty"`
 }
@@ -56,6 +60,7 @@ type SecurityStatus struct {
 type DefenderStatus struct {
 	Enabled              bool
 	RealTimeProtection   bool
+	ProviderVersion      string
 	DefinitionsVersion   string
 	DefinitionsUpdatedAt string
 	LastQuickScan        string
@@ -131,6 +136,323 @@ func encryptionString(enabled bool, detectErr error) string {
 	return "unencrypted"
 }
 
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func resolveExecutable(name string) (string, bool) {
+	path, err := exec.LookPath(name)
+	return path, err == nil
+}
+
+func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func findMacDefenderAppPath() string {
+	candidates := []string{
+		"/Applications/Microsoft Defender.app",
+		"/Applications/Microsoft Defender ATP.app",
+	}
+
+	for _, candidate := range candidates {
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+func readMacAppVersion(appPath string) string {
+	if appPath == "" {
+		return ""
+	}
+	infoPath := filepath.Join(appPath, "Contents", "Info")
+	output, err := runCommand(4*time.Second, "defaults", "read", infoPath, "CFBundleShortVersionString")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(output)
+}
+
+func normalizeTimestampString(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05 -0700 MST",
+		"1/2/2006 3:04:05 PM",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC().Format(time.RFC3339)
+		}
+	}
+
+	return value
+}
+
+func lookupValue(payload map[string]any, key string) (any, bool) {
+	parts := strings.Split(key, ".")
+	var current any = payload
+
+	for _, part := range parts {
+		record, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		next, ok := record[part]
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+
+	return current, true
+}
+
+func boolFromAny(value any) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case float64:
+		return v != 0, true
+	case int:
+		return v != 0, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "on", "enabled":
+			return true, true
+		case "0", "false", "no", "off", "disabled":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func intFromAny(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func stringFromAny(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed != "" {
+			return trimmed, true
+		}
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case int:
+		return strconv.Itoa(v), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	}
+	return "", false
+}
+
+func lookupString(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := lookupValue(payload, key)
+		if !ok {
+			continue
+		}
+		if value, ok := stringFromAny(raw); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func lookupBool(payload map[string]any, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		raw, ok := lookupValue(payload, key)
+		if !ok {
+			continue
+		}
+		if value, ok := boolFromAny(raw); ok {
+			return value, true
+		}
+	}
+	return false, false
+}
+
+func lookupInt(payload map[string]any, keys ...string) (int, bool) {
+	for _, key := range keys {
+		raw, ok := lookupValue(payload, key)
+		if !ok {
+			continue
+		}
+		if value, ok := intFromAny(raw); ok {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func parseMacDefenderHealth(output string) (DefenderStatus, AVProduct, error) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return DefenderStatus{}, AVProduct{}, fmt.Errorf("empty mdatp health output")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return DefenderStatus{}, AVProduct{}, fmt.Errorf("failed to parse mdatp health output: %w", err)
+	}
+
+	status := DefenderStatus{
+		Enabled:            true,
+		ProviderVersion:    lookupString(payload, "app_version", "product_version", "version"),
+		DefinitionsVersion: lookupString(payload, "definitions_version", "virus_definitions_version", "security_intelligence_version"),
+		LastQuickScan:      normalizeTimestampString(lookupString(payload, "last_quick_scan", "scan.last_quick_scan")),
+		LastFullScan:       normalizeTimestampString(lookupString(payload, "last_full_scan", "scan.last_full_scan")),
+	}
+
+	if realTime, ok := lookupBool(payload, "real_time_protection_enabled", "realTimeProtectionEnabled", "real_time_protection_available"); ok {
+		status.RealTimeProtection = realTime
+	}
+
+	status.DefinitionsUpdatedAt = normalizeTimestampString(lookupString(
+		payload,
+		"definitions_updated_at",
+		"definitions_updated",
+		"security_intelligence_updated_at",
+	))
+	if status.DefinitionsUpdatedAt == "" {
+		if minutes, ok := lookupInt(payload, "definitions_updated_minutes_ago"); ok && minutes >= 0 {
+			status.DefinitionsUpdatedAt = time.Now().UTC().Add(-time.Duration(minutes) * time.Minute).Format(time.RFC3339)
+		}
+	}
+
+	definitionsUpToDate := false
+	if value, ok := lookupBool(payload, "definitions_up_to_date", "security_intelligence_up_to_date"); ok {
+		definitionsUpToDate = value
+	} else {
+		state := strings.ToLower(lookupString(payload, "definitions_status", "security_intelligence_status"))
+		if strings.Contains(state, "up_to_date") || strings.Contains(state, "ok") || strings.Contains(state, "current") {
+			definitionsUpToDate = true
+		}
+	}
+	if !definitionsUpToDate {
+		if minutes, ok := lookupInt(payload, "definitions_updated_minutes_ago"); ok && minutes >= 0 {
+			definitionsUpToDate = minutes <= 24*60
+		}
+	}
+
+	displayName := lookupString(payload, "product_name", "display_name", "app_name")
+	if displayName == "" {
+		displayName = "Microsoft Defender for Endpoint"
+	}
+
+	product := AVProduct{
+		DisplayName:         displayName,
+		Provider:            "windows_defender",
+		Registered:          true,
+		RealTimeProtection:  status.RealTimeProtection,
+		DefinitionsUpToDate: definitionsUpToDate,
+		Timestamp:           status.DefinitionsUpdatedAt,
+	}
+
+	return status, product, nil
+}
+
+func getMacDefenderStatus() (DefenderStatus, *AVProduct, error) {
+	if runtime.GOOS != "darwin" {
+		return DefenderStatus{}, nil, ErrNotSupported
+	}
+
+	mdatpPath, hasMdatp := resolveExecutable("mdatp")
+	appPath := findMacDefenderAppPath()
+	if !hasMdatp && appPath == "" {
+		return DefenderStatus{}, nil, ErrNotSupported
+	}
+
+	if hasMdatp {
+		healthOutput, healthErr := runCommand(10*time.Second, mdatpPath, "health", "--output", "json")
+		if healthErr == nil {
+			status, product, parseErr := parseMacDefenderHealth(healthOutput)
+			if parseErr == nil {
+				if status.ProviderVersion == "" {
+					versionOutput, versionErr := runCommand(5*time.Second, mdatpPath, "version")
+					if versionErr == nil {
+						status.ProviderVersion = strings.TrimSpace(strings.Split(versionOutput, "\n")[0])
+					}
+				}
+				if status.ProviderVersion == "" {
+					status.ProviderVersion = readMacAppVersion(appPath)
+				}
+				return status, &product, nil
+			}
+			healthErr = parseErr
+		}
+
+		if appPath == "" {
+			return DefenderStatus{}, nil, healthErr
+		}
+	}
+
+	status := DefenderStatus{
+		Enabled:         true,
+		ProviderVersion: readMacAppVersion(appPath),
+	}
+
+	product := AVProduct{
+		DisplayName:         "Microsoft Defender for Endpoint",
+		Provider:            "windows_defender",
+		Registered:          true,
+		RealTimeProtection:  false,
+		DefinitionsUpToDate: false,
+		PathToSignedProduct: filepath.Join(appPath, "Contents", "MacOS", "Microsoft Defender"),
+	}
+
+	return status, &product, nil
+}
+
+func getGatekeeperStatusDarwin() (bool, error) {
+	if runtime.GOOS != "darwin" {
+		return false, ErrNotSupported
+	}
+
+	output, err := runCommand(6*time.Second, "spctl", "--status")
+	if err != nil {
+		return false, err
+	}
+
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "enabled") {
+		return true, nil
+	}
+	if strings.Contains(lower, "disabled") {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("unexpected gatekeeper status output: %s", strings.TrimSpace(output))
+}
+
 // CollectStatus gathers AV/firewall/encryption posture for this endpoint.
 func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	var status SecurityStatus
@@ -177,6 +499,41 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		}
 	}
 
+	// Defender on macOS (Microsoft Defender for Endpoint via mdatp).
+	if runtime.GOOS == "darwin" {
+		macDefenderStatus, macDefenderProduct, macDefenderErr := getMacDefenderStatus()
+		if macDefenderErr != nil {
+			if !errors.Is(macDefenderErr, ErrNotSupported) {
+				errs = append(errs, macDefenderErr)
+			}
+		} else {
+			if status.Provider == "other" && macDefenderStatus.Enabled {
+				status.Provider = "windows_defender"
+			}
+			if macDefenderProduct != nil {
+				status.AVProducts = append(status.AVProducts, *macDefenderProduct)
+			}
+			if status.ProviderVersion == "" {
+				status.ProviderVersion = macDefenderStatus.ProviderVersion
+			}
+			if macDefenderStatus.RealTimeProtection {
+				status.RealTimeProtection = true
+			}
+			if status.DefinitionsVersion == "" {
+				status.DefinitionsVersion = macDefenderStatus.DefinitionsVersion
+			}
+			if status.DefinitionsUpdatedAt == "" {
+				status.DefinitionsUpdatedAt = macDefenderStatus.DefinitionsUpdatedAt
+			}
+			status.LastScanAt = latestScanTime(macDefenderStatus)
+			if macDefenderStatus.LastFullScan != "" {
+				status.LastScanType = "full"
+			} else if macDefenderStatus.LastQuickScan != "" {
+				status.LastScanType = "quick"
+			}
+		}
+	}
+
 	// Defender fallback (Windows Server and environments where WSC data is unavailable).
 	defenderStatus, defErr := GetDefenderStatus()
 	if defErr != nil {
@@ -186,6 +543,9 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	} else {
 		if status.Provider == "other" {
 			status.Provider = "windows_defender"
+		}
+		if status.ProviderVersion == "" {
+			status.ProviderVersion = defenderStatus.ProviderVersion
 		}
 		if defenderStatus.RealTimeProtection {
 			status.RealTimeProtection = true
@@ -215,6 +575,16 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		errs = append(errs, encErr)
 	}
 	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
+
+	if runtime.GOOS == "darwin" {
+		gatekeeperEnabled, gatekeeperErr := getGatekeeperStatusDarwin()
+		if gatekeeperErr != nil {
+			errs = append(errs, gatekeeperErr)
+		} else {
+			status.GatekeeperEnabled = boolPtr(gatekeeperEnabled)
+			status.GuardianEnabled = boolPtr(gatekeeperEnabled)
+		}
+	}
 
 	return status, errors.Join(errs...)
 }

@@ -11,6 +11,11 @@ import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMod
 
 type ViewMode = 'list' | 'grid';
 
+type Org = {
+  id: string;
+  name: string;
+};
+
 type Site = {
   id: string;
   name: string;
@@ -24,6 +29,7 @@ type Toast = {
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
+  const [orgs, setOrgs] = useState<Org[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -65,9 +71,10 @@ export default function DevicesPage() {
       setLoading(true);
       setError(undefined);
 
-      // Fetch devices and sites in parallel
-      const [devicesResponse, sitesResponse] = await Promise.all([
+      // Fetch devices, orgs, and sites in parallel
+      const [devicesResponse, orgsResponse, sitesResponse] = await Promise.all([
         fetchWithAuth('/devices'),
+        fetchWithAuth('/orgs'),
         fetchWithAuth('/orgs/sites')
       ]);
 
@@ -92,11 +99,20 @@ export default function DevicesPage() {
           ? ((d.hardware as Record<string, unknown>).ramPercent as number ?? 0)
           : 0,
         lastSeen: (d.lastSeenAt ?? d.lastSeen ?? '') as string,
+        orgId: (d.orgId ?? '') as string,
+        orgName: '', // Will be resolved from orgs
         siteId: (d.siteId ?? '') as string,
         siteName: '', // Will be resolved from sites
         agentVersion: (d.agentVersion ?? '') as string,
         tags: (d.tags ?? []) as string[]
       }));
+
+      // Fetch orgs for org name lookup
+      let orgsList: Org[] = [];
+      if (orgsResponse.ok) {
+        const orgsData = await orgsResponse.json();
+        orgsList = orgsData.data ?? orgsData.orgs ?? orgsData ?? [];
+      }
 
       // Fetch sites for site name lookup
       let sitesList: Site[] = [];
@@ -105,16 +121,19 @@ export default function DevicesPage() {
         sitesList = sitesData.data ?? sitesData.sites ?? sitesData ?? [];
       }
 
-      // Create site lookup map
+      // Create lookup maps
+      const orgMap = new Map(orgsList.map((o: Org) => [o.id, o.name]));
       const siteMap = new Map(sitesList.map((s: Site) => [s.id, s.name]));
 
-      // Assign site names to devices
-      const devicesWithSiteNames = transformedDevices.map(device => ({
+      // Assign org and site names to devices
+      const devicesWithNames = transformedDevices.map(device => ({
         ...device,
+        orgName: orgMap.get(device.orgId) ?? 'Unknown Org',
         siteName: siteMap.get(device.siteId) ?? 'Unknown Site'
       }));
 
-      setDevices(devicesWithSiteNames);
+      setDevices(devicesWithNames);
+      setOrgs(orgsList);
       setSites(sitesList);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch devices');
@@ -438,6 +457,7 @@ export default function DevicesPage() {
       {viewMode === 'list' ? (
         <DeviceList
           devices={devices}
+          orgs={orgs}
           sites={sites}
           onSelect={handleSelectDevice}
           onBulkAction={handleBulkAction}

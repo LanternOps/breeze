@@ -15,6 +15,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { setCooldown } from '../services/alertCooldown';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const alertRoutes = new Hono();
 
@@ -648,6 +649,19 @@ alertRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId,
+      action: 'alert_rule.create',
+      resourceType: 'alert_rule',
+      resourceId: rule.id,
+      resourceName: rule.name,
+      details: {
+        templateId: template.id,
+        isActive: rule.isActive,
+        targetType: rule.targetType,
+      },
+    });
+
     return c.json(formatAlertRuleResponse(rule, template), 201);
   }
 );
@@ -786,6 +800,17 @@ alertRoutes.put(
       .where(eq(alertRules.id, ruleId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'alert_rule.update',
+      resourceType: 'alert_rule',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        updatedFields: Object.keys(updates),
+      },
+    });
+
     const [template] = await db
       .select()
       .from(alertTemplates)
@@ -831,6 +856,17 @@ alertRoutes.delete(
     await db
       .delete(alertRules)
       .where(eq(alertRules.id, ruleId));
+
+    writeRouteAudit(c, {
+      orgId: rule.orgId,
+      action: 'alert_rule.delete',
+      resourceType: 'alert_rule',
+      resourceId: rule.id,
+      resourceName: rule.name,
+      details: {
+        activeAlerts: activeCount,
+      },
+    });
 
     return c.json({ success: true });
   }
@@ -1172,6 +1208,18 @@ alertRoutes.post(
       .where(eq(alerts.id, alertId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'alert.acknowledge',
+      resourceType: 'alert',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: {
+        previousStatus: alert.status,
+        nextStatus: updated.status,
+      },
+    });
+
     return c.json(updated);
   }
 );
@@ -1226,6 +1274,19 @@ alertRoutes.post(
       await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
     }
 
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'alert.resolve',
+      resourceType: 'alert',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: {
+        previousStatus: alert.status,
+        nextStatus: updated.status,
+        hasResolutionNote: Boolean(data.note),
+      },
+    });
+
     return c.json(updated);
   }
 );
@@ -1262,6 +1323,19 @@ alertRoutes.post(
       })
       .where(eq(alerts.id, alertId))
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'alert.suppress',
+      resourceType: 'alert',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: {
+        previousStatus: alert.status,
+        nextStatus: updated.status,
+        suppressedUntil: suppressedUntil.toISOString(),
+      },
+    });
 
     return c.json(updated);
   }
@@ -1380,6 +1454,18 @@ alertRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId,
+      action: 'notification_channel.create',
+      resourceType: 'notification_channel',
+      resourceId: channel.id,
+      resourceName: channel.name,
+      details: {
+        type: channel.type,
+        enabled: channel.enabled,
+      },
+    });
+
     return c.json(channel, 201);
   }
 );
@@ -1416,6 +1502,17 @@ alertRoutes.put(
       .where(eq(notificationChannels.id, channelId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: channel.orgId,
+      action: 'notification_channel.update',
+      resourceType: 'notification_channel',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        updatedFields: Object.keys(data),
+      },
+    });
+
     return c.json(updated);
   }
 );
@@ -1436,6 +1533,14 @@ alertRoutes.delete(
     await db
       .delete(notificationChannels)
       .where(eq(notificationChannels.id, channelId));
+
+    writeRouteAudit(c, {
+      orgId: channel.orgId,
+      action: 'notification_channel.delete',
+      resourceType: 'notification_channel',
+      resourceId: channel.id,
+      resourceName: channel.name,
+    });
 
     return c.json({ success: true });
   }
@@ -1534,7 +1639,7 @@ alertRoutes.post(
       };
     }
 
-    return c.json({
+    const response = {
       channelId: channel.id,
       channelName: channel.name,
       channelType: channel.type,
@@ -1542,7 +1647,21 @@ alertRoutes.post(
       testResult,
       testedAt: new Date().toISOString(),
       testedBy: auth.user.id
+    };
+
+    writeRouteAudit(c, {
+      orgId: channel.orgId,
+      action: 'notification_channel.test',
+      resourceType: 'notification_channel',
+      resourceId: channel.id,
+      resourceName: channel.name,
+      details: {
+        success: testResult.success,
+      },
+      result: testResult.success ? 'success' : 'failure',
     });
+
+    return c.json(response);
   }
 );
 
@@ -1659,6 +1778,17 @@ alertRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'escalation_policy.create',
+      resourceType: 'escalation_policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+      details: {
+        stepCount: Array.isArray(policy.steps) ? policy.steps.length : undefined,
+      },
+    });
+
     return c.json(policy, 201);
   }
 );
@@ -1694,6 +1824,17 @@ alertRoutes.put(
       .where(eq(escalationPolicies.id, policyId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'escalation_policy.update',
+      resourceType: 'escalation_policy',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        updatedFields: Object.keys(data),
+      },
+    });
+
     return c.json(updated);
   }
 );
@@ -1714,6 +1855,14 @@ alertRoutes.delete(
     await db
       .delete(escalationPolicies)
       .where(eq(escalationPolicies.id, policyId));
+
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'escalation_policy.delete',
+      resourceType: 'escalation_policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+    });
 
     return c.json({ success: true });
   }

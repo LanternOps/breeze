@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const scriptLibraryRoutes = new Hono();
 
@@ -401,6 +402,7 @@ scriptLibraryRoutes.post(
   zValidator('json', createCategorySchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const data = c.req.valid('json');
       const name = data.name.trim();
 
@@ -421,6 +423,13 @@ scriptLibraryRoutes.post(
       };
 
       categories.set(category.id, category);
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.category.create',
+        resourceType: 'script_category',
+        resourceId: category.id,
+        resourceName: category.name,
+      });
       return c.json(category, 201);
     } catch {
       return c.json({ error: 'Failed to create category' }, 500);
@@ -453,6 +462,7 @@ scriptLibraryRoutes.patch(
   zValidator('json', updateCategorySchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const id = c.req.param('id');
       const data = c.req.valid('json');
 
@@ -487,6 +497,17 @@ scriptLibraryRoutes.patch(
       category.updatedAt = new Date();
       categories.set(id, category);
 
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.category.update',
+        resourceType: 'script_category',
+        resourceId: category.id,
+        resourceName: category.name,
+        details: {
+          updatedFields: Object.keys(data),
+        },
+      });
+
       return c.json(category);
     } catch {
       return c.json({ error: 'Failed to update category' }, 500);
@@ -499,6 +520,7 @@ scriptLibraryRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const id = c.req.param('id');
       const category = categories.get(id);
 
@@ -521,6 +543,14 @@ scriptLibraryRoutes.delete(
           script.updatedAt = new Date();
         }
       }
+
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.category.delete',
+        resourceType: 'script_category',
+        resourceId: category.id,
+        resourceName: category.name,
+      });
 
       return c.json({ success: true });
     } catch {
@@ -551,6 +581,7 @@ scriptLibraryRoutes.post(
   zValidator('json', createTagSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const data = c.req.valid('json');
       const name = data.name.trim();
 
@@ -569,6 +600,13 @@ scriptLibraryRoutes.post(
       };
 
       tags.set(tag.id, tag);
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.tag.create',
+        resourceType: 'script_tag',
+        resourceId: tag.id,
+        resourceName: tag.name,
+      });
       return c.json(tag, 201);
     } catch {
       return c.json({ error: 'Failed to create tag' }, 500);
@@ -581,6 +619,7 @@ scriptLibraryRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const id = c.req.param('id');
       const tag = tags.get(id);
 
@@ -603,6 +642,14 @@ scriptLibraryRoutes.delete(
           script.updatedAt = new Date();
         }
       }
+
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.tag.delete',
+        resourceType: 'script_tag',
+        resourceId: tag.id,
+        resourceName: tag.name,
+      });
 
       return c.json({ success: true });
     } catch {
@@ -669,6 +716,19 @@ scriptLibraryRoutes.post(
       script.updatedAt = new Date();
       scripts.set(scriptId, script);
 
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.version.create',
+        resourceType: 'script',
+        resourceId: script.id,
+        resourceName: script.name,
+        details: {
+          fromVersion: versionEntry.version,
+          toVersion: script.version,
+          hasNote: Boolean(data.note),
+        },
+      });
+
       return c.json({ script, version: versionEntry }, 201);
     } catch {
       return c.json({ error: 'Failed to create version' }, 500);
@@ -716,6 +776,19 @@ scriptLibraryRoutes.post(
       script.updatedAt = new Date();
       scripts.set(scriptId, script);
 
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.version.rollback',
+        resourceType: 'script',
+        resourceId: script.id,
+        resourceName: script.name,
+        details: {
+          fromVersion: snapshot.version,
+          rollbackToVersion: targetVersion.version,
+          resultingVersion: script.version,
+        },
+      });
+
       return c.json({ script, rolledBackFrom: targetVersion, snapshot });
     } catch {
       return c.json({ error: 'Failed to rollback version' }, 500);
@@ -754,6 +827,7 @@ scriptLibraryRoutes.post(
   zValidator('json', createFromTemplateSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const templateId = c.req.param('templateId');
       const template = templates.get(templateId);
 
@@ -778,6 +852,17 @@ scriptLibraryRoutes.post(
 
       scripts.set(script.id, script);
       versionsByScriptId.set(script.id, []);
+
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'script_library.script.create_from_template',
+        resourceType: 'script',
+        resourceId: script.id,
+        resourceName: script.name,
+        details: {
+          templateId,
+        },
+      });
 
       return c.json({ ...script, sourceTemplateId: templateId }, 201);
     } catch {

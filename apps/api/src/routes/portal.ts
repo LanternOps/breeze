@@ -15,6 +15,7 @@ import {
   tickets
 } from '../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../services/password';
+import { writeAuditEvent } from '../services/auditEvents';
 
 export const portalRoutes = new Hono();
 
@@ -76,6 +77,16 @@ function buildPortalUserPayload(user: {
     receiveNotifications: user.receiveNotifications,
     status: user.status
   };
+}
+
+function writePortalAudit(
+  c: Context,
+  event: Parameters<typeof writeAuditEvent>[1]
+) {
+  if (process.env.NODE_ENV === 'test') {
+    return;
+  }
+  writeAuditEvent(c, event);
 }
 
 async function portalAuthMiddleware(c: Context, next: Next) {
@@ -474,6 +485,21 @@ portalRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
       updatedAt: tickets.updatedAt
     });
 
+  writePortalAudit(c, {
+    orgId: auth.user.orgId,
+    actorType: 'user',
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'portal.ticket.create',
+    resourceType: 'ticket',
+    resourceId: ticket.id,
+    resourceName: ticket.subject,
+    details: {
+      priority: ticket.priority,
+      ticketNumber: ticket.ticketNumber,
+    },
+  });
+
   return c.json({ ticket }, 201);
 });
 
@@ -562,6 +588,19 @@ portalRoutes.post(
         content: ticketComments.content,
         createdAt: ticketComments.createdAt
       });
+
+    writePortalAudit(c, {
+      orgId: auth.user.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'portal.ticket.comment.create',
+      resourceType: 'ticket_comment',
+      resourceId: comment.id,
+      details: {
+        ticketId: ticket.id,
+      },
+    });
 
     return c.json({ comment }, 201);
   }
@@ -682,6 +721,19 @@ portalRoutes.post(
         condition: assetCheckouts.condition
       });
 
+    writePortalAudit(c, {
+      orgId: auth.user.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'portal.asset.checkout',
+      resourceType: 'asset_checkout',
+      resourceId: checkout.id,
+      details: {
+        deviceId: checkout.deviceId,
+      },
+    });
+
     return c.json({ checkout }, 201);
   }
 );
@@ -728,6 +780,19 @@ portalRoutes.post(
         checkinNotes: assetCheckouts.checkinNotes,
         condition: assetCheckouts.condition
       });
+
+    writePortalAudit(c, {
+      orgId: auth.user.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'portal.asset.checkin',
+      resourceType: 'asset_checkout',
+      resourceId: checkout.id,
+      details: {
+        deviceId: checkout.deviceId,
+      },
+    });
 
     return c.json({ checkout });
   }
@@ -781,6 +846,21 @@ portalRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (c
   if (!user) {
     return c.json({ error: 'User not found' }, 404);
   }
+
+  writePortalAudit(c, {
+    orgId: user.orgId,
+    actorType: 'user',
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'portal.profile.update',
+    resourceType: 'portal_user',
+    resourceId: user.id,
+    resourceName: user.name ?? user.email,
+    details: {
+      updatedFields: Object.keys(payload),
+      passwordUpdated: Boolean(payload.password),
+    },
+  });
 
   return c.json({ user: buildPortalUserPayload(user) });
 });

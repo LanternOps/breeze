@@ -5,9 +5,12 @@ import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySc
 import DiscoveryJobList from './DiscoveryJobList';
 import DiscoveredAssetList from './DiscoveredAssetList';
 import NetworkTopologyMap from './NetworkTopologyMap';
+import DiscoveryMonitoringDashboard from './DiscoveryMonitoringDashboard';
+import SNMPTemplateList from '../snmp/SNMPTemplateList';
+import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
 import { fetchWithAuth } from '../../stores/auth';
 
-type DiscoveryTab = 'profiles' | 'jobs' | 'assets' | 'topology';
+type DiscoveryTab = 'profiles' | 'jobs' | 'assets' | 'topology' | 'monitoring' | 'templates';
 
 type ApiDiscoverySchedule = {
   type: 'manual' | 'cron' | 'interval';
@@ -164,7 +167,16 @@ function mapProfileToDisplay(profile: ApiDiscoveryProfile): DiscoveryProfile {
 }
 
 export default function DiscoveryPage() {
-  const [activeTab, setActiveTab] = useState<DiscoveryTab>('profiles');
+  const [activeTab, setActiveTab] = useState<DiscoveryTab>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get('tab');
+      if (tab && ['profiles', 'jobs', 'assets', 'topology', 'monitoring', 'templates'].includes(tab)) {
+        return tab as DiscoveryTab;
+      }
+    }
+    return 'profiles';
+  });
   const [profiles, setProfiles] = useState<ApiDiscoveryProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(true);
   const [profilesError, setProfilesError] = useState<string>();
@@ -175,7 +187,9 @@ export default function DiscoveryPage() {
     { id: 'profiles', label: 'Profiles' },
     { id: 'jobs', label: 'Jobs' },
     { id: 'assets', label: 'Assets' },
-    { id: 'topology', label: 'Topology' }
+    { id: 'topology', label: 'Topology' },
+    { id: 'monitoring', label: 'Monitoring' },
+    { id: 'templates', label: 'Templates' }
   ];
 
   const fetchProfiles = useCallback(async () => {
@@ -361,6 +375,15 @@ export default function DiscoveryPage() {
       {activeTab === 'assets' && <DiscoveredAssetList />}
 
       {activeTab === 'topology' && <NetworkTopologyMap />}
+
+      {activeTab === 'monitoring' && <DiscoveryMonitoringDashboard />}
+
+      {activeTab === 'templates' && (
+        <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
+          <SNMPTemplateList />
+          <SNMPTemplateEditor />
+        </div>
+      )}
     </div>
   );
 }

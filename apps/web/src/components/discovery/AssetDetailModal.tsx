@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { DiscoveredAsset } from './DiscoveredAssetList';
+import EnableMonitoringForm from './EnableMonitoringForm';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type AssetDetail = DiscoveredAsset & {
@@ -7,6 +8,18 @@ export type AssetDetail = DiscoveredAsset & {
   osFingerprint?: string;
   snmpData?: Record<string, string>;
   linkedDeviceId?: string | null;
+};
+
+type MonitoringStatus = {
+  enabled: boolean;
+  snmpDevice?: {
+    id: string;
+    snmpVersion: string;
+    pollingInterval: number;
+    isActive: boolean;
+    lastPolled: string | null;
+    lastStatus: string | null;
+  } | null;
 };
 
 type AssetDetailModalProps = {
@@ -27,6 +40,10 @@ export default function AssetDetailModal({
   const [selectedDevice, setSelectedDevice] = useState(asset?.linkedDeviceId ?? '');
   const [linking, setLinking] = useState(false);
   const [linkError, setLinkError] = useState<string>();
+  const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
+  const [monitoringLoading, setMonitoringLoading] = useState(false);
+  const [showEnableForm, setShowEnableForm] = useState(false);
+  const [disabling, setDisabling] = useState(false);
 
   useEffect(() => {
     if (asset?.linkedDeviceId) {
@@ -35,7 +52,40 @@ export default function AssetDetailModal({
       setSelectedDevice('');
     }
     setLinkError(undefined);
+    setShowEnableForm(false);
   }, [asset]);
+
+  useEffect(() => {
+    if (!asset || !open) {
+      setMonitoring(null);
+      return;
+    }
+    setMonitoringLoading(true);
+    fetchWithAuth(`/discovery/assets/${asset.id}/monitoring`)
+      .then(async (res) => {
+        if (res.ok) {
+          setMonitoring(await res.json());
+        }
+      })
+      .catch(() => {})
+      .finally(() => setMonitoringLoading(false));
+  }, [asset, open]);
+
+  const handleDisableMonitoring = async () => {
+    if (!asset) return;
+    setDisabling(true);
+    try {
+      const res = await fetchWithAuth(`/discovery/assets/${asset.id}/disable-monitoring`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Failed to disable monitoring');
+      setMonitoring({ enabled: false, snmpDevice: null });
+    } catch {
+      // Keep current state on failure
+    } finally {
+      setDisabling(false);
+    }
+  };
 
   if (!open || !asset) return null;
 
@@ -144,6 +194,65 @@ export default function AssetDetailModal({
                   ))
                 )}
               </dl>
+            </div>
+
+            <div className="rounded-md border bg-muted/30 p-4">
+              <h3 className="text-sm font-semibold">SNMP Monitoring</h3>
+              {monitoringLoading ? (
+                <div className="mt-3 text-xs text-muted-foreground">Loading monitoring status...</div>
+              ) : monitoring?.enabled && monitoring.snmpDevice ? (
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border bg-green-500/20 text-green-700 border-green-500/40 px-2.5 py-1 text-xs font-medium">
+                      Active
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {monitoring.snmpDevice.snmpVersion} &middot; every {monitoring.snmpDevice.pollingInterval}s
+                    </span>
+                  </div>
+                  {monitoring.snmpDevice.lastPolled && (
+                    <p className="text-xs text-muted-foreground">
+                      Last polled: {new Date(monitoring.snmpDevice.lastPolled).toLocaleString()}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleDisableMonitoring}
+                    disabled={disabling}
+                    className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-70"
+                  >
+                    {disabling ? 'Disabling...' : 'Disable Monitoring'}
+                  </button>
+                </div>
+              ) : showEnableForm ? (
+                <div className="mt-3">
+                  <EnableMonitoringForm
+                    assetId={asset.id}
+                    onEnabled={() => {
+                      setShowEnableForm(false);
+                      setMonitoring({ enabled: true, snmpDevice: null });
+                      // Refetch monitoring status
+                      fetchWithAuth(`/discovery/assets/${asset.id}/monitoring`)
+                        .then(async (res) => {
+                          if (res.ok) setMonitoring(await res.json());
+                        })
+                        .catch(() => {});
+                    }}
+                    onCancel={() => setShowEnableForm(false)}
+                  />
+                </div>
+              ) : (
+                <div className="mt-3">
+                  <p className="text-xs text-muted-foreground mb-2">No active SNMP monitoring.</p>
+                  <button
+                    type="button"
+                    onClick={() => setShowEnableForm(true)}
+                    className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
+                  >
+                    Enable Monitoring
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="rounded-md border bg-muted/30 p-4">

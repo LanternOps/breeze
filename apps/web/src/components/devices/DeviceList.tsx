@@ -17,6 +17,8 @@ export type Device = {
   cpuPercent: number;
   ramPercent: number;
   lastSeen: string;
+  orgId: string;
+  orgName: string;
   siteId: string;
   siteName: string;
   agentVersion: string;
@@ -25,6 +27,7 @@ export type Device = {
 
 type DeviceListProps = {
   devices: Device[];
+  orgs?: { id: string; name: string }[];
   sites?: { id: string; name: string }[];
   timezone?: string;
   onSelect?: (device: Device) => void;
@@ -70,6 +73,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
 
 export default function DeviceList({
   devices,
+  orgs = [],
   sites = [],
   timezone,
   onSelect,
@@ -83,6 +87,7 @@ export default function DeviceList({
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [osFilter, setOsFilter] = useState<string>('all');
+  const [orgFilter, setOrgFilter] = useState<string>('all');
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -148,11 +153,12 @@ export default function DeviceList({
         : device.hostname.toLowerCase().includes(normalizedQuery);
       const matchesStatus = statusFilter === 'all' ? true : device.status === statusFilter;
       const matchesOs = osFilter === 'all' ? true : device.os === osFilter;
+      const matchesOrg = orgFilter === 'all' ? true : device.orgId === orgFilter;
       const matchesSite = siteFilter === 'all' ? true : device.siteId === siteFilter;
 
-      return matchesQuery && matchesStatus && matchesOs && matchesSite;
+      return matchesQuery && matchesStatus && matchesOs && matchesOrg && matchesSite;
     });
-  }, [devices, query, statusFilter, osFilter, siteFilter, serverFilterIds]);
+  }, [devices, query, statusFilter, osFilter, orgFilter, siteFilter, serverFilterIds]);
 
   const totalPages = Math.ceil(filteredDevices.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -244,6 +250,23 @@ export default function DeviceList({
             <option value="macos">macOS</option>
             <option value="linux">Linux</option>
           </select>
+          {orgs.length > 0 && (
+            <select
+              value={orgFilter}
+              onChange={event => {
+                setOrgFilter(event.target.value);
+                setCurrentPage(1);
+              }}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+            >
+              <option value="all">All Orgs</option>
+              {orgs.map(org => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
+            </select>
+          )}
           {sites.length > 0 && (
             <select
               value={siteFilter}
@@ -335,6 +358,8 @@ export default function DeviceList({
                 />
               </th>
               <th className="px-4 py-3">Hostname</th>
+              <th className="px-4 py-3">Organization</th>
+              <th className="px-4 py-3">Site</th>
               <th className="px-4 py-3">OS</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">CPU %</th>
@@ -345,7 +370,7 @@ export default function DeviceList({
           <tbody className="divide-y">
             {paginatedDevices.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={9} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No devices found. Try adjusting your search or filters.
                 </td>
               </tr>
@@ -366,6 +391,8 @@ export default function DeviceList({
                     />
                   </td>
                   <td className="px-4 py-3 text-sm font-medium">{device.hostname}</td>
+                  <td className="px-4 py-3 text-sm text-muted-foreground">{device.orgName}</td>
+                  <td className="px-4 py-3 text-sm text-muted-foreground">{device.siteName}</td>
                   <td className="px-4 py-3 text-sm">{osLabels[device.os]}</td>
                   <td className="px-4 py-3 text-sm">
                     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>

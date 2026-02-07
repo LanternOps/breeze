@@ -13,6 +13,7 @@ import {
   cancelDeployment,
   incrementRetryCount
 } from '../services/deploymentEngine';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const deploymentRoutes = new Hono();
 
@@ -320,6 +321,18 @@ deploymentRoutes.post(
       return c.json({ error: 'Failed to create deployment' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.create',
+      resourceType: 'deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.name,
+      details: {
+        type: deployment.type,
+        targetType: deployment.targetType
+      }
+    });
+
     return c.json({ data: mapDeploymentRow(deployment) }, 201);
   }
 );
@@ -400,6 +413,17 @@ deploymentRoutes.put(
       return c.json({ error: 'Failed to update deployment' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.update',
+      resourceType: 'deployment',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        changedFields: Object.keys(payload)
+      }
+    });
+
     return c.json({ data: mapDeploymentRow(updated) });
   }
 );
@@ -427,6 +451,14 @@ deploymentRoutes.delete(
 
     // Delete the deployment
     await db.delete(deployments).where(eq(deployments.id, id));
+
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.delete',
+      resourceType: 'deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.name
+    });
 
     return c.json({ data: mapDeploymentRow(deployment) });
   }
@@ -462,6 +494,17 @@ deploymentRoutes.post(
       .from(deployments)
       .where(eq(deployments.id, id))
       .limit(1);
+
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.initialize',
+      resourceType: 'deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.name,
+      details: {
+        deviceCount: result.deviceCount
+      }
+    });
 
     return c.json({
       data: {
@@ -504,6 +547,14 @@ deploymentRoutes.post(
       return c.json({ error: 'Failed to start deployment' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.start',
+      resourceType: 'deployment',
+      resourceId: updated.id,
+      resourceName: updated.name
+    });
+
     // Get initial progress
     const progress = await getDeploymentProgress(id);
 
@@ -545,6 +596,14 @@ deploymentRoutes.post(
       .where(eq(deployments.id, id))
       .limit(1);
 
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.pause',
+      resourceType: 'deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.name
+    });
+
     const progress = await getDeploymentProgress(id);
 
     return c.json({
@@ -585,6 +644,14 @@ deploymentRoutes.post(
       .where(eq(deployments.id, id))
       .limit(1);
 
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.resume',
+      resourceType: 'deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.name
+    });
+
     const progress = await getDeploymentProgress(id);
 
     return c.json({
@@ -624,6 +691,14 @@ deploymentRoutes.post(
       .from(deployments)
       .where(eq(deployments.id, id))
       .limit(1);
+
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.cancel',
+      resourceType: 'deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.name
+    });
 
     let progress = null;
     try {
@@ -801,6 +876,18 @@ deploymentRoutes.post(
       completedAt: updated!.completedAt?.toISOString() ?? null,
       result: updated!.result
     };
+
+    writeRouteAudit(c, {
+      orgId: deployment.orgId,
+      action: 'deployment.device.retry',
+      resourceType: 'deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.name,
+      details: {
+        deviceId,
+        retryCount: response.retryCount
+      }
+    });
 
     return c.json({ data: response });
   }

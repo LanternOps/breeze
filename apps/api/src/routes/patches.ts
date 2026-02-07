@@ -5,6 +5,7 @@ import { and, eq, sql, inArray, desc } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { queueCommand } from '../services/commandQueue';
+import { writeRouteAudit, type AuthContext } from '../services/auditEvents';
 import {
   patches,
   devicePatches,
@@ -98,7 +99,60 @@ const listJobsSchema = z.object({
   status: z.enum(['scheduled', 'running', 'completed', 'failed', 'cancelled']).optional()
 });
 
+function inferPatchOs(
+  osTypes: string[] | null,
+  source: string,
+  inferredOs?: string | null
+): 'windows' | 'macos' | 'linux' | 'unknown' {
+  if (Array.isArray(osTypes) && osTypes.length > 0) {
+    const candidate = String(osTypes[0]).toLowerCase();
+    if (candidate === 'windows' || candidate === 'macos' || candidate === 'linux') {
+      return candidate;
+    }
+  }
+
+  if (typeof inferredOs === 'string') {
+    const candidate = inferredOs.toLowerCase();
+    if (candidate === 'windows' || candidate === 'macos' || candidate === 'linux') {
+      return candidate;
+    }
+  }
+
+  switch (source) {
+    case 'microsoft':
+      return 'windows';
+    case 'apple':
+      return 'macos';
+    case 'linux':
+      return 'linux';
+    default:
+      return 'unknown';
+  }
+}
+
 patchRoutes.use('*', authMiddleware);
+
+function writePatchAuditForOrgIds(
+  c: AuthContext,
+  orgIds: string[] | Set<string> | string | null | undefined,
+  event: {
+    action: string;
+    resourceType: string;
+    resourceId?: string;
+    resourceName?: string;
+    details?: Record<string, unknown>;
+  }
+): void {
+  const orgIdList = Array.isArray(orgIds)
+    ? orgIds
+    : (typeof orgIds === 'string'
+      ? [orgIds]
+      : (orgIds ? Array.from(orgIds) : []));
+  const uniqueOrgIds = [...new Set(orgIdList.filter(Boolean))];
+  for (const orgId of uniqueOrgIds) {
+    writeRouteAudit(c, { orgId, ...event });
+  }
+}
 
 // GET /patches - List available patches
 patchRoutes.get(
@@ -140,6 +194,14 @@ patchRoutes.get(
         severity: patches.severity,
         category: patches.category,
         osTypes: patches.osTypes,
+        inferredOs: sql<string | null>`(
+          SELECT ${devices.osType}
+          FROM ${devicePatches}
+          INNER JOIN ${devices} ON ${devices.id} = ${devicePatches.deviceId}
+          WHERE ${devicePatches.patchId} = ${patches.id}
+          ORDER BY ${devicePatches.lastCheckedAt} DESC NULLS LAST
+          LIMIT 1
+        )`,
         releaseDate: patches.releaseDate,
         requiresReboot: patches.requiresReboot,
         downloadSizeMb: patches.downloadSizeMb,
@@ -175,7 +237,7 @@ patchRoutes.get(
 
     const data = patchList.map(patch => ({
       ...patch,
-      os: patch.osTypes?.[0] || 'unknown',
+      os: inferPatchOs(patch.osTypes, patch.source, patch.inferredOs),
       approvalStatus: approvalStatuses[patch.id] || 'pending'
     }));
 
@@ -233,6 +295,21 @@ patchRoutes.post(
     const failedDeviceIDs = queueResults
       .filter((r): r is { ok: false; deviceId: string } => !r.ok)
       .map((r) => r.deviceId);
+
+    writePatchAuditForOrgIds(
+      c,
+      accessibleDevices.map((d) => d.orgId),
+      {
+        action: 'patch.scan.trigger',
+        resourceType: 'patch',
+        details: {
+          source: data.source ?? null,
+          deviceCount: accessibleDevices.length,
+          queuedCommandIds,
+          failedDeviceIds: failedDeviceIDs
+        }
+      }
+    );
 
     return c.json({
       success: failedDeviceIDs.length === 0,
@@ -359,6 +436,17 @@ patchRoutes.post(
         failed.push(patchId);
       }
     }
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'patch.bulk_approve',
+      resourceType: 'patch',
+      details: {
+        approvedCount: approved.length,
+        failedCount: failed.length,
+        patchIds: data.patchIds
+      }
+    });
 
     return c.json({ success: true, approved, failed });
   }
@@ -633,6 +721,23 @@ patchRoutes.post(
         );
     }
 
+    writePatchAuditForOrgIds(
+      c,
+      accessibleDevices.map((d) => d.orgId),
+      {
+        action: 'patch.rollback',
+        resourceType: 'patch',
+        resourceId: id,
+        resourceName: patch.title,
+        details: {
+          queuedCommandIds: queued.map((entry) => entry.commandId),
+          deviceCount: accessibleDevices.length,
+          failedDeviceIds,
+          reason: data.reason ?? null
+        }
+      }
+    );
+
     return c.json({
       success: failedDeviceIds.length === 0,
       patchId: id,
@@ -694,6 +799,16 @@ patchRoutes.post(
         }
       });
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'patch.approve',
+      resourceType: 'patch',
+      resourceId: id,
+      details: {
+        note: data.note ?? null
+      }
+    });
+
     return c.json({ id, status: 'approved' });
   }
 );
@@ -739,6 +854,16 @@ patchRoutes.post(
           updatedAt: new Date()
         }
       });
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'patch.decline',
+      resourceType: 'patch',
+      resourceId: id,
+      details: {
+        note: data.note ?? null
+      }
+    });
 
     return c.json({ id, status: 'declined' });
   }
@@ -787,6 +912,17 @@ patchRoutes.post(
           updatedAt: new Date()
         }
       });
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'patch.defer',
+      resourceType: 'patch',
+      resourceId: id,
+      details: {
+        deferUntil: data.deferUntil,
+        note: data.note ?? null
+      }
+    });
 
     return c.json({
       id,

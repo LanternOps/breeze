@@ -16,6 +16,7 @@ import {
   sites
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const reportRoutes = new Hono();
 
@@ -357,6 +358,15 @@ reportRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: report?.orgId ?? orgId ?? auth.orgId,
+      action: 'report.create',
+      resourceType: 'report',
+      resourceId: report?.id,
+      resourceName: report?.name,
+      details: { type: report?.type, schedule: report?.schedule, format: report?.format }
+    });
+
     return c.json(report, 201);
   }
 );
@@ -394,6 +404,15 @@ reportRoutes.put(
       .where(eq(reports.id, reportId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: report.orgId,
+      action: 'report.update',
+      resourceType: 'report',
+      resourceId: updated?.id ?? reportId,
+      resourceName: updated?.name ?? report.name,
+      details: { changedFields: Object.keys(data) }
+    });
+
     return c.json(updated);
   }
 );
@@ -420,6 +439,14 @@ reportRoutes.delete(
     await db
       .delete(reports)
       .where(eq(reports.id, reportId));
+
+    writeRouteAudit(c, {
+      orgId: report.orgId,
+      action: 'report.delete',
+      resourceType: 'report',
+      resourceId: report.id,
+      resourceName: report.name
+    });
 
     return c.json({ success: true });
   }
@@ -451,6 +478,15 @@ reportRoutes.post(
     if (!run) {
       return c.json({ error: 'Failed to create report run' }, 500);
     }
+
+    writeRouteAudit(c, {
+      orgId: report.orgId,
+      action: 'report.generate',
+      resourceType: 'report_run',
+      resourceId: run.id,
+      resourceName: report.name,
+      details: { reportId: report.id }
+    });
 
     // In a real implementation, this would trigger an async job
     // For now, we'll simulate the report generation process
@@ -551,6 +587,13 @@ reportRoutes.post(
       default:
         return c.json({ error: 'Invalid report type' }, 400);
     }
+
+    writeRouteAudit(c, {
+      orgId: orgId ?? auth.orgId,
+      action: 'report.generate.adhoc',
+      resourceType: 'report',
+      details: { type: data.type, format: data.format }
+    });
 
     return c.json({
       type: data.type,

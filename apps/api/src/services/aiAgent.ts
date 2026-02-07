@@ -45,10 +45,13 @@ const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 529]);
 
 export async function createSession(
   auth: AuthContext,
-  options: { pageContext?: AiPageContext; model?: string; title?: string }
-): Promise<{ id: string }> {
-  const orgId = auth.orgId;
+  options: { pageContext?: AiPageContext; model?: string; title?: string; orgId?: string }
+): Promise<{ id: string; orgId: string }> {
+  const orgId = options.orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) throw new Error('Organization context required');
+  if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+    throw new Error('Access denied to this organization');
+  }
 
   const [session] = await db
     .insert(aiSessions)
@@ -63,7 +66,7 @@ export async function createSession(
     .returning();
 
   if (!session) throw new Error('Failed to create session');
-  return { id: session.id };
+  return { id: session.id, orgId };
 }
 
 export async function getSession(sessionId: string, auth: AuthContext) {
@@ -148,7 +151,7 @@ export async function* sendMessage(
   auth: AuthContext,
   pageContext?: AiPageContext
 ): AsyncGenerator<AiStreamEvent> {
-  const orgId = auth.orgId;
+  const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) {
     yield { type: 'error', message: 'Organization context required' };
     return;

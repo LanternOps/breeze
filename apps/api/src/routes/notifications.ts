@@ -5,6 +5,7 @@ import { db } from '../db';
 import { userNotifications } from '../db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { authMiddleware } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const notificationRoutes = new Hono();
 
@@ -119,6 +120,16 @@ notificationRoutes.patch(
       }
     }
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'notification.read.mark',
+      resourceType: 'notification',
+      details: {
+        all: Boolean(body.all),
+        count: body.ids?.length ?? null
+      }
+    });
+
     return c.json({ success: true });
   }
 );
@@ -143,6 +154,13 @@ notificationRoutes.delete(
       return c.json({ error: 'Notification not found' }, 404);
     }
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'notification.delete',
+      resourceType: 'notification',
+      resourceId: id
+    });
+
     return c.json({ success: true });
   }
 );
@@ -154,6 +172,12 @@ notificationRoutes.delete('/', async (c) => {
   await db
     .delete(userNotifications)
     .where(eq(userNotifications.userId, auth.user.id));
+
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'notification.delete_all',
+    resourceType: 'notification'
+  });
 
   return c.json({ success: true });
 });

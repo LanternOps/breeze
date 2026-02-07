@@ -8,6 +8,7 @@ import { snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds, devices }
 import { enqueueSnmpPoll, buildSnmpPollCommand } from '../jobs/snmpWorker';
 import { isRedisAvailable } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
+import { writeRouteAudit } from '../services/auditEvents';
 
 // --- Helpers ---
 
@@ -212,6 +213,19 @@ snmpRoutes.post(
       lastStatus: 'offline'
     }).returning();
 
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'snmp.device.create',
+      resourceType: 'snmp_device',
+      resourceId: device.id,
+      resourceName: device.name,
+      details: {
+        ipAddress: device.ipAddress,
+        snmpVersion: device.snmpVersion,
+        templateId: device.templateId,
+      },
+    });
+
     return c.json({ data: device }, 201);
   }
 );
@@ -300,6 +314,17 @@ snmpRoutes.patch(
       .where(eq(snmpDevices.id, deviceId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'snmp.device.update',
+      resourceType: 'snmp_device',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        updatedFields: Object.keys(payload),
+      },
+    });
+
     return c.json({ data: updated });
   }
 );
@@ -324,6 +349,16 @@ snmpRoutes.delete(
     await db.delete(snmpMetrics).where(eq(snmpMetrics.deviceId, deviceId));
     await db.delete(snmpAlertThresholds).where(eq(snmpAlertThresholds.deviceId, deviceId));
     const [removed] = await db.delete(snmpDevices).where(eq(snmpDevices.id, deviceId)).returning();
+
+    if (removed) {
+      writeRouteAudit(c, {
+        orgId: removed.orgId,
+        action: 'snmp.device.delete',
+        resourceType: 'snmp_device',
+        resourceId: removed.id,
+        resourceName: removed.name,
+      });
+    }
 
     return c.json({ data: removed });
   }
@@ -350,6 +385,13 @@ snmpRoutes.post(
     }
 
     await enqueueSnmpPoll(deviceId, device.orgId);
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'snmp.device.poll.queue',
+      resourceType: 'snmp_device',
+      resourceId: deviceId,
+    });
 
     return c.json({
       data: {
@@ -410,6 +452,18 @@ snmpRoutes.post(
 
     const command = buildSnmpPollCommand(deviceId, device, testOids, 'snmp-test');
     const sent = sendCommandToAgent(agentId, command);
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'snmp.device.test',
+      resourceType: 'snmp_device',
+      resourceId: device.id,
+      resourceName: device.name,
+      details: {
+        queued: sent,
+      },
+      result: sent ? 'success' : 'failure',
+    });
 
     return c.json({
       data: {
@@ -482,6 +536,17 @@ snmpRoutes.post(
       isBuiltIn: false
     }).returning();
 
+    writeRouteAudit(c, {
+      orgId: c.get('auth').orgId,
+      action: 'snmp.template.create',
+      resourceType: 'snmp_template',
+      resourceId: template.id,
+      resourceName: template.name,
+      details: {
+        oidCount: Array.isArray(template.oids) ? template.oids.length : 0,
+      },
+    });
+
     return c.json({
       data: {
         id: template.id,
@@ -546,6 +611,17 @@ snmpRoutes.patch(
       .where(eq(snmpTemplates.id, templateId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: c.get('auth').orgId,
+      action: 'snmp.template.update',
+      resourceType: 'snmp_template',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        updatedFields: Object.keys(updates),
+      },
+    });
+
     return c.json({
       data: {
         id: updated.id,
@@ -574,6 +650,14 @@ snmpRoutes.delete(
 
     const [removed] = await db.delete(snmpTemplates)
       .where(eq(snmpTemplates.id, templateId)).returning();
+
+    writeRouteAudit(c, {
+      orgId: c.get('auth').orgId,
+      action: 'snmp.template.delete',
+      resourceType: 'snmp_template',
+      resourceId: removed.id,
+      resourceName: removed.name,
+    });
 
     return c.json({ data: removed });
   }
@@ -781,6 +865,18 @@ snmpRoutes.post(
       isActive: payload.isActive ?? true
     }).returning();
 
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId,
+      action: 'snmp.threshold.create',
+      resourceType: 'snmp_threshold',
+      resourceId: threshold.id,
+      details: {
+        deviceId: threshold.deviceId,
+        oid: threshold.oid,
+        severity: threshold.severity,
+      },
+    });
+
     return c.json({ data: threshold }, 201);
   }
 );
@@ -812,6 +908,23 @@ snmpRoutes.patch(
       .where(eq(snmpAlertThresholds.id, thresholdId))
       .returning();
 
+    const [thresholdContext] = await db
+      .select({ orgId: snmpDevices.orgId })
+      .from(snmpAlertThresholds)
+      .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
+      .where(eq(snmpAlertThresholds.id, thresholdId))
+      .limit(1);
+
+    writeRouteAudit(c, {
+      orgId: thresholdContext?.orgId ?? orgResult.orgId,
+      action: 'snmp.threshold.update',
+      resourceType: 'snmp_threshold',
+      resourceId: updated.id,
+      details: {
+        updatedFields: Object.keys(payload),
+      },
+    });
+
     return c.json({ data: updated });
   }
 );
@@ -827,10 +940,10 @@ snmpRoutes.delete(
 
     // Verify threshold exists and its device belongs to the caller's org
     const query = orgResult.orgId
-      ? db.select({ id: snmpAlertThresholds.id }).from(snmpAlertThresholds)
+      ? db.select({ id: snmpAlertThresholds.id, deviceId: snmpAlertThresholds.deviceId }).from(snmpAlertThresholds)
           .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
           .where(and(eq(snmpAlertThresholds.id, thresholdId), eq(snmpDevices.orgId, orgResult.orgId)))
-      : db.select({ id: snmpAlertThresholds.id }).from(snmpAlertThresholds)
+      : db.select({ id: snmpAlertThresholds.id, deviceId: snmpAlertThresholds.deviceId }).from(snmpAlertThresholds)
           .where(eq(snmpAlertThresholds.id, thresholdId));
 
     const [existing] = await query.limit(1);
@@ -838,6 +951,25 @@ snmpRoutes.delete(
 
     const [removed] = await db.delete(snmpAlertThresholds)
       .where(eq(snmpAlertThresholds.id, thresholdId)).returning();
+
+    if (removed) {
+      const [thresholdContext] = await db
+        .select({ orgId: snmpDevices.orgId })
+        .from(snmpDevices)
+        .where(eq(snmpDevices.id, removed.deviceId))
+        .limit(1);
+
+      writeRouteAudit(c, {
+        orgId: thresholdContext?.orgId ?? orgResult.orgId,
+        action: 'snmp.threshold.delete',
+        resourceType: 'snmp_threshold',
+        resourceId: removed.id,
+        details: {
+          deviceId: removed.deviceId,
+          oid: removed.oid,
+        },
+      });
+    }
 
     return c.json({ data: removed });
   }

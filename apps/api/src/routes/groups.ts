@@ -7,6 +7,7 @@ import { deviceGroups, deviceGroupMemberships, devices, organizations, groupMemb
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
 import { evaluateGroupMembership, pinDeviceToGroup } from '../services/groupMembership';
+import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
 
 export const groupRoutes = new Hono();
@@ -330,6 +331,20 @@ groupRoutes.post(
       return c.json({ error: 'Failed to create group' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.create',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name,
+      details: {
+        type: group.type,
+        siteId: group.siteId,
+        parentId: group.parentId,
+        hasFilter: Boolean(group.filterConditions)
+      }
+    });
+
     // If dynamic group with filter, evaluate membership
     if (group.type === 'dynamic' && group.filterConditions) {
       // Run membership evaluation asynchronously (don't block the response)
@@ -411,6 +426,17 @@ groupRoutes.patch(
       return c.json({ error: 'Failed to update group' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'device_group.update',
+      resourceType: 'device_group',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        changedFields: Object.keys(payload)
+      }
+    });
+
     // If dynamic group filter changed, re-evaluate membership
     if (effectiveType === 'dynamic' && filterChanged && updated.filterConditions) {
       // Run membership evaluation asynchronously (don't block the response)
@@ -454,6 +480,14 @@ groupRoutes.delete(
 
     // Delete the group
     await db.delete(deviceGroups).where(eq(deviceGroups.id, id));
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.delete',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name
+    });
 
     return c.json({ data: mapGroupRow(group, 0) });
   }
@@ -567,6 +601,19 @@ groupRoutes.post(
       );
     }
 
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.device.add',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name,
+      details: {
+        addedCount: newDeviceIds.length,
+        skippedCount: existingMemberships.length,
+        deviceIds: newDeviceIds
+      }
+    });
+
     const deviceCount = await getDeviceCountForGroup(id);
 
     return c.json({
@@ -620,6 +667,17 @@ groupRoutes.delete(
           eq(deviceGroupMemberships.deviceId, deviceId)
         )
       );
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.device.remove',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name,
+      details: {
+        deviceId
+      }
+    });
 
     return c.json({ data: { deviceId, groupId: id, removed: true } });
   }
@@ -707,6 +765,17 @@ groupRoutes.post(
 
     await pinDeviceToGroup(id, deviceId, true);
 
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.device.pin',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name,
+      details: {
+        deviceId
+      }
+    });
+
     return c.json({
       data: {
         groupId: id,
@@ -757,6 +826,17 @@ groupRoutes.delete(
     }
 
     await pinDeviceToGroup(id, deviceId, false);
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.device.unpin',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name,
+      details: {
+        deviceId
+      }
+    });
 
     return c.json({
       data: {

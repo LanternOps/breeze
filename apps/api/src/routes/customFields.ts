@@ -48,6 +48,7 @@ const customFieldQuerySchema = z.object({
 });
 import { customFieldDefinitions, organizations } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const customFieldRoutes = new Hono();
 
@@ -329,6 +330,15 @@ customFieldRoutes.post(
       return c.json({ error: 'Failed to create custom field' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: field.orgId ?? auth.orgId,
+      action: 'custom_field.create',
+      resourceType: 'custom_field',
+      resourceId: field.id,
+      resourceName: field.name,
+      details: { fieldKey: field.fieldKey, type: field.type }
+    });
+
     return c.json({ data: mapCustomFieldRow(field) }, 201);
   }
 );
@@ -370,6 +380,15 @@ customFieldRoutes.patch(
       return c.json({ error: 'Failed to update custom field' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId ?? auth.orgId,
+      action: 'custom_field.update',
+      resourceType: 'custom_field',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: { changedFields: Object.keys(payload) }
+    });
+
     return c.json({ data: mapCustomFieldRow(updated) });
   }
 );
@@ -393,6 +412,14 @@ customFieldRoutes.delete(
     }
 
     await db.delete(customFieldDefinitions).where(eq(customFieldDefinitions.id, id));
+
+    writeRouteAudit(c, {
+      orgId: field.orgId ?? auth.orgId,
+      action: 'custom_field.delete',
+      resourceType: 'custom_field',
+      resourceId: field.id,
+      resourceName: field.name
+    });
 
     return c.json({ data: mapCustomFieldRow(field) });
   }

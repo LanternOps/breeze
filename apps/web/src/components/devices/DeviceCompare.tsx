@@ -125,6 +125,8 @@ const mockDevices: Device[] = [
     cpuPercent: 45,
     ramPercent: 62,
     lastSeen: '2024-01-15T12:00:00.000Z',
+    orgId: 'org-1',
+    orgName: 'Acme Corp',
     siteId: 'site-1',
     siteName: 'Headquarters',
     agentVersion: '2.5.1',
@@ -139,6 +141,8 @@ const mockDevices: Device[] = [
     cpuPercent: 78,
     ramPercent: 85,
     lastSeen: '2024-01-15T11:58:00.000Z',
+    orgId: 'org-1',
+    orgName: 'Acme Corp',
     siteId: 'site-1',
     siteName: 'Headquarters',
     agentVersion: '2.5.1',
@@ -153,6 +157,8 @@ const mockDevices: Device[] = [
     cpuPercent: 32,
     ramPercent: 48,
     lastSeen: '2024-01-15T11:55:00.000Z',
+    orgId: 'org-1',
+    orgName: 'Acme Corp',
     siteId: 'site-2',
     siteName: 'Remote Office',
     agentVersion: '2.5.0',
@@ -167,6 +173,8 @@ const mockDevices: Device[] = [
     cpuPercent: 0,
     ramPercent: 0,
     lastSeen: '2024-01-15T10:00:00.000Z',
+    orgId: 'org-1',
+    orgName: 'Acme Corp',
     siteId: 'site-2',
     siteName: 'Remote Office',
     agentVersion: '2.4.3',
@@ -181,6 +189,8 @@ const mockDevices: Device[] = [
     cpuPercent: 12,
     ramPercent: 35,
     lastSeen: '2024-01-15T11:59:00.000Z',
+    orgId: 'org-1',
+    orgName: 'Acme Corp',
     siteId: 'site-1',
     siteName: 'Headquarters',
     agentVersion: '2.5.1',
@@ -200,6 +210,8 @@ function createFallbackDevice(id: string): Device {
     cpuPercent: 0,
     ramPercent: 0,
     lastSeen: '2024-01-15T12:00:00.000Z',
+    orgId: '',
+    orgName: 'Unknown',
     siteId: 'site-0',
     siteName: 'Unknown',
     agentVersion: '-',
@@ -290,6 +302,8 @@ function normalizeDeviceSummary(raw: Record<string, unknown>, index: number): De
   const cpuPercent = toNumber(raw.cpuPercent ?? raw.cpuUsage ?? cpu?.percent, 0);
   const ramPercent = toNumber(raw.ramPercent ?? raw.memoryUsage ?? ram?.percent, 0);
   const lastSeen = String(raw.lastSeen ?? raw.lastSeenAt ?? raw.seenAt ?? '2024-01-15T12:00:00.000Z');
+  const orgId = String(raw.orgId ?? raw.organizationId ?? '');
+  const orgName = String(raw.orgName ?? raw.organizationName ?? 'Unknown');
   const siteId = String(raw.siteId ?? raw.locationId ?? 'site-0');
   const siteName = String(raw.siteName ?? raw.location ?? raw.site ?? 'Unknown');
   const agentVersion = String(raw.agentVersion ?? agent?.version ?? raw.agent ?? '-');
@@ -304,6 +318,8 @@ function normalizeDeviceSummary(raw: Record<string, unknown>, index: number): De
     cpuPercent,
     ramPercent,
     lastSeen,
+    orgId,
+    orgName,
     siteId,
     siteName,
     agentVersion,
@@ -555,6 +571,8 @@ function normalizeDeviceDetail(raw: Record<string, unknown>, fallback: Device): 
     cpuPercent,
     ramPercent,
     lastSeen,
+    orgId: String(source.orgId ?? source.organizationId ?? ''),
+    orgName: String(source.orgName ?? source.organizationName ?? 'Unknown'),
     siteId,
     siteName,
     agentVersion,

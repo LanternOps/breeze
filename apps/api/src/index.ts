@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
@@ -65,6 +66,10 @@ import { initializeDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeSnmpWorker } from './jobs/snmpWorker';
 import { initializeSnmpRetention } from './jobs/snmpRetention';
 import { isRedisAvailable } from './services/redis';
+import { writeAuditEvent } from './services/auditEvents';
+import { db } from './db';
+import { deviceGroups, devices, securityThreats } from './db/schema';
+import { eq } from 'drizzle-orm';
 
 const app = new Hono();
 
@@ -104,6 +109,284 @@ app.route('/metrics', metricsRoutes);
 
 // API routes
 const api = new Hono();
+
+const FALLBACK_AUDIT_PREFIXES = [
+  '/alerts',
+  '/snmp',
+  '/agents',
+  '/backup',
+  '/script-library',
+  '/portal',
+  '/analytics',
+  '/alert-templates',
+  '/software',
+  '/maintenance',
+  '/psa',
+  '/mobile',
+  '/discovery',
+  '/sso',
+  '/reports',
+  '/filters',
+  '/ai',
+  '/notifications',
+  '/custom-fields',
+  '/access-reviews',
+  '/mcp',
+  '/audit-logs',
+  '/agent-versions',
+  '/devices',
+  '/security',
+  '/system-tools'
+];
+
+const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
+  /^\/api\/v1\/security\/recommendations\/[^/]+\/(complete|dismiss)$/,
+  /^\/api\/v1\/system-tools\/devices\/[^/]+\/processes\/[^/]+\/kill$/,
+  /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/value$/,
+  /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/key$/,
+  /^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/
+];
+
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function isMutatingMethod(method: string): boolean {
+  return MUTATING_METHODS.has(method);
+}
+
+function sanitizeActionSegment(segment: string): string {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) {
+    return ':id';
+  }
+  if (/^[0-9]+$/.test(segment)) {
+    return ':n';
+  }
+  if (segment.length > 24 && /^[0-9a-z-]+$/i.test(segment)) {
+    return ':id';
+  }
+  return segment;
+}
+
+function isLikelyUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function buildFallbackAction(method: string, apiPath: string): string {
+  const cleaned = apiPath.replace(/^\/api\/v1\//, '/');
+  const segments = cleaned
+    .split('/')
+    .filter(Boolean)
+    .map(sanitizeActionSegment)
+    .slice(0, 4);
+
+  const action = `api.${method.toLowerCase()}.${segments.join('.') || 'unknown'}`;
+  return action.length > 100 ? action.slice(0, 100) : action;
+}
+
+function getResourceTypeFromPath(apiPath: string): string {
+  const cleaned = apiPath.replace(/^\/api\/v1\//, '/');
+  const first = cleaned.split('/').filter(Boolean)[0];
+  return (first ?? 'system').slice(0, 50);
+}
+
+function fallbackAuditEligible(path: string): boolean {
+  if (FALLBACK_AUDIT_EXCLUDE_PATHS.some((pattern) => pattern.test(path))) {
+    return false;
+  }
+
+  return FALLBACK_AUDIT_PREFIXES.some((prefix) => path.startsWith(`/api/v1${prefix}`));
+}
+
+async function resolveFallbackOrgId(c: Context, path: string): Promise<string | null> {
+  const auth = c.get('auth') as { orgId?: string | null; accessibleOrgIds?: string[] } | undefined;
+  if (auth?.orgId) {
+    return auth.orgId;
+  }
+
+  if (auth?.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
+    return auth.accessibleOrgIds[0] ?? null;
+  }
+
+  if (path.startsWith('/api/v1/agents/')) {
+    const segments = path.split('/').filter(Boolean);
+    const agentId = segments[3];
+    if (!agentId || agentId === 'enroll') {
+      return null;
+    }
+
+    try {
+      const [device] = await db
+        .select({ orgId: devices.orgId })
+        .from(devices)
+        .where(eq(devices.agentId, agentId))
+        .limit(1);
+      return device?.orgId ?? null;
+    } catch (err) {
+      console.error('[audit] Failed to resolve orgId from path:', err);
+      return null;
+    }
+  }
+
+  if (path.startsWith('/api/v1/devices/')) {
+    const segments = path.split('/').filter(Boolean);
+    const entity = segments[3];
+    if (!entity) {
+      return null;
+    }
+
+    if (entity === 'groups') {
+      const groupId = segments[4];
+      if (!groupId || !isLikelyUuid(groupId)) {
+        return null;
+      }
+
+      try {
+        const [group] = await db
+          .select({ orgId: deviceGroups.orgId })
+          .from(deviceGroups)
+          .where(eq(deviceGroups.id, groupId))
+          .limit(1);
+        return group?.orgId ?? null;
+      } catch (err) {
+        console.error('[audit] Failed to resolve orgId from device group:', err);
+        return null;
+      }
+    }
+
+    if (!isLikelyUuid(entity)) {
+      return null;
+    }
+
+    try {
+      const [device] = await db
+        .select({ orgId: devices.orgId })
+        .from(devices)
+        .where(eq(devices.id, entity))
+        .limit(1);
+      return device?.orgId ?? null;
+    } catch (err) {
+      console.error('[audit] Failed to resolve orgId from path:', err);
+      return null;
+    }
+  }
+
+  if (path.startsWith('/api/v1/security/scan/')) {
+    const segments = path.split('/').filter(Boolean);
+    const deviceId = segments[4];
+    if (!deviceId || !isLikelyUuid(deviceId)) {
+      return null;
+    }
+
+    try {
+      const [device] = await db
+        .select({ orgId: devices.orgId })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      return device?.orgId ?? null;
+    } catch (err) {
+      console.error('[audit] Failed to resolve orgId from path:', err);
+      return null;
+    }
+  }
+
+  if (path.startsWith('/api/v1/security/threats/')) {
+    const segments = path.split('/').filter(Boolean);
+    const threatId = segments[4];
+    if (!threatId || !isLikelyUuid(threatId)) {
+      return null;
+    }
+
+    try {
+      const [threat] = await db
+        .select({ orgId: devices.orgId })
+        .from(securityThreats)
+        .innerJoin(devices, eq(securityThreats.deviceId, devices.id))
+        .where(eq(securityThreats.id, threatId))
+        .limit(1);
+      return threat?.orgId ?? null;
+    } catch (err) {
+      console.error('[audit] Failed to resolve orgId from path:', err);
+      return null;
+    }
+  }
+
+  if (path.startsWith('/api/v1/system-tools/devices/')) {
+    const segments = path.split('/').filter(Boolean);
+    const deviceId = segments[4];
+    if (!deviceId || !isLikelyUuid(deviceId)) {
+      return null;
+    }
+
+    try {
+      const [device] = await db
+        .select({ orgId: devices.orgId })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      return device?.orgId ?? null;
+    } catch (err) {
+      console.error('[audit] Failed to resolve orgId from path:', err);
+      return null;
+    }
+  }
+
+  return null;
+}
+
+api.use('*', async (c, next) => {
+  await next();
+
+  const method = c.req.method.toUpperCase();
+  if (!isMutatingMethod(method)) {
+    return;
+  }
+
+  const path = c.req.path;
+  if (!fallbackAuditEligible(path)) {
+    return;
+  }
+
+  if (c.res.status === 404) {
+    return;
+  }
+
+  const orgId = await resolveFallbackOrgId(c, path);
+  if (!orgId) {
+    return;
+  }
+
+  const auth = c.get('auth') as { user?: { id?: string; email?: string }; orgId?: string | null } | undefined;
+  const status = c.res.status;
+
+  let result: 'success' | 'denied' | 'failure';
+  if (status >= 200 && status < 400) {
+    result = 'success';
+  } else if (status === 401 || status === 403) {
+    result = 'denied';
+  } else {
+    result = 'failure';
+  }
+
+  let actorType: 'user' | 'agent' | 'system';
+  if (auth?.user?.id) {
+    actorType = 'user';
+  } else if (path.startsWith('/api/v1/agents/')) {
+    actorType = 'agent';
+  } else {
+    actorType = 'system';
+  }
+
+  writeAuditEvent(c, {
+    orgId,
+    actorType,
+    actorId: auth?.user?.id ?? undefined,
+    actorEmail: auth?.user?.email,
+    action: buildFallbackAction(method, path),
+    resourceType: getResourceTypeFromPath(path),
+    details: { path, method, statusCode: status, fallback: true },
+    result
+  });
+});
 
 api.route('/auth', authRoutes);
 api.route('/agents', agentRoutes);
@@ -243,4 +526,3 @@ async function initializeWorkers(): Promise<void> {
 initializeWorkers().catch((err) => {
   console.error('[CRITICAL] Worker initialization failed unexpectedly:', err);
 });
-

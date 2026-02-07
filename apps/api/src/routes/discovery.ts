@@ -8,10 +8,13 @@ import {
   discoveryProfiles,
   discoveryJobs,
   discoveredAssets,
-  networkTopology
+  networkTopology,
+  snmpDevices,
+  snmpMetrics
 } from '../db/schema';
 import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const discoveryRoutes = new Hono();
 
@@ -185,6 +188,14 @@ discoveryRoutes.post(
       createdBy: auth.user?.id ?? null
     }).returning();
 
+    writeRouteAudit(c, {
+      orgId: profile?.orgId ?? orgResult.orgId,
+      action: 'discovery.profile.create',
+      resourceType: 'discovery_profile',
+      resourceId: profile?.id,
+      resourceName: profile?.name
+    });
+
     return c.json(profile, 201);
   }
 );
@@ -253,6 +264,15 @@ discoveryRoutes.patch(
       .where(eq(discoveryProfiles.id, profileId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: updated?.orgId ?? orgResult.orgId,
+      action: 'discovery.profile.update',
+      resourceType: 'discovery_profile',
+      resourceId: updated?.id ?? profileId,
+      resourceName: updated?.name,
+      details: { changedFields: Object.keys(updates) }
+    });
+
     return c.json(updated);
   }
 );
@@ -269,13 +289,25 @@ discoveryRoutes.delete(
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
     if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
 
-    const [existing] = await db.select({ id: discoveryProfiles.id }).from(discoveryProfiles)
+    const [existing] = await db.select({
+      id: discoveryProfiles.id,
+      orgId: discoveryProfiles.orgId,
+      name: discoveryProfiles.name
+    }).from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
 
     // Delete related jobs first
     await db.delete(discoveryJobs).where(eq(discoveryJobs.profileId, profileId));
     await db.delete(discoveryProfiles).where(eq(discoveryProfiles.id, profileId));
+
+    writeRouteAudit(c, {
+      orgId: existing.orgId,
+      action: 'discovery.profile.delete',
+      resourceType: 'discovery_profile',
+      resourceId: existing.id,
+      resourceName: existing.name
+    });
 
     return c.json({ success: true });
   }
@@ -340,6 +372,14 @@ discoveryRoutes.post(
       }).where(eq(discoveryJobs.id, job.id));
       return c.json({ error: 'Failed to enqueue scan job' }, 503);
     }
+
+    writeRouteAudit(c, {
+      orgId: job.orgId,
+      action: 'discovery.scan.queue',
+      resourceType: 'discovery_job',
+      resourceId: job.id,
+      details: { profileId: profile.id, agentId: body.agentId ?? null }
+    });
 
     return c.json(job, 201);
   }
@@ -439,28 +479,39 @@ discoveryRoutes.get(
     if (query.assetType) conditions.push(eq(discoveredAssets.assetType, query.assetType));
 
     const where = conditions.length ? and(...conditions) : undefined;
-    const results = await db.select().from(discoveredAssets)
+    const results = await db
+      .select({
+        asset: discoveredAssets,
+        snmpDeviceId: snmpDevices.id,
+        snmpIsActive: snmpDevices.isActive
+      })
+      .from(discoveredAssets)
+      .leftJoin(snmpDevices, eq(discoveredAssets.id, snmpDevices.assetId))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
     return c.json({
-      data: results.map((a) => ({
-        id: a.id,
-        orgId: a.orgId,
-        assetType: a.assetType,
-        status: a.status,
-        hostname: a.hostname,
-        ipAddress: a.ipAddress,
-        macAddress: a.macAddress,
-        manufacturer: a.manufacturer,
-        model: a.model,
-        openPorts: a.openPorts,
-        linkedDeviceId: a.linkedDeviceId,
-        firstSeenAt: a.firstSeenAt.toISOString(),
-        lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
-        createdAt: a.createdAt.toISOString(),
-        updatedAt: a.updatedAt.toISOString()
-      }))
+      data: results.map((row) => {
+        const a = row.asset;
+        return {
+          id: a.id,
+          orgId: a.orgId,
+          assetType: a.assetType,
+          status: a.status,
+          hostname: a.hostname,
+          ipAddress: a.ipAddress,
+          macAddress: a.macAddress,
+          manufacturer: a.manufacturer,
+          model: a.model,
+          openPorts: a.openPorts,
+          linkedDeviceId: a.linkedDeviceId,
+          monitoringEnabled: row.snmpDeviceId !== null && row.snmpIsActive === true,
+          firstSeenAt: a.firstSeenAt.toISOString(),
+          lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
+          createdAt: a.createdAt.toISOString(),
+          updatedAt: a.updatedAt.toISOString()
+        };
+      })
     });
   }
 );
@@ -491,6 +542,15 @@ discoveryRoutes.post(
       })
       .where(eq(discoveredAssets.id, assetId))
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: updated?.orgId ?? orgResult.orgId,
+      action: 'discovery.asset.link',
+      resourceType: 'discovered_asset',
+      resourceId: updated?.id ?? assetId,
+      resourceName: updated?.hostname ?? updated?.ipAddress ?? undefined,
+      details: { linkedDeviceId: body.deviceId }
+    });
 
     return c.json(updated);
   }
@@ -526,7 +586,176 @@ discoveryRoutes.post(
       .where(eq(discoveredAssets.id, assetId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: updated?.orgId ?? orgResult.orgId,
+      action: 'discovery.asset.ignore',
+      resourceType: 'discovered_asset',
+      resourceId: updated?.id ?? assetId,
+      resourceName: updated?.hostname ?? updated?.ipAddress ?? undefined,
+      details: { reason: body.reason ?? null }
+    });
+
     return c.json(updated);
+  }
+);
+
+// ==================== MONITORING BRIDGE ROUTES ====================
+
+const enableMonitoringSchema = z.object({
+  snmpVersion: z.enum(['v1', 'v2c', 'v3']),
+  community: z.string().optional(),
+  username: z.string().optional(),
+  authProtocol: z.string().optional(),
+  authPassword: z.string().optional(),
+  privProtocol: z.string().optional(),
+  privPassword: z.string().optional(),
+  templateId: z.string().uuid().optional(),
+  pollingInterval: z.number().int().positive().optional()
+});
+
+discoveryRoutes.post(
+  '/assets/:id/enable-monitoring',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', enableMonitoringSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const assetId = c.req.param('id');
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [asset] = await db.select().from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+
+    // Check if monitoring is already enabled
+    const [existing] = await db.select({ id: snmpDevices.id })
+      .from(snmpDevices)
+      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.isActive, true)))
+      .limit(1);
+    if (existing) return c.json({ error: 'Monitoring already enabled for this asset' }, 409);
+
+    const [snmpDevice] = await db.insert(snmpDevices).values({
+      orgId: asset.orgId,
+      assetId: asset.id,
+      name: asset.hostname ?? asset.ipAddress ?? 'Unknown',
+      ipAddress: asset.ipAddress ?? '',
+      snmpVersion: body.snmpVersion,
+      community: body.community ?? null,
+      username: body.username ?? null,
+      authProtocol: body.authProtocol ?? null,
+      authPassword: body.authPassword ?? null,
+      privProtocol: body.privProtocol ?? null,
+      privPassword: body.privPassword ?? null,
+      templateId: body.templateId ?? null,
+      pollingInterval: body.pollingInterval ?? 300,
+      isActive: true
+    }).returning();
+
+    writeRouteAudit(c, {
+      orgId: asset.orgId,
+      action: 'discovery.asset.enable_monitoring',
+      resourceType: 'discovered_asset',
+      resourceId: assetId,
+      resourceName: asset.hostname ?? asset.ipAddress ?? undefined,
+      details: { snmpDeviceId: snmpDevice?.id, snmpVersion: body.snmpVersion }
+    });
+
+    return c.json({ success: true, snmpDevice }, 201);
+  }
+);
+
+discoveryRoutes.delete(
+  '/assets/:id/disable-monitoring',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const assetId = c.req.param('id');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [asset] = await db.select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
+      .from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+
+    const [updated] = await db.update(snmpDevices)
+      .set({ isActive: false })
+      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.isActive, true)))
+      .returning();
+
+    if (!updated) return c.json({ error: 'No active monitoring found for this asset' }, 404);
+
+    writeRouteAudit(c, {
+      orgId: asset.orgId,
+      action: 'discovery.asset.disable_monitoring',
+      resourceType: 'discovered_asset',
+      resourceId: assetId,
+      details: { snmpDeviceId: updated.id }
+    });
+
+    return c.json({ success: true });
+  }
+);
+
+discoveryRoutes.get(
+  '/assets/:id/monitoring',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const assetId = c.req.param('id');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [asset] = await db.select({ id: discoveredAssets.id })
+      .from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+
+    const [snmpDevice] = await db.select()
+      .from(snmpDevices)
+      .where(eq(snmpDevices.assetId, assetId))
+      .limit(1);
+
+    if (!snmpDevice) {
+      return c.json({ enabled: false, snmpDevice: null, recentMetrics: [] });
+    }
+
+    const recentMetrics = await db.select()
+      .from(snmpMetrics)
+      .where(eq(snmpMetrics.deviceId, snmpDevice.id))
+      .orderBy(desc(snmpMetrics.timestamp))
+      .limit(20);
+
+    return c.json({
+      enabled: snmpDevice.isActive,
+      snmpDevice: {
+        id: snmpDevice.id,
+        snmpVersion: snmpDevice.snmpVersion,
+        templateId: snmpDevice.templateId,
+        pollingInterval: snmpDevice.pollingInterval,
+        isActive: snmpDevice.isActive,
+        lastPolled: snmpDevice.lastPolled?.toISOString() ?? null,
+        lastStatus: snmpDevice.lastStatus
+      },
+      recentMetrics: recentMetrics.map(m => ({
+        id: m.id,
+        oid: m.oid,
+        name: m.name,
+        value: m.value,
+        valueType: m.valueType,
+        timestamp: m.timestamp.toISOString()
+      }))
+    });
   }
 );
 

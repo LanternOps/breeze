@@ -1,8 +1,3 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import SNMPDashboard from '../../components/snmp/SNMPDashboard';
+return Astro.redirect('/discovery?tab=monitoring');
 ---
-
-<DashboardLayout title="Network Monitoring | Breeze RMM">
-  <SNMPDashboard client:load />
-</DashboardLayout>

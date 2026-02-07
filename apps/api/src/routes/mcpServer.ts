@@ -24,6 +24,7 @@ import { db } from '../db';
 import { devices, alerts, scripts, automations } from '../db/schema';
 import { eq, and, desc, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { writeAuditEvent } from '../services/auditEvents';
 
 export const mcpServerRoutes = new Hono();
 
@@ -46,6 +47,14 @@ interface JsonRpcResponse {
   id: string | number | null;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
+}
+
+function buildMcpAuditAction(method: string): string {
+  const normalized = method
+    .toLowerCase()
+    .replace(/[^a-z0-9/_.-]/g, '')
+    .replace(/\//g, '.');
+  return `mcp.${normalized || 'unknown'}`.slice(0, 100);
 }
 
 // ============================================
@@ -168,6 +177,22 @@ mcpServerRoutes.post(
     const auth = buildAuthFromApiKey(apiKey);
 
     const response = await handleJsonRpc(body, auth, apiKey.scopes);
+
+    writeAuditEvent(c, {
+      orgId: apiKey.orgId,
+      actorType: 'api_key',
+      actorId: apiKey.id,
+      action: buildMcpAuditAction(body.method),
+      resourceType: 'mcp_request',
+      resourceId: sessionId,
+      details: {
+        method: body.method,
+        hasSession: Boolean(sessionId),
+        hasParams: Boolean(body.params)
+      },
+      result: response.error ? 'failure' : 'success',
+      errorMessage: response.error?.message
+    });
 
     // If there's an active SSE session, queue the response there (with ownership check)
     if (sessionId) {

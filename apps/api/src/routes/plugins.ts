@@ -5,7 +5,7 @@ import { eq, and, ilike, sql, desc } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { pluginCatalog, pluginInstallations, pluginLogs, organizations } from '../db/schema';
-import { createAuditLog } from '../services/auditService';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const pluginRoutes = new Hono();
 
@@ -359,17 +359,13 @@ pluginRoutes.post(
       }
     });
 
-    // Audit log for plugin installation
-    await createAuditLog({
+    writeRouteAudit(c, {
       orgId: orgResult.orgId as string,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
       action: 'install_plugin',
       resourceType: 'plugin',
       resourceId: installation.id,
       resourceName: catalogPlugin.name,
-      details: { version: catalogPlugin.version, catalogId: body.catalogId },
-      result: 'success'
+      details: { version: catalogPlugin.version, catalogId: body.catalogId }
     });
 
     return c.json(installation, 201);
@@ -490,6 +486,14 @@ pluginRoutes.patch(
       }
     });
 
+    writeRouteAudit(c, {
+      orgId: installation.orgId,
+      action: 'plugin.update',
+      resourceType: 'plugin',
+      resourceId: installation.id,
+      details: { changedFields: Object.keys(updates) }
+    });
+
     return c.json(updated);
   }
 );
@@ -549,17 +553,13 @@ pluginRoutes.delete(
       .set({ installCount: sql`GREATEST(${pluginCatalog.installCount} - 1, 0)` })
       .where(eq(pluginCatalog.id, installation.catalogId));
 
-    // Audit log for plugin uninstallation (in main audit log, not plugin logs)
-    await createAuditLog({
+    writeRouteAudit(c, {
       orgId: installation.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
       action: 'uninstall_plugin',
       resourceType: 'plugin',
       resourceId: installation.id,
       resourceName: installation.pluginName,
-      details: { catalogId: installation.catalogId },
-      result: 'success'
+      details: { catalogId: installation.catalogId }
     });
 
     return c.json({ success: true });
@@ -612,6 +612,13 @@ pluginRoutes.post(
       }
     });
 
+    writeRouteAudit(c, {
+      orgId: installation.orgId,
+      action: 'plugin.enable',
+      resourceType: 'plugin',
+      resourceId: installation.id
+    });
+
     return c.json(updated);
   }
 );
@@ -660,6 +667,13 @@ pluginRoutes.post(
         action: 'disable',
         userId: auth.user.id
       }
+    });
+
+    writeRouteAudit(c, {
+      orgId: installation.orgId,
+      action: 'plugin.disable',
+      resourceType: 'plugin',
+      resourceId: installation.id
     });
 
     return c.json(updated);

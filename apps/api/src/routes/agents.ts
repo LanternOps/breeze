@@ -22,6 +22,7 @@ import {
 } from '../db/schema';
 import { createHash, randomBytes } from 'crypto';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
+import { writeAuditEvent } from '../services/auditEvents';
 
 export const agentRoutes = new Hono();
 
@@ -115,6 +116,8 @@ const securityStatusIngestSchema = z.object({
   threatCount: z.number().int().min(0).optional(),
   firewallEnabled: z.boolean().optional(),
   encryptionStatus: z.string().optional(),
+  gatekeeperEnabled: z.boolean().optional(),
+  guardianEnabled: z.boolean().optional(),
   windowsSecurityCenterAvailable: z.boolean().optional(),
   avProducts: z.array(
     z.object({
@@ -207,6 +210,33 @@ function normalizeSeverity(raw: unknown): 'low' | 'medium' | 'high' | 'critical'
   return 'medium';
 }
 
+function normalizeKnownOsType(raw: unknown): 'windows' | 'macos' | 'linux' | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim().toLowerCase();
+  if (value === 'windows' || value === 'macos' || value === 'linux') {
+    return value;
+  }
+  return null;
+}
+
+function inferPatchOsType(source: string, deviceOs: unknown): 'windows' | 'macos' | 'linux' | null {
+  const normalizedDeviceOs = normalizeKnownOsType(deviceOs);
+  if (normalizedDeviceOs) {
+    return normalizedDeviceOs;
+  }
+
+  switch (source) {
+    case 'microsoft':
+      return 'windows';
+    case 'apple':
+      return 'macos';
+    case 'linux':
+      return 'linux';
+    default:
+      return null;
+  }
+}
+
 function isUuid(value: unknown): value is string {
   return typeof value === 'string' && uuidRegex.test(value);
 }
@@ -250,6 +280,7 @@ async function upsertSecurityStatusForDevice(deviceId: string, payload: Security
       threatCount: payload.threatCount ?? 0,
       firewallEnabled: payload.firewallEnabled ?? null,
       encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
+      gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
       updatedAt: new Date()
     })
     .onConflictDoUpdate({
@@ -265,6 +296,7 @@ async function upsertSecurityStatusForDevice(deviceId: string, payload: Security
         threatCount: payload.threatCount ?? 0,
         firewallEnabled: payload.firewallEnabled ?? null,
         encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
+        gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
         updatedAt: new Date()
       }
     });
@@ -583,6 +615,20 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
   }
 
   // Return enrollment response
+  writeAuditEvent(c, {
+    orgId: key.orgId,
+    actorType: 'agent',
+    actorId: agentId,
+    action: 'agent.enroll',
+    resourceType: 'device',
+    resourceId: result.id,
+    resourceName: data.hostname,
+    details: {
+      siteId: key.siteId,
+      reenrollment: Boolean(existingDevice),
+    },
+  });
+
   return c.json({
     agentId: agentId,
     deviceId: result.id,
@@ -677,9 +723,10 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
 agentRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestSchema), async (c) => {
   const agentId = c.req.param('id');
   const payload = c.req.valid('json');
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
 
   const [device] = await db
-    .select({ id: devices.id })
+    .select({ id: devices.id, orgId: devices.orgId })
     .from(devices)
     .where(eq(devices.agentId, agentId))
     .limit(1);
@@ -689,6 +736,18 @@ agentRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestS
   }
 
   await upsertSecurityStatusForDevice(device.id, payload);
+  writeAuditEvent(c, {
+    orgId: agent?.orgId ?? device.orgId,
+    actorType: 'agent',
+    actorId: agent?.agentId ?? agentId,
+    action: 'agent.security_status.submit',
+    resourceType: 'device',
+    resourceId: device.id,
+    details: {
+      provider: payload.provider ?? null,
+      threatCount: payload.threatCount ?? null,
+    },
+  });
   return c.json({ success: true });
 });
 
@@ -699,6 +758,8 @@ agentRoutes.post(
   async (c) => {
     const commandId = c.req.param('commandId');
     const data = c.req.valid('json');
+    const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+    const agentId = c.req.param('id');
 
     const [command] = await db
       .select()
@@ -738,6 +799,21 @@ agentRoutes.post(
         console.error(`[agents] security command post-processing failed for ${commandId}:`, err);
       }
     }
+
+    writeAuditEvent(c, {
+      orgId: agent?.orgId,
+      actorType: 'agent',
+      actorId: agent?.agentId ?? agentId,
+      action: 'agent.command.result.submit',
+      resourceType: 'device_command',
+      resourceId: commandId,
+      details: {
+        commandType: command.type,
+        status: data.status,
+        exitCode: data.exitCode ?? null,
+      },
+      result: data.status === 'completed' ? 'success' : 'failure',
+    });
 
     return c.json({ success: true });
   }
@@ -1001,6 +1077,7 @@ const submitPatchesSchema = z.object({
 agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
   const installedCount = data.installed?.length || 0;
   console.log(`[PATCHES] Agent ${agentId} submitting ${data.patches.length} pending, ${installedCount} installed`);
 
@@ -1026,6 +1103,7 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
       // Generate an external ID based on source + name + version
       const externalId = patchData.kbNumber ||
         `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
+      const inferredOsType = inferPatchOsType(patchData.source, device.osType);
 
       // Upsert the patch record
       const [patch] = await tx
@@ -1039,7 +1117,8 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
           category: patchData.category || null,
           releaseDate: patchData.releaseDate || null,
           requiresReboot: patchData.requiresRestart || false,
-          downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null
+          downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null,
+          ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
         })
         .onConflictDoUpdate({
           target: [patches.source, patches.externalId],
@@ -1049,6 +1128,15 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
             severity: patchData.severity || 'unknown',
             category: patchData.category || null,
             requiresReboot: patchData.requiresRestart || false,
+            ...(inferredOsType
+              ? {
+                  osTypes: sql`CASE
+                    WHEN ${inferredOsType} = ANY(COALESCE(${patches.osTypes}, ARRAY[]::text[]))
+                    THEN COALESCE(${patches.osTypes}, ARRAY[]::text[])
+                    ELSE COALESCE(${patches.osTypes}, ARRAY[]::text[]) || ARRAY[${inferredOsType}]::text[]
+                  END`
+                }
+              : {}),
             updatedAt: new Date()
           }
         })
@@ -1079,6 +1167,7 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
     if (data.installed && data.installed.length > 0) {
       for (const patchData of data.installed) {
         const externalId = `${patchData.source}:${patchData.name}:${patchData.version || 'installed'}`;
+        const inferredOsType = inferPatchOsType(patchData.source, device.osType);
 
         // Upsert the patch record
         const [patch] = await tx
@@ -1088,13 +1177,23 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
             externalId: externalId,
             title: patchData.name,
             severity: 'unknown',
-            category: patchData.category || null
+            category: patchData.category || null,
+            ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
           })
           .onConflictDoUpdate({
             target: [patches.source, patches.externalId],
             set: {
               title: patchData.name,
               category: patchData.category || null,
+              ...(inferredOsType
+                ? {
+                    osTypes: sql`CASE
+                      WHEN ${inferredOsType} = ANY(COALESCE(${patches.osTypes}, ARRAY[]::text[]))
+                      THEN COALESCE(${patches.osTypes}, ARRAY[]::text[])
+                      ELSE COALESCE(${patches.osTypes}, ARRAY[]::text[]) || ARRAY[${inferredOsType}]::text[]
+                    END`
+                  }
+                : {}),
               updatedAt: new Date()
             }
           })
@@ -1126,6 +1225,19 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
         }
       }
     }
+  });
+
+  writeAuditEvent(c, {
+    orgId: agent?.orgId ?? device.orgId,
+    actorType: 'agent',
+    actorId: agent?.agentId ?? agentId,
+    action: 'agent.patches.submit',
+    resourceType: 'device',
+    resourceId: device.id,
+    details: {
+      pendingCount: data.patches.length,
+      installedCount,
+    },
   });
 
   return c.json({ success: true, pending: data.patches.length, installed: installedCount });
@@ -1205,6 +1317,7 @@ const submitEventLogsSchema = z.object({
 agentRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
 
   const [device] = await db
     .select()
@@ -1244,6 +1357,19 @@ agentRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema), asy
   } catch (err) {
     console.error(`[EventLogs] Error batch inserting events for device ${device.id}:`, err);
   }
+
+  writeAuditEvent(c, {
+    orgId: agent?.orgId ?? device.orgId,
+    actorType: 'agent',
+    actorId: agent?.agentId ?? agentId,
+    action: 'agent.eventlogs.submit',
+    resourceType: 'device',
+    resourceId: device.id,
+    details: {
+      submittedCount: data.events.length,
+      insertedCount: inserted,
+    },
+  });
 
   return c.json({ success: true, count: inserted });
 });

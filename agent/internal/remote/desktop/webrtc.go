@@ -8,6 +8,9 @@ import (
 
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
+
+	"github.com/breeze-rmm/agent/internal/remote/clipboard"
+	"github.com/breeze-rmm/agent/internal/remote/filedrop"
 )
 
 const (
@@ -17,15 +20,17 @@ const (
 
 // Session represents a remote desktop WebRTC session
 type Session struct {
-	id           string
-	peerConn     *webrtc.PeerConnection
-	videoTrack   *webrtc.TrackLocalStaticSample
-	dataChannel  *webrtc.DataChannel
-	inputHandler InputHandler
-	capturer     ScreenCapturer
-	done         chan struct{}
-	mu           sync.RWMutex
-	isActive     bool
+	id            string
+	peerConn      *webrtc.PeerConnection
+	videoTrack    *webrtc.TrackLocalStaticSample
+	dataChannel   *webrtc.DataChannel
+	inputHandler  InputHandler
+	capturer      ScreenCapturer
+	clipboardSync *clipboard.ClipboardSync
+	fileDropHandler *filedrop.FileDropHandler
+	done          chan struct{}
+	mu            sync.RWMutex
+	isActive      bool
 }
 
 // SessionManager manages remote desktop sessions
@@ -89,6 +94,25 @@ func (m *SessionManager) StartSession(sessionID string, offer string) (string, e
 		capturer:     capturer,
 		done:         make(chan struct{}),
 		isActive:     true,
+	}
+
+	// Create clipboard DataChannel for clipboard sync
+	clipboardDC, err := peerConn.CreateDataChannel("clipboard", nil)
+	if err != nil {
+		fmt.Printf("Desktop session %s: failed to create clipboard DataChannel: %v\n", sessionID, err)
+	} else if clipboardDC != nil {
+		session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard())
+		clipboardDC.OnOpen(func() {
+			session.clipboardSync.Watch()
+		})
+	}
+
+	// Create filedrop DataChannel for file transfers
+	filedropDC, err := peerConn.CreateDataChannel("filedrop", nil)
+	if err != nil {
+		fmt.Printf("Desktop session %s: failed to create filedrop DataChannel: %v\n", sessionID, err)
+	} else if filedropDC != nil {
+		session.fileDropHandler = filedrop.NewFileDropHandler(filedropDC, "")
 	}
 
 	// Handle data channel for input events
@@ -172,6 +196,12 @@ func (s *Session) Stop() {
 	s.mu.Unlock()
 
 	close(s.done)
+	if s.clipboardSync != nil {
+		s.clipboardSync.Stop()
+	}
+	if s.fileDropHandler != nil {
+		s.fileDropHandler.Close()
+	}
 	if s.capturer != nil {
 		s.capturer.Close()
 	}

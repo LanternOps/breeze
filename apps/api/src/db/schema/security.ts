@@ -55,6 +55,7 @@ export const securityStatus = pgTable('security_status', {
   threatCount: integer('threat_count').notNull().default(0),
   firewallEnabled: boolean('firewall_enabled'),
   encryptionStatus: varchar('encryption_status', { length: 50 }),
+  gatekeeperEnabled: boolean('gatekeeper_enabled'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   deviceUnique: uniqueIndex('security_status_device_id_unique').on(table.deviceId),

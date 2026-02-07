@@ -6,6 +6,7 @@ import { deviceCommands } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { createCommandSchema } from './schemas';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 export const commandsRoutes = new Hono();
 
@@ -50,6 +51,18 @@ commandsRoutes.post(
     if (!command) {
       return c.json({ error: 'Failed to queue command' }, 500);
     }
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.command.queue',
+      resourceType: 'device_command',
+      resourceId: command.id,
+      resourceName: data.type,
+      details: {
+        deviceId,
+        commandType: data.type
+      }
+    });
 
     return c.json({
       id: command.id,

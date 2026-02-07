@@ -6,6 +6,7 @@ import { devices, deviceGroups, deviceGroupMemberships, sites } from '../../db/s
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getPagination, ensureOrgAccess } from './helpers';
 import { createGroupSchema, updateGroupSchema } from './schemas';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 export const groupsRoutes = new Hono();
 
@@ -116,6 +117,14 @@ groupsRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: group?.orgId ?? data.orgId,
+      action: 'device_group.create',
+      resourceType: 'device_group',
+      resourceId: group?.id,
+      resourceName: group?.name
+    });
+
     return c.json(group, 201);
   }
 );
@@ -155,6 +164,15 @@ groupsRoutes.patch(
       .where(eq(deviceGroups.id, groupId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.update',
+      resourceType: 'device_group',
+      resourceId: updated?.id ?? groupId,
+      resourceName: updated?.name ?? group.name,
+      details: { changedFields: Object.keys(data) }
+    });
+
     return c.json(updated);
   }
 );
@@ -191,6 +209,14 @@ groupsRoutes.delete(
     await db
       .delete(deviceGroups)
       .where(eq(deviceGroups.id, groupId));
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.delete',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name
+    });
 
     return c.json({ success: true });
   }
@@ -253,6 +279,18 @@ groupsRoutes.post(
       )
       .onConflictDoNothing();
 
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.members.add',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name,
+      details: {
+        requestedCount: deviceIds.length,
+        addedCount: validDeviceIds.length
+      }
+    });
+
     return c.json({
       success: true,
       added: validDeviceIds.length
@@ -296,6 +334,15 @@ groupsRoutes.delete(
           inArray(deviceGroupMemberships.deviceId, deviceIds)
         )
       );
+
+    writeRouteAudit(c, {
+      orgId: group.orgId,
+      action: 'device_group.members.remove',
+      resourceType: 'device_group',
+      resourceId: group.id,
+      resourceName: group.name,
+      details: { requestedCount: deviceIds.length }
+    });
 
     return c.json({ success: true });
   }

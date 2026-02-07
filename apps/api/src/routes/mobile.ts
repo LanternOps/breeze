@@ -13,6 +13,7 @@ import {
   scripts
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const mobileRoutes = new Hono();
 
@@ -237,6 +238,15 @@ mobileRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'mobile.device.register',
+      resourceType: 'mobile_device',
+      resourceId: device?.id,
+      resourceName: device?.deviceId,
+      details: { platform: data.platform }
+    });
+
     return c.json(device, 201);
   }
 );
@@ -284,6 +294,15 @@ mobileRoutes.patch(
       return c.json({ error: 'Mobile device not found' }, 404);
     }
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'mobile.device.settings.update',
+      resourceType: 'mobile_device',
+      resourceId: updated.id,
+      resourceName: updated.deviceId,
+      details: { changedFields: Object.keys(data) }
+    });
+
     return c.json(updated);
   }
 );
@@ -309,6 +328,14 @@ mobileRoutes.delete(
     if (!deleted) {
       return c.json({ error: 'Mobile device not found' }, 404);
     }
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'mobile.device.unregister',
+      resourceType: 'mobile_device',
+      resourceId: deleted.id,
+      resourceName: deleted.deviceId
+    });
 
     return c.json({ success: true });
   }
@@ -424,6 +451,14 @@ mobileRoutes.post(
       .where(eq(alerts.id, alertId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'mobile.alert.acknowledge',
+      resourceType: 'alert',
+      resourceId: updated?.id ?? alertId,
+      resourceName: updated?.title ?? alert.title
+    });
+
     return c.json(updated);
   }
 );
@@ -457,6 +492,15 @@ mobileRoutes.post(
       })
       .where(eq(alerts.id, alertId))
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'mobile.alert.resolve',
+      resourceType: 'alert',
+      resourceId: updated?.id ?? alertId,
+      resourceName: updated?.title ?? alert.title,
+      details: { hasNote: Boolean(data.note) }
+    });
 
     return c.json(updated);
   }
@@ -611,6 +655,20 @@ mobileRoutes.post(
         return c.json({ error: 'Failed to create command' }, 500);
       }
 
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: 'mobile.device.action',
+        resourceType: 'device',
+        resourceId: device.id,
+        resourceName: device.hostname,
+        details: {
+          action: data.action,
+          scriptId: script.id,
+          executionId: execution.id,
+          commandId: command.id
+        }
+      });
+
       return c.json({
         action: data.action,
         executionId: execution.id,
@@ -633,6 +691,18 @@ mobileRoutes.post(
     if (!cmd) {
       return c.json({ error: 'Failed to create command' }, 500);
     }
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'mobile.device.action',
+      resourceType: 'device',
+      resourceId: device.id,
+      resourceName: device.hostname,
+      details: {
+        action: data.action,
+        commandId: cmd.id
+      }
+    });
 
     return c.json({
       action: data.action,

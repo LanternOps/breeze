@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { EyeOff, Link2 } from 'lucide-react';
+import { EyeOff, Link2, Signal } from 'lucide-react';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -27,6 +27,7 @@ export type DiscoveredAsset = {
   osFingerprint?: string;
   snmpData?: Record<string, string>;
   linkedDeviceId?: string | null;
+  monitoringEnabled?: boolean;
 };
 
 type ApiDiscoveryAsset = {
@@ -41,6 +42,7 @@ type ApiDiscoveryAsset = {
   osFingerprint?: string | null;
   snmpData?: Record<string, string> | null;
   linkedDeviceId?: string | null;
+  monitoringEnabled?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -95,7 +97,8 @@ function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     openPorts: asset.openPorts ?? [],
     osFingerprint: asset.osFingerprint ?? undefined,
     snmpData: asset.snmpData ?? undefined,
-    linkedDeviceId: asset.linkedDeviceId
+    linkedDeviceId: asset.linkedDeviceId,
+    monitoringEnabled: asset.monitoringEnabled ?? false
   };
 }
 
@@ -220,6 +223,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
               <th className="px-4 py-3">Hostname</th>
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Monitoring</th>
               <th className="px-4 py-3">Manufacturer</th>
               <th className="px-4 py-3">Last Seen</th>
               <th className="px-4 py-3 text-right">Actions</th>
@@ -228,7 +232,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           <tbody className="divide-y">
             {assets.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={9} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No assets discovered yet.
                 </td>
               </tr>
@@ -251,6 +255,9 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusConfig[asset.status].color}`}>
                       {statusConfig[asset.status].label}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Signal className={`h-4 w-4 ${asset.monitoringEnabled ? 'text-green-600' : 'text-muted-foreground/40'}`} />
                   </td>
                   <td className="px-4 py-3 text-sm">{asset.manufacturer}</td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{formatLastSeen(asset.lastSeen, timezone)}</td>

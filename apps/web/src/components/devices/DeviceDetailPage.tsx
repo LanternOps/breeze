@@ -63,6 +63,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
         ramPercent: latestMetrics?.ramPercent ?? 0,
         lastSeen: data.lastSeenAt ?? data.lastSeen ?? '',
+        orgId: data.orgId ?? '',
+        orgName: data.orgName ?? 'Unknown Org',
         siteId: data.siteId ?? '',
         siteName: data.siteName ?? 'Unknown Site',
         agentVersion: data.agentVersion ?? '',

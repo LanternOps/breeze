@@ -50,12 +50,14 @@ vi.mock('../db/schema', () => ({
   },
   devices: {
     id: 'devices.id',
-    orgId: 'devices.orgId'
+    orgId: 'devices.orgId',
+    osType: 'devices.osType'
   },
   devicePatches: {
     deviceId: 'devicePatches.deviceId',
     patchId: 'devicePatches.patchId',
-    status: 'devicePatches.status'
+    status: 'devicePatches.status',
+    lastCheckedAt: 'devicePatches.lastCheckedAt'
   },
   patchApprovals: {
     orgId: 'patchApprovals.orgId',
@@ -119,6 +121,20 @@ function selectWhereLimitResult(rows: unknown[]) {
   };
 }
 
+function selectPatchListResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockReturnValue({
+            offset: vi.fn().mockResolvedValue(rows)
+          })
+        })
+      })
+    })
+  };
+}
+
 describe('patch routes', () => {
   let app: Hono;
 
@@ -163,6 +179,68 @@ describe('patch routes', () => {
 
     expect(queueCommand).toHaveBeenCalledTimes(2);
     expect(queueCommand).toHaveBeenCalledWith(DEVICE_A, 'patch_scan', { source: 'apple' }, USER_ID);
+  });
+
+  it('infers patch os from source when osTypes is missing', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListResult([
+        {
+          id: PATCH_ID,
+          title: 'Safari Update',
+          description: null,
+          source: 'apple',
+          severity: 'important',
+          category: 'system',
+          osTypes: null,
+          inferredOs: null,
+          releaseDate: null,
+          requiresReboot: false,
+          downloadSizeMb: null,
+          createdAt: new Date('2026-02-07T00:00:00.000Z')
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].os).toBe('macos');
+  });
+
+  it('infers patch os from associated device when source is third_party', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListResult([
+        {
+          id: PATCH_ID,
+          title: 'Google Chrome',
+          description: null,
+          source: 'third_party',
+          severity: 'important',
+          category: 'application',
+          osTypes: null,
+          inferredOs: 'macos',
+          releaseDate: null,
+          requiresReboot: false,
+          downloadSizeMb: null,
+          createdAt: new Date('2026-02-07T00:00:00.000Z')
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].os).toBe('macos');
   });
 
   it('returns compliance summary using joined patch filters', async () => {

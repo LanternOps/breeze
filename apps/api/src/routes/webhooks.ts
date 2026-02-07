@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const webhookRoutes = new Hono();
 
@@ -291,6 +292,18 @@ webhookRoutes.post(
 
     webhookStore.set(webhook.id, webhook);
 
+    writeRouteAudit(c, {
+      orgId: webhook.orgId,
+      action: 'webhook.create',
+      resourceType: 'webhook',
+      resourceId: webhook.id,
+      resourceName: webhook.name,
+      details: {
+        urlHost: URL.canParse(webhook.url) ? new URL(webhook.url).hostname : 'redacted',
+        eventCount: webhook.events.length
+      }
+    });
+
     return c.json({
       ...sanitizeWebhook(webhook),
       secret: webhook.secret
@@ -350,6 +363,17 @@ webhookRoutes.patch(
 
     webhookStore.set(webhook.id, updated);
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'webhook.update',
+      resourceType: 'webhook',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        changedFields: Object.keys(data)
+      }
+    });
+
     return c.json({
       ...sanitizeWebhook(updated),
       secret: data.secret ? updated.secret : undefined
@@ -374,6 +398,14 @@ webhookRoutes.delete(
     Array.from(deliveryStore.values())
       .filter(delivery => delivery.webhookId === webhookId)
       .forEach(delivery => deliveryStore.delete(delivery.id));
+
+    writeRouteAudit(c, {
+      orgId: webhook.orgId,
+      action: 'webhook.delete',
+      resourceType: 'webhook',
+      resourceId: webhook.id,
+      resourceName: webhook.name
+    });
 
     return c.json({ success: true });
   }
@@ -455,6 +487,18 @@ webhookRoutes.post(
     deliveryStore.set(delivery.id, delivery);
     webhookStore.set(webhook.id, { ...webhook, lastDeliveryAt: now, updatedAt: now });
 
+    writeRouteAudit(c, {
+      orgId: webhook.orgId,
+      action: 'webhook.test',
+      resourceType: 'webhook',
+      resourceId: webhook.id,
+      resourceName: webhook.name,
+      details: {
+        deliveryId: delivery.id,
+        event
+      }
+    });
+
     return c.json({
       message: 'Test delivery recorded (simulated)',
       delivery
@@ -494,6 +538,18 @@ webhookRoutes.post(
     };
 
     deliveryStore.set(delivery.id, updated);
+
+    writeRouteAudit(c, {
+      orgId: webhook.orgId,
+      action: 'webhook.retry',
+      resourceType: 'webhook',
+      resourceId: webhook.id,
+      resourceName: webhook.name,
+      details: {
+        deliveryId: delivery.id,
+        attempt: updated.attempt
+      }
+    });
 
     return c.json({
       message: 'Delivery retry queued (simulated)',

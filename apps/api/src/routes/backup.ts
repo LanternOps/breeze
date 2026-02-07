@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { authMiddleware } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const backupRoutes = new Hono();
 
@@ -595,6 +596,7 @@ backupRoutes.get('/configs', (c) => {
 });
 
 backupRoutes.post('/configs', zValidator('json', configSchema), async (c) => {
+  const auth = c.get('auth');
   const payload = c.req.valid('json');
   const now = new Date().toISOString();
   const config: BackupConfig = {
@@ -608,6 +610,14 @@ backupRoutes.post('/configs', zValidator('json', configSchema), async (c) => {
   };
 
   backupConfigs.push(config);
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.config.create',
+    resourceType: 'backup_config',
+    resourceId: config.id,
+    resourceName: config.name,
+    details: { provider: config.provider, enabled: config.enabled }
+  });
   return c.json(config, 201);
 });
 
@@ -620,6 +630,7 @@ backupRoutes.get('/configs/:id', (c) => {
 });
 
 backupRoutes.patch('/configs/:id', zValidator('json', configUpdateSchema), async (c) => {
+  const auth = c.get('auth');
   const config = backupConfigs.find((item) => item.id === c.req.param('id'));
   if (!config) {
     return c.json({ error: 'Config not found' }, 404);
@@ -633,25 +644,50 @@ backupRoutes.patch('/configs/:id', zValidator('json', configUpdateSchema), async
   }
   config.updatedAt = new Date().toISOString();
 
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.config.update',
+    resourceType: 'backup_config',
+    resourceId: config.id,
+    resourceName: config.name,
+    details: { changedFields: Object.keys(payload) }
+  });
+
   return c.json(config);
 });
 
 backupRoutes.delete('/configs/:id', (c) => {
+  const auth = c.get('auth');
   const index = backupConfigs.findIndex((item) => item.id === c.req.param('id'));
   if (index === -1) {
     return c.json({ error: 'Config not found' }, 404);
   }
-  backupConfigs.splice(index, 1);
+  const [deleted] = backupConfigs.splice(index, 1);
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.config.delete',
+    resourceType: 'backup_config',
+    resourceId: deleted?.id,
+    resourceName: deleted?.name
+  });
   return c.json({ deleted: true });
 });
 
 backupRoutes.post('/configs/:id/test', (c) => {
+  const auth = c.get('auth');
   const config = backupConfigs.find((item) => item.id === c.req.param('id'));
   if (!config) {
     return c.json({ error: 'Config not found' }, 404);
   }
   const checkedAt = new Date().toISOString();
   config.lastTestedAt = checkedAt;
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.config.test',
+    resourceType: 'backup_config',
+    resourceId: config.id,
+    resourceName: config.name
+  });
   return c.json({
     id: config.id,
     provider: config.provider,
@@ -665,6 +701,7 @@ backupRoutes.get('/policies', (c) => {
 });
 
 backupRoutes.post('/policies', zValidator('json', policySchema), async (c) => {
+  const auth = c.get('auth');
   const payload = c.req.valid('json');
   const config = backupConfigs.find((item) => item.id === payload.configId);
   if (!config) {
@@ -699,10 +736,18 @@ backupRoutes.post('/policies', zValidator('json', policySchema), async (c) => {
   };
 
   backupPolicies.push(policy);
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.policy.create',
+    resourceType: 'backup_policy',
+    resourceId: policy.id,
+    resourceName: policy.name
+  });
   return c.json(policy, 201);
 });
 
 backupRoutes.patch('/policies/:id', zValidator('json', policyUpdateSchema), async (c) => {
+  const auth = c.get('auth');
   const policy = backupPolicies.find((item) => item.id === c.req.param('id'));
   if (!policy) {
     return c.json({ error: 'Policy not found' }, 404);
@@ -737,15 +782,32 @@ backupRoutes.patch('/policies/:id', zValidator('json', policyUpdateSchema), asyn
   }
   policy.updatedAt = new Date().toISOString();
 
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.policy.update',
+    resourceType: 'backup_policy',
+    resourceId: policy.id,
+    resourceName: policy.name,
+    details: { changedFields: Object.keys(payload) }
+  });
+
   return c.json(policy);
 });
 
 backupRoutes.delete('/policies/:id', (c) => {
+  const auth = c.get('auth');
   const index = backupPolicies.findIndex((item) => item.id === c.req.param('id'));
   if (index === -1) {
     return c.json({ error: 'Policy not found' }, 404);
   }
-  backupPolicies.splice(index, 1);
+  const [deleted] = backupPolicies.splice(index, 1);
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.policy.delete',
+    resourceType: 'backup_policy',
+    resourceId: deleted?.id,
+    resourceName: deleted?.name
+  });
   return c.json({ deleted: true });
 });
 
@@ -802,6 +864,7 @@ backupRoutes.get('/jobs/:id', (c) => {
 });
 
 backupRoutes.post('/jobs/run/:deviceId', (c) => {
+  const auth = c.get('auth');
   const deviceId = c.req.param('deviceId');
   const policy = backupPolicies.find((item) => item.targets.deviceIds.includes(deviceId));
   const configId = policy?.configId ?? backupConfigs[0]?.id;
@@ -824,10 +887,18 @@ backupRoutes.post('/jobs/run/:deviceId', (c) => {
   };
 
   backupJobs.push(job);
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.job.run',
+    resourceType: 'backup_job',
+    resourceId: job.id,
+    details: { deviceId, configId, policyId: policy?.id ?? null }
+  });
   return c.json(job, 201);
 });
 
 backupRoutes.post('/jobs/:id/cancel', (c) => {
+  const auth = c.get('auth');
   const job = backupJobs.find((item) => item.id === c.req.param('id'));
   if (!job) {
     return c.json({ error: 'Job not found' }, 404);
@@ -841,6 +912,14 @@ backupRoutes.post('/jobs/:id/cancel', (c) => {
   job.completedAt = new Date().toISOString();
   job.updatedAt = job.completedAt;
   job.error = 'Canceled by user';
+
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.job.cancel',
+    resourceType: 'backup_job',
+    resourceId: job.id,
+    details: { deviceId: job.deviceId }
+  });
 
   return c.json(job);
 });
@@ -887,6 +966,7 @@ backupRoutes.get('/snapshots/:id/browse', (c) => {
 });
 
 backupRoutes.post('/restore', zValidator('json', restoreSchema), async (c) => {
+  const auth = c.get('auth');
   const payload = c.req.valid('json');
   const snapshot = backupSnapshots.find((item) => item.id === payload.snapshotId);
   if (!snapshot) {
@@ -918,6 +998,17 @@ backupRoutes.post('/restore', zValidator('json', restoreSchema), async (c) => {
     status: 'queued',
     createdAt: now,
     updatedAt: now
+  });
+
+  writeRouteAudit(c, {
+    orgId: auth.orgId,
+    action: 'backup.restore.create',
+    resourceType: 'restore_job',
+    resourceId: restoreJob.id,
+    details: {
+      snapshotId: snapshot.id,
+      deviceId: restoreJob.deviceId
+    }
   });
 
   return c.json(restoreJob, 201);

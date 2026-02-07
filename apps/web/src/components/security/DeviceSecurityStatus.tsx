@@ -16,6 +16,7 @@ type DeviceSecurity = {
   realTimeProtection: boolean;
   firewallEnabled: boolean;
   encryptionStatus: 'encrypted' | 'partial' | 'unencrypted';
+  gatekeeperEnabled?: boolean | null;
   status: 'protected' | 'at_risk' | 'unprotected' | 'offline';
   threatsDetected: number;
 };
@@ -112,11 +113,18 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
     );
   }
 
-  const protectionItems = [
+  const baseProtectionItems = [
     { id: 'realtime', label: 'Real-time Protection', enabled: data.realTimeProtection, detail: data.realTimeProtection ? 'Running' : 'Disabled' },
     { id: 'firewall', label: 'Firewall', enabled: data.firewallEnabled, detail: data.firewallEnabled ? 'Policy enforced' : 'Disabled' },
     { id: 'encryption', label: 'Disk Encryption', enabled: data.encryptionStatus !== 'unencrypted', detail: data.encryptionStatus }
   ];
+  const hasGatekeeper = typeof data.gatekeeperEnabled === 'boolean';
+  const protectionItems = hasGatekeeper
+    ? [
+      ...baseProtectionItems,
+      { id: 'gatekeeper', label: 'Guardian (Gatekeeper)', enabled: data.gatekeeperEnabled === true, detail: data.gatekeeperEnabled ? 'Enabled' : 'Disabled' }
+    ]
+    : baseProtectionItems;
 
   if (!showAvActions) {
     return (
@@ -137,7 +145,7 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
           </div>
         </div>
 
-        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className={`mt-6 grid gap-4 ${hasGatekeeper ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
           <div className="rounded-md border bg-muted/30 p-4">
             <p className="text-xs uppercase text-muted-foreground">Detected AV</p>
             <p className="mt-2 text-sm font-medium">{data.provider?.name ?? 'Unknown Provider'}</p>
@@ -151,6 +159,12 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
             <p className="text-xs uppercase text-muted-foreground">Disk Encryption</p>
             <p className="mt-2 text-sm font-medium capitalize">{data.encryptionStatus}</p>
           </div>
+          {hasGatekeeper && (
+            <div className="rounded-md border bg-muted/30 p-4">
+              <p className="text-xs uppercase text-muted-foreground">Guardian (Gatekeeper)</p>
+              <p className="mt-2 text-sm font-medium">{data.gatekeeperEnabled ? 'Enabled' : 'Disabled'}</p>
+            </div>
+          )}
         </div>
       </div>
     );

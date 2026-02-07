@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const psaRoutes = new Hono();
 
@@ -216,6 +217,15 @@ psaRoutes.post(
 
     psaConnections.set(connection.id, connection);
 
+    writeRouteAudit(c, {
+      orgId: connection.orgId,
+      action: 'psa.connection.create',
+      resourceType: 'psa_connection',
+      resourceId: connection.id,
+      resourceName: connection.name,
+      details: { provider: connection.provider }
+    });
+
     return c.json(serializeConnection(connection, true), 201);
   }
 );
@@ -277,6 +287,15 @@ psaRoutes.patch(
 
     psaConnections.set(connection.id, connection);
 
+    writeRouteAudit(c, {
+      orgId: connection.orgId,
+      action: 'psa.connection.update',
+      resourceType: 'psa_connection',
+      resourceId: connection.id,
+      resourceName: connection.name,
+      details: { changedFields: Object.keys(data) }
+    });
+
     return c.json(serializeConnection(connection, true));
   }
 );
@@ -300,6 +319,14 @@ psaRoutes.delete(
 
     psaConnections.delete(connectionId);
     psaTickets.delete(connectionId);
+
+    writeRouteAudit(c, {
+      orgId: connection.orgId,
+      action: 'psa.connection.delete',
+      resourceType: 'psa_connection',
+      resourceId: connection.id,
+      resourceName: connection.name
+    });
 
     return c.json({ success: true });
   }
@@ -325,6 +352,14 @@ psaRoutes.post(
     connection.lastTestedAt = new Date();
     connection.updatedAt = new Date();
     psaConnections.set(connection.id, connection);
+
+    writeRouteAudit(c, {
+      orgId: connection.orgId,
+      action: 'psa.connection.test',
+      resourceType: 'psa_connection',
+      resourceId: connection.id,
+      resourceName: connection.name
+    });
 
     return c.json({
       success: true,
@@ -353,6 +388,14 @@ psaRoutes.post(
     connection.lastSyncedAt = new Date();
     connection.updatedAt = new Date();
     psaConnections.set(connection.id, connection);
+
+    writeRouteAudit(c, {
+      orgId: connection.orgId,
+      action: 'psa.connection.sync',
+      resourceType: 'psa_connection',
+      resourceId: connection.id,
+      resourceName: connection.name
+    });
 
     return c.json({
       id: connection.id,
@@ -384,6 +427,15 @@ psaRoutes.post(
     connection.settings = { ...connection.settings, status: body.status };
     connection.updatedAt = new Date();
     psaConnections.set(connection.id, connection);
+
+    writeRouteAudit(c, {
+      orgId: connection.orgId,
+      action: 'psa.connection.status.update',
+      resourceType: 'psa_connection',
+      resourceId: connection.id,
+      resourceName: connection.name,
+      details: { status: body.status }
+    });
 
     return c.json({ success: true, status: body.status });
   }

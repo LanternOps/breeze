@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const alertTemplateRoutes = new Hono();
 
@@ -771,6 +772,7 @@ alertTemplateRoutes.post(
   zValidator('json', createTemplateSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const data = c.req.valid('json');
       const targets: AlertTemplateTarget = data.targets && Object.keys(data.targets).length > 0
         ? data.targets as AlertTemplateTarget
@@ -790,6 +792,17 @@ alertTemplateRoutes.post(
       };
 
       customTemplates.set(template.id, template);
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'alert_template.create',
+        resourceType: 'alert_template',
+        resourceId: template.id,
+        resourceName: template.name,
+        details: {
+          category: template.category,
+          severity: template.severity,
+        },
+      });
       return c.json({ data: template }, 201);
     } catch {
       return c.json({ error: 'Failed to create template' }, 500);
@@ -822,6 +835,7 @@ alertTemplateRoutes.patch(
   zValidator('json', updateTemplateSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const templateId = c.req.param('id');
       const updates = c.req.valid('json');
 
@@ -851,6 +865,16 @@ alertTemplateRoutes.patch(
       };
 
       customTemplates.set(templateId, updated);
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'alert_template.update',
+        resourceType: 'alert_template',
+        resourceId: updated.id,
+        resourceName: updated.name,
+        details: {
+          updatedFields: Object.keys(updates),
+        },
+      });
       return c.json({ data: updated });
     } catch {
       return c.json({ error: 'Failed to update template' }, 500);
@@ -863,6 +887,7 @@ alertTemplateRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const templateId = c.req.param('id');
 
       if (isBuiltInTemplate(templateId)) {
@@ -875,6 +900,13 @@ alertTemplateRoutes.delete(
       }
 
       customTemplates.delete(templateId);
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'alert_template.delete',
+        resourceType: 'alert_template',
+        resourceId: existing.id,
+        resourceName: existing.name,
+      });
       return c.json({ data: { id: templateId, deleted: true } });
     } catch {
       return c.json({ error: 'Failed to delete template' }, 500);
@@ -936,6 +968,7 @@ alertTemplateRoutes.post(
   zValidator('json', createRuleSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const data = c.req.valid('json');
       const template = getTemplateById(data.templateId);
 
@@ -961,6 +994,18 @@ alertTemplateRoutes.post(
       };
 
       alertRules.set(rule.id, rule);
+      writeRouteAudit(c, {
+        orgId: rule.orgId ?? auth.orgId,
+        action: 'alert_rule.create',
+        resourceType: 'alert_rule',
+        resourceId: rule.id,
+        resourceName: rule.name,
+        details: {
+          templateId: rule.templateId,
+          enabled: rule.enabled,
+          severity: rule.severity,
+        },
+      });
       return c.json({ data: rule }, 201);
     } catch {
       return c.json({ error: 'Failed to create rule' }, 500);
@@ -993,6 +1038,7 @@ alertTemplateRoutes.patch(
   zValidator('json', updateRuleSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const ruleId = c.req.param('id');
       const updates = c.req.valid('json');
       const existing = alertRules.get(ruleId);
@@ -1014,6 +1060,16 @@ alertTemplateRoutes.patch(
       };
 
       alertRules.set(ruleId, updated);
+      writeRouteAudit(c, {
+        orgId: updated.orgId ?? auth.orgId,
+        action: 'alert_rule.update',
+        resourceType: 'alert_rule',
+        resourceId: updated.id,
+        resourceName: updated.name,
+        details: {
+          updatedFields: Object.keys(updates),
+        },
+      });
       return c.json({ data: updated });
     } catch {
       return c.json({ error: 'Failed to update rule' }, 500);
@@ -1026,6 +1082,7 @@ alertTemplateRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const ruleId = c.req.param('id');
       const existing = alertRules.get(ruleId);
 
@@ -1034,6 +1091,13 @@ alertTemplateRoutes.delete(
       }
 
       alertRules.delete(ruleId);
+      writeRouteAudit(c, {
+        orgId: existing.orgId ?? auth.orgId,
+        action: 'alert_rule.delete',
+        resourceType: 'alert_rule',
+        resourceId: existing.id,
+        resourceName: existing.name,
+      });
       return c.json({ data: { id: ruleId, deleted: true } });
     } catch {
       return c.json({ error: 'Failed to delete rule' }, 500);
@@ -1047,6 +1111,7 @@ alertTemplateRoutes.post(
   zValidator('json', toggleRuleSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const ruleId = c.req.param('id');
       const { enabled } = c.req.valid('json');
       const existing = alertRules.get(ruleId);
@@ -1062,6 +1127,16 @@ alertTemplateRoutes.post(
       };
 
       alertRules.set(ruleId, updated);
+      writeRouteAudit(c, {
+        orgId: updated.orgId ?? auth.orgId,
+        action: 'alert_rule.toggle',
+        resourceType: 'alert_rule',
+        resourceId: updated.id,
+        resourceName: updated.name,
+        details: {
+          enabled,
+        },
+      });
       return c.json({ data: updated });
     } catch {
       return c.json({ error: 'Failed to toggle rule' }, 500);
@@ -1121,6 +1196,7 @@ alertTemplateRoutes.post(
   zValidator('json', analyzeCorrelationsSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
       const data = c.req.valid('json');
       const alertIds = data.alertIds ?? [];
       const windowMinutes = data.windowMinutes ?? 60;
@@ -1136,6 +1212,18 @@ alertTemplateRoutes.post(
           (link) => alertIds.includes(link.alertId) || alertIds.includes(link.relatedAlertId)
         )
         : correlationLinks;
+
+      writeRouteAudit(c, {
+        orgId: auth.orgId,
+        action: 'alert_correlation.analyze',
+        resourceType: 'alert_correlation',
+        details: {
+          requestedAlertCount: alertIds.length,
+          groupCount: groups.length,
+          linkCount: links.length,
+          windowMinutes,
+        },
+      });
 
       return c.json({
         data: {

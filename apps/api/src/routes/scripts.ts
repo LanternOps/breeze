@@ -13,6 +13,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { sendCommandToAgent } from './agentWs';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const scriptRoutes = new Hono();
 
@@ -72,6 +73,14 @@ async function getScriptWithOrgCheck(scriptId: string, auth: { scope: string; pa
   }
 
   return script;
+}
+
+function resolveScriptAuditOrgId(
+  auth: { orgId: string | null },
+  scriptOrgId?: string | null,
+  deviceOrgId?: string | null
+): string | null {
+  return scriptOrgId ?? deviceOrgId ?? auth.orgId ?? null;
 }
 
 // Validation schemas
@@ -359,6 +368,18 @@ scriptRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId,
+      action: 'script.import',
+      resourceType: 'script',
+      resourceId: cloned?.id,
+      resourceName: cloned?.name,
+      details: {
+        sourceScriptId: sourceId,
+        sourceScriptName: source.name
+      }
+    });
+
     return c.json(cloned, 201);
   }
 );
@@ -430,6 +451,19 @@ scriptRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, script?.orgId ?? null),
+      action: 'script.create',
+      resourceType: 'script',
+      resourceId: script?.id,
+      resourceName: script?.name,
+      details: {
+        osTypes: script?.osTypes,
+        language: script?.language,
+        isSystem: script?.isSystem
+      }
+    });
+
     return c.json(script, 201);
   }
 );
@@ -482,6 +516,18 @@ scriptRoutes.put(
       .where(eq(scripts.id, scriptId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, script.orgId),
+      action: 'script.update',
+      resourceType: 'script',
+      resourceId: updated?.id,
+      resourceName: updated?.name,
+      details: {
+        changedFields: Object.keys(data),
+        newVersion: updated?.version
+      }
+    });
+
     return c.json(updated);
   }
 );
@@ -530,6 +576,14 @@ scriptRoutes.delete(
     await db
       .delete(scripts)
       .where(eq(scripts.id, scriptId));
+
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, script.orgId),
+      action: 'script.delete',
+      resourceType: 'script',
+      resourceId: script.id,
+      resourceName: script.name
+    });
 
     return c.json({ success: true });
   }
@@ -682,6 +736,19 @@ scriptRoutes.post(
         .set({ status: 'queued' })
         .where(eq(scriptExecutionBatches.id, batchId));
     }
+
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, script.orgId, validDevices[0]?.orgId ?? null),
+      action: 'script.execute',
+      resourceType: 'script',
+      resourceId: script.id,
+      resourceName: script.name,
+      details: {
+        batchId,
+        devicesTargeted: validDevices.length,
+        triggerType
+      }
+    });
 
     return c.json({
       batchId,
@@ -885,6 +952,18 @@ scriptRoutes.post(
           sql`${deviceCommands.payload}->>'executionId' = ${executionId}`
         )
       );
+
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, null, execution.deviceOrgId ?? null),
+      action: 'script.execution.cancel',
+      resourceType: 'script_execution',
+      resourceId: updated.id,
+      details: {
+        scriptExecutionId: executionId,
+        deviceId: execution.deviceId,
+        previousStatus: execution.status
+      }
+    });
 
     return c.json({
       success: true,

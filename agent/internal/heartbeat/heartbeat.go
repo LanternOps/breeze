@@ -12,14 +12,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/discovery"
+	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
-	"github.com/breeze-rmm/agent/internal/scripts"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/snmppoll"
 	"github.com/breeze-rmm/agent/internal/terminal"
@@ -64,6 +66,8 @@ type Heartbeat struct {
 	desktopMgr          *desktop.SessionManager
 	wsDesktopMgr        *desktop.WsSessionManager
 	terminalMgr         *terminal.Manager
+	executor            *executor.Executor
+	backupMgr           *backup.BackupManager
 	securityScanner     *security.SecurityScanner
 	wsClient            *websocket.Client
 	mu                  sync.Mutex
@@ -83,7 +87,7 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		AgentID:   cfg.AgentID,
 	}
 
-	return &Heartbeat{
+	h := &Heartbeat{
 		config:          cfg,
 		client:          &http.Client{Timeout: 30 * time.Second},
 		stopChan:        make(chan struct{}),
@@ -96,12 +100,47 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		connectionsCol:  collectors.NewConnectionsCollector(),
 		eventLogCol:     collectors.NewEventLogCollector(),
 		agentVersion:    version,
+		executor:        executor.New(cfg),
 		fileTransferMgr: filetransfer.NewManager(ftConfig),
 		desktopMgr:      desktop.NewSessionManager(),
 		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
 		securityScanner: &security.SecurityScanner{Config: cfg},
 	}
+
+	// Initialize backup manager if enabled
+	if cfg.BackupEnabled && len(cfg.BackupPaths) > 0 {
+		var backupProvider providers.BackupProvider
+		switch cfg.BackupProvider {
+		case "s3":
+			backupProvider = providers.NewS3Provider(cfg.BackupS3Bucket, cfg.BackupS3Region, "", "", "")
+		default:
+			localPath := cfg.BackupLocalPath
+			if localPath == "" {
+				localPath = config.GetDataDir() + "/backups"
+			}
+			backupProvider = providers.NewLocalProvider(localPath)
+		}
+		schedule, parseErr := time.ParseDuration(cfg.BackupSchedule)
+		if parseErr != nil && cfg.BackupSchedule != "" {
+			fmt.Printf("Warning: invalid backup schedule %q: %v, using default 24h\n", cfg.BackupSchedule, parseErr)
+		}
+		if schedule <= 0 {
+			schedule = 24 * time.Hour
+		}
+		retention := cfg.BackupRetention
+		if retention <= 0 {
+			retention = 7
+		}
+		h.backupMgr = backup.NewBackupManager(backup.BackupConfig{
+			Provider:  backupProvider,
+			Paths:     cfg.BackupPaths,
+			Schedule:  schedule,
+			Retention: retention,
+		})
+	}
+
+	return h
 }
 
 // SetWebSocketClient sets the WebSocket client for terminal output streaming
@@ -119,6 +158,13 @@ func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 }
 
 func (h *Heartbeat) Start() {
+	// Start backup scheduler if configured
+	if h.backupMgr != nil {
+		if err := h.backupMgr.Start(); err != nil {
+			fmt.Printf("Failed to start backup manager: %v\n", err)
+		}
+	}
+
 	ticker := time.NewTicker(time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second)
 	defer ticker.Stop()
 
@@ -165,6 +211,9 @@ func (h *Heartbeat) Start() {
 }
 
 func (h *Heartbeat) Stop() {
+	if h.backupMgr != nil {
+		h.backupMgr.Stop()
+	}
 	close(h.stopChan)
 }
 
@@ -898,27 +947,132 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	case tools.CmdTerminalStop:
 		result = tools.StopTerminal(h.terminalMgr, cmd.Payload)
 
-	// Script execution
+	// Script execution (via secure executor)
 	case tools.CmdScript, tools.CmdRunScript:
-		language := tools.GetPayloadString(cmd.Payload, "language", "bash")
-		content := tools.GetPayloadString(cmd.Payload, "content", "")
-		timeoutSec := tools.GetPayloadInt(cmd.Payload, "timeoutSeconds", 300)
-		if content == "" {
+		start := time.Now()
+		script := executor.ScriptExecution{
+			ID:         cmd.ID,
+			ScriptID:   tools.GetPayloadString(cmd.Payload, "scriptId", ""),
+			ScriptType: tools.GetPayloadString(cmd.Payload, "language", "bash"),
+			Script:     tools.GetPayloadString(cmd.Payload, "content", ""),
+			Timeout:    tools.GetPayloadInt(cmd.Payload, "timeoutSeconds", 300),
+			RunAs:      tools.GetPayloadString(cmd.Payload, "runAs", ""),
+		}
+		// Extract parameters if present
+		if params, ok := cmd.Payload["parameters"].(map[string]any); ok {
+			script.Parameters = make(map[string]string, len(params))
+			for k, v := range params {
+				if s, ok := v.(string); ok {
+					script.Parameters[k] = s
+				}
+			}
+		}
+		if script.Script == "" {
 			result = tools.CommandResult{
-				Status: "failed",
-				Error:  "script content is empty",
+				Status:     "failed",
+				Error:      "script content is empty",
+				DurationMs: time.Since(start).Milliseconds(),
 			}
 		} else {
-			runner := scripts.NewRunner()
-			scriptResult := runner.Run(language, content, time.Duration(timeoutSec)*time.Second)
-			result = tools.CommandResult{
-				Status:     scriptResult.Status,
-				ExitCode:   scriptResult.ExitCode,
-				Stdout:     scriptResult.Stdout,
-				Stderr:     scriptResult.Stderr,
-				Error:      scriptResult.ErrorMsg,
-				DurationMs: scriptResult.DurationMs,
+			scriptResult, execErr := h.executor.Execute(script)
+			if execErr != nil && scriptResult == nil {
+				result = tools.NewErrorResult(execErr, time.Since(start).Milliseconds())
+			} else {
+				status := "completed"
+				if scriptResult.ExitCode != 0 {
+					status = "failed"
+				}
+				if scriptResult.Error != "" && strings.Contains(scriptResult.Error, "timed out") {
+					status = "timeout"
+				}
+				result = tools.CommandResult{
+					Status:     status,
+					ExitCode:   scriptResult.ExitCode,
+					Stdout:     executor.SanitizeOutput(scriptResult.Stdout),
+					Stderr:     executor.SanitizeOutput(scriptResult.Stderr),
+					Error:      scriptResult.Error,
+					DurationMs: time.Since(start).Milliseconds(),
+				}
 			}
+		}
+
+	// Script cancel
+	case tools.CmdScriptCancel:
+		start := time.Now()
+		executionID := tools.GetPayloadString(cmd.Payload, "executionId", "")
+		if executionID == "" {
+			result = tools.CommandResult{
+				Status:     "failed",
+				Error:      "missing executionId",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		} else if err := h.executor.Cancel(executionID); err != nil {
+			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		} else {
+			result = tools.NewSuccessResult(map[string]any{
+				"executionId": executionID,
+				"cancelled":   true,
+			}, time.Since(start).Milliseconds())
+		}
+
+	// Script list running
+	case tools.CmdScriptListRunning:
+		start := time.Now()
+		running := h.executor.ListRunning()
+		result = tools.NewSuccessResult(map[string]any{
+			"running": running,
+			"count":   len(running),
+		}, time.Since(start).Milliseconds())
+
+	// Backup management
+	case tools.CmdBackupRun:
+		start := time.Now()
+		if h.backupMgr == nil {
+			result = tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
+		} else {
+			job, err := h.backupMgr.RunBackup()
+			if err != nil && job == nil {
+				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			} else {
+				jobResult := map[string]any{
+					"jobId":  job.ID,
+					"status": job.Status,
+				}
+				if job.Snapshot != nil {
+					jobResult["snapshotId"] = job.Snapshot.ID
+					jobResult["filesBackedUp"] = job.FilesBackedUp
+					jobResult["bytesBackedUp"] = job.BytesBackedUp
+				}
+				if job.Error != nil {
+					jobResult["warning"] = job.Error.Error()
+				}
+				result = tools.NewSuccessResult(jobResult, time.Since(start).Milliseconds())
+			}
+		}
+
+	case tools.CmdBackupList:
+		start := time.Now()
+		if h.backupMgr == nil {
+			result = tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
+		} else {
+			snapshots, err := backup.ListSnapshots(h.backupMgr.GetProvider())
+			if err != nil && len(snapshots) == 0 {
+				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			} else {
+				result = tools.NewSuccessResult(map[string]any{
+					"snapshots": snapshots,
+					"count":     len(snapshots),
+				}, time.Since(start).Milliseconds())
+			}
+		}
+
+	case tools.CmdBackupStop:
+		start := time.Now()
+		if h.backupMgr == nil {
+			result = tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
+		} else {
+			h.backupMgr.Stop()
+			result = tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 		}
 
 	// Patch management

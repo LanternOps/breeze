@@ -5,6 +5,7 @@ import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { patchPolicies, organizations } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const patchPolicyRoutes = new Hono();
 
@@ -234,6 +235,18 @@ patchPolicyRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: policy?.orgId,
+      action: 'patch_policy.create',
+      resourceType: 'patch_policy',
+      resourceId: policy?.id,
+      resourceName: policy?.name,
+      details: {
+        enabled: policy?.enabled,
+        sourceCount: policy?.sources?.length ?? 0
+      }
+    });
+
     return c.json(policy, 201);
   }
 );
@@ -295,6 +308,17 @@ patchPolicyRoutes.patch(
       .where(eq(patchPolicies.id, policyId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'patch_policy.update',
+      resourceType: 'patch_policy',
+      resourceId: updated?.id,
+      resourceName: updated?.name,
+      details: {
+        changedFields: Object.keys(data)
+      }
+    });
+
     return c.json(updated);
   }
 );
@@ -315,6 +339,14 @@ patchPolicyRoutes.delete(
     await db
       .delete(patchPolicies)
       .where(eq(patchPolicies.id, policyId));
+
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'patch_policy.delete',
+      resourceType: 'patch_policy',
+      resourceId: policy.id,
+      resourceName: policy.name
+    });
 
     return c.json({ success: true });
   }

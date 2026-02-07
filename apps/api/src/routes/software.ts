@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const softwareRoutes = new Hono();
 
@@ -625,6 +626,7 @@ softwareRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createCatalogSchema),
   (c) => {
+    const auth = c.get('auth');
     const payload = c.req.valid('json');
     const now = new Date().toISOString();
     const item: SoftwareCatalogItem = {
@@ -644,6 +646,17 @@ softwareRoutes.post(
     };
 
     softwareCatalog.push(item);
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'software.catalog.create',
+      resourceType: 'software_catalog_item',
+      resourceId: item.id,
+      resourceName: item.name,
+      details: {
+        vendor: item.vendor,
+        latestVersion: item.latestVersion,
+      },
+    });
     return c.json({ data: item }, 201);
   }
 );
@@ -692,6 +705,7 @@ softwareRoutes.post(
   zValidator('param', versionParamSchema),
   zValidator('json', createVersionSchema),
   (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
     const item = softwareCatalog.find((entry) => entry.id === id);
@@ -714,6 +728,18 @@ softwareRoutes.post(
     softwareVersions.push(version);
     item.latestVersion = payload.version;
     item.updatedAt = new Date().toISOString();
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'software.catalog.version.create',
+      resourceType: 'software_version',
+      resourceId: version.id,
+      resourceName: item.name,
+      details: {
+        softwareId: id,
+        version: version.version,
+      },
+    });
 
     return c.json({ data: version }, 201);
   }
@@ -743,6 +769,7 @@ softwareRoutes.patch(
   zValidator('param', catalogIdParamSchema),
   zValidator('json', updateCatalogSchema),
   (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
     const item = softwareCatalog.find((entry) => entry.id === id);
@@ -751,6 +778,16 @@ softwareRoutes.patch(
     }
 
     Object.assign(item, payload, { updatedAt: new Date().toISOString() });
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'software.catalog.update',
+      resourceType: 'software_catalog_item',
+      resourceId: item.id,
+      resourceName: item.name,
+      details: {
+        updatedFields: Object.keys(payload),
+      },
+    });
     return c.json({ data: item });
   }
 );
@@ -761,18 +798,28 @@ softwareRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   zValidator('param', catalogIdParamSchema),
   (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const index = softwareCatalog.findIndex((entry) => entry.id === id);
     if (index === -1) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
 
+    const removed = softwareCatalog[index]!;
     softwareCatalog.splice(index, 1);
     for (let i = softwareVersions.length - 1; i >= 0; i -= 1) {
       if ((softwareVersions[i]?.softwareId ?? '') === id) {
         softwareVersions.splice(i, 1);
       }
     }
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'software.catalog.delete',
+      resourceType: 'software_catalog_item',
+      resourceId: removed.id,
+      resourceName: removed.name,
+    });
 
     return c.json({ success: true, id });
   }
@@ -808,6 +855,7 @@ softwareRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createDeploymentSchema),
   (c) => {
+    const auth = c.get('auth');
     const payload = c.req.valid('json');
     const item = softwareCatalog.find((entry) => entry.id === payload.softwareId);
     if (!item) {
@@ -840,6 +888,19 @@ softwareRoutes.post(
       });
     });
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'software.deployment.create',
+      resourceType: 'software_deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.softwareName,
+      details: {
+        softwareId: deployment.softwareId,
+        action: deployment.action,
+        deviceCount: deployment.deviceIds.length,
+      },
+    });
+
     return c.json({ data: deployment }, 201);
   }
 );
@@ -867,6 +928,7 @@ softwareRoutes.post(
   zValidator('param', deploymentIdParamSchema),
   zValidator('json', cancelDeploymentSchema),
   (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
     const deployment = deployments.find((entry) => entry.id === id);
@@ -888,6 +950,18 @@ softwareRoutes.post(
         result.message = payload.reason ?? 'Cancelled by operator.';
         result.completedAt = deployment.completedAt;
       }
+    });
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'software.deployment.cancel',
+      resourceType: 'software_deployment',
+      resourceId: deployment.id,
+      resourceName: deployment.softwareName,
+      details: {
+        previousStatus: 'pending_or_queued',
+        reason: payload.reason,
+      },
     });
 
     return c.json({ data: deployment });
@@ -966,6 +1040,7 @@ softwareRoutes.post(
   zValidator('param', inventoryUninstallParamSchema),
   zValidator('json', uninstallRequestSchema),
   (c) => {
+    const auth = c.get('auth');
     const { deviceId, softwareId } = c.req.valid('param');
     const payload = c.req.valid('json');
     const inventory = softwareInventory.find((entry) => entry.deviceId === deviceId);
@@ -1006,6 +1081,18 @@ softwareRoutes.post(
       deviceId,
       status: deployment.status,
       message: payload.reason ?? 'Queued uninstall request.'
+    });
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'software.uninstall.queue',
+      resourceType: 'software_deployment',
+      resourceId: deployment.id,
+      resourceName: catalogItem.name,
+      details: {
+        deviceId,
+        softwareId,
+      },
     });
 
     return c.json({ data: deployment }, 202);

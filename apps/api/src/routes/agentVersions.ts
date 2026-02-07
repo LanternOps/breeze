@@ -5,6 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { agentVersions } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const agentVersionRoutes = new Hono();
 
@@ -121,6 +122,7 @@ agentVersionRoutes.post(
   requireScope('system'),
   zValidator('json', createVersionSchema),
   async (c) => {
+    const auth = c.get('auth');
     const data = c.req.valid('json');
 
     // If this version is marked as latest, unset isLatest for other versions
@@ -151,6 +153,18 @@ agentVersionRoutes.post(
         isLatest: data.isLatest ?? false
       })
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'agent_version.create',
+      resourceType: 'agent_version',
+      resourceId: newVersion?.id,
+      resourceName: newVersion?.version,
+      details: {
+        platform: newVersion?.platform,
+        architecture: newVersion?.architecture
+      }
+    });
 
     return c.json({
       id: newVersion.id,

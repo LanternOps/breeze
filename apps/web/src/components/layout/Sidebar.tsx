@@ -51,8 +51,7 @@ const integrationsNav = [
 ];
 
 const monitoringNav = [
-  { name: 'Security', href: '/security', icon: ShieldCheck },
-  { name: 'Network/SNMP', href: '/snmp', icon: Network }
+  { name: 'Security', href: '/security', icon: ShieldCheck }
 ];
 
 const operationsNav = [

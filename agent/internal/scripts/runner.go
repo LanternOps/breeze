@@ -1,3 +1,6 @@
+// Deprecated: Use github.com/breeze-rmm/agent/internal/executor instead.
+// The executor package provides security validation, output size limits,
+// cancellation, parameter substitution, and runAs support.
 package scripts
 
 import (

@@ -49,6 +49,7 @@ type StatusRow = {
   threatCount: number;
   firewallEnabled: boolean;
   encryptionStatus: string;
+  gatekeeperEnabled: boolean | null;
   lastScan: Date | null;
   lastScanType: string | null;
 };
@@ -338,7 +339,8 @@ function toStatusResponse(row: StatusRow) {
     threatsDetected: row.threatCount,
     realTimeProtection: row.realTimeProtection,
     firewallEnabled: row.firewallEnabled,
-    encryptionStatus: normalizeEncryption(row.encryptionStatus)
+    encryptionStatus: normalizeEncryption(row.encryptionStatus),
+    gatekeeperEnabled: row.gatekeeperEnabled
   };
 }
 
@@ -371,6 +373,7 @@ async function listStatusRows(auth: AuthContext, orgId?: string): Promise<Status
       threatCount: securityStatus.threatCount,
       firewallEnabled: securityStatus.firewallEnabled,
       encryptionStatus: securityStatus.encryptionStatus,
+      gatekeeperEnabled: securityStatus.gatekeeperEnabled,
       lastScan: securityStatus.lastScan,
       lastScanType: securityStatus.lastScanType
     })
@@ -392,6 +395,7 @@ async function listStatusRows(auth: AuthContext, orgId?: string): Promise<Status
     threatCount: row.threatCount ?? 0,
     firewallEnabled: row.firewallEnabled ?? false,
     encryptionStatus: row.encryptionStatus ?? 'unknown',
+    gatekeeperEnabled: row.gatekeeperEnabled ?? null,
     lastScan: row.lastScan,
     lastScanType: row.lastScanType
   }));

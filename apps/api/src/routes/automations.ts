@@ -13,6 +13,7 @@ import {
   scripts
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const automationRoutes = new Hono();
 
@@ -370,6 +371,15 @@ automationRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: automation?.orgId,
+      action: 'automation.create',
+      resourceType: 'automation',
+      resourceId: automation?.id,
+      resourceName: automation?.name,
+      details: { enabled: automation?.enabled }
+    });
+
     return c.json(automation, 201);
   }
 );
@@ -410,6 +420,15 @@ automationRoutes.put(
       .set(updates)
       .where(eq(automations.id, automationId))
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: automation.orgId,
+      action: 'automation.update',
+      resourceType: 'automation',
+      resourceId: updated?.id,
+      resourceName: updated?.name,
+      details: { changedFields: Object.keys(data) }
+    });
 
     return c.json(updated);
   }
@@ -456,6 +475,14 @@ automationRoutes.delete(
     await db
       .delete(automations)
       .where(eq(automations.id, automationId));
+
+    writeRouteAudit(c, {
+      orgId: automation.orgId,
+      action: 'automation.delete',
+      resourceType: 'automation',
+      resourceId: automation.id,
+      resourceName: automation.name
+    });
 
     return c.json({ success: true });
   }
@@ -550,6 +577,15 @@ automationRoutes.post(
         // Ignore errors in background task
       }
     }, 1000);
+
+    writeRouteAudit(c, {
+      orgId: automation.orgId,
+      action: 'automation.trigger',
+      resourceType: 'automation',
+      resourceId: automation.id,
+      resourceName: automation.name,
+      details: { runId: run.id, devicesTargeted: targetDeviceIds.length }
+    });
 
     return c.json({
       message: 'Automation triggered',
@@ -953,6 +989,15 @@ automationRoutes.post(
       })
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: policy?.orgId,
+      action: 'automation.policy.create',
+      resourceType: 'automation_policy',
+      resourceId: policy?.id,
+      resourceName: policy?.name,
+      details: { enforcement: policy?.enforcement, enabled: policy?.enabled }
+    });
+
     return c.json(policy, 201);
   }
 );
@@ -1012,6 +1057,15 @@ automationRoutes.put(
       .where(eq(automationPolicies.id, policyId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'automation.policy.update',
+      resourceType: 'automation_policy',
+      resourceId: updated?.id,
+      resourceName: updated?.name,
+      details: { changedFields: Object.keys(data) }
+    });
+
     return c.json(updated);
   }
 );
@@ -1038,6 +1092,14 @@ automationRoutes.delete(
     await db
       .delete(automationPolicies)
       .where(eq(automationPolicies.id, policyId));
+
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'automation.policy.delete',
+      resourceType: 'automation_policy',
+      resourceId: policy.id,
+      resourceName: policy.name
+    });
 
     return c.json({ success: true });
   }
@@ -1162,6 +1224,15 @@ automationRoutes.post(
         updatedAt: new Date()
       })
       .where(eq(automationPolicies.id, policyId));
+
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'automation.policy.evaluate',
+      resourceType: 'automation_policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+      details: { devicesEvaluated: targetDevices.length }
+    });
 
     return c.json({
       message: 'Policy evaluation completed',

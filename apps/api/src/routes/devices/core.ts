@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, gte, like, sql, desc } from 'drizzle-orm';
 import { db } from '../../db';
+import { randomBytes } from 'crypto';
 import {
   devices,
   deviceHardware,
@@ -9,15 +10,59 @@ import {
   deviceMetrics,
   deviceGroupMemberships,
   deviceGroups,
-  sites
+  sites,
+  enrollmentKeys
 } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 export const coreRoutes = new Hono();
 
 coreRoutes.use('*', authMiddleware);
+
+// POST /devices/onboarding-token - Generate a short-lived enrollment key
+coreRoutes.post(
+  '/onboarding-token',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+
+    // Determine orgId: use the user's org, or first accessible org for partner/system
+    const orgId = auth.orgId
+      ?? (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds[0] : null);
+    if (!orgId) {
+      return c.json({ error: 'No organization context available' }, 400);
+    }
+
+    // Pick the first site in the org for the enrollment key
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(eq(sites.orgId, orgId))
+      .limit(1);
+
+    if (!site) {
+      return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
+    }
+
+    const key = `enroll_${randomBytes(24).toString('hex')}`;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    await db.insert(enrollmentKeys).values({
+      orgId,
+      siteId: site.id,
+      name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
+      key,
+      maxUsage: 10,
+      expiresAt,
+      createdBy: auth.user.id,
+    });
+
+    return c.json({ token: key });
+  }
+);
 
 // GET /devices - List devices (paginated, filtered, sorted)
 coreRoutes.get(
@@ -282,6 +327,15 @@ coreRoutes.patch(
       .where(eq(devices.id, deviceId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.update',
+      resourceType: 'device',
+      resourceId: updated?.id ?? deviceId,
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
+      details: { changedFields: Object.keys(data) }
+    });
+
     return c.json(updated);
   }
 );
@@ -311,6 +365,14 @@ coreRoutes.delete(
       })
       .where(eq(devices.id, deviceId))
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.decommission',
+      resourceType: 'device',
+      resourceId: updated?.id ?? deviceId,
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+    });
 
     return c.json({ success: true, device: updated });
   }

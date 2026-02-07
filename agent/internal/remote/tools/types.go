@@ -96,6 +96,15 @@ const (
 
 	// SNMP polling
 	CmdSnmpPoll = "snmp_poll"
+
+	// Script management (executor)
+	CmdScriptCancel      = "script_cancel"
+	CmdScriptListRunning = "script_list_running"
+
+	// Backup management
+	CmdBackupRun  = "backup_run"
+	CmdBackupList = "backup_list"
+	CmdBackupStop = "backup_stop"
 )
 
 // CommandResult represents the result of a command execution

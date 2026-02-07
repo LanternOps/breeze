@@ -17,6 +17,14 @@ type Config struct {
 	HeartbeatIntervalSeconds int      `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds   int      `mapstructure:"metrics_interval_seconds"`
 	EnabledCollectors        []string `mapstructure:"enabled_collectors"`
+	BackupEnabled            bool     `mapstructure:"backup_enabled"`
+	BackupPaths              []string `mapstructure:"backup_paths"`
+	BackupSchedule           string   `mapstructure:"backup_schedule"`
+	BackupRetention          int      `mapstructure:"backup_retention"`
+	BackupProvider           string   `mapstructure:"backup_provider"`
+	BackupLocalPath          string   `mapstructure:"backup_local_path"`
+	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
+	BackupS3Region           string   `mapstructure:"backup_s3_region"`
 }
 
 func Default() *Config {
@@ -91,6 +99,18 @@ func SaveTo(cfg *Config, cfgFile string) error {
 
 	// Restrict config file to owner-only access (contains auth token)
 	return os.Chmod(cfgPath, 0600)
+}
+
+// GetDataDir returns the platform-specific data directory for the agent
+func GetDataDir() string {
+	switch runtime.GOOS {
+	case "windows":
+		return filepath.Join(os.Getenv("ProgramData"), "Breeze", "data")
+	case "darwin":
+		return "/Library/Application Support/Breeze/data"
+	default:
+		return "/var/lib/breeze"
+	}
 }
 
 func configDir() string {

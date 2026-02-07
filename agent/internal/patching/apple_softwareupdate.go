@@ -77,10 +77,15 @@ func (p *AppleSoftwareUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 		return nil, fmt.Errorf("system_profiler install history failed: %w", err)
 	}
 
+	return parseAppleInstallHistory(output, time.Now(), 90*24*time.Hour)
+}
+
+func parseAppleInstallHistory(output []byte, now time.Time, maxAge time.Duration) ([]InstalledPatch, error) {
 	var result struct {
 		SPInstallHistoryDataType []struct {
 			Name        string `json:"_name"`
 			Version     string `json:"install_version"`
+			Source      string `json:"package_source"`
 			InstallDate string `json:"install_date"`
 		} `json:"SPInstallHistoryDataType"`
 	}
@@ -89,10 +94,13 @@ func (p *AppleSoftwareUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 		return nil, fmt.Errorf("parse install history failed: %w", err)
 	}
 
-	cutoff := time.Now().Add(-90 * 24 * time.Hour)
+	cutoff := now.Add(-maxAge)
 	installed := make([]InstalledPatch, 0, len(result.SPInstallHistoryDataType))
 	for _, item := range result.SPInstallHistoryDataType {
-		if item.Name == "" {
+		if item.Name == "" || isIgnoredInstallHistoryItem(item.Name) {
+			continue
+		}
+		if !isApplePackageSource(item.Source) {
 			continue
 		}
 
@@ -112,6 +120,20 @@ func (p *AppleSoftwareUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 	}
 
 	return installed, nil
+}
+
+func isApplePackageSource(source string) bool {
+	source = strings.TrimSpace(strings.ToLower(source))
+	if source == "" {
+		return true
+	}
+	return strings.Contains(source, "apple")
+}
+
+func isIgnoredInstallHistoryItem(name string) bool {
+	return strings.HasPrefix(name, "MAContent") ||
+		strings.HasPrefix(name, "MobileAssets") ||
+		strings.Contains(name, "AssetPack")
 }
 
 func parseSoftwareUpdateList(output []byte) []AvailablePatch {

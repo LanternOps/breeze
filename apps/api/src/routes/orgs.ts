@@ -5,6 +5,7 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { partners, organizations, sites } from '../db/schema';
 import { authMiddleware, requireScope, requirePartner } from '../middleware/auth';
+import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 
 export const orgRoutes = new Hono();
 
@@ -94,6 +95,26 @@ async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: 
   return true;
 }
 
+async function resolveAuditOrgIdForPartner(partnerId: string | null): Promise<string | null> {
+  if (!partnerId) {
+    return null;
+  }
+
+  try {
+    const [org] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.partnerId, partnerId), isNull(organizations.deletedAt)))
+      .orderBy(organizations.createdAt)
+      .limit(1);
+
+    return org?.id ?? null;
+  } catch (err) {
+    console.error('[audit] Failed to resolve orgId for partner:', partnerId, err);
+    return null;
+  }
+}
+
 orgRoutes.use('*', authMiddleware);
 
 // --- Partners (system admins) ---
@@ -123,6 +144,7 @@ orgRoutes.get('/partners', requireScope('system'), zValidator('query', paginatio
 });
 
 orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPartnerSchema), async (c) => {
+  const auth = c.get('auth');
   const data = c.req.valid('json');
 
   const [partner] = await db
@@ -139,6 +161,21 @@ orgRoutes.post('/partners', requireScope('system'), zValidator('json', createPar
       billingEmail: data.billingEmail
     })
     .returning();
+
+  writeAuditEvent(c, {
+    orgId: auth.orgId,
+    actorId: auth.user?.id,
+    actorEmail: auth.user?.email,
+    action: 'partner.create',
+    resourceType: 'partner',
+    resourceId: partner?.id,
+    resourceName: partner?.name,
+    details: {
+      slug: partner?.slug,
+      type: partner?.type,
+      plan: partner?.plan
+    }
+  });
 
   return c.json(partner, 201);
 });
@@ -160,6 +197,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
 });
 
 orgRoutes.patch('/partners/:id', requireScope('system'), zValidator('json', updatePartnerSchema), async (c) => {
+  const auth = c.get('auth');
   const id = c.req.param('id');
   const data = c.req.valid('json');
   const updates = { ...data, updatedAt: new Date() };
@@ -178,10 +216,25 @@ orgRoutes.patch('/partners/:id', requireScope('system'), zValidator('json', upda
     return c.json({ error: 'Partner not found' }, 404);
   }
 
+  const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
+  writeAuditEvent(c, {
+    orgId: auditOrgId,
+    actorId: auth.user?.id,
+    actorEmail: auth.user?.email,
+    action: 'partner.update',
+    resourceType: 'partner',
+    resourceId: partner.id,
+    resourceName: partner.name,
+    details: {
+      changedFields: Object.keys(data)
+    }
+  });
+
   return c.json(partner);
 });
 
 orgRoutes.delete('/partners/:id', requireScope('system'), async (c) => {
+  const auth = c.get('auth');
   const id = c.req.param('id');
 
   const [partner] = await db
@@ -193,6 +246,17 @@ orgRoutes.delete('/partners/:id', requireScope('system'), async (c) => {
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
+
+  const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
+  writeAuditEvent(c, {
+    orgId: auditOrgId,
+    actorId: auth.user?.id,
+    actorEmail: auth.user?.email,
+    action: 'partner.delete',
+    resourceType: 'partner',
+    resourceId: partner.id,
+    resourceName: partner.name
+  });
 
   return c.json({ success: true });
 });
@@ -281,6 +345,16 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, zValida
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
     .returning();
 
+  const auditOrgId = await resolveAuditOrgIdForPartner(auth.partnerId);
+  writeRouteAudit(c, {
+    orgId: auditOrgId,
+    action: 'partner.settings.update',
+    resourceType: 'partner',
+    resourceId: partner?.id,
+    resourceName: partner?.name,
+    details: { changedFields: Object.keys(body) }
+  });
+
   return c.json(partner);
 });
 
@@ -296,6 +370,10 @@ orgRoutes.get('/organizations', requireScope('partner', 'system'), zValidator('q
   const auth = c.get('auth');
   const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
+
+  if (auth.scope === 'partner' && !auth.partnerId) {
+    return c.json({ error: 'Partner context required' }, 403);
+  }
 
   // Partner users always filter to their own partner; system users can optionally filter by partnerId
   const effectivePartnerId = auth.scope === 'partner' ? auth.partnerId : queryPartnerId;
@@ -349,6 +427,15 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('
     .insert(organizations)
     .values(insertValues)
     .returning();
+
+  writeRouteAudit(c, {
+    orgId: organization?.id,
+    action: 'organization.create',
+    resourceType: 'organization',
+    resourceId: organization?.id,
+    resourceName: organization?.name,
+    details: { partnerId: organization?.partnerId, status: organization?.status, type: organization?.type }
+  });
 
   return c.json(organization, 201);
 });
@@ -416,6 +503,15 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
     return c.json({ error: 'Organization not found' }, 404);
   }
 
+  writeRouteAudit(c, {
+    orgId: organization.id,
+    action: 'organization.update',
+    resourceType: 'organization',
+    resourceId: organization.id,
+    resourceName: organization.name,
+    details: { changedFields: Object.keys(data) }
+  });
+
   return c.json(organization);
 });
 
@@ -438,6 +534,14 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
+
+  writeRouteAudit(c, {
+    orgId: organization.id,
+    action: 'organization.delete',
+    resourceType: 'organization',
+    resourceId: organization.id,
+    resourceName: organization.name
+  });
 
   return c.json({ success: true });
 });
@@ -489,18 +593,21 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), zVali
     }
   }
 
-  const countQuery = db.select({ count: sql<number>`count(*)` }).from(sites);
-  if (conditions) {
-    countQuery.where(conditions);
-  }
-  const countResult = await countQuery;
+  const whereCondition = conditions ?? sql`true`;
+
+  const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(sites)
+    .where(whereCondition);
   const count = countResult[0]?.count ?? 0;
 
-  const dataQuery = db.select().from(sites);
-  if (conditions) {
-    dataQuery.where(conditions);
-  }
-  const data = await dataQuery.limit(limit).offset(offset).orderBy(sites.createdAt);
+  const data = await db
+    .select()
+    .from(sites)
+    .where(whereCondition)
+    .limit(limit)
+    .offset(offset)
+    .orderBy(sites.createdAt);
 
   return c.json({
     data,
@@ -528,6 +635,14 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), zVal
       settings: data.settings
     })
     .returning();
+
+  writeRouteAudit(c, {
+    orgId: site?.orgId,
+    action: 'site.create',
+    resourceType: 'site',
+    resourceId: site?.id,
+    resourceName: site?.name
+  });
 
   return c.json(site, 201);
 });
@@ -584,6 +699,15 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     .where(eq(sites.id, id))
     .returning();
 
+  writeRouteAudit(c, {
+    orgId: site.orgId,
+    action: 'site.update',
+    resourceType: 'site',
+    resourceId: updated?.id,
+    resourceName: updated?.name,
+    details: { changedFields: Object.keys(data) }
+  });
+
   return c.json(updated);
 });
 
@@ -607,6 +731,14 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
   }
 
   await db.delete(sites).where(eq(sites.id, id));
+
+  writeRouteAudit(c, {
+    orgId: site.orgId,
+    action: 'site.delete',
+    resourceType: 'site',
+    resourceId: site.id,
+    resourceName: site.name
+  });
 
   return c.json({ success: true });
 });

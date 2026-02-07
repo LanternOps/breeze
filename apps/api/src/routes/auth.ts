@@ -26,6 +26,7 @@ import {
 } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import { createAuditLogAsync } from '../services/auditService';
+import type { RequestLike } from '../services/auditEvents';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 
@@ -72,7 +73,7 @@ const refreshSchema = z.object({
 // Helpers
 // ============================================
 
-function getClientIP(c: any): string {
+function getClientIP(c: RequestLike): string {
   return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
     c.req.header('x-real-ip') ||
     'unknown';
@@ -98,13 +99,14 @@ async function resolveUserAuditOrgId(userId: string): Promise<string | null> {
       .limit(1);
 
     return orgAssoc?.orgId ?? null;
-  } catch {
+  } catch (err) {
+    console.error('[audit] Failed to resolve orgId for user:', userId, err);
     return null;
   }
 }
 
 function writeAuthAudit(
-  c: any,
+  c: RequestLike,
   opts: {
     orgId: string;
     action: string;
@@ -136,7 +138,7 @@ function writeAuthAudit(
 }
 
 async function auditUserLoginFailure(
-  c: any,
+  c: RequestLike,
   opts: {
     userId: string;
     email?: string;
@@ -164,7 +166,7 @@ async function auditUserLoginFailure(
 }
 
 function auditLogin(
-  c: any,
+  c: RequestLike,
   opts: { orgId: string; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string }
 ): void {
   createAuditLogAsync({
@@ -858,6 +860,17 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     })
     .where(eq(users.id, payload.sub));
 
+  const setupOrgId = await resolveUserAuditOrgId(payload.sub);
+  if (setupOrgId) {
+    writeAuthAudit(c, {
+      orgId: setupOrgId,
+      action: 'auth.mfa.setup',
+      result: 'success',
+      userId: payload.sub,
+      details: { method: 'totp' }
+    });
+  }
+
   // Clear setup data
   await redis.del(`mfa:setup:${payload.sub}`);
 
@@ -905,6 +918,17 @@ authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySche
       updatedAt: new Date()
     })
     .where(eq(users.id, auth.user.id));
+
+  if (auth.orgId) {
+    writeAuthAudit(c, {
+      orgId: auth.orgId,
+      action: 'auth.mfa.disable',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { method: 'totp' }
+    });
+  }
 
   return c.json({ success: true, message: 'MFA disabled successfully' });
 });

@@ -5,6 +5,7 @@ import { and, desc, eq, gte, lte, ilike, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { auditLogs as auditLogsTable, users } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const auditLogRoutes = new Hono();
 
@@ -445,6 +446,16 @@ auditLogRoutes.post(
     });
 
     const rows = await queryRows(where, 10000, 0);
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'audit_logs.export',
+      resourceType: 'audit_log',
+      details: {
+        format: body.format,
+        rowCount: rows.length
+      }
+    });
 
     if (body.format === 'csv') {
       c.header('Content-Type', 'text/csv');

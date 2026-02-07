@@ -6,6 +6,7 @@ import { db } from '../db';
 import { organizations, savedFilters } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { evaluateFilterWithPreview, FilterConditionGroup } from '../services/filterEngine';
+import { writeRouteAudit } from '../services/auditEvents';
 
 // Filter schemas (defined locally to avoid rootDir issues)
 const filterOperatorSchema = z.enum([
@@ -196,6 +197,17 @@ filterRoutes.post(
     // Trim to limit after aggregating
     const trimmedDevices = allDevices.slice(0, limit ?? 10);
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId ?? (orgIds.length === 1 ? orgIds[0] : null),
+      action: 'filter.preview',
+      resourceType: 'saved_filter',
+      details: {
+        orgCount: orgIds.length,
+        totalCount,
+        previewCount: trimmedDevices.length
+      }
+    });
+
     return c.json({
       data: {
         totalCount,
@@ -298,6 +310,14 @@ filterRoutes.post(
       return c.json({ error: 'Failed to create saved filter' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: filter.orgId,
+      action: 'filter.create',
+      resourceType: 'saved_filter',
+      resourceId: filter.id,
+      resourceName: filter.name
+    });
+
     return c.json({ data: mapFilterRow(filter) }, 201);
   }
 );
@@ -351,6 +371,15 @@ filterRoutes.patch(
       return c.json({ error: 'Failed to update saved filter' }, 500);
     }
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'filter.update',
+      resourceType: 'saved_filter',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: { changedFields: Object.keys(payload) }
+    });
+
     return c.json({ data: mapFilterRow(updated) });
   }
 );
@@ -370,6 +399,14 @@ filterRoutes.delete(
     }
 
     await db.delete(savedFilters).where(eq(savedFilters.id, id));
+
+    writeRouteAudit(c, {
+      orgId: filter.orgId,
+      action: 'filter.delete',
+      resourceType: 'saved_filter',
+      resourceId: filter.id,
+      resourceName: filter.name
+    });
 
     return c.json({ data: mapFilterRow(filter) });
   }
@@ -395,6 +432,18 @@ filterRoutes.post(
       filter.conditions as FilterConditionGroup,
       { orgId: filter.orgId, previewLimit: query.limit }
     );
+
+    writeRouteAudit(c, {
+      orgId: filter.orgId,
+      action: 'filter.saved.preview',
+      resourceType: 'saved_filter',
+      resourceId: filter.id,
+      resourceName: filter.name,
+      details: {
+        totalCount: preview.totalCount,
+        previewCount: preview.devices.length
+      }
+    });
 
     return c.json({
       data: {

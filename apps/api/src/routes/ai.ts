@@ -19,6 +19,7 @@ import {
   searchSessions
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
+import { writeRouteAudit } from '../services/auditEvents';
 
 // Inline validators (avoid rootDir issues with @breeze/shared)
 const aiPageContextSchema = z.discriminatedUnion('type', [
@@ -31,7 +32,8 @@ const aiPageContextSchema = z.discriminatedUnion('type', [
 const createAiSessionSchema = z.object({
   pageContext: aiPageContextSchema.optional(),
   model: z.string().max(100).optional(),
-  title: z.string().max(255).optional()
+  title: z.string().max(255).optional(),
+  orgId: z.string().uuid().optional()
 });
 
 const sendAiMessageSchema = z.object({
@@ -68,12 +70,19 @@ aiRoutes.post(
 
     try {
       const session = await createSession(auth, body);
+      writeRouteAudit(c, {
+        orgId: session.orgId,
+        action: 'ai.session.create',
+        resourceType: 'ai_session',
+        resourceId: session.id,
+        resourceName: body.title
+      });
       return c.json(session, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create session';
-      // Only known validation errors are 400; unexpected errors are 500
-      const isValidationError = message === 'Organization context required';
-      return c.json({ error: message }, isValidationError ? 400 : 500);
+      if (message === 'Organization context required') return c.json({ error: message }, 400);
+      if (message === 'Access denied to this organization') return c.json({ error: message }, 403);
+      return c.json({ error: message }, 500);
     }
   }
 );
@@ -146,6 +155,13 @@ aiRoutes.delete(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'ai.session.close',
+      resourceType: 'ai_session',
+      resourceId: sessionId
+    });
+
     return c.json({ success: true });
   }
 );
@@ -163,6 +179,14 @@ aiRoutes.post(
     const auth = c.get('auth');
     const sessionId = c.req.param('id');
     const body = c.req.valid('json');
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'ai.message.send',
+      resourceType: 'ai_session',
+      resourceId: sessionId,
+      details: { contentLength: body.content.length }
+    });
 
     return streamSSE(c, async (stream) => {
       try {
@@ -207,6 +231,14 @@ aiRoutes.post(
       return c.json({ error: 'Execution not found or already processed' }, 404);
     }
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'ai.tool_approval.update',
+      resourceType: 'ai_execution',
+      resourceId: executionId,
+      details: { approved }
+    });
+
     return c.json({ success: true, approved });
   }
 );
@@ -221,10 +253,19 @@ aiRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = auth.orgId;
+    const orgId = c.req.query('orgId') || auth.orgId;
 
     if (!orgId) {
-      return c.json({ error: 'Organization context required' }, 400);
+      // System/partner users without a specific org — return zero usage
+      return c.json({
+        daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+        monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+        budget: null
+      });
+    }
+
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
     const usage = await getUsageSummary(orgId);
@@ -246,11 +287,22 @@ aiRoutes.put(
   })),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = auth.orgId;
+    const orgId = c.req.query('orgId') || auth.orgId;
     if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
 
     const body = c.req.valid('json');
     await updateBudget(orgId, body);
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'ai.budget.update',
+      resourceType: 'ai_budget'
+    });
+
     return c.json({ success: true });
   }
 );
@@ -261,8 +313,12 @@ aiRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = auth.orgId;
+    const orgId = c.req.query('orgId') || auth.orgId;
     if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
 
     const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 100);
     const offset = parseInt(c.req.query('offset') ?? '0', 10) || 0;

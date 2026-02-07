@@ -6,6 +6,7 @@ import { db } from '../db';
 import { maintenanceWindows, maintenanceOccurrences } from '../db/schema/maintenance';
 import { organizations } from '../db/schema/orgs';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const maintenanceRoutes = new Hono();
 
@@ -316,6 +317,19 @@ maintenanceRoutes.post(
       await db.insert(maintenanceOccurrences).values(occurrencesToCreate);
     }
 
+    writeRouteAudit(c, {
+      orgId: createdWindow.orgId,
+      action: 'maintenance_window.create',
+      resourceType: 'maintenance_window',
+      resourceId: createdWindow.id,
+      resourceName: createdWindow.name,
+      details: {
+        targetType: createdWindow.targetType,
+        recurrence: createdWindow.recurrence,
+        occurrenceCount: occurrencesToCreate.length,
+      },
+    });
+
     return c.json(createdWindow, 201);
   }
 );
@@ -408,6 +422,17 @@ maintenanceRoutes.patch(
       .where(eq(maintenanceWindows.id, windowId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: window.orgId,
+      action: 'maintenance_window.update',
+      resourceType: 'maintenance_window',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        updatedFields: Object.keys(updates),
+      },
+    });
+
     return c.json(updated);
   }
 );
@@ -442,6 +467,14 @@ maintenanceRoutes.delete(
 
     // Delete the window
     await db.delete(maintenanceWindows).where(eq(maintenanceWindows.id, windowId));
+
+    writeRouteAudit(c, {
+      orgId: window.orgId,
+      action: 'maintenance_window.delete',
+      resourceType: 'maintenance_window',
+      resourceId: window.id,
+      resourceName: window.name,
+    });
 
     return c.json({ success: true });
   }
@@ -486,6 +519,18 @@ maintenanceRoutes.post(
           gte(maintenanceOccurrences.startTime, new Date())
         )
       );
+
+    writeRouteAudit(c, {
+      orgId: window.orgId,
+      action: 'maintenance_window.cancel',
+      resourceType: 'maintenance_window',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        previousStatus: window.status,
+        nextStatus: updated.status,
+      },
+    });
 
     return c.json(updated);
   }
@@ -637,6 +682,17 @@ maintenanceRoutes.patch(
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: occurrence.window.orgId,
+      action: 'maintenance_occurrence.update',
+      resourceType: 'maintenance_occurrence',
+      resourceId: updated.id,
+      resourceName: occurrence.window.name,
+      details: {
+        updatedFields: Object.keys(updates),
+      },
+    });
+
     return c.json(updated);
   }
 );
@@ -676,6 +732,18 @@ maintenanceRoutes.post(
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: occurrence.window.orgId,
+      action: 'maintenance_occurrence.start',
+      resourceType: 'maintenance_occurrence',
+      resourceId: updated.id,
+      resourceName: occurrence.window.name,
+      details: {
+        previousStatus: occurrence.occurrence.status,
+        nextStatus: updated.status,
+      },
+    });
+
     return c.json(updated);
   }
 );
@@ -714,6 +782,18 @@ maintenanceRoutes.post(
       })
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: occurrence.window.orgId,
+      action: 'maintenance_occurrence.end',
+      resourceType: 'maintenance_occurrence',
+      resourceId: updated.id,
+      resourceName: occurrence.window.name,
+      details: {
+        previousStatus: occurrence.occurrence.status,
+        nextStatus: updated.status,
+      },
+    });
 
     return c.json(updated);
   }

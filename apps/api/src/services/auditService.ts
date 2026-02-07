@@ -24,6 +24,9 @@ export async function createAuditLog(params: CreateAuditLogParams): Promise<void
 
 export function createAuditLogAsync(params: CreateAuditLogParams): void {
   createAuditLog(params).catch((err) => {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
     console.error('[audit] Failed to write audit log:', err);
   });
 }

@@ -6,6 +6,7 @@ import { and, eq, sql, gte, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, devices } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const analyticsRoutes = new Hono();
 
@@ -190,7 +191,19 @@ analyticsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', timeSeriesQuerySchema),
   async (c) => {
+    const auth = c.get('auth');
     const data = c.req.valid('json');
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'analytics.query.execute',
+      resourceType: 'analytics_query',
+      details: {
+        deviceCount: data.deviceIds.length,
+        metricCount: data.metricTypes.length,
+        aggregation: data.aggregation
+      }
+    });
 
     return c.json({
       query: data,
@@ -295,6 +308,14 @@ analyticsRoutes.post(
 
     dashboards.set(dashboard.id, dashboard);
 
+    writeRouteAudit(c, {
+      orgId: dashboard.orgId,
+      action: 'analytics.dashboard.create',
+      resourceType: 'analytics_dashboard',
+      resourceId: dashboard.id,
+      resourceName: dashboard.name
+    });
+
     return c.json(dashboard, 201);
   }
 );
@@ -363,6 +384,15 @@ analyticsRoutes.patch(
 
     dashboards.set(dashboard.id, dashboard);
 
+    writeRouteAudit(c, {
+      orgId: dashboard.orgId,
+      action: 'analytics.dashboard.update',
+      resourceType: 'analytics_dashboard',
+      resourceId: dashboard.id,
+      resourceName: dashboard.name,
+      details: { changedFields: Object.keys(updates) }
+    });
+
     return c.json(dashboard);
   }
 );
@@ -389,6 +419,14 @@ analyticsRoutes.delete(
     }
 
     dashboards.delete(dashboardId);
+
+    writeRouteAudit(c, {
+      orgId: dashboard.orgId,
+      action: 'analytics.dashboard.delete',
+      resourceType: 'analytics_dashboard',
+      resourceId: dashboard.id,
+      resourceName: dashboard.name
+    });
 
     return c.json({ success: true });
   }
@@ -429,6 +467,15 @@ analyticsRoutes.post(
     dashboard.widgetIds.push(widget.id);
     dashboard.updatedAt = now;
     dashboards.set(dashboard.id, dashboard);
+
+    writeRouteAudit(c, {
+      orgId: dashboard.orgId,
+      action: 'analytics.widget.create',
+      resourceType: 'analytics_widget',
+      resourceId: widget.id,
+      resourceName: widget.name,
+      details: { dashboardId: dashboard.id, type: widget.type }
+    });
 
     return c.json(widget, 201);
   }
@@ -478,6 +525,15 @@ analyticsRoutes.patch(
 
     widgets.set(widget.id, widget);
 
+    writeRouteAudit(c, {
+      orgId: dashboard.orgId,
+      action: 'analytics.widget.update',
+      resourceType: 'analytics_widget',
+      resourceId: widget.id,
+      resourceName: widget.name,
+      details: { changedFields: Object.keys(updates) }
+    });
+
     return c.json(widget);
   }
 );
@@ -508,6 +564,14 @@ analyticsRoutes.delete(
     dashboard.widgetIds = dashboard.widgetIds.filter((id) => id !== widgetId);
     dashboard.updatedAt = new Date();
     dashboards.set(dashboard.id, dashboard);
+
+    writeRouteAudit(c, {
+      orgId: dashboard.orgId,
+      action: 'analytics.widget.delete',
+      resourceType: 'analytics_widget',
+      resourceId: widget.id,
+      resourceName: widget.name
+    });
 
     return c.json({ success: true });
   }
@@ -625,6 +689,14 @@ analyticsRoutes.post(
     };
 
     slaDefinitions.set(sla.id, sla);
+
+    writeRouteAudit(c, {
+      orgId: sla.orgId,
+      action: 'analytics.sla.create',
+      resourceType: 'sla_definition',
+      resourceId: sla.id,
+      resourceName: sla.name
+    });
 
     return c.json(sla, 201);
   }
