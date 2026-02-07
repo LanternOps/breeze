@@ -128,7 +128,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">Event Log Viewer</h3>
+          <h3 className="text-lg font-semibold">Activities</h3>
         </div>
         <div className="flex items-center gap-2">
           {(Object.keys(levelConfig) as Array<keyof typeof levelConfig>).map(level => {
