@@ -118,7 +118,7 @@ type CommandResult struct {
 }
 
 // NewSuccessResult creates a successful command result with data
-func NewSuccessResult(data interface{}, durationMs int64) CommandResult {
+func NewSuccessResult(data any, durationMs int64) CommandResult {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return CommandResult{
@@ -285,6 +285,20 @@ type FileListResponse struct {
 	Entries []FileEntry `json:"entries"`
 }
 
+// RequirePayloadString extracts a required string field from the payload.
+// Returns an error result if the field is missing or empty.
+func RequirePayloadString(payload map[string]any, key string) (string, *CommandResult) {
+	val := GetPayloadString(payload, key, "")
+	if val == "" {
+		result := CommandResult{
+			Status: "failed",
+			Error:  fmt.Sprintf("missing required field: %s", key),
+		}
+		return "", &result
+	}
+	return val, nil
+}
+
 // Payload helpers
 func GetPayloadString(payload map[string]any, key string, defaultVal string) string {
 	if v, ok := payload[key]; ok {
@@ -323,7 +337,7 @@ func GetPayloadStringSlice(payload map[string]any, key string) []string {
 	if !ok {
 		return nil
 	}
-	slice, ok := raw.([]interface{})
+	slice, ok := raw.([]any)
 	if !ok {
 		return nil
 	}

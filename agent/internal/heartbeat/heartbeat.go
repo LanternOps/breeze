@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +18,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
-	"github.com/breeze-rmm/agent/internal/discovery"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/health"
@@ -29,8 +27,8 @@ import (
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
-	"github.com/breeze-rmm/agent/internal/snmppoll"
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -40,12 +38,13 @@ import (
 var log = logging.L("heartbeat")
 
 type HeartbeatPayload struct {
-	Metrics       *collectors.SystemMetrics `json:"metrics"`
-	Status        string                    `json:"status"`
-	AgentVersion  string                    `json:"agentVersion"`
-	PendingReboot bool                      `json:"pendingReboot,omitempty"`
-	LastUser      string                    `json:"lastUser,omitempty"`
-	HealthStatus  map[string]any            `json:"healthStatus,omitempty"`
+	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
+	MetricsAvailable *bool                     `json:"metricsAvailable,omitempty"`
+	Status           string                    `json:"status"`
+	AgentVersion     string                    `json:"agentVersion"`
+	PendingReboot    bool                      `json:"pendingReboot,omitempty"`
+	LastUser         string                    `json:"lastUser,omitempty"`
+	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -62,6 +61,7 @@ type Command struct {
 
 type Heartbeat struct {
 	config              *config.Config
+	secureToken         *secmem.SecureString
 	client              *http.Client
 	stopChan            chan struct{}
 	metricsCol          *collectors.MetricsCollector
@@ -87,28 +87,35 @@ type Heartbeat struct {
 	lastSecurityUpdate  time.Time
 
 	// Resilience & observability
-	pool       *workerpool.Pool
-	healthMon  *health.Monitor
-	auditLog   *audit.Logger
-	accepting  atomic.Bool
-	wg         sync.WaitGroup
-	retryCfg   httputil.RetryConfig
-	stopOnce   sync.Once
+	pool        *workerpool.Pool
+	healthMon   *health.Monitor
+	auditLog    *audit.Logger
+	accepting   atomic.Bool
+	wg          sync.WaitGroup
+	inventoryWg sync.WaitGroup
+	retryCfg    httputil.RetryConfig
+	stopOnce    sync.Once
 }
 
 func New(cfg *config.Config) *Heartbeat {
-	return NewWithVersion(cfg, "0.1.0")
+	return NewWithVersion(cfg, "0.1.0", nil)
 }
 
-func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
+func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString) *Heartbeat {
+	ftToken := token
+	if ftToken == nil && cfg.AuthToken != "" {
+		ftToken = secmem.NewSecureString(cfg.AuthToken)
+	}
+
 	ftConfig := &filetransfer.Config{
 		ServerURL: cfg.ServerURL,
-		AuthToken: cfg.AuthToken,
+		AuthToken: ftToken,
 		AgentID:   cfg.AgentID,
 	}
 
 	h := &Heartbeat{
 		config:          cfg,
+		secureToken:     ftToken,
 		client:          &http.Client{Timeout: 30 * time.Second},
 		stopChan:        make(chan struct{}),
 		metricsCol:      collectors.NewMetricsCollector(),
@@ -137,6 +144,7 @@ func NewWithVersion(cfg *config.Config, version string) *Heartbeat {
 		auditLogger, err := audit.NewLogger(cfg)
 		if err != nil {
 			log.Error("failed to start audit logger", "error", err)
+			h.healthMon.Update("audit", health.Unhealthy, err.Error())
 		} else {
 			h.auditLog = auditLogger
 		}
@@ -272,12 +280,25 @@ func (h *Heartbeat) StopAcceptingCommands() {
 	h.pool.StopAccepting()
 }
 
-// DrainAndWait waits for all in-flight commands to complete, respecting ctx deadline.
+// DrainAndWait waits for all in-flight commands and inventory goroutines to complete,
+// respecting the context deadline.
 func (h *Heartbeat) DrainAndWait(ctx context.Context) {
-	log.Info("draining in-flight commands")
+	log.Info("draining in-flight commands and inventory goroutines")
 	h.pool.Drain(ctx)
 	h.wg.Wait()
-	log.Info("all commands drained")
+
+	// Wait for inventory goroutines with deadline
+	done := make(chan struct{})
+	go func() {
+		h.inventoryWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		log.Info("all commands and inventory goroutines drained")
+	case <-ctx.Done():
+		log.Warn("inventory goroutine drain timed out")
+	}
 }
 
 func (h *Heartbeat) Stop() {
@@ -285,27 +306,57 @@ func (h *Heartbeat) Stop() {
 		if h.backupMgr != nil {
 			h.backupMgr.Stop()
 		}
-		if h.auditLog != nil {
-			h.auditLog.Log(audit.EventAgentStop, "", nil)
-			h.auditLog.Close()
-		}
+		h.auditLog.Log(audit.EventAgentStop, "", nil)
+		h.auditLog.Close()
 		close(h.stopChan)
 	})
 }
 
-// sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory
+// sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory.
+// All goroutines are tracked via inventoryWg for graceful shutdown.
 func (h *Heartbeat) sendInventory() {
-	go h.sendHardwareInventory()
-	go h.sendSoftwareInventory()
-	go h.sendDiskInventory()
-	go h.sendNetworkInventory()
-	go h.sendConnectionsInventory()
-	go h.sendPatchInventory()
-	go h.sendSecurityStatus()
+	fns := []func(){
+		h.sendHardwareInventory,
+		h.sendSoftwareInventory,
+		h.sendDiskInventory,
+		h.sendNetworkInventory,
+		h.sendConnectionsInventory,
+		h.sendPatchInventory,
+		h.sendSecurityStatus,
+	}
+	for _, fn := range fns {
+		h.inventoryWg.Add(1)
+		go func(f func()) {
+			defer h.inventoryWg.Done()
+			f()
+		}(fn)
+	}
+}
+
+// authHeader returns the Bearer token for HTTP Authorization headers.
+// Prefers secureToken; falls back to config plaintext only if secureToken is nil.
+func (h *Heartbeat) authHeader() string {
+	if h.secureToken != nil && !h.secureToken.IsZeroed() {
+		return "Bearer " + h.secureToken.Reveal()
+	}
+	if h.config.AuthToken != "" {
+		return "Bearer " + h.config.AuthToken
+	}
+	log.Warn("authHeader called with no available token")
+	return "Bearer "
+}
+
+// authTokenPlaintext returns the raw token string for use in external APIs
+// (e.g., updater) that require a plain string, not a Bearer header.
+func (h *Heartbeat) authTokenPlaintext() string {
+	if h.secureToken != nil && !h.secureToken.IsZeroed() {
+		return h.secureToken.Reveal()
+	}
+	return h.config.AuthToken
 }
 
 // sendInventoryData marshals the payload and sends it to the given endpoint via PUT.
-func (h *Heartbeat) sendInventoryData(endpoint string, payload interface{}, label string) {
+func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Error("failed to marshal inventory", "label", label, "error", err)
@@ -315,7 +366,7 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload interface{}, labe
 	url := fmt.Sprintf("%s/api/v1/agents/%s/%s", h.config.ServerURL, h.config.AgentID, endpoint)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
-		"Authorization": {"Bearer " + h.config.AuthToken},
+		"Authorization": {h.authHeader()},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -351,9 +402,9 @@ func (h *Heartbeat) sendSoftwareInventory() {
 		return
 	}
 
-	items := make([]map[string]interface{}, len(software))
+	items := make([]map[string]any, len(software))
 	for i, item := range software {
-		items[i] = map[string]interface{}{
+		items[i] = map[string]any{
 			"name":            item.Name,
 			"version":         item.Version,
 			"vendor":          item.Vendor,
@@ -363,7 +414,7 @@ func (h *Heartbeat) sendSoftwareInventory() {
 		}
 	}
 
-	h.sendInventoryData("software", map[string]interface{}{"software": items}, fmt.Sprintf("software (%d items)", len(software)))
+	h.sendInventoryData("software", map[string]any{"software": items}, fmt.Sprintf("software (%d items)", len(software)))
 }
 
 func (h *Heartbeat) sendDiskInventory() {
@@ -373,7 +424,7 @@ func (h *Heartbeat) sendDiskInventory() {
 		return
 	}
 
-	h.sendInventoryData("disks", map[string]interface{}{"disks": disks}, fmt.Sprintf("disks (%d)", len(disks)))
+	h.sendInventoryData("disks", map[string]any{"disks": disks}, fmt.Sprintf("disks (%d)", len(disks)))
 }
 
 func (h *Heartbeat) sendNetworkInventory() {
@@ -383,7 +434,7 @@ func (h *Heartbeat) sendNetworkInventory() {
 		return
 	}
 
-	h.sendInventoryData("network", map[string]interface{}{"adapters": adapters}, fmt.Sprintf("network (%d adapters)", len(adapters)))
+	h.sendInventoryData("network", map[string]any{"adapters": adapters}, fmt.Sprintf("network (%d adapters)", len(adapters)))
 }
 
 func (h *Heartbeat) sendPatchInventory() {
@@ -397,39 +448,19 @@ func (h *Heartbeat) sendPatchInventory() {
 		return
 	}
 
-	h.sendInventoryData("patches", map[string]interface{}{
+	h.sendInventoryData("patches", map[string]any{
 		"patches":   pendingItems,
 		"installed": installedItems,
 	}, fmt.Sprintf("patches (%d pending, %d installed)", len(pendingItems), len(installedItems)))
 }
 
-func (h *Heartbeat) collectPatchInventory() ([]map[string]interface{}, []map[string]interface{}, error) {
+func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any, error) {
 	if h.patchMgr != nil && len(h.patchMgr.ProviderIDs()) > 0 {
 		available, scanErr := h.patchMgr.Scan()
 		installed, installedErr := h.patchMgr.GetInstalled()
 
-		pendingItems := make([]map[string]interface{}, len(available))
-		for i, patch := range available {
-			pendingItems[i] = map[string]interface{}{
-				"name":        patch.Title,
-				"version":     patch.Version,
-				"category":    h.mapPatchProviderCategory(patch.Provider),
-				"severity":    "unknown",
-				"description": patch.Description,
-				"source":      h.mapPatchProviderSource(patch.Provider),
-			}
-		}
-
-		installedItems := make([]map[string]interface{}, len(installed))
-		for i, patch := range installed {
-			installedItems[i] = map[string]interface{}{
-				"name":        patch.Title,
-				"version":     patch.Version,
-				"category":    h.mapPatchProviderCategory(patch.Provider),
-				"source":      h.mapPatchProviderSource(patch.Provider),
-				"installedAt": "",
-			}
-		}
+		pendingItems := h.availablePatchesToMaps(available)
+		installedItems := h.installedPatchesToMaps(installed)
 
 		if scanErr != nil && installedErr != nil {
 			return pendingItems, installedItems, fmt.Errorf("patch scan failed: %v; installed scan failed: %v", scanErr, installedErr)
@@ -447,13 +478,42 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]interface{}, []map[str
 	return h.collectPatchInventoryFromCollectors()
 }
 
-func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]interface{}, []map[string]interface{}, error) {
+func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []map[string]any {
+	items := make([]map[string]any, len(patches))
+	for i, p := range patches {
+		items[i] = map[string]any{
+			"name":        p.Title,
+			"version":     p.Version,
+			"category":    h.mapPatchProviderCategory(p.Provider),
+			"severity":    "unknown",
+			"description": p.Description,
+			"source":      h.mapPatchProviderSource(p.Provider),
+		}
+	}
+	return items
+}
+
+func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []map[string]any {
+	items := make([]map[string]any, len(patches))
+	for i, p := range patches {
+		items[i] = map[string]any{
+			"name":        p.Title,
+			"version":     p.Version,
+			"category":    h.mapPatchProviderCategory(p.Provider),
+			"source":      h.mapPatchProviderSource(p.Provider),
+			"installedAt": "",
+		}
+	}
+	return items
+}
+
+func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]any, []map[string]any, error) {
 	patches, collectErr := h.patchCol.Collect()
 	installedPatches, installedErr := h.patchCol.CollectInstalled(90 * 24 * time.Hour)
 
-	pendingItems := make([]map[string]interface{}, len(patches))
+	pendingItems := make([]map[string]any, len(patches))
 	for i, patch := range patches {
-		pendingItems[i] = map[string]interface{}{
+		pendingItems[i] = map[string]any{
 			"name":            patch.Name,
 			"version":         patch.Version,
 			"currentVersion":  patch.CurrentVer,
@@ -468,9 +528,9 @@ func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]interfac
 		}
 	}
 
-	installedItems := make([]map[string]interface{}, len(installedPatches))
+	installedItems := make([]map[string]any, len(installedPatches))
 	for i, patch := range installedPatches {
-		installedItems[i] = map[string]interface{}{
+		installedItems[i] = map[string]any{
 			"name":        patch.Name,
 			"version":     patch.Version,
 			"category":    patch.Category,
@@ -556,9 +616,9 @@ func (h *Heartbeat) sendConnectionsInventory() {
 		return
 	}
 
-	items := make([]map[string]interface{}, len(connections))
+	items := make([]map[string]any, len(connections))
 	for i, conn := range connections {
-		items[i] = map[string]interface{}{
+		items[i] = map[string]any{
 			"protocol":    conn.Protocol,
 			"localAddr":   conn.LocalAddr,
 			"localPort":   conn.LocalPort,
@@ -570,7 +630,7 @@ func (h *Heartbeat) sendConnectionsInventory() {
 		}
 	}
 
-	h.sendInventoryData("connections", map[string]interface{}{"connections": items}, fmt.Sprintf("connections (%d active)", len(connections)))
+	h.sendInventoryData("connections", map[string]any{"connections": items}, fmt.Sprintf("connections (%d active)", len(connections)))
 }
 
 func (h *Heartbeat) sendEventLogs() {
@@ -584,7 +644,7 @@ func (h *Heartbeat) sendEventLogs() {
 		return
 	}
 
-	h.sendInventoryData("eventlogs", map[string]interface{}{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
+	h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
 }
 
 func (h *Heartbeat) sendSecurityStatus() {
@@ -598,24 +658,29 @@ func (h *Heartbeat) sendSecurityStatus() {
 
 func (h *Heartbeat) sendHeartbeat() {
 	metrics, err := h.metricsCol.Collect()
+	metricsAvailable := true
 	if err != nil {
 		log.Error("failed to collect metrics", "error", err)
 		h.healthMon.Update("metrics", health.Degraded, err.Error())
-		metrics = &collectors.SystemMetrics{}
+		metricsAvailable = false
 	} else {
 		h.healthMon.Update("metrics", health.Healthy, "")
 	}
 
 	status := "ok"
-	if metrics.CPUPercent > 90 || metrics.RAMPercent > 90 || metrics.DiskPercent > 90 {
+	if metricsAvailable && (metrics.CPUPercent > 90 || metrics.RAMPercent > 90 || metrics.DiskPercent > 90) {
 		status = "warning"
 	}
 
 	payload := HeartbeatPayload{
-		Metrics:      metrics,
 		Status:       status,
 		AgentVersion: h.agentVersion,
 		HealthStatus: h.healthMon.Summary(),
+	}
+	if metricsAvailable {
+		payload.Metrics = metrics
+	} else {
+		payload.MetricsAvailable = &metricsAvailable
 	}
 
 	body, err := json.Marshal(payload)
@@ -627,7 +692,7 @@ func (h *Heartbeat) sendHeartbeat() {
 	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", h.config.ServerURL, h.config.AgentID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
-		"Authorization": {"Bearer " + h.config.AuthToken},
+		"Authorization": {h.authHeader()},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -691,7 +756,7 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 	url := fmt.Sprintf("%s/api/v1/agents/%s/commands/%s/result", h.config.ServerURL, h.config.AgentID, commandID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
-		"Authorization": {"Bearer " + h.config.AuthToken},
+		"Authorization": {h.authHeader()},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -761,664 +826,25 @@ func isEphemeralCommand(cmdType string) bool {
 	return false
 }
 
-// executeCommand runs a command and returns the result
+// executeCommand runs a command and returns the result.
+// Command dispatch is handled via the handler registry in handlers*.go.
 func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	cmdLog := logging.WithCommand(log, cmd.ID, cmd.Type)
 	cmdLog.Info("processing command")
 
 	// Audit: command received
-	if h.auditLog != nil {
-		h.auditLog.Log(audit.EventCommandReceived, cmd.ID, map[string]any{
-			"type": cmd.Type,
-		})
-	}
+	h.auditLog.Log(audit.EventCommandReceived, cmd.ID, map[string]any{
+		"type": cmd.Type,
+	})
 
 	// Privilege check (warn-only for now)
 	if privilege.RequiresElevation(cmd.Type) && !privilege.IsRunningAsRoot() {
 		cmdLog.Warn("command requires elevated privileges but agent is not running as root")
 	}
 
-	var result tools.CommandResult
-
-	switch cmd.Type {
-	// Process management
-	case tools.CmdListProcesses:
-		result = tools.ListProcesses(cmd.Payload)
-	case tools.CmdGetProcess:
-		result = tools.GetProcess(cmd.Payload)
-	case tools.CmdKillProcess:
-		result = tools.KillProcess(cmd.Payload)
-
-	// Service management
-	case tools.CmdListServices:
-		result = tools.ListServices(cmd.Payload)
-	case tools.CmdGetService:
-		result = tools.GetService(cmd.Payload)
-	case tools.CmdStartService:
-		result = tools.StartService(cmd.Payload)
-	case tools.CmdStopService:
-		result = tools.StopService(cmd.Payload)
-	case tools.CmdRestartService:
-		result = tools.RestartService(cmd.Payload)
-
-	// Event logs (Windows)
-	case tools.CmdEventLogsList:
-		result = tools.ListEventLogs(cmd.Payload)
-	case tools.CmdEventLogsQuery:
-		result = tools.QueryEventLogs(cmd.Payload)
-	case tools.CmdEventLogGet:
-		result = tools.GetEventLogEntry(cmd.Payload)
-
-	// Scheduled tasks (Windows)
-	case tools.CmdTasksList:
-		result = tools.ListTasks(cmd.Payload)
-	case tools.CmdTaskGet:
-		result = tools.GetTask(cmd.Payload)
-	case tools.CmdTaskRun:
-		result = tools.RunTask(cmd.Payload)
-	case tools.CmdTaskEnable:
-		result = tools.EnableTask(cmd.Payload)
-	case tools.CmdTaskDisable:
-		result = tools.DisableTask(cmd.Payload)
-
-	// Registry (Windows)
-	case tools.CmdRegistryKeys:
-		result = tools.ListRegistryKeys(cmd.Payload)
-	case tools.CmdRegistryValues:
-		result = tools.ListRegistryValues(cmd.Payload)
-	case tools.CmdRegistryGet:
-		result = tools.GetRegistryValue(cmd.Payload)
-	case tools.CmdRegistrySet:
-		result = tools.SetRegistryValue(cmd.Payload)
-	case tools.CmdRegistryDelete:
-		result = tools.DeleteRegistryValue(cmd.Payload)
-
-	// System
-	case tools.CmdReboot:
-		result = tools.Reboot(cmd.Payload)
-	case tools.CmdShutdown:
-		result = tools.Shutdown(cmd.Payload)
-	case tools.CmdLock:
-		result = tools.Lock(cmd.Payload)
-
-	// Software inventory
-	case tools.CmdCollectSoftware:
-		start := time.Now()
-		collector := collectors.NewSoftwareCollector()
-		software, err := collector.Collect()
-		if err != nil {
-			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-		} else {
-			result = tools.NewSuccessResult(software, time.Since(start).Milliseconds())
-		}
-
-	// File transfer
-	case tools.CmdFileTransfer:
-		start := time.Now()
-		transferResult := h.fileTransferMgr.HandleTransfer(cmd.Payload)
-		result = tools.NewSuccessResult(transferResult, time.Since(start).Milliseconds())
-		if status, ok := transferResult["status"].(string); ok && status == "failed" {
-			if errMsg, ok := transferResult["error"].(string); ok {
-				result = tools.CommandResult{
-					Status:     "failed",
-					Error:      errMsg,
-					DurationMs: time.Since(start).Milliseconds(),
-				}
-			}
-		}
-
-	case tools.CmdCancelTransfer:
-		start := time.Now()
-		if transferID, ok := cmd.Payload["transferId"].(string); ok {
-			h.fileTransferMgr.CancelTransfer(transferID)
-			result = tools.NewSuccessResult(map[string]any{"cancelled": true}, time.Since(start).Milliseconds())
-		} else {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing transferId",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		}
-
-	// Remote desktop
-	case tools.CmdStartDesktop:
-		start := time.Now()
-		sessionID, _ := cmd.Payload["sessionId"].(string)
-		offer, _ := cmd.Payload["offer"].(string)
-		if sessionID == "" || offer == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing sessionId or offer",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else {
-			answer, err := h.desktopMgr.StartSession(sessionID, offer)
-			if err != nil {
-				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			} else {
-				result = tools.NewSuccessResult(map[string]any{
-					"sessionId": sessionID,
-					"answer":    answer,
-				}, time.Since(start).Milliseconds())
-			}
-		}
-
-	case tools.CmdStopDesktop:
-		start := time.Now()
-		if sessionID, ok := cmd.Payload["sessionId"].(string); ok {
-			h.desktopMgr.StopSession(sessionID)
-			result = tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
-		} else {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing sessionId",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		}
-
-	// Remote desktop (WebSocket streaming)
-	case tools.CmdDesktopStreamStart:
-		start := time.Now()
-		sessionID, _ := cmd.Payload["sessionId"].(string)
-		if sessionID == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing sessionId",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else {
-			config := desktop.DefaultStreamConfig()
-			if q, ok := cmd.Payload["quality"].(float64); ok && q >= 1 && q <= 100 {
-				config.Quality = int(q)
-			}
-			if s, ok := cmd.Payload["scaleFactor"].(float64); ok && s > 0 && s <= 1.0 {
-				config.ScaleFactor = s
-			}
-			if f, ok := cmd.Payload["maxFps"].(float64); ok && f >= 1 && f <= 30 {
-				config.MaxFPS = int(f)
-			}
-
-			w, h2, err := h.wsDesktopMgr.StartSession(sessionID, config, func(sid string, data []byte) error {
-				if h.wsClient != nil {
-					return h.wsClient.SendDesktopFrame(sid, data)
-				}
-				return fmt.Errorf("ws client not available")
-			})
-			if err != nil {
-				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			} else {
-				result = tools.NewSuccessResult(map[string]any{
-					"sessionId":    sessionID,
-					"screenWidth":  w,
-					"screenHeight": h2,
-				}, time.Since(start).Milliseconds())
-			}
-		}
-
-	case tools.CmdDesktopStreamStop:
-		start := time.Now()
-		sessionID, _ := cmd.Payload["sessionId"].(string)
-		if sessionID == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing sessionId",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else {
-			h.wsDesktopMgr.StopSession(sessionID)
-			result = tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
-		}
-
-	case tools.CmdDesktopInput:
-		start := time.Now()
-		sessionID, _ := cmd.Payload["sessionId"].(string)
-		if sessionID == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing sessionId",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else {
-			event := desktop.InputEvent{}
-			if e, ok := cmd.Payload["event"].(map[string]any); ok {
-				event.Type, _ = e["type"].(string)
-				if x, ok := e["x"].(float64); ok {
-					event.X = int(x)
-				}
-				if y, ok := e["y"].(float64); ok {
-					event.Y = int(y)
-				}
-				event.Button, _ = e["button"].(string)
-				event.Key, _ = e["key"].(string)
-				if d, ok := e["delta"].(float64); ok {
-					event.Delta = int(d)
-				}
-				if mods, ok := e["modifiers"].([]any); ok {
-					for _, m := range mods {
-						if ms, ok := m.(string); ok {
-							event.Modifiers = append(event.Modifiers, ms)
-						}
-					}
-				}
-			}
-			if err := h.wsDesktopMgr.HandleInput(sessionID, event); err != nil {
-				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			} else {
-				result = tools.NewSuccessResult(map[string]any{"ok": true}, time.Since(start).Milliseconds())
-			}
-		}
-
-	case tools.CmdDesktopConfig:
-		start := time.Now()
-		sessionID, _ := cmd.Payload["sessionId"].(string)
-		if sessionID == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing sessionId",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else {
-			config := desktop.StreamConfig{}
-			if q, ok := cmd.Payload["quality"].(float64); ok {
-				config.Quality = int(q)
-			}
-			if s, ok := cmd.Payload["scaleFactor"].(float64); ok {
-				config.ScaleFactor = s
-			}
-			if f, ok := cmd.Payload["maxFps"].(float64); ok {
-				config.MaxFPS = int(f)
-			}
-			if err := h.wsDesktopMgr.UpdateConfig(sessionID, config); err != nil {
-				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			} else {
-				result = tools.NewSuccessResult(map[string]any{"ok": true}, time.Since(start).Milliseconds())
-			}
-		}
-
-	// Terminal commands
-	case tools.CmdTerminalStart:
-		result = tools.StartTerminal(h.terminalMgr, cmd.Payload, h.sendTerminalOutput)
-	case tools.CmdTerminalData:
-		result = tools.WriteTerminal(h.terminalMgr, cmd.Payload)
-	case tools.CmdTerminalResize:
-		result = tools.ResizeTerminal(h.terminalMgr, cmd.Payload)
-	case tools.CmdTerminalStop:
-		result = tools.StopTerminal(h.terminalMgr, cmd.Payload)
-
-	// Script execution (via secure executor)
-	case tools.CmdScript, tools.CmdRunScript:
-		start := time.Now()
-		script := executor.ScriptExecution{
-			ID:         cmd.ID,
-			ScriptID:   tools.GetPayloadString(cmd.Payload, "scriptId", ""),
-			ScriptType: tools.GetPayloadString(cmd.Payload, "language", "bash"),
-			Script:     tools.GetPayloadString(cmd.Payload, "content", ""),
-			Timeout:    tools.GetPayloadInt(cmd.Payload, "timeoutSeconds", 300),
-			RunAs:      tools.GetPayloadString(cmd.Payload, "runAs", ""),
-		}
-		if params, ok := cmd.Payload["parameters"].(map[string]any); ok {
-			script.Parameters = make(map[string]string, len(params))
-			for k, v := range params {
-				if s, ok := v.(string); ok {
-					script.Parameters[k] = s
-				}
-			}
-		}
-		if script.Script == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "script content is empty",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else {
-			scriptResult, execErr := h.executor.Execute(script)
-			if execErr != nil && scriptResult == nil {
-				result = tools.NewErrorResult(execErr, time.Since(start).Milliseconds())
-			} else {
-				status := "completed"
-				if scriptResult.ExitCode != 0 {
-					status = "failed"
-				}
-				if scriptResult.Error != "" && strings.Contains(scriptResult.Error, "timed out") {
-					status = "timeout"
-				}
-				result = tools.CommandResult{
-					Status:     status,
-					ExitCode:   scriptResult.ExitCode,
-					Stdout:     executor.SanitizeOutput(scriptResult.Stdout),
-					Stderr:     executor.SanitizeOutput(scriptResult.Stderr),
-					Error:      scriptResult.Error,
-					DurationMs: time.Since(start).Milliseconds(),
-				}
-			}
-		}
-
-	// Script cancel
-	case tools.CmdScriptCancel:
-		start := time.Now()
-		executionID := tools.GetPayloadString(cmd.Payload, "executionId", "")
-		if executionID == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing executionId",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else if err := h.executor.Cancel(executionID); err != nil {
-			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-		} else {
-			result = tools.NewSuccessResult(map[string]any{
-				"executionId": executionID,
-				"cancelled":   true,
-			}, time.Since(start).Milliseconds())
-		}
-
-	// Script list running
-	case tools.CmdScriptListRunning:
-		start := time.Now()
-		running := h.executor.ListRunning()
-		result = tools.NewSuccessResult(map[string]any{
-			"running": running,
-			"count":   len(running),
-		}, time.Since(start).Milliseconds())
-
-	// Backup management
-	case tools.CmdBackupRun:
-		start := time.Now()
-		if h.backupMgr == nil {
-			result = tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
-		} else {
-			job, err := h.backupMgr.RunBackup()
-			if err != nil && job == nil {
-				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			} else {
-				jobResult := map[string]any{
-					"jobId":  job.ID,
-					"status": job.Status,
-				}
-				if job.Snapshot != nil {
-					jobResult["snapshotId"] = job.Snapshot.ID
-					jobResult["filesBackedUp"] = job.FilesBackedUp
-					jobResult["bytesBackedUp"] = job.BytesBackedUp
-				}
-				if job.Error != nil {
-					jobResult["warning"] = job.Error.Error()
-				}
-				result = tools.NewSuccessResult(jobResult, time.Since(start).Milliseconds())
-			}
-		}
-
-	case tools.CmdBackupList:
-		start := time.Now()
-		if h.backupMgr == nil {
-			result = tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
-		} else {
-			snapshots, err := backup.ListSnapshots(h.backupMgr.GetProvider())
-			if err != nil && len(snapshots) == 0 {
-				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			} else {
-				result = tools.NewSuccessResult(map[string]any{
-					"snapshots": snapshots,
-					"count":     len(snapshots),
-				}, time.Since(start).Milliseconds())
-			}
-		}
-
-	case tools.CmdBackupStop:
-		start := time.Now()
-		if h.backupMgr == nil {
-			result = tools.NewErrorResult(fmt.Errorf("backup not configured"), time.Since(start).Milliseconds())
-		} else {
-			h.backupMgr.Stop()
-			result = tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
-		}
-
-	// Patch management
-	case tools.CmdPatchScan:
-		start := time.Now()
-		pendingItems, installedItems, err := h.collectPatchInventory()
-		if err != nil && len(pendingItems) == 0 && len(installedItems) == 0 {
-			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			break
-		}
-
-		h.sendInventoryData("patches", map[string]interface{}{
-			"patches":   pendingItems,
-			"installed": installedItems,
-		}, fmt.Sprintf("patches (%d pending, %d installed)", len(pendingItems), len(installedItems)))
-
-		result = tools.NewSuccessResult(map[string]any{
-			"pendingCount":   len(pendingItems),
-			"installedCount": len(installedItems),
-			"warning":        errorString(err),
-		}, time.Since(start).Milliseconds())
-
-	case tools.CmdInstallPatches:
-		result = h.executePatchInstallCommand(cmd.Payload, false)
-
-	case tools.CmdRollbackPatches:
-		result = h.executePatchInstallCommand(cmd.Payload, true)
-
-	// Security status collection
-	case tools.CmdSecurityCollectStatus:
-		start := time.Now()
-		status, err := security.CollectStatus(h.config)
-		if err != nil {
-			result = tools.NewSuccessResult(map[string]any{
-				"status":  status,
-				"warning": err.Error(),
-			}, time.Since(start).Milliseconds())
-		} else {
-			result = tools.NewSuccessResult(status, time.Since(start).Milliseconds())
-		}
-
-	// Security scan execution
-	case tools.CmdSecurityScan:
-		start := time.Now()
-		scanType := strings.ToLower(tools.GetPayloadString(cmd.Payload, "scanType", "quick"))
-		scanRecordID := tools.GetPayloadString(cmd.Payload, "scanRecordId", "")
-		paths := tools.GetPayloadStringSlice(cmd.Payload, "paths")
-
-		if h.securityScanner == nil {
-			h.securityScanner = &security.SecurityScanner{Config: h.config}
-		}
-
-		var (
-			scanResult security.ScanResult
-			err        error
-		)
-		switch scanType {
-		case "quick":
-			scanResult, err = h.securityScanner.QuickScan()
-		case "full":
-			scanResult, err = h.securityScanner.FullScan()
-		case "custom":
-			if len(paths) == 0 {
-				err = fmt.Errorf("custom scan requires one or more paths")
-			} else {
-				scanResult, err = h.securityScanner.CustomScan(paths)
-			}
-		default:
-			err = fmt.Errorf("unsupported scanType: %s", scanType)
-		}
-
-		if err != nil {
-			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			break
-		}
-
-		if runtime.GOOS == "windows" && tools.GetPayloadBool(cmd.Payload, "triggerDefender", false) && scanType != "custom" {
-			if defErr := security.TriggerDefenderScan(scanType); defErr != nil {
-				cmdLog.Warn("defender scan trigger warning", "error", defErr)
-			}
-		}
-
-		result = tools.NewSuccessResult(map[string]any{
-			"scanRecordId": scanRecordID,
-			"scanType":     scanType,
-			"durationMs":   scanResult.Duration.Milliseconds(),
-			"threatsFound": len(scanResult.Threats),
-			"threats":      scanResult.Threats,
-			"status":       scanResult.Status,
-		}, time.Since(start).Milliseconds())
-
-	// Threat actions
-	case tools.CmdSecurityThreatQuarantine:
-		start := time.Now()
-		path := tools.GetPayloadString(cmd.Payload, "path", "")
-		if path == "" {
-			result = tools.NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
-			break
-		}
-		quarantineDir := tools.GetPayloadString(cmd.Payload, "quarantineDir", security.DefaultQuarantineDir())
-		dest, err := security.QuarantineThreat(security.Threat{
-			Name:     tools.GetPayloadString(cmd.Payload, "name", ""),
-			Type:     tools.GetPayloadString(cmd.Payload, "threatType", "malware"),
-			Severity: tools.GetPayloadString(cmd.Payload, "severity", "medium"),
-			Path:     path,
-		}, quarantineDir)
-		if err != nil {
-			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-		} else {
-			result = tools.NewSuccessResult(map[string]any{
-				"path":          path,
-				"quarantinedTo": dest,
-				"status":        "quarantined",
-			}, time.Since(start).Milliseconds())
-		}
-
-	case tools.CmdSecurityThreatRemove:
-		start := time.Now()
-		path := tools.GetPayloadString(cmd.Payload, "path", "")
-		if path == "" {
-			result = tools.NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
-			break
-		}
-		err := security.RemoveThreat(security.Threat{
-			Name:     tools.GetPayloadString(cmd.Payload, "name", ""),
-			Type:     tools.GetPayloadString(cmd.Payload, "threatType", "malware"),
-			Severity: tools.GetPayloadString(cmd.Payload, "severity", "medium"),
-			Path:     path,
-		})
-		if err != nil {
-			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-		} else {
-			result = tools.NewSuccessResult(map[string]any{
-				"path":   path,
-				"status": "removed",
-			}, time.Since(start).Milliseconds())
-		}
-
-	case tools.CmdSecurityThreatRestore:
-		start := time.Now()
-		source := tools.GetPayloadString(cmd.Payload, "quarantinedPath", "")
-		originalPath := tools.GetPayloadString(cmd.Payload, "originalPath", "")
-		if source == "" || originalPath == "" {
-			result = tools.NewErrorResult(fmt.Errorf("quarantinedPath and originalPath are required"), time.Since(start).Milliseconds())
-			break
-		}
-		if err := os.MkdirAll(filepath.Dir(originalPath), 0755); err != nil {
-			result = tools.NewErrorResult(fmt.Errorf("failed to create restore directory: %w", err), time.Since(start).Milliseconds())
-			break
-		}
-		if err := os.Rename(source, originalPath); err != nil {
-			result = tools.NewErrorResult(fmt.Errorf("failed to restore file: %w", err), time.Since(start).Milliseconds())
-		} else {
-			result = tools.NewSuccessResult(map[string]any{
-				"quarantinedPath": source,
-				"originalPath":    originalPath,
-				"status":          "restored",
-			}, time.Since(start).Milliseconds())
-		}
-
-	// File operations
-	case tools.CmdFileList:
-		result = tools.ListFiles(cmd.Payload)
-	case tools.CmdFileRead:
-		result = tools.ReadFile(cmd.Payload)
-	case tools.CmdFileWrite:
-		result = tools.WriteFile(cmd.Payload)
-	case tools.CmdFileDelete:
-		result = tools.DeleteFile(cmd.Payload)
-	case tools.CmdFileMkdir:
-		result = tools.MakeDirectory(cmd.Payload)
-	case tools.CmdFileRename:
-		result = tools.RenameFile(cmd.Payload)
-
-	// Network discovery
-	case tools.CmdNetworkDiscovery:
-		start := time.Now()
-		scanConfig := discovery.ScanConfig{
-			Subnets:          tools.GetPayloadStringSlice(cmd.Payload, "subnets"),
-			ExcludeIPs:       tools.GetPayloadStringSlice(cmd.Payload, "excludeIps"),
-			Methods:          tools.GetPayloadStringSlice(cmd.Payload, "methods"),
-			PortRanges:       tools.GetPayloadStringSlice(cmd.Payload, "portRanges"),
-			SNMPCommunities:  tools.GetPayloadStringSlice(cmd.Payload, "snmpCommunities"),
-			Timeout:          time.Duration(tools.GetPayloadInt(cmd.Payload, "timeout", 2)) * time.Second,
-			Concurrency:      tools.GetPayloadInt(cmd.Payload, "concurrency", 128),
-			DeepScan:         tools.GetPayloadBool(cmd.Payload, "deepScan", false),
-			IdentifyOS:       tools.GetPayloadBool(cmd.Payload, "identifyOS", false),
-			ResolveHostnames: tools.GetPayloadBool(cmd.Payload, "resolveHostnames", false),
-		}
-		scanner := discovery.NewScanner(scanConfig)
-		hosts, err := scanner.Scan()
-		if err != nil {
-			result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-		} else {
-			result = tools.NewSuccessResult(map[string]any{
-				"jobId":           tools.GetPayloadString(cmd.Payload, "jobId", ""),
-				"hosts":           hosts,
-				"hostsScanned":    0,
-				"hostsDiscovered": len(hosts),
-			}, time.Since(start).Milliseconds())
-		}
-
-	// SNMP polling
-	case tools.CmdSnmpPoll:
-		start := time.Now()
-		target := tools.GetPayloadString(cmd.Payload, "target", "")
-		if target == "" {
-			result = tools.CommandResult{
-				Status:     "failed",
-				Error:      "missing SNMP target",
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		} else {
-			version := tools.GetPayloadString(cmd.Payload, "version", "v2c")
-			var snmpVersion snmppoll.SNMPVersion
-			switch version {
-			case "v1":
-				snmpVersion = 0x00
-			case "v3":
-				snmpVersion = 0x03
-			default:
-				snmpVersion = 0x01
-			}
-
-			device := snmppoll.SNMPDevice{
-				IP:      target,
-				Port:    uint16(tools.GetPayloadInt(cmd.Payload, "port", 161)),
-				Version: snmpVersion,
-				Auth: snmppoll.SNMPAuth{
-					Community: tools.GetPayloadString(cmd.Payload, "community", "public"),
-					Username:  tools.GetPayloadString(cmd.Payload, "username", ""),
-				},
-				OIDs:    tools.GetPayloadStringSlice(cmd.Payload, "oids"),
-				Timeout: time.Duration(tools.GetPayloadInt(cmd.Payload, "timeout", 2)) * time.Second,
-				Retries: tools.GetPayloadInt(cmd.Payload, "retries", 1),
-			}
-
-			metrics, err := snmppoll.CollectMetrics(device)
-			if err != nil {
-				result = tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			} else {
-				result = tools.NewSuccessResult(map[string]any{
-					"deviceId": tools.GetPayloadString(cmd.Payload, "deviceId", ""),
-					"metrics":  metrics,
-				}, time.Since(start).Milliseconds())
-			}
-		}
-
-	default:
+	// Dispatch via handler registry
+	result, handled := h.dispatchCommand(cmd)
+	if !handled {
 		result = tools.CommandResult{
 			Status: "failed",
 			Error:  fmt.Sprintf("unknown command type: %s", cmd.Type),
@@ -1426,13 +852,11 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	}
 
 	// Audit: command executed
-	if h.auditLog != nil {
-		h.auditLog.Log(audit.EventCommandExecuted, cmd.ID, map[string]any{
-			"type":       cmd.Type,
-			"status":     result.Status,
-			"durationMs": result.DurationMs,
-		})
-	}
+	h.auditLog.Log(audit.EventCommandExecuted, cmd.ID, map[string]any{
+		"type":       cmd.Type,
+		"status":     result.Status,
+		"durationMs": result.DurationMs,
+	})
 
 	return result
 }
@@ -1734,9 +1158,10 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 
 	backupPath := binaryPath + ".backup"
 
+	authToken := h.authTokenPlaintext()
 	updaterCfg := &updater.Config{
 		ServerURL:      h.config.ServerURL,
-		AuthToken:      h.config.AuthToken,
+		AuthToken:      authToken,
 		CurrentVersion: h.agentVersion,
 		BinaryPath:     binaryPath,
 		BackupPath:     backupPath,

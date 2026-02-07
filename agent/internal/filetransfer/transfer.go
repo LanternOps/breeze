@@ -12,7 +12,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/secmem"
 )
+
+var log = logging.L("filetransfer")
 
 const (
 	ChunkSize = 1 * 1024 * 1024 // 1MB chunks
@@ -21,7 +26,7 @@ const (
 // Config holds file transfer configuration
 type Config struct {
 	ServerURL string
-	AuthToken string
+	AuthToken *secmem.SecureString
 	AgentID   string
 }
 
@@ -196,7 +201,7 @@ func (m *Manager) uploadChunk(transferID string, chunkNum int, data []byte, isFi
 	}
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+m.config.AuthToken)
+	req.Header.Set("Authorization", "Bearer "+m.config.AuthToken.Reveal())
 
 	resp, err := m.client.Do(req)
 	if err != nil {
@@ -230,7 +235,7 @@ func (m *Manager) download(transfer *Transfer) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+m.config.AuthToken)
+	req.Header.Set("Authorization", "Bearer "+m.config.AuthToken.Reveal())
 
 	resp, err := m.client.Do(req)
 	if err != nil {
@@ -292,12 +297,25 @@ func (m *Manager) reportProgress(transfer *Transfer) {
 		"error":      transfer.Error,
 	}
 
-	body, _ := json.Marshal(data)
+	body, err := json.Marshal(data)
+	if err != nil {
+		log.Warn("failed to marshal transfer progress", "transferId", transfer.ID, "error", err)
+		return
+	}
 	url := fmt.Sprintf("%s/api/v1/remote/transfers/%s/progress", m.config.ServerURL, transfer.ID)
 
-	req, _ := http.NewRequest("PUT", url, bytes.NewReader(body))
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
+	if err != nil {
+		log.Warn("failed to create progress request", "transferId", transfer.ID, "error", err)
+		return
+	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+m.config.AuthToken)
+	req.Header.Set("Authorization", "Bearer "+m.config.AuthToken.Reveal())
 
-	m.client.Do(req)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		log.Warn("failed to report transfer progress", "transferId", transfer.ID, "error", err)
+		return
+	}
+	resp.Body.Close()
 }

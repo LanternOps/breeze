@@ -41,13 +41,14 @@ type ScriptExecution struct {
 
 // ScriptResult represents the result of a script execution
 type ScriptResult struct {
-	ExecutionID string `json:"executionId"`
-	ExitCode    int    `json:"exitCode"`
-	Stdout      string `json:"stdout"`
-	Stderr      string `json:"stderr"`
-	Error       string `json:"error,omitempty"`
-	StartedAt   string `json:"startedAt"`
-	CompletedAt string `json:"completedAt"`
+	ExecutionID    string   `json:"executionId"`
+	ExitCode       int      `json:"exitCode"`
+	Stdout         string   `json:"stdout"`
+	Stderr         string   `json:"stderr"`
+	Error          string   `json:"error,omitempty"`
+	StartedAt      string   `json:"startedAt"`
+	CompletedAt    string   `json:"completedAt"`
+	TruncatedFields []string `json:"truncatedFields,omitempty"`
 }
 
 // Executor handles script execution with security controls
@@ -210,6 +211,18 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	result.Stderr = stderr.String()
 	result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 
+	// Record truncation in both a structured field and human-readable notice
+	stdoutWriter := cmd.Stdout.(*limitedWriter)
+	stderrWriter := cmd.Stderr.(*limitedWriter)
+	if stdoutWriter.truncated {
+		result.TruncatedFields = append(result.TruncatedFields, "stdout")
+		result.Stderr += "\n[breeze: stdout truncated at 1MB]"
+	}
+	if stderrWriter.truncated {
+		result.TruncatedFields = append(result.TruncatedFields, "stderr")
+		result.Stderr += "\n[breeze: stderr truncated at 1MB]"
+	}
+
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			// Kill the entire process group on timeout
@@ -342,22 +355,25 @@ func (e *Executor) configureRunAs(cmd *exec.Cmd, runAs string) error {
 	}
 }
 
-// limitedWriter wraps a buffer with a size limit
+// limitedWriter wraps a buffer with a size limit and tracks truncation.
 type limitedWriter struct {
-	buf     *bytes.Buffer
-	limit   int
-	written int
+	buf       *bytes.Buffer
+	limit     int
+	written   int
+	truncated bool
 }
 
 func (w *limitedWriter) Write(p []byte) (n int, err error) {
 	if w.written >= w.limit {
 		// Discard additional data but don't error
+		w.truncated = true
 		return len(p), nil
 	}
 
 	remaining := w.limit - w.written
 	if len(p) > remaining {
 		p = p[:remaining]
+		w.truncated = true
 	}
 
 	n, err = w.buf.Write(p)
