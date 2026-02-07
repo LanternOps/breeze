@@ -24,7 +24,7 @@ type SNMPDevice struct {
 type SNMPMetric struct {
 	OID       string      `json:"oid"`
 	Name      string      `json:"name"`
-	Value     interface{} `json:"value"`
+	Value     any `json:"value"`
 	Timestamp time.Time   `json:"timestamp"`
 }
 
@@ -78,7 +78,7 @@ func (d SNMPDevice) ClientConfig() SNMPClientConfig {
 }
 
 // ParseValue converts SNMP PDUs into Go-friendly values.
-func ParseValue(pdu gosnmp.SnmpPDU) interface{} {
+func ParseValue(pdu gosnmp.SnmpPDU) any {
 	if pdu.Value == nil {
 		return nil
 	}

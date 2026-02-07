@@ -23,6 +23,8 @@ type Pool struct {
 	stopOnce   sync.Once
 	closeOnce  sync.Once
 	stopChan   chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // New creates a pool with maxWorkers goroutines and a task queue of queueSize.
@@ -34,10 +36,14 @@ func New(maxWorkers, queueSize int) *Pool {
 		queueSize = 1
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	p := &Pool{
 		maxWorkers: maxWorkers,
 		queue:      make(chan Task, queueSize),
 		stopChan:   make(chan struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 	p.accepting.Store(true)
 
@@ -47,6 +53,13 @@ func New(maxWorkers, queueSize int) *Pool {
 
 	log.Info("worker pool started", "workers", maxWorkers, "queueSize", queueSize)
 	return p
+}
+
+// Context returns the pool-wide context, cancelled after Drain returns
+// (whether it completed normally or timed out). Tasks can capture this via
+// closure to check for cancellation.
+func (p *Pool) Context() context.Context {
+	return p.ctx
 }
 
 // Submit enqueues a task. Returns false if the pool is stopped or the queue is full.
@@ -72,10 +85,23 @@ func (p *Pool) StopAccepting() {
 	p.accepting.Store(false)
 }
 
+// Shutdown is the preferred shutdown method: calls StopAccepting then Drain.
+func (p *Pool) Shutdown(ctx context.Context) {
+	p.StopAccepting()
+	p.Drain(ctx)
+}
+
 // Drain waits for all in-flight and queued tasks to complete, respecting the
 // context deadline. Call StopAccepting first to prevent new submissions.
+// If StopAccepting was not called, Drain calls it automatically as a safety guard.
 // After Drain returns, the queue channel is closed so worker goroutines exit.
 func (p *Pool) Drain(ctx context.Context) {
+	// Safety guard: auto-stop accepting if caller forgot
+	if p.accepting.Load() {
+		log.Warn("Drain called without StopAccepting, auto-stopping")
+		p.StopAccepting()
+	}
+
 	p.stopOnce.Do(func() {
 		close(p.stopChan)
 	})
@@ -93,6 +119,9 @@ func (p *Pool) Drain(ctx context.Context) {
 		log.Warn("worker pool drain timed out")
 	}
 
+	// Cancel pool-wide context so in-flight tasks can observe cancellation
+	p.cancel()
+
 	// Close queue so worker goroutines exit and are not leaked
 	p.closeOnce.Do(func() {
 		close(p.queue)
@@ -108,18 +137,13 @@ func (p *Pool) worker() {
 			}
 			p.runTask(task)
 		case <-p.stopChan:
-			// Drain remaining queued tasks
-			for {
-				select {
-				case task, ok := <-p.queue:
-					if !ok {
-						return
-					}
-					p.runTask(task)
-				default:
-					return
-				}
+			// Drain remaining queued tasks until the channel is closed.
+			// Reading until close (not using default) prevents a race where
+			// this worker exits while tasks remain in the channel.
+			for task := range p.queue {
+				p.runTask(task)
 			}
+			return
 		}
 	}
 }

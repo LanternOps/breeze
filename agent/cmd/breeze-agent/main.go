@@ -87,11 +87,13 @@ func main() {
 // initLogging sets up structured logging from config. Call after config.Load().
 func initLogging(cfg *config.Config) {
 	var output io.Writer = os.Stdout
+	logFileFallback := false
 
 	if cfg.LogFile != "" {
 		rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v (logging to stdout)\n", cfg.LogFile, err)
+			logFileFallback = true
 		} else {
 			output = logging.TeeWriter(os.Stdout, rw)
 		}
@@ -100,6 +102,11 @@ func initLogging(cfg *config.Config) {
 	logging.Init(cfg.LogFormat, cfg.LogLevel, output)
 	// Re-bind package-level logger after Init
 	log = logging.L("main")
+
+	// Re-log fallback via structured logger so it appears in journalctl/Event Viewer
+	if logFileFallback {
+		log.Warn("log file fallback active, logging to stdout only", "requestedFile", cfg.LogFile)
+	}
 }
 
 // runAgent starts the main agent run loop. The heartbeat module handles:
@@ -122,6 +129,7 @@ func runAgent() {
 
 	// Wrap auth token in SecureString for defense-in-depth
 	secureToken := secmem.NewSecureString(cfg.AuthToken)
+	cfg.AuthToken = "" // Clear plaintext from config struct
 	defer secureToken.Zero()
 
 	log.Info("starting agent",
@@ -131,15 +139,13 @@ func runAgent() {
 	)
 
 	// Start heartbeat - this implements the main agent run loop
-	hb := heartbeat.NewWithVersion(cfg, version)
+	hb := heartbeat.NewWithVersion(cfg, version, secureToken)
 
-	// Log agent start audit event
-	if al := hb.AuditLog(); al != nil {
-		al.Log(audit.EventAgentStart, "", map[string]any{
-			"version": version,
-			"agentId": cfg.AgentID,
-		})
-	}
+	// Log agent start audit event (nil-safe: Log() is a no-op on nil receiver)
+	hb.AuditLog().Log(audit.EventAgentStart, "", map[string]any{
+		"version": version,
+		"agentId": cfg.AgentID,
+	})
 
 	go hb.Start()
 
@@ -147,7 +153,7 @@ func runAgent() {
 	wsConfig := &websocket.Config{
 		ServerURL: cfg.ServerURL,
 		AgentID:   cfg.AgentID,
-		AuthToken: cfg.AuthToken,
+		AuthToken: secureToken,
 	}
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
 	hb.SetWebSocketClient(wsClient)

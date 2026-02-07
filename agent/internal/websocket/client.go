@@ -3,7 +3,8 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
 var log = logging.L("websocket")
@@ -30,7 +32,7 @@ const (
 type Config struct {
 	ServerURL string
 	AgentID   string
-	AuthToken string
+	AuthToken *secmem.SecureString
 }
 
 // Command represents a command received via WebSocket
@@ -121,8 +123,15 @@ func (c *Client) connect() error {
 		return fmt.Errorf("failed to build WebSocket URL: %w", err)
 	}
 
+	if c.config.AuthToken == nil || c.config.AuthToken.IsZeroed() {
+		return fmt.Errorf("auth token is nil or zeroed — cannot connect")
+	}
+
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, _, err := dialer.Dial(wsURL, nil)
+	headers := http.Header{
+		"Authorization": {"Bearer " + c.config.AuthToken.Reveal()},
+	}
+	conn, _, err := dialer.Dial(wsURL, headers)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
@@ -150,9 +159,6 @@ func (c *Client) buildWSURL() (string, error) {
 	}
 
 	serverURL.Path = fmt.Sprintf("/api/v1/agent-ws/%s/ws", c.config.AgentID)
-	q := serverURL.Query()
-	q.Set("token", c.config.AuthToken)
-	serverURL.RawQuery = q.Encode()
 
 	return serverURL.String(), nil
 }

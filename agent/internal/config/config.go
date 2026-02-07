@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,8 +86,17 @@ func Load(cfgFile string) (*Config, error) {
 		return nil, err
 	}
 
-	// Warn-only validation (does not block startup)
-	cfg.Validate()
+	// Validate config: fatals block startup, warnings are logged and continue.
+	result := cfg.ValidateTiered()
+	for _, err := range result.Warnings {
+		log.Warn("config validation", "error", err)
+	}
+	if result.HasFatals() {
+		for _, err := range result.Fatals {
+			log.Error("config validation fatal", "error", err)
+		}
+		return nil, fmt.Errorf("config has fatal validation errors: %v", result.Fatals[0])
+	}
 
 	return cfg, nil
 }

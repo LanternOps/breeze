@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -18,28 +19,39 @@ var log = logging.L("audit")
 
 // Event types for audit logging.
 const (
-	EventCommandReceived    = "command_received"
-	EventCommandExecuted    = "command_executed"
-	EventScriptExecution    = "script_execution"
-	EventServiceAction      = "service_action"
-	EventFileModification   = "file_modification"
-	EventConfigChange       = "config_change"
-	EventPrivilegedOp       = "privileged_operation"
-	EventAgentStart         = "agent_start"
-	EventAgentStop          = "agent_stop"
+	EventCommandReceived = "command_received"
+	EventCommandExecuted = "command_executed"
+	EventScriptExecution = "script_execution"
+	EventServiceAction   = "service_action"
+	EventFileModification = "file_modification"
+	EventConfigChange    = "config_change"
+	EventPrivilegedOp    = "privileged_operation"
+	EventAgentStart      = "agent_start"
+	EventAgentStop       = "agent_stop"
+	EventLogRotated      = "log_rotated"
 )
+
+// criticalEvents are event types that require fsync after writing.
+var criticalEvents = map[string]bool{
+	EventPrivilegedOp: true,
+	EventAgentStart:   true,
+	EventAgentStop:    true,
+	EventConfigChange: true,
+}
 
 // Entry is a single audit log record.
 type Entry struct {
-	Timestamp  string         `json:"timestamp"`
-	EventType  string         `json:"eventType"`
-	CommandID  string         `json:"commandId,omitempty"`
-	Details    map[string]any `json:"details,omitempty"`
-	PrevHash   string         `json:"prevHash"`
-	EntryHash  string         `json:"entryHash"`
+	Timestamp string         `json:"timestamp"`
+	EventType string         `json:"eventType"`
+	CommandID string         `json:"commandId,omitempty"`
+	Details   map[string]any `json:"details,omitempty"`
+	PrevHash  string         `json:"prevHash"`
+	EntryHash string         `json:"entryHash"`
 }
 
 // Logger writes tamper-evident JSONL audit logs with a SHA-256 hash chain.
+// On log rotation, a sentinel entry (EventLogRotated) is written as the first
+// record in the new file, with prevHash linking to the last entry of the old file.
 type Logger struct {
 	mu         sync.Mutex
 	file       *os.File
@@ -48,6 +60,7 @@ type Logger struct {
 	maxBackups int
 	written    int64
 	prevHash   string
+	dropped    atomic.Int64
 }
 
 // NewLogger creates an audit logger writing to {dataDir}/audit.jsonl.
@@ -84,8 +97,14 @@ func NewLogger(cfg *config.Config) (*Logger, error) {
 }
 
 // Log writes a single audit entry with hash chain linking.
-// The hash chain is only advanced after a successful write to prevent corruption.
+// The hash chain is only advanced after a successful write to prevent
+// gaps: if the write fails, the next entry will re-link to the same prevHash.
+// Safe to call on a nil receiver (no-op).
 func (l *Logger) Log(eventType string, commandID string, details map[string]any) {
+	if l == nil {
+		return
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -100,6 +119,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 	entryHash, err := l.computeHash(entry)
 	if err != nil {
 		log.Error("failed to compute audit entry hash", "error", err, "eventType", eventType)
+		l.dropped.Add(1)
 		return
 	}
 	entry.EntryHash = entryHash
@@ -107,6 +127,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 	data, err := json.Marshal(entry)
 	if err != nil {
 		log.Error("failed to marshal audit entry", "error", err, "eventType", eventType)
+		l.dropped.Add(1)
 		return
 	}
 	data = append(data, '\n')
@@ -114,6 +135,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 	if l.written+int64(len(data)) > l.maxSize {
 		if err := l.rotate(); err != nil {
 			log.Error("audit log rotation failed", "error", err)
+			l.dropped.Add(1)
 			return
 		}
 	}
@@ -121,16 +143,29 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 	n, err := l.file.Write(data)
 	if err != nil {
 		log.Error("failed to write audit entry", "error", err, "eventType", eventType)
+		l.dropped.Add(1)
 		return
 	}
 	l.written += int64(n)
 
 	// Only advance hash chain after successful write
 	l.prevHash = entry.EntryHash
+
+	// Fsync critical entries to ensure they survive a crash
+	if criticalEvents[eventType] {
+		if err := l.file.Sync(); err != nil {
+			log.Error("failed to fsync critical audit entry — durability not guaranteed", "error", err, "eventType", eventType)
+		}
+	}
 }
 
 // Close flushes and closes the audit log file.
+// Safe to call on a nil receiver (no-op).
 func (l *Logger) Close() error {
+	if l == nil {
+		return nil
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -140,14 +175,30 @@ func (l *Logger) Close() error {
 	return nil
 }
 
+// DroppedCount returns the number of audit entries that failed to write.
+// Returns -1 if the logger is nil (not initialized), distinguishing
+// "logger not available" from "logger working with zero drops".
+func (l *Logger) DroppedCount() int64 {
+	if l == nil {
+		return -1
+	}
+	return l.dropped.Load()
+}
+
+// computeHash produces the SHA-256 hash for an audit entry.
+// Fields are length-prefixed to prevent delimiter injection attacks
+// (e.g., a timestamp containing "|" colliding with another field combination).
 func (l *Logger) computeHash(entry Entry) (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%s", entry.Timestamp, entry.EventType, entry.CommandID, entry.PrevHash)
+	for _, field := range []string{entry.Timestamp, entry.EventType, entry.CommandID, entry.PrevHash} {
+		fmt.Fprintf(h, "%d:%s", len(field), field)
+	}
 	if entry.Details != nil {
 		detailBytes, err := json.Marshal(entry.Details)
 		if err != nil {
 			return "", fmt.Errorf("marshal details for hash: %w", err)
 		}
+		fmt.Fprintf(h, "%d:", len(detailBytes))
 		h.Write(detailBytes)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
@@ -171,6 +222,9 @@ func (l *Logger) openFile() error {
 }
 
 func (l *Logger) rotate() error {
+	// Save prevHash before rotation so we can link to it
+	prevHashBeforeRotation := l.prevHash
+
 	if l.file != nil {
 		l.file.Close()
 	}
@@ -193,7 +247,49 @@ func (l *Logger) rotate() error {
 	if err := os.Rename(l.filePath, l.backupName(1)); err != nil && !os.IsNotExist(err) {
 		log.Warn("audit log rotation: failed to rename current log", "error", err)
 	}
-	return l.openFile()
+
+	if err := l.openFile(); err != nil {
+		return err
+	}
+
+	// Write rotation sentinel as first entry in new file
+	sentinel := Entry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		EventType: EventLogRotated,
+		PrevHash:  prevHashBeforeRotation,
+		Details: map[string]any{
+			"previousFile": l.backupName(1),
+		},
+	}
+	sentinelHash, err := l.computeHash(sentinel)
+	if err != nil {
+		log.Error("rotation sentinel hash failed — hash chain broken", "error", err)
+		l.dropped.Add(1)
+		l.prevHash = "chain-broken"
+		return nil // rotation itself succeeded but chain is broken
+	}
+	sentinel.EntryHash = sentinelHash
+
+	data, err := json.Marshal(sentinel)
+	if err != nil {
+		log.Error("rotation sentinel marshal failed — hash chain broken", "error", err)
+		l.dropped.Add(1)
+		l.prevHash = "chain-broken"
+		return nil
+	}
+	data = append(data, '\n')
+
+	n, writeErr := l.file.Write(data)
+	if writeErr != nil {
+		log.Error("rotation sentinel write failed — hash chain broken", "error", writeErr)
+		l.dropped.Add(1)
+		l.prevHash = "chain-broken"
+		return nil
+	}
+	l.written += int64(n)
+	l.prevHash = sentinel.EntryHash
+
+	return nil
 }
 
 func (l *Logger) backupName(index int) string {

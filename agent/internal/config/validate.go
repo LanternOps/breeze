@@ -2,12 +2,15 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("config")
 
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -22,93 +25,129 @@ var knownCollectors = map[string]bool{
 }
 
 var validLogLevels = map[string]bool{
-	"debug": true,
-	"info":  true,
-	"warn":  true,
+	"debug":   true,
+	"info":    true,
+	"warn":    true,
 	"warning": true,
-	"error": true,
+	"error":   true,
 }
 
-// Validate checks the config for invalid values and returns all errors found.
-// Dangerous zero-values that would cause panics are clamped to safe defaults.
-// Other validation errors are logged as warnings but do not prevent startup.
+// ValidationResult separates fatal errors (prevent startup) from warnings
+// (logged but allow startup).
+type ValidationResult struct {
+	Fatals   []error
+	Warnings []error
+}
+
+// HasFatals returns true if there are any fatal validation errors.
+func (r ValidationResult) HasFatals() bool {
+	return len(r.Fatals) > 0
+}
+
+// AllErrors returns all errors (fatals + warnings) for backward compatibility.
+func (r ValidationResult) AllErrors() []error {
+	all := make([]error, 0, len(r.Fatals)+len(r.Warnings))
+	all = append(all, r.Fatals...)
+	all = append(all, r.Warnings...)
+	return all
+}
+
+// Validate checks the config for invalid values and returns all errors as a flat list.
+// Internally calls ValidateTiered, logs fatals at Error and warnings at Warn level,
+// then returns all errors combined. See ValidateTiered for the structured result.
+// Note: clamping side-effects mutate the Config receiver.
 func (c *Config) Validate() []error {
-	var errs []error
+	result := c.ValidateTiered()
+
+	// Log fatals as errors, warnings as warnings
+	for _, err := range result.Fatals {
+		log.Error("config validation fatal", "error", err)
+	}
+	for _, err := range result.Warnings {
+		log.Warn("config validation", "error", err)
+	}
+
+	return result.AllErrors()
+}
+
+// ValidateTiered performs validation and returns a structured result with
+// fatals and warnings separated.
+func (c *Config) ValidateTiered() ValidationResult {
+	var result ValidationResult
 
 	if c.AgentID != "" && !uuidRegex.MatchString(c.AgentID) {
-		errs = append(errs, fmt.Errorf("agent_id %q is not a valid UUID", c.AgentID))
+		result.Fatals = append(result.Fatals, fmt.Errorf("agent_id %q is not a valid UUID", c.AgentID))
 	}
 
 	if c.ServerURL != "" {
 		u, err := url.Parse(c.ServerURL)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("server_url %q is not a valid URL: %w", c.ServerURL, err))
+			result.Fatals = append(result.Fatals, fmt.Errorf("server_url %q is not a valid URL: %w", c.ServerURL, err))
 		} else if u.Scheme != "http" && u.Scheme != "https" {
-			errs = append(errs, fmt.Errorf("server_url scheme must be http or https, got %q", u.Scheme))
+			result.Fatals = append(result.Fatals, fmt.Errorf("server_url scheme must be http or https, got %q", u.Scheme))
 		}
 	}
 
 	if c.AuthToken != "" {
 		for _, r := range c.AuthToken {
 			if unicode.IsControl(r) {
-				errs = append(errs, fmt.Errorf("auth_token contains control characters"))
+				result.Fatals = append(result.Fatals, fmt.Errorf("auth_token contains control characters"))
 				break
 			}
 		}
 	}
 
-	// Clamp intervals to safe range to prevent panics (e.g. rand.Int64N(0))
+	// Clamp intervals to safe range to prevent panics (e.g. rand.Int64N(0)).
+	// These are warnings (not fatals) because the value is auto-corrected.
 	if c.HeartbeatIntervalSeconds < 5 {
-		errs = append(errs, fmt.Errorf("heartbeat_interval_seconds %d is below minimum 5, clamping", c.HeartbeatIntervalSeconds))
+		result.Warnings = append(result.Warnings, fmt.Errorf("heartbeat_interval_seconds %d is below minimum 5, clamped to 5", c.HeartbeatIntervalSeconds))
 		c.HeartbeatIntervalSeconds = 5
 	} else if c.HeartbeatIntervalSeconds > 3600 {
-		errs = append(errs, fmt.Errorf("heartbeat_interval_seconds %d exceeds maximum 3600, clamping", c.HeartbeatIntervalSeconds))
+		result.Warnings = append(result.Warnings, fmt.Errorf("heartbeat_interval_seconds %d exceeds maximum 3600, clamped to 3600", c.HeartbeatIntervalSeconds))
 		c.HeartbeatIntervalSeconds = 3600
 	}
 
 	if c.MetricsIntervalSeconds < 5 {
-		errs = append(errs, fmt.Errorf("metrics_interval_seconds %d is below minimum 5, clamping", c.MetricsIntervalSeconds))
+		result.Warnings = append(result.Warnings, fmt.Errorf("metrics_interval_seconds %d is below minimum 5, clamped to 5", c.MetricsIntervalSeconds))
 		c.MetricsIntervalSeconds = 5
 	} else if c.MetricsIntervalSeconds > 3600 {
-		errs = append(errs, fmt.Errorf("metrics_interval_seconds %d exceeds maximum 3600, clamping", c.MetricsIntervalSeconds))
+		result.Warnings = append(result.Warnings, fmt.Errorf("metrics_interval_seconds %d exceeds maximum 3600, clamped to 3600", c.MetricsIntervalSeconds))
 		c.MetricsIntervalSeconds = 3600
 	}
 
+	// Warnings: unknown collectors
 	for _, name := range c.EnabledCollectors {
 		if !knownCollectors[strings.ToLower(name)] {
-			errs = append(errs, fmt.Errorf("unknown collector %q", name))
+			result.Warnings = append(result.Warnings, fmt.Errorf("unknown collector %q", name))
 		}
 	}
 
+	// Warnings: unknown log level
 	if c.LogLevel != "" && !validLogLevels[strings.ToLower(c.LogLevel)] {
-		errs = append(errs, fmt.Errorf("log_level %q is not valid (use debug, info, warn, error)", c.LogLevel))
+		result.Warnings = append(result.Warnings, fmt.Errorf("log_level %q is not valid (use debug, info, warn, error)", c.LogLevel))
 	}
 
 	if c.LogFormat != "" && c.LogFormat != "text" && c.LogFormat != "json" {
-		errs = append(errs, fmt.Errorf("log_format %q is not valid (use text or json)", c.LogFormat))
+		result.Warnings = append(result.Warnings, fmt.Errorf("log_format %q is not valid (use text or json)", c.LogFormat))
 	}
 
-	// Clamp concurrency settings to safe range
+	// Clamp concurrency settings to safe range.
+	// These are warnings (not fatals) because the value is auto-corrected.
 	if c.MaxConcurrentCommands < 1 {
-		errs = append(errs, fmt.Errorf("max_concurrent_commands %d is below minimum 1, clamping", c.MaxConcurrentCommands))
+		result.Warnings = append(result.Warnings, fmt.Errorf("max_concurrent_commands %d is below minimum 1, clamped to 1", c.MaxConcurrentCommands))
 		c.MaxConcurrentCommands = 1
 	} else if c.MaxConcurrentCommands > 100 {
-		errs = append(errs, fmt.Errorf("max_concurrent_commands %d exceeds maximum 100, clamping", c.MaxConcurrentCommands))
+		result.Warnings = append(result.Warnings, fmt.Errorf("max_concurrent_commands %d exceeds maximum 100, clamped to 100", c.MaxConcurrentCommands))
 		c.MaxConcurrentCommands = 100
 	}
 
 	if c.CommandQueueSize < 1 {
-		errs = append(errs, fmt.Errorf("command_queue_size %d is below minimum 1, clamping", c.CommandQueueSize))
+		result.Warnings = append(result.Warnings, fmt.Errorf("command_queue_size %d is below minimum 1, clamped to 1", c.CommandQueueSize))
 		c.CommandQueueSize = 1
 	} else if c.CommandQueueSize > 10000 {
-		errs = append(errs, fmt.Errorf("command_queue_size %d exceeds maximum 10000, clamping", c.CommandQueueSize))
+		result.Warnings = append(result.Warnings, fmt.Errorf("command_queue_size %d exceeds maximum 10000, clamped to 10000", c.CommandQueueSize))
 		c.CommandQueueSize = 10000
 	}
 
-	// Log validation errors as warnings
-	for _, err := range errs {
-		slog.Warn("config validation", "error", err)
-	}
-
-	return errs
+	return result
 }

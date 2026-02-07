@@ -2,7 +2,7 @@ package discovery
 
 import (
 	"log/slog"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"os"
 	"sync"
@@ -80,7 +80,7 @@ func pingWithConn(conn *icmp.PacketConn, ip net.IP, timeout time.Duration) bool 
 		Body: &icmp.Echo{
 			ID:   id,
 			Seq:  seq,
-			Data: []byte{0x42, 0x52, 0x5a, byte(rand.Intn(255))},
+			Data: []byte{0x42, 0x52, 0x5a, byte(rand.IntN(256))},
 		},
 	}
 	payload, err := message.Marshal(nil)
