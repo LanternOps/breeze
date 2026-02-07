@@ -153,10 +153,14 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
   return response;
 }
 
+export type MfaMethod = 'totp' | 'sms';
+
 export async function apiLogin(email: string, password: string): Promise<{
   success: boolean;
   mfaRequired?: boolean;
   tempToken?: string;
+  mfaMethod?: MfaMethod;
+  phoneLast4?: string;
   user?: User;
   tokens?: Tokens;
   error?: string;
@@ -178,7 +182,9 @@ export async function apiLogin(email: string, password: string): Promise<{
       return {
         success: true,
         mfaRequired: true,
-        tempToken: data.tempToken
+        tempToken: data.tempToken,
+        mfaMethod: data.mfaMethod || 'totp',
+        phoneLast4: data.phoneLast4
       };
     }
 
@@ -192,7 +198,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   }
 }
 
-export async function apiVerifyMFA(code: string, tempToken: string): Promise<{
+export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<{
   success: boolean;
   user?: User;
   tokens?: Tokens;
@@ -202,7 +208,7 @@ export async function apiVerifyMFA(code: string, tempToken: string): Promise<{
     const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, tempToken })
+      body: JSON.stringify({ code, tempToken, method })
     });
 
     const data = await response.json();
@@ -324,6 +330,95 @@ export async function apiResetPassword(token: string, password: string): Promise
     }
 
     return { success: true };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiSendSmsMfaCode(tempToken: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(buildApiUrl('/auth/mfa/sms/send'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || 'Failed to send SMS code' };
+    }
+
+    return { success: true };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiVerifyPhone(phoneNumber: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    const response = await fetchWithAuth('/auth/phone/verify', {
+      method: 'POST',
+      body: JSON.stringify({ phoneNumber })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || 'Failed to send verification code' };
+    }
+
+    return { success: true };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiConfirmPhone(phoneNumber: string, code: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    const response = await fetchWithAuth('/auth/phone/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ phoneNumber, code })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || 'Failed to verify phone' };
+    }
+
+    return { success: true };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiEnableSmsMfa(): Promise<{
+  success: boolean;
+  recoveryCodes?: string[];
+  error?: string;
+}> {
+  try {
+    const response = await fetchWithAuth('/auth/mfa/sms/enable', {
+      method: 'POST'
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || 'Failed to enable SMS MFA' };
+    }
+
+    return { success: true, recoveryCodes: data.recoveryCodes };
   } catch {
     return { success: false, error: 'Network error' };
   }

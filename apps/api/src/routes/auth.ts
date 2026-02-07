@@ -22,8 +22,14 @@ import {
   loginLimiter,
   forgotPasswordLimiter,
   mfaLimiter,
-  getRedis
+  getRedis,
+  smsPhoneVerifyLimiter,
+  smsPhoneVerifyUserLimiter,
+  smsLoginSendLimiter,
+  smsLoginGlobalLimiter,
+  phoneConfirmLimiter
 } from '../services';
+import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
 import { createAuditLogAsync } from '../services/auditService';
 import type { RequestLike } from '../services/auditEvents';
@@ -53,7 +59,21 @@ const registerPartnerSchema = z.object({
 
 const mfaVerifySchema = z.object({
   code: z.string().length(6),
-  tempToken: z.string().optional()
+  tempToken: z.string().optional(),
+  method: z.enum(['totp', 'sms']).optional()
+});
+
+const phoneVerifySchema = z.object({
+  phoneNumber: z.string().regex(/^\+[1-9]\d{6,14}$/, 'Invalid phone number. Use E.164 format (e.g. +14155551234)')
+});
+
+const phoneConfirmSchema = z.object({
+  phoneNumber: z.string().regex(/^\+[1-9]\d{6,14}$/),
+  code: z.string().length(6)
+});
+
+const smsSendSchema = z.object({
+  tempToken: z.string()
 });
 
 const forgotPasswordSchema = z.object({
@@ -412,17 +432,20 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   }
 
   // Check if MFA is required
-  if (user.mfaEnabled && user.mfaSecret) {
-    if (!redis) {
-      return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
-    }
+  if (user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms')) {
     // Create a temporary token for MFA verification
     const tempToken = nanoid(32);
-    await redis.setex(`mfa:pending:${tempToken}`, 300, user.id); // 5 min expiry
+    const mfaMethod = user.mfaMethod || 'totp';
+    await redis.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
+      userId: user.id,
+      mfaMethod
+    }));
 
     return c.json({
       mfaRequired: true,
       tempToken,
+      mfaMethod,
+      phoneLast4: user.phoneNumber?.slice(-4) || null,
       user: null,
       tokens: null
     });
@@ -654,7 +677,7 @@ authRoutes.post('/mfa/setup', authMiddleware, async (c) => {
 
 // MFA verify (for login or setup confirmation)
 authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
-  const { code, tempToken } = c.req.valid('json');
+  const { code, tempToken, method: requestMethod } = c.req.valid('json');
   const redis = getRedis();
 
   if (!redis) {
@@ -663,13 +686,26 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
 
   // Case 1: Verifying during login (has tempToken)
   if (tempToken) {
-    const userId = await redis.get(`mfa:pending:${tempToken}`);
-    if (!userId) {
+    const pendingRaw = await redis.get(`mfa:pending:${tempToken}`);
+    if (!pendingRaw) {
       return c.json({ error: 'Invalid or expired MFA session' }, 401);
     }
 
+    // Parse pending data — supports both legacy (plain userId string) and new (JSON) format
+    let pendingUserId: string;
+    let pendingMfaMethod: string;
+    try {
+      const parsed = JSON.parse(pendingRaw);
+      pendingUserId = parsed.userId;
+      pendingMfaMethod = parsed.mfaMethod || 'totp';
+    } catch {
+      // Legacy format: plain userId string
+      pendingUserId = pendingRaw;
+      pendingMfaMethod = 'totp';
+    }
+
     // Rate limit MFA attempts
-    const rateCheck = await rateLimiter(redis, `mfa:${userId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+    const rateCheck = await rateLimiter(redis, `mfa:${pendingUserId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
     if (!rateCheck.allowed) {
       return c.json({ error: 'Too many MFA attempts' }, 429);
     }
@@ -677,21 +713,46 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     const [user] = await db
       .select()
       .from(users)
-      .where(eq(users.id, userId))
+      .where(eq(users.id, pendingUserId))
       .limit(1);
 
-    if (!user || !user.mfaSecret) {
+    if (!user) {
       return c.json({ error: 'Invalid MFA configuration' }, 400);
     }
 
-    const valid = await verifyMFAToken(user.mfaSecret, code);
+    // Use the server-stored method only — never allow the client to override
+    const effectiveMethod = pendingMfaMethod;
+
+    let valid = false;
+    if (effectiveMethod === 'sms') {
+      const phone = user.phoneNumber;
+      if (!phone) {
+        return c.json({ error: 'No phone number configured for SMS MFA' }, 400);
+      }
+      const twilio = getTwilioService();
+      if (!twilio) {
+        return c.json({ error: 'SMS service not configured' }, 501);
+      }
+      const result = await twilio.checkVerificationCode(phone, code);
+      if (result.serviceError) {
+        return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
+      }
+      valid = result.valid;
+    } else {
+      // TOTP verification
+      if (!user.mfaSecret) {
+        return c.json({ error: 'Invalid MFA configuration' }, 400);
+      }
+      valid = await verifyMFAToken(user.mfaSecret, code);
+    }
+
     if (!valid) {
       void auditUserLoginFailure(c, {
         userId: user.id,
         email: user.email,
         name: user.name,
         reason: 'mfa_invalid_code',
-        details: { method: 'mfa' }
+        details: { method: effectiveMethod }
       });
       return c.json({ error: 'Invalid MFA code' }, 401);
     }
@@ -850,12 +911,13 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
-  // Enable MFA
+  // Enable MFA (TOTP)
   await db
     .update(users)
     .set({
       mfaSecret: secret,
       mfaEnabled: true,
+      mfaMethod: 'totp',
       updatedAt: new Date()
     })
     .where(eq(users.id, payload.sub));
@@ -884,30 +946,86 @@ authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySche
   const auth = c.get('auth');
   const { code } = c.req.valid('json');
 
+  // Check org policy — if requireMfa is true, block disable
+  if (auth.orgId) {
+    const [org] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, auth.orgId))
+      .limit(1);
+
+    const orgSettings = org?.settings as { security?: { requireMfa?: boolean } } | null;
+    if (orgSettings?.security?.requireMfa) {
+      return c.json({ error: 'Your organization requires MFA. Contact your admin to change this policy.' }, 403);
+    }
+  }
+
   const [user] = await db
-    .select({ mfaSecret: users.mfaSecret, mfaEnabled: users.mfaEnabled })
+    .select({
+      mfaSecret: users.mfaSecret,
+      mfaEnabled: users.mfaEnabled,
+      mfaMethod: users.mfaMethod,
+      phoneNumber: users.phoneNumber
+    })
     .from(users)
     .where(eq(users.id, auth.user.id))
     .limit(1);
 
-  if (!user?.mfaEnabled || !user.mfaSecret) {
+  if (!user?.mfaEnabled) {
     return c.json({ error: 'MFA is not enabled' }, 400);
   }
 
-  const valid = await verifyMFAToken(user.mfaSecret, code);
-  if (!valid) {
-    if (auth.orgId) {
-      writeAuthAudit(c, {
-        orgId: auth.orgId,
-        action: 'auth.mfa.disable.failed',
-        result: 'failure',
-        reason: 'invalid_mfa_code',
-        userId: auth.user.id,
-        email: auth.user.email,
-        details: { method: 'mfa' }
-      });
+  const currentMethod = user.mfaMethod || 'totp';
+
+  // Verify using the appropriate method
+  if (currentMethod === 'sms') {
+    // For SMS MFA disable, we require a fresh SMS code
+    const twilio = getTwilioService();
+    if (!twilio) {
+      return c.json({ error: 'SMS service not configured' }, 501);
     }
-    return c.json({ error: 'Invalid MFA code' }, 401);
+
+    if (!user.phoneNumber) {
+      return c.json({ error: 'No phone number configured' }, 400);
+    }
+    const result = await twilio.checkVerificationCode(user.phoneNumber, code);
+    if (result.serviceError) {
+      return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
+    }
+    if (!result.valid) {
+      if (auth.orgId) {
+        writeAuthAudit(c, {
+          orgId: auth.orgId,
+          action: 'auth.mfa.disable.failed',
+          result: 'failure',
+          reason: 'invalid_sms_code',
+          userId: auth.user.id,
+          email: auth.user.email,
+          details: { method: 'sms' }
+        });
+      }
+      return c.json({ error: 'Invalid verification code' }, 401);
+    }
+  } else {
+    // TOTP
+    if (!user.mfaSecret) {
+      return c.json({ error: 'Invalid MFA configuration' }, 400);
+    }
+    const valid = await verifyMFAToken(user.mfaSecret, code);
+    if (!valid) {
+      if (auth.orgId) {
+        writeAuthAudit(c, {
+          orgId: auth.orgId,
+          action: 'auth.mfa.disable.failed',
+          result: 'failure',
+          reason: 'invalid_mfa_code',
+          userId: auth.user.id,
+          email: auth.user.email,
+          details: { method: 'totp' }
+        });
+      }
+      return c.json({ error: 'Invalid MFA code' }, 401);
+    }
   }
 
   await db
@@ -915,6 +1033,10 @@ authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySche
     .set({
       mfaSecret: null,
       mfaEnabled: false,
+      mfaMethod: null,
+      mfaRecoveryCodes: null,
+      phoneNumber: null,
+      phoneVerified: false,
       updatedAt: new Date()
     })
     .where(eq(users.id, auth.user.id));
@@ -926,11 +1048,293 @@ authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySche
       result: 'success',
       userId: auth.user.id,
       email: auth.user.email,
-      details: { method: 'totp' }
+      details: { method: currentMethod }
     });
   }
 
   return c.json({ success: true, message: 'MFA disabled successfully' });
+});
+
+// Phone verification - send code (authenticated)
+authRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerifySchema), async (c) => {
+  const auth = c.get('auth');
+  const { phoneNumber } = c.req.valid('json');
+
+  const twilio = getTwilioService();
+  if (!twilio) {
+    return c.json({ error: 'SMS service not configured' }, 501);
+  }
+
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  // Rate limit per phone number
+  const phoneRate = await rateLimiter(
+    redis,
+    `sms:phone-verify:${phoneNumber}`,
+    smsPhoneVerifyLimiter.limit,
+    smsPhoneVerifyLimiter.windowSeconds
+  );
+  if (!phoneRate.allowed) {
+    return c.json({ error: 'Too many verification attempts for this number. Try again later.' }, 429);
+  }
+
+  // Rate limit per user
+  const userRate = await rateLimiter(
+    redis,
+    `sms:phone-verify-user:${auth.user.id}`,
+    smsPhoneVerifyUserLimiter.limit,
+    smsPhoneVerifyUserLimiter.windowSeconds
+  );
+  if (!userRate.allowed) {
+    return c.json({ error: 'Too many verification attempts. Try again later.' }, 429);
+  }
+
+  const result = await twilio.sendVerificationCode(phoneNumber);
+  if (!result.success) {
+    if (result.isUserError) {
+      return c.json({ error: 'Invalid phone number. Please use a mobile phone number in E.164 format.' }, 400);
+    }
+    return c.json({ error: 'Failed to send verification code' }, 500);
+  }
+
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+  if (orgId) {
+    writeAuthAudit(c, {
+      orgId,
+      action: 'auth.phone.verify.requested',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { phoneLast4: phoneNumber.slice(-4) }
+    });
+  }
+
+  return c.json({ success: true, message: 'Verification code sent' });
+});
+
+// Phone verification - confirm code (authenticated)
+authRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfirmSchema), async (c) => {
+  const auth = c.get('auth');
+  const { phoneNumber, code } = c.req.valid('json');
+
+  const twilio = getTwilioService();
+  if (!twilio) {
+    return c.json({ error: 'SMS service not configured' }, 501);
+  }
+
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  // Rate limit confirmation attempts
+  const rateCheck = await rateLimiter(
+    redis,
+    `sms:phone-confirm:${auth.user.id}`,
+    phoneConfirmLimiter.limit,
+    phoneConfirmLimiter.windowSeconds
+  );
+  if (!rateCheck.allowed) {
+    return c.json({ error: 'Too many attempts. Try again later.' }, 429);
+  }
+
+  const result = await twilio.checkVerificationCode(phoneNumber, code);
+  if (result.serviceError) {
+    return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
+  }
+
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+
+  if (!result.valid) {
+    if (orgId) {
+      writeAuthAudit(c, {
+        orgId,
+        action: 'auth.phone.verify.failed',
+        result: 'failure',
+        reason: 'invalid_code',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { phoneLast4: phoneNumber.slice(-4) }
+      });
+    }
+    return c.json({ error: 'Invalid verification code' }, 401);
+  }
+
+  // Update user with verified phone
+  await db
+    .update(users)
+    .set({
+      phoneNumber,
+      phoneVerified: true,
+      updatedAt: new Date()
+    })
+    .where(eq(users.id, auth.user.id));
+
+  if (orgId) {
+    writeAuthAudit(c, {
+      orgId,
+      action: 'auth.phone.verify.confirmed',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { phoneLast4: phoneNumber.slice(-4) }
+    });
+  }
+
+  return c.json({ success: true, message: 'Phone number verified' });
+});
+
+// SMS MFA enable (authenticated, requires verified phone)
+authRoutes.post('/mfa/sms/enable', authMiddleware, async (c) => {
+  const auth = c.get('auth');
+
+  const [user] = await db
+    .select({
+      phoneNumber: users.phoneNumber,
+      phoneVerified: users.phoneVerified,
+      mfaEnabled: users.mfaEnabled
+    })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  if (!user.phoneVerified || !user.phoneNumber) {
+    return c.json({ error: 'Phone number must be verified before enabling SMS MFA' }, 400);
+  }
+
+  if (user.mfaEnabled) {
+    return c.json({ error: 'MFA is already enabled. Disable it first to switch methods.' }, 400);
+  }
+
+  // Check org policy — is SMS allowed?
+  if (auth.orgId) {
+    const [org] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, auth.orgId))
+      .limit(1);
+
+    const orgSettings = org?.settings as { security?: { allowedMfaMethods?: { sms?: boolean } } } | null;
+    if (orgSettings?.security?.allowedMfaMethods && !orgSettings.security.allowedMfaMethods.sms) {
+      return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
+    }
+  }
+
+  // Generate recovery codes
+  const recoveryCodes = generateRecoveryCodes();
+
+  // Enable SMS MFA
+  await db
+    .update(users)
+    .set({
+      mfaEnabled: true,
+      mfaMethod: 'sms',
+      mfaSecret: null,
+      mfaRecoveryCodes: recoveryCodes,
+      updatedAt: new Date()
+    })
+    .where(eq(users.id, auth.user.id));
+
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+  if (orgId) {
+    writeAuthAudit(c, {
+      orgId,
+      action: 'auth.mfa.setup',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { method: 'sms' }
+    });
+  }
+
+  return c.json({ success: true, recoveryCodes, message: 'SMS MFA enabled successfully' });
+});
+
+// SMS MFA send code during login (unauthenticated, requires tempToken)
+authRoutes.post('/mfa/sms/send', zValidator('json', smsSendSchema), async (c) => {
+  const { tempToken } = c.req.valid('json');
+
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const twilio = getTwilioService();
+  if (!twilio) {
+    return c.json({ error: 'SMS service not configured' }, 501);
+  }
+
+  const pendingRaw = await redis.get(`mfa:pending:${tempToken}`);
+  if (!pendingRaw) {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+
+  let userId: string;
+  try {
+    const parsed = JSON.parse(pendingRaw);
+    userId = parsed.userId;
+  } catch {
+    return c.json({ error: 'Invalid MFA session data' }, 400);
+  }
+
+  // Look up phone number from DB (never store PII in Redis)
+  const [smsUser] = await db
+    .select({ phoneNumber: users.phoneNumber })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  const phoneNumber = smsUser?.phoneNumber;
+  if (!phoneNumber) {
+    return c.json({ error: 'No phone number configured for SMS MFA' }, 400);
+  }
+
+  // Rate limit per tempToken
+  const tokenRate = await rateLimiter(
+    redis,
+    `sms:login-send:${tempToken}`,
+    smsLoginSendLimiter.limit,
+    smsLoginSendLimiter.windowSeconds
+  );
+  if (!tokenRate.allowed) {
+    return c.json({ error: 'Too many SMS requests. Try again later.' }, 429);
+  }
+
+  // Rate limit per phone globally
+  const phoneRate = await rateLimiter(
+    redis,
+    `sms:login-global:${phoneNumber}`,
+    smsLoginGlobalLimiter.limit,
+    smsLoginGlobalLimiter.windowSeconds
+  );
+  if (!phoneRate.allowed) {
+    return c.json({ error: 'Too many SMS requests. Try again later.' }, 429);
+  }
+
+  const result = await twilio.sendVerificationCode(phoneNumber);
+  if (!result.success) {
+    return c.json({ error: 'Failed to send SMS code' }, 500);
+  }
+
+  const orgId = await resolveUserAuditOrgId(userId);
+  if (orgId) {
+    writeAuthAudit(c, {
+      orgId,
+      action: 'auth.mfa.sms.sent',
+      result: 'success',
+      userId,
+      details: { phoneLast4: phoneNumber.slice(-4) }
+    });
+  }
+
+  return c.json({ success: true, message: 'SMS code sent' });
 });
 
 // Forgot password
@@ -1039,6 +1443,9 @@ authRoutes.get('/me', authMiddleware, async (c) => {
       name: users.name,
       avatarUrl: users.avatarUrl,
       mfaEnabled: users.mfaEnabled,
+      mfaMethod: users.mfaMethod,
+      phoneNumber: users.phoneNumber,
+      phoneVerified: users.phoneVerified,
       status: users.status,
       lastLoginAt: users.lastLoginAt,
       createdAt: users.createdAt
@@ -1051,5 +1458,12 @@ authRoutes.get('/me', authMiddleware, async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
-  return c.json({ user });
+  const { phoneNumber: rawPhone, ...userWithoutPhone } = user;
+  return c.json({
+    user: {
+      ...userWithoutPhone,
+      mfaMethod: user.mfaMethod || (user.mfaEnabled ? 'totp' : null),
+      phoneLast4: rawPhone?.slice(-4) || null
+    }
+  });
 });

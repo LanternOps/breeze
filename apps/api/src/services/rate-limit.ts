@@ -11,19 +11,24 @@ export interface RateLimitConfig {
   windowSeconds: number;
 }
 
+function failClosed(windowSeconds: number): RateLimitResult {
+  return {
+    allowed: false,
+    remaining: 0,
+    resetAt: new Date(Date.now() + windowSeconds * 1000)
+  };
+}
+
 export async function rateLimiter(
   redis: Redis | null,
   key: string,
   limit: number,
   windowSeconds: number
 ): Promise<RateLimitResult> {
-  // If Redis is unavailable, allow all requests (no rate limiting)
+  // If Redis is unavailable, fail closed — deny the request for security
   if (!redis) {
-    return {
-      allowed: true,
-      remaining: limit,
-      resetAt: new Date(Date.now() + windowSeconds * 1000)
-    };
+    console.error('[rate-limit] Redis unavailable, failing closed for key:', key);
+    return failClosed(windowSeconds);
   }
 
   const now = Date.now();
@@ -41,11 +46,8 @@ export async function rateLimiter(
       .exec();
 
     if (!results) {
-      return {
-        allowed: true,
-        remaining: limit,
-        resetAt: new Date(Date.now() + windowSeconds * 1000)
-      };
+      console.error('[rate-limit] Redis multi returned null for key:', key);
+      return failClosed(windowSeconds);
     }
 
     const countResult = results[2]?.[1];
@@ -61,13 +63,9 @@ export async function rateLimiter(
       remaining: Math.max(0, limit - count),
       resetAt
     };
-  } catch {
-    // Redis error - allow request
-    return {
-      allowed: true,
-      remaining: limit,
-      resetAt: new Date(Date.now() + windowSeconds * 1000)
-    };
+  } catch (err) {
+    console.error('[rate-limit] Redis error for key:', key, err);
+    return failClosed(windowSeconds);
   }
 }
 
@@ -82,6 +80,31 @@ export const forgotPasswordLimiter: RateLimitConfig = {
 };
 
 export const mfaLimiter: RateLimitConfig = {
+  limit: 5,
+  windowSeconds: 5 * 60
+};
+
+export const smsPhoneVerifyLimiter: RateLimitConfig = {
+  limit: 3,
+  windowSeconds: 60 * 60
+};
+
+export const smsPhoneVerifyUserLimiter: RateLimitConfig = {
+  limit: 5,
+  windowSeconds: 60 * 60
+};
+
+export const smsLoginSendLimiter: RateLimitConfig = {
+  limit: 3,
+  windowSeconds: 5 * 60
+};
+
+export const smsLoginGlobalLimiter: RateLimitConfig = {
+  limit: 5,
+  windowSeconds: 15 * 60
+};
+
+export const phoneConfirmLimiter: RateLimitConfig = {
   limit: 5,
   windowSeconds: 5 * 60
 };

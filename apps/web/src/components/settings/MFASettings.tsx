@@ -1,31 +1,46 @@
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 import { useMemo, useRef, useState } from 'react';
+import type { MfaMethod } from '../../stores/auth';
 
 const DIGIT_COUNT = 6;
 
 type MFASettingsProps = {
   enabled?: boolean;
+  mfaMethod?: MfaMethod | null;
+  phoneVerified?: boolean;
+  phoneLast4?: string;
+  smsAllowed?: boolean;
   qrCodeDataUrl?: string;
   recoveryCodes?: string[];
   onEnable?: (code: string) => void | Promise<void>;
   onDisable?: (code: string) => void | Promise<void>;
   onGenerateRecoveryCodes?: () => void | Promise<void>;
   onRequestSetup?: () => void | Promise<void>;
+  onVerifyPhone?: (phoneNumber: string) => Promise<{ success: boolean; error?: string }>;
+  onConfirmPhone?: (phoneNumber: string, code: string) => Promise<{ success: boolean; error?: string }>;
+  onEnableSmsMfa?: () => Promise<{ success: boolean; recoveryCodes?: string[]; error?: string }>;
   errorMessage?: string;
   successMessage?: string;
   loading?: boolean;
 };
 
-type MFAView = 'status' | 'setup' | 'disable' | 'recovery';
+type MFAView = 'status' | 'setup' | 'disable' | 'recovery' | 'phone-verify' | 'sms-setup';
 
 export default function MFASettings({
   enabled = false,
+  mfaMethod,
+  phoneVerified = false,
+  phoneLast4,
+  smsAllowed = false,
   qrCodeDataUrl,
   recoveryCodes,
   onEnable,
   onDisable,
   onGenerateRecoveryCodes,
   onRequestSetup,
+  onVerifyPhone,
+  onConfirmPhone,
+  onEnableSmsMfa,
   errorMessage,
   successMessage,
   loading
@@ -34,13 +49,28 @@ export default function MFASettings({
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
+  const [localError, setLocalError] = useState<string>();
+  const [localSuccess, setLocalSuccess] = useState<string>();
+  const [smsRecoveryCodes, setSmsRecoveryCodes] = useState<string[]>();
+  const [phoneInput, setPhoneInput] = useState('');
+  const [phoneDigits, setPhoneDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
+  const [phoneCodeSent, setPhoneCodeSent] = useState(false);
+  const [localPhoneVerified, setLocalPhoneVerified] = useState(phoneVerified);
+  const [localPhoneLast4, setLocalPhoneLast4] = useState(phoneLast4);
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const phoneInputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const code = digits.join('');
+  const phoneCode = phoneDigits.join('');
+  const currentMethod = mfaMethod || (enabled ? 'totp' : null);
 
   const resetDigits = () => {
     setDigits(Array(DIGIT_COUNT).fill(''));
+  };
+
+  const resetPhoneDigits = () => {
+    setPhoneDigits(Array(DIGIT_COUNT).fill(''));
   };
 
   const focusIndex = (index: number) => {
@@ -81,6 +111,45 @@ export default function MFASettings({
   const handlePaste = (index: number, event: ClipboardEvent<HTMLInputElement>) => {
     event.preventDefault();
     handleChange(index, event.clipboardData.getData('text'));
+  };
+
+  // Phone digit handlers (separate refs)
+  const focusPhoneIndex = (index: number) => {
+    phoneInputRefs.current[index]?.focus();
+    phoneInputRefs.current[index]?.select();
+  };
+
+  const handlePhoneDigitChange = (index: number, value: string) => {
+    const sanitized = value.replace(/\D/g, '');
+    if (!sanitized) {
+      const next = [...phoneDigits];
+      next[index] = '';
+      setPhoneDigits(next);
+      return;
+    }
+
+    const next = [...phoneDigits];
+    const split = sanitized.slice(0, DIGIT_COUNT - index).split('');
+    split.forEach((digit, offset) => {
+      next[index + offset] = digit;
+    });
+    setPhoneDigits(next);
+    const nextIndex = Math.min(index + split.length, DIGIT_COUNT - 1);
+    focusPhoneIndex(nextIndex);
+  };
+
+  const handlePhoneKeyDown = (index: number, event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Backspace' && phoneDigits[index] === '' && index > 0) {
+      const next = [...phoneDigits];
+      next[index - 1] = '';
+      setPhoneDigits(next);
+      focusPhoneIndex(index - 1);
+    }
+  };
+
+  const handlePhonePaste = (index: number, event: ClipboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    handlePhoneDigitChange(index, event.clipboardData.getData('text'));
   };
 
   const handleStartSetup = async () => {
@@ -127,9 +196,59 @@ export default function MFASettings({
   };
 
   const handleCopyRecoveryCodes = () => {
-    if (recoveryCodes?.length) {
-      navigator.clipboard.writeText(recoveryCodes.join('\n'));
+    const codes = smsRecoveryCodes || recoveryCodes;
+    if (codes?.length) {
+      navigator.clipboard.writeText(codes.join('\n'));
     }
+  };
+
+  const handleSendPhoneCode = async () => {
+    if (!phoneInput || !onVerifyPhone) return;
+    setIsSubmitting(true);
+    setLocalError(undefined);
+    const result = await onVerifyPhone(phoneInput);
+    if (!result.success) {
+      setLocalError(result.error);
+    } else {
+      setPhoneCodeSent(true);
+      setLocalSuccess('Verification code sent');
+    }
+    setIsSubmitting(false);
+  };
+
+  const handleConfirmPhone = async () => {
+    if (phoneCode.length !== DIGIT_COUNT || !onConfirmPhone) return;
+    setIsSubmitting(true);
+    setLocalError(undefined);
+    const result = await onConfirmPhone(phoneInput, phoneCode);
+    if (!result.success) {
+      setLocalError(result.error);
+    } else {
+      setLocalPhoneVerified(true);
+      setLocalPhoneLast4(phoneInput.slice(-4));
+      setLocalSuccess('Phone number verified');
+      setView('status');
+      resetPhoneDigits();
+      setPhoneInput('');
+      setPhoneCodeSent(false);
+    }
+    setIsSubmitting(false);
+  };
+
+  const handleEnableSms = async () => {
+    if (!onEnableSmsMfa) return;
+    setIsSubmitting(true);
+    setLocalError(undefined);
+    const result = await onEnableSmsMfa();
+    if (!result.success) {
+      setLocalError(result.error);
+    } else {
+      setSmsRecoveryCodes(result.recoveryCodes);
+      setLocalSuccess('SMS MFA enabled');
+      setView('recovery');
+      setShowCodes(true);
+    }
+    setIsSubmitting(false);
   };
 
   const renderDigitInputs = () => (
@@ -155,19 +274,170 @@ export default function MFASettings({
     </div>
   );
 
+  const renderPhoneDigitInputs = () => (
+    <div className="flex items-center gap-2">
+      {phoneDigits.map((digit, index) => (
+        <input
+          key={`phone-digit-${index}`}
+          ref={element => {
+            phoneInputRefs.current[index] = element;
+          }}
+          autoFocus={index === 0}
+          inputMode="numeric"
+          autoComplete={index === 0 ? 'one-time-code' : 'off'}
+          className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-ring"
+          maxLength={1}
+          value={digit}
+          onChange={event => handlePhoneDigitChange(index, event.target.value)}
+          onKeyDown={event => handlePhoneKeyDown(index, event)}
+          onPaste={event => handlePhonePaste(index, event)}
+          disabled={isLoading}
+        />
+      ))}
+    </div>
+  );
+
+  const displayError = localError || errorMessage;
+  const displaySuccess = localSuccess || successMessage;
+
   const renderError = () =>
-    errorMessage && (
+    displayError && (
       <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-        {errorMessage}
+        {displayError}
       </div>
     );
 
   const renderSuccess = () =>
-    successMessage && (
+    displaySuccess && (
       <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">
-        {successMessage}
+        {displaySuccess}
       </div>
     );
+
+  // Phone verify view
+  if (view === 'phone-verify') {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold">Verify your phone number</h2>
+          <p className="text-sm text-muted-foreground">
+            Enter your phone number in E.164 format to receive a verification code.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium">Phone number</label>
+          <input
+            type="tel"
+            value={phoneInput}
+            onChange={e => setPhoneInput(e.target.value)}
+            placeholder="+14155551234"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            disabled={phoneCodeSent}
+          />
+        </div>
+
+        {!phoneCodeSent && (
+          <button
+            type="button"
+            onClick={handleSendPhoneCode}
+            disabled={isLoading || !phoneInput}
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isLoading ? 'Sending...' : 'Send code'}
+          </button>
+        )}
+
+        {phoneCodeSent && (
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Verification code</label>
+            {renderPhoneDigitInputs()}
+            <p className="text-xs text-muted-foreground">
+              Enter the 6-digit code sent to your phone.
+            </p>
+          </div>
+        )}
+
+        {renderError()}
+        {renderSuccess()}
+
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setView('status');
+              setPhoneCodeSent(false);
+              setPhoneInput('');
+              resetPhoneDigits();
+              setLocalError(undefined);
+              setLocalSuccess(undefined);
+            }}
+            className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            Cancel
+          </button>
+          {phoneCodeSent && (
+            <button
+              type="button"
+              onClick={handleConfirmPhone}
+              disabled={isLoading || phoneCode.length !== DIGIT_COUNT}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoading ? 'Verifying...' : 'Verify phone'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // SMS setup confirmation view
+  if (view === 'sms-setup') {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold">Enable SMS MFA</h2>
+          <p className="text-sm text-muted-foreground">
+            Enable SMS-based multi-factor authentication for your account.
+          </p>
+        </div>
+
+        <div className="rounded-md border bg-muted/30 p-4 text-sm">
+          <p>
+            SMS codes will be sent to your verified phone number ending in{' '}
+            <span className="font-mono font-medium">{localPhoneLast4 || phoneLast4 || '****'}</span>.
+          </p>
+        </div>
+
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
+          SMS MFA is less secure than an authenticator app due to SIM swapping risks. We recommend TOTP when possible.
+        </div>
+
+        {renderError()}
+
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setView('status');
+              setLocalError(undefined);
+            }}
+            className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleEnableSms}
+            disabled={isLoading}
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isLoading ? 'Enabling...' : 'Enable SMS MFA'}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // Status view - shows current MFA state
   if (view === 'status') {
@@ -180,11 +450,12 @@ export default function MFASettings({
           </p>
         </div>
 
+        {/* Authenticator app row */}
         <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">Authenticator app</span>
-              {enabled ? (
+              {currentMethod === 'totp' ? (
                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
                   Enabled
                 </span>
@@ -195,23 +466,25 @@ export default function MFASettings({
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              {enabled
+              {currentMethod === 'totp'
                 ? 'Your account is protected with an authenticator app.'
-                : 'Use an authenticator app to generate verification codes.'}
+                : 'Use an authenticator app to generate verification codes. (Recommended)'}
             </p>
           </div>
-          {enabled ? (
+          {currentMethod === 'totp' ? (
             <button
               type="button"
               onClick={() => {
                 resetDigits();
+                setLocalError(undefined);
+                setLocalSuccess(undefined);
                 setView('disable');
               }}
               className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
             >
               Disable
             </button>
-          ) : (
+          ) : !enabled ? (
             <button
               type="button"
               onClick={handleStartSetup}
@@ -220,8 +493,69 @@ export default function MFASettings({
             >
               Enable
             </button>
-          )}
+          ) : null}
         </div>
+
+        {/* SMS codes row — only visible if org allows SMS */}
+        {smsAllowed && (
+          <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">SMS codes</span>
+                {currentMethod === 'sms' ? (
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
+                    Enabled
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                    Disabled
+                  </span>
+                )}
+                {localPhoneVerified && localPhoneLast4 && currentMethod !== 'sms' && (
+                  <span className="text-xs text-muted-foreground">
+                    (phone verified: ...{localPhoneLast4})
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {currentMethod === 'sms'
+                  ? `SMS codes sent to phone ending in ${localPhoneLast4 || phoneLast4 || '****'}.`
+                  : 'Receive verification codes via SMS as a backup.'}
+              </p>
+            </div>
+            {currentMethod === 'sms' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  resetDigits();
+                  setLocalError(undefined);
+                  setLocalSuccess(undefined);
+                  setView('disable');
+                }}
+                className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
+              >
+                Disable
+              </button>
+            ) : !enabled ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setLocalError(undefined);
+                  setLocalSuccess(undefined);
+                  if (localPhoneVerified) {
+                    setView('sms-setup');
+                  } else {
+                    setView('phone-verify');
+                  }
+                }}
+                disabled={isLoading}
+                className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {localPhoneVerified ? 'Enable' : 'Verify phone'}
+              </button>
+            ) : null}
+          </div>
+        )}
 
         {enabled && (
           <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
@@ -236,6 +570,8 @@ export default function MFASettings({
               onClick={() => {
                 setView('recovery');
                 setShowCodes(false);
+                setLocalError(undefined);
+                setLocalSuccess(undefined);
               }}
               className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
@@ -250,7 +586,7 @@ export default function MFASettings({
     );
   }
 
-  // Setup view - QR code and verification
+  // Setup view - QR code and verification (TOTP)
   if (view === 'setup') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
@@ -313,9 +649,11 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Disable authenticator</h2>
+          <h2 className="text-lg font-semibold">Disable MFA</h2>
           <p className="text-sm text-muted-foreground">
-            Enter a verification code to disable multi-factor authentication.
+            {currentMethod === 'sms'
+              ? 'Enter a verification code sent to your phone to disable MFA.'
+              : 'Enter a verification code to disable multi-factor authentication.'}
           </p>
         </div>
 
@@ -323,7 +661,9 @@ export default function MFASettings({
           <label className="text-sm font-medium">Verification code</label>
           {renderDigitInputs()}
           <p className="text-xs text-muted-foreground">
-            Enter the 6-digit code from your authenticator app.
+            {currentMethod === 'sms'
+              ? 'Enter the 6-digit code sent to your phone.'
+              : 'Enter the 6-digit code from your authenticator app.'}
           </p>
         </div>
 
@@ -355,6 +695,7 @@ export default function MFASettings({
 
   // Recovery codes view
   if (view === 'recovery') {
+    const displayCodes = smsRecoveryCodes || recoveryCodes;
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
         <div className="space-y-1">
@@ -365,10 +706,10 @@ export default function MFASettings({
           </p>
         </div>
 
-        {showCodes && recoveryCodes?.length ? (
+        {showCodes && displayCodes?.length ? (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/30 p-4 font-mono text-sm">
-              {recoveryCodes.map((recoveryCode, index) => (
+              {displayCodes.map((recoveryCode, index) => (
                 <div key={`recovery-code-${index}`} className="text-center">
                   {recoveryCode}
                 </div>

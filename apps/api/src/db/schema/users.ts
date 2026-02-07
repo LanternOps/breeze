@@ -4,6 +4,7 @@ import { partners, organizations } from './orgs';
 export const userStatusEnum = pgEnum('user_status', ['active', 'invited', 'disabled']);
 export const roleScopeEnum = pgEnum('role_scope', ['system', 'partner', 'organization']);
 export const orgAccessEnum = pgEnum('org_access', ['all', 'selected', 'none']);
+export const mfaMethodEnum = pgEnum('mfa_method', ['totp', 'sms']);
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -13,6 +14,9 @@ export const users = pgTable('users', {
   mfaSecret: text('mfa_secret'),
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
   mfaRecoveryCodes: jsonb('mfa_recovery_codes'),
+  phoneNumber: text('phone_number'),
+  phoneVerified: boolean('phone_verified').notNull().default(false),
+  mfaMethod: mfaMethodEnum('mfa_method'),
   status: userStatusEnum('status').notNull().default('invited'),
   avatarUrl: text('avatar_url'),
   lastLoginAt: timestamp('last_login_at'),
