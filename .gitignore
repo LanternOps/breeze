@@ -56,3 +56,4 @@ target/
 
 # Stray screenshots
 *.png
+.worktrees/
