@@ -22,7 +22,7 @@
 <p align="center">
   <a href="https://github.com/lanternops/breeze/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License" /></a>
   <a href="https://github.com/lanternops/breeze/releases"><img src="https://img.shields.io/github/v/release/lanternops/breeze" alt="Release" /></a>
-  <a href="https://discord.gg/breeze-rmm"><img src="https://img.shields.io/discord/000000000?label=discord" alt="Discord" /></a>
+  <a href="https://breezermm.com/discord"><img src="https://img.shields.io/discord/000000000?label=discord" alt="Discord" /></a>
 </p>
 
 ---
@@ -33,7 +33,7 @@ Breeze is a full-featured remote monitoring and management platform with AI buil
 
 Software features are exploding, but people can't keep up. Every RMM on the market adds more buttons, more tabs, more dashboards. Breeze takes a different approach: **an AI agent that actually uses the features for you.** It investigates alerts, remediates issues, documents what it did, and only bothers you when it needs a human decision.
 
-Breeze is free, open source (AGPL-3.0), and designed to be self-hosted or [cloud-hosted through LanternOps](https://lanternops.com).
+Breeze is free, open source (AGPL-3.0), and designed to be self-hosted or [cloud-hosted through LanternOps](https://lanternops.io).
 
 ### Why Breeze?
 
