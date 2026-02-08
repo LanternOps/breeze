@@ -249,6 +249,20 @@ export const agentHeartbeatSchema = z.object({
     diskUsedGb: z.number().min(0),
     networkInBytes: z.number().optional(),
     networkOutBytes: z.number().optional(),
+    bandwidthInBps: z.number().int().min(0).optional(),
+    bandwidthOutBps: z.number().int().min(0).optional(),
+    interfaceStats: z.array(z.object({
+      name: z.string().min(1),
+      inBytesPerSec: z.number().int().min(0),
+      outBytesPerSec: z.number().int().min(0),
+      inBytes: z.number().int().min(0),
+      outBytes: z.number().int().min(0),
+      inPackets: z.number().int().min(0),
+      outPackets: z.number().int().min(0),
+      inErrors: z.number().int().min(0),
+      outErrors: z.number().int().min(0),
+      speed: z.number().int().min(0).optional()
+    })).max(100).optional(),
     processCount: z.number().optional()
   }),
   status: z.enum(['ok', 'warning', 'error']),

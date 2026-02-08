@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
+import type { InterfaceBandwidth } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned']);
@@ -81,6 +82,9 @@ export const deviceMetrics = pgTable('device_metrics', {
   diskUsedGb: real('disk_used_gb').notNull(),
   networkInBytes: bigint('network_in_bytes', { mode: 'bigint' }),
   networkOutBytes: bigint('network_out_bytes', { mode: 'bigint' }),
+  bandwidthInBps: bigint('bandwidth_in_bps', { mode: 'bigint' }),
+  bandwidthOutBps: bigint('bandwidth_out_bps', { mode: 'bigint' }),
+  interfaceStats: jsonb('interface_stats').$type<InterfaceBandwidth[]>(),
   processCount: integer('process_count'),
   customMetrics: jsonb('custom_metrics')
 }, (table) => ({

@@ -168,6 +168,19 @@ export interface DeviceHardware {
   updatedAt: Date;
 }
 
+export interface InterfaceBandwidth {
+  name: string;
+  inBytesPerSec: number;
+  outBytesPerSec: number;
+  inBytes: number;
+  outBytes: number;
+  inPackets: number;
+  outPackets: number;
+  inErrors: number;
+  outErrors: number;
+  speed?: number;
+}
+
 export interface DeviceMetrics {
   deviceId: string;
   timestamp: Date;
@@ -178,6 +191,9 @@ export interface DeviceMetrics {
   diskUsedGb: number;
   networkInBytes: bigint | null;
   networkOutBytes: bigint | null;
+  bandwidthInBps: bigint | null;
+  bandwidthOutBps: bigint | null;
+  interfaceStats: InterfaceBandwidth[] | null;
   processCount: number | null;
   customMetrics: Record<string, unknown> | null;
 }
