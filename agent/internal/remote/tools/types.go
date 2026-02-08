@@ -33,11 +33,13 @@ const (
 	CmdTaskDisable = "task_disable"
 
 	// Registry (Windows)
-	CmdRegistryKeys   = "registry_keys"
-	CmdRegistryValues = "registry_values"
-	CmdRegistryGet    = "registry_get"
-	CmdRegistrySet    = "registry_set"
-	CmdRegistryDelete = "registry_delete"
+	CmdRegistryKeys      = "registry_keys"
+	CmdRegistryValues    = "registry_values"
+	CmdRegistryGet       = "registry_get"
+	CmdRegistrySet       = "registry_set"
+	CmdRegistryDelete    = "registry_delete"
+	CmdRegistryKeyCreate = "registry_key_create"
+	CmdRegistryKeyDelete = "registry_key_delete"
 
 	// System
 	CmdReboot   = "reboot"

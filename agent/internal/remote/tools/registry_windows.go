@@ -3,8 +3,11 @@
 package tools
 
 import (
+	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf16"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -102,10 +105,6 @@ func listRegistryValuesOS(hive, path string, startTime time.Time) CommandResult 
 }
 
 func getRegistryValueOS(hive, path, name string, startTime time.Time) CommandResult {
-	if name == "" {
-		return NewErrorResult(fmt.Errorf("value name is required"), time.Since(startTime).Milliseconds())
-	}
-
 	key, err := openRegistryKey(hive, path, registry.QUERY_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -133,10 +132,6 @@ func getRegistryValueOS(hive, path, name string, startTime time.Time) CommandRes
 }
 
 func setRegistryValueOS(hive, path, name, valueType, data string, startTime time.Time) CommandResult {
-	if name == "" {
-		return NewErrorResult(fmt.Errorf("value name is required"), time.Since(startTime).Milliseconds())
-	}
-
 	key, err := openRegistryKey(hive, path, registry.SET_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -156,6 +151,30 @@ func setRegistryValueOS(hive, path, name, valueType, data string, startTime time
 		var val uint64
 		fmt.Sscanf(data, "%d", &val)
 		err = key.SetQWordValue(name, val)
+	case "REG_MULTI_SZ":
+		values := []string{}
+		for _, line := range strings.Split(data, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				values = append(values, trimmed)
+			}
+		}
+		err = key.SetStringsValue(name, values)
+	case "REG_BINARY":
+		hexData := strings.ReplaceAll(data, " ", "")
+		if len(hexData)%2 != 0 {
+			hexData = "0" + hexData
+		}
+		buf := make([]byte, len(hexData)/2)
+		for i := 0; i < len(hexData); i += 2 {
+			var parsed uint64
+			_, scanErr := fmt.Sscanf(hexData[i:i+2], "%02x", &parsed)
+			if scanErr != nil {
+				return NewErrorResult(fmt.Errorf("failed to parse binary value: %w", scanErr), time.Since(startTime).Milliseconds())
+			}
+			buf[i/2] = byte(parsed)
+		}
+		err = key.SetBinaryValue(name, buf)
 	default:
 		return NewErrorResult(fmt.Errorf("unsupported value type: %s", valueType), time.Since(startTime).Milliseconds())
 	}
@@ -175,10 +194,6 @@ func setRegistryValueOS(hive, path, name, valueType, data string, startTime time
 }
 
 func deleteRegistryValueOS(hive, path, name string, startTime time.Time) CommandResult {
-	if name == "" {
-		return NewErrorResult(fmt.Errorf("value name is required"), time.Since(startTime).Milliseconds())
-	}
-
 	key, err := openRegistryKey(hive, path, registry.SET_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -198,21 +213,56 @@ func deleteRegistryValueOS(hive, path, name string, startTime time.Time) Command
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
 }
 
+func createRegistryKeyOS(hive, path string, startTime time.Time) CommandResult {
+	if path == "" {
+		return NewErrorResult(fmt.Errorf("key path is required"), time.Since(startTime).Milliseconds())
+	}
+
+	root, err := resolveRegistryRoot(hive)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
+
+	key, _, err := registry.CreateKey(root, path, registry.ALL_ACCESS)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to create key: %w", err), time.Since(startTime).Milliseconds())
+	}
+	key.Close()
+
+	result := map[string]any{
+		"path":    path,
+		"created": true,
+	}
+
+	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
+}
+
+func deleteRegistryKeyOS(hive, path string, startTime time.Time) CommandResult {
+	if path == "" {
+		return NewErrorResult(fmt.Errorf("key path is required"), time.Since(startTime).Milliseconds())
+	}
+
+	root, err := resolveRegistryRoot(hive)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
+
+	if err := registry.DeleteKey(root, path); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to delete key: %w", err), time.Since(startTime).Milliseconds())
+	}
+
+	result := map[string]any{
+		"path":    path,
+		"deleted": true,
+	}
+
+	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
+}
+
 func openRegistryKey(hive, path string, access uint32) (registry.Key, error) {
-	var root registry.Key
-	switch hive {
-	case "HKLM", "HKEY_LOCAL_MACHINE":
-		root = registry.LOCAL_MACHINE
-	case "HKCU", "HKEY_CURRENT_USER":
-		root = registry.CURRENT_USER
-	case "HKCR", "HKEY_CLASSES_ROOT":
-		root = registry.CLASSES_ROOT
-	case "HKU", "HKEY_USERS":
-		root = registry.USERS
-	case "HKCC", "HKEY_CURRENT_CONFIG":
-		root = registry.CURRENT_CONFIG
-	default:
-		return 0, fmt.Errorf("unknown registry hive: %s", hive)
+	root, err := resolveRegistryRoot(hive)
+	if err != nil {
+		return 0, err
 	}
 
 	key, err := registry.OpenKey(root, path, access)
@@ -221,6 +271,23 @@ func openRegistryKey(hive, path string, access uint32) (registry.Key, error) {
 	}
 
 	return key, nil
+}
+
+func resolveRegistryRoot(hive string) (registry.Key, error) {
+	switch hive {
+	case "HKLM", "HKEY_LOCAL_MACHINE":
+		return registry.LOCAL_MACHINE, nil
+	case "HKCU", "HKEY_CURRENT_USER":
+		return registry.CURRENT_USER, nil
+	case "HKCR", "HKEY_CLASSES_ROOT":
+		return registry.CLASSES_ROOT, nil
+	case "HKU", "HKEY_USERS":
+		return registry.USERS, nil
+	case "HKCC", "HKEY_CURRENT_CONFIG":
+		return registry.CURRENT_CONFIG, nil
+	default:
+		return 0, fmt.Errorf("unknown registry hive: %s", hive)
+	}
 }
 
 func typeToString(valType uint32) string {
@@ -245,14 +312,17 @@ func typeToString(valType uint32) string {
 func formatValue(buf []byte, valType uint32) string {
 	switch valType {
 	case registry.SZ, registry.EXPAND_SZ:
-		// UTF-16 to string
-		if len(buf) > 1 {
-			// Remove null terminator
-			for len(buf) > 1 && buf[len(buf)-1] == 0 && buf[len(buf)-2] == 0 {
-				buf = buf[:len(buf)-2]
+		return decodeUTF16LE(buf)
+	case registry.MULTI_SZ:
+		decoded := decodeUTF16LE(buf)
+		parts := strings.Split(decoded, "\x00")
+		cleaned := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if part != "" {
+				cleaned = append(cleaned, part)
 			}
 		}
-		return string(buf)
+		return strings.Join(cleaned, "\n")
 	case registry.DWORD:
 		if len(buf) >= 4 {
 			val := uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16 | uint32(buf[3])<<24
@@ -265,7 +335,28 @@ func formatValue(buf []byte, valType uint32) string {
 			return fmt.Sprintf("%d", val)
 		}
 	case registry.BINARY:
-		return fmt.Sprintf("%x", buf)
+		return strings.ToUpper(fmt.Sprintf("% X", buf))
 	}
 	return fmt.Sprintf("%v", buf)
+}
+
+func decodeUTF16LE(buf []byte) string {
+	if len(buf) < 2 {
+		return ""
+	}
+
+	if len(buf)%2 != 0 {
+		buf = buf[:len(buf)-1]
+	}
+
+	u16 := make([]uint16, 0, len(buf)/2)
+	for i := 0; i < len(buf); i += 2 {
+		u16 = append(u16, binary.LittleEndian.Uint16(buf[i:i+2]))
+	}
+
+	for len(u16) > 0 && u16[len(u16)-1] == 0 {
+		u16 = u16[:len(u16)-1]
+	}
+
+	return string(utf16.Decode(u16))
 }

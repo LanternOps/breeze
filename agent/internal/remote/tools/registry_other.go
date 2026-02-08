@@ -41,3 +41,17 @@ func deleteRegistryValueOS(hive, path, name string, startTime time.Time) Command
 		time.Since(startTime).Milliseconds(),
 	)
 }
+
+func createRegistryKeyOS(hive, path string, startTime time.Time) CommandResult {
+	return NewErrorResult(
+		fmt.Errorf("registry is only supported on Windows"),
+		time.Since(startTime).Milliseconds(),
+	)
+}
+
+func deleteRegistryKeyOS(hive, path string, startTime time.Time) CommandResult {
+	return NewErrorResult(
+		fmt.Errorf("registry is only supported on Windows"),
+		time.Since(startTime).Milliseconds(),
+	)
+}

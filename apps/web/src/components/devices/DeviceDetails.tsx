@@ -199,7 +199,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       )}
 
       {activeTab === 'patches' && (
-        <DevicePatchStatusTab deviceId={device.id} timezone={effectiveTimezone} />
+        <DevicePatchStatusTab deviceId={device.id} timezone={effectiveTimezone} osType={device.os} />
       )}
 
       {activeTab === 'security' && (
