@@ -46,6 +46,17 @@ type Config struct {
 	// User helper configuration
 	UserHelperEnabled bool   `mapstructure:"user_helper_enabled"`
 	IPCSocketPath     string `mapstructure:"ipc_socket_path"`
+
+	// Patch management
+	PatchExcludeDrivers        bool     `mapstructure:"patch_exclude_drivers"`
+	PatchExcludeFeatureUpdates bool     `mapstructure:"patch_exclude_feature_updates"`
+	PatchMinDiskSpaceGB        float64  `mapstructure:"patch_min_disk_space_gb"`
+	PatchRequireACPower        bool     `mapstructure:"patch_require_ac_power"`
+	PatchMaintenanceStart      string   `mapstructure:"patch_maintenance_start"` // "HH:MM" local time
+	PatchMaintenanceEnd        string   `mapstructure:"patch_maintenance_end"`   // "HH:MM" local time
+	PatchMaintenanceDays       []string `mapstructure:"patch_maintenance_days"`  // ["monday",...] empty=all
+	PatchRebootMaxPerDay       int      `mapstructure:"patch_reboot_max_per_day"`
+	PatchAutoAcceptEula        bool     `mapstructure:"patch_auto_accept_eula"`
 }
 
 func Default() *Config {
@@ -62,6 +73,12 @@ func Default() *Config {
 		AuditEnabled:             true,
 		AuditMaxSizeMB:           50,
 		AuditMaxBackups:          3,
+
+		PatchExcludeFeatureUpdates: true,
+		PatchMinDiskSpaceGB:        2.0,
+		PatchRequireACPower:        true,
+		PatchRebootMaxPerDay:       3,
+		PatchAutoAcceptEula:        true,
 	}
 }
 

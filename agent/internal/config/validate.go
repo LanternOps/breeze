@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -148,6 +149,40 @@ func (c *Config) ValidateTiered() ValidationResult {
 	} else if c.CommandQueueSize > 10000 {
 		result.Warnings = append(result.Warnings, fmt.Errorf("command_queue_size %d exceeds maximum 10000, clamped to 10000", c.CommandQueueSize))
 		c.CommandQueueSize = 10000
+	}
+
+	// Patch management validation
+	if c.PatchMinDiskSpaceGB != 0 {
+		if c.PatchMinDiskSpaceGB < 0.5 {
+			result.Warnings = append(result.Warnings, fmt.Errorf("patch_min_disk_space_gb %.1f is below minimum 0.5, clamped to 0.5", c.PatchMinDiskSpaceGB))
+			c.PatchMinDiskSpaceGB = 0.5
+		} else if c.PatchMinDiskSpaceGB > 50 {
+			result.Warnings = append(result.Warnings, fmt.Errorf("patch_min_disk_space_gb %.1f exceeds maximum 50, clamped to 50", c.PatchMinDiskSpaceGB))
+			c.PatchMinDiskSpaceGB = 50
+		}
+	}
+
+	if c.PatchRebootMaxPerDay != 0 {
+		if c.PatchRebootMaxPerDay < 1 {
+			result.Warnings = append(result.Warnings, fmt.Errorf("patch_reboot_max_per_day %d is below minimum 1, clamped to 1", c.PatchRebootMaxPerDay))
+			c.PatchRebootMaxPerDay = 1
+		} else if c.PatchRebootMaxPerDay > 10 {
+			result.Warnings = append(result.Warnings, fmt.Errorf("patch_reboot_max_per_day %d exceeds maximum 10, clamped to 10", c.PatchRebootMaxPerDay))
+			c.PatchRebootMaxPerDay = 10
+		}
+	}
+
+	if c.PatchMaintenanceStart != "" {
+		if _, err := time.Parse("15:04", c.PatchMaintenanceStart); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Errorf("patch_maintenance_start %q is not valid HH:MM, cleared", c.PatchMaintenanceStart))
+			c.PatchMaintenanceStart = ""
+		}
+	}
+	if c.PatchMaintenanceEnd != "" {
+		if _, err := time.Parse("15:04", c.PatchMaintenanceEnd); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Errorf("patch_maintenance_end %q is not valid HH:MM, cleared", c.PatchMaintenanceEnd))
+			c.PatchMaintenanceEnd = ""
+		}
 	}
 
 	return result

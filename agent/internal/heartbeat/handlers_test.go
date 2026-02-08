@@ -39,6 +39,8 @@ var allCommandTypes = []string{
 
 	// handlers_patch.go init()
 	tools.CmdPatchScan, tools.CmdInstallPatches, tools.CmdRollbackPatches,
+	tools.CmdDownloadPatches,
+	tools.CmdScheduleReboot, tools.CmdCancelReboot, tools.CmdGetRebootStatus,
 
 	// handlers_network.go init()
 	tools.CmdNetworkDiscovery, tools.CmdSnmpPoll,

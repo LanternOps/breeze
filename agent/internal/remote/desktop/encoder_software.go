@@ -65,6 +65,10 @@ func (s *softwareEncoder) SetFPS(fps int) error {
 	return nil
 }
 
+func (s *softwareEncoder) SetDimensions(width, height int) error {
+	return nil
+}
+
 func (s *softwareEncoder) Close() error {
 	return nil
 }
