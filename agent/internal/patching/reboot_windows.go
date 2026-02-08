@@ -126,6 +126,9 @@ func (r *RebootManager) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.stopped {
+		return // already stopped, avoid double-close on stopChan
+	}
 	r.stopped = true
 	r.cancelLocked()
 	close(r.stopChan)
@@ -176,6 +179,11 @@ func (r *RebootManager) scheduleNotifications(totalDelay time.Duration) {
 
 func (r *RebootManager) executeReboot() {
 	r.mu.Lock()
+
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
 
 	// Circuit breaker: check reboot frequency
 	now := time.Now()

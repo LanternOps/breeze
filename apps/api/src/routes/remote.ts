@@ -179,11 +179,11 @@ const sessionHistorySchema = z.object({
 });
 
 const webrtcOfferSchema = z.object({
-  offer: z.string().min(1)
+  offer: z.string().min(1).max(65536)
 });
 
 const webrtcAnswerSchema = z.object({
-  answer: z.string().min(1)
+  answer: z.string().min(1).max(65536)
 });
 
 const iceCandidateSchema = z.object({
@@ -714,13 +714,14 @@ remoteRoutes.post(
 
     // Send start_desktop command to agent with the offer
     // The agent will create a pion PeerConnection and return the answer
+    let agentReachable = false;
     if (device.agentId) {
-      const sent = sendCommandToAgent(device.agentId, {
+      agentReachable = sendCommandToAgent(device.agentId, {
         id: `desk-${sessionId}`,
         type: 'start_desktop',
         payload: { sessionId, offer: data.offer }
       });
-      if (!sent) {
+      if (!agentReachable) {
         console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
       }
     }
@@ -728,7 +729,8 @@ remoteRoutes.post(
     return c.json({
       id: updated.id,
       status: updated.status,
-      webrtcOffer: updated.webrtcOffer
+      webrtcOffer: updated.webrtcOffer,
+      ...(agentReachable ? {} : { warning: 'Agent is not currently connected; the offer will be delivered when it reconnects' })
     });
   }
 );

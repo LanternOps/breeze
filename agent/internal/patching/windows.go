@@ -17,6 +17,16 @@ import (
 
 var log = logging.L("patching")
 
+// WUA OperationResultCode constants
+const (
+	wuaResultNotStarted       = 0
+	wuaResultInProgress       = 1
+	wuaResultSucceeded        = 2
+	wuaResultSucceededReboot  = 3
+	wuaResultFailed           = 4
+	wuaResultAborted          = 5
+)
+
 // WindowsUpdateProvider integrates with Windows Update.
 type WindowsUpdateProvider struct {
 	cfg *config.Config
@@ -118,16 +128,16 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			}
 		}
 
-		if resultCode != 2 && resultCode != 3 {
+		if resultCode != wuaResultSucceeded && resultCode != wuaResultSucceededReboot {
 			msg := fmt.Sprintf("install failed with result code %d", resultCode)
 			if result.HResult != 0 {
 				msg += ": " + FormatHResult(result.HResult)
 			}
-			return fmt.Errorf("%s", msg)
+			return fmt.Errorf("WUA install: %s", msg)
 		}
 
 		// Post-install verification: re-search to confirm installation
-		if resultCode == 2 || resultCode == 3 {
+		if resultCode == wuaResultSucceeded || resultCode == wuaResultSucceededReboot {
 			verifyUpdate, verifyErr := w.findUpdate(session, "IsInstalled=0", patchID)
 			if verifyErr == nil && verifyUpdate != nil {
 				// Still shows as not installed — likely needs reboot
@@ -178,7 +188,7 @@ func (w *WindowsUpdateProvider) Uninstall(patchID string) error {
 		defer uninstallResult.Release()
 
 		resultCode, _ := w.getIntProperty(uninstallResult, "ResultCode")
-		if resultCode != 2 && resultCode != 3 {
+		if resultCode != wuaResultSucceeded && resultCode != wuaResultSucceededReboot {
 			return fmt.Errorf("uninstall failed with result code %d", resultCode)
 		}
 
@@ -389,11 +399,14 @@ func (w *WindowsUpdateProvider) getKBNumber(update *ole.IDispatch) string {
 	defer kbIDs.Release()
 
 	countVar, err := oleutil.GetProperty(kbIDs, "Count")
-	if err != nil || int(countVar.Val) == 0 {
-		countVar.Clear()
+	if err != nil {
 		return ""
 	}
+	count := int(countVar.Val)
 	countVar.Clear()
+	if count == 0 {
+		return ""
+	}
 
 	itemVar, err := oleutil.CallMethod(kbIDs, "Item", 0)
 	if err != nil {
@@ -423,11 +436,14 @@ func (w *WindowsUpdateProvider) mapCategory(update *ole.IDispatch) string {
 	defer cats.Release()
 
 	countVar, err := oleutil.GetProperty(cats, "Count")
-	if err != nil || int(countVar.Val) == 0 {
-		countVar.Clear()
+	if err != nil {
 		return "application"
 	}
+	catCount := int(countVar.Val)
 	countVar.Clear()
+	if catCount == 0 {
+		return "application"
+	}
 
 	itemVar, err := oleutil.CallMethod(cats, "Item", 0)
 	if err != nil {
@@ -708,7 +724,7 @@ func (w *WindowsUpdateProvider) Download(patchIDs []string, progress ProgressCal
 			if err != nil {
 				results = append(results, DownloadResult{
 					PatchID: info.id,
-					Success: resultCode == 2,
+					Success: resultCode == wuaResultSucceeded,
 					Message: fmt.Sprintf("download result code: %d", resultCode),
 				})
 				continue
@@ -729,7 +745,7 @@ func (w *WindowsUpdateProvider) Download(patchIDs []string, progress ProgressCal
 			hresult, _ := w.getIntProperty(updateResult, "HResult")
 			updateResult.Release()
 
-			success := code == 2 // orcSucceeded
+			success := code == wuaResultSucceeded
 			msg := fmt.Sprintf("result code: %d", code)
 			if hresult != 0 {
 				msg = fmt.Sprintf("result code: %d, %s", code, FormatHResult(hresult))
