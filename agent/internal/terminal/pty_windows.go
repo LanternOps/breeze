@@ -4,7 +4,6 @@ package terminal
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 )
@@ -48,25 +47,21 @@ func (s *Session) start() error {
 
 	s.cmd = cmd
 
-	// Create a pipe for the pseudo-PTY interface
-	// We'll use the stdin writer as our "PTY" for writing
-	s.pty = stdin.(*os.File)
+	// Store the stdin pipe for writing input to the shell
+	s.stdin = stdin
 
 	// Start reading stdout in a goroutine
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, err := stdout.Read(buf)
-			if err != nil {
-				if err != io.EOF && s.onClose != nil {
-					s.onClose(err)
-				}
-				return
-			}
 			if n > 0 && s.onOutput != nil {
 				data := make([]byte, n)
 				copy(data, buf[:n])
 				s.onOutput(data)
+			}
+			if err != nil {
+				return
 			}
 		}
 	}()
@@ -76,16 +71,13 @@ func (s *Session) start() error {
 		buf := make([]byte, 4096)
 		for {
 			n, err := stderr.Read(buf)
-			if err != nil {
-				if err != io.EOF {
-					return
-				}
-				return
-			}
 			if n > 0 && s.onOutput != nil {
 				data := make([]byte, n)
 				copy(data, buf[:n])
 				s.onOutput(data)
+			}
+			if err != nil {
+				return
 			}
 		}
 	}()

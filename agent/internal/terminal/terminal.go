@@ -18,7 +18,8 @@ type Session struct {
 	Cols     uint16
 	Rows     uint16
 	Shell    string
-	pty      *os.File
+	pty      *os.File       // used on Unix/macOS for real PTY master fd
+	stdin    io.WriteCloser // used on Windows for pipe-based stdin
 	cmd      *exec.Cmd
 	mu       sync.Mutex
 	closed   bool
@@ -146,13 +147,19 @@ func (m *Manager) CloseAll() {
 	}
 }
 
-// write writes data to the session's PTY
+// write writes data to the session's PTY or stdin pipe
 func (s *Session) write(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
 		return fmt.Errorf("session is closed")
+	}
+
+	// Prefer stdin pipe (Windows), fall back to PTY fd (Unix/macOS)
+	if s.stdin != nil {
+		_, err := s.stdin.Write(data)
+		return err
 	}
 
 	if s.pty == nil {
@@ -175,7 +182,14 @@ func (s *Session) close() error {
 
 	var closeErr error
 
-	// Close PTY
+	// Close stdin pipe (Windows)
+	if s.stdin != nil {
+		if err := s.stdin.Close(); err != nil {
+			closeErr = err
+		}
+	}
+
+	// Close PTY (Unix/macOS)
 	if s.pty != nil {
 		if err := s.pty.Close(); err != nil {
 			closeErr = err

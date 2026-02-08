@@ -36,6 +36,12 @@ type WsStreamSession struct {
 	done         chan struct{}
 	mu           sync.RWMutex
 	isActive     bool
+
+	// Optimized pipeline components
+	differ   *frameDiffer
+	cursor   *cursorOverlay
+	metrics  *StreamMetrics
+	adaptive *adaptiveQuality
 }
 
 // newWsStreamSession creates a new streaming session (called by WsSessionManager)
@@ -48,12 +54,17 @@ func newWsStreamSession(id string, capturer ScreenCapturer, inputHandler InputHa
 		config:       config,
 		done:         make(chan struct{}),
 		isActive:     true,
+		differ:       newFrameDiffer(),
+		cursor:       newCursorOverlay(),
+		metrics:      newStreamMetrics(),
+		adaptive:     newAdaptiveQuality(config.Quality),
 	}
 }
 
-// Start begins the capture loop in a goroutine
+// Start begins the capture loop and metrics logger in goroutines
 func (s *WsStreamSession) Start() {
 	go s.captureLoop()
+	go s.metricsLogger()
 }
 
 // captureLoop runs at the configured FPS and sends JPEG frames
@@ -82,38 +93,114 @@ func (s *WsStreamSession) captureLoop() {
 	}
 }
 
-// captureAndSend captures one frame and sends it
+// captureAndSend captures one frame through the optimized pipeline:
+// Capture → Frame diff → Cursor composite → Fast scale → Adaptive quality → Pooled JPEG encode → Send
 func (s *WsStreamSession) captureAndSend() {
 	s.mu.RLock()
 	if !s.isActive {
 		s.mu.RUnlock()
 		return
 	}
-	quality := s.config.Quality
 	scaleFactor := s.config.ScaleFactor
 	s.mu.RUnlock()
 
+	// 1. Capture (using persistent GDI handles)
+	t0 := time.Now()
 	img, err := s.capturer.Capture()
+	captureTime := time.Since(t0)
 	if err != nil {
 		slog.Warn("Desktop capture error", "sessionId", s.id, "error", err)
 		return
 	}
+	s.metrics.RecordCapture(captureTime)
 
-	// Scale if needed
-	if scaleFactor < 1.0 && scaleFactor > 0 {
-		img = ScaleImage(img, scaleFactor)
+	// 2. Frame differencing — skip encode+send if pixels unchanged
+	if !s.differ.HasChanged(img.Pix) {
+		captureImagePool.Put(img)
+		s.metrics.RecordSkip()
+		return
 	}
 
-	// Encode to JPEG
-	jpegData, err := EncodeJPEG(img, quality)
+	// 3. Cursor compositing (drawn at full resolution, scales naturally)
+	s.cursor.CompositeCursor(img)
+
+	// 4. Fast scale using direct Pix manipulation
+	var scaled = img
+	t1 := time.Now()
+	if scaleFactor < 1.0 && scaleFactor > 0 {
+		scaled = ScaleImageFast(img, scaleFactor)
+		captureImagePool.Put(img) // return full-res image to pool
+	}
+	s.metrics.RecordScale(time.Since(t1))
+
+	// 5. Get adaptive quality
+	quality := s.adaptive.Quality()
+	s.metrics.SetQuality(quality)
+
+	// 6. Pooled JPEG encode
+	t2 := time.Now()
+	buf, err := EncodeJPEGPooled(scaled, quality)
+	encodeTime := time.Since(t2)
+
+	// Return scaled image to pool (only if it was a different image from capture)
+	if scaleFactor < 1.0 && scaleFactor > 0 {
+		scaledImagePool.Put(scaled)
+	} else {
+		captureImagePool.Put(scaled)
+	}
+
 	if err != nil {
 		slog.Warn("Desktop JPEG encode error", "sessionId", s.id, "error", err)
 		return
 	}
 
-	// Send frame (non-blocking — if the channel is full, frame is dropped)
-	if err := s.sendFrame(s.id, jpegData); err != nil {
-		// Frame dropped or connection issue — don't log every dropped frame
+	frameSize := buf.Len()
+	s.metrics.RecordEncode(encodeTime, frameSize)
+
+	// 7. Send frame
+	jpegData := buf.Bytes()
+	sendErr := s.sendFrame(s.id, jpegData)
+	putBuffer(buf) // return buffer to pool after send copies it
+
+	if sendErr != nil {
+		s.metrics.RecordDrop()
+		s.adaptive.RecordFrame(encodeTime, frameSize, true)
+	} else {
+		s.metrics.RecordSend(frameSize)
+		s.adaptive.RecordFrame(encodeTime, frameSize, false)
+	}
+
+	// 8. Let adaptive quality recalculate
+	s.adaptive.Adjust()
+}
+
+// metricsLogger periodically logs streaming metrics
+func (s *WsStreamSession) metricsLogger() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			snap := s.metrics.Snapshot()
+			slog.Info("Desktop stream metrics",
+				"sessionId", s.id,
+				"captured", snap.FramesCaptured,
+				"encoded", snap.FramesEncoded,
+				"sent", snap.FramesSent,
+				"skipped", snap.FramesSkipped,
+				"dropped", snap.FramesDropped,
+				"captureMs", fmt.Sprintf("%.1f", snap.CaptureMs),
+				"scaleMs", fmt.Sprintf("%.1f", snap.ScaleMs),
+				"encodeMs", fmt.Sprintf("%.1f", snap.EncodeMs),
+				"frameBytes", snap.LastFrameSize,
+				"bandwidthKBps", fmt.Sprintf("%.1f", snap.BandwidthKBps),
+				"quality", snap.CurrentQuality,
+				"uptime", snap.Uptime.Round(time.Second),
+			)
+		}
 	}
 }
 
@@ -132,9 +219,11 @@ func (s *WsStreamSession) UpdateConfig(config StreamConfig) {
 
 	if config.Quality >= 1 && config.Quality <= 100 {
 		s.config.Quality = config.Quality
+		s.adaptive.SetBaseQuality(config.Quality)
 	}
 	if config.ScaleFactor > 0 && config.ScaleFactor <= 1.0 {
 		s.config.ScaleFactor = config.ScaleFactor
+		s.differ.Reset() // resolution change invalidates frame diff
 	}
 	if config.MaxFPS >= 1 && config.MaxFPS <= 30 {
 		s.config.MaxFPS = config.MaxFPS
@@ -160,5 +249,15 @@ func (s *WsStreamSession) Stop() {
 	if s.capturer != nil {
 		s.capturer.Close()
 	}
-	slog.Info("Desktop WS stream session stopped", "sessionId", s.id)
+
+	// Log final metrics
+	snap := s.metrics.Snapshot()
+	slog.Info("Desktop WS stream session stopped",
+		"sessionId", s.id,
+		"totalCaptured", snap.FramesCaptured,
+		"totalSent", snap.FramesSent,
+		"totalSkipped", snap.FramesSkipped,
+		"avgBandwidthKBps", fmt.Sprintf("%.1f", snap.BandwidthKBps),
+		"uptime", snap.Uptime.Round(time.Second),
+	)
 }
