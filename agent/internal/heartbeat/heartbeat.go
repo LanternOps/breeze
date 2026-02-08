@@ -100,6 +100,11 @@ type Heartbeat struct {
 	inventoryWg sync.WaitGroup
 	retryCfg    httputil.RetryConfig
 	stopOnce    sync.Once
+
+	// Command deduplication: prevents the same commandId from being
+	// executed twice when delivered via both WebSocket and heartbeat.
+	seenCommands   map[string]time.Time
+	seenCommandsMu sync.Mutex
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -141,6 +146,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		pool:            workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
 		healthMon:       health.NewMonitor(),
 		retryCfg:        httputil.DefaultRetryConfig(),
+		seenCommands:    make(map[string]time.Time),
 	}
 	h.accepting.Store(true)
 
@@ -803,6 +809,10 @@ func (h *Heartbeat) sendHeartbeat() {
 func (h *Heartbeat) processCommand(cmd Command) {
 	result := h.executeCommand(cmd)
 
+	if result.Status == "duplicate" {
+		return
+	}
+
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
 		log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err)
@@ -872,7 +882,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 		}
 	}
 
-	if !isEphemeralCommand(cmd.Type) {
+	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) {
 		go h.submitCommandResult(cmd.ID, result)
 	}
 
@@ -888,10 +898,45 @@ func isEphemeralCommand(cmdType string) bool {
 	return false
 }
 
+// markCommandSeen returns true if this is the first time seeing the command ID.
+// It also evicts entries older than 2 minutes to prevent unbounded growth.
+func (h *Heartbeat) markCommandSeen(id string) bool {
+	h.seenCommandsMu.Lock()
+	defer h.seenCommandsMu.Unlock()
+
+	if _, seen := h.seenCommands[id]; seen {
+		return false
+	}
+
+	h.seenCommands[id] = time.Now()
+
+	// Evict entries older than 2 minutes when map grows past 100
+	if len(h.seenCommands) > 100 {
+		cutoff := time.Now().Add(-2 * time.Minute)
+		for k, t := range h.seenCommands {
+			if t.Before(cutoff) {
+				delete(h.seenCommands, k)
+			}
+		}
+	}
+
+	return true
+}
+
 // executeCommand runs a command and returns the result.
 // Command dispatch is handled via the handler registry in handlers*.go.
 func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	cmdLog := logging.WithCommand(log, cmd.ID, cmd.Type)
+
+	// Deduplicate: skip if we've already seen this command ID
+	// (can arrive via both WebSocket and heartbeat response)
+	if !h.markCommandSeen(cmd.ID) {
+		cmdLog.Debug("skipping duplicate command")
+		return tools.CommandResult{
+			Status: "duplicate",
+		}
+	}
+
 	cmdLog.Info("processing command")
 
 	// Audit: command received
