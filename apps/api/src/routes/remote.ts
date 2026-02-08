@@ -103,8 +103,35 @@ async function getTransferWithOrgCheck(transferId: string, auth: { canAccessOrg:
   return transfer;
 }
 
+// Auto-expire stale sessions that were never properly connected
+async function expireStaleSessions(orgId: string) {
+  const now = new Date();
+  // Pending sessions older than 5 minutes were never picked up
+  const pendingCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+  // Connecting sessions older than 2 minutes failed to negotiate
+  const connectingCutoff = new Date(now.getTime() - 2 * 60 * 1000);
+
+  await db
+    .update(remoteSessions)
+    .set({ status: 'disconnected', endedAt: now })
+    .where(
+      and(
+        inArray(remoteSessions.deviceId,
+          db.select({ id: devices.id }).from(devices).where(eq(devices.orgId, orgId))
+        ),
+        or(
+          and(eq(remoteSessions.status, 'pending'), lte(remoteSessions.createdAt, pendingCutoff)),
+          and(eq(remoteSessions.status, 'connecting'), lte(remoteSessions.createdAt, connectingCutoff))
+        )
+      )
+    );
+}
+
 // Rate limiting helper - check concurrent sessions per org
 async function checkSessionRateLimit(orgId: string, maxConcurrent: number = 10): Promise<{ allowed: boolean; currentCount: number }> {
+  // Clean up stale sessions first so they don't count against the limit
+  await expireStaleSessions(orgId);
+
   const countResult = await db
     .select({ count: sql<number>`count(*)` })
     .from(remoteSessions)
@@ -222,42 +249,49 @@ remoteRoutes.use('*', authMiddleware);
 // REMOTE SESSIONS ENDPOINTS
 // ============================================
 
-// DELETE /remote/sessions/stale - Cleanup stale sessions (dev only)
+// DELETE /remote/sessions/stale - Cleanup stale sessions, optionally scoped to a device
 remoteRoutes.delete(
   '/sessions/stale',
-  requireScope('system', 'partner'),
+  requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
+    const deviceId = c.req.query('deviceId');
     const activeStatuses: Array<'pending' | 'connecting' | 'active'> = ['pending', 'connecting', 'active'];
 
-    let scopedSessionIds: string[] = [];
+    const conditions: ReturnType<typeof eq>[] = [
+      inArray(remoteSessions.status, activeStatuses)
+    ];
 
-    if (auth.scope === 'partner') {
+    // Scope by device if specified
+    if (deviceId) {
+      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      if (!device) {
+        return c.json({ error: 'Device not found or access denied' }, 404);
+      }
+      conditions.push(eq(remoteSessions.deviceId, deviceId));
+    }
+
+    // Scope by org access
+    if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      conditions.push(eq(devices.orgId, auth.orgId));
+    } else if (auth.scope === 'partner') {
       const orgIds = auth.accessibleOrgIds ?? [];
       if (orgIds.length === 0) {
         return c.json({ cleaned: 0, ids: [] });
       }
-
-      const partnerSessions = await db
-        .select({ id: remoteSessions.id })
-        .from(remoteSessions)
-        .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
-        .where(
-          and(
-            inArray(remoteSessions.status, activeStatuses),
-            inArray(devices.orgId, orgIds)
-          )
-        );
-
-      scopedSessionIds = partnerSessions.map((session) => session.id);
-    } else {
-      const allActiveSessions = await db
-        .select({ id: remoteSessions.id })
-        .from(remoteSessions)
-        .where(inArray(remoteSessions.status, activeStatuses));
-
-      scopedSessionIds = allActiveSessions.map((session) => session.id);
+      conditions.push(inArray(devices.orgId, orgIds));
     }
+
+    const staleSessions = await db
+      .select({ id: remoteSessions.id })
+      .from(remoteSessions)
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .where(and(...conditions));
+
+    const scopedSessionIds = staleSessions.map((session) => session.id);
 
     if (scopedSessionIds.length === 0) {
       return c.json({ cleaned: 0, ids: [] });

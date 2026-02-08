@@ -19,18 +19,21 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // On Linux/Windows, deep link URL comes as a command-line argument.
+            // On macOS, it arrives via on_open_url instead, so argv may be empty.
             if let Some(url) = argv.get(1) {
                 let _ = app.emit("deep-link-received", url.clone());
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_focus();
-                }
+            }
+            // Always focus the existing window
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
             }
         }));
     }
 
     builder
         .setup(|app| {
-            // Check for deep link on initial launch — store it for the frontend to retrieve
+            // Check for deep link on initial launch
             let initial_url = app
                 .deep_link()
                 .get_current()
@@ -38,9 +41,24 @@ pub fn run() {
                 .flatten()
                 .and_then(|urls| urls.first().map(|u| u.to_string()));
 
-            app.manage(DeepLinkState(Mutex::new(initial_url)));
+            // Store for the get_initial_deep_link command (synchronous path)
+            app.manage(DeepLinkState(Mutex::new(initial_url.clone())));
 
-            // Listen for future deep link events (after app is already running)
+            // Also emit the initial URL as an event after a short delay, giving
+            // the webview time to mount and register its event listener. This
+            // handles the macOS race where get_current() returns the URL but the
+            // frontend hasn't called get_initial_deep_link yet, or vice-versa.
+            if let Some(url) = initial_url {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let _ = handle.emit("deep-link-received", url);
+                });
+            }
+
+            // Listen for deep link events when the app is already running.
+            // On macOS this is the PRIMARY path for receiving URLs (both initial
+            // and subsequent), since macOS delivers them via the app delegate.
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 if let Some(url) = event.urls().first() {

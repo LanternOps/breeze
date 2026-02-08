@@ -17,7 +17,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [fps, setFps] = useState(0);
   const [quality, setQuality] = useState(60);
-  const [scale, setScale] = useState(0.5);
+  const [scale, setScale] = useState(1.0);
   const [maxFps, setMaxFps] = useState(15);
   const [hostname, setHostname] = useState('');
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
@@ -55,6 +55,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setStatus('connected');
             setHostname(msg.device?.hostname || 'Unknown');
             setConnectedAt(new Date());
+            // Auto-focus the canvas so keyboard events are captured immediately
+            canvasRef.current?.focus();
             break;
           case 'pong':
             break;
@@ -132,7 +134,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     });
   }, []);
 
-  // Compute scale from canvas coordinates to remote screen coordinates
+  // Map browser pixel coordinates to full remote screen coordinates.
+  // The canvas dimensions match the scaled frame (e.g. 960x540 at 50%),
+  // but the agent expects coordinates in the full screen space (1920x1080).
   const scaleCoords = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -142,10 +146,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const scaleY = canvas.height / rect.height;
 
     return {
-      x: Math.round((clientX - rect.left) * scaleX),
-      y: Math.round((clientY - rect.top) * scaleY),
+      x: Math.round((clientX - rect.left) * scaleX / scale),
+      y: Math.round((clientY - rect.top) * scaleY / scale),
     };
-  }, []);
+  }, [scale]);
 
   // Send input event
   const sendInput = useCallback((event: Record<string, unknown>) => {

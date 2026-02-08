@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, ExternalLink, Download } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '@/stores/auth';
 
@@ -11,6 +11,12 @@ interface Props {
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  // Clean up listeners on unmount
+  useEffect(() => {
+    return () => { cleanupRef.current?.(); };
+  }, []);
 
   const handleConnect = useCallback(async () => {
     setStatus('creating');
@@ -45,13 +51,38 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       setStatus('launching');
 
-      // Try to open via deep link
+      // Trigger the OS protocol handler. For custom protocols like breeze://,
+      // the browser hands the URL off to the OS and stays on the current page.
       window.location.href = deepLink;
 
-      // Show fallback after 3 seconds (viewer not installed)
-      setTimeout(() => {
-        setStatus((current) => current === 'launching' ? 'fallback' : current);
-      }, 3000);
+      // Detect if the app launched by listening for window blur (the OS steals
+      // focus when it opens the Breeze Viewer app).
+      let launched = false;
+      let fallbackTimer: ReturnType<typeof setTimeout>;
+
+      const onBlur = () => {
+        launched = true;
+        setStatus('idle');
+      };
+
+      const cleanup = () => {
+        window.removeEventListener('blur', onBlur);
+        clearTimeout(fallbackTimer);
+        cleanupRef.current = null;
+      };
+
+      window.addEventListener('blur', onBlur);
+      cleanupRef.current = cleanup;
+
+      // Show fallback after 4 seconds if the app didn't launch
+      fallbackTimer = setTimeout(() => {
+        cleanup();
+        if (!launched) {
+          // End the session we created so it doesn't count against the limit
+          fetchWithAuth(`/remote/sessions/${session.id}/end`, { method: 'POST' }).catch(() => {});
+          setStatus((current) => current === 'launching' ? 'fallback' : current);
+        }
+      }, 4000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
       setStatus('idle');

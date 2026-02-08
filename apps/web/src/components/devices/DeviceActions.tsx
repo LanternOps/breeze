@@ -10,7 +10,8 @@ import {
   X,
   AlertTriangle,
   Wrench,
-  Trash2
+  Trash2,
+  XCircle
 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -21,7 +22,7 @@ type DeviceActionsProps = {
   compact?: boolean;
 };
 
-type ModalType = 'none' | 'reboot' | 'shutdown' | 'maintenance' | 'decommission';
+type ModalType = 'none' | 'reboot' | 'shutdown' | 'maintenance' | 'decommission' | 'clear-sessions';
 
 export default function DeviceActions({ device, onAction, compact = false }: DeviceActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -29,7 +30,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
   const [loading, setLoading] = useState(false);
 
   const handleAction = async (action: string) => {
-    if (action === 'reboot' || action === 'shutdown' || action === 'maintenance' || action === 'decommission') {
+    if (action === 'reboot' || action === 'shutdown' || action === 'maintenance' || action === 'decommission' || action === 'clear-sessions') {
       setModalType(action);
       setMenuOpen(false);
       return;
@@ -102,6 +103,14 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               >
                 <RotateCcw className="h-4 w-4" />
                 Reboot
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAction('clear-sessions')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <XCircle className="h-4 w-4" />
+                Clear Sessions
               </button>
               <hr className="my-1" />
               <button
@@ -201,6 +210,14 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               </button>
               <button
                 type="button"
+                onClick={() => handleAction('clear-sessions')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <XCircle className="h-4 w-4" />
+                Clear Sessions
+              </button>
+              <button
+                type="button"
                 onClick={() => handleAction('settings')}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
@@ -271,6 +288,12 @@ function ConfirmationModal({ type, device, loading, onConfirm, onCancel }: Confi
       confirmLabel: 'Decommission',
       confirmClass: 'bg-destructive text-destructive-foreground hover:opacity-90'
     },
+    'clear-sessions': {
+      title: 'Clear Sessions',
+      description: `End all active remote sessions for ${device.hostname}? This will disconnect any users currently connected via terminal, desktop, or file transfer.`,
+      confirmLabel: 'Clear Sessions',
+      confirmClass: 'bg-yellow-600 text-white hover:bg-yellow-700'
+    },
     none: {
       title: '',
       description: '',
@@ -289,9 +312,13 @@ function ConfirmationModal({ type, device, loading, onConfirm, onCancel }: Confi
             <div className={`flex h-10 w-10 items-center justify-center rounded-full ${
               type === 'shutdown' || type === 'decommission' ? 'bg-destructive/10' : 'bg-yellow-500/10'
             }`}>
-              <AlertTriangle className={`h-5 w-5 ${
-                type === 'shutdown' || type === 'decommission' ? 'text-destructive' : 'text-yellow-600'
-              }`} />
+              {type === 'clear-sessions' ? (
+                <XCircle className="h-5 w-5 text-yellow-600" />
+              ) : (
+                <AlertTriangle className={`h-5 w-5 ${
+                  type === 'shutdown' || type === 'decommission' ? 'text-destructive' : 'text-yellow-600'
+                }`} />
+              )}
             </div>
             <h2 className="text-lg font-semibold">{config.title}</h2>
           </div>

@@ -10,19 +10,31 @@ export interface ConnectionParams {
 
 export function parseDeepLink(url: string): ConnectionParams | null {
   try {
-    // Handle both breeze://connect?... and breeze:connect?... formats
-    const normalized = url.replace('breeze://', 'https://breeze/');
+    // Normalize various URL formats that macOS/Windows/Linux may deliver:
+    //   breeze://connect?...   (standard)
+    //   breeze:connect?...     (some platforms strip //)
+    //   breeze://connect/?...  (trailing slash variant)
+    let normalized = url;
+    if (normalized.startsWith('breeze://')) {
+      normalized = normalized.replace('breeze://', 'https://breeze/');
+    } else if (normalized.startsWith('breeze:')) {
+      normalized = normalized.replace('breeze:', 'https://breeze/');
+    }
+
     const parsed = new URL(normalized);
     const sessionId = parsed.searchParams.get('session');
     const token = parsed.searchParams.get('token');
     const apiUrl = parsed.searchParams.get('api');
 
     if (!sessionId || !token || !apiUrl) {
+      console.warn('[parseDeepLink] Missing params from URL:', url,
+        { sessionId: !!sessionId, token: !!token, apiUrl: !!apiUrl });
       return null;
     }
 
     return { sessionId, token, apiUrl };
-  } catch {
+  } catch (e) {
+    console.error('[parseDeepLink] Failed to parse URL:', url, e);
     return null;
   }
 }

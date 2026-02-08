@@ -225,7 +225,7 @@ function createDesktopWsHandlers(sessionId: string, token: string | undefined) {
         payload: {
           sessionId,
           quality: 60,
-          scaleFactor: 0.5,
+          scaleFactor: 1.0,
           maxFps: 15
         }
       };
