@@ -305,8 +305,10 @@ coreRoutes.get(
     // Convert BigInt fields to numbers for JSON serialization
     const recentMetrics = recentMetricsRaw.map(m => ({
       ...m,
-      networkInBytes: m.networkInBytes ? Number(m.networkInBytes) : null,
-      networkOutBytes: m.networkOutBytes ? Number(m.networkOutBytes) : null
+      networkInBytes: m.networkInBytes != null ? Number(m.networkInBytes) : null,
+      networkOutBytes: m.networkOutBytes != null ? Number(m.networkOutBytes) : null,
+      bandwidthInBps: m.bandwidthInBps != null ? Number(m.bandwidthInBps) : null,
+      bandwidthOutBps: m.bandwidthOutBps != null ? Number(m.bandwidthOutBps) : null
     }));
 
     // Get group memberships

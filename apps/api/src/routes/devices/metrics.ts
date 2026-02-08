@@ -22,6 +22,8 @@ function aggregateMetricsByInterval(
     avgDiskUsedGb: number;
     totalNetworkIn: bigint;
     totalNetworkOut: bigint;
+    avgBandwidthIn: number;
+    avgBandwidthOut: number;
     avgProcessCount: number;
   }>,
   interval: string,
@@ -35,6 +37,8 @@ function aggregateMetricsByInterval(
   diskUsedGb: number;
   networkIn: number;
   networkOut: number;
+  bandwidthInBps: number;
+  bandwidthOutBps: number;
   processCount: number;
 }> {
   if (data.length === 0) return [];
@@ -50,6 +54,8 @@ function aggregateMetricsByInterval(
       diskUsedGb: Number(d.avgDiskUsedGb?.toFixed(2) ?? 0),
       networkIn: Number(d.totalNetworkIn ?? 0),
       networkOut: Number(d.totalNetworkOut ?? 0),
+      bandwidthInBps: Math.round(d.avgBandwidthIn ?? 0),
+      bandwidthOutBps: Math.round(d.avgBandwidthOut ?? 0),
       processCount: Math.round(d.avgProcessCount ?? 0)
     }));
   }
@@ -77,6 +83,8 @@ function aggregateMetricsByInterval(
     diskUsedGb: number;
     networkIn: number;
     networkOut: number;
+    bandwidthInBps: number;
+    bandwidthOutBps: number;
     processCount: number;
   }> = [];
 
@@ -89,6 +97,8 @@ function aggregateMetricsByInterval(
     const avgDiskUsed = points.reduce((sum, p) => sum + (p.avgDiskUsedGb ?? 0), 0) / count;
     const totalIn = points.reduce((sum, p) => sum + Number(p.totalNetworkIn ?? 0), 0);
     const totalOut = points.reduce((sum, p) => sum + Number(p.totalNetworkOut ?? 0), 0);
+    const avgBwIn = points.reduce((sum, p) => sum + (p.avgBandwidthIn ?? 0), 0) / count;
+    const avgBwOut = points.reduce((sum, p) => sum + (p.avgBandwidthOut ?? 0), 0) / count;
     const avgProcess = points.reduce((sum, p) => sum + (p.avgProcessCount ?? 0), 0) / count;
 
     result.push({
@@ -100,6 +110,8 @@ function aggregateMetricsByInterval(
       diskUsedGb: Number(avgDiskUsed.toFixed(2)),
       networkIn: totalIn,
       networkOut: totalOut,
+      bandwidthInBps: Math.round(avgBwIn),
+      bandwidthOutBps: Math.round(avgBwOut),
       processCount: Math.round(avgProcess)
     });
   }
@@ -183,6 +195,8 @@ metricsRoutes.get(
         avgDiskUsedGb: sql<number>`avg(${deviceMetrics.diskUsedGb})`,
         totalNetworkIn: sql<bigint>`sum(${deviceMetrics.networkInBytes})`,
         totalNetworkOut: sql<bigint>`sum(${deviceMetrics.networkOutBytes})`,
+        avgBandwidthIn: sql<number>`avg(${deviceMetrics.bandwidthInBps})::float8`,
+        avgBandwidthOut: sql<number>`avg(${deviceMetrics.bandwidthOutBps})::float8`,
         avgProcessCount: sql<number>`avg(${deviceMetrics.processCount})`
       })
       .from(deviceMetrics)
