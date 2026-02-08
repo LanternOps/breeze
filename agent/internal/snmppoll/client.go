@@ -3,6 +3,7 @@ package snmppoll
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gosnmp/gosnmp"
@@ -159,4 +160,44 @@ func inferSecurityLevel(auth SNMPAuth) gosnmp.SnmpV3MsgFlags {
 		return gosnmp.AuthNoPriv
 	}
 	return gosnmp.NoAuthNoPriv
+}
+
+// ParseAuthProtocol converts a string (e.g. "SHA", "MD5") to a gosnmp auth protocol.
+func ParseAuthProtocol(s string) gosnmp.SnmpV3AuthProtocol {
+	switch strings.ToUpper(s) {
+	case "MD5":
+		return gosnmp.MD5
+	case "SHA", "SHA1":
+		return gosnmp.SHA
+	case "SHA224":
+		return gosnmp.SHA224
+	case "SHA256":
+		return gosnmp.SHA256
+	case "SHA384":
+		return gosnmp.SHA384
+	case "SHA512":
+		return gosnmp.SHA512
+	default:
+		return gosnmp.NoAuth
+	}
+}
+
+// ParsePrivProtocol converts a string (e.g. "AES", "DES") to a gosnmp priv protocol.
+func ParsePrivProtocol(s string) gosnmp.SnmpV3PrivProtocol {
+	switch strings.ToUpper(s) {
+	case "DES":
+		return gosnmp.DES
+	case "AES", "AES128":
+		return gosnmp.AES
+	case "AES192":
+		return gosnmp.AES192
+	case "AES256":
+		return gosnmp.AES256
+	case "AES192C":
+		return gosnmp.AES192C
+	case "AES256C":
+		return gosnmp.AES256C
+	default:
+		return gosnmp.NoPriv
+	}
 }

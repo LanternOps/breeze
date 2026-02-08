@@ -10,6 +10,7 @@ import {
   discoveredAssets,
   networkTopology,
   snmpDevices,
+  snmpAlertThresholds,
   snmpMetrics,
   devices
 } from '../db/schema';
@@ -684,6 +685,54 @@ discoveryRoutes.post(
     });
 
     return c.json(updated);
+  }
+);
+
+discoveryRoutes.delete(
+  '/assets/:id',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const assetId = c.req.param('id');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [existing] = await db.select({
+      id: discoveredAssets.id,
+      orgId: discoveredAssets.orgId,
+      hostname: discoveredAssets.hostname,
+      ipAddress: discoveredAssets.ipAddress
+    }).from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Asset not found' }, 404);
+
+    await db.transaction(async (tx) => {
+      const monitoringDevices = await tx.select({ id: snmpDevices.id })
+        .from(snmpDevices)
+        .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, existing.orgId)));
+
+      for (const monitoringDevice of monitoringDevices) {
+        await tx.delete(snmpMetrics).where(eq(snmpMetrics.deviceId, monitoringDevice.id));
+        await tx.delete(snmpAlertThresholds).where(eq(snmpAlertThresholds.deviceId, monitoringDevice.id));
+      }
+
+      await tx.delete(snmpDevices)
+        .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, existing.orgId)));
+      await tx.delete(discoveredAssets).where(eq(discoveredAssets.id, assetId));
+    });
+
+    writeRouteAudit(c, {
+      orgId: existing.orgId,
+      action: 'discovery.asset.delete',
+      resourceType: 'discovered_asset',
+      resourceId: existing.id,
+      resourceName: existing.hostname ?? existing.ipAddress ?? undefined
+    });
+
+    return c.json({ success: true });
   }
 );
 

@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { db } from '../db';
 import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 
@@ -46,13 +46,19 @@ interface ProcessPollResultsJobData {
   metrics: SnmpMetricResult[];
 }
 
-type SnmpJobData = PollDeviceJobData | ProcessPollResultsJobData;
+interface PollSchedulerJobData {
+  type: 'poll-scheduler';
+}
+
+type SnmpJobData = PollDeviceJobData | ProcessPollResultsJobData | PollSchedulerJobData;
 
 function createSnmpWorker(): Worker<SnmpJobData> {
   return new Worker<SnmpJobData>(
     SNMP_QUEUE,
     async (job: Job<SnmpJobData>) => {
       switch (job.data.type) {
+        case 'poll-scheduler':
+          return await processScheduler();
         case 'poll-device':
           return await processPollDevice(job.data);
         case 'process-poll-results':
@@ -264,6 +270,83 @@ export async function enqueueSnmpPollResults(
   return job.id!;
 }
 
+/**
+ * Schedule repeatable polling jobs for all active SNMP devices.
+ *
+ * Runs a "poll-scheduler" job every 60 seconds. That job scans
+ * `snmp_devices` for rows whose `pollingInterval` has elapsed since
+ * `lastPolled` (or that have never been polled) and enqueues individual
+ * `poll-device` jobs for each.
+ */
+async function scheduleSnmpPolling(): Promise<void> {
+  const queue = getSnmpQueue();
+
+  // Remove any existing repeatable scheduler jobs
+  const existingJobs = await queue.getRepeatableJobs();
+  for (const job of existingJobs) {
+    if (job.name === 'poll-scheduler') {
+      await queue.removeRepeatableByKey(job.key);
+    }
+  }
+
+  // Run the scheduler every 60 seconds
+  await queue.add(
+    'poll-scheduler',
+    { type: 'poll-scheduler' as const },
+    {
+      repeat: {
+        every: 60 * 1000
+      },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 20 }
+    }
+  );
+
+  console.log('[SnmpWorker] Scheduled repeatable SNMP poll scheduler (every 60s)');
+}
+
+/**
+ * The scheduler job: find all active SNMP devices due for polling
+ * and enqueue individual poll-device jobs for each.
+ */
+async function processScheduler(): Promise<{ enqueued: number }> {
+  const now = new Date();
+
+  // Find all active devices that are due for polling:
+  //   lastPolled IS NULL  OR  lastPolled + pollingInterval <= now
+  const dueDevices = await db
+    .select({
+      id: snmpDevices.id,
+      orgId: snmpDevices.orgId,
+      pollingInterval: snmpDevices.pollingInterval,
+      lastPolled: snmpDevices.lastPolled
+    })
+    .from(snmpDevices)
+    .where(
+      and(
+        eq(snmpDevices.isActive, true),
+        sql`(${snmpDevices.lastPolled} IS NULL OR ${snmpDevices.lastPolled} + make_interval(secs => ${snmpDevices.pollingInterval}) <= ${now})`
+      )
+    );
+
+  if (dueDevices.length === 0) return { enqueued: 0 };
+
+  let enqueued = 0;
+  for (const device of dueDevices) {
+    try {
+      await enqueueSnmpPoll(device.id, device.orgId);
+      enqueued++;
+    } catch (err) {
+      console.error(`[SnmpWorker] Failed to enqueue poll for device ${device.id}:`, err);
+    }
+  }
+
+  if (enqueued > 0) {
+    console.log(`[SnmpWorker] Scheduler enqueued ${enqueued} device polls`);
+  }
+  return { enqueued };
+}
+
 // Worker instance
 let snmpWorkerInstance: Worker<SnmpJobData> | null = null;
 
@@ -278,6 +361,9 @@ export async function initializeSnmpWorker(): Promise<void> {
     snmpWorkerInstance.on('failed', (job, error) => {
       console.error(`[SnmpWorker] Job ${job?.id} failed:`, error);
     });
+
+    // Schedule the repeatable polling scheduler
+    await scheduleSnmpPolling();
 
     console.log('[SnmpWorker] SNMP worker initialized');
   } catch (error) {

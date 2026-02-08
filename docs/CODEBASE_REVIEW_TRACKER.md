@@ -1,6 +1,6 @@
 # Breeze Codebase Review Tracker
 
-Last updated: 2026-02-08 21:14 MST  
+Last updated: 2026-02-08 21:26 MST  
 Purpose: Track progress of a systematic code review (not product delivery progress).
 
 ## Status Legend
@@ -28,7 +28,7 @@ Purpose: Track progress of a systematic code review (not product delivery progre
 | P4 | Shared contracts and validation | `packages/shared/src` | Shared types/validators/constants reviewed for drift | DONE | Codex | Shared AI/filter contracts now consumed directly from `@breeze/shared` in API paths; removed API `rootDir` blocker pattern and closed F-048 with shared typecheck/test validation |
 | P5 | Agent runtime review | `agent/` and `apps/agent/` | Command execution, heartbeat, OS-specific logic reviewed | IN_PROGRESS | Codex | Runtime sweep underway; F-049 remediated (nil-safe audit logging in canonical `agent` heartbeat path) |
 | P6 | Infra and CI confidence | `.github/workflows`, `docker/`, `docker-compose*.yml`, `e2e-tests/`, `monitoring/` | Build/test/deploy risk and observability gaps logged | IN_PROGRESS | Codex | Infra/CI sweep underway; F-050/F-051/F-052/F-053 remediated |
-| P7 | Final synthesis | Entire repo | Findings prioritized, owners assigned, blockers captured | TODO |  |  |
+| P7 | Final synthesis | Entire repo | Findings prioritized, owners assigned, blockers captured | IN_PROGRESS | Codex | Synthesis completed with explicit residuals; owner assignment and remaining depth expansion (F-003) still pending |
 
 ---
 
@@ -280,12 +280,36 @@ Severity guide:
 - [ ] Every row in Sections 1 and 2 is `DONE` or explicitly `BLOCKED` with owner and reason.
 - [ ] All `P0` and `P1` findings have assigned owners and remediation plan.
 - [ ] Validation evidence table has current run results for required commands.
-- [ ] Open decisions are resolved or accepted as explicit risk.
-- [ ] Final summary is added here:
+- [x] Open decisions are resolved or accepted as explicit risk.
+- [x] Final summary is added here:
 
 `Summary:`  
+Core backend/frontend/agent/infra review slices are completed with findings logged through `F-053`; all `P0/P1` findings except residual test-depth work are remediated in code/config. Live E2E UI execution is now real Playwright-based and no longer blocked by missing implementation.
+
 `Top risks:`  
+`F-003` test-depth remains the only open finding. Additional risk is operational reproducibility: full live E2E green depends on reachable remote MCP nodes and stable seeded test data/accounts.
+
 `Recommended next actions:`  
+1) Assign owners and targets for remaining depth expansion (`F-003`) by domain (`apps/web`, `agent/`, `apps/agent/`).  
+2) Finish cross-app permission-boundary confirmation checklist (`web/portal/mobile/viewer`) with explicit evidence rows.  
+3) Execute full critical-path live E2E run in a provisioned environment (UI + remote nodes reachable), then attach run logs and close Section 7 criteria.
+
+---
+
+## 9) P7 Synthesis Snapshot
+
+### Completed
+- Findings `F-004` through `F-053` (except `F-003`) are remediated and validated.
+- Release false-green bypasses removed; monitoring scrape auth and rule loading aligned.
+- E2E runner now supports real live UI (Playwright) and live remote MCP execution.
+- Tracker now contains remediation checklists and validation evidence for each major fix.
+
+### Remaining
+- `F-003` remains open (broader test-density growth and integration depth).
+- Findings table `Action Owner` assignments are still mostly unfilled.
+- One codebase-specific checklist item remains open:
+  - Confirm web/portal/mobile/viewer permission boundaries with explicit final evidence.
+- Full live E2E success is environment-dependent and still blocked by remote node connectivity/data state in this workspace.
 
 ---
 

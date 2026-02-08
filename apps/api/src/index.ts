@@ -42,6 +42,7 @@ import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
 import { snmpRoutes } from './routes/snmp';
+import { monitorRoutes } from './routes/monitors';
 import { softwareRoutes } from './routes/software';
 import { systemToolsRoutes } from './routes/systemTools';
 import { notificationRoutes } from './routes/notifications';
@@ -67,6 +68,7 @@ import { initializeNotificationDispatcher } from './services/notificationDispatc
 import { initializeEventLogRetention } from './jobs/eventLogRetention';
 import { initializeDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeSnmpWorker } from './jobs/snmpWorker';
+import { initializeMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention } from './jobs/snmpRetention';
 import { initializePolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
@@ -130,6 +132,7 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/psa',
   '/mobile',
   '/discovery',
+  '/monitors',
   '/sso',
   '/reports',
   '/filters',
@@ -429,6 +432,7 @@ api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
 api.route('/snmp', snmpRoutes);
+api.route('/monitors', monitorRoutes);
 api.route('/software', softwareRoutes);
 api.route('/system-tools', systemToolsRoutes);
 api.route('/notifications', notificationRoutes);
@@ -634,6 +638,7 @@ async function initializeWorkers(): Promise<void> {
     ['eventLogRetention', initializeEventLogRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['snmpWorker', initializeSnmpWorker],
+    ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
   ];
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import CreateMonitorForm from '../monitors/CreateMonitorForm';
 
 type SNMPTemplate = {
   id: string;
@@ -11,15 +12,18 @@ type SNMPTemplate = {
 
 type EnableMonitoringFormProps = {
   assetId: string;
+  ipAddress?: string;
   onEnabled: () => void;
   onCancel: () => void;
 };
 
 export default function EnableMonitoringForm({
   assetId,
+  ipAddress,
   onEnabled,
   onCancel
 }: EnableMonitoringFormProps) {
+  const [monitorCategory, setMonitorCategory] = useState<'snmp' | 'network'>('snmp');
   const [snmpVersion, setSnmpVersion] = useState<'v1' | 'v2c' | 'v3'>('v2c');
   const [community, setCommunity] = useState('public');
   const [username, setUsername] = useState('');
@@ -103,8 +107,59 @@ export default function EnableMonitoringForm({
     }
   };
 
+  if (monitorCategory === 'network') {
+    return (
+      <div className="space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-2">Monitor Type</label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setMonitorCategory('snmp')}
+              className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              SNMP
+            </button>
+            <button
+              type="button"
+              onClick={() => setMonitorCategory('network')}
+              className="rounded-md border border-primary bg-primary/5 px-3 py-1.5 text-sm font-medium"
+            >
+              Network (Ping/TCP/HTTP/DNS)
+            </button>
+          </div>
+        </div>
+        <CreateMonitorForm
+          assetId={assetId}
+          defaultTarget={ipAddress}
+          onCreated={onEnabled}
+          onCancel={onCancel}
+        />
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-xs font-medium text-muted-foreground mb-2">Monitor Type</label>
+        <div className="flex gap-2 mb-4">
+          <button
+            type="button"
+            onClick={() => setMonitorCategory('snmp')}
+            className="rounded-md border border-primary bg-primary/5 px-3 py-1.5 text-sm font-medium"
+          >
+            SNMP
+          </button>
+          <button
+            type="button"
+            onClick={() => setMonitorCategory('network')}
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            Network (Ping/TCP/HTTP/DNS)
+          </button>
+        </div>
+      </div>
       <div>
         <label className="block text-xs font-medium text-muted-foreground mb-1">SNMP Version</label>
         <select

@@ -4,12 +4,20 @@ import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults } from '../db/schema';
 import { handleTerminalOutput } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
+import { enqueueMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
 import { isRedisAvailable } from '../services/redis';
+
+const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
+
+function normalizeMonitorStatus(raw: string | undefined): 'online' | 'offline' | 'degraded' {
+  if (raw && VALID_MONITOR_STATUSES.has(raw)) return raw as 'online' | 'offline' | 'degraded';
+  return 'offline';
+}
 
 // Store active WebSocket connections by agentId
 // Map<agentId, WSContext>
@@ -184,6 +192,57 @@ async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
+    }
+    return;
+  }
+
+  // Check if this is a network monitor result
+  const monitorData = result.result as {
+    monitorId?: string;
+    status?: string;
+    responseMs?: number;
+    statusCode?: number;
+    error?: string;
+  } | undefined;
+
+  if (monitorData?.monitorId && monitorData.status) {
+    console.log(`[AgentWs] Processing monitor check result for monitor ${monitorData.monitorId} from agent ${agentId}`);
+    try {
+      const status = normalizeMonitorStatus(monitorData.status);
+      if (isRedisAvailable()) {
+        await enqueueMonitorCheckResult(monitorData.monitorId, {
+          monitorId: monitorData.monitorId,
+          status,
+          responseMs: monitorData.responseMs ?? 0,
+          statusCode: monitorData.statusCode,
+          error: monitorData.error,
+          details: monitorData as Record<string, unknown>
+        });
+      } else {
+        console.warn(`[AgentWs] Redis unavailable, writing monitor result directly for ${monitorData.monitorId}`);
+        const now = new Date();
+        await db.insert(networkMonitorResults).values({
+          monitorId: monitorData.monitorId,
+          status,
+          responseMs: monitorData.responseMs ?? null,
+          statusCode: monitorData.statusCode ?? null,
+          error: monitorData.error ?? null,
+          details: monitorData as Record<string, unknown>,
+          timestamp: now
+        });
+        await db
+          .update(networkMonitors)
+          .set({
+            lastChecked: now,
+            lastStatus: status,
+            lastResponseMs: monitorData.responseMs ?? null,
+            lastError: monitorData.error ?? null,
+            updatedAt: now
+          })
+          .where(eq(networkMonitors.id, monitorData.monitorId));
+      }
+    } catch (err) {
+      console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);
     }
     return;
   }
