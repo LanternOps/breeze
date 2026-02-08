@@ -38,7 +38,7 @@ jobs:
         run: pnpm build --filter=@breeze/api
 
       - name: Upload API artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: api-dist
           path: apps/api/dist
@@ -69,7 +69,7 @@ jobs:
         run: pnpm build --filter=@breeze/web
 
       - name: Upload Web artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: web-dist
           path: apps/web/dist
@@ -128,7 +128,7 @@ jobs:
             ./cmd/breeze-agent
 
       - name: Upload Agent artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
