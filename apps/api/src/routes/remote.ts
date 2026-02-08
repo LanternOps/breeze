@@ -11,6 +11,7 @@ import {
   auditLogs
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { sendCommandToAgent } from './agentWs';
 
 export const remoteRoutes = new Hono();
 
@@ -710,6 +711,19 @@ remoteRoutes.post(
       { sessionId, type: session.type },
       c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
     );
+
+    // Send start_desktop command to agent with the offer
+    // The agent will create a pion PeerConnection and return the answer
+    if (device.agentId) {
+      const sent = sendCommandToAgent(device.agentId, {
+        id: `desk-${sessionId}`,
+        type: 'start_desktop',
+        payload: { sessionId, offer: data.offer }
+      });
+      if (!sent) {
+        console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
+      }
+    }
 
     return c.json({
       id: updated.id,

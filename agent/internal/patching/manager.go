@@ -164,6 +164,73 @@ func (m *PatchManager) formatPatchID(providerID, patchID string) string {
 	return providerID + patchIDSeparator + patchID
 }
 
+// GetProvider returns a provider by ID.
+func (m *PatchManager) GetProvider(providerID string) (PatchProvider, bool) {
+	p, ok := m.providerIndex[providerID]
+	return p, ok
+}
+
+// DownloadPatches downloads patches by their composite IDs, using DownloadableProvider
+// if the underlying provider supports it.
+func (m *PatchManager) DownloadPatches(patchIDs []string, progress ProgressCallback) ([]DownloadResult, error) {
+	// Group patches by provider
+	groups := make(map[string][]string)
+	for _, patchID := range patchIDs {
+		providerID, localID, err := m.splitPatchID(patchID)
+		if err != nil {
+			return nil, err
+		}
+		groups[providerID] = append(groups[providerID], localID)
+	}
+
+	var results []DownloadResult
+	for providerID, localIDs := range groups {
+		provider, ok := m.providerIndex[providerID]
+		if !ok {
+			for _, id := range localIDs {
+				results = append(results, DownloadResult{
+					PatchID: m.formatPatchID(providerID, id),
+					Success: false,
+					Message: fmt.Sprintf("unknown provider: %s", providerID),
+				})
+			}
+			continue
+		}
+
+		downloadable, ok := provider.(DownloadableProvider)
+		if !ok {
+			for _, id := range localIDs {
+				results = append(results, DownloadResult{
+					PatchID: m.formatPatchID(providerID, id),
+					Success: false,
+					Message: fmt.Sprintf("provider %s does not support download", providerID),
+				})
+			}
+			continue
+		}
+
+		providerResults, err := downloadable.Download(localIDs, progress)
+		if err != nil {
+			for _, id := range localIDs {
+				results = append(results, DownloadResult{
+					PatchID: m.formatPatchID(providerID, id),
+					Success: false,
+					Message: err.Error(),
+				})
+			}
+			continue
+		}
+
+		// Decorate results with full patch IDs
+		for _, r := range providerResults {
+			r.PatchID = m.formatPatchID(providerID, r.PatchID)
+			results = append(results, r)
+		}
+	}
+
+	return results, nil
+}
+
 // ProviderIDs returns the registered provider IDs in order.
 func (m *PatchManager) ProviderIDs() []string {
 	ids := make([]string, 0, len(m.providers))

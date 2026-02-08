@@ -167,6 +167,24 @@ func (b *Broker) AllSessions() []SessionInfo {
 	return infos
 }
 
+// BroadcastNotification sends a desktop notification to all connected user sessions.
+func (b *Broker) BroadcastNotification(title, body, urgency string) {
+	b.mu.RLock()
+	sessions := make([]*Session, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		sessions = append(sessions, s)
+	}
+	b.mu.RUnlock()
+
+	for _, s := range sessions {
+		_ = s.SendNotify("", ipc.TypeNotify, &ipc.NotifyRequest{
+			Title:   title,
+			Body:    body,
+			Urgency: urgency,
+		})
+	}
+}
+
 // SessionCount returns the number of active sessions.
 func (b *Broker) SessionCount() int {
 	b.mu.RLock()

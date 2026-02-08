@@ -78,6 +78,10 @@ func (q *quicksyncEncoder) SetFPS(fps int) error {
 	return nil
 }
 
+func (q *quicksyncEncoder) SetDimensions(width, height int) error {
+	return nil
+}
+
 func (q *quicksyncEncoder) Close() error {
 	return nil
 }

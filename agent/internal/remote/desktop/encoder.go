@@ -62,6 +62,7 @@ type encoderBackend interface {
 	SetQuality(quality QualityPreset) error
 	SetBitrate(bitrate int) error
 	SetFPS(fps int) error
+	SetDimensions(width, height int) error
 	Close() error
 	Name() string
 	IsHardware() bool
@@ -99,12 +100,11 @@ func NewVideoEncoder(cfg EncoderConfig) (*VideoEncoder, error) {
 
 func (v *VideoEncoder) Encode(frame []byte) ([]byte, error) {
 	v.mu.Lock()
-	backend := v.backend
-	v.mu.Unlock()
-	if backend == nil {
+	defer v.mu.Unlock()
+	if v.backend == nil {
 		return nil, errors.New("encoder not initialized")
 	}
-	return backend.Encode(frame)
+	return v.backend.Encode(frame)
 }
 
 func (v *VideoEncoder) SetCodec(codec Codec) error {
@@ -157,6 +157,12 @@ func (v *VideoEncoder) SetFPS(fps int) error {
 	}
 	v.cfg.FPS = fps
 	return nil
+}
+
+func (v *VideoEncoder) SetDimensions(width, height int) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.backend.SetDimensions(width, height)
 }
 
 func (v *VideoEncoder) Close() error {
