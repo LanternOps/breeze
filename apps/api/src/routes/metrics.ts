@@ -13,12 +13,13 @@
  */
 
 import { Hono } from 'hono';
-import { sql, eq, gte, avg, desc } from 'drizzle-orm';
+import { sql, eq, gte, avg, and } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, deviceMetrics, remoteSessions } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 
 export const metricsRoutes = new Hono();
+const METRICS_SCRAPE_TOKEN = process.env.METRICS_SCRAPE_TOKEN?.trim();
 
 // ============================================
 // Metric Types (prom-client compatible structure)
@@ -278,6 +279,15 @@ function formatMetrics(): string {
   return lines.join('\n');
 }
 
+function metricsResponse(c: any): Response {
+  const metrics = formatMetrics();
+
+  return c.text(metrics, 200, {
+    'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+  });
+}
+
 /**
  * Formats labels in Prometheus format: {key1="value1",key2="value2"}
  */
@@ -304,15 +314,26 @@ function escapeLabel(value: string): string {
  * Queries devices table for counts and remote_sessions for session stats.
  */
 metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth');
+  const orgCondition =
+    typeof auth?.orgCondition === 'function'
+      ? auth.orgCondition(devices.orgId)
+      : auth?.orgId
+        ? eq(devices.orgId, auth.orgId)
+        : undefined;
+
   try {
     // Device counts by status (exclude decommissioned)
+    const deviceStatusCondition = orgCondition
+      ? and(sql`${devices.status} != 'decommissioned'`, orgCondition)
+      : sql`${devices.status} != 'decommissioned'`;
     const statusCounts = await db
       .select({
         status: devices.status,
         count: sql<number>`count(*)`,
       })
       .from(devices)
-      .where(sql`${devices.status} != 'decommissioned'`)
+      .where(deviceStatusCondition)
       .groupBy(devices.status);
 
     let total = 0;
@@ -329,18 +350,26 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     const uptime = total > 0 ? Math.round((online / total) * 1000) / 10 : 0;
 
     // Active remote sessions
+    const activeSessionCondition = orgCondition
+      ? and(eq(remoteSessions.status, 'active'), orgCondition)
+      : eq(remoteSessions.status, 'active');
     const [sessionRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(remoteSessions)
-      .where(eq(remoteSessions.status, 'active'));
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .where(activeSessionCondition);
     const activeSessions = Number(sessionRow?.count ?? 0);
 
     // Total sessions in the last 30 days
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const totalSessionCondition = orgCondition
+      ? and(gte(remoteSessions.createdAt, thirtyDaysAgo), orgCondition)
+      : gte(remoteSessions.createdAt, thirtyDaysAgo);
     const [totalSessionRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(remoteSessions)
-      .where(gte(remoteSessions.createdAt, thirtyDaysAgo));
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .where(totalSessionCondition);
     const totalSessions = Number(totalSessionRow?.count ?? 0);
 
     return c.json({
@@ -374,11 +403,21 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
  * Aggregates deviceMetrics into daily averages for the requested range.
  */
 metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth');
+  const orgCondition =
+    typeof auth?.orgCondition === 'function'
+      ? auth.orgCondition(devices.orgId)
+      : auth?.orgId
+        ? eq(devices.orgId, auth.orgId)
+        : undefined;
   const range = c.req.query('range') ?? '30d';
   const days = range === '24h' ? 1 : range === '7d' ? 7 : 30;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
   try {
+    const trendsCondition = orgCondition
+      ? and(gte(deviceMetrics.timestamp, since), orgCondition)
+      : gte(deviceMetrics.timestamp, since);
     const rows = await db
       .select({
         bucket: sql<string>`date_trunc('day', ${deviceMetrics.timestamp})`.as('bucket'),
@@ -386,7 +425,8 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
         memory: avg(deviceMetrics.ramPercent).as('memory'),
       })
       .from(deviceMetrics)
-      .where(gte(deviceMetrics.timestamp, since))
+      .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
+      .where(trendsCondition)
       .groupBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`)
       .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
 
@@ -408,9 +448,26 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
 });
 
 /**
+ * GET /scrape — token-authenticated endpoint for Prometheus scraping.
+ * This avoids exposing metrics publicly while still supporting internal monitoring.
+ */
+metricsRoutes.get('/scrape', async (c) => {
+  if (!METRICS_SCRAPE_TOKEN) {
+    return c.json({ error: 'Metrics scrape token is not configured' }, 503);
+  }
+
+  const authHeader = c.req.header('Authorization');
+  if (authHeader !== `Bearer ${METRICS_SCRAPE_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  return metricsResponse(c);
+});
+
+/**
  * GET /json — Metrics in JSON format (for debugging)
  */
-metricsRoutes.get('/json', async (c) => {
+metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => {
   return c.json({
     http_requests_total: httpRequestsTotal,
     http_request_duration_seconds: httpRequestDurationSeconds,
@@ -433,26 +490,16 @@ metricsRoutes.get('/json', async (c) => {
 /**
  * GET /prometheus — Metrics in Prometheus exposition format
  */
-metricsRoutes.get('/prometheus', async (c) => {
-  const metrics = formatMetrics();
-
-  return c.text(metrics, 200, {
-    'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-  });
+metricsRoutes.get('/prometheus', authMiddleware, requireScope('system'), async (c) => {
+  return metricsResponse(c);
 });
 
 /**
  * GET /metrics — Backward-compatible alias for Prometheus scraping.
  * Existing Prometheus configs may point to /metrics/metrics; keep it working.
  */
-metricsRoutes.get('/metrics', async (c) => {
-  const metrics = formatMetrics();
-
-  return c.text(metrics, 200, {
-    'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-  });
+metricsRoutes.get('/metrics', authMiddleware, requireScope('system'), async (c) => {
+  return metricsResponse(c);
 });
 
 // ============================================

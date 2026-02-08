@@ -42,6 +42,10 @@ type Config struct {
 	AuditEnabled    bool `mapstructure:"audit_enabled"`
 	AuditMaxSizeMB  int  `mapstructure:"audit_max_size_mb"`
 	AuditMaxBackups int  `mapstructure:"audit_max_backups"`
+
+	// User helper configuration
+	UserHelperEnabled bool   `mapstructure:"user_helper_enabled"`
+	IPCSocketPath     string `mapstructure:"ipc_socket_path"`
 }
 
 func Default() *Config {

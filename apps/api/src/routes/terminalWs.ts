@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import { verifyToken } from '../services/jwt';
+import { getRedis } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 
 // Types for terminal messages
@@ -56,6 +57,18 @@ async function validateTerminalAccess(
   const payload = await verifyToken(token);
   if (!payload || payload.type !== 'access') {
     return { valid: false, error: 'Invalid or expired token' };
+  }
+
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const revoked = await redis.get(`token:revoked:${payload.sub}`);
+      if (revoked) {
+        return { valid: false, error: 'Invalid or expired token' };
+      }
+    } catch (error) {
+      console.warn('[terminalWs] Failed to check token revocation state:', error);
+    }
   }
 
   // Check user exists and is active

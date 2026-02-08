@@ -1,57 +1,31 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { db } from '../db';
-import { organizations } from '../db/schema';
+import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { validateWebhookUrlSafety } from '../services/notificationSenders/webhookSender';
+import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
 
 export const webhookRoutes = new Hono();
 
-type WebhookStatus = 'active' | 'paused' | 'failed';
+type ApiWebhookStatus = 'active' | 'paused' | 'failed';
+type DbWebhookStatus = 'active' | 'disabled' | 'error';
 type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying';
 
 type WebhookHeaders = Array<{ key: string; value: string }>;
 
-interface WebhookRecord {
-  id: string;
-  orgId: string;
-  name: string;
-  url: string;
-  secret: string;
-  events: string[];
-  headers: WebhookHeaders;
-  status: WebhookStatus;
-  createdBy: string;
-  createdAt: Date;
-  updatedAt: Date;
-  lastDeliveryAt: Date | null;
-}
-
-interface WebhookDeliveryRecord {
-  id: string;
-  webhookId: string;
-  orgId: string;
-  status: WebhookDeliveryStatus;
-  event: string;
-  payload: unknown;
-  responseStatus: number | null;
-  responseBody: string | null;
-  attempt: number;
-  nextAttemptAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-  deliveredAt: Date | null;
-}
-
-const webhookStore = new Map<string, WebhookRecord>();
-const deliveryStore = new Map<string, WebhookDeliveryRecord>();
-
-// ============================================
-// Helper functions
-// ============================================
+type RouteAuth = {
+  scope: 'organization' | 'partner' | 'system' | string;
+  partnerId: string | null;
+  orgId: string | null;
+  accessibleOrgIds: string[] | null;
+  canAccessOrg: (orgId: string) => boolean;
+  user: { id: string; email?: string };
+};
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -59,88 +33,169 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
-  if (auth.scope === 'organization') {
-    return auth.orgId === orgId;
-  }
-
-  if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
-  }
-
-  // system scope has access to all
-  return true;
+function mapApiStatusToDb(status: ApiWebhookStatus): DbWebhookStatus {
+  if (status === 'paused') return 'disabled';
+  if (status === 'failed') return 'error';
+  return 'active';
 }
 
-async function getOrgIdsForAuth(auth: { scope: string; partnerId: string | null; orgId: string | null }): Promise<string[] | null> {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return null;
-    return [auth.orgId];
-  }
-
-  if (auth.scope === 'partner') {
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-    return partnerOrgs.map(o => o.id);
-  }
-
-  // system scope - return null to indicate no filtering needed
-  return null;
+function mapDbStatusToApi(status: DbWebhookStatus): ApiWebhookStatus {
+  if (status === 'disabled') return 'paused';
+  if (status === 'error') return 'failed';
+  return 'active';
 }
 
-function sanitizeWebhook(webhook: WebhookRecord) {
-  const { secret, ...rest } = webhook;
-  return { ...rest, hasSecret: Boolean(secret) };
+function normalizeHeaders(headers: unknown): WebhookHeaders {
+  if (!headers) return [];
+
+  if (Array.isArray(headers)) {
+    return headers
+      .filter((entry): entry is { key: string; value: string } => {
+        return Boolean(entry)
+          && typeof entry === 'object'
+          && typeof (entry as { key?: unknown }).key === 'string'
+          && typeof (entry as { value?: unknown }).value === 'string';
+      })
+      .map((entry) => ({
+        key: entry.key,
+        value: entry.value
+      }));
+  }
+
+  if (typeof headers === 'object') {
+    return Object.entries(headers as Record<string, unknown>)
+      .filter(([key, value]) => key.length > 0 && typeof value === 'string')
+      .map(([key, value]) => ({ key, value }));
+  }
+
+  return [];
 }
 
-function getDeliveryStats(webhookId: string) {
-  const deliveries = Array.from(deliveryStore.values()).filter(delivery => delivery.webhookId === webhookId);
-  const total = deliveries.length;
-  const counts = deliveries.reduce<Record<WebhookDeliveryStatus, number>>((acc, delivery) => {
-    acc[delivery.status] += 1;
+function headersToRecord(headers: unknown): Record<string, string> {
+  return normalizeHeaders(headers).reduce<Record<string, string>>((acc, header) => {
+    acc[header.key] = header.value;
     return acc;
-  }, { pending: 0, delivered: 0, failed: 0, retrying: 0 });
+  }, {});
+}
 
-  const lastDelivery = deliveries
-    .filter(delivery => delivery.deliveredAt)
-    .sort((a, b) => (b.deliveredAt?.getTime() ?? 0) - (a.deliveredAt?.getTime() ?? 0))[0];
+function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): WorkerWebhookConfig {
+  const retryPolicy = (webhook.retryPolicy ?? undefined) as WorkerWebhookConfig['retryPolicy'];
 
   return {
-    total,
-    ...counts,
-    lastDeliveredAt: lastDelivery?.deliveredAt ?? null
+    id: webhook.id,
+    orgId: webhook.orgId,
+    name: webhook.name,
+    url: webhook.url,
+    secret: webhook.secret ?? undefined,
+    events: webhook.events ?? [],
+    headers: headersToRecord(webhook.headers),
+    retryPolicy
   };
 }
 
-function getWebhookWithOrgCheck(webhookId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
-  const webhook = webhookStore.get(webhookId);
+function sanitizeWebhook(
+  webhook: typeof webhooksTable.$inferSelect,
+  options: { includeSecret?: boolean } = {}
+) {
+  const { includeSecret = false } = options;
+
+  return {
+    id: webhook.id,
+    orgId: webhook.orgId,
+    name: webhook.name,
+    url: webhook.url,
+    events: webhook.events ?? [],
+    headers: normalizeHeaders(webhook.headers),
+    status: mapDbStatusToApi(webhook.status as DbWebhookStatus),
+    createdBy: webhook.createdBy,
+    createdAt: webhook.createdAt,
+    updatedAt: webhook.updatedAt,
+    lastDeliveryAt: webhook.lastDeliveryAt,
+    hasSecret: Boolean(webhook.secret),
+    ...(includeSecret && webhook.secret ? { secret: webhook.secret } : {})
+  };
+}
+
+function mapDelivery(
+  delivery: typeof webhookDeliveries.$inferSelect,
+  orgId: string
+) {
+  return {
+    id: delivery.id,
+    webhookId: delivery.webhookId,
+    orgId,
+    status: delivery.status as WebhookDeliveryStatus,
+    event: delivery.eventType,
+    eventId: delivery.eventId,
+    payload: delivery.payload,
+    responseStatus: delivery.responseStatus,
+    responseBody: delivery.responseBody,
+    attempt: delivery.attempts,
+    nextAttemptAt: delivery.nextRetryAt,
+    createdAt: delivery.createdAt,
+    deliveredAt: delivery.deliveredAt
+  };
+}
+
+async function getWebhookWithOrgCheck(webhookId: string, auth: RouteAuth) {
+  const [webhook] = await db
+    .select()
+    .from(webhooksTable)
+    .where(eq(webhooksTable.id, webhookId))
+    .limit(1);
+
   if (!webhook) {
     return null;
   }
 
-  return ensureOrgAccess(webhook.orgId, auth).then(hasAccess => (hasAccess ? webhook : null));
-}
-
-function getDeliveryWithOrgCheck(deliveryId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
-  const delivery = deliveryStore.get(deliveryId);
-  if (!delivery) {
+  if (!auth.canAccessOrg(webhook.orgId)) {
     return null;
   }
 
-  return ensureOrgAccess(delivery.orgId, auth).then(hasAccess => (hasAccess ? delivery : null));
+  return webhook;
+}
+
+async function getDeliveryStats(webhookId: string) {
+  const [counts, lastDelivered] = await Promise.all([
+    db
+      .select({
+        status: webhookDeliveries.status,
+        count: sql<number>`count(*)::int`
+      })
+      .from(webhookDeliveries)
+      .where(eq(webhookDeliveries.webhookId, webhookId))
+      .groupBy(webhookDeliveries.status),
+    db
+      .select({ deliveredAt: webhookDeliveries.deliveredAt })
+      .from(webhookDeliveries)
+      .where(
+        and(
+          eq(webhookDeliveries.webhookId, webhookId),
+          eq(webhookDeliveries.status, 'delivered')
+        )
+      )
+      .orderBy(desc(webhookDeliveries.deliveredAt))
+      .limit(1)
+  ]);
+
+  const stats: Record<WebhookDeliveryStatus, number> = {
+    pending: 0,
+    delivered: 0,
+    failed: 0,
+    retrying: 0
+  };
+
+  for (const row of counts) {
+    stats[row.status as WebhookDeliveryStatus] = Number(row.count ?? 0);
+  }
+
+  const total = stats.pending + stats.delivered + stats.failed + stats.retrying;
+
+  return {
+    total,
+    ...stats,
+    lastDeliveredAt: lastDelivered[0]?.deliveredAt ?? null
+  };
 }
 
 // ============================================
@@ -180,7 +235,7 @@ const listDeliveriesSchema = z.object({
 
 const testWebhookSchema = z.object({
   event: z.string().min(1).optional(),
-  payload: z.any().optional()
+  payload: z.record(z.unknown()).optional()
 });
 
 // ============================================
@@ -195,53 +250,64 @@ webhookRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listWebhooksSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    let allowedOrgIds: string[] | null = null;
+    const conditions: SQL[] = [];
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
-      allowedOrgIds = [auth.orgId];
+      conditions.push(eq(webhooksTable.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
-        if (!hasAccess) {
+        if (!auth.canAccessOrg(query.orgId)) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        allowedOrgIds = [query.orgId];
+        conditions.push(eq(webhooksTable.orgId, query.orgId));
       } else {
-        allowedOrgIds = await getOrgIdsForAuth(auth);
+        const orgIds = auth.accessibleOrgIds ?? [];
+        if (orgIds.length === 0) {
+          return c.json({
+            data: [],
+            pagination: { page, limit, total: 0 }
+          });
+        }
+        conditions.push(inArray(webhooksTable.orgId, orgIds));
       }
-    } else if (auth.scope === 'system') {
-      if (query.orgId) {
-        allowedOrgIds = [query.orgId];
-      }
-    }
-
-    const allWebhooks = Array.from(webhookStore.values());
-    let filtered = allWebhooks;
-
-    if (allowedOrgIds) {
-      filtered = filtered.filter(webhook => allowedOrgIds?.includes(webhook.orgId));
+    } else if (query.orgId) {
+      conditions.push(eq(webhooksTable.orgId, query.orgId));
     }
 
     if (query.status) {
-      filtered = filtered.filter(webhook => webhook.status === query.status);
+      conditions.push(eq(webhooksTable.status, mapApiStatusToDb(query.status)));
     }
 
-    const total = filtered.length;
-    const data = filtered
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(offset, offset + limit)
-      .map(sanitizeWebhook);
+    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [countResult, webhookRows] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(webhooksTable)
+        .where(whereCondition),
+      db
+        .select()
+        .from(webhooksTable)
+        .where(whereCondition)
+        .orderBy(desc(webhooksTable.createdAt))
+        .limit(limit)
+        .offset(offset)
+    ]);
 
     return c.json({
-      data,
-      pagination: { page, limit, total }
+      data: webhookRows.map((webhook) => sanitizeWebhook(webhook)),
+      pagination: {
+        page,
+        limit,
+        total: Number(countResult[0]?.count ?? 0)
+      }
     });
   }
 );
@@ -252,7 +318,7 @@ webhookRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createWebhookSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const data = c.req.valid('json');
 
     let orgId = data.orgId;
@@ -266,48 +332,51 @@ webhookRoutes.post(
       if (!orgId) {
         return c.json({ error: 'orgId is required for partner scope' }, 400);
       }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
+      if (!auth.canAccessOrg(orgId)) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
-    } else if (auth.scope === 'system' && !orgId) {
+    } else if (!orgId) {
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const now = new Date();
-    const webhook: WebhookRecord = {
-      id: randomUUID(),
-      orgId: orgId!,
-      name: data.name,
-      url: data.url,
-      secret: data.secret,
-      events: data.events,
-      headers: data.headers ?? [],
-      status: 'active',
-      createdBy: auth.user.id,
-      createdAt: now,
-      updatedAt: now,
-      lastDeliveryAt: null
-    };
+    const urlErrors = validateWebhookUrlSafety(data.url);
+    if (urlErrors.length > 0) {
+      return c.json({ error: 'Invalid webhook URL', details: urlErrors }, 400);
+    }
 
-    webhookStore.set(webhook.id, webhook);
+    const [created] = await db
+      .insert(webhooksTable)
+      .values({
+        orgId,
+        name: data.name,
+        url: data.url,
+        secret: data.secret,
+        events: data.events,
+        headers: data.headers ?? [],
+        status: 'active',
+        createdBy: auth.user.id,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      })
+      .returning();
+
+    if (!created) {
+      return c.json({ error: 'Failed to create webhook' }, 500);
+    }
 
     writeRouteAudit(c, {
-      orgId: webhook.orgId,
+      orgId: created.orgId,
       action: 'webhook.create',
       resourceType: 'webhook',
-      resourceId: webhook.id,
-      resourceName: webhook.name,
+      resourceId: created.id,
+      resourceName: created.name,
       details: {
-        urlHost: URL.canParse(webhook.url) ? new URL(webhook.url).hostname : 'redacted',
-        eventCount: webhook.events.length
+        urlHost: URL.canParse(created.url) ? new URL(created.url).hostname : 'redacted',
+        eventCount: created.events?.length ?? 0
       }
     });
 
-    return c.json({
-      ...sanitizeWebhook(webhook),
-      secret: webhook.secret
-    }, 201);
+    return c.json(sanitizeWebhook(created, { includeSecret: true }), 201);
   }
 );
 
@@ -316,7 +385,7 @@ webhookRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
@@ -324,9 +393,11 @@ webhookRoutes.get(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
+    const stats = await getDeliveryStats(webhook.id);
+
     return c.json({
       ...sanitizeWebhook(webhook),
-      deliveryStats: getDeliveryStats(webhook.id)
+      deliveryStats: stats
     });
   }
 );
@@ -337,7 +408,7 @@ webhookRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateWebhookSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');
     const data = c.req.valid('json');
 
@@ -350,18 +421,33 @@ webhookRoutes.patch(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
-    const updated: WebhookRecord = {
-      ...webhook,
-      name: data.name ?? webhook.name,
-      url: data.url ?? webhook.url,
-      secret: data.secret ?? webhook.secret,
-      events: data.events ?? webhook.events,
-      headers: data.headers ?? webhook.headers,
-      status: data.status ?? webhook.status,
+    if (data.url) {
+      const urlErrors = validateWebhookUrlSafety(data.url);
+      if (urlErrors.length > 0) {
+        return c.json({ error: 'Invalid webhook URL', details: urlErrors }, 400);
+      }
+    }
+
+    const updatePayload: Partial<typeof webhooksTable.$inferInsert> = {
       updatedAt: new Date()
     };
 
-    webhookStore.set(webhook.id, updated);
+    if (data.name !== undefined) updatePayload.name = data.name;
+    if (data.url !== undefined) updatePayload.url = data.url;
+    if (data.secret !== undefined) updatePayload.secret = data.secret;
+    if (data.events !== undefined) updatePayload.events = data.events;
+    if (data.headers !== undefined) updatePayload.headers = data.headers;
+    if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
+
+    const [updated] = await db
+      .update(webhooksTable)
+      .set(updatePayload)
+      .where(eq(webhooksTable.id, webhookId))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Webhook not found' }, 404);
+    }
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -376,7 +462,7 @@ webhookRoutes.patch(
 
     return c.json({
       ...sanitizeWebhook(updated),
-      secret: data.secret ? updated.secret : undefined
+      ...(data.secret ? { secret: updated.secret } : {})
     });
   }
 );
@@ -386,7 +472,7 @@ webhookRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
@@ -394,10 +480,13 @@ webhookRoutes.delete(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
-    webhookStore.delete(webhookId);
-    Array.from(deliveryStore.values())
-      .filter(delivery => delivery.webhookId === webhookId)
-      .forEach(delivery => deliveryStore.delete(delivery.id));
+    await db
+      .delete(webhookDeliveries)
+      .where(eq(webhookDeliveries.webhookId, webhook.id));
+
+    await db
+      .delete(webhooksTable)
+      .where(eq(webhooksTable.id, webhook.id));
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
@@ -417,7 +506,7 @@ webhookRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listDeliveriesSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
@@ -427,20 +516,34 @@ webhookRoutes.get(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
-    let deliveries = Array.from(deliveryStore.values()).filter(delivery => delivery.webhookId === webhook.id);
-
+    const conditions: SQL[] = [eq(webhookDeliveries.webhookId, webhook.id)];
     if (query.status) {
-      deliveries = deliveries.filter(delivery => delivery.status === query.status);
+      conditions.push(eq(webhookDeliveries.status, query.status));
     }
 
-    const total = deliveries.length;
-    const data = deliveries
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(offset, offset + limit);
+    const whereCondition = and(...conditions);
+
+    const [countResult, deliveryRows] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(webhookDeliveries)
+        .where(whereCondition),
+      db
+        .select()
+        .from(webhookDeliveries)
+        .where(whereCondition)
+        .orderBy(desc(webhookDeliveries.createdAt))
+        .limit(limit)
+        .offset(offset)
+    ]);
 
     return c.json({
-      data,
-      pagination: { page, limit, total }
+      data: deliveryRows.map((delivery) => mapDelivery(delivery, webhook.orgId)),
+      pagination: {
+        page,
+        limit,
+        total: Number(countResult[0]?.count ?? 0)
+      }
     });
   }
 );
@@ -451,7 +554,7 @@ webhookRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', testWebhookSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');
     const data = c.req.valid('json');
 
@@ -460,32 +563,66 @@ webhookRoutes.post(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
-    const event = data.event ?? 'webhook.test';
+    const eventType = data.event ?? 'webhook.test';
     const payload = data.payload ?? {
       message: 'Test webhook from Breeze RMM',
       timestamp: new Date().toISOString(),
       webhookId: webhook.id
     };
 
+    const eventId = randomUUID();
     const now = new Date();
-    const delivery: WebhookDeliveryRecord = {
-      id: randomUUID(),
-      webhookId: webhook.id,
+
+    const [delivery] = await db
+      .insert(webhookDeliveries)
+      .values({
+        webhookId: webhook.id,
+        eventType,
+        eventId,
+        payload,
+        status: 'pending',
+        attempts: 0,
+        createdAt: now
+      })
+      .returning();
+
+    if (!delivery) {
+      return c.json({ error: 'Failed to create delivery record' }, 500);
+    }
+
+    const event = {
+      id: eventId,
+      type: eventType,
       orgId: webhook.orgId,
-      status: 'delivered',
-      event,
+      source: 'webhook.test',
+      priority: 'normal',
       payload,
-      responseStatus: 200,
-      responseBody: 'Simulated delivery (no outbound request sent)',
-      attempt: 1,
-      nextAttemptAt: null,
-      createdAt: now,
-      updatedAt: now,
-      deliveredAt: now
+      metadata: {
+        timestamp: now.toISOString(),
+        userId: auth.user.id
+      }
     };
 
-    deliveryStore.set(delivery.id, delivery);
-    webhookStore.set(webhook.id, { ...webhook, lastDeliveryAt: now, updatedAt: now });
+    try {
+      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), event as any, delivery.id);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
+      const [failedDelivery] = await db
+        .update(webhookDeliveries)
+        .set({
+          status: 'failed',
+          attempts: 1,
+          errorMessage,
+          deliveredAt: new Date()
+        })
+        .where(eq(webhookDeliveries.id, delivery.id))
+        .returning();
+
+      return c.json({
+        error: 'Failed to queue webhook delivery',
+        delivery: mapDelivery(failedDelivery ?? delivery, webhook.orgId)
+      }, 503);
+    }
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
@@ -495,13 +632,13 @@ webhookRoutes.post(
       resourceName: webhook.name,
       details: {
         deliveryId: delivery.id,
-        event
+        event: eventType
       }
     });
 
     return c.json({
-      message: 'Test delivery recorded (simulated)',
-      delivery
+      message: 'Test delivery queued',
+      delivery: mapDelivery(delivery, webhook.orgId)
     }, 202);
   }
 );
@@ -511,7 +648,7 @@ webhookRoutes.post(
   '/:id/retry/:deliveryId',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');
     const deliveryId = c.req.param('deliveryId');
 
@@ -520,8 +657,18 @@ webhookRoutes.post(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
-    const delivery = await getDeliveryWithOrgCheck(deliveryId, auth);
-    if (!delivery || delivery.webhookId !== webhook.id) {
+    const [delivery] = await db
+      .select()
+      .from(webhookDeliveries)
+      .where(
+        and(
+          eq(webhookDeliveries.id, deliveryId),
+          eq(webhookDeliveries.webhookId, webhook.id)
+        )
+      )
+      .limit(1);
+
+    if (!delivery) {
       return c.json({ error: 'Delivery not found' }, 404);
     }
 
@@ -529,15 +676,59 @@ webhookRoutes.post(
       return c.json({ error: 'Only failed deliveries can be retried' }, 400);
     }
 
-    const updated: WebhookDeliveryRecord = {
-      ...delivery,
-      status: 'retrying',
-      attempt: delivery.attempt + 1,
-      nextAttemptAt: new Date(),
-      updatedAt: new Date()
+    const retryEventId = randomUUID();
+    const now = new Date();
+
+    const [retryDelivery] = await db
+      .insert(webhookDeliveries)
+      .values({
+        webhookId: webhook.id,
+        eventType: delivery.eventType,
+        eventId: retryEventId,
+        payload: delivery.payload,
+        status: 'pending',
+        attempts: 0,
+        createdAt: now
+      })
+      .returning();
+
+    if (!retryDelivery) {
+      return c.json({ error: 'Failed to create retry delivery record' }, 500);
+    }
+
+    const retryEvent = {
+      id: retryEventId,
+      type: delivery.eventType,
+      orgId: webhook.orgId,
+      source: 'webhook.retry',
+      priority: 'normal',
+      payload: delivery.payload,
+      metadata: {
+        timestamp: now.toISOString(),
+        userId: auth.user.id
+      }
     };
 
-    deliveryStore.set(delivery.id, updated);
+    try {
+      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), retryEvent as any, retryDelivery.id);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
+      const [failedRetry] = await db
+        .update(webhookDeliveries)
+        .set({
+          status: 'failed',
+          attempts: 1,
+          errorMessage,
+          deliveredAt: new Date()
+        })
+        .where(eq(webhookDeliveries.id, retryDelivery.id))
+        .returning();
+
+      return c.json({
+        error: 'Failed to queue retry delivery',
+        delivery: mapDelivery(failedRetry ?? retryDelivery, webhook.orgId)
+      }, 503);
+    }
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
@@ -546,14 +737,14 @@ webhookRoutes.post(
       resourceId: webhook.id,
       resourceName: webhook.name,
       details: {
-        deliveryId: delivery.id,
-        attempt: updated.attempt
+        sourceDeliveryId: delivery.id,
+        retryDeliveryId: retryDelivery.id
       }
     });
 
     return c.json({
-      message: 'Delivery retry queued (simulated)',
-      delivery: updated
+      message: 'Delivery retry queued',
+      delivery: mapDelivery(retryDelivery, webhook.orgId)
     }, 202);
   }
 );

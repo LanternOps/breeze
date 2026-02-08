@@ -3,10 +3,10 @@
 
 environment:
   # Base URL for Breeze UI
-  baseUrl: "http://localhost:3000"
+  baseUrl: "${E2E_BASE_URL:-http://localhost:4321/}"
 
   # API URL for direct API calls
-  apiUrl: "http://localhost:4000"
+  apiUrl: "${E2E_API_URL:-http://localhost:3001}"
 
   # Timeout for individual test steps (ms)
   defaultTimeout: 30000

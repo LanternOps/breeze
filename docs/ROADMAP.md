@@ -498,4 +498,4 @@ Keep in Claude:
 ### Build Artifacts
 - API: `apps/api/dist/` (273KB ESM)
 - Web: `apps/web/dist/` (Astro SSR)
-- Agent: `apps/agent/breeze-agent` (10.5MB binary)
+- Agent: `agent/breeze-agent` (10.5MB binary)

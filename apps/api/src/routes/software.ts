@@ -5,6 +5,7 @@ import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const softwareRoutes = new Hono();
+const DEFAULT_SOFTWARE_ORG_ID = 'org-123';
 
 type Platform = 'windows' | 'macos' | 'linux';
 type SoftwareCategory =
@@ -451,6 +452,55 @@ const softwareInventory: DeviceInventory[] = [
   }
 ];
 
+const catalogOrgById = new Map<string, string>(
+  softwareCatalog.map((item) => [item.id, DEFAULT_SOFTWARE_ORG_ID])
+);
+const deploymentOrgById = new Map<string, string>(
+  deployments.map((deployment) => [deployment.id, DEFAULT_SOFTWARE_ORG_ID])
+);
+const inventoryOrgByDeviceId = new Map<string, string>(
+  softwareInventory.map((inventory) => [inventory.deviceId, DEFAULT_SOFTWARE_ORG_ID])
+);
+
+function resolveScopedOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId?: string | null;
+    accessibleOrgIds?: string[] | null;
+  }
+) {
+  if (auth.orgId) {
+    return auth.orgId;
+  }
+
+  if (auth.scope === 'partner' && Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    return auth.accessibleOrgIds[0] ?? null;
+  }
+
+  return null;
+}
+
+function getCatalogItemForOrg(id: string, orgId: string) {
+  if (catalogOrgById.get(id) !== orgId) {
+    return null;
+  }
+  return softwareCatalog.find((entry) => entry.id === id) ?? null;
+}
+
+function getDeploymentForOrg(id: string, orgId: string) {
+  if (deploymentOrgById.get(id) !== orgId) {
+    return null;
+  }
+  return deployments.find((entry) => entry.id === id) ?? null;
+}
+
+function getInventoryForOrg(deviceId: string, orgId: string) {
+  if (inventoryOrgByDeviceId.get(deviceId) !== orgId) {
+    return null;
+  }
+  return softwareInventory.find((entry) => entry.deviceId === deviceId) ?? null;
+}
+
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
   const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
@@ -603,10 +653,17 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listCatalogSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
     const searchTerm = query.search ?? query.q;
     const filtered = softwareCatalog.filter((item) => {
+      if (catalogOrgById.get(item.id) !== orgId) return false;
       if (!matchesSearch(item, searchTerm)) return false;
       if (query.category && item.category !== query.category) return false;
       if (query.platform && !item.platforms.includes(query.platform)) return false;
@@ -627,6 +684,11 @@ softwareRoutes.post(
   zValidator('json', createCatalogSchema),
   (c) => {
     const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const payload = c.req.valid('json');
     const now = new Date().toISOString();
     const item: SoftwareCatalogItem = {
@@ -646,8 +708,9 @@ softwareRoutes.post(
     };
 
     softwareCatalog.push(item);
+    catalogOrgById.set(item.id, orgId);
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId,
       action: 'software.catalog.create',
       resourceType: 'software_catalog_item',
       resourceId: item.id,
@@ -667,8 +730,15 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', catalogSearchSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const query = c.req.valid('query');
     const matches = softwareCatalog.filter((item) => {
+      if (catalogOrgById.get(item.id) !== orgId) return false;
       if (!matchesSearch(item, query.q)) return false;
       if (query.category && item.category !== query.category) return false;
       return true;
@@ -684,8 +754,14 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('param', versionParamSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
-    const item = softwareCatalog.find((entry) => entry.id === id);
+    const item = getCatalogItemForOrg(id, orgId);
     if (!item) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
@@ -706,9 +782,14 @@ softwareRoutes.post(
   zValidator('json', createVersionSchema),
   (c) => {
     const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
-    const item = softwareCatalog.find((entry) => entry.id === id);
+    const item = getCatalogItemForOrg(id, orgId);
     if (!item) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
@@ -730,7 +811,7 @@ softwareRoutes.post(
     item.updatedAt = new Date().toISOString();
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId,
       action: 'software.catalog.version.create',
       resourceType: 'software_version',
       resourceId: version.id,
@@ -751,8 +832,14 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('param', catalogIdParamSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
-    const item = softwareCatalog.find((entry) => entry.id === id);
+    const item = getCatalogItemForOrg(id, orgId);
     if (!item) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
@@ -770,16 +857,21 @@ softwareRoutes.patch(
   zValidator('json', updateCatalogSchema),
   (c) => {
     const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
-    const item = softwareCatalog.find((entry) => entry.id === id);
+    const item = getCatalogItemForOrg(id, orgId);
     if (!item) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
 
     Object.assign(item, payload, { updatedAt: new Date().toISOString() });
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId,
       action: 'software.catalog.update',
       resourceType: 'software_catalog_item',
       resourceId: item.id,
@@ -799,7 +891,15 @@ softwareRoutes.delete(
   zValidator('param', catalogIdParamSchema),
   (c) => {
     const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
+    if (catalogOrgById.get(id) !== orgId) {
+      return c.json({ error: 'Catalog item not found' }, 404);
+    }
     const index = softwareCatalog.findIndex((entry) => entry.id === id);
     if (index === -1) {
       return c.json({ error: 'Catalog item not found' }, 404);
@@ -812,9 +912,10 @@ softwareRoutes.delete(
         softwareVersions.splice(i, 1);
       }
     }
+    catalogOrgById.delete(id);
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId,
       action: 'software.catalog.delete',
       resourceType: 'software_catalog_item',
       resourceId: removed.id,
@@ -831,9 +932,16 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listDeploymentsSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
     const filtered = deployments.filter((deployment) => {
+      if (deploymentOrgById.get(deployment.id) !== orgId) return false;
       if (query.status && deployment.status !== query.status) return false;
       if (query.action && deployment.action !== query.action) return false;
       if (query.softwareId && deployment.softwareId !== query.softwareId) return false;
@@ -856,8 +964,13 @@ softwareRoutes.post(
   zValidator('json', createDeploymentSchema),
   (c) => {
     const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const payload = c.req.valid('json');
-    const item = softwareCatalog.find((entry) => entry.id === payload.softwareId);
+    const item = getCatalogItemForOrg(payload.softwareId, orgId);
     if (!item) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
@@ -878,6 +991,7 @@ softwareRoutes.post(
     };
 
     deployments.push(deployment);
+    deploymentOrgById.set(deployment.id, orgId);
 
     payload.deviceIds.forEach((deviceId) => {
       deploymentResults.push({
@@ -889,7 +1003,7 @@ softwareRoutes.post(
     });
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId,
       action: 'software.deployment.create',
       resourceType: 'software_deployment',
       resourceId: deployment.id,
@@ -911,8 +1025,14 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('param', deploymentIdParamSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
-    const deployment = deployments.find((entry) => entry.id === id);
+    const deployment = getDeploymentForOrg(id, orgId);
     if (!deployment) {
       return c.json({ error: 'Deployment not found' }, 404);
     }
@@ -929,9 +1049,14 @@ softwareRoutes.post(
   zValidator('json', cancelDeploymentSchema),
   (c) => {
     const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
-    const deployment = deployments.find((entry) => entry.id === id);
+    const deployment = getDeploymentForOrg(id, orgId);
     if (!deployment) {
       return c.json({ error: 'Deployment not found' }, 404);
     }
@@ -953,7 +1078,7 @@ softwareRoutes.post(
     });
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId,
       action: 'software.deployment.cancel',
       resourceType: 'software_deployment',
       resourceId: deployment.id,
@@ -974,8 +1099,14 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('param', deploymentIdParamSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { id } = c.req.valid('param');
-    const deployment = deployments.find((entry) => entry.id === id);
+    const deployment = getDeploymentForOrg(id, orgId);
     if (!deployment) {
       return c.json({ error: 'Deployment not found' }, 404);
     }
@@ -991,8 +1122,16 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', listInventorySchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const query = c.req.valid('query');
-    let filtered = softwareInventory;
+    let filtered = softwareInventory.filter(
+      (entry) => inventoryOrgByDeviceId.get(entry.deviceId) === orgId
+    );
 
     if (query.deviceId) {
       filtered = filtered.filter((entry) => entry.deviceId === query.deviceId);
@@ -1023,8 +1162,14 @@ softwareRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('param', inventoryParamSchema),
   (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { deviceId } = c.req.valid('param');
-    const inventory = softwareInventory.find((entry) => entry.deviceId === deviceId);
+    const inventory = getInventoryForOrg(deviceId, orgId);
     if (!inventory) {
       return c.json({ error: 'Device inventory not found' }, 404);
     }
@@ -1041,9 +1186,14 @@ softwareRoutes.post(
   zValidator('json', uninstallRequestSchema),
   (c) => {
     const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
     const { deviceId, softwareId } = c.req.valid('param');
     const payload = c.req.valid('json');
-    const inventory = softwareInventory.find((entry) => entry.deviceId === deviceId);
+    const inventory = getInventoryForOrg(deviceId, orgId);
     if (!inventory) {
       return c.json({ error: 'Device inventory not found' }, 404);
     }
@@ -1053,7 +1203,7 @@ softwareRoutes.post(
       return c.json({ error: 'Software not found on device' }, 404);
     }
 
-    const catalogItem = softwareCatalog.find((entry) => entry.id === softwareId);
+    const catalogItem = getCatalogItemForOrg(softwareId, orgId);
     if (!catalogItem) {
       return c.json({ error: 'Catalog item not found' }, 404);
     }
@@ -1076,6 +1226,7 @@ softwareRoutes.post(
     };
 
     deployments.push(deployment);
+    deploymentOrgById.set(deployment.id, orgId);
     deploymentResults.push({
       deploymentId: deployment.id,
       deviceId,
@@ -1084,7 +1235,7 @@ softwareRoutes.post(
     });
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId,
       action: 'software.uninstall.queue',
       resourceType: 'software_deployment',
       resourceId: deployment.id,

@@ -1,4 +1,4 @@
-.PHONY: build build-all clean test install
+.PHONY: build build-all clean test install install-service uninstall-service
 
 VERSION ?= 0.1.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -36,9 +36,56 @@ else
 	sudo cp bin/breeze-agent /usr/local/bin/breeze-agent
 endif
 
+# Install as system service (requires sudo)
+install-service: build
+ifeq ($(shell uname -s),Darwin)
+	sudo bash scripts/install/install-darwin.sh
+else ifeq ($(shell uname -s),Linux)
+	sudo bash scripts/install/install-linux.sh
+else
+	@echo "Unsupported OS for service install. Use Windows Services manually."
+endif
+
+# Uninstall system service (requires sudo)
+uninstall-service:
+ifeq ($(shell uname -s),Darwin)
+	sudo bash scripts/install/uninstall-darwin.sh
+else ifeq ($(shell uname -s),Linux)
+	sudo bash scripts/install/uninstall-linux.sh
+else
+	@echo "Unsupported OS for service uninstall."
+endif
+
 # Development run
 run:
 	go run ./cmd/breeze-agent run
+
+# Run user helper (for development)
+run-user-helper:
+	go run ./cmd/breeze-agent user-helper
+
+# Install user helper service files (requires sudo on Linux/macOS)
+install-user-helper:
+ifeq ($(shell uname -s),Darwin)
+	sudo cp service/launchd/com.breeze.agent-user.plist /Library/LaunchAgents/
+	sudo chown root:wheel /Library/LaunchAgents/com.breeze.agent-user.plist
+	sudo chmod 644 /Library/LaunchAgents/com.breeze.agent-user.plist
+	@echo "LaunchAgent installed. Users will get the helper at next login."
+else ifeq ($(shell uname -s),Linux)
+	sudo mkdir -p /usr/lib/systemd/user
+	sudo cp service/systemd/breeze-agent-user.service /usr/lib/systemd/user/
+	sudo chmod 644 /usr/lib/systemd/user/breeze-agent-user.service
+	sudo cp service/xdg/breeze-agent-user.desktop /etc/xdg/autostart/
+	sudo chmod 644 /etc/xdg/autostart/breeze-agent-user.desktop
+	@echo "Systemd user unit + XDG autostart installed."
+	@echo "Users: systemctl --user enable breeze-agent-user"
+else
+	@echo "Windows: run scripts/install/install-windows.ps1 as Administrator"
+endif
+
+# Run IPC + session broker tests
+test-ipc:
+	go test -v -count=1 ./internal/ipc/... ./internal/sessionbroker/... ./internal/userhelper/...
 
 # Update dependencies
 deps:

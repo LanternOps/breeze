@@ -46,8 +46,8 @@ const customFieldQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(50)
 });
-import { customFieldDefinitions, organizations } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { customFieldDefinitions } from '../db/schema';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const customFieldRoutes = new Hono();
@@ -80,27 +80,21 @@ customFieldRoutes.use('*', authMiddleware);
 
 async function ensureOrgAccess(
   orgId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, auth.partnerId as string)))
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   return true;
 }
 
 async function getOrgIdsForAuth(
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds'>
 ): Promise<string[] | null> {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return null;
@@ -108,11 +102,7 @@ async function getOrgIdsForAuth(
   }
 
   if (auth.scope === 'partner') {
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-    return partnerOrgs.map((org) => org.id);
+    return auth.accessibleOrgIds ?? [];
   }
 
   return null;

@@ -41,7 +41,8 @@ vi.mock('../db/schema', () => ({
   deviceGroupMemberships: {},
   deviceCommands: {},
   sites: {},
-  organizations: {}
+  organizations: {},
+  enrollmentKeys: {}
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -50,11 +51,15 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: 'org-123',
-      partnerId: null
+      partnerId: null,
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId: string) => orgId === 'org-123',
+      orgCondition: vi.fn()
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c, next) => next()),
+  requirePermission: vi.fn(() => async (_c, next) => next())
 }));
 
 import { db } from '../db';
@@ -66,6 +71,70 @@ describe('device routes', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.route('/devices', deviceRoutes);
+  });
+
+  describe('POST /devices/onboarding-token', () => {
+    it('should require orgId for partner/system contexts with multiple accessible orgs', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds: ['org-1', 'org-2'],
+          canAccessOrg: (orgId: string) => ['org-1', 'org-2'].includes(orgId),
+          orgCondition: vi.fn()
+        });
+        return next();
+      });
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Organization ID required');
+    });
+
+    it('should use explicit orgId when provided and accessible', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds: ['org-1', 'org-2'],
+          canAccessOrg: (orgId: string) => ['org-1', 'org-2'].includes(orgId),
+          orgCondition: vi.fn()
+        });
+        return next();
+      });
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token?orgId=org-2', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.token).toContain('enroll_');
+      expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    });
   });
 
   describe('GET /devices', () => {

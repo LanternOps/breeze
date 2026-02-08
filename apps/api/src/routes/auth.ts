@@ -47,6 +47,12 @@ const loginSchema = z.object({
   password: z.string().min(1)
 });
 
+const registerSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  name: z.string().min(1).max(255)
+});
+
 const registerPartnerSchema = z.object({
   companyName: z.string().min(2).max(255),
   email: z.string().email(),
@@ -85,6 +91,15 @@ const resetPasswordSchema = z.object({
   password: z.string().min(8)
 });
 
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8)
+});
+
+const mfaEnableSchema = z.object({
+  code: z.string().length(6)
+});
+
 const refreshSchema = z.object({
   refreshToken: z.string()
 });
@@ -101,6 +116,100 @@ function getClientIP(c: RequestLike): string {
 
 function genericAuthError() {
   return { error: 'Invalid email or password' };
+}
+
+type UserTokenContext = {
+  roleId: string | null;
+  partnerId: string | null;
+  orgId: string | null;
+  scope: 'system' | 'partner' | 'organization';
+};
+
+async function isTokenRevokedForUser(userId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) {
+    return false;
+  }
+
+  try {
+    const revoked = await redis.get(`token:revoked:${userId}`);
+    return Boolean(revoked);
+  } catch (error) {
+    console.warn('[auth] Failed to check token revocation state:', error);
+    return false;
+  }
+}
+
+async function resolveCurrentUserTokenContext(userId: string): Promise<UserTokenContext> {
+  let roleId: string | null = null;
+  let partnerId: string | null = null;
+  let orgId: string | null = null;
+  let scope: 'system' | 'partner' | 'organization' = 'system';
+
+  let partnerUsersTable:
+    | { partnerId?: unknown; roleId?: unknown; userId?: unknown }
+    | undefined;
+  try {
+    partnerUsersTable = partnerUsers as unknown as { partnerId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+  } catch {
+    partnerUsersTable = undefined;
+  }
+
+  if (partnerUsersTable?.partnerId && partnerUsersTable?.roleId && partnerUsersTable?.userId) {
+    const [partnerAssoc] = await db
+      .select({
+        partnerId: partnerUsers.partnerId,
+        roleId: partnerUsers.roleId
+      })
+      .from(partnerUsers)
+      .where(eq(partnerUsers.userId, userId))
+      .limit(1);
+
+    if (partnerAssoc?.partnerId && partnerAssoc?.roleId) {
+      return {
+        roleId: partnerAssoc.roleId,
+        partnerId: partnerAssoc.partnerId,
+        orgId: null,
+        scope: 'partner'
+      };
+    }
+  }
+
+  let organizationUsersTable:
+    | { orgId?: unknown; roleId?: unknown; userId?: unknown }
+    | undefined;
+  try {
+    organizationUsersTable = organizationUsers as unknown as { orgId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+  } catch {
+    organizationUsersTable = undefined;
+  }
+
+  if (organizationUsersTable?.orgId && organizationUsersTable?.roleId && organizationUsersTable?.userId) {
+    const [orgAssoc] = await db
+      .select({
+        orgId: organizationUsers.orgId,
+        roleId: organizationUsers.roleId
+      })
+      .from(organizationUsers)
+      .where(eq(organizationUsers.userId, userId))
+      .limit(1);
+
+    if (orgAssoc?.orgId && orgAssoc?.roleId) {
+      orgId = orgAssoc.orgId;
+      roleId = orgAssoc.roleId;
+      scope = 'organization';
+
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, orgAssoc.orgId))
+        .limit(1);
+
+      partnerId = org?.partnerId ?? null;
+    }
+  }
+
+  return { roleId, partnerId, orgId, scope };
 }
 
 const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
@@ -207,6 +316,79 @@ function auditLogin(
 // ============================================
 // Routes
 // ============================================
+
+// Register user (compatibility for legacy signup path)
+authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
+  const { email, password, name } = c.req.valid('json');
+  const ip = getClientIP(c);
+  const normalizedEmail = email.toLowerCase();
+
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const rateCheck = await rateLimiter(redis, `register:${ip}`, 5, 3600);
+  if (!rateCheck.allowed) {
+    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+  }
+
+  const passwordCheck = isPasswordStrong(password);
+  if (!passwordCheck.valid) {
+    return c.json({ error: passwordCheck.errors[0] }, 400);
+  }
+
+  const existingUsers = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, normalizedEmail))
+    .limit(1);
+
+  if (existingUsers.length > 0) {
+    return c.json({ error: 'An account with this email already exists' }, 400);
+  }
+
+  const passwordHash = await hashPassword(password);
+  const [newUser] = await db
+    .insert(users)
+    .values({
+      email: normalizedEmail,
+      name,
+      passwordHash,
+      status: 'active'
+    })
+    .returning();
+
+  if (!newUser) {
+    return c.json({ error: 'Failed to create account' }, 500);
+  }
+
+  const context = await resolveCurrentUserTokenContext(newUser.id);
+  const tokens = await createTokenPair({
+    sub: newUser.id,
+    email: newUser.email,
+    roleId: context.roleId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+    scope: context.scope
+  });
+
+  await db
+    .update(users)
+    .set({ lastLoginAt: new Date() })
+    .where(eq(users.id, newUser.id));
+
+  return c.json({
+    user: {
+      id: newUser.id,
+      email: newUser.email,
+      name: newUser.name,
+      mfaEnabled: false
+    },
+    tokens,
+    mfaRequired: false
+  });
+});
 
 // Register Partner (self-service MSP/company signup)
 authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), async (c) => {
@@ -611,6 +793,10 @@ authRoutes.post('/refresh', zValidator('json', refreshSchema), async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
+  if (await isTokenRevokedForUser(payload.sub)) {
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
   // Check if user still exists and is active
   const [user] = await db
     .select({ id: users.id, email: users.email, status: users.status })
@@ -622,14 +808,16 @@ authRoutes.post('/refresh', zValidator('json', refreshSchema), async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
+  const context = await resolveCurrentUserTokenContext(user.id);
+
   // Create new token pair
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
-    roleId: payload.roleId,
-    orgId: payload.orgId,
-    partnerId: payload.partnerId,
-    scope: payload.scope
+    roleId: context.roleId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+    scope: context.scope
   });
 
   return c.json({ tokens });
@@ -877,6 +1065,10 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
   const token = authHeader.slice(7);
   const payload = await verifyToken(token);
   if (!payload) {
+    return c.json({ error: 'Invalid token' }, 401);
+  }
+
+  if (await isTokenRevokedForUser(payload.sub)) {
     return c.json({ error: 'Invalid token' }, 401);
   }
 
@@ -1430,6 +1622,169 @@ authRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), asyn
   await invalidateAllUserSessions(userId);
 
   return c.json({ success: true, message: 'Password reset successfully' });
+});
+
+// Change password (requires auth)
+authRoutes.post('/change-password', authMiddleware, zValidator('json', changePasswordSchema), async (c) => {
+  const auth = c.get('auth');
+  const { currentPassword, newPassword } = c.req.valid('json');
+
+  const [user] = await db
+    .select({ passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  if (!user?.passwordHash) {
+    const message = 'Password authentication is not available for this account';
+    return c.json({ error: message, message }, 400);
+  }
+
+  const validCurrentPassword = await verifyPassword(user.passwordHash, currentPassword);
+  if (!validCurrentPassword) {
+    const message = 'Current password is incorrect';
+    return c.json({ error: message, message }, 401);
+  }
+
+  const passwordCheck = isPasswordStrong(newPassword);
+  if (!passwordCheck.valid) {
+    const message = passwordCheck.errors[0] || 'Password is too weak';
+    return c.json({ error: message, message }, 400);
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await db
+    .update(users)
+    .set({
+      passwordHash,
+      passwordChangedAt: new Date(),
+      updatedAt: new Date()
+    })
+    .where(eq(users.id, auth.user.id));
+
+  await invalidateAllUserSessions(auth.user.id);
+  const redis = getRedis();
+  if (redis) {
+    await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1');
+  }
+
+  return c.json({ success: true, message: 'Password changed successfully' });
+});
+
+// MFA enable compatibility endpoint for frontend settings flow
+authRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema), async (c) => {
+  const auth = c.get('auth');
+  const { code } = c.req.valid('json');
+  const redis = getRedis();
+
+  if (!redis) {
+    const message = 'MFA enablement unavailable. Please try again later.';
+    return c.json({ error: message, message }, 503);
+  }
+
+  const setupData = await redis.get(`mfa:setup:${auth.user.id}`);
+  if (!setupData) {
+    const message = 'No pending MFA setup';
+    return c.json({ error: message, message }, 400);
+  }
+
+  let secret: string;
+  let recoveryCodes: string[];
+  try {
+    const parsed = JSON.parse(setupData) as { secret?: unknown; recoveryCodes?: unknown };
+    if (typeof parsed.secret !== 'string' || !Array.isArray(parsed.recoveryCodes) || parsed.recoveryCodes.some(code => typeof code !== 'string')) {
+      throw new Error('Invalid setup data');
+    }
+    secret = parsed.secret;
+    recoveryCodes = parsed.recoveryCodes;
+  } catch {
+    const message = 'Invalid MFA setup data';
+    return c.json({ error: message, message }, 500);
+  }
+
+  const valid = await verifyMFAToken(secret, code);
+  if (!valid) {
+    const orgId = await resolveUserAuditOrgId(auth.user.id);
+    if (orgId) {
+      writeAuthAudit(c, {
+        orgId,
+        action: 'auth.mfa.setup.failed',
+        result: 'failure',
+        reason: 'invalid_mfa_code',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { phase: 'setup_confirmation' }
+      });
+    }
+    const message = 'Invalid MFA code';
+    return c.json({ error: message, message }, 401);
+  }
+
+  await db
+    .update(users)
+    .set({
+      mfaSecret: secret,
+      mfaEnabled: true,
+      mfaMethod: 'totp',
+      mfaRecoveryCodes: recoveryCodes,
+      updatedAt: new Date()
+    })
+    .where(eq(users.id, auth.user.id));
+
+  await redis.del(`mfa:setup:${auth.user.id}`);
+
+  const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
+  if (setupOrgId) {
+    writeAuthAudit(c, {
+      orgId: setupOrgId,
+      action: 'auth.mfa.setup',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { method: 'totp' }
+    });
+  }
+
+  return c.json({ success: true, recoveryCodes, message: 'MFA enabled successfully' });
+});
+
+// Generate new MFA recovery codes for the authenticated user
+authRoutes.post('/mfa/recovery-codes', authMiddleware, async (c) => {
+  const auth = c.get('auth');
+
+  const [user] = await db
+    .select({ mfaEnabled: users.mfaEnabled })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  if (!user?.mfaEnabled) {
+    const message = 'MFA must be enabled before generating recovery codes';
+    return c.json({ error: message, message }, 400);
+  }
+
+  const recoveryCodes = generateRecoveryCodes();
+  await db
+    .update(users)
+    .set({
+      mfaRecoveryCodes: recoveryCodes,
+      updatedAt: new Date()
+    })
+    .where(eq(users.id, auth.user.id));
+
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+  if (orgId) {
+    writeAuthAudit(c, {
+      orgId,
+      action: 'auth.mfa.recovery_codes.rotate',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { count: recoveryCodes.length }
+    });
+  }
+
+  return c.json({ success: true, recoveryCodes, message: 'Recovery codes generated successfully' });
 });
 
 // Get current user (requires auth)

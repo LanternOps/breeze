@@ -61,7 +61,9 @@ const securityActions = new Set([
   'user.login.failed',
   'user.permission.change',
   'policy.update',
-  'policy.create'
+  'policy.create',
+  'policy.evaluate',
+  'automation.policy.evaluate'
 ]);
 
 const complianceActions = new Set([
@@ -70,6 +72,8 @@ const complianceActions = new Set([
   'device.create',
   'device.delete',
   'policy.update',
+  'policy.evaluate',
+  'automation.policy.evaluate',
   'script.execute',
   'organization.update'
 ]);
@@ -80,6 +84,8 @@ const dataChangeActions = new Set([
   'device.delete',
   'device.update',
   'policy.update',
+  'policy.evaluate',
+  'automation.policy.evaluate',
   'policy.create',
   'script.execute',
   'organization.update'
@@ -104,6 +110,7 @@ function deriveCategory(action: string): string {
   if (action.startsWith('user.login') || action.startsWith('user.logout') || action.startsWith('user.permission')) return 'authentication';
   if (action.startsWith('device.')) return 'device';
   if (action.startsWith('script.')) return 'automation';
+  if (action.startsWith('automation.policy.')) return 'policy';
   if (action.startsWith('policy.')) return 'policy';
   if (action.startsWith('alert.')) return 'alert';
   if (action.startsWith('data.')) return 'compliance';

@@ -12,7 +12,8 @@ import {
   permissions,
   rolePermissions,
   partnerUsers,
-  organizationUsers
+  organizationUsers,
+  organizations
 } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -21,6 +22,34 @@ import { writeRouteAudit } from '../services/auditEvents';
 export const accessReviewRoutes = new Hono();
 
 accessReviewRoutes.use('*', authMiddleware);
+accessReviewRoutes.use('*', async (c, next) => {
+  const auth = c.get('auth');
+  if (!auth || auth.scope !== 'partner') {
+    await next();
+    return;
+  }
+
+  if (!auth.partnerId) {
+    throw new HTTPException(403, { message: 'Partner context required' });
+  }
+
+  if (!Array.isArray(auth.accessibleOrgIds)) {
+    await next();
+    return;
+  }
+
+  const partnerOrgRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, auth.partnerId));
+  const hasFullPartnerAccess = partnerOrgRows.every((org) => auth.accessibleOrgIds.includes(org.id));
+
+  if (!hasFullPartnerAccess) {
+    throw new HTTPException(403, { message: 'Full partner organization access required' });
+  }
+
+  await next();
+});
 
 // Zod schemas for validation
 const createReviewSchema = z.object({

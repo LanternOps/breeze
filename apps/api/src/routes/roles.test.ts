@@ -44,7 +44,8 @@ vi.mock('../db/schema', () => ({
   rolePermissions: {},
   partnerUsers: {},
   organizationUsers: {},
-  users: {}
+  users: {},
+  organizations: {}
 }));
 
 vi.mock('../middleware/auth', () => ({

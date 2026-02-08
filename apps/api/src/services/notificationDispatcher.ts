@@ -170,6 +170,28 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
   }
 
+  const requestedChannelIds = [...new Set(channelIds.filter(Boolean))];
+  if (requestedChannelIds.length === 0) {
+    console.log(`[NotificationDispatcher] No valid channel IDs configured for alert ${data.alertId}`);
+    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+  }
+
+  const validChannels = await db
+    .select({ id: notificationChannels.id })
+    .from(notificationChannels)
+    .where(
+      and(
+        eq(notificationChannels.orgId, alert.orgId),
+        inArray(notificationChannels.id, requestedChannelIds)
+      )
+    );
+  channelIds = validChannels.map((channel) => channel.id);
+
+  if (channelIds.length === 0) {
+    console.log(`[NotificationDispatcher] No valid channels in alert org for alert ${data.alertId}`);
+    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+  }
+
   // Queue notification jobs for each channel
   const queue = getNotificationQueue();
   const jobs = channelIds.map(channelId => ({
@@ -186,7 +208,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
   // Check for escalation policy
   const escalationPolicyId = overrides?.escalationPolicyId as string | undefined;
   if (escalationPolicyId) {
-    await scheduleEscalation(data.alertId, escalationPolicyId);
+    await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId);
   }
 
   return {
@@ -227,14 +249,19 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
   const [channel] = await db
     .select()
     .from(notificationChannels)
-    .where(eq(notificationChannels.id, data.channelId))
+    .where(
+      and(
+        eq(notificationChannels.id, data.channelId),
+        eq(notificationChannels.orgId, alert.orgId)
+      )
+    )
     .limit(1);
 
   if (!channel) {
     return {
       success: false,
       channelType: 'unknown',
-      error: 'Channel not found',
+      error: 'Channel not found for alert organization',
       durationMs: Date.now() - startTime
     };
   }
@@ -413,11 +440,16 @@ async function sendWebhookChannelNotification(
 /**
  * Schedule escalation steps based on policy
  */
-async function scheduleEscalation(alertId: string, policyId: string): Promise<void> {
+async function scheduleEscalation(alertId: string, policyId: string, orgId: string): Promise<void> {
   const [policy] = await db
     .select()
     .from(escalationPolicies)
-    .where(eq(escalationPolicies.id, policyId))
+    .where(
+      and(
+        eq(escalationPolicies.id, policyId),
+        eq(escalationPolicies.orgId, orgId)
+      )
+    )
     .limit(1);
 
   if (!policy) {
@@ -434,6 +466,21 @@ async function scheduleEscalation(alertId: string, policyId: string): Promise<vo
   }
 
   const queue = getNotificationQueue();
+  const requestedChannelIds = [...new Set(
+    steps.flatMap((step) => Array.isArray(step.channelIds) ? step.channelIds : []).filter(Boolean)
+  )];
+  const validChannels = requestedChannelIds.length > 0
+    ? await db
+      .select({ id: notificationChannels.id })
+      .from(notificationChannels)
+      .where(
+        and(
+          eq(notificationChannels.orgId, orgId),
+          inArray(notificationChannels.id, requestedChannelIds)
+        )
+      )
+    : [];
+  const validChannelIdSet = new Set(validChannels.map((channel) => channel.id));
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
@@ -441,7 +488,9 @@ async function scheduleEscalation(alertId: string, policyId: string): Promise<vo
 
     const delayMs = step.delayMinutes * 60 * 1000;
 
-    for (const channelId of step.channelIds || []) {
+    const stepChannelIds = (step.channelIds || []).filter((channelId) => validChannelIdSet.has(channelId));
+
+    for (const channelId of stepChannelIds) {
       await queue.add(
         'send',
         {

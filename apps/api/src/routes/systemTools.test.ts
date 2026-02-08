@@ -88,7 +88,7 @@ describe('system tools routes', () => {
     expect(body.meta.total).toBe(1);
   });
 
-  it('falls back to mock processes on invalid agent response', async () => {
+  it('returns 502 on invalid process payload from agent', async () => {
     mockDeviceSelect();
     mockExecuteCommand.mockResolvedValue({
       status: 'completed',
@@ -97,20 +97,17 @@ describe('system tools routes', () => {
 
     const res = await app.request(`/system-tools/devices/${deviceId}/processes`);
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(502);
     const body = await res.json();
-    expect(body.data.length).toBeGreaterThan(0);
-    expect(body.meta.total).toBe(8);
+    expect(body.error).toContain('Failed to parse agent response');
   });
 
-  it('gets process details by pid', async () => {
+  it('returns 501 for process details endpoint until agent integration is implemented', async () => {
     mockDeviceSelect();
 
     const res = await app.request(`/system-tools/devices/${deviceId}/processes/2048`);
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data.pid).toBe(2048);
+    expect(res.status).toBe(501);
   });
 
   it('kills a process and logs audit', async () => {
@@ -152,26 +149,22 @@ describe('system tools routes', () => {
     expect(body.meta.total).toBe(1);
   });
 
-  it('returns 404 for missing service', async () => {
+  it('returns 501 for service details endpoint until agent integration is implemented', async () => {
     mockDeviceSelect();
 
     const res = await app.request(`/system-tools/devices/${deviceId}/services/UnknownService`);
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(501);
   });
 
-  it('starts a service and logs audit', async () => {
+  it('returns 501 for service start endpoint until agent integration is implemented', async () => {
     mockDeviceSelect();
 
     const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM/start`, {
       method: 'POST'
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.success).toBe(true);
-    expect(body.data.status).toBe('running');
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    expect(res.status).toBe(501);
   });
 
   it('lists registry keys', async () => {
@@ -233,63 +226,52 @@ describe('system tools routes', () => {
     expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
-  it('lists event logs', async () => {
+  it('returns 501 for event log listing until agent integration is implemented', async () => {
     mockDeviceSelect();
 
     const res = await app.request(`/system-tools/devices/${deviceId}/eventlogs`);
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data.length).toBeGreaterThan(0);
+    expect(res.status).toBe(501);
   });
 
-  it('filters event log entries', async () => {
+  it('returns 501 for event log query until agent integration is implemented', async () => {
     mockDeviceSelect();
 
     const res = await app.request(
       `/system-tools/devices/${deviceId}/eventlogs/System/events?level=critical&eventId=6008`
     );
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data).toHaveLength(1);
-    expect(body.meta.filters.level).toBe('critical');
+    expect(res.status).toBe(501);
   });
 
-  it('gets event log record details', async () => {
+  it('returns 501 for event log detail until agent integration is implemented', async () => {
     mockDeviceSelect();
 
     const res = await app.request(
       `/system-tools/devices/${deviceId}/eventlogs/System/events/15234`
     );
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data.recordId).toBe(15234);
+    expect(res.status).toBe(501);
   });
 
-  it('lists scheduled tasks', async () => {
+  it('returns 501 for scheduled tasks listing until agent integration is implemented', async () => {
     mockDeviceSelect();
 
     const res = await app.request(`/system-tools/devices/${deviceId}/tasks?limit=2&page=1`);
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data).toHaveLength(2);
+    expect(res.status).toBe(501);
   });
 
-  it('gets task details with encoded path', async () => {
+  it('returns 501 for task details until agent integration is implemented', async () => {
     mockDeviceSelect();
     const encodedPath = encodeURIComponent('\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan');
 
     const res = await app.request(`/system-tools/devices/${deviceId}/tasks/${encodedPath}`);
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data.name).toContain('Windows Defender');
+    expect(res.status).toBe(501);
   });
 
-  it('runs a task and logs audit', async () => {
+  it('returns 501 for task run endpoint until agent integration is implemented', async () => {
     mockDeviceSelect();
     const encodedPath = encodeURIComponent('\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan');
 
@@ -297,14 +279,10 @@ describe('system tools routes', () => {
       method: 'POST'
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.success).toBe(true);
-    expect(body.data.state).toBe('running');
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    expect(res.status).toBe(501);
   });
 
-  it('enables a task and logs audit', async () => {
+  it('returns 501 for task enable endpoint until agent integration is implemented', async () => {
     mockDeviceSelect();
     const encodedPath = encodeURIComponent('\\Backup\\Daily Backup');
 
@@ -312,13 +290,10 @@ describe('system tools routes', () => {
       method: 'POST'
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data.state).toBe('ready');
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    expect(res.status).toBe(501);
   });
 
-  it('disables a task and logs audit', async () => {
+  it('returns 501 for task disable endpoint until agent integration is implemented', async () => {
     mockDeviceSelect();
     const encodedPath = encodeURIComponent('\\Microsoft\\Windows\\WindowsUpdate\\Scheduled Start');
 
@@ -326,9 +301,6 @@ describe('system tools routes', () => {
       method: 'POST'
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data.state).toBe('disabled');
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    expect(res.status).toBe(501);
   });
 });

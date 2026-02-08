@@ -3,8 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceGroups, deviceGroupMemberships, devices, organizations, groupMembershipLog } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog } from '../db/schema';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
 import { evaluateGroupMembership, pinDeviceToGroup } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -93,27 +93,21 @@ groupRoutes.use('*', authMiddleware);
 
 async function ensureOrgAccess(
   orgId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, auth.partnerId as string)))
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   return true;
 }
 
 async function getOrgIdsForAuth(
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds'>
 ): Promise<string[] | null> {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return null;
@@ -121,11 +115,7 @@ async function getOrgIdsForAuth(
   }
 
   if (auth.scope === 'partner') {
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-    return partnerOrgs.map((org) => org.id);
+    return auth.accessibleOrgIds ?? [];
   }
 
   return null;

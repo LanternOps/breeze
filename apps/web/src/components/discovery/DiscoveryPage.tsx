@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, useEffect } from 'react';
 import { Plus } from 'lucide-react';
 import DiscoveryProfileList, { type DiscoveryProfile, type DiscoveryProfileStatus } from './DiscoveryProfileList';
-import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule } from './DiscoveryProfileForm';
+import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings } from './DiscoveryProfileForm';
 import DiscoveryJobList from './DiscoveryJobList';
 import DiscoveredAssetList from './DiscoveredAssetList';
 import NetworkTopologyMap from './NetworkTopologyMap';
@@ -9,6 +9,7 @@ import DiscoveryMonitoringDashboard from './DiscoveryMonitoringDashboard';
 import SNMPTemplateList from '../snmp/SNMPTemplateList';
 import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 const DISCOVERY_TABS = ['profiles', 'jobs', 'assets', 'topology', 'monitoring', 'templates'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
@@ -19,12 +20,27 @@ type ApiDiscoverySchedule = {
   intervalMinutes?: number;
 };
 
+type ApiSnmpCredentials = {
+  version?: string;
+  port?: number;
+  timeout?: number;
+  retries?: number;
+  username?: string;
+  authProtocol?: string;
+  authPassphrase?: string;
+  privacyProtocol?: string;
+  privacyPassphrase?: string;
+};
+
 type ApiDiscoveryProfile = {
   id: string;
   name: string;
+  siteId: string;
   subnets: string[];
   methods: string[];
   schedule?: ApiDiscoverySchedule;
+  snmpCommunities?: string[];
+  snmpCredentials?: ApiSnmpCredentials | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -167,22 +183,42 @@ function mapProfileToDisplay(profile: ApiDiscoveryProfile): DiscoveryProfile {
   };
 }
 
+function getTabFromURL(): DiscoveryTab {
+  if (typeof window === 'undefined') return 'profiles';
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get('tab');
+  if (tab && (DISCOVERY_TABS as readonly string[]).includes(tab)) {
+    return tab as DiscoveryTab;
+  }
+  return 'profiles';
+}
+
+function pushTabToURL(tab: DiscoveryTab) {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (tab === 'profiles') {
+    url.searchParams.delete('tab');
+  } else {
+    url.searchParams.set('tab', tab);
+  }
+  window.history.pushState({ tab }, '', url.toString());
+}
+
 export default function DiscoveryPage() {
-  const [activeTab, setActiveTab] = useState<DiscoveryTab>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const tab = params.get('tab');
-      if (tab && (DISCOVERY_TABS as readonly string[]).includes(tab)) {
-        return tab as DiscoveryTab;
-      }
-    }
-    return 'profiles';
-  });
+  const [activeTab, setActiveTab] = useState<DiscoveryTab>(getTabFromURL);
+
+  // Listen for back/forward navigation
+  useEffect(() => {
+    const onPopState = () => setActiveTab(getTabFromURL());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
   const [profiles, setProfiles] = useState<ApiDiscoveryProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(true);
   const [profilesError, setProfilesError] = useState<string>();
   const [savingProfile, setSavingProfile] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ApiDiscoveryProfile | null>(null);
+  const [jobsProfileFilter, setJobsProfileFilter] = useState<string | null>(null);
 
   const tabLabels: Record<DiscoveryTab, string> = {
     profiles: 'Profiles',
@@ -217,38 +253,89 @@ export default function DiscoveryPage() {
 
   const displayProfiles = useMemo(() => profiles.map(mapProfileToDisplay), [profiles]);
 
+  const { currentOrgId, currentSiteId, sites } = useOrgStore();
+  const siteOptions = useMemo(() => sites.map(s => ({ id: s.id, name: s.name })), [sites]);
+
   const formInitialValues = useMemo<DiscoveryProfileFormValues | undefined>(() => {
     if (!editingProfile) return undefined;
+
+    const creds = editingProfile.snmpCredentials;
+    const community = editingProfile.snmpCommunities?.[0] ?? 'public';
+    const version = (creds?.version === 'v3' ? 'v3' : 'v2c') as SnmpSettings['version'];
+
+    const snmp: SnmpSettings = {
+      version,
+      community,
+      port: creds?.port ?? 161,
+      timeout: creds?.timeout ?? 2000,
+      retries: creds?.retries ?? 1,
+      username: creds?.username ?? '',
+      authProtocol: (creds?.authProtocol === 'md5' ? 'md5' : 'sha') as SnmpSettings['authProtocol'],
+      authPassphrase: creds?.authPassphrase ?? '',
+      privacyProtocol: (creds?.privacyProtocol === 'des' ? 'des' : 'aes') as SnmpSettings['privacyProtocol'],
+      privacyPassphrase: creds?.privacyPassphrase ?? ''
+    };
+
     return {
       name: editingProfile.name,
+      siteId: editingProfile.siteId ?? currentSiteId ?? '',
       subnets: editingProfile.subnets ?? [],
       methods: editingProfile.methods ?? [],
       schedule: scheduleToForm(editingProfile.schedule),
-      snmp: {
-        version: 'v2c',
-        community: 'public',
-        port: 161,
-        timeout: 2000,
-        retries: 1,
-        username: '',
-        authProtocol: 'sha',
-        authPassphrase: '',
-        privacyProtocol: 'aes',
-        privacyPassphrase: ''
-      }
+      snmp
     };
-  }, [editingProfile]);
+  }, [editingProfile, currentSiteId]);
 
   const handleSubmitProfile = async (values: DiscoveryProfileFormValues) => {
     setSavingProfile(true);
     setProfilesError(undefined);
 
+    if (!values.siteId) {
+      setProfilesError('Please select a site for this discovery profile.');
+      setSavingProfile(false);
+      return;
+    }
+
+    if (values.snmp.version === 'v3') {
+      if (!values.snmp.username?.trim()) {
+        setProfilesError('SNMPv3 username is required.');
+        setSavingProfile(false);
+        return;
+      }
+      if (!values.snmp.authPassphrase?.trim()) {
+        setProfilesError('SNMPv3 auth passphrase is required.');
+        setSavingProfile(false);
+        return;
+      }
+    }
+
     try {
+      const snmpCommunities = values.snmp.version === 'v2c' ? [values.snmp.community] : [];
+
+      const snmpCredentials: Record<string, unknown> = {
+        version: values.snmp.version,
+        port: values.snmp.port,
+        timeout: values.snmp.timeout,
+        retries: values.snmp.retries
+      };
+
+      if (values.snmp.version === 'v3') {
+        snmpCredentials.username = values.snmp.username;
+        snmpCredentials.authProtocol = values.snmp.authProtocol;
+        snmpCredentials.authPassphrase = values.snmp.authPassphrase;
+        snmpCredentials.privacyProtocol = values.snmp.privacyProtocol;
+        snmpCredentials.privacyPassphrase = values.snmp.privacyPassphrase;
+      }
+
       const payload = {
         name: values.name,
         subnets: values.subnets,
         methods: values.methods,
-        schedule: formScheduleToApi(values.schedule)
+        schedule: formScheduleToApi(values.schedule),
+        siteId: values.siteId,
+        snmpCommunities,
+        snmpCredentials,
+        ...(currentOrgId ? { orgId: currentOrgId } : {})
       };
 
       const url = editingProfile
@@ -276,6 +363,10 @@ export default function DiscoveryPage() {
   };
 
   const handleDeleteProfile = async (profile: DiscoveryProfile) => {
+    if (!confirm(`Delete profile "${profile.name}"? This will also remove all associated scan jobs.`)) {
+      return;
+    }
+
     setProfilesError(undefined);
 
     try {
@@ -303,17 +394,72 @@ export default function DiscoveryPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to run discovery profile');
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error ?? 'Failed to run discovery profile');
       }
+
+      // Switch to jobs tab filtered to this profile so user can see the queued scan
+      setJobsProfileFilter(profile.id);
+      navigateToTab('jobs');
     } catch (err) {
       setProfilesError(err instanceof Error ? err.message : 'An error occurred');
     }
   };
 
-  const handleEditProfile = (profile: DiscoveryProfile) => {
-    const match = profiles.find(item => item.id === profile.id) ?? null;
-    setEditingProfile(match);
+  const handleEditProfile = async (profile: DiscoveryProfile) => {
+    setProfilesError(undefined);
+    try {
+      const response = await fetchWithAuth(`/discovery/profiles/${profile.id}`);
+      if (!response.ok) {
+        if (response.status === 404) {
+          // Detail endpoint not available; fall back to list data with warning
+          const match = profiles.find(item => item.id === profile.id);
+          if (!match) {
+            setProfilesError('This profile may have been deleted. Please refresh the page.');
+            return;
+          }
+          setEditingProfile(match);
+          setProfilesError('Profile detail endpoint unavailable. SNMP credentials may not be loaded.');
+          return;
+        }
+        const errData = await response.json().catch(() => null);
+        throw new Error(errData?.error ?? `Failed to load profile details (HTTP ${response.status})`);
+      }
+      const data = await response.json();
+      const fullProfile: ApiDiscoveryProfile = data.data ?? data.profile ?? data;
+      setEditingProfile(fullProfile);
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Failed to load profile details');
+    }
   };
+
+  const navigateToTab = useCallback((tab: DiscoveryTab) => {
+    setActiveTab(tab);
+    pushTabToURL(tab);
+  }, []);
+
+  const handleNavigateToJobs = useCallback((profileId: string) => {
+    setJobsProfileFilter(profileId);
+    navigateToTab('jobs');
+  }, [navigateToTab]);
+
+  const handleNavigateToProfiles = useCallback(() => {
+    navigateToTab('profiles');
+  }, [navigateToTab]);
+
+  const handleNavigateToAssets = useCallback(() => {
+    navigateToTab('assets');
+  }, [navigateToTab]);
+
+  const handleNavigateToMonitoring = useCallback(() => {
+    navigateToTab('monitoring');
+  }, [navigateToTab]);
+
+  // Clear filters when manually clicking a tab
+  const handleTabClick = useCallback((tab: DiscoveryTab) => {
+    if (tab === 'jobs') setJobsProfileFilter(null);
+    navigateToTab(tab);
+  }, [navigateToTab]);
 
   return (
     <div className="space-y-6">
@@ -329,7 +475,7 @@ export default function DiscoveryPage() {
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           onClick={() => {
             setEditingProfile(null);
-            setActiveTab('profiles');
+            navigateToTab('profiles');
           }}
         >
           <Plus className="h-4 w-4" />
@@ -342,7 +488,7 @@ export default function DiscoveryPage() {
           <button
             key={tab.id}
             type="button"
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => handleTabClick(tab.id)}
             className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
               activeTab === tab.id ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'
             }`}
@@ -362,23 +508,33 @@ export default function DiscoveryPage() {
             onEdit={handleEditProfile}
             onDelete={handleDeleteProfile}
             onRun={handleRunProfile}
+            onViewJobs={handleNavigateToJobs}
           />
           <DiscoveryProfileForm
             initialValues={formInitialValues}
+            sites={siteOptions}
             onSubmit={handleSubmitProfile}
             onCancel={() => setEditingProfile(null)}
             submitLabel={editingProfile ? (savingProfile ? 'Updating...' : 'Update Profile') : (savingProfile ? 'Creating...' : 'Create Profile')}
+            disabled={savingProfile}
           />
         </div>
       )}
 
-      {activeTab === 'jobs' && <DiscoveryJobList />}
+      {activeTab === 'jobs' && (
+        <DiscoveryJobList
+          profileFilter={jobsProfileFilter}
+          onClearFilter={() => setJobsProfileFilter(null)}
+          onViewProfile={handleNavigateToProfiles}
+          onViewAssets={handleNavigateToAssets}
+        />
+      )}
 
       {activeTab === 'assets' && <DiscoveredAssetList />}
 
-      {activeTab === 'topology' && <NetworkTopologyMap />}
+      {activeTab === 'topology' && <NetworkTopologyMap onNodeClick={handleNavigateToAssets} />}
 
-      {activeTab === 'monitoring' && <DiscoveryMonitoringDashboard />}
+      {activeTab === 'monitoring' && <DiscoveryMonitoringDashboard onViewAssets={handleNavigateToAssets} />}
 
       {activeTab === 'templates' && (
         <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">

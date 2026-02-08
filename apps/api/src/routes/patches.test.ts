@@ -13,6 +13,13 @@ const DEVICE_C = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const DEVICE_D = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const PATCH_ID = '44444444-4444-4444-4444-444444444444';
 
+const mockAuthState = vi.hoisted(() => ({
+  scope: 'organization' as 'organization' | 'partner' | 'system',
+  orgId: '11111111-1111-1111-1111-111111111111' as string | null,
+  partnerId: null as string | null,
+  accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'] as string[] | null
+}));
+
 vi.mock('drizzle-orm', () => {
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })) as unknown;
 
@@ -85,19 +92,26 @@ vi.mock('../services/commandQueue', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c, next) => {
+    const canAccessOrg = (orgId: string) => {
+      if (mockAuthState.accessibleOrgIds === null) {
+        return true;
+      }
+      return mockAuthState.accessibleOrgIds.includes(orgId);
+    };
+
     c.set('auth', {
       user: { id: USER_ID, email: 'test@example.com', name: 'Test User' },
-      token: { sub: USER_ID, scope: 'organization', type: 'access' },
-      scope: 'organization',
-      orgId: ACCESSIBLE_ORG_ID,
-      partnerId: null,
-      accessibleOrgIds: [ACCESSIBLE_ORG_ID],
-      canAccessOrg: (orgId: string) => orgId === ACCESSIBLE_ORG_ID,
+      token: { sub: USER_ID, scope: mockAuthState.scope, type: 'access' },
+      scope: mockAuthState.scope,
+      orgId: mockAuthState.orgId,
+      partnerId: mockAuthState.partnerId,
+      accessibleOrgIds: mockAuthState.accessibleOrgIds,
+      canAccessOrg,
       orgCondition: () => ({ op: 'orgCondition' })
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -140,6 +154,10 @@ describe('patch routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAuthState.scope = 'organization';
+    mockAuthState.orgId = ACCESSIBLE_ORG_ID;
+    mockAuthState.partnerId = null;
+    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
     app = new Hono();
     app.route('/patches', patchRoutes);
   });
@@ -348,5 +366,62 @@ describe('patch routes', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('Scheduled rollback');
+  });
+
+  it('allows partner bulk approve when orgId is provided', async () => {
+    mockAuthState.scope = 'partner';
+    mockAuthState.orgId = null;
+    mockAuthState.partnerId = 'partner-123';
+    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined)
+      })
+    } as any);
+
+    const res = await app.request('/patches/bulk-approve', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ACCESSIBLE_ORG_ID,
+        patchIds: [PATCH_ID],
+        note: 'Approve for tenant'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.approved).toEqual([PATCH_ID]);
+    expect(body.failed).toEqual([]);
+  });
+
+  it('allows system patch approve when orgId is provided', async () => {
+    mockAuthState.scope = 'system';
+    mockAuthState.orgId = null;
+    mockAuthState.partnerId = null;
+    mockAuthState.accessibleOrgIds = null;
+
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{ id: PATCH_ID }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined)
+      })
+    } as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/approve`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ACCESSIBLE_ORG_ID,
+        note: 'System approval'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(PATCH_ID);
+    expect(body.status).toBe('approved');
   });
 });

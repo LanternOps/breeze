@@ -29,6 +29,7 @@ const createPartnerSchema = z.object({
 const updatePartnerSchema = createPartnerSchema.partial();
 
 const createOrganizationSchema = z.object({
+  partnerId: z.string().uuid().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
@@ -41,7 +42,7 @@ const createOrganizationSchema = z.object({
   billingContact: z.any().optional()
 });
 
-const updateOrganizationSchema = createOrganizationSchema.partial();
+const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true });
 
 const listSitesSchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -428,12 +429,25 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), zValidator('
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
-  if (!auth.partnerId) {
-    return c.json({ error: 'Partner context required to create organizations' }, 400);
+  let targetPartnerId: string | null = null;
+
+  if (auth.scope === 'partner') {
+    if (!auth.partnerId) {
+      return c.json({ error: 'Partner context required to create organizations' }, 400);
+    }
+    if (data.partnerId && data.partnerId !== auth.partnerId) {
+      return c.json({ error: 'Access denied to this partner' }, 403);
+    }
+    targetPartnerId = auth.partnerId;
+  } else {
+    targetPartnerId = data.partnerId ?? auth.partnerId;
+    if (!targetPartnerId) {
+      return c.json({ error: 'partnerId is required for system scope' }, 400);
+    }
   }
 
   const insertValues = {
-    partnerId: auth.partnerId,
+    partnerId: targetPartnerId,
     name: data.name,
     slug: data.slug,
     type: data.type,
@@ -489,7 +503,7 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
   const id = c.req.param('id');
   const data = c.req.valid('json');
 
-  if (!auth.partnerId) {
+  if (auth.scope === 'partner' && !auth.partnerId) {
     return c.json({ error: 'Partner context required for this operation' }, 403);
   }
 
@@ -513,7 +527,9 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
     updates.contractEnd = data.contractEnd ? new Date(data.contractEnd) : null;
   }
 
-  const conditions = and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt));
+  const conditions = auth.scope === 'partner'
+    ? and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId as string), isNull(organizations.deletedAt))
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
   const [organization] = await db
     .update(organizations)
@@ -541,11 +557,13 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async 
   const auth = c.get('auth');
   const id = c.req.param('id');
 
-  if (!auth.partnerId) {
+  if (auth.scope === 'partner' && !auth.partnerId) {
     return c.json({ error: 'Partner context required for this operation' }, 403);
   }
 
-  const conditions = and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt));
+  const conditions = auth.scope === 'partner'
+    ? and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId as string), isNull(organizations.deletedAt))
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
   const [organization] = await db
     .update(organizations)

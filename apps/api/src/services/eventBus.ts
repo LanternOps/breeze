@@ -23,6 +23,11 @@ export type EventType =
   | 'automation.started'
   | 'automation.completed'
   | 'automation.failed'
+  // Policy events
+  | 'policy.evaluated'
+  | 'policy.violation'
+  | 'policy.compliant'
+  | 'policy.remediation.triggered'
   // Patch events
   | 'patch.available'
   | 'patch.approved'
@@ -444,6 +449,11 @@ export const EVENT_TYPES = {
   AUTOMATION_STARTED: 'automation.started' as const,
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
+  // Policy
+  POLICY_EVALUATED: 'policy.evaluated' as const,
+  POLICY_VIOLATION: 'policy.violation' as const,
+  POLICY_COMPLIANT: 'policy.compliant' as const,
+  POLICY_REMEDIATION_TRIGGERED: 'policy.remediation.triggered' as const,
   // Patch
   PATCH_AVAILABLE: 'patch.available' as const,
   PATCH_APPROVED: 'patch.approved' as const,

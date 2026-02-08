@@ -62,7 +62,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     { name: 'Devices', description: 'Device management and monitoring' },
     { name: 'Scripts', description: 'Script library and execution' },
     { name: 'Alerts', description: 'Alert rules, alerts, and notifications' },
-    { name: 'Automations', description: 'Automation workflows and policies' },
+    { name: 'Automations', description: 'Automation workflows and runs' },
+    { name: 'Policies', description: 'Compliance policy definitions and evaluations' },
     { name: 'Reports', description: 'Reporting and data exports' },
     { name: 'Remote', description: 'Remote access sessions and file transfers' },
     { name: 'Agents', description: 'Agent enrollment and communication' },
@@ -2642,15 +2643,16 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/automations/policies': {
+    '/policies': {
       get: {
-        tags: ['Automations'],
+        tags: ['Policies'],
         summary: 'List policies',
         parameters: [
           { $ref: '#/components/parameters/pageParam' },
           { $ref: '#/components/parameters/limitParam' },
           { $ref: '#/components/parameters/orgIdParam' },
-          { name: 'enforcement', in: 'query', schema: { type: 'string', enum: ['monitor', 'warn', 'enforce'] } }
+          { name: 'enforcement', in: 'query', schema: { type: 'string', enum: ['monitor', 'warn', 'enforce'] } },
+          { name: 'enabled', in: 'query', schema: { type: 'string', enum: ['true', 'false'] } }
         ],
         responses: {
           '200': {
@@ -2670,8 +2672,33 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
-        tags: ['Automations'],
+        tags: ['Policies'],
         summary: 'Create policy',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  orgId: { type: 'string', format: 'uuid' },
+                  name: { type: 'string' },
+                  description: { type: 'string' },
+                  enabled: { type: 'boolean' },
+                  targets: { type: 'object' },
+                  targetType: { type: 'string', enum: ['all', 'sites', 'groups', 'tags', 'devices'] },
+                  targetIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+                  rules: { type: 'array', items: { type: 'object' } },
+                  enforcement: { type: 'string', enum: ['monitor', 'warn', 'enforce'] },
+                  enforcementLevel: { type: 'string', enum: ['monitor', 'warn', 'enforce'] },
+                  checkIntervalMinutes: { type: 'integer' },
+                  remediationScriptId: { type: 'string', format: 'uuid' }
+                },
+                required: ['name', 'rules']
+              }
+            }
+          }
+        },
         responses: {
           '201': {
             description: 'Policy created',
@@ -2684,14 +2711,45 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/automations/policies/compliance/summary': {
+    '/policies/compliance/stats': {
       get: {
-        tags: ['Automations'],
-        summary: 'Get compliance summary',
+        tags: ['Policies'],
+        summary: 'Get policy compliance stats',
         parameters: [{ $ref: '#/components/parameters/orgIdParam' }],
         responses: {
           '200': {
-            description: 'Compliance summary',
+            description: 'Policy compliance stats',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'object',
+                      properties: {
+                        complianceRate: { type: 'integer' },
+                        complianceScore: { type: 'integer' },
+                        totalPolicies: { type: 'integer' },
+                        enabledPolicies: { type: 'integer' },
+                        complianceOverview: { type: 'object' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/policies/compliance/summary': {
+      get: {
+        tags: ['Policies'],
+        summary: 'Get policy compliance summary',
+        parameters: [{ $ref: '#/components/parameters/orgIdParam' }],
+        responses: {
+          '200': {
+            description: 'Policy compliance summary',
             content: {
               'application/json': {
                 schema: {
@@ -2701,7 +2759,11 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                     enabledPolicies: { type: 'integer' },
                     byEnforcement: { type: 'object' },
                     complianceOverview: { type: 'object' },
-                    complianceRate: { type: 'integer' }
+                    complianceRate: { type: 'integer' },
+                    overall: { type: 'object' },
+                    trend: { type: 'array', items: { type: 'object' } },
+                    policies: { type: 'array', items: { type: 'object' } },
+                    nonCompliantDevices: { type: 'array', items: { type: 'object' } }
                   }
                 }
               }
@@ -2710,9 +2772,105 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/automations/policies/{id}/evaluate': {
+    '/policies/{id}': {
+      get: {
+        tags: ['Policies'],
+        summary: 'Get policy',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Policy',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Policy' }
+              }
+            }
+          }
+        }
+      },
+      put: {
+        tags: ['Policies'],
+        summary: 'Update policy',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Updated policy',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Policy' }
+              }
+            }
+          }
+        }
+      },
+      patch: {
+        tags: ['Policies'],
+        summary: 'Patch policy',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Patched policy',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Policy' }
+              }
+            }
+          }
+        }
+      },
+      delete: {
+        tags: ['Policies'],
+        summary: 'Delete policy',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Policy deleted',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Success' }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/policies/{id}/activate': {
       post: {
-        tags: ['Automations'],
+        tags: ['Policies'],
+        summary: 'Activate policy',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Policy activated',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Policy' }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/policies/{id}/deactivate': {
+      post: {
+        tags: ['Policies'],
+        summary: 'Deactivate policy',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Policy deactivated',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Policy' }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/policies/{id}/evaluate': {
+      post: {
+        tags: ['Policies'],
         summary: 'Evaluate policy',
         description: 'Force immediate policy evaluation',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2725,9 +2883,11 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   type: 'object',
                   properties: {
                     message: { type: 'string' },
+                    policyId: { type: 'string', format: 'uuid' },
                     devicesEvaluated: { type: 'integer' },
                     results: { type: 'array', items: { type: 'object' } },
-                    summary: { type: 'object' }
+                    summary: { type: 'object' },
+                    evaluatedAt: { type: 'string', format: 'date-time' }
                   }
                 }
               }
@@ -2736,9 +2896,9 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/automations/policies/{id}/compliance': {
+    '/policies/{id}/compliance': {
       get: {
-        tags: ['Automations'],
+        tags: ['Policies'],
         summary: 'Get policy compliance',
         parameters: [
           { $ref: '#/components/parameters/idParam' },
@@ -2748,14 +2908,44 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         ],
         responses: {
           '200': {
-            description: 'Compliance status per device',
+            description: 'Compliance status for policy',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
                     data: { type: 'array', items: { $ref: '#/components/schemas/PolicyCompliance' } },
-                    pagination: { $ref: '#/components/schemas/Pagination' }
+                    pagination: { $ref: '#/components/schemas/Pagination' },
+                    overall: { type: 'object' },
+                    trend: { type: 'array', items: { type: 'object' } },
+                    policies: { type: 'array', items: { type: 'object' } },
+                    nonCompliantDevices: { type: 'array', items: { type: 'object' } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/policies/{id}/remediate': {
+      post: {
+        tags: ['Policies'],
+        summary: 'Trigger policy remediation',
+        description: 'Trigger remediation automation for a policy without running a full evaluation',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Remediation automation triggered',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    message: { type: 'string' },
+                    policyId: { type: 'string', format: 'uuid' },
+                    automationId: { type: 'string', format: 'uuid' },
+                    run: { type: 'object' }
                   }
                 }
               }

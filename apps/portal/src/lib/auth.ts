@@ -5,13 +5,16 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { buildPortalApiUrl } from './api';
 
 export interface PortalUser {
   id: string;
   email: string;
   name: string;
-  organizationId: string;
-  organizationName: string;
+  organizationId?: string;
+  organizationName?: string;
+  orgId?: string;
+  orgName?: string;
   avatarUrl?: string;
 }
 
@@ -81,8 +84,6 @@ export const usePortalAuth = create<PortalAuthState>()(
   )
 );
 
-const API_BASE = import.meta.env.PUBLIC_API_URL || '/api';
-
 /**
  * Portal login - uses a separate endpoint for customer portal users
  */
@@ -96,10 +97,15 @@ export async function portalLogin(
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/portal/auth/login`, {
+    const orgId = typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('orgId')
+      : null;
+    const payload = orgId ? { email, password, orgId } : { email, password };
+
+    const response = await fetch(buildPortalApiUrl('/portal/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify(payload)
     });
 
     const data = await response.json();
@@ -108,10 +114,31 @@ export async function portalLogin(
       return { success: false, error: data.error || 'Login failed' };
     }
 
+    const mappedUser: PortalUser = {
+      id: data.user?.id,
+      email: data.user?.email,
+      name: data.user?.name ?? '',
+      organizationId: data.user?.organizationId ?? data.user?.orgId,
+      organizationName: data.user?.organizationName ?? data.user?.orgName ?? 'Organization',
+      orgId: data.user?.orgId ?? data.user?.organizationId,
+      orgName: data.user?.orgName ?? data.user?.organizationName
+    };
+
+    const expiresInSeconds = data.tokens?.expiresInSeconds
+      ?? (typeof data.expiresAt === 'string'
+        ? Math.max(1, Math.floor((new Date(data.expiresAt).getTime() - Date.now()) / 1000))
+        : 86400);
+
+    const tokens: Tokens = data.tokens ?? {
+      accessToken: data.accessToken,
+      refreshToken: data.accessToken,
+      expiresInSeconds
+    };
+
     return {
       success: true,
-      user: data.user,
-      tokens: data.tokens
+      user: mappedUser,
+      tokens
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -126,7 +153,7 @@ export async function portalLogout(): Promise<void> {
 
   if (tokens?.accessToken) {
     try {
-      await fetch(`${API_BASE}/portal/auth/logout`, {
+      await fetch(buildPortalApiUrl('/portal/auth/logout'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -149,10 +176,15 @@ export async function portalForgotPassword(email: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/portal/auth/forgot-password`, {
+    const orgId = typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('orgId')
+      : null;
+    const payload = orgId ? { email, orgId } : { email };
+
+    const response = await fetch(buildPortalApiUrl('/portal/auth/forgot-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
+      body: JSON.stringify(payload)
     });
 
     const data = await response.json();
@@ -178,7 +210,7 @@ export async function portalResetPassword(
   error?: string;
 }> {
   try {
-    const response = await fetch(`${API_BASE}/portal/auth/reset-password`, {
+    const response = await fetch(buildPortalApiUrl('/portal/auth/reset-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, password })

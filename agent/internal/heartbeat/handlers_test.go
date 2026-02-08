@@ -49,6 +49,9 @@ var allCommandTypes = []string{
 
 	// handlers_patch.go init() — backup
 	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop,
+
+	// handlers_user.go init()
+	CmdNotifyUser, CmdTrayUpdate,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

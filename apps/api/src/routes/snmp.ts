@@ -17,7 +17,7 @@ function escapeLikePattern(input: string): string {
 }
 
 function resolveOrgId(
-  auth: { scope: string; orgId: string | null },
+  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
   requestedOrgId?: string,
   requireForNonOrg = false
 ) {
@@ -26,8 +26,28 @@ function resolveOrgId(
     if (requestedOrgId && requestedOrgId !== auth.orgId) return { error: 'Access denied', status: 403 } as const;
     return { orgId: auth.orgId } as const;
   }
+
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access denied', status: 403 } as const;
+    }
+    return { orgId: requestedOrgId } as const;
+  }
+
+  if (auth.scope === 'partner') {
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (!requireForNonOrg && accessibleOrgIds.length === 1) {
+      return { orgId: accessibleOrgIds[0] } as const;
+    }
+    return { error: 'orgId is required for partner scope', status: 400 } as const;
+  }
+
+  if (auth.scope === 'system' && !requestedOrgId) {
+    return { error: 'orgId is required for system scope', status: 400 } as const;
+  }
+
   if (requireForNonOrg && !requestedOrgId) return { error: 'orgId is required', status: 400 } as const;
-  return { orgId: requestedOrgId ?? null } as const;
+  return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
 }
 
 // --- Zod Schemas ---

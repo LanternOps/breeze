@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { remoteRoutes } from './remote';
 
+const mockAuthState = vi.hoisted(() => ({
+  scope: 'organization' as 'organization' | 'partner' | 'system',
+  orgId: 'org-123' as string | null,
+  partnerId: null as string | null,
+  accessibleOrgIds: ['org-123'] as string[] | null
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../db', () => ({
@@ -41,13 +48,18 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c, next) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
-      scope: 'organization',
-      orgId: 'org-123',
-      partnerId: null
+      scope: mockAuthState.scope,
+      orgId: mockAuthState.orgId,
+      partnerId: mockAuthState.partnerId,
+      accessibleOrgIds: mockAuthState.accessibleOrgIds,
+      canAccessOrg: (orgId: string) => {
+        if (mockAuthState.accessibleOrgIds === null) return true;
+        return mockAuthState.accessibleOrgIds.includes(orgId);
+      }
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -57,6 +69,10 @@ describe('remote routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAuthState.scope = 'organization';
+    mockAuthState.orgId = 'org-123';
+    mockAuthState.partnerId = null;
+    mockAuthState.accessibleOrgIds = ['org-123'];
     app = new Hono();
     app.route('/remote', remoteRoutes);
   });
@@ -324,6 +340,41 @@ describe('remote routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.iceCandidatesCount).toBe(2);
+    });
+  });
+
+  describe('DELETE /remote/sessions/stale', () => {
+    it('cleans only partner-scoped sessions', async () => {
+      mockAuthState.scope = 'partner';
+      mockAuthState.orgId = null;
+      mockAuthState.partnerId = 'partner-123';
+      mockAuthState.accessibleOrgIds = ['org-123', 'org-456'];
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: 'session-a' }, { id: 'session-b' }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'session-a' }, { id: 'session-b' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/remote/sessions/stale', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.cleaned).toBe(2);
+      expect(body.ids).toEqual(['session-a', 'session-b']);
     });
   });
 });

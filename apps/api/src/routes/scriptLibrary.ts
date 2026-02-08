@@ -6,6 +6,7 @@ import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const scriptLibraryRoutes = new Hono();
+const DEFAULT_SCRIPT_LIBRARY_ORG_ID = 'org-123';
 
 type OsType = 'windows' | 'macos' | 'linux';
 type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
@@ -297,6 +298,19 @@ const usageStats = new Map<string, ScriptUsageStats>([
   }]
 ]);
 
+const categoryOrgById = new Map<string, string>(
+  [...categories.keys()].map((categoryId) => [categoryId, DEFAULT_SCRIPT_LIBRARY_ORG_ID])
+);
+const tagOrgById = new Map<string, string>(
+  [...tags.keys()].map((tagId) => [tagId, DEFAULT_SCRIPT_LIBRARY_ORG_ID])
+);
+const templateOrgById = new Map<string, string>(
+  [...templates.keys()].map((templateId) => [templateId, DEFAULT_SCRIPT_LIBRARY_ORG_ID])
+);
+const scriptOrgById = new Map<string, string>(
+  [...scripts.keys()].map((scriptId) => [scriptId, DEFAULT_SCRIPT_LIBRARY_ORG_ID])
+);
+
 // ============================================
 // VALIDATION SCHEMAS
 // ============================================
@@ -338,16 +352,40 @@ const createFromTemplateSchema = z.object({
 // HELPERS
 // ============================================
 
-function getCategoryList() {
-  return [...categories.values()].sort((a, b) => a.name.localeCompare(b.name));
+function resolveScopedOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId?: string | null;
+    accessibleOrgIds?: string[] | null;
+  }
+) {
+  if (auth.orgId) {
+    return auth.orgId;
+  }
+
+  if (auth.scope === 'partner' && Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    return auth.accessibleOrgIds[0] ?? null;
+  }
+
+  return null;
 }
 
-function getTagList() {
-  return [...tags.values()].sort((a, b) => a.name.localeCompare(b.name));
+function getCategoryList(orgId: string) {
+  return [...categories.values()]
+    .filter((category) => categoryOrgById.get(category.id) === orgId)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function getTemplateList() {
-  return [...templates.values()].sort((a, b) => a.name.localeCompare(b.name));
+function getTagList(orgId: string) {
+  return [...tags.values()]
+    .filter((tag) => tagOrgById.get(tag.id) === orgId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function getTemplateList(orgId: string) {
+  return [...templates.values()]
+    .filter((template) => templateOrgById.get(template.id) === orgId)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getVersionHistory(scriptId: string) {
@@ -368,9 +406,12 @@ function getUsageStats(scriptId: string): ScriptUsageStats {
   };
 }
 
-function findCategoryIdByName(name: string) {
+function findCategoryIdByName(name: string, orgId: string) {
   const normalized = name.trim().toLowerCase();
   for (const category of categories.values()) {
+    if (categoryOrgById.get(category.id) !== orgId) {
+      continue;
+    }
     if (category.name.toLowerCase() === normalized) {
       return category.id;
     }
@@ -389,7 +430,13 @@ scriptLibraryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
-      return c.json({ data: getCategoryList() });
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
+      return c.json({ data: getCategoryList(orgId) });
     } catch {
       return c.json({ error: 'Failed to list categories' }, 500);
     }
@@ -403,11 +450,18 @@ scriptLibraryRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const data = c.req.valid('json');
       const name = data.name.trim();
 
       const duplicate = [...categories.values()].some(
-        (category) => category.name.toLowerCase() === name.toLowerCase()
+        (category) =>
+          categoryOrgById.get(category.id) === orgId &&
+          category.name.toLowerCase() === name.toLowerCase()
       );
       if (duplicate) {
         return c.json({ error: 'Category name already exists' }, 409);
@@ -423,8 +477,9 @@ scriptLibraryRoutes.post(
       };
 
       categories.set(category.id, category);
+      categoryOrgById.set(category.id, orgId);
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.category.create',
         resourceType: 'script_category',
         resourceId: category.id,
@@ -442,10 +497,16 @@ scriptLibraryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const id = c.req.param('id');
       const category = categories.get(id);
 
-      if (!category) {
+      if (!category || categoryOrgById.get(id) !== orgId) {
         return c.json({ error: 'Category not found' }, 404);
       }
 
@@ -463,6 +524,11 @@ scriptLibraryRoutes.patch(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const id = c.req.param('id');
       const data = c.req.valid('json');
 
@@ -471,14 +537,17 @@ scriptLibraryRoutes.patch(
       }
 
       const category = categories.get(id);
-      if (!category) {
+      if (!category || categoryOrgById.get(id) !== orgId) {
         return c.json({ error: 'Category not found' }, 404);
       }
 
       if (data.name) {
         const name = data.name.trim();
         const duplicate = [...categories.values()].some(
-          (entry) => entry.id !== id && entry.name.toLowerCase() === name.toLowerCase()
+          (entry) =>
+            entry.id !== id &&
+            categoryOrgById.get(entry.id) === orgId &&
+            entry.name.toLowerCase() === name.toLowerCase()
         );
         if (duplicate) {
           return c.json({ error: 'Category name already exists' }, 409);
@@ -498,7 +567,7 @@ scriptLibraryRoutes.patch(
       categories.set(id, category);
 
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.category.update',
         resourceType: 'script_category',
         resourceId: category.id,
@@ -521,31 +590,37 @@ scriptLibraryRoutes.delete(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const id = c.req.param('id');
       const category = categories.get(id);
 
-      if (!category) {
+      if (!category || categoryOrgById.get(id) !== orgId) {
         return c.json({ error: 'Category not found' }, 404);
       }
 
       categories.delete(id);
+      categoryOrgById.delete(id);
 
       for (const template of templates.values()) {
-        if (template.categoryId === id) {
+        if (template.categoryId === id && templateOrgById.get(template.id) === orgId) {
           template.categoryId = null;
           template.updatedAt = new Date();
         }
       }
 
       for (const script of scripts.values()) {
-        if (script.categoryId === id) {
+        if (script.categoryId === id && scriptOrgById.get(script.id) === orgId) {
           script.categoryId = null;
           script.updatedAt = new Date();
         }
       }
 
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.category.delete',
         resourceType: 'script_category',
         resourceId: category.id,
@@ -568,7 +643,13 @@ scriptLibraryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
-      return c.json({ data: getTagList() });
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
+      return c.json({ data: getTagList(orgId) });
     } catch {
       return c.json({ error: 'Failed to list tags' }, 500);
     }
@@ -582,11 +663,16 @@ scriptLibraryRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const data = c.req.valid('json');
       const name = data.name.trim();
 
       const duplicate = [...tags.values()].some(
-        (tag) => tag.name.toLowerCase() === name.toLowerCase()
+        (tag) => tagOrgById.get(tag.id) === orgId && tag.name.toLowerCase() === name.toLowerCase()
       );
       if (duplicate) {
         return c.json({ error: 'Tag name already exists' }, 409);
@@ -600,8 +686,9 @@ scriptLibraryRoutes.post(
       };
 
       tags.set(tag.id, tag);
+      tagOrgById.set(tag.id, orgId);
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.tag.create',
         resourceType: 'script_tag',
         resourceId: tag.id,
@@ -620,31 +707,37 @@ scriptLibraryRoutes.delete(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const id = c.req.param('id');
       const tag = tags.get(id);
 
-      if (!tag) {
+      if (!tag || tagOrgById.get(id) !== orgId) {
         return c.json({ error: 'Tag not found' }, 404);
       }
 
       tags.delete(id);
+      tagOrgById.delete(id);
 
       for (const template of templates.values()) {
-        if (template.tags.includes(id)) {
+        if (templateOrgById.get(template.id) === orgId && template.tags.includes(id)) {
           template.tags = template.tags.filter((tagId) => tagId !== id);
           template.updatedAt = new Date();
         }
       }
 
       for (const script of scripts.values()) {
-        if (script.tags.includes(id)) {
+        if (scriptOrgById.get(script.id) === orgId && script.tags.includes(id)) {
           script.tags = script.tags.filter((tagId) => tagId !== id);
           script.updatedAt = new Date();
         }
       }
 
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.tag.delete',
         resourceType: 'script_tag',
         resourceId: tag.id,
@@ -667,10 +760,16 @@ scriptLibraryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const scriptId = c.req.param('id');
       const script = scripts.get(scriptId);
 
-      if (!script) {
+      if (!script || scriptOrgById.get(scriptId) !== orgId) {
         return c.json({ error: 'Script not found' }, 404);
       }
 
@@ -687,15 +786,20 @@ scriptLibraryRoutes.post(
   zValidator('json', createVersionSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const scriptId = c.req.param('id');
       const data = c.req.valid('json');
       const script = scripts.get(scriptId);
 
-      if (!script) {
+      if (!script || scriptOrgById.get(scriptId) !== orgId) {
         return c.json({ error: 'Script not found' }, 404);
       }
 
-      const auth = c.get('auth');
       const createdBy = auth?.user?.id ?? 'system';
       const versionEntry: ScriptVersion = {
         id: randomUUID(),
@@ -717,7 +821,7 @@ scriptLibraryRoutes.post(
       scripts.set(scriptId, script);
 
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.version.create',
         resourceType: 'script',
         resourceId: script.id,
@@ -741,11 +845,17 @@ scriptLibraryRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const scriptId = c.req.param('id');
       const versionId = c.req.param('versionId');
       const script = scripts.get(scriptId);
 
-      if (!script) {
+      if (!script || scriptOrgById.get(scriptId) !== orgId) {
         return c.json({ error: 'Script not found' }, 404);
       }
 
@@ -756,7 +866,6 @@ scriptLibraryRoutes.post(
         return c.json({ error: 'Version not found' }, 404);
       }
 
-      const auth = c.get('auth');
       const createdBy = auth?.user?.id ?? 'system';
       const snapshot: ScriptVersion = {
         id: randomUUID(),
@@ -777,7 +886,7 @@ scriptLibraryRoutes.post(
       scripts.set(scriptId, script);
 
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.version.rollback',
         resourceType: 'script',
         resourceId: script.id,
@@ -806,10 +915,16 @@ scriptLibraryRoutes.get(
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
-      const query = c.req.valid('query');
-      let data = getTemplateList();
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
 
-      const categoryId = query.categoryId ?? (query.category ? findCategoryIdByName(query.category) : null);
+      const query = c.req.valid('query');
+      let data = getTemplateList(orgId);
+
+      const categoryId = query.categoryId ?? (query.category ? findCategoryIdByName(query.category, orgId) : null);
       if (categoryId) {
         data = data.filter((template) => template.categoryId === categoryId);
       }
@@ -828,10 +943,15 @@ scriptLibraryRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const templateId = c.req.param('templateId');
       const template = templates.get(templateId);
 
-      if (!template) {
+      if (!template || templateOrgById.get(templateId) !== orgId) {
         return c.json({ error: 'Template not found' }, 404);
       }
 
@@ -851,10 +971,11 @@ scriptLibraryRoutes.post(
       };
 
       scripts.set(script.id, script);
+      scriptOrgById.set(script.id, orgId);
       versionsByScriptId.set(script.id, []);
 
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'script_library.script.create_from_template',
         resourceType: 'script',
         resourceId: script.id,
@@ -880,10 +1001,16 @@ scriptLibraryRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const scriptId = c.req.param('id');
       const script = scripts.get(scriptId);
 
-      if (!script) {
+      if (!script || scriptOrgById.get(scriptId) !== orgId) {
         return c.json({ error: 'Script not found' }, 404);
       }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -29,6 +30,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -85,6 +87,9 @@ type Heartbeat struct {
 	lastInventoryUpdate time.Time
 	lastEventLogUpdate  time.Time
 	lastSecurityUpdate  time.Time
+
+	// User session helper (IPC)
+	sessionBroker *sessionbroker.Broker
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -150,6 +155,16 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}
 
+	// Initialize session broker for user helpers (IPC)
+	if cfg.UserHelperEnabled {
+		socketPath := cfg.IPCSocketPath
+		if socketPath == "" {
+			socketPath = ipc.DefaultSocketPath()
+		}
+		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		log.Info("user helper IPC enabled", "socket", socketPath)
+	}
+
 	// Initialize backup manager if enabled
 	if cfg.BackupEnabled && len(cfg.BackupPaths) > 0 {
 		var backupProvider providers.BackupProvider
@@ -201,6 +216,24 @@ func (h *Heartbeat) HealthMonitor() *health.Monitor {
 	return h.healthMon
 }
 
+// SessionBroker returns the session broker for user helper connections.
+func (h *Heartbeat) SessionBroker() *sessionbroker.Broker {
+	return h.sessionBroker
+}
+
+// handleUserHelperMessage processes messages from user helpers that aren't
+// responses to pending commands (e.g., tray actions).
+func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env *ipc.Envelope) {
+	switch env.Type {
+	case ipc.TypeTrayAction:
+		log.Info("tray action from user helper", "uid", session.UID, "sessionId", session.SessionID)
+	case ipc.TypeNotifyResult:
+		log.Debug("notify result from user helper", "uid", session.UID)
+	default:
+		log.Debug("unhandled user helper message", "type", env.Type, "uid", session.UID)
+	}
+}
+
 // sendTerminalOutput streams terminal output via WebSocket
 func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 	if h.wsClient != nil {
@@ -211,6 +244,11 @@ func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 }
 
 func (h *Heartbeat) Start() {
+	// Start session broker for user helpers
+	if h.sessionBroker != nil {
+		go h.sessionBroker.Listen(h.stopChan)
+	}
+
 	// Start backup scheduler if configured
 	if h.backupMgr != nil {
 		if err := h.backupMgr.Start(); err != nil {
@@ -303,11 +341,16 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
+		if h.sessionBroker != nil {
+			h.sessionBroker.Close()
+		}
 		if h.backupMgr != nil {
 			h.backupMgr.Stop()
 		}
-		h.auditLog.Log(audit.EventAgentStop, "", nil)
-		h.auditLog.Close()
+		if h.auditLog != nil {
+			h.auditLog.Log(audit.EventAgentStop, "", nil)
+			h.auditLog.Close()
+		}
 		close(h.stopChan)
 	})
 }
@@ -683,6 +726,27 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.MetricsAvailable = &metricsAvailable
 	}
 
+	// Include user helper session info in heartbeat
+	if h.sessionBroker != nil {
+		sessions := h.sessionBroker.AllSessions()
+		if len(sessions) > 0 {
+			helpers := make([]map[string]any, len(sessions))
+			for i, s := range sessions {
+				helpers[i] = map[string]any{
+					"uid":          s.UID,
+					"username":     s.Username,
+					"display":      s.DisplayEnv,
+					"connectedAt":  s.ConnectedAt,
+					"lastSeen":     s.LastSeen,
+				}
+				if s.Capabilities != nil {
+					helpers[i]["capabilities"] = s.Capabilities
+				}
+			}
+			payload.HealthStatus["userHelpers"] = helpers
+		}
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Error("failed to marshal heartbeat", "error", err)
@@ -833,9 +897,11 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	cmdLog.Info("processing command")
 
 	// Audit: command received
-	h.auditLog.Log(audit.EventCommandReceived, cmd.ID, map[string]any{
-		"type": cmd.Type,
-	})
+	if h.auditLog != nil {
+		h.auditLog.Log(audit.EventCommandReceived, cmd.ID, map[string]any{
+			"type": cmd.Type,
+		})
+	}
 
 	// Privilege check (warn-only for now)
 	if privilege.RequiresElevation(cmd.Type) && !privilege.IsRunningAsRoot() {
@@ -852,11 +918,13 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	}
 
 	// Audit: command executed
-	h.auditLog.Log(audit.EventCommandExecuted, cmd.ID, map[string]any{
-		"type":       cmd.Type,
-		"status":     result.Status,
-		"durationMs": result.DurationMs,
-	})
+	if h.auditLog != nil {
+		h.auditLog.Log(audit.EventCommandExecuted, cmd.ID, map[string]any{
+			"type":       cmd.Type,
+			"status":     result.Status,
+			"durationMs": result.DurationMs,
+		})
+	}
 
 	return result
 }
@@ -1175,4 +1243,3 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 
 	log.Info("update successful", "targetVersion", targetVersion)
 }
-

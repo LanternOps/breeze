@@ -106,10 +106,11 @@ function buildApiUrl(path: string): string {
   // Ensure path starts with /
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
 
-  // Remove leading /api if present (to avoid /api/v1/api/...)
-  const cleanPath = normalizedPath.startsWith('/api/')
-    ? normalizedPath.slice(4)
-    : normalizedPath.startsWith('/api')
+  // Remove only the exact "/api" prefix boundary to avoid "/api/v1/api/..."
+  // while preserving legitimate paths like "/api-keys".
+  const cleanPath = normalizedPath === '/api'
+    ? ''
+    : normalizedPath.startsWith('/api/')
       ? normalizedPath.slice(4)
       : normalizedPath;
 

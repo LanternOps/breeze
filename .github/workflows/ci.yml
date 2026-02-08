@@ -90,8 +90,6 @@ jobs:
 
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
-        # TODO: Add vitest to API package and uncomment
-        continue-on-error: true
 
   test-web:
     name: Test Web
@@ -116,8 +114,6 @@ jobs:
 
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
-        # TODO: Add vitest to Web package and uncomment
-        continue-on-error: true
 
   build-api:
     name: Build API
@@ -212,14 +208,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: apps/agent/go.sum
+          cache-dependency-path: agent/go.sum
 
       - name: Download Go dependencies
-        working-directory: apps/agent
+        working-directory: agent
         run: go mod download
 
       - name: Build Agent
-        working-directory: apps/agent
+        working-directory: agent
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -234,7 +230,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: apps/agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 7
 
   test-agent:
@@ -248,21 +244,21 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: apps/agent/go.sum
+          cache-dependency-path: agent/go.sum
 
       - name: Download Go dependencies
-        working-directory: apps/agent
+        working-directory: agent
         run: go mod download
 
       - name: Run Go tests
-        working-directory: apps/agent
+        working-directory: agent
         run: go test -v -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
           name: agent-coverage
-          path: apps/agent/coverage.out
+          path: agent/coverage.out
           retention-days: 7
 
   # Summary job that depends on all other jobs for branch protection
@@ -276,6 +272,8 @@ jobs:
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+          TEST_API_RESULT: ${{ needs.test-api.result }}
+          TEST_WEB_RESULT: ${{ needs.test-web.result }}
           BUILD_API_RESULT: ${{ needs.build-api.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
@@ -283,6 +281,8 @@ jobs:
         run: |
           if [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
+             [[ "${TEST_API_RESULT}" != "success" ]] || \
+             [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \

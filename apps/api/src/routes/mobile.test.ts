@@ -114,6 +114,53 @@ describe('mobile routes', () => {
     app.route('/mobile', mobileRoutes);
   });
 
+  describe('POST /mobile/notifications/register', () => {
+    it('should register push token through compatibility endpoint', async () => {
+      vi.mocked(db.insert).mockReturnValue(
+        mockInsertOnConflictReturning([
+          {
+            id: 'mobile-1',
+            deviceId: 'push-android-abc123',
+            platform: 'android'
+          }
+        ]) as any
+      );
+
+      const res = await app.request('/mobile/notifications/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: 'expo-token-1',
+          platform: 'android'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+    });
+  });
+
+  describe('POST /mobile/notifications/unregister', () => {
+    it('should unregister push token through compatibility endpoint', async () => {
+      vi.mocked(db.delete).mockReturnValue(
+        mockDeleteReturning([{ id: 'mobile-1' }]) as any
+      );
+
+      const res = await app.request('/mobile/notifications/unregister', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: 'expo-token-1'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+    });
+  });
+
   describe('POST /mobile/devices', () => {
     it('should register a device with platform token', async () => {
       vi.mocked(db.insert).mockReturnValue(

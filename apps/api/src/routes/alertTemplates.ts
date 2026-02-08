@@ -259,6 +259,11 @@ customTemplates.set(backupFailureTemplateId, {
   updatedAt: yesterday
 });
 
+const customTemplateOrgById = new Map<string, string>([
+  [dbConnectionsTemplateId, orgAlphaId],
+  [backupFailureTemplateId, orgAlphaId]
+]);
+
 const alertRules = new Map<string, AlertRule>();
 
 const cpuDbRuleId = randomUUID();
@@ -553,12 +558,62 @@ function parseBoolean(value?: string) {
   return undefined;
 }
 
-function getAllTemplates() {
-  return [...builtInTemplates, ...customTemplates.values()];
+function resolveScopedOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId?: string | null;
+    accessibleOrgIds?: string[] | null;
+  }
+) {
+  if (auth.orgId) {
+    return auth.orgId;
+  }
+
+  if (auth.scope === 'partner' && Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    return auth.accessibleOrgIds[0] ?? null;
+  }
+
+  return null;
 }
 
-function getTemplateById(templateId: string) {
-  return builtInTemplates.find((template) => template.id === templateId) ?? customTemplates.get(templateId);
+function getAllTemplates(orgId: string) {
+  return [
+    ...builtInTemplates,
+    ...[...customTemplates.values()].filter((template) => customTemplateOrgById.get(template.id) === orgId)
+  ];
+}
+
+function getTemplateById(templateId: string, orgId: string) {
+  const builtIn = builtInTemplates.find((template) => template.id === templateId);
+  if (builtIn) {
+    return builtIn;
+  }
+
+  const customTemplate = customTemplates.get(templateId);
+  if (!customTemplate) {
+    return null;
+  }
+
+  if (customTemplateOrgById.get(templateId) !== orgId) {
+    return null;
+  }
+
+  return customTemplate;
+}
+
+function getRuleForOrg(ruleId: string, orgId: string) {
+  const rule = alertRules.get(ruleId);
+  if (!rule || rule.orgId !== orgId) {
+    return null;
+  }
+  return rule;
+}
+
+function getScopedCorrelationAlerts(orgId: string) {
+  return correlationAlerts.filter((alert) => {
+    const rule = alertRules.get(alert.ruleId);
+    return rule?.orgId === orgId;
+  });
 }
 
 function isBuiltInTemplate(templateId: string) {
@@ -707,8 +762,14 @@ alertTemplateRoutes.get(
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const query = c.req.valid('query');
-      let data = getAllTemplates();
+      let data = getAllTemplates(orgId);
 
       if (query.builtIn) {
         const builtInFlag = parseBoolean(query.builtIn);
@@ -743,6 +804,12 @@ alertTemplateRoutes.get(
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const query = c.req.valid('query');
       let data = builtInTemplates;
 
@@ -773,6 +840,11 @@ alertTemplateRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const data = c.req.valid('json');
       const targets: AlertTemplateTarget = data.targets && Object.keys(data.targets).length > 0
         ? data.targets as AlertTemplateTarget
@@ -792,8 +864,9 @@ alertTemplateRoutes.post(
       };
 
       customTemplates.set(template.id, template);
+      customTemplateOrgById.set(template.id, orgId);
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'alert_template.create',
         resourceType: 'alert_template',
         resourceId: template.id,
@@ -815,8 +888,14 @@ alertTemplateRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const templateId = c.req.param('id');
-      const template = getTemplateById(templateId);
+      const template = getTemplateById(templateId, orgId);
 
       if (!template) {
         return c.json({ error: 'Template not found' }, 404);
@@ -836,6 +915,11 @@ alertTemplateRoutes.patch(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const templateId = c.req.param('id');
       const updates = c.req.valid('json');
 
@@ -844,6 +928,9 @@ alertTemplateRoutes.patch(
       }
 
       const existing = customTemplates.get(templateId);
+      if (customTemplateOrgById.get(templateId) !== orgId) {
+        return c.json({ error: 'Template not found' }, 404);
+      }
       if (!existing) {
         return c.json({ error: 'Template not found' }, 404);
       }
@@ -866,7 +953,7 @@ alertTemplateRoutes.patch(
 
       customTemplates.set(templateId, updated);
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'alert_template.update',
         resourceType: 'alert_template',
         resourceId: updated.id,
@@ -888,6 +975,11 @@ alertTemplateRoutes.delete(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const templateId = c.req.param('id');
 
       if (isBuiltInTemplate(templateId)) {
@@ -895,13 +987,17 @@ alertTemplateRoutes.delete(
       }
 
       const existing = customTemplates.get(templateId);
+      if (customTemplateOrgById.get(templateId) !== orgId) {
+        return c.json({ error: 'Template not found' }, 404);
+      }
       if (!existing) {
         return c.json({ error: 'Template not found' }, 404);
       }
 
       customTemplates.delete(templateId);
+      customTemplateOrgById.delete(templateId);
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'alert_template.delete',
         resourceType: 'alert_template',
         resourceId: existing.id,
@@ -924,8 +1020,18 @@ alertTemplateRoutes.get(
   zValidator('query', listRulesSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const query = c.req.valid('query');
-      let data = Array.from(alertRules.values());
+      if (query.orgId && query.orgId !== orgId) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+
+      let data = Array.from(alertRules.values()).filter((rule) => rule.orgId === orgId);
 
       if (query.orgId) {
         data = data.filter((rule) => rule.orgId === query.orgId);
@@ -969,8 +1075,17 @@ alertTemplateRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const data = c.req.valid('json');
-      const template = getTemplateById(data.templateId);
+      if (data.orgId && data.orgId !== orgId) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+
+      const template = getTemplateById(data.templateId, orgId);
 
       if (!template) {
         return c.json({ error: 'Template not found' }, 404);
@@ -978,7 +1093,7 @@ alertTemplateRoutes.post(
 
       const rule: AlertRule = {
         id: randomUUID(),
-        orgId: data.orgId ?? null,
+        orgId,
         name: data.name.trim(),
         description: data.description,
         templateId: template.id,
@@ -995,7 +1110,7 @@ alertTemplateRoutes.post(
 
       alertRules.set(rule.id, rule);
       writeRouteAudit(c, {
-        orgId: rule.orgId ?? auth.orgId,
+        orgId,
         action: 'alert_rule.create',
         resourceType: 'alert_rule',
         resourceId: rule.id,
@@ -1018,8 +1133,14 @@ alertTemplateRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const ruleId = c.req.param('id');
-      const rule = alertRules.get(ruleId);
+      const rule = getRuleForOrg(ruleId, orgId);
 
       if (!rule) {
         return c.json({ error: 'Rule not found' }, 404);
@@ -1039,9 +1160,14 @@ alertTemplateRoutes.patch(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const ruleId = c.req.param('id');
       const updates = c.req.valid('json');
-      const existing = alertRules.get(ruleId);
+      const existing = getRuleForOrg(ruleId, orgId);
 
       if (!existing) {
         return c.json({ error: 'Rule not found' }, 404);
@@ -1061,7 +1187,7 @@ alertTemplateRoutes.patch(
 
       alertRules.set(ruleId, updated);
       writeRouteAudit(c, {
-        orgId: updated.orgId ?? auth.orgId,
+        orgId,
         action: 'alert_rule.update',
         resourceType: 'alert_rule',
         resourceId: updated.id,
@@ -1083,8 +1209,13 @@ alertTemplateRoutes.delete(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const ruleId = c.req.param('id');
-      const existing = alertRules.get(ruleId);
+      const existing = getRuleForOrg(ruleId, orgId);
 
       if (!existing) {
         return c.json({ error: 'Rule not found' }, 404);
@@ -1092,7 +1223,7 @@ alertTemplateRoutes.delete(
 
       alertRules.delete(ruleId);
       writeRouteAudit(c, {
-        orgId: existing.orgId ?? auth.orgId,
+        orgId,
         action: 'alert_rule.delete',
         resourceType: 'alert_rule',
         resourceId: existing.id,
@@ -1112,9 +1243,14 @@ alertTemplateRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
       const ruleId = c.req.param('id');
       const { enabled } = c.req.valid('json');
-      const existing = alertRules.get(ruleId);
+      const existing = getRuleForOrg(ruleId, orgId);
 
       if (!existing) {
         return c.json({ error: 'Rule not found' }, 404);
@@ -1128,7 +1264,7 @@ alertTemplateRoutes.post(
 
       alertRules.set(ruleId, updated);
       writeRouteAudit(c, {
-        orgId: updated.orgId ?? auth.orgId,
+        orgId,
         action: 'alert_rule.toggle',
         resourceType: 'alert_rule',
         resourceId: updated.id,
@@ -1154,8 +1290,18 @@ alertTemplateRoutes.get(
   zValidator('query', listCorrelationsSchema),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
+      const scopedAlerts = getScopedCorrelationAlerts(orgId);
+      const scopedAlertIds = new Set(scopedAlerts.map((alert) => alert.id));
       const query = c.req.valid('query');
-      let data = [...correlationLinks];
+      let data = correlationLinks.filter(
+        (link) => scopedAlertIds.has(link.alertId) && scopedAlertIds.has(link.relatedAlertId)
+      );
 
       if (query.alertId) {
         data = data.filter(
@@ -1183,7 +1329,20 @@ alertTemplateRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
-      return c.json({ data: correlationGroups });
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
+      const scopedAlertIds = new Set(getScopedCorrelationAlerts(orgId).map((alert) => alert.id));
+      const groups = correlationGroups
+        .map((group) => ({
+          ...group,
+          alerts: group.alerts.filter((alert) => scopedAlertIds.has(alert.id))
+        }))
+        .filter((group) => group.alerts.length > 0);
+      return c.json({ data: groups });
     } catch {
       return c.json({ error: 'Failed to list correlation groups' }, 500);
     }
@@ -1197,24 +1356,38 @@ alertTemplateRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
+      const scopedAlerts = getScopedCorrelationAlerts(orgId);
+      const scopedAlertIds = new Set(scopedAlerts.map((alert) => alert.id));
       const data = c.req.valid('json');
-      const alertIds = data.alertIds ?? [];
+      const alertIds = (data.alertIds ?? []).filter((alertId) => scopedAlertIds.has(alertId));
       const windowMinutes = data.windowMinutes ?? 60;
 
+      const baseGroups = correlationGroups
+        .map((group) => ({
+          ...group,
+          alerts: group.alerts.filter((alert) => scopedAlertIds.has(alert.id))
+        }))
+        .filter((group) => group.alerts.length > 0);
       const groups = alertIds.length
-        ? correlationGroups.filter((group) =>
-          group.alerts.some((alert) => alertIds.includes(alert.id))
-        )
-        : correlationGroups;
+        ? baseGroups.filter((group) => group.alerts.some((alert) => alertIds.includes(alert.id)))
+        : baseGroups;
 
+      const scopedLinks = correlationLinks.filter(
+        (link) => scopedAlertIds.has(link.alertId) && scopedAlertIds.has(link.relatedAlertId)
+      );
       const links = alertIds.length
-        ? correlationLinks.filter(
+        ? scopedLinks.filter(
           (link) => alertIds.includes(link.alertId) || alertIds.includes(link.relatedAlertId)
         )
-        : correlationLinks;
+        : scopedLinks;
 
       writeRouteAudit(c, {
-        orgId: auth.orgId,
+        orgId,
         action: 'alert_correlation.analyze',
         resourceType: 'alert_correlation',
         details: {
@@ -1247,8 +1420,16 @@ alertTemplateRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     try {
+      const auth = c.get('auth');
+      const orgId = resolveScopedOrgId(auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
+      }
+
+      const scopedAlerts = getScopedCorrelationAlerts(orgId);
+      const scopedAlertIds = new Set(scopedAlerts.map((item) => item.id));
       const alertId = c.req.param('alertId');
-      const alert = correlationAlerts.find((item) => item.id === alertId);
+      const alert = scopedAlerts.find((item) => item.id === alertId);
 
       if (!alert) {
         return c.json({ error: 'Alert not found' }, 404);
@@ -1257,9 +1438,16 @@ alertTemplateRoutes.get(
       return c.json({
         data: {
           alert,
-          correlations: getCorrelationLinksForAlert(alertId),
-          relatedAlerts: getRelatedAlerts(alertId),
+          correlations: getCorrelationLinksForAlert(alertId).filter(
+            (link) => scopedAlertIds.has(link.alertId) && scopedAlertIds.has(link.relatedAlertId)
+          ),
+          relatedAlerts: getRelatedAlerts(alertId).filter((item) => scopedAlertIds.has(item.id)),
           groups: getCorrelationGroupsForAlert(alertId)
+            .map((group) => ({
+              ...group,
+              alerts: group.alerts.filter((item) => scopedAlertIds.has(item.id))
+            }))
+            .filter((group) => group.alerts.length > 0)
         }
       });
     } catch {

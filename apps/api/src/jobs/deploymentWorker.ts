@@ -520,6 +520,34 @@ interface ExecutionResult {
   durationMs?: number;
 }
 
+type AgentCommandResult = {
+  success?: boolean;
+  error?: string;
+  compliant?: boolean;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+} | null;
+
+export function isSuccessfulAgentCommand(
+  status: string,
+  result: AgentCommandResult
+): boolean {
+  if (status !== 'completed') {
+    return false;
+  }
+
+  if (typeof result?.exitCode === 'number') {
+    return result.exitCode === 0;
+  }
+
+  if (typeof result?.success === 'boolean') {
+    return result.success;
+  }
+
+  return true;
+}
+
 async function executeDeploymentPayload(
   payload: DeploymentPayload,
   deviceId: string
@@ -792,10 +820,11 @@ async function executeSoftwarePayload(
     }
 
     if (updatedCommand.status === 'completed' || updatedCommand.status === 'failed') {
-      const result = updatedCommand.result as { success?: boolean; error?: string } | null;
+      const result = updatedCommand.result as AgentCommandResult;
       return {
-        success: result?.success || false,
-        error: result?.error,
+        success: isSuccessfulAgentCommand(updatedCommand.status, result),
+        output: result?.stdout,
+        error: result?.error || result?.stderr,
         durationMs: Date.now() - startTime
       };
     }
@@ -858,11 +887,14 @@ async function executePolicyPayload(
     }
 
     if (updatedCommand.status === 'completed' || updatedCommand.status === 'failed') {
-      const result = updatedCommand.result as { success?: boolean; error?: string; compliant?: boolean } | null;
+      const result = updatedCommand.result as AgentCommandResult;
+      const success = isSuccessfulAgentCommand(updatedCommand.status, result);
       return {
-        success: result?.success || false,
-        output: result?.compliant ? 'Device is compliant' : 'Device is non-compliant',
-        error: result?.error,
+        success,
+        output: typeof result?.compliant === 'boolean'
+          ? (result.compliant ? 'Device is compliant' : 'Device is non-compliant')
+          : undefined,
+        error: result?.error || result?.stderr,
         durationMs: Date.now() - startTime
       };
     }

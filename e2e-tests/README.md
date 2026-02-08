@@ -5,10 +5,16 @@ End-to-end testing framework for Breeze RMM using Claude Code as the coordinator
 ## Overview
 
 This testing framework enables:
-- **UI Testing**: Automated browser testing of Breeze web UI via Playwright MCP
+- **UI Testing**: Automated browser testing of Breeze web UI via Playwright
 - **Cross-Platform Testing**: Verification on Windows, Linux, and macOS nodes
 - **AI-Assisted Debugging**: Claude Code investigates issues on remote machines
 - **Conversational Testing**: Run tests by talking to Claude Code
+
+Current status:
+- The CLI runner supports `dry-run`, `simulate`, and `live` execution modes.
+- In `live` mode, `remote` steps execute real MCP `tools/call` requests to configured nodes.
+- In `live` mode, `ui` steps execute real Playwright browser actions.
+- Use `--allow-ui-simulate` in `live` mode only when you want to bypass UI execution.
 
 ## Architecture
 
@@ -17,7 +23,7 @@ This testing framework enables:
 │  Your Machine (Coordinator)                                     │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │  Claude Code                                                │ │
-│  │    ├─ playwright-mcp → Chrome → Breeze UI                  │ │
+│  │    ├─ playwright runner → Browser → Breeze UI              │ │
 │  │    ├─ windows-node   → Remote Windows PC                   │ │
 │  │    ├─ linux-node     → Remote Linux VM                     │ │
 │  │    └─ macos-node     → Remote Mac                          │ │
@@ -37,7 +43,7 @@ This testing framework enables:
 ## Prerequisites
 
 1. **Claude Code** installed and configured
-2. **Playwright MCP** plugin enabled
+2. **Playwright** installed for local UI execution (`npm install` in `e2e-tests`)
 3. **Remote MCP servers** running on test nodes (see `../tools/remote-mcp/`)
 4. **Tailscale** (or other network connectivity) between machines
 
@@ -68,6 +74,7 @@ export MACOS_NODE_TOKEN="your-macos-token"
 ```bash
 cd e2e-tests
 npm install
+npx playwright install chromium
 ```
 
 ## Usage
@@ -75,25 +82,45 @@ npm install
 ### CLI Runner
 
 ```bash
-# Run all tests
+# Run all tests in live mode
 npm test
+
+# Simulate all tests (non-blocking preview mode)
+npm run test:simulate
 
 # Dry run (preview without executing)
 npm run test:dry
 
-# Run critical tests only
+# Explicit live mode
+npm run test:live
+
+# Live remote execution with simulated UI steps
+npx tsx run.ts --mode live --allow-ui-simulate
+
+# Run critical tests in live mode
 npm run test:critical
 
-# Run tests for specific platform
+# Simulate critical tests
+npm run test:critical:simulate
+
+# Run tests for specific platform in live mode
 npm run test:linux
 npm run test:windows
 npm run test:macos
 
-# Run specific test
-npx tsx run.ts --test agent_install_linux
+# Simulate platform-specific tests
+npm run test:linux:simulate
+npm run test:windows:simulate
+npm run test:macos:simulate
 
-# Run tests with specific tags
-npx tsx run.ts --tags critical,agent
+# Run specific test in simulate mode
+npx tsx run.ts --mode simulate --test agent_install_linux
+
+# Run specific test in live mode (remote steps live, UI simulated)
+npx tsx run.ts --mode live --allow-ui-simulate --test agent_install_linux
+
+# Run tests with specific tags in simulate mode
+npx tsx run.ts --mode simulate --tags critical,agent
 ```
 
 ### Conversational Mode
@@ -130,7 +157,7 @@ tests:
     nodes: [linux, windows]
     timeout: 120000
     steps:
-      # UI step - uses Playwright MCP
+      # UI step - uses Playwright
       - id: step_1
         action: ui
         description: "Login to dashboard"

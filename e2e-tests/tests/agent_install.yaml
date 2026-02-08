@@ -19,7 +19,7 @@ tests:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor: "h1:has-text('Dashboard')"
 
       # Step 2: Navigate to device enrollment
       - id: navigate_to_enrollment
@@ -28,17 +28,17 @@ tests:
         playwright:
           - goto: "/devices"
           - click: "button:has-text('Add Device')"
-          - waitFor: "[data-testid='enrollment-dialog']"
+          - waitFor: "h2:has-text('Add New Device')"
 
       # Step 3: Get enrollment key
       - id: get_enrollment_key
         action: ui
         description: "Extract enrollment key from UI"
         playwright:
-          - waitFor: "[data-testid='enrollment-key']"
+          - waitFor: "div.fixed code"
           - extract:
-              enrollmentKey: "[data-testid='enrollment-key']"
-              installScript: "[data-testid='install-script-windows']"
+              enrollmentKey: "div.fixed code"
+              installScript: "div.fixed code"
 
       # Step 4: Install agent on Windows
       - id: install_agent
@@ -83,7 +83,7 @@ tests:
           - goto: "/devices"
           - waitFor: "tr:has-text('windows')"
           - assert:
-              selector: "[data-testid='device-status']:has-text('windows')"
+              selector: "tr:has-text('windows')"
               contains: "Online"
 
       # Step 7: Cleanup - uninstall agent
@@ -117,7 +117,7 @@ tests:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor: "h1:has-text('Dashboard')"
 
       - id: navigate_to_enrollment
         action: ui
@@ -125,15 +125,15 @@ tests:
         playwright:
           - goto: "/devices"
           - click: "button:has-text('Add Device')"
-          - waitFor: "[data-testid='enrollment-dialog']"
+          - waitFor: "h2:has-text('Add New Device')"
 
       - id: get_enrollment_key
         action: ui
         description: "Extract enrollment key from UI"
         playwright:
-          - waitFor: "[data-testid='enrollment-key']"
+          - waitFor: "div.fixed code"
           - extract:
-              enrollmentKey: "[data-testid='enrollment-key']"
+              enrollmentKey: "div.fixed code"
 
       - id: install_agent
         action: remote
@@ -174,7 +174,7 @@ tests:
           - goto: "/devices"
           - waitFor: "tr:has-text('linux')"
           - assert:
-              selector: "[data-testid='device-status']:has-text('linux')"
+              selector: "tr:has-text('linux')"
               contains: "Online"
 
       - id: cleanup
@@ -207,7 +207,7 @@ tests:
               "[name='email']": "${TEST_USER_EMAIL}"
               "[name='password']": "${TEST_USER_PASSWORD}"
           - click: "button[type='submit']"
-          - waitFor: "[data-testid='dashboard']"
+          - waitFor: "h1:has-text('Dashboard')"
 
       - id: navigate_to_enrollment
         action: ui
@@ -215,15 +215,15 @@ tests:
         playwright:
           - goto: "/devices"
           - click: "button:has-text('Add Device')"
-          - waitFor: "[data-testid='enrollment-dialog']"
+          - waitFor: "h2:has-text('Add New Device')"
 
       - id: get_enrollment_key
         action: ui
         description: "Extract enrollment key from UI"
         playwright:
-          - waitFor: "[data-testid='enrollment-key']"
+          - waitFor: "div.fixed code"
           - extract:
-              enrollmentKey: "[data-testid='enrollment-key']"
+              enrollmentKey: "div.fixed code"
 
       - id: install_agent
         action: remote
@@ -264,7 +264,7 @@ tests:
           - goto: "/devices"
           - waitFor: "tr:has-text('macos')"
           - assert:
-              selector: "[data-testid='device-status']:has-text('macos')"
+              selector: "tr:has-text('macos')"
               contains: "Online"
 
       - id: cleanup

@@ -1,18 +1,18 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, like, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
+import { createHash } from 'crypto';
 import { db } from '../db';
 import {
   alerts,
   deviceCommands,
   devices,
   mobileDevices,
-  organizations,
   scriptExecutions,
   scripts
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const mobileRoutes = new Hono();
@@ -24,27 +24,24 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
+function derivePushDeviceId(userId: string, platform: 'ios' | 'android', token: string) {
+  const tokenHash = createHash('sha256')
+    .update(`${userId}:${platform}:${token}`)
+    .digest('hex')
+    .slice(0, 48);
+  return `push-${platform}-${tokenHash}`;
+}
+
 async function ensureOrgAccess(
   orgId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   // system scope has access to all
@@ -52,7 +49,7 @@ async function ensureOrgAccess(
 }
 
 async function getOrgIdsForAuth(
-  auth: { scope: string; partnerId: string | null; orgId: string | null },
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
   orgId?: string
 ) {
   if (auth.scope === 'organization') {
@@ -70,13 +67,7 @@ async function getOrgIdsForAuth(
       }
       return { orgIds: [orgId] };
     }
-
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-
-    return { orgIds: partnerOrgs.map(o => o.id) };
+    return { orgIds: auth.accessibleOrgIds ?? [] };
   }
 
   if (auth.scope === 'system' && orgId) {
@@ -88,7 +79,7 @@ async function getOrgIdsForAuth(
 
 async function getDeviceWithOrgCheck(
   deviceId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   const [device] = await db
     .select()
@@ -110,7 +101,7 @@ async function getDeviceWithOrgCheck(
 
 async function getAlertWithOrgCheck(
   alertId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   const [alert] = await db
     .select()
@@ -146,6 +137,15 @@ const registerDeviceSchema = z.object({
   if (data.platform === 'android' && !data.fcmToken) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'fcmToken is required for Android devices' });
   }
+});
+
+const registerPushTokenSchema = z.object({
+  token: z.string().min(1),
+  platform: z.enum(['ios', 'android'])
+});
+
+const unregisterPushTokenSchema = z.object({
+  token: z.string().min(1)
 });
 
 const updateDeviceSettingsSchema = z.object({
@@ -193,6 +193,84 @@ const summaryQuerySchema = z.object({
 
 // Apply auth middleware to all routes
 mobileRoutes.use('*', authMiddleware);
+
+// POST /notifications/register - Compatibility push token registration endpoint
+mobileRoutes.post(
+  '/notifications/register',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', registerPushTokenSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { token, platform } = c.req.valid('json');
+    const now = new Date();
+    const deviceId = derivePushDeviceId(auth.user.id, platform, token);
+
+    const [device] = await db
+      .insert(mobileDevices)
+      .values({
+        userId: auth.user.id,
+        deviceId,
+        platform,
+        fcmToken: platform === 'android' ? token : null,
+        apnsToken: platform === 'ios' ? token : null,
+        notificationsEnabled: true,
+        lastActiveAt: now,
+        updatedAt: now
+      })
+      .onConflictDoUpdate({
+        target: mobileDevices.deviceId,
+        set: {
+          fcmToken: platform === 'android' ? token : null,
+          apnsToken: platform === 'ios' ? token : null,
+          notificationsEnabled: true,
+          lastActiveAt: now,
+          updatedAt: now
+        }
+      })
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'mobile.push.register',
+      resourceType: 'mobile_device',
+      resourceId: device?.id,
+      resourceName: device?.deviceId,
+      details: { platform }
+    });
+
+    return c.json({ success: true });
+  }
+);
+
+// POST /notifications/unregister - Compatibility push token unregister endpoint
+mobileRoutes.post(
+  '/notifications/unregister',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', unregisterPushTokenSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { token } = c.req.valid('json');
+
+    const removed = await db
+      .delete(mobileDevices)
+      .where(
+        and(
+          eq(mobileDevices.userId, auth.user.id),
+          or(eq(mobileDevices.fcmToken, token), eq(mobileDevices.apnsToken, token))
+        )
+      )
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'mobile.push.unregister',
+      resourceType: 'mobile_device',
+      details: { removedCount: removed.length }
+    });
+
+    return c.json({ success: true });
+  }
+);
 
 // POST /devices - Register mobile device for push
 mobileRoutes.post(

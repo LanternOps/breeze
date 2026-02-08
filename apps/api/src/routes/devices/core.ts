@@ -29,12 +29,23 @@ coreRoutes.post(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
+    const requestedOrgId = c.req.query('orgId');
 
-    // Determine orgId: use the user's org, or first accessible org for partner/system
-    const orgId = auth.orgId
-      ?? (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds[0] : null);
+    let orgId = auth.orgId ?? null;
+
+    if (requestedOrgId) {
+      if (!auth.canAccessOrg(requestedOrgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+      orgId = requestedOrgId;
+    }
+
+    if (!orgId && auth.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
+      orgId = auth.accessibleOrgIds[0];
+    }
+
     if (!orgId) {
-      return c.json({ error: 'No organization context available' }, 400);
+      return c.json({ error: 'Organization ID required. Provide orgId query parameter.' }, 400);
     }
 
     // Pick the first site in the org for the enrollment key

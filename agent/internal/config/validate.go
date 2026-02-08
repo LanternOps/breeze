@@ -13,6 +13,7 @@ import (
 var log = logging.L("config")
 
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var hexIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{32,128}$`)
 
 var knownCollectors = map[string]bool{
 	"hardware": true,
@@ -75,8 +76,8 @@ func (c *Config) Validate() []error {
 func (c *Config) ValidateTiered() ValidationResult {
 	var result ValidationResult
 
-	if c.AgentID != "" && !uuidRegex.MatchString(c.AgentID) {
-		result.Fatals = append(result.Fatals, fmt.Errorf("agent_id %q is not a valid UUID", c.AgentID))
+	if c.AgentID != "" && !uuidRegex.MatchString(c.AgentID) && !hexIDRegex.MatchString(c.AgentID) {
+		result.Fatals = append(result.Fatals, fmt.Errorf("agent_id %q is not a valid UUID or hex identifier", c.AgentID))
 	}
 
 	if c.ServerURL != "" {

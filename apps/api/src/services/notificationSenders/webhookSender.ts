@@ -5,6 +5,8 @@
  * Supports custom headers, authentication, and payload templates.
  */
 
+import { isIP } from 'net';
+
 export interface WebhookNotificationPayload {
   alertId: string;
   alertName: string;
@@ -42,6 +44,88 @@ export interface SendResult {
   responseBody?: string;
 }
 
+function parseIpv4Octets(hostname: string): number[] | null {
+  const parts = hostname.split('.');
+  if (parts.length !== 4) return null;
+
+  const octets = parts.map((part) => Number(part));
+  if (octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return null;
+  }
+
+  return octets;
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const octets = parseIpv4Octets(hostname);
+  if (!octets) return false;
+
+  const [a, b] = octets;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 0) return true;
+  return false;
+}
+
+function isPrivateIpv6(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+
+  if (normalized === '::1' || normalized === '::') return true;
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true; // Unique local
+  if (
+    normalized.startsWith('fe8')
+    || normalized.startsWith('fe9')
+    || normalized.startsWith('fea')
+    || normalized.startsWith('feb')
+  ) return true; // Link local fe80::/10
+
+  if (normalized.startsWith('::ffff:')) {
+    const ipv4Part = normalized.slice('::ffff:'.length);
+    if (isPrivateIpv4(ipv4Part)) return true;
+  }
+
+  return false;
+}
+
+export function validateWebhookUrlSafety(rawUrl: string): string[] {
+  const errors: string[] = [];
+  let parsed: URL;
+
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return ['Invalid URL format'];
+  }
+
+  if (parsed.protocol !== 'https:') {
+    errors.push('Webhook URL must use HTTPS');
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (!hostname) {
+    errors.push('Webhook URL hostname is required');
+    return errors;
+  }
+
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    errors.push('Webhook URL cannot target localhost or local network hostnames');
+  }
+
+  const ipVersion = isIP(hostname);
+  if (ipVersion === 4 && isPrivateIpv4(hostname)) {
+    errors.push('Webhook URL cannot target private, loopback, or link-local IPv4 addresses');
+  }
+  if (ipVersion === 6 && isPrivateIpv6(hostname)) {
+    errors.push('Webhook URL cannot target private, loopback, or link-local IPv6 addresses');
+  }
+
+  return errors;
+}
+
 /**
  * Send a webhook notification for an alert
  */
@@ -49,6 +133,14 @@ export async function sendWebhookNotification(
   config: WebhookConfig,
   payload: WebhookNotificationPayload
 ): Promise<SendResult> {
+  const safetyErrors = validateWebhookUrlSafety(config.url);
+  if (safetyErrors.length > 0) {
+    return {
+      success: false,
+      error: `Unsafe webhook URL: ${safetyErrors.join('; ')}`
+    };
+  }
+
   const method = config.method || 'POST';
   const timeout = config.timeout || 30000; // 30 second default
   const maxRetries = config.retryCount || 0;
@@ -231,11 +323,7 @@ export function validateWebhookConfig(config: unknown): { valid: boolean; errors
   if (!c.url || typeof c.url !== 'string') {
     errors.push('Missing or invalid URL');
   } else {
-    try {
-      new URL(c.url);
-    } catch {
-      errors.push('Invalid URL format');
-    }
+    errors.push(...validateWebhookUrlSafety(c.url));
   }
 
   // Validate method if provided

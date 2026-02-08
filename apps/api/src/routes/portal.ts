@@ -31,6 +31,7 @@ type PortalAuthContext = {
   user: {
     id: string;
     orgId: string;
+    orgName?: string | null;
     email: string;
     name: string | null;
     receiveNotifications: boolean;
@@ -46,10 +47,40 @@ declare module 'hono' {
 }
 
 const portalSessions = new Map<string, PortalSession>();
-const portalResetTokens = new Map<string, { userId: string; expiresAt: Date }>();
+const portalResetTokens = new Map<string, { userId: string; expiresAt: Date; createdAt: Date }>();
+const portalRateLimitBuckets = new Map<string, {
+  count: number;
+  resetAtMs: number;
+  blockedUntilMs: number;
+  lastSeenAtMs: number;
+}>();
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
 const RESET_TTL_MS = 1000 * 60 * 60;
+const PORTAL_SESSION_CAP = 20000;
+const PORTAL_RESET_TOKEN_CAP = 20000;
+const PORTAL_RATE_BUCKET_CAP = 50000;
+const STATE_SWEEP_INTERVAL_MS = 60 * 1000;
+const RATE_LIMIT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+const LOGIN_RATE_LIMIT = {
+  windowMs: 5 * 60 * 1000,
+  maxAttempts: 10,
+  blockMs: 15 * 60 * 1000
+} as const;
+const FORGOT_PASSWORD_RATE_LIMIT = {
+  windowMs: 15 * 60 * 1000,
+  maxAttempts: 5,
+  blockMs: 30 * 60 * 1000
+} as const;
+const RESET_PASSWORD_RATE_LIMIT = {
+  windowMs: 15 * 60 * 1000,
+  maxAttempts: 10,
+  blockMs: 30 * 60 * 1000
+} as const;
+
+let lastStateSweepAtMs = 0;
+let lastRateLimitSweepAtMs = 0;
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -61,9 +92,129 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+function getClientIp(c: Context): string {
+  return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+    c.req.header('x-real-ip') ||
+    'unknown';
+}
+
+function capMapByOldest<T>(
+  map: Map<string, T>,
+  cap: number,
+  getAgeMs: (value: T) => number
+) {
+  if (map.size <= cap) {
+    return;
+  }
+
+  const overflow = map.size - cap;
+  const entries = Array.from(map.entries())
+    .sort(([, left], [, right]) => getAgeMs(left) - getAgeMs(right));
+
+  for (let i = 0; i < overflow; i++) {
+    const key = entries[i]?.[0];
+    if (key) {
+      map.delete(key);
+    }
+  }
+}
+
+function sweepPortalState(nowMs: number = Date.now()) {
+  if (nowMs - lastStateSweepAtMs < STATE_SWEEP_INTERVAL_MS) {
+    return;
+  }
+
+  lastStateSweepAtMs = nowMs;
+
+  for (const [token, session] of portalSessions.entries()) {
+    if (session.expiresAt.getTime() <= nowMs) {
+      portalSessions.delete(token);
+    }
+  }
+
+  for (const [tokenHash, reset] of portalResetTokens.entries()) {
+    if (reset.expiresAt.getTime() <= nowMs) {
+      portalResetTokens.delete(tokenHash);
+    }
+  }
+
+  capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
+  capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
+}
+
+function sweepRateLimitBuckets(nowMs: number = Date.now()) {
+  if (nowMs - lastRateLimitSweepAtMs < RATE_LIMIT_SWEEP_INTERVAL_MS) {
+    return;
+  }
+
+  lastRateLimitSweepAtMs = nowMs;
+
+  for (const [key, bucket] of portalRateLimitBuckets.entries()) {
+    const stale = bucket.resetAtMs <= nowMs && bucket.blockedUntilMs <= nowMs;
+    const idleTooLong = nowMs - bucket.lastSeenAtMs > RATE_LIMIT_SWEEP_INTERVAL_MS * 6;
+    if (stale || idleTooLong) {
+      portalRateLimitBuckets.delete(key);
+    }
+  }
+
+  capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (bucket) => bucket.lastSeenAtMs);
+}
+
+function checkRateLimit(
+  key: string,
+  config: { windowMs: number; maxAttempts: number; blockMs: number },
+  nowMs: number = Date.now()
+) {
+  sweepRateLimitBuckets(nowMs);
+
+  let bucket = portalRateLimitBuckets.get(key);
+  if (!bucket || bucket.resetAtMs <= nowMs) {
+    bucket = {
+      count: 0,
+      resetAtMs: nowMs + config.windowMs,
+      blockedUntilMs: 0,
+      lastSeenAtMs: nowMs
+    };
+  }
+
+  if (bucket.blockedUntilMs > nowMs) {
+    bucket.lastSeenAtMs = nowMs;
+    portalRateLimitBuckets.set(key, bucket);
+    capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (entry) => entry.lastSeenAtMs);
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((bucket.blockedUntilMs - nowMs) / 1000))
+    } as const;
+  }
+
+  bucket.count += 1;
+  bucket.lastSeenAtMs = nowMs;
+
+  if (bucket.count > config.maxAttempts) {
+    bucket.blockedUntilMs = nowMs + config.blockMs;
+    portalRateLimitBuckets.set(key, bucket);
+    capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (entry) => entry.lastSeenAtMs);
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil(config.blockMs / 1000))
+    } as const;
+  }
+
+  portalRateLimitBuckets.set(key, bucket);
+  capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (entry) => entry.lastSeenAtMs);
+  return { allowed: true, retryAfterSeconds: 0 } as const;
+}
+
+function clearRateLimitKeys(keys: string[]) {
+  for (const key of keys) {
+    portalRateLimitBuckets.delete(key);
+  }
+}
+
 function buildPortalUserPayload(user: {
   id: string;
   orgId: string;
+  orgName?: string | null;
   email: string;
   name: string | null;
   receiveNotifications: boolean;
@@ -72,6 +223,9 @@ function buildPortalUserPayload(user: {
   return {
     id: user.id,
     orgId: user.orgId,
+    orgName: user.orgName ?? null,
+    organizationId: user.orgId,
+    organizationName: user.orgName ?? 'Organization',
     email: user.email,
     name: user.name,
     receiveNotifications: user.receiveNotifications,
@@ -90,6 +244,8 @@ function writePortalAudit(
 }
 
 async function portalAuthMiddleware(c: Context, next: Next) {
+  sweepPortalState();
+
   const authHeader = c.req.header('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return c.json({ error: 'Missing or invalid authorization header' }, 401);
@@ -156,7 +312,7 @@ const brandingParamSchema = z.object({
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
-  orgId: z.string().uuid()
+  orgId: z.string().uuid().optional()
 });
 
 const forgotPasswordSchema = z.object({
@@ -211,13 +367,16 @@ const updateProfileSchema = z.object({
   password: z.string().min(8).optional()
 });
 
-// ============================================
-// Public routes
-// ============================================
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8)
+});
 
-portalRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), async (c) => {
-  const { domain } = c.req.valid('param');
+async function resolveBrandingByDomain(domain: string) {
   const normalizedDomain = domain.trim().toLowerCase();
+  if (!normalizedDomain) {
+    return null;
+  }
 
   const [branding] = await db
     .select({
@@ -245,6 +404,34 @@ portalRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), 
     .limit(1);
 
   if (!branding || !branding.domainVerified) {
+    return null;
+  }
+
+  return branding;
+}
+
+// ============================================
+// Public routes
+// ============================================
+
+portalRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), async (c) => {
+  const { domain } = c.req.valid('param');
+  const branding = await resolveBrandingByDomain(domain);
+  if (!branding) {
+    return c.json({ error: 'Branding not found' }, 404);
+  }
+
+  return c.json({ branding });
+});
+
+portalRoutes.get('/branding', async (c) => {
+  const host = c.req.header('x-forwarded-host')
+    || c.req.header('host')
+    || '';
+  const domain = host.split(':')[0] || '';
+
+  const branding = await resolveBrandingByDomain(domain);
+  if (!branding) {
     return c.json({ error: 'Branding not found' }, 404);
   }
 
@@ -256,10 +443,23 @@ portalRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), 
 // ============================================
 
 portalRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
+  sweepPortalState();
+
   const { email, password, orgId } = c.req.valid('json');
   const normalizedEmail = normalizeEmail(email);
+  const clientIp = getClientIp(c);
+  const ipRateKey = `portal:login:ip:${clientIp}`;
+  const accountRateKey = `portal:login:account:${orgId ?? 'any'}:${normalizedEmail}`;
 
-  const [user] = await db
+  for (const rateKey of [ipRateKey, accountRateKey]) {
+    const rate = checkRateLimit(rateKey, LOGIN_RATE_LIMIT);
+    if (!rate.allowed) {
+      c.header('Retry-After', String(rate.retryAfterSeconds));
+      return c.json({ error: 'Too many login attempts. Please try again later.' }, 429);
+    }
+  }
+
+  const userRows = await db
     .select({
       id: portalUsers.id,
       orgId: portalUsers.orgId,
@@ -270,8 +470,18 @@ portalRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
       status: portalUsers.status
     })
     .from(portalUsers)
-    .where(and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail)))
-    .limit(1);
+    .where(
+      orgId
+        ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail))
+        : eq(portalUsers.email, normalizedEmail)
+    )
+    .limit(orgId ? 1 : 2);
+
+  if (!orgId && userRows.length > 1) {
+    return c.json({ error: 'Multiple portal accounts found for this email. Please provide organization context.' }, 400);
+  }
+
+  const user = userRows[0];
 
   if (!user || !user.passwordHash) {
     return c.json({ error: 'Invalid email or password' }, 401);
@@ -297,22 +507,44 @@ portalRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
     createdAt: now,
     expiresAt
   });
+  capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
 
   await db
     .update(portalUsers)
     .set({ lastLoginAt: now, updatedAt: now })
     .where(eq(portalUsers.id, user.id));
 
+  const resolvedAccountRateKey = `portal:login:account:${user.orgId}:${normalizedEmail}`;
+  clearRateLimitKeys([ipRateKey, accountRateKey, resolvedAccountRateKey]);
+
   return c.json({
     user: buildPortalUserPayload(user),
     accessToken: token,
-    expiresAt
+    expiresAt,
+    tokens: {
+      accessToken: token,
+      refreshToken: token,
+      expiresInSeconds: Math.floor(SESSION_TTL_MS / 1000)
+    }
   });
 });
 
 portalRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema), async (c) => {
+  sweepPortalState();
+
   const { email, orgId } = c.req.valid('json');
   const normalizedEmail = normalizeEmail(email);
+  const clientIp = getClientIp(c);
+  const ipRateKey = `portal:forgot:ip:${clientIp}`;
+  const accountRateKey = `portal:forgot:account:${orgId ?? 'any'}:${normalizedEmail}`;
+
+  for (const rateKey of [ipRateKey, accountRateKey]) {
+    const rate = checkRateLimit(rateKey, FORGOT_PASSWORD_RATE_LIMIT);
+    if (!rate.allowed) {
+      c.header('Retry-After', String(rate.retryAfterSeconds));
+      return c.json({ error: 'Too many password reset attempts. Please try again later.' }, 429);
+    }
+  }
 
   const [user] = await db
     .select({ id: portalUsers.id, email: portalUsers.email, orgId: portalUsers.orgId })
@@ -328,22 +560,35 @@ portalRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSche
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
     const expiresAt = new Date(Date.now() + RESET_TTL_MS);
-    portalResetTokens.set(tokenHash, { userId: user.id, expiresAt });
-    console.log(`Portal password reset token for ${user.email}: ${resetToken}`);
+    portalResetTokens.set(tokenHash, { userId: user.id, expiresAt, createdAt: new Date() });
+    capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
   }
 
   return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
 });
 
 portalRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema), async (c) => {
+  sweepPortalState();
+
   const { token, password } = c.req.valid('json');
+  const clientIp = getClientIp(c);
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const ipRateKey = `portal:reset:ip:${clientIp}`;
+  const tokenRateKey = `portal:reset:token:${tokenHash}`;
+
+  for (const rateKey of [ipRateKey, tokenRateKey]) {
+    const rate = checkRateLimit(rateKey, RESET_PASSWORD_RATE_LIMIT);
+    if (!rate.allowed) {
+      c.header('Retry-After', String(rate.retryAfterSeconds));
+      return c.json({ error: 'Too many password reset attempts. Please try again later.' }, 429);
+    }
+  }
 
   const passwordCheck = isPasswordStrong(password);
   if (!passwordCheck.valid) {
     return c.json({ error: passwordCheck.errors[0] }, 400);
   }
 
-  const tokenHash = createHash('sha256').update(token).digest('hex');
   const stored = portalResetTokens.get(tokenHash);
 
   if (!stored || stored.expiresAt.getTime() <= Date.now()) {
@@ -359,6 +604,8 @@ portalRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema
     .set({ passwordHash, updatedAt: now })
     .where(eq(portalUsers.id, stored.userId));
 
+  clearRateLimitKeys([ipRateKey, tokenRateKey]);
+
   portalResetTokens.delete(tokenHash);
 
   for (const [sessionToken, session] of portalSessions.entries()) {
@@ -370,18 +617,20 @@ portalRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema
   return c.json({ success: true, message: 'Password reset successfully' });
 });
 
+portalRoutes.post('/auth/logout', portalAuthMiddleware, async (c) => {
+  const auth = c.get('portalAuth');
+  portalSessions.delete(auth.token);
+  return c.json({ success: true });
+});
+
 // ============================================
 // Protected routes
 // ============================================
 
 portalRoutes.use('/devices/*', portalAuthMiddleware);
-portalRoutes.use('/devices', portalAuthMiddleware);
 portalRoutes.use('/tickets/*', portalAuthMiddleware);
-portalRoutes.use('/tickets', portalAuthMiddleware);
 portalRoutes.use('/assets/*', portalAuthMiddleware);
-portalRoutes.use('/assets', portalAuthMiddleware);
 portalRoutes.use('/profile/*', portalAuthMiddleware);
-portalRoutes.use('/profile', portalAuthMiddleware);
 
 portalRoutes.get('/devices', zValidator('query', listSchema), async (c) => {
   const auth = c.get('portalAuth');
@@ -863,4 +1112,62 @@ portalRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (c
   });
 
   return c.json({ user: buildPortalUserPayload(user) });
+});
+
+portalRoutes.post('/profile/password', zValidator('json', changePasswordSchema), async (c) => {
+  const auth = c.get('portalAuth');
+  const { currentPassword, newPassword } = c.req.valid('json');
+
+  const [user] = await db
+    .select({
+      id: portalUsers.id,
+      passwordHash: portalUsers.passwordHash,
+      email: portalUsers.email,
+      orgId: portalUsers.orgId,
+      name: portalUsers.name
+    })
+    .from(portalUsers)
+    .where(eq(portalUsers.id, auth.user.id))
+    .limit(1);
+
+  if (!user || !user.passwordHash) {
+    return c.json({ error: 'Password authentication is not available for this account' }, 400);
+  }
+
+  const validCurrentPassword = await verifyPassword(user.passwordHash, currentPassword);
+  if (!validCurrentPassword) {
+    return c.json({ error: 'Current password is incorrect' }, 401);
+  }
+
+  const passwordCheck = isPasswordStrong(newPassword);
+  if (!passwordCheck.valid) {
+    return c.json({ error: passwordCheck.errors[0] }, 400);
+  }
+
+  await db
+    .update(portalUsers)
+    .set({
+      passwordHash: await hashPassword(newPassword),
+      updatedAt: new Date()
+    })
+    .where(eq(portalUsers.id, auth.user.id));
+
+  for (const [sessionToken, session] of portalSessions.entries()) {
+    if (session.portalUserId === auth.user.id) {
+      portalSessions.delete(sessionToken);
+    }
+  }
+
+  writePortalAudit(c, {
+    orgId: auth.user.orgId,
+    actorType: 'user',
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'portal.profile.password.change',
+    resourceType: 'portal_user',
+    resourceId: auth.user.id,
+    resourceName: user.name ?? user.email
+  });
+
+  return c.json({ success: true, message: 'Password changed successfully' });
 });

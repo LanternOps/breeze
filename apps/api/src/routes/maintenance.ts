@@ -4,7 +4,6 @@ import { z } from 'zod';
 import { eq, and, or, lte, gte, inArray, desc, asc, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { maintenanceWindows, maintenanceOccurrences } from '../db/schema/maintenance';
-import { organizations } from '../db/schema/orgs';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -12,30 +11,14 @@ export const maintenanceRoutes = new Hono();
 
 // Helper functions
 async function canAccessOrg(
-  auth: { scope: string; orgId: string | null; partnerId?: string | null },
+  auth: { canAccessOrg: (orgId: string) => boolean },
   orgId: string
 ): Promise<boolean> {
-  if (auth.scope === 'organization') {
-    return auth.orgId === orgId;
-  }
-  if (auth.scope === 'partner' && auth.partnerId) {
-    // Verify org belongs to this partner
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(and(
-        eq(organizations.id, orgId),
-        eq(organizations.partnerId, auth.partnerId)
-      ))
-      .limit(1);
-    return Boolean(org);
-  }
-  // System scope has access to all
-  return auth.scope === 'system';
+  return auth.canAccessOrg(orgId);
 }
 
 function resolveOrgId(
-  auth: { scope: string; orgId: string | null },
+  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
   requestedOrgId?: string,
   requireForNonOrg = false
 ) {
@@ -51,11 +34,27 @@ function resolveOrgId(
     return { orgId: auth.orgId } as const;
   }
 
+  if (requestedOrgId && !auth.canAccessOrg(requestedOrgId)) {
+    return { error: 'Access to this organization denied', status: 403 } as const;
+  }
+
+  if (auth.scope === 'partner' && !requestedOrgId) {
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (!requireForNonOrg && accessibleOrgIds.length === 1) {
+      return { orgId: accessibleOrgIds[0] } as const;
+    }
+    return { error: 'orgId is required for partner scope', status: 400 } as const;
+  }
+
+  if (auth.scope === 'system' && !requestedOrgId) {
+    return { error: 'orgId is required for system scope', status: 400 } as const;
+  }
+
   if (requireForNonOrg && !requestedOrgId) {
     return { error: 'orgId is required', status: 400 } as const;
   }
 
-  return { orgId: requestedOrgId ?? null } as const;
+  return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
 }
 
 // Validation schemas

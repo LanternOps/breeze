@@ -1,105 +1,30 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships } from '../db/schema';
-// Filter types defined locally to avoid rootDir issues with @breeze/shared
-export type FilterOperator =
-  | 'equals'
-  | 'notEquals'
-  | 'greaterThan'
-  | 'greaterThanOrEquals'
-  | 'lessThan'
-  | 'lessThanOrEquals'
-  | 'contains'
-  | 'notContains'
-  | 'startsWith'
-  | 'endsWith'
-  | 'matches'
-  | 'in'
-  | 'notIn'
-  | 'hasAny'
-  | 'hasAll'
-  | 'isEmpty'
-  | 'isNotEmpty'
-  | 'isNull'
-  | 'isNotNull'
-  | 'before'
-  | 'after'
-  | 'between'
-  | 'withinLast'
-  | 'notWithinLast';
-
-export type FilterFieldCategory =
-  | 'core'
-  | 'os'
-  | 'hardware'
-  | 'network'
-  | 'metrics'
-  | 'software'
-  | 'hierarchy'
-  | 'custom'
-  | 'computed';
-
-export type FilterFieldType =
-  | 'string'
-  | 'number'
-  | 'boolean'
-  | 'date'
-  | 'datetime'
-  | 'array'
-  | 'enum';
-
-export interface FilterFieldDefinition {
-  key: string;
-  label: string;
-  category: FilterFieldCategory;
-  type: FilterFieldType;
-  operators: FilterOperator[];
-  enumValues?: string[];
-  description?: string;
-  computed?: boolean;
-}
-
-export interface FilterCondition {
-  field: string;
-  operator: FilterOperator;
-  value: FilterValue;
-}
-
-export type FilterValue =
-  | string
-  | number
-  | boolean
-  | Date
-  | string[]
-  | number[]
-  | { from: Date; to: Date }
-  | { amount: number; unit: 'minutes' | 'hours' | 'days' | 'weeks' | 'months' };
-
-export interface FilterConditionGroup {
-  operator: 'AND' | 'OR';
-  conditions: (FilterCondition | FilterConditionGroup)[];
-}
-
-export interface FilterEvaluationResult {
-  deviceIds: string[];
-  totalCount: number;
-  evaluatedAt: Date;
-}
-
-export interface FilterPreviewResult {
-  totalCount: number;
-  devices: FilterPreviewDevice[];
-  evaluatedAt: Date;
-}
-
-export interface FilterPreviewDevice {
-  id: string;
-  hostname: string;
-  displayName: string | null;
-  osType: string;
-  status: string;
-  lastSeenAt: Date | null;
-}
+import type {
+  FilterOperator,
+  FilterFieldCategory,
+  FilterFieldType,
+  FilterFieldDefinition,
+  FilterCondition,
+  FilterValue,
+  FilterConditionGroup,
+  FilterEvaluationResult,
+  FilterPreviewResult,
+  FilterPreviewDevice
+} from '@breeze/shared/types/filters';
+export type {
+  FilterOperator,
+  FilterFieldCategory,
+  FilterFieldType,
+  FilterFieldDefinition,
+  FilterCondition,
+  FilterValue,
+  FilterConditionGroup,
+  FilterEvaluationResult,
+  FilterPreviewResult,
+  FilterPreviewDevice
+} from '@breeze/shared/types/filters';
 
 // ============================================
 // Field Definitions

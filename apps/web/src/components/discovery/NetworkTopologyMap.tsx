@@ -42,6 +42,7 @@ type ApiTopologyLink = {
 
 type NetworkTopologyMapProps = {
   height?: number;
+  onNodeClick?: () => void;
 };
 
 const typeColors: Record<TopologyNodeType, string> = {
@@ -91,7 +92,7 @@ function mapLink(link: ApiTopologyLink): TopologyLink {
   };
 }
 
-export default function NetworkTopologyMap({ height = 420 }: NetworkTopologyMapProps) {
+export default function NetworkTopologyMap({ height = 420, onNodeClick }: NetworkTopologyMapProps) {
   const [nodes, setNodes] = useState<TopologyNode[]>([]);
   const [links, setLinks] = useState<TopologyLink[]>([]);
   const [loading, setLoading] = useState(true);
@@ -168,7 +169,12 @@ export default function NetworkTopologyMap({ height = 420 }: NetworkTopologyMapP
       .attr('r', 18)
       .attr('fill', d => typeColors[d.type])
       .attr('stroke', d => statusStroke[d.status])
-      .attr('stroke-width', 3);
+      .attr('stroke-width', 3)
+      .style('cursor', onNodeClick ? 'pointer' : 'default');
+
+    if (onNodeClick) {
+      nodeGroup.on('click', () => onNodeClick());
+    }
 
     nodeGroup
       .append('text')
@@ -191,7 +197,7 @@ export default function NetworkTopologyMap({ height = 420 }: NetworkTopologyMapP
     return () => {
       simulation.stop();
     };
-  }, [height, linksMemo, nodesMemo]);
+  }, [height, linksMemo, nodesMemo, onNodeClick]);
 
   if (loading && nodes.length === 0) {
     return (
@@ -251,13 +257,16 @@ export default function NetworkTopologyMap({ height = 420 }: NetworkTopologyMapP
       <div className="mt-6 overflow-hidden rounded-md border bg-muted/30">
         <svg ref={svgRef} className="h-full w-full" style={{ height }} />
       </div>
-      <div className="mt-4 flex flex-wrap gap-3 text-xs text-muted-foreground">
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         {Object.entries(typeColors).map(([type, color]) => (
           <span key={type} className="flex items-center gap-2">
             <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
             {type}
           </span>
         ))}
+        {onNodeClick && (
+          <span className="ml-auto text-muted-foreground/60">Click a node to view assets</span>
+        )}
       </div>
     </div>
   );

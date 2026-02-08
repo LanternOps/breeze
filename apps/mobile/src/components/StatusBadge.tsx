@@ -2,7 +2,7 @@ import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Text, useTheme } from 'react-native-paper';
 
-type SeverityType = 'critical' | 'high' | 'medium' | 'low' | 'online' | 'offline' | 'warning';
+type SeverityType = 'critical' | 'high' | 'medium' | 'low' | 'info' | 'online' | 'offline' | 'warning';
 
 interface StatusBadgeProps {
   severity: SeverityType;
@@ -38,6 +38,12 @@ export function StatusBadge({ severity, size = 'medium', showLabel = true }: Sta
           background: '#3b82f620',
           text: '#3b82f6',
           dot: '#3b82f6',
+        };
+      case 'info':
+        return {
+          background: '#0ea5e920',
+          text: '#0ea5e9',
+          dot: '#0ea5e9',
         };
       case 'online':
         return {

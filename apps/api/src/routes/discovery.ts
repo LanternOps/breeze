@@ -10,9 +10,10 @@ import {
   discoveredAssets,
   networkTopology,
   snmpDevices,
-  snmpMetrics
+  snmpMetrics,
+  devices
 } from '../db/schema';
-import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
+import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -21,7 +22,7 @@ export const discoveryRoutes = new Hono();
 // --- Helpers ---
 
 function resolveOrgId(
-  auth: { scope: string; orgId: string | null },
+  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
   requestedOrgId?: string,
   requireForNonOrg = false
 ) {
@@ -30,8 +31,28 @@ function resolveOrgId(
     if (requestedOrgId && requestedOrgId !== auth.orgId) return { error: 'Access to this organization denied', status: 403 } as const;
     return { orgId: auth.orgId } as const;
   }
+
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access to this organization denied', status: 403 } as const;
+    }
+    return { orgId: requestedOrgId } as const;
+  }
+
+  if (auth.scope === 'partner') {
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (!requireForNonOrg && accessibleOrgIds.length === 1) {
+      return { orgId: accessibleOrgIds[0] } as const;
+    }
+    return { error: 'orgId is required for partner scope', status: 400 } as const;
+  }
+
+  if (auth.scope === 'system' && !requestedOrgId) {
+    return { error: 'orgId is required for system scope', status: 400 } as const;
+  }
+
   if (requireForNonOrg && !requestedOrgId) return { error: 'orgId is required', status: 400 } as const;
-  return { orgId: requestedOrgId ?? null } as const;
+  return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
 }
 
 // --- Zod Schemas ---
@@ -297,9 +318,11 @@ discoveryRoutes.delete(
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
 
-    // Delete related jobs first
-    await db.delete(discoveryJobs).where(eq(discoveryJobs.profileId, profileId));
-    await db.delete(discoveryProfiles).where(eq(discoveryProfiles.id, profileId));
+    // Delete related jobs and profile atomically
+    await db.transaction(async (tx) => {
+      await tx.delete(discoveryJobs).where(eq(discoveryJobs.profileId, profileId));
+      await tx.delete(discoveryProfiles).where(eq(discoveryProfiles.id, profileId));
+    });
 
     writeRouteAudit(c, {
       orgId: existing.orgId,
@@ -461,6 +484,65 @@ discoveryRoutes.get(
   }
 );
 
+// POST /jobs/:id/cancel - Cancel a scheduled or running discovery job
+discoveryRoutes.post(
+  '/jobs/:id/cancel',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const jobId = c.req.param('id');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveryJobs.id, jobId)];
+    if (orgResult.orgId) conditions.push(eq(discoveryJobs.orgId, orgResult.orgId));
+
+    const [job] = await db.select().from(discoveryJobs)
+      .where(and(...conditions)).limit(1);
+    if (!job) return c.json({ error: 'Job not found' }, 404);
+
+    const cancelableStatuses = ['scheduled', 'running'];
+    if (!cancelableStatuses.includes(job.status)) {
+      return c.json({ error: `Cannot cancel job with status: ${job.status}` }, 400);
+    }
+
+    const [updated] = await db.update(discoveryJobs)
+      .set({
+        status: 'cancelled',
+        completedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(discoveryJobs.id, jobId))
+      .returning();
+
+    if (!updated) return c.json({ error: 'Failed to cancel job' }, 500);
+
+    // Best-effort: remove from BullMQ queue if still queued
+    try {
+      const queue = getDiscoveryQueue();
+      await queue.remove(jobId);
+    } catch {
+      // Job may already be processing or completed in the queue — ignore
+    }
+
+    writeRouteAudit(c, {
+      orgId: updated.orgId ?? orgResult.orgId,
+      action: 'discovery.job.cancel',
+      resourceType: 'discovery_job',
+      resourceId: updated.id,
+      details: { previousStatus: job.status }
+    });
+
+    return c.json({
+      ...updated,
+      createdAt: updated.createdAt.toISOString(),
+      scheduledAt: updated.scheduledAt?.toISOString() ?? null,
+      startedAt: updated.startedAt?.toISOString() ?? null,
+      completedAt: updated.completedAt?.toISOString() ?? null
+    });
+  }
+);
+
 // ==================== ASSET ROUTES ====================
 
 discoveryRoutes.get(
@@ -483,10 +565,13 @@ discoveryRoutes.get(
       .select({
         asset: discoveredAssets,
         snmpDeviceId: snmpDevices.id,
-        snmpIsActive: snmpDevices.isActive
+        snmpIsActive: snmpDevices.isActive,
+        linkedDeviceHostname: devices.hostname,
+        linkedDeviceDisplayName: devices.displayName
       })
       .from(discoveredAssets)
       .leftJoin(snmpDevices, and(eq(discoveredAssets.id, snmpDevices.assetId), eq(snmpDevices.isActive, true)))
+      .leftJoin(devices, eq(discoveredAssets.linkedDeviceId, devices.id))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
@@ -504,8 +589,11 @@ discoveryRoutes.get(
           manufacturer: a.manufacturer,
           model: a.model,
           openPorts: a.openPorts,
+          responseTimeMs: a.responseTimeMs,
           linkedDeviceId: a.linkedDeviceId,
+          linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
           monitoringEnabled: row.snmpDeviceId !== null && row.snmpIsActive === true,
+          discoveryMethods: a.discoveryMethods,
           firstSeenAt: a.firstSeenAt.toISOString(),
           lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
           createdAt: a.createdAt.toISOString(),
@@ -772,6 +860,97 @@ discoveryRoutes.get(
         valueType: m.valueType,
         timestamp: m.timestamp.toISOString()
       }))
+    });
+  }
+);
+
+const updateMonitoringSchema = z.object({
+  snmpVersion: z.enum(['v1', 'v2c', 'v3']).optional(),
+  community: z.string().optional(),
+  username: z.string().optional(),
+  authProtocol: z.enum(['md5', 'sha', 'sha256']).optional(),
+  authPassword: z.string().optional(),
+  privProtocol: z.enum(['des', 'aes', 'aes256']).optional(),
+  privPassword: z.string().optional(),
+  templateId: z.string().uuid().nullable().optional(),
+  pollingInterval: z.number().int().min(30).max(86400).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  isActive: z.boolean().optional()
+});
+
+discoveryRoutes.patch(
+  '/assets/:id/monitoring',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', updateMonitoringSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const assetId = c.req.param('id');
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [asset] = await db.select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
+      .from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+
+    const [existing] = await db.select()
+      .from(snmpDevices)
+      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
+      .limit(1);
+    if (!existing) return c.json({ error: 'No monitoring configuration found for this asset' }, 404);
+
+    const setValues: Record<string, unknown> = {};
+    if (body.snmpVersion !== undefined) setValues.snmpVersion = body.snmpVersion;
+    if (body.community !== undefined) setValues.community = body.community;
+    if (body.username !== undefined) setValues.username = body.username;
+    if (body.authProtocol !== undefined) setValues.authProtocol = body.authProtocol;
+    if (body.authPassword !== undefined) setValues.authPassword = body.authPassword;
+    if (body.privProtocol !== undefined) setValues.privProtocol = body.privProtocol;
+    if (body.privPassword !== undefined) setValues.privPassword = body.privPassword;
+    if (body.templateId !== undefined) setValues.templateId = body.templateId;
+    if (body.pollingInterval !== undefined) setValues.pollingInterval = body.pollingInterval;
+    if (body.port !== undefined) setValues.port = body.port;
+    if (body.isActive !== undefined) setValues.isActive = body.isActive;
+
+    if (Object.keys(setValues).length === 0) {
+      return c.json({ error: 'No fields to update' }, 400);
+    }
+
+    const [updated] = await db.update(snmpDevices)
+      .set(setValues)
+      .where(eq(snmpDevices.id, existing.id))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Failed to update monitoring configuration' }, 500);
+    }
+
+    writeRouteAudit(c, {
+      orgId: asset.orgId,
+      action: 'discovery.asset.update_monitoring',
+      resourceType: 'discovered_asset',
+      resourceId: assetId,
+      details: { snmpDeviceId: updated.id, changes: Object.keys(setValues) }
+    });
+
+    return c.json({
+      success: true,
+      snmpDevice: {
+        id: updated.id,
+        snmpVersion: updated.snmpVersion,
+        port: updated.port,
+        community: updated.community ? '***' : null,
+        username: updated.username ?? null,
+        templateId: updated.templateId,
+        pollingInterval: updated.pollingInterval,
+        isActive: updated.isActive,
+        lastPolled: updated.lastPolled?.toISOString() ?? null,
+        lastStatus: updated.lastStatus
+      }
     });
   }
 );

@@ -1,0 +1,34 @@
+[Unit]
+Description=Breeze RMM Agent
+Documentation=https://github.com/breeze-rmm/breeze
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/breeze-agent run
+WorkingDirectory=/etc/breeze
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze
+PrivateTmp=true
+NoNewPrivileges=false
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+# Logging (stdout goes to journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=breeze-agent
+
+# File limits
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

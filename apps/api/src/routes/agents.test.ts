@@ -47,11 +47,19 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c, next) => next()),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 vi.mock('../middleware/agentAuth', () => ({
-  agentAuthMiddleware: vi.fn((c, next) => next())
+  agentAuthMiddleware: vi.fn((c, next) => {
+    c.set('agent', {
+      deviceId: 'device-123',
+      agentId: 'agent-123',
+      orgId: 'org-123',
+      siteId: 'site-123'
+    });
+    return next();
+  })
 }));
 
 import { db } from '../db';

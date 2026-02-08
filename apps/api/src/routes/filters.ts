@@ -3,64 +3,16 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, savedFilters } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { savedFilters } from '../db/schema';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, FilterConditionGroup } from '../services/filterEngine';
 import { writeRouteAudit } from '../services/auditEvents';
-
-// Filter schemas (defined locally to avoid rootDir issues)
-const filterOperatorSchema = z.enum([
-  'equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals',
-  'contains', 'notContains', 'startsWith', 'endsWith', 'matches',
-  'in', 'notIn', 'hasAny', 'hasAll', 'isEmpty', 'isNotEmpty',
-  'isNull', 'isNotNull', 'before', 'after', 'between', 'withinLast', 'notWithinLast'
-]);
-
-const filterValueSchema = z.union([
-  z.string(), z.number(), z.boolean(), z.coerce.date(),
-  z.array(z.string()), z.array(z.number()),
-  z.object({ from: z.coerce.date(), to: z.coerce.date() }),
-  z.object({ amount: z.number().positive(), unit: z.enum(['minutes', 'hours', 'days', 'weeks', 'months']) })
-]);
-
-const filterConditionSchema = z.object({
-  field: z.string().min(1),
-  operator: filterOperatorSchema,
-  value: filterValueSchema.optional()
-});
-
-interface LocalFilterConditionGroup {
-  operator: 'AND' | 'OR';
-  conditions: Array<
-    | { field: string; operator: string; value?: unknown }
-    | LocalFilterConditionGroup
-  >;
-}
-
-const filterConditionGroupSchema: z.ZodType<LocalFilterConditionGroup> = z.lazy(() =>
-  z.object({
-    operator: z.enum(['AND', 'OR']),
-    conditions: z.array(z.union([filterConditionSchema, filterConditionGroupSchema])).min(1)
-  })
-);
-
-const createSavedFilterSchema = z.object({
-  name: z.string().min(1).max(200),
-  description: z.string().max(1000).optional(),
-  conditions: filterConditionGroupSchema
-});
-
-const updateSavedFilterSchema = z.object({
-  name: z.string().min(1).max(200).optional(),
-  description: z.string().max(1000).nullable().optional(),
-  conditions: filterConditionGroupSchema.optional()
-});
-
-const savedFilterQuerySchema = z.object({
-  search: z.string().optional(),
-  page: z.coerce.number().min(1).default(1),
-  limit: z.coerce.number().min(1).max(100).default(50)
-});
+import {
+  filterConditionGroupSchema,
+  createSavedFilterSchema,
+  updateSavedFilterSchema,
+  savedFilterQuerySchema
+} from '@breeze/shared/validators/filters';
 
 export const filterRoutes = new Hono();
 
@@ -91,27 +43,21 @@ filterRoutes.use('*', authMiddleware);
 
 async function ensureOrgAccess(
   orgId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, auth.partnerId as string)))
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   return true;
 }
 
 async function getOrgIdsForAuth(
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds'>
 ): Promise<string[] | null> {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return null;
@@ -119,11 +65,7 @@ async function getOrgIdsForAuth(
   }
 
   if (auth.scope === 'partner') {
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-    return partnerOrgs.map((org) => org.id);
+    return auth.accessibleOrgIds ?? [];
   }
 
   return null;

@@ -7,7 +7,7 @@
 
 import { db } from '../../db';
 import { userNotifications, organizationUsers, users, partnerUsers, organizations } from '../../db/schema';
-import { eq, and, or, inArray } from 'drizzle-orm';
+import { eq, and, or, sql } from 'drizzle-orm';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -84,11 +84,13 @@ export async function sendInAppNotification(payload: InAppNotificationPayload): 
           and(
             eq(partnerUsers.partnerId, org.partnerId),
             eq(users.status, 'active'),
-            // Include users with 'all' access or specific access to this org
+            // Include users with full access or selected access that explicitly includes this org.
             or(
               eq(partnerUsers.orgAccess, 'all'),
-              // For 'specific' access, would need to check orgIds array
-              // but 'all' covers most admin cases
+              and(
+                eq(partnerUsers.orgAccess, 'selected'),
+                sql`${payload.orgId} = ANY(${partnerUsers.orgIds})`
+              )
             )
           )
         );

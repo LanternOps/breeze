@@ -66,6 +66,7 @@ services:
       LOG_LEVEL: debug
       ENABLE_API_DOCS: "true"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-dev-monitoring-scrape-token-change-me}
     ports:
       - "3001:3001"
     volumes:

@@ -3,8 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { devices, organizations } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { devices } from '../db/schema';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 
 export const tagRoutes = new Hono();
 
@@ -20,7 +20,7 @@ const listTagsQuerySchema = z.object({
 tagRoutes.use('*', authMiddleware);
 
 async function getOrgIdsForAuth(
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds'>
 ): Promise<string[] | null> {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return null;
@@ -28,11 +28,7 @@ async function getOrgIdsForAuth(
   }
 
   if (auth.scope === 'partner') {
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-    return partnerOrgs.map((org) => org.id);
+    return auth.accessibleOrgIds ?? [];
   }
 
   return null;

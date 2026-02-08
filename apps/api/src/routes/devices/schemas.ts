@@ -38,6 +38,17 @@ export const createCommandSchema = z.object({
   payload: z.any().optional()
 });
 
+export const bulkCommandSchema = z.object({
+  deviceIds: z.array(z.string().uuid()).min(1),
+  type: z.enum(['script', 'reboot', 'shutdown', 'update']),
+  payload: z.any().optional()
+});
+
+export const maintenanceModeSchema = z.object({
+  enable: z.boolean(),
+  durationHours: z.number().int().positive().max(168).optional()
+});
+
 export const createGroupSchema = z.object({
   orgId: z.string().uuid(),
   name: z.string().min(1).max(255),

@@ -39,19 +39,20 @@ type SNMPInfo struct {
 
 // DiscoveredHost represents a device found during discovery.
 type DiscoveredHost struct {
-	IP            string     `json:"ip"`
-	MAC           string     `json:"mac,omitempty"`
-	Hostname      string     `json:"hostname,omitempty"`
-	NetbiosName   string     `json:"netbiosName,omitempty"`
-	AssetType     string     `json:"assetType"`
-	Manufacturer  string     `json:"manufacturer,omitempty"`
-	Model         string     `json:"model,omitempty"`
-	OpenPorts     []OpenPort `json:"openPorts,omitempty"`
-	OSFingerprint string     `json:"osFingerprint,omitempty"`
-	SNMPData      *SNMPInfo  `json:"snmpData,omitempty"`
-	Methods       []string   `json:"methods"`
-	FirstSeen     time.Time  `json:"firstSeen"`
-	LastSeen      time.Time  `json:"lastSeen"`
+	IP             string     `json:"ip"`
+	MAC            string     `json:"mac,omitempty"`
+	Hostname       string     `json:"hostname,omitempty"`
+	NetbiosName    string     `json:"netbiosName,omitempty"`
+	AssetType      string     `json:"assetType"`
+	Manufacturer   string     `json:"manufacturer,omitempty"`
+	Model          string     `json:"model,omitempty"`
+	OpenPorts      []OpenPort `json:"openPorts,omitempty"`
+	OSFingerprint  string     `json:"osFingerprint,omitempty"`
+	SNMPData       *SNMPInfo  `json:"snmpData,omitempty"`
+	ResponseTimeMs float64    `json:"responseTimeMs,omitempty"`
+	Methods        []string   `json:"methods"`
+	FirstSeen      time.Time  `json:"firstSeen"`
+	LastSeen       time.Time  `json:"lastSeen"`
 }
 
 // Scanner coordinates network discovery methods.
@@ -106,9 +107,11 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 
 	var aliveTargets []net.IP
 	if methods["ping"] {
-		aliveTargets = PingSweep(targets, s.config.Timeout, s.config.Concurrency)
-		for _, ip := range aliveTargets {
-			host := getOrCreateHost(hosts, ip.String(), now)
+		pingResults := PingSweep(targets, s.config.Timeout, s.config.Concurrency)
+		for _, pr := range pingResults {
+			aliveTargets = append(aliveTargets, pr.IP)
+			host := getOrCreateHost(hosts, pr.IP.String(), now)
+			host.ResponseTimeMs = float64(pr.RTT.Microseconds()) / 1000.0
 			host.Methods = addMethod(host.Methods, "ping")
 		}
 	}
@@ -137,6 +140,16 @@ func (s *Scanner) Scan() ([]DiscoveredHost, error) {
 			host := getOrCreateHost(hosts, ip, now)
 			host.SNMPData = snmpInfo
 			host.Methods = addMethod(host.Methods, "snmp")
+		}
+	}
+
+	// Fill in missing MACs from the OS ARP cache.
+	// After port scanning, hosts are typically in the kernel ARP table
+	// even if pcap-based ARP scan failed (requires root).
+	arpCache := ReadARPCache()
+	for ip, mac := range arpCache {
+		if host, ok := hosts[ip]; ok && host.MAC == "" {
+			host.MAC = mac
 		}
 	}
 

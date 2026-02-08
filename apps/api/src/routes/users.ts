@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
-import { users, partnerUsers, organizationUsers, roles } from '../db/schema';
+import { users, partnerUsers, organizationUsers, roles, organizations } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
@@ -12,6 +12,34 @@ import { createAuditLogAsync } from '../services/auditService';
 export const userRoutes = new Hono();
 
 userRoutes.use('*', authMiddleware);
+userRoutes.use('*', async (c, next) => {
+  const auth = c.get('auth');
+  if (!auth || auth.scope !== 'partner') {
+    await next();
+    return;
+  }
+
+  if (!auth.partnerId) {
+    throw new HTTPException(403, { message: 'Partner context required' });
+  }
+
+  if (!Array.isArray(auth.accessibleOrgIds)) {
+    await next();
+    return;
+  }
+
+  const partnerOrgRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, auth.partnerId));
+  const hasFullPartnerAccess = partnerOrgRows.every((org) => auth.accessibleOrgIds.includes(org.id));
+
+  if (!hasFullPartnerAccess) {
+    throw new HTTPException(403, { message: 'Full partner organization access required' });
+  }
+
+  await next();
+});
 
 const inviteUserSchema = z.object({
   email: z.string().email(),

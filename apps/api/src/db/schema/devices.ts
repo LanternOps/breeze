@@ -99,6 +99,29 @@ export const deviceSoftware = pgTable('device_software', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
+export const deviceRegistryState = pgTable('device_registry_state', {
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  registryPath: text('registry_path').notNull(),
+  valueName: text('value_name').notNull(),
+  valueData: text('value_data'),
+  valueType: varchar('value_type', { length: 64 }),
+  collectedAt: timestamp('collected_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  pk: primaryKey({ columns: [table.deviceId, table.registryPath, table.valueName] })
+}));
+
+export const deviceConfigState = pgTable('device_config_state', {
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  filePath: text('file_path').notNull(),
+  configKey: text('config_key').notNull(),
+  configValue: text('config_value'),
+  collectedAt: timestamp('collected_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  pk: primaryKey({ columns: [table.deviceId, table.filePath, table.configKey] })
+}));
+
 export const deviceGroups = pgTable('device_groups', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),

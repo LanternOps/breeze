@@ -2,9 +2,10 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
+import { getRedis } from '../services/redis';
 import { db } from '../db';
 import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
-import { eq, inArray, SQL } from 'drizzle-orm';
+import { and, eq, inArray, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 
 export interface AuthContext {
@@ -47,6 +48,21 @@ declare module 'hono' {
   }
 }
 
+async function isUserTokenRevoked(userId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) {
+    return false;
+  }
+
+  try {
+    const revoked = await redis.get(`token:revoked:${userId}`);
+    return Boolean(revoked);
+  } catch (error) {
+    console.warn('[auth] Failed to check token revocation state:', error);
+    return false;
+  }
+}
+
 // Optional auth - doesn't throw if not authenticated, just sets auth to null
 export async function optionalAuthMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
@@ -62,6 +78,12 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
 
   if (!payload || payload.type !== 'access') {
     // Invalid token - continue without auth context
+    await next();
+    return;
+  }
+
+  if (await isUserTokenRevoked(payload.sub)) {
+    // Token has been explicitly revoked - continue without auth context
     await next();
     return;
   }
@@ -82,7 +104,8 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
     const accessibleOrgIds = await computeAccessibleOrgIds(
       payload.scope,
       payload.partnerId,
-      payload.orgId
+      payload.orgId,
+      user.id
     );
 
     const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
@@ -127,7 +150,8 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
 async function computeAccessibleOrgIds(
   scope: 'system' | 'partner' | 'organization',
   partnerId: string | null,
-  orgId: string | null
+  orgId: string | null,
+  userId: string
 ): Promise<string[] | null> {
   if (scope === 'system') {
     // System users can access all orgs - return null to indicate no filter
@@ -140,7 +164,51 @@ async function computeAccessibleOrgIds(
   }
 
   if (scope === 'partner' && partnerId) {
-    // Partner users can access all orgs under their partner
+    const [partnerMembership] = await db
+      .select({
+        orgAccess: partnerUsers.orgAccess,
+        orgIds: partnerUsers.orgIds
+      })
+      .from(partnerUsers)
+      .where(
+        and(
+          eq(partnerUsers.userId, userId),
+          eq(partnerUsers.partnerId, partnerId)
+        )
+      )
+      .limit(1);
+
+    if (!partnerMembership) {
+      return [];
+    }
+
+    if (partnerMembership.orgAccess === 'none') {
+      return [];
+    }
+
+    if (partnerMembership.orgAccess === 'selected') {
+      const selectedOrgIds = (partnerMembership.orgIds ?? []).filter(
+        (value): value is string => typeof value === 'string' && value.length > 0
+      );
+
+      if (selectedOrgIds.length === 0) {
+        return [];
+      }
+
+      const partnerOrgs = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.partnerId, partnerId),
+            inArray(organizations.id, selectedOrgIds)
+          )
+        );
+
+      return partnerOrgs.map(o => o.id);
+    }
+
+    // orgAccess=all: partner users can access all orgs under their partner.
     const partnerOrgs = await db
       .select({ id: organizations.id })
       .from(organizations)
@@ -170,6 +238,10 @@ export async function authMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid token type' });
   }
 
+  if (await isUserTokenRevoked(payload.sub)) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
   // Fetch user to ensure they still exist and are active
   const [user] = await db
     .select({
@@ -194,7 +266,8 @@ export async function authMiddleware(c: Context, next: Next) {
   const accessibleOrgIds = await computeAccessibleOrgIds(
     payload.scope,
     payload.partnerId,
-    payload.orgId
+    payload.orgId,
+    user.id
   );
 
   // Create helper functions
@@ -403,28 +476,17 @@ export async function resolveOrgAccess(
       return { type: 'error', error: 'Partner context required', status: 403 };
     }
 
-    // If specific org requested, verify it belongs to partner
+    // If specific org requested, verify it's in caller's accessible org set.
     if (requestedOrgId) {
-      const [org] = await db
-        .select({ id: organizations.id, partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, requestedOrgId))
-        .limit(1);
-
-      if (!org || org.partnerId !== auth.partnerId) {
+      if (!auth.canAccessOrg(requestedOrgId)) {
         return { type: 'error', error: 'Access to this organization denied', status: 403 };
       }
 
       return { type: 'single', orgId: requestedOrgId };
     }
 
-    // No specific org - get all orgs under this partner
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId));
-
-    return { type: 'multiple', orgIds: partnerOrgs.map(o => o.id) };
+    // No specific org - use pre-computed accessible orgs for this partner user.
+    return { type: 'multiple', orgIds: auth.accessibleOrgIds ?? [] };
   }
 
   // System-scoped users

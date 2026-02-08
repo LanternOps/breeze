@@ -4,6 +4,10 @@ vi.mock('../services/jwt', () => ({
   verifyToken: vi.fn()
 }));
 
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn()
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn()
@@ -17,13 +21,23 @@ vi.mock('../db/schema', () => ({
     name: 'name',
     status: 'status'
   },
-  partnerUsers: {},
-  organizationUsers: {}
+  partnerUsers: {
+    userId: 'partnerUsers.userId',
+    partnerId: 'partnerUsers.partnerId',
+    orgAccess: 'partnerUsers.orgAccess',
+    orgIds: 'partnerUsers.orgIds'
+  },
+  organizationUsers: {},
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId'
+  }
 }));
 
 import { Hono } from 'hono';
 import { authMiddleware, requireScope } from './auth';
 import { verifyToken } from '../services/jwt';
+import { getRedis } from '../services/redis';
 import { db } from '../db';
 
 const basePayload = {
@@ -52,7 +66,10 @@ const baseAuth = {
   token: basePayload,
   partnerId: basePayload.partnerId,
   orgId: basePayload.orgId,
-  scope: basePayload.scope
+  scope: basePayload.scope,
+  accessibleOrgIds: [basePayload.orgId],
+  orgCondition: vi.fn(),
+  canAccessOrg: (orgId: string) => orgId === basePayload.orgId
 };
 
 function mockUserSelect(rows: Array<typeof activeUser>) {
@@ -65,6 +82,24 @@ function mockUserSelect(rows: Array<typeof activeUser>) {
   } as any);
 }
 
+function selectWithLimit(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  };
+}
+
+function selectWithWhere(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(rows)
+    })
+  };
+}
+
 function buildAuthApp() {
   const app = new Hono();
   app.use(authMiddleware);
@@ -75,6 +110,9 @@ function buildAuthApp() {
 describe('authMiddleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(verifyToken).mockReset();
+    vi.mocked(getRedis).mockReturnValue(null);
   });
 
   it('rejects missing authorization header', async () => {
@@ -157,6 +195,66 @@ describe('authMiddleware', () => {
       orgId: basePayload.orgId,
       scope: basePayload.scope
     });
+  });
+
+  it('rejects revoked access tokens', async () => {
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    vi.mocked(getRedis).mockReturnValue({
+      get: vi.fn().mockResolvedValue('1')
+    } as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(401);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('restricts partner scope to selected orgIds from partner membership', async () => {
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null
+    });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'selected', orgIds: ['org-a', 'org-b'] }]) as any)
+      .mockReturnValueOnce(selectWithWhere([{ id: 'org-a' }]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.auth.scope).toBe('partner');
+    expect(body.auth.accessibleOrgIds).toEqual(['org-a']);
+  });
+
+  it('enforces partner orgAccess=none as no accessible organizations', async () => {
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null
+    });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.auth.scope).toBe('partner');
+    expect(body.auth.accessibleOrgIds).toEqual([]);
   });
 });
 

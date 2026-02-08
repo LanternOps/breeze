@@ -8,6 +8,8 @@ import {
   deviceHardware,
   deviceNetwork,
   deviceDisks,
+  deviceRegistryState,
+  deviceConfigState,
   deviceMetrics,
   deviceCommands,
   deviceConnections,
@@ -154,6 +156,18 @@ function parseDate(value: unknown): Date | null {
   if (typeof value !== 'string' || value.trim() === '') return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeStateValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
 }
 
 function normalizeProvider(raw: unknown): SecurityProviderValue {
@@ -758,13 +772,22 @@ agentRoutes.post(
   async (c) => {
     const commandId = c.req.param('commandId');
     const data = c.req.valid('json');
-    const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+    const agent = c.get('agent') as { orgId?: string; agentId?: string; deviceId?: string } | undefined;
     const agentId = c.req.param('id');
+
+    if (!agent?.deviceId) {
+      return c.json({ error: 'Agent context not found' }, 401);
+    }
 
     const [command] = await db
       .select()
       .from(deviceCommands)
-      .where(eq(deviceCommands.id, commandId))
+      .where(
+        and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.deviceId, agent.deviceId)
+        )
+      )
       .limit(1);
 
     if (!command) {
@@ -996,6 +1019,139 @@ agentRoutes.put('/:id/disks', zValidator('json', updateDisksSchema), async (c) =
   });
 
   return c.json({ success: true, count: data.disks.length });
+});
+
+const updateRegistryStateSchema = z.object({
+  entries: z.array(z.object({
+    registryPath: z.string().min(1),
+    valueName: z.string().min(1),
+    valueData: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+    valueType: z.string().optional(),
+    collectedAt: z.string().optional()
+  })),
+  replace: z.boolean().optional().default(true)
+});
+
+agentRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  await db.transaction(async (tx) => {
+    if (data.replace) {
+      await tx
+        .delete(deviceRegistryState)
+        .where(eq(deviceRegistryState.deviceId, device.id));
+    }
+
+    if (data.entries.length === 0) {
+      return;
+    }
+
+    const now = new Date();
+    await tx
+      .insert(deviceRegistryState)
+      .values(
+        data.entries.map((entry) => ({
+          deviceId: device.id,
+          registryPath: entry.registryPath,
+          valueName: entry.valueName,
+          valueData: normalizeStateValue(entry.valueData),
+          valueType: entry.valueType || null,
+          collectedAt: parseDate(entry.collectedAt) ?? now,
+          updatedAt: now
+        }))
+      )
+      .onConflictDoUpdate({
+        target: [
+          deviceRegistryState.deviceId,
+          deviceRegistryState.registryPath,
+          deviceRegistryState.valueName
+        ],
+        set: {
+          valueData: sql`excluded.value_data`,
+          valueType: sql`excluded.value_type`,
+          collectedAt: sql`excluded.collected_at`,
+          updatedAt: now
+        }
+      });
+  });
+
+  return c.json({ success: true, count: data.entries.length });
+});
+
+const updateConfigStateSchema = z.object({
+  entries: z.array(z.object({
+    filePath: z.string().min(1),
+    configKey: z.string().min(1),
+    configValue: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+    collectedAt: z.string().optional()
+  })),
+  replace: z.boolean().optional().default(true)
+});
+
+agentRoutes.put('/:id/config-state', zValidator('json', updateConfigStateSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  await db.transaction(async (tx) => {
+    if (data.replace) {
+      await tx
+        .delete(deviceConfigState)
+        .where(eq(deviceConfigState.deviceId, device.id));
+    }
+
+    if (data.entries.length === 0) {
+      return;
+    }
+
+    const now = new Date();
+    await tx
+      .insert(deviceConfigState)
+      .values(
+        data.entries.map((entry) => ({
+          deviceId: device.id,
+          filePath: entry.filePath,
+          configKey: entry.configKey,
+          configValue: normalizeStateValue(entry.configValue),
+          collectedAt: parseDate(entry.collectedAt) ?? now,
+          updatedAt: now
+        }))
+      )
+      .onConflictDoUpdate({
+        target: [
+          deviceConfigState.deviceId,
+          deviceConfigState.filePath,
+          deviceConfigState.configKey
+        ],
+        set: {
+          configValue: sql`excluded.config_value`,
+          collectedAt: sql`excluded.collected_at`,
+          updatedAt: now
+        }
+      });
+  });
+
+  return c.json({ success: true, count: data.entries.length });
 });
 
 // Update network adapters

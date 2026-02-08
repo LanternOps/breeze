@@ -70,6 +70,8 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-noreply@breeze.local}
+      # Shared with monitoring/prometheus.yml bearer credentials for /metrics/scrape.
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-dev-monitoring-scrape-token-change-me}
     ports:
       - "${API_PORT:-3001}:3001"
     networks:
@@ -160,6 +162,7 @@ services:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     networks:
       - breeze-network

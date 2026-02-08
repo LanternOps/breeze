@@ -7,7 +7,6 @@ import {
   remoteSessions,
   fileTransfers,
   devices,
-  organizations,
   users,
   auditLogs
 } from '../db/schema';
@@ -25,34 +24,21 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
-  if (auth.scope === 'organization') {
-    return auth.orgId === orgId;
+function hasSessionOrTransferOwnership(
+  auth: { scope: string; user: { id: string } },
+  ownerUserId: string
+) {
+  if (auth.scope === 'system') {
+    return true;
   }
-
-  if (auth.scope === 'partner') {
-    if (!auth.partnerId) {
-      return false;
-    }
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
-  }
-
-  // system scope has access to all
-  return true;
+  return auth.user.id === ownerUserId;
 }
 
-async function getDeviceWithOrgCheck(deviceId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+  return auth.canAccessOrg(orgId);
+}
+
+async function getDeviceWithOrgCheck(deviceId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [device] = await db
     .select()
     .from(devices)
@@ -63,7 +49,7 @@ async function getDeviceWithOrgCheck(deviceId: string, auth: { scope: string; pa
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(device.orgId, auth);
+  const hasAccess = ensureOrgAccess(device.orgId, auth);
   if (!hasAccess) {
     return null;
   }
@@ -71,7 +57,7 @@ async function getDeviceWithOrgCheck(deviceId: string, auth: { scope: string; pa
   return device;
 }
 
-async function getSessionWithOrgCheck(sessionId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getSessionWithOrgCheck(sessionId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [session] = await db
     .select({
       session: remoteSessions,
@@ -86,7 +72,7 @@ async function getSessionWithOrgCheck(sessionId: string, auth: { scope: string; 
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(session.device.orgId, auth);
+  const hasAccess = ensureOrgAccess(session.device.orgId, auth);
   if (!hasAccess) {
     return null;
   }
@@ -94,7 +80,7 @@ async function getSessionWithOrgCheck(sessionId: string, auth: { scope: string; 
   return session;
 }
 
-async function getTransferWithOrgCheck(transferId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getTransferWithOrgCheck(transferId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [transfer] = await db
     .select({
       transfer: fileTransfers,
@@ -109,7 +95,7 @@ async function getTransferWithOrgCheck(transferId: string, auth: { scope: string
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(transfer.device.orgId, auth);
+  const hasAccess = ensureOrgAccess(transfer.device.orgId, auth);
   if (!hasAccess) {
     return null;
   }
@@ -241,10 +227,46 @@ remoteRoutes.delete(
   '/sessions/stale',
   requireScope('system', 'partner'),
   async (c) => {
+    const auth = c.get('auth');
+    const activeStatuses: Array<'pending' | 'connecting' | 'active'> = ['pending', 'connecting', 'active'];
+
+    let scopedSessionIds: string[] = [];
+
+    if (auth.scope === 'partner') {
+      const orgIds = auth.accessibleOrgIds ?? [];
+      if (orgIds.length === 0) {
+        return c.json({ cleaned: 0, ids: [] });
+      }
+
+      const partnerSessions = await db
+        .select({ id: remoteSessions.id })
+        .from(remoteSessions)
+        .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+        .where(
+          and(
+            inArray(remoteSessions.status, activeStatuses),
+            inArray(devices.orgId, orgIds)
+          )
+        );
+
+      scopedSessionIds = partnerSessions.map((session) => session.id);
+    } else {
+      const allActiveSessions = await db
+        .select({ id: remoteSessions.id })
+        .from(remoteSessions)
+        .where(inArray(remoteSessions.status, activeStatuses));
+
+      scopedSessionIds = allActiveSessions.map((session) => session.id);
+    }
+
+    if (scopedSessionIds.length === 0) {
+      return c.json({ cleaned: 0, ids: [] });
+    }
+
     const result = await db
       .update(remoteSessions)
       .set({ status: 'disconnected', endedAt: new Date() })
-      .where(inArray(remoteSessions.status, ['pending', 'connecting', 'active']))
+      .where(inArray(remoteSessions.id, scopedSessionIds))
       .returning({ id: remoteSessions.id });
 
     return c.json({ cleaned: result.length, ids: result.map(r => r.id) });
@@ -347,22 +369,18 @@ remoteRoutes.get(
     }
     conditions.push(eq(devices.orgId, auth.orgId));
   } else if (auth.scope === 'partner') {
-    if (!auth.partnerId) {
-      return c.json({ error: 'Partner context required' }, 403);
+    const orgIds = auth.accessibleOrgIds ?? [];
+    if (orgIds.length === 0) {
+      return c.json({
+        data: [],
+        pagination: { page, limit, total: 0 }
+      });
     }
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
+    conditions.push(inArray(devices.orgId, orgIds));
+    }
 
-      const orgIds = partnerOrgs.map(o => o.id);
-      if (orgIds.length === 0) {
-        return c.json({
-          data: [],
-          pagination: { page, limit, total: 0 }
-        });
-      }
-      conditions.push(inArray(devices.orgId, orgIds));
+    if (auth.scope !== 'system') {
+      conditions.push(eq(remoteSessions.userId, auth.user.id));
     }
 
     // Additional filters
@@ -467,23 +485,19 @@ remoteRoutes.get(
     }
     conditions.push(eq(devices.orgId, auth.orgId));
   } else if (auth.scope === 'partner') {
-    if (!auth.partnerId) {
-      return c.json({ error: 'Partner context required' }, 403);
+    const orgIds = auth.accessibleOrgIds ?? [];
+    if (orgIds.length === 0) {
+      return c.json({
+        data: [],
+        pagination: { page, limit, total: 0 },
+        stats: { totalSessions: 0, totalDurationSeconds: 0, avgDurationSeconds: 0 }
+      });
     }
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
+    conditions.push(inArray(devices.orgId, orgIds));
+    }
 
-      const orgIds = partnerOrgs.map(o => o.id);
-      if (orgIds.length === 0) {
-        return c.json({
-          data: [],
-          pagination: { page, limit, total: 0 },
-          stats: { totalSessions: 0, totalDurationSeconds: 0, avgDurationSeconds: 0 }
-        });
-      }
-      conditions.push(inArray(devices.orgId, orgIds));
+    if (auth.scope !== 'system') {
+      conditions.push(eq(remoteSessions.userId, auth.user.id));
     }
 
     // Additional filters
@@ -492,6 +506,9 @@ remoteRoutes.get(
     }
 
     if (query.userId) {
+      if (auth.scope !== 'system' && query.userId !== auth.user.id) {
+        return c.json({ error: 'Access denied' }, 403);
+      }
       conditions.push(eq(remoteSessions.userId, query.userId));
     }
 
@@ -607,6 +624,9 @@ remoteRoutes.get(
     }
 
     const { session, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Get user info
     const [user] = await db
@@ -657,6 +677,9 @@ remoteRoutes.post(
     }
 
     const { session, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Only allow offer in pending or connecting state
     if (!['pending', 'connecting'].includes(session.status)) {
@@ -712,6 +735,9 @@ remoteRoutes.post(
     }
 
     const { session, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Only allow answer in connecting state
     if (session.status !== 'connecting') {
@@ -769,6 +795,9 @@ remoteRoutes.post(
     }
 
     const { session } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Only allow ICE candidates in connecting or active state
     if (!['connecting', 'active'].includes(session.status)) {
@@ -816,6 +845,9 @@ remoteRoutes.post(
     }
 
     const { session, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Don't allow ending already ended sessions
     if (['disconnected', 'failed'].includes(session.status)) {
@@ -906,6 +938,9 @@ remoteRoutes.post(
       if (sessionResult.session.status !== 'active') {
         return c.json({ error: 'Session is not active' }, 400);
       }
+      if (!hasSessionOrTransferOwnership(auth, sessionResult.session.userId)) {
+        return c.json({ error: 'Access denied' }, 403);
+      }
     }
 
     // Create transfer record
@@ -985,22 +1020,18 @@ remoteRoutes.get(
     }
     conditions.push(eq(devices.orgId, auth.orgId));
   } else if (auth.scope === 'partner') {
-    if (!auth.partnerId) {
-      return c.json({ error: 'Partner context required' }, 403);
+    const orgIds = auth.accessibleOrgIds ?? [];
+    if (orgIds.length === 0) {
+      return c.json({
+        data: [],
+        pagination: { page, limit, total: 0 }
+      });
     }
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
+    conditions.push(inArray(devices.orgId, orgIds));
+    }
 
-      const orgIds = partnerOrgs.map(o => o.id);
-      if (orgIds.length === 0) {
-        return c.json({
-          data: [],
-          pagination: { page, limit, total: 0 }
-        });
-      }
-      conditions.push(inArray(devices.orgId, orgIds));
+    if (auth.scope !== 'system') {
+      conditions.push(eq(fileTransfers.userId, auth.user.id));
     }
 
     // Additional filters
@@ -1090,6 +1121,9 @@ remoteRoutes.get(
     }
 
     const { transfer, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, transfer.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Get user info
     const [user] = await db
@@ -1136,6 +1170,9 @@ remoteRoutes.post(
     }
 
     const { transfer, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, transfer.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Only allow cancelling pending or transferring transfers
     if (!['pending', 'transferring'].includes(transfer.status)) {
@@ -1197,6 +1234,9 @@ remoteRoutes.get(
     }
 
     const { transfer } = result;
+    if (!hasSessionOrTransferOwnership(auth, transfer.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     // Only allow download for completed upload transfers
     if (transfer.direction !== 'upload') {
@@ -1230,7 +1270,7 @@ remoteRoutes.get(
 // PATCH /remote/transfers/:id/progress - Update transfer progress (called by agent)
 remoteRoutes.patch(
   '/transfers/:id/progress',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('system'),
   async (c) => {
     const auth = c.get('auth');
     const transferId = c.req.param('id');

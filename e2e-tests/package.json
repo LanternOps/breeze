@@ -4,18 +4,25 @@
   "description": "End-to-end tests for Breeze RMM using Claude Code coordination",
   "type": "module",
   "scripts": {
-    "test": "tsx run.ts",
+    "test": "tsx run.ts --mode live",
+    "test:simulate": "tsx run.ts --mode simulate",
+    "test:live": "tsx run.ts --mode live",
     "test:dry": "tsx run.ts --dry-run",
-    "test:critical": "tsx run.ts --tags critical",
-    "test:windows": "tsx run.ts --nodes windows",
-    "test:linux": "tsx run.ts --nodes linux",
-    "test:macos": "tsx run.ts --nodes macos"
+    "test:critical": "tsx run.ts --mode live --tags critical",
+    "test:critical:simulate": "tsx run.ts --mode simulate --tags critical",
+    "test:windows": "tsx run.ts --mode live --nodes windows",
+    "test:windows:simulate": "tsx run.ts --mode simulate --nodes windows",
+    "test:linux": "tsx run.ts --mode live --nodes linux",
+    "test:linux:simulate": "tsx run.ts --mode simulate --nodes linux",
+    "test:macos": "tsx run.ts --mode live --nodes macos",
+    "test:macos:simulate": "tsx run.ts --mode simulate --nodes macos"
   },
   "dependencies": {
     "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "playwright": "^1.49.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }

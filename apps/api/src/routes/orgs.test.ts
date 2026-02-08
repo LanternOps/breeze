@@ -38,18 +38,21 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       token: {},
       partnerId: 'partner-123',
       orgId: 'org-123',
-      scope: 'system'
-    });
+      scope: 'system',
+      accessibleOrgIds: null,
+      orgCondition: () => undefined,
+      canAccessOrg: () => true
+    } as any);
     return next();
   }),
-  requireScope: vi.fn(() => (c, next) => next()),
-  requirePartner: vi.fn((c, next) => next())
+  requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePartner: vi.fn((c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -65,14 +68,17 @@ describe('org routes', () => {
     orgId: string | null;
     scope: 'system' | 'partner' | 'organization';
   }> = {}) => {
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         user: { id: 'user-123', email: 'test@example.com', name: 'Test User', ...overrides.user },
         token: overrides.token ?? {},
-        partnerId: overrides.partnerId ?? 'partner-123',
-        orgId: overrides.orgId ?? 'org-123',
-        scope: overrides.scope ?? 'system'
-      });
+        partnerId: 'partnerId' in overrides ? overrides.partnerId : 'partner-123',
+        orgId: 'orgId' in overrides ? overrides.orgId : 'org-123',
+        scope: overrides.scope ?? 'system',
+        accessibleOrgIds: null,
+        orgCondition: () => undefined,
+        canAccessOrg: () => true
+      } as any);
       return next();
     });
   };
@@ -308,6 +314,46 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.id).toBe('org-1');
     });
+
+    it('should allow system scope create with explicit partnerId', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'org-1', partnerId: 'partner-999', name: 'Org' }])
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          partnerId: '99999999-9999-4999-8999-999999999999',
+          name: 'Org',
+          slug: 'org'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.id).toBe('org-1');
+    });
+
+    it('should require partnerId for system scope create', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+
+      const res = await app.request('/orgs/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Org',
+          slug: 'org-no-partner'
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('partnerId is required');
+    });
   });
 
   describe('GET /orgs/organizations/:id', () => {
@@ -395,6 +441,27 @@ describe('org routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    it('should allow system scope updates without partnerId context', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Updated by system' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated by system' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.name).toBe('Updated by system');
+    });
   });
 
   describe('DELETE /orgs/organizations/:id', () => {
@@ -432,6 +499,25 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    it('should allow system scope delete without partnerId context', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'DELETE'
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
     });
   });
 

@@ -56,7 +56,21 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   users: {},
-  sessions: {}
+  sessions: {},
+  partnerUsers: {
+    userId: 'partnerUsers.userId',
+    partnerId: 'partnerUsers.partnerId',
+    roleId: 'partnerUsers.roleId'
+  },
+  organizationUsers: {
+    userId: 'organizationUsers.userId',
+    orgId: 'organizationUsers.orgId',
+    roleId: 'organizationUsers.roleId'
+  },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId'
+  }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -74,6 +88,9 @@ import {
   isPasswordStrong,
   createTokenPair,
   verifyToken,
+  verifyMFAToken,
+  generateRecoveryCodes,
+  invalidateAllUserSessions,
   rateLimiter,
   getRedis
 } from '../services';
@@ -380,6 +397,12 @@ describe('auth routes', () => {
 
   describe('POST /auth/refresh', () => {
     it('should refresh tokens successfully', async () => {
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(null),
+        setex: vi.fn(),
+        del: vi.fn()
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
@@ -389,17 +412,32 @@ describe('auth routes', () => {
         scope: 'system',
         type: 'refresh'
       });
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'user-123',
-              email: 'test@example.com',
-              status: 'active'
-            }])
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-123',
+                email: 'test@example.com',
+                status: 'active'
+              }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
@@ -412,6 +450,12 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.tokens).toBeDefined();
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({
+        scope: 'system',
+        roleId: null,
+        orgId: null,
+        partnerId: null
+      }));
     });
 
     it('should reject invalid refresh token', async () => {
@@ -448,6 +492,106 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+
+    it('should reject revoked refresh token sessions', async () => {
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue('1'),
+        setex: vi.fn(),
+        del: vi.fn()
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-old',
+        orgId: 'org-old',
+        partnerId: 'partner-old',
+        scope: 'partner',
+        type: 'refresh'
+      });
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          refreshToken: 'revoked-refresh-token'
+        })
+      });
+
+      expect(res.status).toBe(401);
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('should re-derive token claims from current memberships', async () => {
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(null),
+        setex: vi.fn(),
+        del: vi.fn()
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'stale-role',
+        orgId: null,
+        partnerId: 'stale-partner',
+        scope: 'partner',
+        type: 'refresh'
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-123',
+                email: 'test@example.com',
+                status: 'active'
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                orgId: 'org-live',
+                roleId: 'role-live'
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-live' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          refreshToken: 'refresh-token-live-context'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({
+        sub: 'user-123',
+        scope: 'organization',
+        roleId: 'role-live',
+        orgId: 'org-live',
+        partnerId: 'partner-live'
+      }));
     });
   });
 
@@ -565,6 +709,131 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('auth compatibility endpoints', () => {
+    it('POST /auth/change-password should change password for authenticated user', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
+      const mockRedis = {
+        get: vi.fn(),
+        setex: vi.fn().mockResolvedValue('OK'),
+        del: vi.fn()
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const res = await app.request('/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          currentPassword: 'OldStrongPass123',
+          newPassword: 'NewStrongPass123'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.message).toBe('Password changed successfully');
+      expect(hashPassword).toHaveBeenCalledWith('NewStrongPass123');
+      expect(invalidateAllUserSessions).toHaveBeenCalledWith('user-123');
+      expect(mockRedis.setex).toHaveBeenCalledWith('token:revoked:user-123', 900, '1');
+    });
+
+    it('POST /auth/mfa/enable should enable MFA and return recovery codes', async () => {
+      const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({
+          secret: 'MFASECRET123',
+          recoveryCodes: setupRecoveryCodes
+        })),
+        setex: vi.fn(),
+        del: vi.fn().mockResolvedValue(1)
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(verifyMFAToken).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ code: '123456' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.recoveryCodes).toEqual(setupRecoveryCodes);
+      expect(body.message).toBe('MFA enabled successfully');
+    });
+
+    it('POST /auth/mfa/recovery-codes should rotate recovery codes when MFA is enabled', async () => {
+      const newRecoveryCodes = ['NEW-0001', 'NEW-0002'];
+      vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.recoveryCodes).toEqual(newRecoveryCodes);
+      expect(body.message).toBe('Recovery codes generated successfully');
     });
   });
 

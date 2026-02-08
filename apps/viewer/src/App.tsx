@@ -1,9 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
+import type { ComponentType } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import DesktopViewer from './components/DesktopViewer';
 import { parseDeepLink, type ConnectionParams } from './lib/protocol';
 import { Monitor } from 'lucide-react';
+
+const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
 
 export default function App() {
   const [params, setParams] = useState<ConnectionParams | null>(null);
@@ -68,7 +71,7 @@ export default function App() {
     <div className="flex items-center justify-center h-screen bg-gray-900">
       <div className="text-center max-w-md px-6">
         <div className="flex items-center justify-center w-16 h-16 bg-blue-600/20 rounded-2xl mx-auto mb-6">
-          <Monitor className="w-8 h-8 text-blue-400" />
+          <MonitorIcon className="w-8 h-8 text-blue-400" />
         </div>
         <h1 className="text-2xl font-semibold text-white mb-2">Breeze Remote Desktop</h1>
         <p className="text-gray-400 mb-8">

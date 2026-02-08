@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchWithAuth } from '@/stores/auth';
-import { sendBulkCommand, sendDeviceCommand, toggleMaintenanceMode } from '../deviceActions';
+import {
+  bulkDecommissionDevices,
+  decommissionDevice,
+  executeScript,
+  sendBulkCommand,
+  sendDeviceCommand,
+  toggleMaintenanceMode
+} from '../deviceActions';
 
 vi.mock('@/stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -140,6 +147,69 @@ describe('deviceActions service', () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse({ error: 'Maintenance failed' }, false, 400));
 
       await expect(toggleMaintenanceMode('dev-1', true)).rejects.toThrow('Maintenance failed');
+    });
+  });
+
+  describe('executeScript', () => {
+    it('executes script with parameters', async () => {
+      const execution = {
+        batchId: 'batch-1',
+        scriptId: 'script-1',
+        devicesTargeted: 2,
+        executions: [],
+        status: 'queued'
+      };
+
+      fetchWithAuthMock.mockResolvedValue(makeResponse(execution));
+
+      const result = await executeScript('script-1', ['dev-1', 'dev-2'], { timeout: 120 });
+
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/scripts/script-1/execute', {
+        method: 'POST',
+        body: JSON.stringify({ deviceIds: ['dev-1', 'dev-2'], parameters: { timeout: 120 } })
+      });
+      expect(result).toEqual(execution);
+    });
+
+    it('falls back to default message when error body is unreadable', async () => {
+      fetchWithAuthMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: vi.fn().mockRejectedValue(new Error('invalid json'))
+      } as Response);
+
+      await expect(executeScript('script-1', ['dev-1'])).rejects.toThrow('Failed to execute script');
+    });
+  });
+
+  describe('decommissionDevice', () => {
+    it('returns success payload on delete', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ data: { success: true } }));
+
+      const result = await decommissionDevice('dev-1');
+
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1', { method: 'DELETE' });
+      expect(result).toEqual({ success: true });
+    });
+
+    it('throws helpful error on failure', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ message: 'Delete rejected' }, false, 403));
+
+      await expect(decommissionDevice('dev-1')).rejects.toThrow('Delete rejected');
+    });
+  });
+
+  describe('bulkDecommissionDevices', () => {
+    it('counts succeeded and failed deletions', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse({ data: { success: true } }))
+        .mockResolvedValueOnce(makeResponse({ error: 'not found' }, false, 404))
+        .mockResolvedValueOnce(makeResponse({ data: { success: true } }));
+
+      const result = await bulkDecommissionDevices(['dev-1', 'dev-2', 'dev-3']);
+
+      expect(result).toEqual({ succeeded: 2, failed: 1 });
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
     });
   });
 });

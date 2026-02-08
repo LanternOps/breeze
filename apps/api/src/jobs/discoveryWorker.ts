@@ -12,9 +12,10 @@ import {
   discoveryJobs,
   discoveredAssets,
   networkTopology,
-  devices
+  devices,
+  deviceNetwork
 } from '../db/schema';
-import { eq, and, sql, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 
@@ -72,6 +73,7 @@ export interface DiscoveredHostResult {
     sysObjectId?: string;
     sysName?: string;
   };
+  responseTimeMs?: number;
   methods: string[];
 }
 
@@ -195,6 +197,19 @@ async function processResults(data: ProcessResultsJobData): Promise<{
   durationMs: number;
 }> {
   const startTime = Date.now();
+
+  // Check if job was cancelled before processing results
+  const [currentJob] = await db
+    .select({ status: discoveryJobs.status })
+    .from(discoveryJobs)
+    .where(eq(discoveryJobs.id, data.jobId))
+    .limit(1);
+
+  if (currentJob?.status === 'cancelled') {
+    console.log(`[DiscoveryWorker] Job ${data.jobId} was cancelled — skipping result processing`);
+    return { newAssets: 0, updatedAssets: 0, durationMs: Date.now() - startTime };
+  }
+
   let newCount = 0;
   let updatedCount = 0;
 
@@ -224,26 +239,67 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       openPorts: host.openPorts ?? null,
       osFingerprint: host.osFingerprint ? { os: host.osFingerprint } : null,
       snmpData: host.snmpData ?? null,
+      responseTimeMs: host.responseTimeMs ?? null,
       discoveryMethods: host.methods?.map(mapMethod) ?? [],
       lastSeenAt: new Date(),
       lastJobId: data.jobId,
       updatedAt: new Date()
     };
 
+    let upsertedAssetId: string | null = null;
+    let alreadyLinked = false;
+
     if (existing) {
       await db
         .update(discoveredAssets)
         .set(assetData)
         .where(eq(discoveredAssets.id, existing.id));
+      upsertedAssetId = existing.id;
       updatedCount++;
+
+      // Check if already linked (preserve manual decisions)
+      const [currentAsset] = await db
+        .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
+        .from(discoveredAssets)
+        .where(eq(discoveredAssets.id, existing.id))
+        .limit(1);
+      alreadyLinked = !!currentAsset?.linkedDeviceId;
     } else {
-      await db.insert(discoveredAssets).values({
+      const [inserted] = await db.insert(discoveredAssets).values({
         orgId: data.orgId,
         siteId: data.siteId,
         status: 'new',
         ...assetData
-      });
+      }).returning({ id: discoveredAssets.id });
+      upsertedAssetId = inserted?.id ?? null;
       newCount++;
+    }
+
+    // Auto-link: match discovered asset to enrolled device by MAC or IP
+    if (upsertedAssetId && !alreadyLinked && (assetData.macAddress || assetData.ipAddress)) {
+      try {
+        const conditions = [];
+        if (assetData.macAddress) conditions.push(eq(deviceNetwork.macAddress, assetData.macAddress));
+        if (assetData.ipAddress) conditions.push(eq(deviceNetwork.ipAddress, assetData.ipAddress));
+
+        if (conditions.length > 0) {
+          const [match] = await db
+            .select({ deviceId: deviceNetwork.deviceId })
+            .from(deviceNetwork)
+            .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
+            .where(and(eq(devices.orgId, data.orgId), or(...conditions)))
+            .limit(1);
+
+          if (match) {
+            await db
+              .update(discoveredAssets)
+              .set({ linkedDeviceId: match.deviceId, status: 'managed' as any })
+              .where(eq(discoveredAssets.id, upsertedAssetId));
+          }
+        }
+      } catch (linkErr) {
+        console.warn(`[DiscoveryWorker] Auto-link failed for ${host.ip}:`, linkErr);
+      }
     }
   }
 
@@ -287,6 +343,10 @@ function mapAssetType(agentType: string): any {
     iot: 'iot',
     camera: 'camera',
     nas: 'nas',
+    // Fallbacks for older agent versions that send invalid type strings
+    windows: 'workstation',
+    linux: 'workstation',
+    web: 'unknown',
   };
   return typeMap[agentType] ?? 'unknown';
 }

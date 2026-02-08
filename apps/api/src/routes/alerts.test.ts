@@ -48,7 +48,9 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null,
-      user: { id: 'user-123', email: 'test@example.com' }
+      user: { id: 'user-123', email: 'test@example.com' },
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
     });
     return next();
   }),
@@ -68,7 +70,9 @@ describe('alert routes', () => {
         scope: 'organization',
         orgId: '11111111-1111-1111-1111-111111111111',
         partnerId: null,
-        user: { id: 'user-123', email: 'test@example.com' }
+        user: { id: 'user-123', email: 'test@example.com' },
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+        canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
       });
       return next();
     });
@@ -294,6 +298,120 @@ describe('alert routes', () => {
       expect(body.byStatus.resolved).toBe(1);
       expect(body.byStatus.acknowledged).toBe(0);
       expect(body.total).toBe(3);
+    });
+  });
+
+  describe('alert rule notification ownership validation', () => {
+    it('rejects creating a rule with notification channels outside the org', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: '44444444-4444-4444-4444-444444444444',
+                orgId: '11111111-1111-1111-1111-111111111111',
+                name: 'CPU Template'
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([])
+          })
+        } as any);
+
+      const res = await app.request('/alerts/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          templateId: '44444444-4444-4444-4444-444444444444',
+          notificationChannelIds: ['22222222-2222-2222-2222-222222222222']
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Notification channels must belong to the same organization');
+    });
+
+    it('rejects updating a rule with notification channels outside the org', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: '55555555-5555-5555-5555-555555555555',
+                orgId: '11111111-1111-1111-1111-111111111111',
+                templateId: '44444444-4444-4444-4444-444444444444',
+                name: 'CPU Rule',
+                overrideSettings: {}
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([])
+          })
+        } as any);
+
+      const res = await app.request('/alerts/rules/55555555-5555-5555-5555-555555555555', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          notificationChannelIds: ['33333333-3333-3333-3333-333333333333']
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Notification channels must belong to the same organization');
+    });
+  });
+
+  describe('notification channel webhook validation', () => {
+    it('rejects creating a webhook channel with an unsafe URL', async () => {
+      const res = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Unsafe webhook',
+          type: 'webhook',
+          config: { url: 'http://127.0.0.1/webhook' },
+          enabled: true
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid webhook channel configuration');
+    });
+
+    it('rejects updating a webhook channel with an unsafe URL', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'channel-123',
+              orgId: '11111111-1111-1111-1111-111111111111',
+              type: 'webhook'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/alerts/channels/channel-123', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          config: { url: 'http://169.254.169.254/latest/meta-data' }
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid webhook channel configuration');
     });
   });
 });

@@ -1,11 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { db } from '../db';
-import { organizations } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const psaRoutes = new Hono();
@@ -44,24 +41,16 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function ensureOrgAccess(
+  orgId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   // system scope has access to all
@@ -108,7 +97,10 @@ const listTicketsSchema = z.object({
 psaRoutes.use('*', authMiddleware);
 
 // Helper to resolve accessible org IDs for the current auth context
-async function resolveOrgIds(auth: { scope: string; partnerId: string | null; orgId: string | null }, queryOrgId?: string): Promise<string[] | null> {
+async function resolveOrgIds(
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
+  queryOrgId?: string
+): Promise<string[] | null> {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return [];
     return [auth.orgId];
@@ -119,11 +111,7 @@ async function resolveOrgIds(auth: { scope: string; partnerId: string | null; or
       const hasAccess = await ensureOrgAccess(queryOrgId, auth);
       return hasAccess ? [queryOrgId] : [];
     }
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-    return partnerOrgs.map((org) => org.id);
+    return auth.accessibleOrgIds ?? [];
   }
 
   // system scope

@@ -115,6 +115,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   openPorts: jsonb('open_ports'),
   osFingerprint: jsonb('os_fingerprint'),
   snmpData: jsonb('snmp_data'),
+  responseTimeMs: real('response_time_ms'),
   linkedDeviceId: uuid('linked_device_id').references(() => devices.id),
   firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at'),

@@ -149,6 +149,7 @@ export default function NotificationCenter() {
   const [error, setError] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const notificationsRef = useRef<NotificationItem[]>([]);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -200,36 +201,102 @@ export default function NotificationCenter() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    notificationsRef.current = notifications;
+  }, [notifications]);
+
   const unreadCount = useMemo(
     () => notifications.filter((notification) => !notification.read).length,
     [notifications]
   );
   const unreadDisplay = unreadCount > 99 ? '99+' : unreadCount.toString();
 
-  const markNotificationRead = (id: string, read: boolean) => {
+  const persistNotificationRead = useCallback(
+    async (payload: { ids?: string[]; all?: boolean; read?: boolean }) => {
+      const response = await fetchWithAuth('/notifications/read', {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error('Unable to update notification status');
+      }
+    },
+    []
+  );
+
+  const markNotificationRead = async (id: string, read: boolean) => {
+    const previous = notificationsRef.current;
+    const shouldUpdate = previous.some((notification) => notification.id === id && notification.read !== read);
+    if (!shouldUpdate) return;
+
+    setError(null);
     setNotifications((prev) =>
       prev.map((notification) =>
         notification.id === id ? { ...notification, read } : notification
       )
     );
+
+    try {
+      await persistNotificationRead({ ids: [id], read });
+    } catch (err) {
+      setNotifications(previous);
+      setError(err instanceof Error ? err.message : 'Unable to update notification status');
+    }
   };
 
-  const markAllRead = () => {
+  const markAllRead = async () => {
+    const previous = notificationsRef.current;
+    if (previous.length === 0 || previous.every((notification) => notification.read)) return;
+
+    setError(null);
     setNotifications((prev) => prev.map((notification) => ({ ...notification, read: true })));
+
+    try {
+      await persistNotificationRead({ all: true, read: true });
+    } catch (err) {
+      setNotifications(previous);
+      setError(err instanceof Error ? err.message : 'Unable to update notification status');
+    }
   };
 
-  const markAllUnread = () => {
+  const markAllUnread = async () => {
+    const previous = notificationsRef.current;
+    if (previous.length === 0 || previous.every((notification) => !notification.read)) return;
+
+    setError(null);
     setNotifications((prev) => prev.map((notification) => ({ ...notification, read: false })));
+
+    try {
+      await persistNotificationRead({ all: true, read: false });
+    } catch (err) {
+      setNotifications(previous);
+      setError(err instanceof Error ? err.message : 'Unable to update notification status');
+    }
   };
 
-  const clearAll = () => {
+  const clearAll = async () => {
+    const previous = notificationsRef.current;
+    if (previous.length === 0) return;
+
+    setError(null);
     setNotifications([]);
+
+    try {
+      const response = await fetchWithAuth('/notifications', { method: 'DELETE' });
+      if (!response.ok) {
+        throw new Error('Unable to clear notifications');
+      }
+    } catch (err) {
+      setNotifications(previous);
+      setError(err instanceof Error ? err.message : 'Unable to clear notifications');
+    }
   };
 
-  const handleNavigate = (notification: NotificationItem) => {
+  const handleNavigate = async (notification: NotificationItem) => {
     if (!notification.href) return;
     if (!notification.read) {
-      markNotificationRead(notification.id, true);
+      await markNotificationRead(notification.id, true);
     }
     window.location.href = notification.href;
   };
@@ -262,7 +329,9 @@ export default function NotificationCenter() {
             <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
               <button
                 type="button"
-                onClick={markAllRead}
+                onClick={() => {
+                  void markAllRead();
+                }}
                 disabled={notifications.length === 0 || unreadCount === 0}
                 className={cn(
                   'rounded-md border px-2 py-1 transition hover:bg-muted',
@@ -274,7 +343,9 @@ export default function NotificationCenter() {
               </button>
               <button
                 type="button"
-                onClick={markAllUnread}
+                onClick={() => {
+                  void markAllUnread();
+                }}
                 disabled={notifications.length === 0 || unreadCount === notifications.length}
                 className={cn(
                   'rounded-md border px-2 py-1 transition hover:bg-muted',
@@ -286,7 +357,9 @@ export default function NotificationCenter() {
               </button>
               <button
                 type="button"
-                onClick={clearAll}
+                onClick={() => {
+                  void clearAll();
+                }}
                 disabled={notifications.length === 0}
                 className={cn(
                   'rounded-md border border-destructive/30 px-2 py-1 text-destructive transition hover:bg-destructive/10',
@@ -322,11 +395,13 @@ export default function NotificationCenter() {
                     key={notification.id}
                     role="button"
                     tabIndex={0}
-                    onClick={() => handleNavigate(notification)}
+                    onClick={() => {
+                      void handleNavigate(notification);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
-                        handleNavigate(notification);
+                        void handleNavigate(notification);
                       }
                     }}
                     className={cn(
@@ -362,7 +437,7 @@ export default function NotificationCenter() {
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
-                            markNotificationRead(
+                            void markNotificationRead(
                               notification.id,
                               !notification.read
                             );

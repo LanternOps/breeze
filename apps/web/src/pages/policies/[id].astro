@@ -1,10 +1,10 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import PolicyEditor from '../../components/policies/PolicyEditor';
+import PolicyEditPage from '../../components/automations/PolicyEditPage';
 
 const { id } = Astro.params;
 ---
 
 <DashboardLayout title="Edit Policy">
-  <PolicyEditor policyId={id} client:load />
+  <PolicyEditPage policyId={id} client:load />
 </DashboardLayout>

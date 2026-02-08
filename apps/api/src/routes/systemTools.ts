@@ -3,8 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { devices, organizations } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { devices } from '../db/schema';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { executeCommand, CommandTypes } from '../services/commandQueue';
 import { createAuditLog } from '../services/auditService';
 
@@ -118,31 +118,26 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function ensureOrgAccess(
+  orgId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   // system scope has access to all
   return true;
 }
 
-async function getDeviceWithOrgCheck(deviceId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getDeviceWithOrgCheck(
+  deviceId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   const [device] = await db
     .select()
     .from(devices)

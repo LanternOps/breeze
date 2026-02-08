@@ -1,0 +1,23 @@
+[Unit]
+Description=Breeze RMM User Session Helper
+Documentation=https://docs.breeze.io/agent/user-helper
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/breeze-agent user-helper
+Restart=on-failure
+RestartSec=10
+Environment=DISPLAY=%I
+
+# Sandbox: no network, limited filesystem
+ProtectSystem=strict
+PrivateNetwork=true
+NoNewPrivileges=true
+ProtectHome=read-only
+ReadOnlyPaths=/
+ReadWritePaths=/var/run/breeze /tmp
+
+[Install]
+WantedBy=graphical-session.target

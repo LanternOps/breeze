@@ -12,10 +12,9 @@ import {
   deviceHardware,
   alerts,
   alertRules,
-  organizations,
   sites
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const reportRoutes = new Hono();
@@ -27,31 +26,26 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function ensureOrgAccess(
+  orgId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   // system scope has access to all
   return true;
 }
 
-async function getReportWithOrgCheck(reportId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getReportWithOrgCheck(
+  reportId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   const [report] = await db
     .select()
     .from(reports)
@@ -70,7 +64,10 @@ async function getReportWithOrgCheck(reportId: string, auth: { scope: string; pa
   return report;
 }
 
-async function getReportRunWithOrgCheck(runId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getReportRunWithOrgCheck(
+  runId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   const [run] = await db
     .select({
       id: reportRuns.id,
@@ -101,18 +98,16 @@ async function getReportRunWithOrgCheck(runId: string, auth: { scope: string; pa
   return run;
 }
 
-async function getOrgIdsForAuth(auth: { scope: string; partnerId: string | null; orgId: string | null }): Promise<string[] | null> {
+async function getOrgIdsForAuth(
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds'>
+): Promise<string[] | null> {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return null;
     return [auth.orgId];
   }
 
   if (auth.scope === 'partner') {
-    const partnerOrgs = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, auth.partnerId as string));
-    return partnerOrgs.map(o => o.id);
+    return auth.accessibleOrgIds ?? [];
   }
 
   // system scope - return null to indicate no filtering needed
@@ -231,12 +226,7 @@ reportRoutes.get(
         }
         conditions.push(eq(reports.orgId, query.orgId));
       } else {
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0) {
           return c.json({
             data: [],
@@ -624,12 +614,7 @@ reportRoutes.get(
       }
       conditions.push(eq(reports.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
-      const partnerOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, auth.partnerId as string));
-
-      const orgIds = partnerOrgs.map(o => o.id);
+      const orgIds = auth.accessibleOrgIds ?? [];
       if (orgIds.length === 0) {
         return c.json({
           data: [],

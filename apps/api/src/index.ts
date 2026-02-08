@@ -23,13 +23,14 @@ import { roleRoutes } from './routes/roles';
 import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { reportRoutes } from './routes/reports';
+import { searchRoutes } from './routes/search';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { ssoRoutes } from './routes/sso';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
 import { webhookRoutes } from './routes/webhooks';
-import { policyRoutes } from './routes/policies';
+import { policyRoutes } from './routes/policyManagement';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches';
 import { patchPolicyRoutes } from './routes/patchPolicies';
@@ -46,6 +47,8 @@ import { systemToolsRoutes } from './routes/systemTools';
 import { notificationRoutes } from './routes/notifications';
 import { metricsRoutes } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
+import { integrationRoutes } from './routes/integrations';
+import { partnerRoutes } from './routes/partner';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
 import { filterRoutes } from './routes/filters';
@@ -65,11 +68,14 @@ import { initializeEventLogRetention } from './jobs/eventLogRetention';
 import { initializeDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeSnmpWorker } from './jobs/snmpWorker';
 import { initializeSnmpRetention } from './jobs/snmpRetention';
+import { initializePolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
+import { initializePolicyAlertBridge } from './services/policyAlertBridge';
+import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { isRedisAvailable } from './services/redis';
 import { writeAuditEvent } from './services/auditEvents';
 import { db } from './db';
-import { deviceGroups, devices, securityThreats } from './db/schema';
-import { eq } from 'drizzle-orm';
+import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
+import { and, eq, sql } from 'drizzle-orm';
 
 const app = new Hono();
 
@@ -402,6 +408,7 @@ api.route('/roles', roleRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
+api.route('/search', searchRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
 api.route('/remote', remoteRoutes);
@@ -426,6 +433,9 @@ api.route('/software', softwareRoutes);
 api.route('/system-tools', systemToolsRoutes);
 api.route('/notifications', notificationRoutes);
 api.route('/groups', groupRoutes);
+api.route('/device-groups', groupRoutes);
+api.route('/integrations', integrationRoutes);
+api.route('/partner', partnerRoutes);
 api.route('/tags', tagRoutes);
 api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
@@ -488,6 +498,126 @@ export function areWorkersHealthy(): boolean {
 }
 export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
 
+function headersToRecord(headers: unknown): Record<string, string> {
+  if (!headers) return {};
+
+  if (Array.isArray(headers)) {
+    return headers.reduce<Record<string, string>>((acc, header) => {
+      if (
+        header
+        && typeof header === 'object'
+        && typeof (header as { key?: unknown }).key === 'string'
+        && typeof (header as { value?: unknown }).value === 'string'
+      ) {
+        acc[(header as { key: string }).key] = (header as { value: string }).value;
+      }
+      return acc;
+    }, {});
+  }
+
+  if (typeof headers === 'object') {
+    return Object.entries(headers as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, value]) => {
+      if (typeof value === 'string') {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+  }
+
+  return {};
+}
+
+async function initializeWebhookDeliveryWorker(): Promise<void> {
+  const webhookWorker = getWebhookWorker();
+
+  webhookWorker.setDeliveryCallback(async (result) => {
+    const deliveryStatus = result.success ? 'delivered' : 'failed';
+    const deliveredAt = result.success ? new Date(result.deliveredAt ?? new Date().toISOString()) : null;
+    const responseTimeMs = typeof result.responseTimeMs === 'number'
+      ? Math.max(0, Math.round(result.responseTimeMs))
+      : null;
+
+    await db
+      .update(webhookDeliveries)
+      .set({
+        status: deliveryStatus,
+        attempts: result.attempts,
+        responseStatus: result.responseStatus ?? null,
+        responseBody: result.responseBody ?? null,
+        responseTimeMs,
+        errorMessage: result.errorMessage ?? null,
+        deliveredAt
+      })
+      .where(eq(webhookDeliveries.id, result.deliveryId));
+
+    const aggregateUpdate = result.success
+      ? {
+        successCount: sql`${webhooksTable.successCount} + 1`,
+        lastSuccessAt: new Date(),
+        lastDeliveryAt: new Date()
+      }
+      : {
+        failureCount: sql`${webhooksTable.failureCount} + 1`,
+        lastDeliveryAt: new Date()
+      };
+
+    await db
+      .update(webhooksTable)
+      .set(aggregateUpdate)
+      .where(eq(webhooksTable.id, result.webhookId));
+  });
+
+  await initializeWebhookDelivery(
+    async (orgId, eventType) => {
+      const rows = await db
+        .select()
+        .from(webhooksTable)
+        .where(
+          and(
+            eq(webhooksTable.orgId, orgId),
+            eq(webhooksTable.status, 'active')
+          )
+        );
+
+      return rows
+        .filter((webhook) => {
+          const events = webhook.events ?? [];
+          return events.includes(eventType) || events.includes('*');
+        })
+        .map((webhook) => ({
+          id: webhook.id,
+          orgId: webhook.orgId,
+          name: webhook.name,
+          url: webhook.url,
+          secret: webhook.secret ?? undefined,
+          events: webhook.events ?? [],
+          headers: headersToRecord(webhook.headers),
+          retryPolicy: (webhook.retryPolicy ?? undefined) as {
+            maxRetries: number;
+            backoffMultiplier: number;
+            initialDelayMs: number;
+            maxDelayMs: number;
+          } | undefined
+        }));
+    },
+    async (webhook, event) => {
+      const [delivery] = await db
+        .insert(webhookDeliveries)
+        .values({
+          webhookId: webhook.id,
+          eventType: event.type,
+          eventId: event.id,
+          payload: event.payload,
+          status: 'pending',
+          attempts: 0
+        })
+        .returning({ id: webhookDeliveries.id });
+
+      return delivery?.id ?? null;
+    }
+  );
+}
+
 async function initializeWorkers(): Promise<void> {
   if (!isRedisAvailable()) {
     console.warn('[WARN] Redis not available - background workers disabled');
@@ -498,6 +628,9 @@ async function initializeWorkers(): Promise<void> {
     ['alertWorkers', initializeAlertWorkers],
     ['offlineDetector', initializeOfflineDetector],
     ['notificationDispatcher', initializeNotificationDispatcher],
+    ['webhookDelivery', initializeWebhookDeliveryWorker],
+    ['policyEvaluationWorker', initializePolicyEvaluationWorker],
+    ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['snmpWorker', initializeSnmpWorker],

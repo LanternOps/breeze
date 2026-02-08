@@ -48,61 +48,43 @@ import { nanoid } from 'nanoid';
 import { isPasswordStrong, verifyPassword } from '../services/password';
 import { db } from '../db';
 
-const mockSelectLimit = (result: any) => ({
-  from: vi.fn().mockReturnValue({
-    where: vi.fn().mockReturnValue({
-      limit: vi.fn().mockResolvedValue(result)
-    })
-  })
+const makeThenable = (result: any, chain: Record<string, any>) => ({
+  ...chain,
+  then: (resolve: (value: any) => unknown, reject?: (reason: unknown) => unknown) =>
+    Promise.resolve(result).then(resolve, reject)
 });
 
-const mockSelectWhere = (result: any) => ({
-  from: vi.fn().mockReturnValue({
-    where: vi.fn().mockResolvedValue(result)
-  })
-});
+const makeLimitChain = (result: any) =>
+  makeThenable(result, {
+    offset: vi.fn().mockResolvedValue(result)
+  });
 
-const mockSelectOrderLimitOffset = (result: any) => ({
-  from: vi.fn().mockReturnValue({
-    where: vi.fn().mockReturnValue({
-      orderBy: vi.fn().mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          offset: vi.fn().mockResolvedValue(result)
-        })
-      })
-    })
-  })
-});
+const makeOrderChain = (result: any) =>
+  makeThenable(result, {
+    limit: vi.fn().mockReturnValue(makeLimitChain(result))
+  });
 
-const mockSelectOrder = (result: any) => ({
-  from: vi.fn().mockReturnValue({
-    where: vi.fn().mockReturnValue({
-      orderBy: vi.fn().mockResolvedValue(result)
-    })
-  })
-});
+const makeWhereChain = (result: any) =>
+  makeThenable(result, {
+    limit: vi.fn().mockResolvedValue(result),
+    orderBy: vi.fn().mockReturnValue(makeOrderChain(result))
+  });
 
-const mockSelectLeftJoinWhere = (result: any) => ({
+const mockSelectResult = (result: any) => ({
   from: vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue(makeWhereChain(result)),
     leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(result)
+      where: vi.fn().mockReturnValue(makeWhereChain(result))
     })
   })
 });
 
-const mockSelectLeftJoinOrderLimitOffset = (result: any) => ({
-  from: vi.fn().mockReturnValue({
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            offset: vi.fn().mockResolvedValue(result)
-          })
-        })
-      })
-    })
-  })
-});
+const mockSelectLimit = mockSelectResult;
+const mockSelectWhere = mockSelectResult;
+const mockSelectOrderLimitOffset = mockSelectResult;
+const mockSelectOrder = mockSelectResult;
+const mockSelectLeftJoinWhere = mockSelectResult;
+const mockSelectLeftJoinOrderLimitOffset = mockSelectResult;
 
 const mockUpdateReturning = (result: any) => ({
   set: vi.fn().mockReturnValue({

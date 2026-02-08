@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { DiscoveredAsset } from './DiscoveredAssetList';
+import type { DiscoveredAsset, OpenPortEntry } from './DiscoveredAssetList';
+import { typeConfig, statusConfig } from './DiscoveredAssetList';
 import EnableMonitoringForm from './EnableMonitoringForm';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type AssetDetail = DiscoveredAsset & {
-  openPorts?: number[];
+  openPorts?: OpenPortEntry[];
   osFingerprint?: string;
   snmpData?: Record<string, string>;
   linkedDeviceId?: string | null;
@@ -133,8 +134,21 @@ export default function AssetDetailModal({
       <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">Asset Details</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{asset.ip} • {asset.hostname || 'Unknown host'}</p>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold">{asset.hostname || asset.ip}</h2>
+              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeConfig[asset.type].color}`}>
+                {typeConfig[asset.type].label}
+              </span>
+              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusConfig[asset.status].color}`}>
+                {statusConfig[asset.status].label}
+              </span>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {asset.ip} • {asset.mac !== '—' ? asset.mac : 'No MAC'}
+              {asset.lastSeen && (
+                <> • Last seen {new Date(asset.lastSeen).toLocaleString()}</>
+              )}
+            </p>
           </div>
           <button
             type="button"
@@ -163,6 +177,16 @@ export default function AssetDetailModal({
                   <dd className="font-medium">{asset.manufacturer}</dd>
                 </div>
                 <div className="flex items-center justify-between">
+                  <dt className="text-muted-foreground">Ping</dt>
+                  <dd className="font-mono font-medium">
+                    {asset.responseTimeMs != null
+                      ? asset.responseTimeMs < 1
+                        ? '<1 ms'
+                        : `${asset.responseTimeMs.toFixed(1)} ms`
+                      : '—'}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between">
                   <dt className="text-muted-foreground">OS Fingerprint</dt>
                   <dd className="font-medium">{osFingerprint}</dd>
                 </div>
@@ -175,12 +199,12 @@ export default function AssetDetailModal({
                 {openPorts.length === 0 ? (
                   <span className="text-xs text-muted-foreground">No ports detected.</span>
                 ) : (
-                  openPorts.map(port => (
+                  openPorts.map((p) => (
                     <span
-                      key={port}
+                      key={p.port}
                       className="rounded-full border border-muted bg-background px-2 py-1 text-xs"
                     >
-                      {port}
+                      {p.port}{p.service ? ` (${p.service})` : ''}
                     </span>
                   ))
                 )}

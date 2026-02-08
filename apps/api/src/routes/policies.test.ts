@@ -1,14 +1,74 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { policyRoutes } from './policies';
+import { policyRoutes } from './policyManagement';
 
 vi.mock('../services', () => ({}));
 
 vi.mock('../db', () => ({
-  db: {}
+  db: {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  }
 }));
 
-vi.mock('../db/schema', () => ({}));
+vi.mock('../db/schema', () => ({
+  automationPolicies: {
+    id: {},
+    orgId: {},
+    name: {},
+    enabled: {},
+    enforcement: {},
+    updatedAt: {},
+    checkIntervalMinutes: {},
+    lastEvaluatedAt: {},
+    remediationScriptId: {},
+  },
+  automationPolicyCompliance: {
+    id: {},
+    policyId: {},
+    deviceId: {},
+    status: {},
+    details: {},
+    lastCheckedAt: {},
+    remediationAttempts: {},
+    updatedAt: {},
+  },
+  automations: {
+    id: {},
+    orgId: {},
+    enabled: {},
+    runCount: {},
+    lastRunAt: {},
+  },
+  automationRuns: {
+    id: {},
+    status: {},
+    startedAt: {},
+  },
+  devices: {
+    id: {},
+    hostname: {},
+  },
+  organizations: {
+    id: {},
+    partnerId: {},
+  },
+  scripts: {
+    id: {},
+    orgId: {},
+  },
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../services/policyEvaluationService', () => ({
+  evaluatePolicy: vi.fn(),
+  resolvePolicyRemediationAutomationId: vi.fn(),
+}));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c, next) => {
@@ -29,9 +89,29 @@ vi.mock('../middleware/auth', () => ({
   })
 }));
 
+import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { evaluatePolicy, resolvePolicyRemediationAutomationId } from '../services/policyEvaluationService';
 
-const orgId = '11111111-1111-1111-1111-111111111111';
+const orgId = '123e4567-e89b-42d3-a456-426614174000';
+const policyId = '223e4567-e89b-42d3-a456-426614174001';
+
+const basePolicyRow = {
+  id: policyId,
+  orgId,
+  name: 'Endpoint Baseline',
+  description: 'Ensure baseline configuration.',
+  enabled: true,
+  targets: { targetType: 'all', targetIds: [] },
+  rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
+  enforcement: 'monitor',
+  checkIntervalMinutes: 30,
+  remediationScriptId: null,
+  createdBy: 'user-123',
+  createdAt: new Date('2026-02-07T00:00:00.000Z'),
+  updatedAt: new Date('2026-02-07T00:00:00.000Z'),
+  lastEvaluatedAt: null,
+};
 
 describe('policy routes', () => {
   let app: Hono;
@@ -51,7 +131,51 @@ describe('policy routes', () => {
     app.route('/policies', policyRoutes);
   });
 
-  async function createPolicy() {
+  it('lists policies from the canonical /policies endpoint', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockResolvedValue([basePolicyRow]),
+              }),
+            }),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            groupBy: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    const res = await app.request('/policies?limit=2', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].id).toBe(policyId);
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('creates a policy', async () => {
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([basePolicyRow]),
+      }),
+    } as any);
+
     const res = await app.request('/policies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -59,185 +183,107 @@ describe('policy routes', () => {
         orgId,
         name: 'Endpoint Baseline',
         description: 'Ensure baseline configuration.',
-        type: 'configuration',
-        enforcementLevel: 'monitor',
+        rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
         targetType: 'all',
-        rules: [{ type: 'config_check', path: '/etc/example.conf', expected: true }],
-        checkIntervalMinutes: 30
+        enforcementLevel: 'monitor',
+        checkIntervalMinutes: 30,
       })
     });
 
     expect(res.status).toBe(201);
-    return res.json();
-  }
-
-  describe('CRUD', () => {
-    it('should list policies', async () => {
-      const res = await app.request('/policies?limit=2', {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(Array.isArray(body.data)).toBe(true);
-      expect(body.pagination).toBeDefined();
-    });
-
-    it('should create and fetch a policy', async () => {
-      const created = await createPolicy();
-
-      const res = await app.request(`/policies/${created.id}`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.id).toBe(created.id);
-      expect(body.name).toBe('Endpoint Baseline');
-    });
-
-    it('should update a policy', async () => {
-      const created = await createPolicy();
-
-      const res = await app.request(`/policies/${created.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'Updated Baseline',
-          rules: [{ type: 'disk_encryption', required: true }]
-        })
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.name).toBe('Updated Baseline');
-      expect(body.rules).toHaveLength(1);
-      expect(body.rules[0].type).toBe('disk_encryption');
-    });
-
-    it('should archive a policy', async () => {
-      const created = await createPolicy();
-
-      const res = await app.request(`/policies/${created.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.status).toBe('archived');
-      expect(body.archivedAt).toBeDefined();
-    });
+    const body = await res.json();
+    expect(body.id).toBe(policyId);
+    expect(body.enforcementLevel).toBe('monitor');
   });
 
-  describe('rule configuration', () => {
-    it('should reject policies without rules', async () => {
-      const res = await app.request('/policies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orgId,
-          name: 'Invalid Policy',
-          type: 'security',
-          rules: []
-        })
-      });
-
-      expect(res.status).toBe(400);
+  it('rejects missing targetIds for scoped policies', async () => {
+    const res = await app.request('/policies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Scoped Policy',
+        targetType: 'sites',
+        rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
+      })
     });
 
-    it('should reject missing targetIds when targetType is not all', async () => {
-      const res = await app.request('/policies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orgId,
-          name: 'Scoped Policy',
-          type: 'security',
-          targetType: 'sites',
-          rules: [{ type: 'security_check', enabled: true }]
-        })
-      });
-
-      expect(res.status).toBe(400);
-    });
+    expect(res.status).toBe(400);
   });
 
-  describe('assignments', () => {
-    it('should create, list, and delete assignments', async () => {
-      const created = await createPolicy();
+  it('evaluates a policy through policyEvaluationService', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([basePolicyRow]),
+        }),
+      }),
+    } as any);
 
-      const createRes = await app.request(`/policies/${created.id}/assignments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetType: 'site',
-          targetId: 'site-123'
-        })
-      });
-
-      expect(createRes.status).toBe(201);
-      const assignment = await createRes.json();
-      expect(assignment.targetType).toBe('site');
-
-      const listRes = await app.request(`/policies/${created.id}/assignments`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(listRes.status).toBe(200);
-      const listBody = await listRes.json();
-      expect(listBody.data).toHaveLength(1);
-
-      const deleteRes = await app.request(
-        `/policies/${created.id}/assignments/${assignment.id}`,
-        { method: 'DELETE', headers: { Authorization: 'Bearer token' } }
-      );
-
-      expect(deleteRes.status).toBe(200);
-      const deleted = await deleteRes.json();
-      expect(deleted.id).toBe(assignment.id);
+    vi.mocked(evaluatePolicy).mockResolvedValue({
+      message: 'Policy evaluation completed',
+      policyId,
+      devicesEvaluated: 1,
+      results: [],
+      summary: { compliant: 1, non_compliant: 0 },
+      evaluatedAt: new Date().toISOString(),
     });
 
-    it('should prevent duplicate assignments', async () => {
-      const created = await createPolicy();
-
-      const payload = {
-        targetType: 'tag',
-        targetId: 'secure'
-      };
-
-      const first = await app.request(`/policies/${created.id}/assignments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      expect(first.status).toBe(201);
-
-      const second = await app.request(`/policies/${created.id}/assignments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      expect(second.status).toBe(409);
+    const res = await app.request(`/policies/${policyId}/evaluate`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
     });
 
-    it('should require targetId for scoped assignments', async () => {
-      const created = await createPolicy();
+    expect(res.status).toBe(200);
+    expect(evaluatePolicy).toHaveBeenCalled();
+  });
 
-      const res = await app.request(`/policies/${created.id}/assignments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetType: 'group'
-        })
-      });
+  it('returns remediation configuration error when no automation is mapped', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([basePolicyRow]),
+        }),
+      }),
+    } as any);
+    vi.mocked(resolvePolicyRemediationAutomationId).mockResolvedValue(null);
 
-      expect(res.status).toBe(400);
+    const res = await app.request(`/policies/${policyId}/remediate`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
     });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('removes policy and compliance records', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([basePolicyRow]),
+        }),
+      }),
+    } as any);
+
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const res = await app.request(`/policies/${policyId}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+  });
+
+  it('does not expose legacy assignments endpoints', async () => {
+    const res = await app.request(`/policies/${policyId}/assignments`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
   });
 });

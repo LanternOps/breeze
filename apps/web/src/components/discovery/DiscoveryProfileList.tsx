@@ -1,4 +1,4 @@
-import { Play, Pencil, Trash2 } from 'lucide-react';
+import { Play, Pencil, Trash2, List } from 'lucide-react';
 
 export type DiscoveryProfileStatus = 'active' | 'paused' | 'draft' | 'error';
 
@@ -21,6 +21,7 @@ type DiscoveryProfileListProps = {
   onEdit?: (profile: DiscoveryProfile) => void;
   onDelete?: (profile: DiscoveryProfile) => void;
   onRun?: (profile: DiscoveryProfile) => void;
+  onViewJobs?: (profileId: string) => void;
 };
 
 const statusConfig: Record<DiscoveryProfileStatus, { label: string; color: string }> = {
@@ -37,7 +38,8 @@ export default function DiscoveryProfileList({
   onRetry,
   onEdit,
   onDelete,
-  onRun
+  onRun,
+  onViewJobs
 }: DiscoveryProfileListProps) {
   if (loading) {
     return (
@@ -156,6 +158,14 @@ export default function DiscoveryProfileList({
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onViewJobs?.(profile.id)}
+                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+                        title="View jobs"
+                      >
+                        <List className="h-4 w-4" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => onRun?.(profile)}

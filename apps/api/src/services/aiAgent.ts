@@ -13,23 +13,7 @@ import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { getToolDefinitions, executeTool } from './aiTools';
 import { writeAuditEvent, type RequestLike } from './auditEvents';
-
-// Page context types (mirror @breeze/shared/types/ai)
-type AiPageContext =
-  | { type: 'device'; id: string; hostname: string; os?: string; status?: string; ip?: string }
-  | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
-  | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
-  | { type: 'custom'; label: string; data: Record<string, unknown> };
-
-type AiStreamEvent =
-  | { type: 'message_start'; messageId: string }
-  | { type: 'content_delta'; delta: string }
-  | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; toolUseId: string; output: unknown; isError: boolean }
-  | { type: 'approval_required'; executionId: string; toolName: string; input: Record<string, unknown>; description: string }
-  | { type: 'message_end'; inputTokens: number; outputTokens: number }
-  | { type: 'error'; message: string }
-  | { type: 'done' };
+import type { AiPageContext, AiStreamEvent } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { checkBudget, checkAiRateLimit, recordUsage, calculateCostCents } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
@@ -158,11 +142,14 @@ export async function* sendMessage(
   pageContext?: AiPageContext,
   requestContext?: RequestLike
 ): AsyncGenerator<AiStreamEvent> {
-  const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-  if (!orgId) {
-    yield { type: 'error', message: 'Organization context required' };
+  // Load session first and use the session org as the authoritative context
+  // for rate-limit and budget checks.
+  const session = await getSession(sessionId, auth);
+  if (!session) {
+    yield { type: 'error', message: 'Session not found' };
     return;
   }
+  const orgId = session.orgId;
 
   // Check rate limits
   let rateLimitError: string | null;
@@ -189,13 +176,6 @@ export async function* sendMessage(
   }
   if (budgetError) {
     yield { type: 'error', message: budgetError };
-    return;
-  }
-
-  // Load session
-  const session = await getSession(sessionId, auth);
-  if (!session) {
-    yield { type: 'error', message: 'Session not found' };
     return;
   }
 

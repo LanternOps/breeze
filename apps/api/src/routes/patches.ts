@@ -54,10 +54,12 @@ const listApprovalsSchema = z.object({
 });
 
 const approvalActionSchema = z.object({
+  orgId: z.string().uuid().optional(),
   note: z.string().max(1000).optional()
 });
 
 const deferSchema = z.object({
+  orgId: z.string().uuid().optional(),
   deferUntil: z.string().datetime(),
   note: z.string().max(1000).optional()
 });
@@ -78,6 +80,7 @@ const rollbackSchema = z.object({
 });
 
 const bulkApproveSchema = z.object({
+  orgId: z.string().uuid().optional(),
   patchIds: z.array(z.string().uuid()).min(1),
   note: z.string().max(1000).optional()
 });
@@ -154,6 +157,37 @@ function writePatchAuditForOrgIds(
   }
 }
 
+function resolvePatchApprovalOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    accessibleOrgIds: string[] | null;
+    canAccessOrg: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string
+): { orgId: string } | { error: string; status: 400 | 403 } {
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access denied to this organization', status: 403 };
+    }
+    return { orgId: requestedOrgId };
+  }
+
+  if (auth.orgId) {
+    return { orgId: auth.orgId };
+  }
+
+  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    return { orgId: auth.accessibleOrgIds[0]! };
+  }
+
+  if (auth.scope === 'partner' || auth.scope === 'system') {
+    return { error: 'orgId is required for partner/system scope', status: 400 };
+  }
+
+  return { error: 'Organization context required', status: 400 };
+}
+
 // GET /patches - List available patches
 patchRoutes.get(
   '/',
@@ -195,11 +229,11 @@ patchRoutes.get(
         category: patches.category,
         osTypes: patches.osTypes,
         inferredOs: sql<string | null>`(
-          SELECT ${devices.osType}
-          FROM ${devicePatches}
-          INNER JOIN ${devices} ON ${devices.id} = ${devicePatches.deviceId}
-          WHERE ${devicePatches.patchId} = ${patches.id}
-          ORDER BY ${devicePatches.lastCheckedAt} DESC NULLS LAST
+          SELECT "devices"."os_type"
+          FROM "device_patches"
+          INNER JOIN "devices" ON "devices"."id" = "device_patches"."device_id"
+          WHERE "device_patches"."patch_id" = "patches"."id"
+          ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST
           LIMIT 1
         )`,
         releaseDate: patches.releaseDate,
@@ -214,7 +248,7 @@ patchRoutes.get(
       .offset(offset);
 
     // Get total count
-    const [{ count }] = await db
+    const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(patches)
       .where(whereClause);
@@ -243,7 +277,7 @@ patchRoutes.get(
 
     return c.json({
       data,
-      pagination: { page, limit, total: Number(count) }
+      pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
     });
   }
 );
@@ -381,14 +415,14 @@ patchRoutes.get(
       .limit(limit)
       .offset(offset);
 
-    const [{ count }] = await db
+    const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(patchApprovals)
       .where(whereClause);
 
     return c.json({
       data: approvals,
-      pagination: { page, limit, total: Number(count) }
+      pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
     });
   }
 );
@@ -402,9 +436,11 @@ patchRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    if (!auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 400);
+    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    if ('error' in orgResolution) {
+      return c.json({ error: orgResolution.error }, orgResolution.status);
     }
+    const targetOrgId = orgResolution.orgId;
 
     const approved: string[] = [];
     const failed: string[] = [];
@@ -414,7 +450,7 @@ patchRoutes.post(
         await db
           .insert(patchApprovals)
           .values({
-            orgId: auth.orgId,
+            orgId: targetOrgId,
             patchId,
             status: 'approved',
             approvedBy: auth.user.id,
@@ -438,7 +474,7 @@ patchRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId: targetOrgId,
       action: 'patch.bulk_approve',
       resourceType: 'patch',
       details: {
@@ -715,7 +751,7 @@ patchRoutes.post(
             deviceId: entry.deviceId,
             patchId: id,
             reason: data.reason ?? null,
-            status: 'pending',
+            status: 'pending' as const,
             initiatedBy: auth.user.id
           }))
         );
@@ -763,9 +799,11 @@ patchRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    if (!auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 400);
+    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    if ('error' in orgResolution) {
+      return c.json({ error: orgResolution.error }, orgResolution.status);
     }
+    const targetOrgId = orgResolution.orgId;
 
     // Verify patch exists
     const [patch] = await db
@@ -781,7 +819,7 @@ patchRoutes.post(
     await db
       .insert(patchApprovals)
       .values({
-        orgId: auth.orgId,
+        orgId: targetOrgId,
         patchId: id,
         status: 'approved',
         approvedBy: auth.user.id,
@@ -800,7 +838,7 @@ patchRoutes.post(
       });
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId: targetOrgId,
       action: 'patch.approve',
       resourceType: 'patch',
       resourceId: id,
@@ -824,9 +862,11 @@ patchRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    if (!auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 400);
+    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    if ('error' in orgResolution) {
+      return c.json({ error: orgResolution.error }, orgResolution.status);
     }
+    const targetOrgId = orgResolution.orgId;
 
     const [patch] = await db
       .select({ id: patches.id })
@@ -841,7 +881,7 @@ patchRoutes.post(
     await db
       .insert(patchApprovals)
       .values({
-        orgId: auth.orgId,
+        orgId: targetOrgId,
         patchId: id,
         status: 'rejected',
         notes: data.note
@@ -856,7 +896,7 @@ patchRoutes.post(
       });
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId: targetOrgId,
       action: 'patch.decline',
       resourceType: 'patch',
       resourceId: id,
@@ -880,9 +920,11 @@ patchRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    if (!auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 400);
+    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    if ('error' in orgResolution) {
+      return c.json({ error: orgResolution.error }, orgResolution.status);
     }
+    const targetOrgId = orgResolution.orgId;
 
     const [patch] = await db
       .select({ id: patches.id })
@@ -897,7 +939,7 @@ patchRoutes.post(
     await db
       .insert(patchApprovals)
       .values({
-        orgId: auth.orgId,
+        orgId: targetOrgId,
         patchId: id,
         status: 'deferred',
         deferUntil: new Date(data.deferUntil),
@@ -914,7 +956,7 @@ patchRoutes.post(
       });
 
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId: targetOrgId,
       action: 'patch.defer',
       resourceType: 'patch',
       resourceId: id,

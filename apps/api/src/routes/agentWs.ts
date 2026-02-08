@@ -94,6 +94,104 @@ async function updateDeviceStatus(agentId: string, status: 'online' | 'offline')
 }
 
 /**
+ * Handle command results for commands dispatched directly via WebSocket
+ * (without a deviceCommands DB record). This covers discovery scans
+ * and SNMP polls which use their own job tracking tables.
+ */
+async function processOrphanedCommandResult(
+  agentId: string,
+  result: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  // Check if this is a discovery job result
+  const [discoveryJob] = await db
+    .select({ id: discoveryJobs.id, orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
+    .from(discoveryJobs)
+    .where(eq(discoveryJobs.id, result.commandId))
+    .limit(1);
+
+  if (discoveryJob) {
+    console.log(`[AgentWs] Processing discovery result for job ${discoveryJob.id} from agent ${agentId}`);
+    try {
+      const discoveryData = result.result as {
+        jobId?: string;
+        hosts?: DiscoveredHostResult[];
+        hostsScanned?: number;
+        hostsDiscovered?: number;
+      } | undefined;
+
+      if (result.status !== 'completed' || !discoveryData?.hosts) {
+        const errorMsg = result.error || result.stderr || `Agent returned status: ${result.status}`;
+        await db
+          .update(discoveryJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            errors: { message: errorMsg },
+            updatedAt: new Date()
+          })
+          .where(eq(discoveryJobs.id, discoveryJob.id));
+        console.warn(`[AgentWs] Discovery job ${discoveryJob.id} failed: ${errorMsg}`);
+        return;
+      }
+
+      if (isRedisAvailable()) {
+        await enqueueDiscoveryResults(
+          discoveryJob.id,
+          discoveryJob.orgId,
+          discoveryJob.siteId,
+          discoveryData.hosts,
+          discoveryData.hostsScanned ?? 0,
+          discoveryData.hostsDiscovered ?? 0
+        );
+      } else {
+        console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryJob.id}`);
+        await db
+          .update(discoveryJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
+            hostsScanned: discoveryData.hostsScanned ?? 0,
+            errors: { message: 'Results received but could not be processed: job queue unavailable' },
+            updatedAt: new Date()
+          })
+          .where(eq(discoveryJobs.id, discoveryJob.id));
+      }
+    } catch (err) {
+      console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+    }
+    return;
+  }
+
+  // Check if this is an SNMP poll result
+  const snmpData = result.result as {
+    deviceId?: string;
+    metrics?: SnmpMetricResult[];
+  } | undefined;
+
+  if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
+    console.log(`[AgentWs] Processing SNMP poll result for device ${snmpData.deviceId} from agent ${agentId}`);
+    try {
+      if (isRedisAvailable()) {
+        await enqueueSnmpPollResults(snmpData.deviceId, snmpData.metrics);
+      } else {
+        console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${snmpData.deviceId}`);
+        const { snmpDevices } = await import('../db/schema');
+        await db
+          .update(snmpDevices)
+          .set({ lastPolled: new Date(), lastStatus: 'warning' })
+          .where(eq(snmpDevices.id, snmpData.deviceId));
+      }
+    } catch (err) {
+      console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
+    }
+    return;
+  }
+
+  console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands or discovery jobs for agent ${agentId}`);
+}
+
+/**
  * Process command result from agent
  */
 async function processCommandResult(
@@ -101,16 +199,28 @@ async function processCommandResult(
   result: z.infer<typeof commandResultSchema>
 ): Promise<void> {
   try {
-    const [command] = await db
-      .select()
+    const [ownedCommand] = await db
+      .select({
+        command: deviceCommands,
+        deviceId: devices.id
+      })
       .from(deviceCommands)
-      .where(eq(deviceCommands.id, result.commandId))
+      .innerJoin(devices, eq(deviceCommands.deviceId, devices.id))
+      .where(
+        and(
+          eq(deviceCommands.id, result.commandId),
+          eq(devices.agentId, agentId)
+        )
+      )
       .limit(1);
 
-    if (!command) {
-      console.warn(`Command ${result.commandId} not found for agent ${agentId}`);
+    if (!ownedCommand) {
+      // Discovery and SNMP commands are dispatched directly via WebSocket
+      // without creating a deviceCommands record. Handle them here.
+      await processOrphanedCommandResult(agentId, result);
       return;
     }
+    const command = ownedCommand.command;
 
     // Agent sends structured data in `result` field (parsed JSON) rather than
     // `stdout` (raw string). Convert it back to a JSON string for storage.
@@ -131,7 +241,12 @@ async function processCommandResult(
           error: result.error
         }
       })
-      .where(eq(deviceCommands.id, result.commandId));
+      .where(
+        and(
+          eq(deviceCommands.id, result.commandId),
+          eq(deviceCommands.deviceId, ownedCommand.deviceId)
+        )
+      );
 
     console.log(`Command ${result.commandId} ${result.status} for agent ${agentId}`);
 
@@ -215,7 +330,7 @@ async function processCommandResult(
         const payload = command.payload as Record<string, unknown> | null;
         const executionId = payload?.executionId as string | undefined;
         if (executionId) {
-          let scriptStatus: string;
+          let scriptStatus: 'completed' | 'failed' | 'timeout';
           if (result.status === 'completed') {
             scriptStatus = result.exitCode && result.exitCode !== 0 ? 'failed' : 'completed';
           } else if (result.status === 'timeout') {
@@ -460,9 +575,16 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/agent-ws/:id/ws?token=xxx
   app.get(
     '/:id/ws',
-    upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined } }) => {
+    upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined; header: (key: string) => string | undefined } }) => {
       const agentId = c.req.param('id');
-      const token = c.req.query('token');
+      // Accept token from query param (?token=brz_...) or Authorization header (Bearer brz_...)
+      let token = c.req.query('token');
+      if (!token) {
+        const authHeader = c.req.header('Authorization');
+        if (authHeader?.startsWith('Bearer ')) {
+          token = authHeader.slice(7);
+        }
+      }
       return createAgentWsHandlers(agentId, token);
     })
   );

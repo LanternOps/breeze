@@ -15,8 +15,15 @@ import (
 
 var pingSequence uint32
 
+// PingResult holds a responding IP and its round-trip time.
+type PingResult struct {
+	IP  net.IP
+	RTT time.Duration
+}
+
 // PingSweep performs an ICMP ping sweep over the target IPs.
-func PingSweep(targets []net.IP, timeout time.Duration, workers int) []net.IP {
+// Returns a slice of PingResult with the responding IP and measured RTT.
+func PingSweep(targets []net.IP, timeout time.Duration, workers int) []PingResult {
 	if len(targets) == 0 {
 		return nil
 	}
@@ -27,24 +34,35 @@ func PingSweep(targets []net.IP, timeout time.Duration, workers int) []net.IP {
 		workers = 128
 	}
 
-	jobs := make(chan net.IP)
-	results := make(chan net.IP, len(targets))
+	// Verify we can open an ICMP socket before spawning workers.
+	// Running without root on macOS/Linux will fail here.
+	testConn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+	if err != nil {
+		slog.Warn("ICMP ping unavailable (requires root/elevated privileges), skipping ping sweep", "error", err)
+		return nil
+	}
+	testConn.Close()
+
+	jobs := make(chan net.IP, workers)
+	results := make(chan PingResult, len(targets))
 	var wg sync.WaitGroup
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Share one ICMP socket per worker instead of one per target
 			conn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
 			if err != nil {
 				slog.Error("ICMP listen failed for worker", "error", err)
+				// Drain jobs to prevent deadlock
+				for range jobs {
+				}
 				return
 			}
 			defer conn.Close()
 			for ip := range jobs {
-				if pingWithConn(conn, ip, timeout) {
-					results <- ip
+				if rtt, ok := pingWithConn(conn, ip, timeout); ok {
+					results <- PingResult{IP: ip, RTT: rtt}
 				}
 			}
 		}()
@@ -58,18 +76,19 @@ func PingSweep(targets []net.IP, timeout time.Duration, workers int) []net.IP {
 	wg.Wait()
 	close(results)
 
-	alive := make([]net.IP, 0, len(results))
-	for ip := range results {
-		alive = append(alive, ip)
+	alive := make([]PingResult, 0, len(results))
+	for r := range results {
+		alive = append(alive, r)
 	}
 	return alive
 }
 
 // pingWithConn pings a single target using a shared ICMP connection.
-func pingWithConn(conn *icmp.PacketConn, ip net.IP, timeout time.Duration) bool {
+// Returns the round-trip time and true if the target responded.
+func pingWithConn(conn *icmp.PacketConn, ip net.IP, timeout time.Duration) (time.Duration, bool) {
 	ip = ip.To4()
 	if ip == nil {
-		return false
+		return 0, false
 	}
 
 	seq := int(atomic.AddUint32(&pingSequence, 1))
@@ -85,32 +104,50 @@ func pingWithConn(conn *icmp.PacketConn, ip net.IP, timeout time.Duration) bool 
 	}
 	payload, err := message.Marshal(nil)
 	if err != nil {
-		return false
+		return 0, false
 	}
 
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return false
+		return 0, false
 	}
 
+	sendTime := time.Now()
 	if _, err := conn.WriteTo(payload, &net.IPAddr{IP: ip}); err != nil {
-		return false
+		return 0, false
 	}
 
+	targetStr := ip.String()
 	buffer := make([]byte, 1500)
 	for {
 		n, peer, err := conn.ReadFrom(buffer)
 		if err != nil {
-			return false
+			return 0, false
 		}
 		if peer == nil {
 			continue
 		}
+
+		// Only accept replies from the target we pinged
+		peerIP := peer.(*net.IPAddr)
+		if peerIP.IP.String() != targetStr {
+			continue
+		}
+
 		parsed, err := icmp.ParseMessage(1, buffer[:n])
 		if err != nil {
-			return false
+			return 0, false
 		}
-		if parsed.Type == ipv4.ICMPTypeEchoReply {
-			return true
+		if parsed.Type != ipv4.ICMPTypeEchoReply {
+			continue
+		}
+
+		// Verify the echo ID and sequence match what we sent
+		echo, ok := parsed.Body.(*icmp.Echo)
+		if !ok {
+			continue
+		}
+		if echo.ID == id && echo.Seq == seq {
+			return time.Since(sendTime), true
 		}
 	}
 }

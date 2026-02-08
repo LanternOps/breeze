@@ -103,10 +103,10 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: apps/agent/go.sum
+          cache-dependency-path: agent/go.sum
 
       - name: Download Go dependencies
-        working-directory: apps/agent
+        working-directory: agent
         run: go mod download
 
       - name: Get version from tag
@@ -116,7 +116,7 @@ jobs:
         run: echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build Agent
-        working-directory: apps/agent
+        working-directory: agent
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -131,7 +131,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: apps/agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 30
 
   create-release:
@@ -231,8 +231,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # TODO: Create Dockerfile in apps/api
-        continue-on-error: true
 
   build-docker-web:
     name: Build Web Docker Image
@@ -281,5 +279,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # TODO: Create Dockerfile in apps/web
-        continue-on-error: true

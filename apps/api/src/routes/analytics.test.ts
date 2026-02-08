@@ -29,7 +29,15 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  organizations: {}
+  organizations: {},
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    status: 'devices.status',
+    enrolledAt: 'devices.enrolledAt',
+    osType: 'devices.osType',
+    osVersion: 'devices.osVersion'
+  }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -38,12 +46,17 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null,
-      user: { id: 'user-123', email: 'test@example.com' }
+      user: { id: 'user-123', email: 'test@example.com' },
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+      orgCondition: vi.fn(() => ({ type: 'org-condition' }))
     });
     return next();
   }),
   requireScope: vi.fn(() => async (_c, next) => next())
 }));
+
+import { db } from '../db';
 
 describe('analytics routes', () => {
   let app: Hono;
@@ -129,6 +142,29 @@ describe('analytics routes', () => {
 
   describe('GET /analytics/executive-summary', () => {
     it('should return summary data for the requested period', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([
+                { status: 'online', count: 2 },
+                { status: 'offline', count: 1 }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([
+                  { week: '2026-02-01T00:00:00.000Z', count: 3 }
+                ])
+              })
+            })
+          })
+        } as any);
+
       const res = await app.request('/analytics/executive-summary?periodType=monthly', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
@@ -136,8 +172,9 @@ describe('analytics routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.periodType).toBe('monthly');
-      expect(body.highlights).toEqual([]);
+      expect(body.data.periodType).toBe('monthly');
+      expect(body.data.devices).toEqual({ total: 3, online: 2, offline: 1 });
+      expect(body.data.highlights).toEqual([]);
     });
   });
 

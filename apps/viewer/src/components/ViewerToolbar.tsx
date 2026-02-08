@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import type { ComponentType } from 'react';
 import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard } from 'lucide-react';
 
 interface Props {
@@ -35,6 +36,14 @@ export default function ViewerToolbar({
   onCtrlAltDel,
   onDisconnect,
 }: Props) {
+  const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
+  const ConnectedIcon = Wifi as unknown as ComponentType<{ className?: string }>;
+  const DisconnectedIcon = WifiOff as unknown as ComponentType<{ className?: string }>;
+  const MinimizeIcon = Minimize as unknown as ComponentType<{ className?: string }>;
+  const MaximizeIcon = Maximize as unknown as ComponentType<{ className?: string }>;
+  const PowerIcon = Power as unknown as ComponentType<{ className?: string }>;
+  const KeyboardIcon = Keyboard as unknown as ComponentType<{ className?: string }>;
+
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [duration, setDuration] = useState('0:00');
 
@@ -68,13 +77,13 @@ export default function ViewerToolbar({
     error: 'text-red-400',
   }[status];
 
-  const StatusIcon = status === 'connected' ? Wifi : WifiOff;
+  const StatusIcon = status === 'connected' ? ConnectedIcon : DisconnectedIcon;
 
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-800 border-b border-gray-700 text-sm select-none">
       {/* Connection info */}
       <div className="flex items-center gap-2">
-        <Monitor className="w-4 h-4 text-gray-400" />
+        <MonitorIcon className="w-4 h-4 text-gray-400" />
         <span className="text-gray-200 font-medium">{hostname || 'Connecting...'}</span>
         <StatusIcon className={`w-3.5 h-3.5 ${statusColor}`} />
         {connectedAt && (
@@ -143,7 +152,7 @@ export default function ViewerToolbar({
         className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded"
         title="Send Ctrl+Alt+Del"
       >
-        <Keyboard className="w-3.5 h-3.5" />
+        <KeyboardIcon className="w-3.5 h-3.5" />
         <span>Ctrl+Alt+Del</span>
       </button>
 
@@ -152,7 +161,7 @@ export default function ViewerToolbar({
         className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
         title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
       >
-        {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+        {isFullscreen ? <MinimizeIcon className="w-4 h-4" /> : <MaximizeIcon className="w-4 h-4" />}
       </button>
 
       <button
@@ -160,7 +169,7 @@ export default function ViewerToolbar({
         className="flex items-center gap-1 px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded"
         title="Disconnect"
       >
-        <Power className="w-3.5 h-3.5" />
+        <PowerIcon className="w-3.5 h-3.5" />
         <span>Disconnect</span>
       </button>
     </div>

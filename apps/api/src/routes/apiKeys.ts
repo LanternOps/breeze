@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc } from 'drizzle-orm';
+import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { apiKeys, organizations } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { apiKeys } from '../db/schema';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { createHash, randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 
@@ -34,24 +34,16 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function ensureOrgAccess(
+  orgId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
 
   if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
+    return auth.canAccessOrg(orgId);
   }
 
   // system scope has access to all
@@ -143,20 +135,14 @@ apiKeyRoutes.get(
         }
         conditions.push(eq(apiKeys.orgId, query.orgId));
       } else {
-        // Get API keys from all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0) {
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 }
           });
         }
-        conditions.push(sql`${apiKeys.orgId} = ANY(${orgIds})` as ReturnType<typeof eq>);
+        conditions.push(inArray(apiKeys.orgId, orgIds) as ReturnType<typeof eq>);
       }
     } else if (auth.scope === 'system') {
       if (query.orgId) {

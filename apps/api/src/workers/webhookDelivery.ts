@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'crypto';
 import { getRedisConnection } from '../services/redis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
+import { validateWebhookUrlSafety } from '../services/notificationSenders/webhookSender';
 
 // Webhook delivery configuration
 const WEBHOOK_TIMEOUT_MS = 30000;
@@ -71,6 +72,19 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
   const { webhook, event } = job;
   const deliveryId = job.id;
   const timestamp = Date.now();
+
+  const urlErrors = validateWebhookUrlSafety(webhook.url);
+  if (urlErrors.length > 0) {
+    return {
+      deliveryId,
+      webhookId: webhook.id,
+      eventId: event.id,
+      eventType: event.type,
+      success: false,
+      attempts: job.attempts + 1,
+      errorMessage: `Unsafe webhook URL: ${urlErrors.join('; ')}`
+    };
+  }
 
   // Prepare payload
   const payload = JSON.stringify({
@@ -198,12 +212,12 @@ class WebhookDeliveryWorker {
   /**
    * Queue a webhook for delivery
    */
-  async queueDelivery(webhook: WebhookConfig, event: BreezeEvent): Promise<string> {
+  async queueDelivery(webhook: WebhookConfig, event: BreezeEvent, deliveryId?: string): Promise<string> {
     const redis = getRedisConnection();
-    const deliveryId = randomUUID();
+    const nextDeliveryId = deliveryId ?? randomUUID();
 
     const job: WebhookDeliveryJob = {
-      id: deliveryId,
+      id: nextDeliveryId,
       webhookId: webhook.id,
       webhook,
       event,
@@ -214,9 +228,9 @@ class WebhookDeliveryWorker {
     // Add to Redis list queue
     await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(job));
 
-    console.log(`[WebhookWorker] Queued delivery ${deliveryId} for webhook ${webhook.id}`);
+    console.log(`[WebhookWorker] Queued delivery ${nextDeliveryId} for webhook ${webhook.id}`);
 
-    return deliveryId;
+    return nextDeliveryId;
   }
 
   /**
@@ -372,7 +386,8 @@ export function getWebhookWorker(): WebhookDeliveryWorker {
  * and routing to appropriate webhooks
  */
 export async function initializeWebhookDelivery(
-  getWebhooksForEvent: (orgId: string, eventType: string) => Promise<WebhookConfig[]>
+  getWebhooksForEvent: (orgId: string, eventType: string) => Promise<WebhookConfig[]>,
+  createDeliveryRecord?: (webhook: WebhookConfig, event: BreezeEvent) => Promise<string | null>
 ): Promise<void> {
   const eventBus = getEventBus();
   const worker = getWebhookWorker();
@@ -385,11 +400,16 @@ export async function initializeWebhookDelivery(
 
       // Queue delivery for each webhook
       for (const webhook of webhooks) {
-        await worker.queueDelivery(webhook, event);
+        const deliveryId = createDeliveryRecord ? await createDeliveryRecord(webhook, event) : null;
+        await worker.queueDelivery(webhook, event, deliveryId ?? undefined);
       }
     } catch (err) {
       console.error('[WebhookDelivery] Error routing event to webhooks:', err);
     }
+  });
+
+  void worker.start().catch((err) => {
+    console.error('[WebhookDelivery] Worker failed:', err);
   });
 
   console.log('[WebhookDelivery] Initialized webhook event subscription');

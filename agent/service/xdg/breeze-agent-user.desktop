@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Breeze Agent Helper
+Comment=Breeze RMM User Session Helper
+Exec=/usr/local/bin/breeze-agent user-helper
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Phase=Applications
+X-KDE-autostart-phase=2

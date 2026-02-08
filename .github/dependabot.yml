@@ -91,7 +91,7 @@ updates:
 
   # Go dependencies for the agent
   - package-ecosystem: "gomod"
-    directory: "/apps/agent"
+    directory: "/agent"
     schedule:
       interval: "weekly"
       day: "monday"

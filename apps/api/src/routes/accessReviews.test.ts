@@ -42,8 +42,11 @@ vi.mock('../db/schema', () => ({
   accessReviewItems: {},
   users: {},
   roles: {},
+  rolePermissions: {},
+  permissions: {},
   partnerUsers: {},
-  organizationUsers: {}
+  organizationUsers: {},
+  organizations: {}
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -217,6 +220,13 @@ describe('access review routes', () => {
                   }
                 ])
               })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
             })
           })
         } as any);

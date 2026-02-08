@@ -10,12 +10,12 @@ import {
   notificationChannels,
   escalationPolicies,
   alertNotifications,
-  devices,
-  organizations
+  devices
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { setCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
+import { validateWebhookConfig } from '../services/notificationSenders/webhookSender';
 
 export const alertRoutes = new Hono();
 
@@ -26,31 +26,11 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
-  if (auth.scope === 'organization') {
-    return auth.orgId === orgId;
-  }
-
-  if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
-  }
-
-  // system scope has access to all
-  return true;
+function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+  return auth.canAccessOrg(orgId);
 }
 
-async function getAlertRuleWithOrgCheck(ruleId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getAlertRuleWithOrgCheck(ruleId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [rule] = await db
     .select()
     .from(alertRules)
@@ -61,7 +41,7 @@ async function getAlertRuleWithOrgCheck(ruleId: string, auth: { scope: string; p
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(rule.orgId, auth);
+  const hasAccess = ensureOrgAccess(rule.orgId, auth);
   if (!hasAccess) {
     return null;
   }
@@ -69,7 +49,7 @@ async function getAlertRuleWithOrgCheck(ruleId: string, auth: { scope: string; p
   return rule;
 }
 
-async function getAlertWithOrgCheck(alertId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getAlertWithOrgCheck(alertId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [alert] = await db
     .select()
     .from(alerts)
@@ -80,7 +60,7 @@ async function getAlertWithOrgCheck(alertId: string, auth: { scope: string; part
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(alert.orgId, auth);
+  const hasAccess = ensureOrgAccess(alert.orgId, auth);
   if (!hasAccess) {
     return null;
   }
@@ -88,7 +68,7 @@ async function getAlertWithOrgCheck(alertId: string, auth: { scope: string; part
   return alert;
 }
 
-async function getNotificationChannelWithOrgCheck(channelId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getNotificationChannelWithOrgCheck(channelId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [channel] = await db
     .select()
     .from(notificationChannels)
@@ -99,7 +79,7 @@ async function getNotificationChannelWithOrgCheck(channelId: string, auth: { sco
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(channel.orgId, auth);
+  const hasAccess = ensureOrgAccess(channel.orgId, auth);
   if (!hasAccess) {
     return null;
   }
@@ -107,7 +87,7 @@ async function getNotificationChannelWithOrgCheck(channelId: string, auth: { sco
   return channel;
 }
 
-async function getEscalationPolicyWithOrgCheck(policyId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getEscalationPolicyWithOrgCheck(policyId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [policy] = await db
     .select()
     .from(escalationPolicies)
@@ -118,7 +98,7 @@ async function getEscalationPolicyWithOrgCheck(policyId: string, auth: { scope: 
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(policy.orgId, auth);
+  const hasAccess = ensureOrgAccess(policy.orgId, auth);
   if (!hasAccess) {
     return null;
   }
@@ -190,6 +170,97 @@ function getNotificationChannelIds(overrides: AlertRuleOverrides) {
   if (Array.isArray(overrides.notificationChannelIds)) return overrides.notificationChannelIds;
   if (Array.isArray(overrides.notificationChannels)) return overrides.notificationChannels;
   return [];
+}
+
+function containsNotificationBindingOverride(value: unknown) {
+  return isRecord(value)
+    && ('notificationChannelIds' in value
+      || 'notificationChannels' in value
+      || 'escalationPolicyId' in value);
+}
+
+function validateNotificationChannelConfig(
+  type: 'email' | 'slack' | 'teams' | 'webhook' | 'pagerduty' | 'sms',
+  config: unknown
+): string[] {
+  if (!isRecord(config)) {
+    return ['Config must be an object'];
+  }
+
+  if (type === 'webhook') {
+    return validateWebhookConfig(config).errors;
+  }
+
+  if (type === 'email' && 'recipients' in config) {
+    const recipients = (config as { recipients?: unknown }).recipients;
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return ['Email channel recipients must be a non-empty array'];
+    }
+  }
+
+  if ((type === 'slack' || type === 'teams') && 'webhookUrl' in config) {
+    const webhookUrl = (config as { webhookUrl?: unknown }).webhookUrl;
+    if (typeof webhookUrl !== 'string' || webhookUrl.length === 0) {
+      return [`${type} webhookUrl must be a non-empty string`];
+    }
+  }
+
+  if (type === 'pagerduty' && 'routingKey' in config) {
+    const routingKey = (config as { routingKey?: unknown }).routingKey;
+    if (typeof routingKey !== 'string' || routingKey.length === 0) {
+      return ['PagerDuty routingKey must be a non-empty string'];
+    }
+  }
+
+  if (type === 'sms' && 'phoneNumbers' in config) {
+    const phoneNumbers = (config as { phoneNumbers?: unknown }).phoneNumbers;
+    if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
+      return ['SMS channel phoneNumbers must be a non-empty array'];
+    }
+  }
+
+  return [];
+}
+
+async function validateAlertRuleNotificationBindings(
+  orgId: string,
+  overrides: AlertRuleOverrides
+): Promise<string | null> {
+  const requestedChannelIds = [...new Set(getNotificationChannelIds(overrides).filter(Boolean))];
+  if (requestedChannelIds.length > 0) {
+    const channels = await db
+      .select({ id: notificationChannels.id })
+      .from(notificationChannels)
+      .where(
+        and(
+          eq(notificationChannels.orgId, orgId),
+          inArray(notificationChannels.id, requestedChannelIds)
+        )
+      );
+
+    if (channels.length !== requestedChannelIds.length) {
+      return 'Notification channels must belong to the same organization as the alert rule';
+    }
+  }
+
+  if (typeof overrides.escalationPolicyId === 'string' && overrides.escalationPolicyId.length > 0) {
+    const [policy] = await db
+      .select({ id: escalationPolicies.id })
+      .from(escalationPolicies)
+      .where(
+        and(
+          eq(escalationPolicies.id, overrides.escalationPolicyId),
+          eq(escalationPolicies.orgId, orgId)
+        )
+      )
+      .limit(1);
+
+    if (!policy) {
+      return 'Escalation policy must belong to the same organization as the alert rule';
+    }
+  }
+
+  return null;
 }
 
 function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemplateRow | null) {
@@ -421,13 +492,13 @@ const createChannelSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms']),
-  config: z.any(), // JSONB for type-specific config
+  config: z.record(z.unknown()), // JSONB for type-specific config
   enabled: z.boolean().default(true)
 });
 
 const updateChannelSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  config: z.any().optional(),
+  config: z.record(z.unknown()).optional(),
   enabled: z.boolean().optional()
 });
 
@@ -477,19 +548,13 @@ alertRoutes.get(
       conditions.push(eq(alertRules.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
+        const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
         conditions.push(eq(alertRules.orgId, query.orgId));
       } else {
-        // Get rules from all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0) {
           return c.json({
             data: [],
@@ -626,6 +691,14 @@ alertRoutes.post(
       baseOverrides.notificationChannelIds = notificationChannelIds;
     }
 
+    const createNotificationBindingError = await validateAlertRuleNotificationBindings(
+      orgId,
+      getOverrides(baseOverrides)
+    );
+    if (createNotificationBindingError) {
+      return c.json({ error: createNotificationBindingError }, 400);
+    }
+
     baseOverrides.targets = targets;
     baseOverrides.targetIds = targetIds;
 
@@ -752,6 +825,23 @@ alertRoutes.put(
     const notificationChannelIds = data.notificationChannelIds ?? data.notificationChannels;
     if (notificationChannelIds !== undefined) {
       baseOverrides.notificationChannelIds = notificationChannelIds;
+    }
+
+    const shouldValidateNotificationBindings =
+      data.escalationPolicyId !== undefined
+      || data.notificationChannelIds !== undefined
+      || data.notificationChannels !== undefined
+      || containsNotificationBindingOverride(data.overrideSettings)
+      || containsNotificationBindingOverride(data.overrides);
+
+    if (shouldValidateNotificationBindings) {
+      const updateNotificationBindingError = await validateAlertRuleNotificationBindings(
+        rule.orgId,
+        getOverrides(baseOverrides)
+      );
+      if (updateNotificationBindingError) {
+        return c.json({ error: updateNotificationBindingError }, 400);
+      }
     }
 
     if (templateOwned !== undefined) {
@@ -982,19 +1072,13 @@ alertRoutes.get(
       conditions.push(eq(alerts.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
+        const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
         conditions.push(eq(alerts.orgId, query.orgId));
       } else {
-        // Get alerts from all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0) {
           return c.json({
             data: [],
@@ -1093,19 +1177,13 @@ alertRoutes.get(
       orgFilter = eq(alerts.orgId, auth.orgId);
     } else if (auth.scope === 'partner') {
       if (orgId) {
-        const hasAccess = await ensureOrgAccess(orgId, auth);
+        const hasAccess = ensureOrgAccess(orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
         orgFilter = eq(alerts.orgId, orgId);
       } else {
-        // Get all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0) {
           return c.json({
             bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
@@ -1366,19 +1444,13 @@ alertRoutes.get(
       conditions.push(eq(notificationChannels.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
+        const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
         conditions.push(eq(notificationChannels.orgId, query.orgId));
       } else {
-        // Get channels from all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0) {
           return c.json({
             data: [],
@@ -1443,6 +1515,14 @@ alertRoutes.post(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
 
+    const configErrors = validateNotificationChannelConfig(data.type, data.config);
+    if (configErrors.length > 0) {
+      return c.json({
+        error: `Invalid ${data.type} channel configuration`,
+        details: configErrors
+      }, 400);
+    }
+
     const [channel] = await db
       .insert(notificationChannels)
       .values({
@@ -1487,6 +1567,16 @@ alertRoutes.put(
     const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
     if (!channel) {
       return c.json({ error: 'Notification channel not found' }, 404);
+    }
+
+    if (data.config !== undefined) {
+      const configErrors = validateNotificationChannelConfig(channel.type, data.config);
+      if (configErrors.length > 0) {
+        return c.json({
+          error: `Invalid ${channel.type} channel configuration`,
+          details: configErrors
+        }, 400);
+      }
     }
 
     // Build updates object
@@ -1690,19 +1780,13 @@ alertRoutes.get(
       conditions.push(eq(escalationPolicies.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
+        const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
         conditions.push(eq(escalationPolicies.orgId, query.orgId));
       } else {
-        // Get policies from all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0) {
           return c.json({
             data: [],
@@ -1761,7 +1845,7 @@ alertRoutes.post(
       if (!orgId) {
         return c.json({ error: 'orgId is required for partner scope' }, 400);
       }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
+      const hasAccess = ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }

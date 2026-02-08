@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, useCallback } from 'react';
 
 export type DiscoverySchedule = {
   cadence: 'daily' | 'weekly' | 'monthly';
@@ -23,33 +23,74 @@ export type SnmpSettings = {
 
 export type DiscoveryProfileFormValues = {
   name: string;
+  siteId: string;
   subnets: string[];
   methods: string[];
   schedule: DiscoverySchedule;
   snmp: SnmpSettings;
 };
 
+type SiteOption = {
+  id: string;
+  name: string;
+};
+
 type DiscoveryProfileFormProps = {
   initialValues?: DiscoveryProfileFormValues;
+  sites?: SiteOption[];
   onSubmit?: (values: DiscoveryProfileFormValues) => void;
   onCancel?: () => void;
   submitLabel?: string;
+  disabled?: boolean;
 };
 
 const methodOptions = [
-  { id: 'icmp', label: 'ICMP Ping' },
+  { id: 'ping', label: 'ICMP Ping' },
   { id: 'arp', label: 'ARP Sweep' },
   { id: 'snmp', label: 'SNMP Probe' },
-  { id: 'tcp', label: 'TCP Port Scan' },
-  { id: 'agent', label: 'Agent Check-in' }
+  { id: 'port_scan', label: 'TCP Port Scan' }
 ];
 
 const dayOptions = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+const CIDR_REGEX = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,3}$/;
+const IP_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
+
+function validateSubnets(text: string): string[] {
+  const lines = text
+    .split(/\n|,/)
+    .map(v => v.trim())
+    .filter(Boolean);
+
+  const errors: string[] = [];
+  for (const line of lines) {
+    if (CIDR_REGEX.test(line)) {
+      const [ip, prefix] = line.split('/');
+      const octets = ip.split('.').map(Number);
+      const prefixNum = Number(prefix);
+      if (octets.some(o => o > 255)) {
+        errors.push(`"${line}": octet value exceeds 255`);
+      } else if (prefixNum > 32) {
+        errors.push(`"${line}": prefix length must be 0–32`);
+      }
+    } else if (IP_REGEX.test(line)) {
+      const octets = line.split('.').map(Number);
+      if (octets.some(o => o > 255)) {
+        errors.push(`"${line}": octet value exceeds 255`);
+      }
+      // bare IP is accepted (treated as /32)
+    } else {
+      errors.push(`"${line}": not a valid CIDR range or IP address`);
+    }
+  }
+  return errors;
+}
+
 const defaultValues: DiscoveryProfileFormValues = {
   name: '',
+  siteId: '',
   subnets: [],
-  methods: ['icmp', 'snmp'],
+  methods: ['ping', 'snmp'],
   schedule: {
     cadence: 'daily',
     time: '02:00',
@@ -73,23 +114,29 @@ const defaultValues: DiscoveryProfileFormValues = {
 
 export default function DiscoveryProfileForm({
   initialValues,
+  sites = [],
   onSubmit,
   onCancel,
-  submitLabel = 'Save Profile'
+  submitLabel = 'Save Profile',
+  disabled = false
 }: DiscoveryProfileFormProps) {
   const [formValues, setFormValues] = useState<DiscoveryProfileFormValues>(initialValues ?? defaultValues);
   const [subnetsText, setSubnetsText] = useState((initialValues?.subnets ?? []).join('\n'));
+  const [subnetErrors, setSubnetErrors] = useState<string[]>([]);
 
   useEffect(() => {
+    setSubnetErrors([]);
     if (initialValues) {
       setFormValues(initialValues);
       setSubnetsText(initialValues.subnets.join('\n'));
       return;
     }
 
-    setFormValues(defaultValues);
+    // Auto-select first site if only one available
+    const autoSiteId = sites.length === 1 ? sites[0].id : '';
+    setFormValues({ ...defaultValues, siteId: autoSiteId });
     setSubnetsText('');
-  }, [initialValues]);
+  }, [initialValues, sites]);
 
   const handleToggleMethod = (method: string) => {
     setFormValues(prev => {
@@ -103,16 +150,33 @@ export default function DiscoveryProfileForm({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
     const subnets = subnetsText
       .split(/\n|,/)
       .map(value => value.trim())
       .filter(Boolean);
+
+    if (subnets.length === 0) {
+      setSubnetErrors(['At least one subnet or IP address is required.']);
+      return;
+    }
+
+    const errors = validateSubnets(subnetsText);
+    if (errors.length > 0) {
+      setSubnetErrors(errors);
+      return;
+    }
 
     onSubmit?.({
       ...formValues,
       subnets
     });
   };
+
+  const handleSubnetsChange = useCallback((value: string) => {
+    setSubnetsText(value);
+    setSubnetErrors([]);
+  }, []);
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -130,6 +194,19 @@ export default function DiscoveryProfileForm({
               placeholder="Headquarters scan"
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Site</label>
+            <select
+              value={formValues.siteId}
+              onChange={event => setFormValues(prev => ({ ...prev, siteId: event.target.value }))}
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">Select a site...</option>
+              {sites.map(site => (
+                <option key={site.id} value={site.id}>{site.name}</option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="text-sm font-medium">Schedule cadence</label>
@@ -152,13 +229,20 @@ export default function DiscoveryProfileForm({
             <label className="text-sm font-medium">Subnets to scan</label>
             <textarea
               value={subnetsText}
-              onChange={event => setSubnetsText(event.target.value)}
-              placeholder="10.0.0.0/24\n10.0.1.0/24"
-              className="mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              onChange={event => handleSubnetsChange(event.target.value)}
+              placeholder={"10.0.0.0/24\n10.0.1.0/24"}
+              className={`mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${subnetErrors.length > 0 ? 'border-destructive' : ''}`}
             />
             <p className="mt-2 text-xs text-muted-foreground">
               Enter CIDR ranges separated by commas or new lines.
             </p>
+            {subnetErrors.length > 0 && (
+              <div className="mt-1 space-y-0.5">
+                {subnetErrors.map((err, i) => (
+                  <p key={i} className="text-xs text-destructive">{err}</p>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -435,7 +519,8 @@ export default function DiscoveryProfileForm({
         )}
         <button
           type="submit"
-          className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+          disabled={disabled}
+          className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {submitLabel}
         </button>

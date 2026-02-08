@@ -6,6 +6,7 @@ import { authMiddleware } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const backupRoutes = new Hono();
+const DEFAULT_BACKUP_ORG_ID = 'org-123';
 
 backupRoutes.use('*', authMiddleware);
 
@@ -146,6 +147,24 @@ function getNextRun(schedule: BackupPolicySchedule) {
   }
 
   return next.toISOString();
+}
+
+function resolveScopedOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId?: string | null;
+    accessibleOrgIds?: string[] | null;
+  }
+) {
+  if (auth.orgId) {
+    return auth.orgId;
+  }
+
+  if (auth.scope === 'partner' && Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    return auth.accessibleOrgIds[0] ?? null;
+  }
+
+  return null;
 }
 
 const backupConfigs: BackupConfig[] = [
@@ -520,6 +539,22 @@ const snapshotContents: Record<string, SnapshotTreeItem[]> = {
   ]
 };
 
+const configOrgById = new Map<string, string>(
+  backupConfigs.map((config) => [config.id, DEFAULT_BACKUP_ORG_ID])
+);
+const policyOrgById = new Map<string, string>(
+  backupPolicies.map((policy) => [policy.id, DEFAULT_BACKUP_ORG_ID])
+);
+const snapshotOrgById = new Map<string, string>(
+  backupSnapshots.map((snapshot) => [snapshot.id, DEFAULT_BACKUP_ORG_ID])
+);
+const restoreOrgById = new Map<string, string>(
+  restoreJobs.map((restoreJob) => [restoreJob.id, DEFAULT_BACKUP_ORG_ID])
+);
+const jobOrgById = new Map<string, string>(
+  backupJobs.map((job) => [job.id, DEFAULT_BACKUP_ORG_ID])
+);
+
 const configSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(['s3', 'local']),
@@ -592,11 +627,22 @@ const restoreSchema = z.object({
 });
 
 backupRoutes.get('/configs', (c) => {
-  return c.json({ data: backupConfigs });
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  return c.json({ data: backupConfigs.filter((config) => configOrgById.get(config.id) === orgId) });
 });
 
 backupRoutes.post('/configs', zValidator('json', configSchema), async (c) => {
   const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
   const payload = c.req.valid('json');
   const now = new Date().toISOString();
   const config: BackupConfig = {
@@ -610,8 +656,9 @@ backupRoutes.post('/configs', zValidator('json', configSchema), async (c) => {
   };
 
   backupConfigs.push(config);
+  configOrgById.set(config.id, orgId);
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.config.create',
     resourceType: 'backup_config',
     resourceId: config.id,
@@ -622,7 +669,17 @@ backupRoutes.post('/configs', zValidator('json', configSchema), async (c) => {
 });
 
 backupRoutes.get('/configs/:id', (c) => {
-  const config = backupConfigs.find((item) => item.id === c.req.param('id'));
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const configId = c.req.param('id');
+  if (configOrgById.get(configId) !== orgId) {
+    return c.json({ error: 'Config not found' }, 404);
+  }
+  const config = backupConfigs.find((item) => item.id === configId);
   if (!config) {
     return c.json({ error: 'Config not found' }, 404);
   }
@@ -631,7 +688,16 @@ backupRoutes.get('/configs/:id', (c) => {
 
 backupRoutes.patch('/configs/:id', zValidator('json', configUpdateSchema), async (c) => {
   const auth = c.get('auth');
-  const config = backupConfigs.find((item) => item.id === c.req.param('id'));
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const configId = c.req.param('id');
+  if (configOrgById.get(configId) !== orgId) {
+    return c.json({ error: 'Config not found' }, 404);
+  }
+  const config = backupConfigs.find((item) => item.id === configId);
   if (!config) {
     return c.json({ error: 'Config not found' }, 404);
   }
@@ -645,7 +711,7 @@ backupRoutes.patch('/configs/:id', zValidator('json', configUpdateSchema), async
   config.updatedAt = new Date().toISOString();
 
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.config.update',
     resourceType: 'backup_config',
     resourceId: config.id,
@@ -658,13 +724,25 @@ backupRoutes.patch('/configs/:id', zValidator('json', configUpdateSchema), async
 
 backupRoutes.delete('/configs/:id', (c) => {
   const auth = c.get('auth');
-  const index = backupConfigs.findIndex((item) => item.id === c.req.param('id'));
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const configId = c.req.param('id');
+  if (configOrgById.get(configId) !== orgId) {
+    return c.json({ error: 'Config not found' }, 404);
+  }
+  const index = backupConfigs.findIndex((item) => item.id === configId);
   if (index === -1) {
     return c.json({ error: 'Config not found' }, 404);
   }
   const [deleted] = backupConfigs.splice(index, 1);
+  if (deleted) {
+    configOrgById.delete(deleted.id);
+  }
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.config.delete',
     resourceType: 'backup_config',
     resourceId: deleted?.id,
@@ -675,14 +753,23 @@ backupRoutes.delete('/configs/:id', (c) => {
 
 backupRoutes.post('/configs/:id/test', (c) => {
   const auth = c.get('auth');
-  const config = backupConfigs.find((item) => item.id === c.req.param('id'));
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const configId = c.req.param('id');
+  if (configOrgById.get(configId) !== orgId) {
+    return c.json({ error: 'Config not found' }, 404);
+  }
+  const config = backupConfigs.find((item) => item.id === configId);
   if (!config) {
     return c.json({ error: 'Config not found' }, 404);
   }
   const checkedAt = new Date().toISOString();
   config.lastTestedAt = checkedAt;
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.config.test',
     resourceType: 'backup_config',
     resourceId: config.id,
@@ -697,13 +784,26 @@ backupRoutes.post('/configs/:id/test', (c) => {
 });
 
 backupRoutes.get('/policies', (c) => {
-  return c.json({ data: backupPolicies });
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  return c.json({ data: backupPolicies.filter((policy) => policyOrgById.get(policy.id) === orgId) });
 });
 
 backupRoutes.post('/policies', zValidator('json', policySchema), async (c) => {
   const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
   const payload = c.req.valid('json');
-  const config = backupConfigs.find((item) => item.id === payload.configId);
+  const config = backupConfigs.find(
+    (item) => item.id === payload.configId && configOrgById.get(item.id) === orgId
+  );
   if (!config) {
     return c.json({ error: 'Config not found' }, 400);
   }
@@ -736,8 +836,9 @@ backupRoutes.post('/policies', zValidator('json', policySchema), async (c) => {
   };
 
   backupPolicies.push(policy);
+  policyOrgById.set(policy.id, orgId);
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.policy.create',
     resourceType: 'backup_policy',
     resourceId: policy.id,
@@ -748,7 +849,16 @@ backupRoutes.post('/policies', zValidator('json', policySchema), async (c) => {
 
 backupRoutes.patch('/policies/:id', zValidator('json', policyUpdateSchema), async (c) => {
   const auth = c.get('auth');
-  const policy = backupPolicies.find((item) => item.id === c.req.param('id'));
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const policyId = c.req.param('id');
+  if (policyOrgById.get(policyId) !== orgId) {
+    return c.json({ error: 'Policy not found' }, 404);
+  }
+  const policy = backupPolicies.find((item) => item.id === policyId);
   if (!policy) {
     return c.json({ error: 'Policy not found' }, 404);
   }
@@ -756,7 +866,15 @@ backupRoutes.patch('/policies/:id', zValidator('json', policyUpdateSchema), asyn
   const payload = c.req.valid('json');
   if (payload.name !== undefined) policy.name = payload.name;
   if (payload.enabled !== undefined) policy.enabled = payload.enabled;
-  if (payload.configId !== undefined) policy.configId = payload.configId;
+  if (payload.configId !== undefined) {
+    const configExists = backupConfigs.some(
+      (item) => item.id === payload.configId && configOrgById.get(item.id) === orgId
+    );
+    if (!configExists) {
+      return c.json({ error: 'Config not found' }, 400);
+    }
+    policy.configId = payload.configId;
+  }
   if (payload.targets !== undefined) {
     policy.targets = {
       deviceIds: payload.targets.deviceIds ?? policy.targets.deviceIds,
@@ -783,7 +901,7 @@ backupRoutes.patch('/policies/:id', zValidator('json', policyUpdateSchema), asyn
   policy.updatedAt = new Date().toISOString();
 
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.policy.update',
     resourceType: 'backup_policy',
     resourceId: policy.id,
@@ -796,13 +914,25 @@ backupRoutes.patch('/policies/:id', zValidator('json', policyUpdateSchema), asyn
 
 backupRoutes.delete('/policies/:id', (c) => {
   const auth = c.get('auth');
-  const index = backupPolicies.findIndex((item) => item.id === c.req.param('id'));
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const policyId = c.req.param('id');
+  if (policyOrgById.get(policyId) !== orgId) {
+    return c.json({ error: 'Policy not found' }, 404);
+  }
+  const index = backupPolicies.findIndex((item) => item.id === policyId);
   if (index === -1) {
     return c.json({ error: 'Policy not found' }, 404);
   }
   const [deleted] = backupPolicies.splice(index, 1);
+  if (deleted) {
+    policyOrgById.delete(deleted.id);
+  }
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.policy.delete',
     resourceType: 'backup_policy',
     resourceId: deleted?.id,
@@ -812,12 +942,18 @@ backupRoutes.delete('/policies/:id', (c) => {
 });
 
 backupRoutes.get('/jobs', zValidator('query', jobListSchema), (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
   const query = c.req.valid('query');
   const deviceFilter = query.deviceId ?? query.device;
   const from = toDateOrNull(query.from);
   const to = toDateOrNull(query.to);
 
-  let results = [...backupJobs];
+  let results = backupJobs.filter((job) => jobOrgById.get(job.id) === orgId);
 
   if (query.status) {
     results = results.filter((job) => job.status === query.status);
@@ -856,7 +992,17 @@ backupRoutes.get('/jobs', zValidator('query', jobListSchema), (c) => {
 });
 
 backupRoutes.get('/jobs/:id', (c) => {
-  const job = backupJobs.find((item) => item.id === c.req.param('id'));
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const jobId = c.req.param('id');
+  if (jobOrgById.get(jobId) !== orgId) {
+    return c.json({ error: 'Job not found' }, 404);
+  }
+  const job = backupJobs.find((item) => item.id === jobId);
   if (!job) {
     return c.json({ error: 'Job not found' }, 404);
   }
@@ -865,10 +1011,17 @@ backupRoutes.get('/jobs/:id', (c) => {
 
 backupRoutes.post('/jobs/run/:deviceId', (c) => {
   const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
   const deviceId = c.req.param('deviceId');
-  const policy = backupPolicies.find((item) => item.targets.deviceIds.includes(deviceId));
-  const configId = policy?.configId ?? backupConfigs[0]?.id;
-  if (!configId) {
+  const policy = backupPolicies.find(
+    (item) => item.targets.deviceIds.includes(deviceId) && policyOrgById.get(item.id) === orgId
+  );
+  const configId = policy?.configId ?? backupConfigs.find((item) => configOrgById.get(item.id) === orgId)?.id;
+  if (!configId || configOrgById.get(configId) !== orgId) {
     return c.json({ error: 'No backup config available' }, 400);
   }
 
@@ -887,8 +1040,9 @@ backupRoutes.post('/jobs/run/:deviceId', (c) => {
   };
 
   backupJobs.push(job);
+  jobOrgById.set(job.id, orgId);
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.job.run',
     resourceType: 'backup_job',
     resourceId: job.id,
@@ -899,7 +1053,16 @@ backupRoutes.post('/jobs/run/:deviceId', (c) => {
 
 backupRoutes.post('/jobs/:id/cancel', (c) => {
   const auth = c.get('auth');
-  const job = backupJobs.find((item) => item.id === c.req.param('id'));
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const jobId = c.req.param('id');
+  if (jobOrgById.get(jobId) !== orgId) {
+    return c.json({ error: 'Job not found' }, 404);
+  }
+  const job = backupJobs.find((item) => item.id === jobId);
   if (!job) {
     return c.json({ error: 'Job not found' }, 404);
   }
@@ -914,7 +1077,7 @@ backupRoutes.post('/jobs/:id/cancel', (c) => {
   job.error = 'Canceled by user';
 
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.job.cancel',
     resourceType: 'backup_job',
     resourceId: job.id,
@@ -925,8 +1088,14 @@ backupRoutes.post('/jobs/:id/cancel', (c) => {
 });
 
 backupRoutes.get('/snapshots', zValidator('query', snapshotListSchema), (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
   const query = c.req.valid('query');
-  let results = [...backupSnapshots];
+  let results = backupSnapshots.filter((snapshot) => snapshotOrgById.get(snapshot.id) === orgId);
 
   if (query.deviceId) {
     results = results.filter((snapshot) => snapshot.deviceId === query.deviceId);
@@ -946,7 +1115,17 @@ backupRoutes.get('/snapshots', zValidator('query', snapshotListSchema), (c) => {
 });
 
 backupRoutes.get('/snapshots/:id', (c) => {
-  const snapshot = backupSnapshots.find((item) => item.id === c.req.param('id'));
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const snapshotId = c.req.param('id');
+  if (snapshotOrgById.get(snapshotId) !== orgId) {
+    return c.json({ error: 'Snapshot not found' }, 404);
+  }
+  const snapshot = backupSnapshots.find((item) => item.id === snapshotId);
   if (!snapshot) {
     return c.json({ error: 'Snapshot not found' }, 404);
   }
@@ -954,7 +1133,17 @@ backupRoutes.get('/snapshots/:id', (c) => {
 });
 
 backupRoutes.get('/snapshots/:id/browse', (c) => {
-  const snapshot = backupSnapshots.find((item) => item.id === c.req.param('id'));
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const snapshotId = c.req.param('id');
+  if (snapshotOrgById.get(snapshotId) !== orgId) {
+    return c.json({ error: 'Snapshot not found' }, 404);
+  }
+  const snapshot = backupSnapshots.find((item) => item.id === snapshotId);
   if (!snapshot) {
     return c.json({ error: 'Snapshot not found' }, 404);
   }
@@ -967,8 +1156,15 @@ backupRoutes.get('/snapshots/:id/browse', (c) => {
 
 backupRoutes.post('/restore', zValidator('json', restoreSchema), async (c) => {
   const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
   const payload = c.req.valid('json');
-  const snapshot = backupSnapshots.find((item) => item.id === payload.snapshotId);
+  const snapshot = backupSnapshots.find(
+    (item) => item.id === payload.snapshotId && snapshotOrgById.get(item.id) === orgId
+  );
   if (!snapshot) {
     return c.json({ error: 'Snapshot not found' }, 404);
   }
@@ -988,6 +1184,7 @@ backupRoutes.post('/restore', zValidator('json', restoreSchema), async (c) => {
   };
 
   restoreJobs.push(restoreJob);
+  restoreOrgById.set(restoreJob.id, orgId);
   backupJobs.push({
     id: restoreJob.id,
     type: 'restore',
@@ -999,9 +1196,10 @@ backupRoutes.post('/restore', zValidator('json', restoreSchema), async (c) => {
     createdAt: now,
     updatedAt: now
   });
+  jobOrgById.set(restoreJob.id, orgId);
 
   writeRouteAudit(c, {
-    orgId: auth.orgId,
+    orgId,
     action: 'backup.restore.create',
     resourceType: 'restore_job',
     resourceId: restoreJob.id,
@@ -1015,7 +1213,17 @@ backupRoutes.post('/restore', zValidator('json', restoreSchema), async (c) => {
 });
 
 backupRoutes.get('/restore/:id', (c) => {
-  const restoreJob = restoreJobs.find((item) => item.id === c.req.param('id'));
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const restoreId = c.req.param('id');
+  if (restoreOrgById.get(restoreId) !== orgId) {
+    return c.json({ error: 'Restore job not found' }, 404);
+  }
+  const restoreJob = restoreJobs.find((item) => item.id === restoreId);
   if (!restoreJob) {
     return c.json({ error: 'Restore job not found' }, 404);
   }
@@ -1023,18 +1231,29 @@ backupRoutes.get('/restore/:id', (c) => {
 });
 
 backupRoutes.get('/dashboard', (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const scopedPolicies = backupPolicies.filter((policy) => policyOrgById.get(policy.id) === orgId);
+  const scopedJobs = backupJobs.filter((job) => jobOrgById.get(job.id) === orgId);
+  const scopedSnapshots = backupSnapshots.filter((snapshot) => snapshotOrgById.get(snapshot.id) === orgId);
+  const scopedConfigs = backupConfigs.filter((config) => configOrgById.get(config.id) === orgId);
+
   const now = Date.now();
   const dayAgo = now - 24 * 60 * 60 * 1000;
   const protectedDevices = new Set(
-    backupPolicies.flatMap((policy) => policy.targets.deviceIds)
+    scopedPolicies.flatMap((policy) => policy.targets.deviceIds)
   );
-  const recentJobs = [...backupJobs].sort((a, b) => {
+  const recentJobs = [...scopedJobs].sort((a, b) => {
     const aTime = toDateOrNull(a.startedAt ?? a.createdAt) ?? 0;
     const bTime = toDateOrNull(b.startedAt ?? b.createdAt) ?? 0;
     return bTime - aTime;
   });
 
-  const lastDayJobs = backupJobs.filter((job) => {
+  const lastDayJobs = scopedJobs.filter((job) => {
     const timestamp = toDateOrNull(job.startedAt ?? job.createdAt) ?? 0;
     return timestamp >= dayAgo;
   });
@@ -1043,15 +1262,15 @@ backupRoutes.get('/dashboard', (c) => {
   const failed = lastDayJobs.filter((job) => job.status === 'failed').length;
   const running = lastDayJobs.filter((job) => job.status === 'running').length;
   const queued = lastDayJobs.filter((job) => job.status === 'queued').length;
-  const totalBytes = backupSnapshots.reduce((sum, snap) => sum + snap.sizeBytes, 0);
+  const totalBytes = scopedSnapshots.reduce((sum, snap) => sum + snap.sizeBytes, 0);
 
   return c.json({
     data: {
       totals: {
-        configs: backupConfigs.length,
-        policies: backupPolicies.length,
-        jobs: backupJobs.length,
-        snapshots: backupSnapshots.length
+        configs: scopedConfigs.length,
+        policies: scopedPolicies.length,
+        jobs: scopedJobs.length,
+        snapshots: scopedSnapshots.length
       },
       jobsLast24h: {
         completed,
@@ -1061,7 +1280,7 @@ backupRoutes.get('/dashboard', (c) => {
       },
       storage: {
         totalBytes,
-        snapshots: backupSnapshots.length
+        snapshots: scopedSnapshots.length
       },
       coverage: {
         protectedDevices: protectedDevices.size
@@ -1072,9 +1291,18 @@ backupRoutes.get('/dashboard', (c) => {
 });
 
 backupRoutes.get('/status/:deviceId', (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
   const deviceId = c.req.param('deviceId');
-  const policy = backupPolicies.find((item) => item.targets.deviceIds.includes(deviceId));
+  const policy = backupPolicies.find(
+    (item) => item.targets.deviceIds.includes(deviceId) && policyOrgById.get(item.id) === orgId
+  );
   const jobs = backupJobs
+    .filter((job) => jobOrgById.get(job.id) === orgId)
     .filter((job) => job.deviceId === deviceId)
     .sort((a, b) => {
       const aTime = toDateOrNull(a.startedAt ?? a.createdAt) ?? 0;

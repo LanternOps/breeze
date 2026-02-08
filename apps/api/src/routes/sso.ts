@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, gt } from 'drizzle-orm';
+import { nanoid } from 'nanoid';
 import { db } from '../db';
 import {
   ssoProviders,
@@ -28,6 +29,7 @@ import {
 } from '../services/sso';
 import { createTokenPair, createSession } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
+import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 
 export const ssoRoutes = new Hono();
 
@@ -57,20 +59,134 @@ const createProviderSchema = z.object({
 });
 
 const updateProviderSchema = createProviderSchema.partial();
+const tokenExchangeSchema = z.object({
+  code: z.string().min(1)
+});
 
 // ============================================
 // Helper Functions
 // ============================================
 
+type SsoTokenExchangeGrant = {
+  accessToken: string;
+  refreshToken: string;
+  expiresInSeconds: number;
+  createdAtMs: number;
+  expiresAtMs: number;
+};
+
+const ssoTokenExchangeGrants = new Map<string, SsoTokenExchangeGrant>();
+const SSO_TOKEN_GRANT_TTL_MS = 2 * 60 * 1000;
+const SSO_TOKEN_GRANT_CAP = 20000;
+const SSO_TOKEN_SWEEP_INTERVAL_MS = 60 * 1000;
+
+let lastSsoTokenSweepAtMs = 0;
+
+function capMapByOldest<T>(
+  map: Map<string, T>,
+  cap: number,
+  getAgeMs: (value: T) => number
+) {
+  if (map.size <= cap) {
+    return;
+  }
+
+  const overflow = map.size - cap;
+  const entries = Array.from(map.entries())
+    .sort(([, left], [, right]) => getAgeMs(left) - getAgeMs(right));
+
+  for (let i = 0; i < overflow; i++) {
+    const key = entries[i]?.[0];
+    if (key) {
+      map.delete(key);
+    }
+  }
+}
+
+function sweepSsoTokenExchangeGrants(nowMs: number = Date.now()) {
+  if (nowMs - lastSsoTokenSweepAtMs < SSO_TOKEN_SWEEP_INTERVAL_MS) {
+    return;
+  }
+
+  lastSsoTokenSweepAtMs = nowMs;
+  for (const [code, grant] of ssoTokenExchangeGrants.entries()) {
+    if (grant.expiresAtMs <= nowMs) {
+      ssoTokenExchangeGrants.delete(code);
+    }
+  }
+
+  capMapByOldest(ssoTokenExchangeGrants, SSO_TOKEN_GRANT_CAP, (grant) => grant.createdAtMs);
+}
+
+function createSsoTokenExchangeGrant(
+  accessToken: string,
+  refreshToken: string,
+  expiresInSeconds: number
+): string {
+  const nowMs = Date.now();
+  sweepSsoTokenExchangeGrants(nowMs);
+
+  const code = nanoid(48);
+  ssoTokenExchangeGrants.set(code, {
+    accessToken,
+    refreshToken,
+    expiresInSeconds,
+    createdAtMs: nowMs,
+    expiresAtMs: nowMs + SSO_TOKEN_GRANT_TTL_MS
+  });
+
+  capMapByOldest(ssoTokenExchangeGrants, SSO_TOKEN_GRANT_CAP, (grant) => grant.createdAtMs);
+  return code;
+}
+
+function consumeSsoTokenExchangeGrant(code: string): SsoTokenExchangeGrant | null {
+  sweepSsoTokenExchangeGrants();
+
+  const grant = ssoTokenExchangeGrants.get(code);
+  if (!grant) {
+    return null;
+  }
+
+  ssoTokenExchangeGrants.delete(code);
+  if (grant.expiresAtMs <= Date.now()) {
+    return null;
+  }
+
+  return grant;
+}
+
+function normalizeRedirectPath(redirectParam: string | undefined): string {
+  if (!redirectParam) {
+    return '/';
+  }
+
+  const trimmed = redirectParam.trim();
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.includes('\\')) {
+    return '/';
+  }
+
+  try {
+    const parsed = new URL(trimmed, 'https://local.invalid');
+    if (parsed.origin !== 'https://local.invalid') {
+      return '/';
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return '/';
+  }
+}
+
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
-  if (!provider.clientId || !provider.clientSecret || !provider.issuer) {
+  const decryptedClientSecret = decryptSecret(provider.clientSecret);
+
+  if (!provider.clientId || !decryptedClientSecret || !provider.issuer) {
     throw new Error('Provider is not fully configured');
   }
 
   return {
     issuer: provider.issuer,
     clientId: provider.clientId,
-    clientSecret: provider.clientSecret,
+    clientSecret: decryptedClientSecret,
     authorizationUrl: provider.authorizationUrl || `${provider.issuer}/authorize`,
     tokenUrl: provider.tokenUrl || `${provider.issuer}/oauth/token`,
     userInfoUrl: provider.userInfoUrl || `${provider.issuer}/userinfo`,
@@ -189,7 +305,7 @@ ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partn
       type: body.type,
       issuer: body.issuer,
       clientId: body.clientId,
-      clientSecret: body.clientSecret,
+      clientSecret: encryptSecret(body.clientSecret),
       scopes: body.scopes || config.scopes,
       attributeMapping: body.attributeMapping || config.attributeMapping,
       authorizationUrl: config.authorizationUrl,
@@ -218,20 +334,26 @@ ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partn
     details: { type: provider.type, status: provider.status }
   });
 
-  return c.json({ data: provider }, 201);
+  const { clientSecret, ...safeProvider } = provider;
+  return c.json({ data: { ...safeProvider, hasClientSecret: !!clientSecret } }, 201);
 });
 
 // Update SSO provider
 ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('json', updateProviderSchema), async (c) => {
   const providerId = c.req.param('id');
   const body = c.req.valid('json');
+  const updates: Partial<typeof ssoProviders.$inferInsert> = {
+    ...body,
+    updatedAt: new Date()
+  };
+
+  if (body.clientSecret !== undefined) {
+    updates.clientSecret = encryptSecret(body.clientSecret);
+  }
 
   const [updated] = await db
     .update(ssoProviders)
-    .set({
-      ...body,
-      updatedAt: new Date()
-    })
+    .set(updates)
     .where(eq(ssoProviders.id, providerId))
     .returning();
 
@@ -248,7 +370,8 @@ ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', '
     details: { changedFields: Object.keys(body) }
   });
 
-  return c.json({ data: updated });
+  const { clientSecret, ...safeProvider } = updated;
+  return c.json({ data: { ...safeProvider, hasClientSecret: !!clientSecret } });
 });
 
 // Delete SSO provider
@@ -371,7 +494,7 @@ ssoRoutes.post('/providers/:id/test', authMiddleware, requireScope('organization
 // Initiate SSO login
 ssoRoutes.get('/login/:orgId', async (c) => {
   const orgId = c.req.param('orgId');
-  const redirectUrl = c.req.query('redirect') || '/';
+  const redirectUrl = normalizeRedirectPath(c.req.query('redirect'));
 
   const [provider] = await db
     .select()
@@ -554,8 +677,8 @@ ssoRoutes.get('/callback', async (c) => {
         .set({
           email: attrs.email,
           profile: userInfo,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
+          accessToken: encryptSecret(tokens.access_token),
+          refreshToken: encryptSecret(tokens.refresh_token),
           tokenExpiresAt: tokens.expires_in
             ? new Date(Date.now() + tokens.expires_in * 1000)
             : null,
@@ -570,8 +693,8 @@ ssoRoutes.get('/callback', async (c) => {
         externalId: userInfo.sub,
         email: attrs.email,
         profile: userInfo,
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
+        accessToken: encryptSecret(tokens.access_token),
+        refreshToken: encryptSecret(tokens.refresh_token),
         tokenExpiresAt: tokens.expires_in
           ? new Date(Date.now() + tokens.expires_in * 1000)
           : null,
@@ -614,7 +737,7 @@ ssoRoutes.get('/callback', async (c) => {
       scope: (orgUser?.roleScope || 'organization') as 'system' | 'partner' | 'organization'
     };
 
-    const { accessToken, refreshToken } = await createTokenPair(tokenPayload);
+    const { accessToken, refreshToken, expiresInSeconds } = await createTokenPair(tokenPayload);
 
     await createSession({
       userId: user.id,
@@ -622,14 +745,28 @@ ssoRoutes.get('/callback', async (c) => {
       userAgent
     });
 
-    // Redirect with tokens (in production, use secure cookies instead)
-    const redirectPath = session.redirectUrl || '/';
-    return c.redirect(`${redirectPath}?token=${accessToken}&refresh=${refreshToken}`);
+    const tokenExchangeCode = createSsoTokenExchangeGrant(accessToken, refreshToken, expiresInSeconds);
+    const redirectPath = normalizeRedirectPath(session.redirectUrl ?? '/');
+    return c.redirect(`${redirectPath}#ssoCode=${encodeURIComponent(tokenExchangeCode)}`);
 
   } catch (error: any) {
     console.error('SSO callback error:', error);
     return c.redirect(`/login?error=sso_error&message=${encodeURIComponent(error.message || 'Authentication failed')}`);
   }
+});
+
+ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) => {
+  const { code } = c.req.valid('json');
+  const grant = consumeSsoTokenExchangeGrant(code);
+  if (!grant) {
+    return c.json({ error: 'Invalid or expired token exchange code' }, 400);
+  }
+
+  return c.json({
+    accessToken: grant.accessToken,
+    refreshToken: grant.refreshToken,
+    expiresInSeconds: grant.expiresInSeconds
+  });
 });
 
 // Get SSO login URL for organization (public endpoint for login page)

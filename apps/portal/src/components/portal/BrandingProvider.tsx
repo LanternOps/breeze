@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { buildPortalApiUrl } from '@/lib/api';
 
 export interface BrandingConfig {
   name: string;
@@ -40,17 +41,21 @@ export function BrandingProvider({ children }: BrandingProviderProps) {
     // Fetch branding configuration from API
     async function fetchBranding() {
       try {
-        const response = await fetch('/api/portal/branding');
+        const domain = typeof window !== 'undefined'
+          ? window.location.hostname
+          : 'localhost';
+        const response = await fetch(buildPortalApiUrl(`/portal/branding/${encodeURIComponent(domain)}`));
         if (response.ok) {
           const data = await response.json();
-          setBranding({ ...defaultBranding, ...data });
+          const brandingData = data?.branding ?? data;
+          setBranding({ ...defaultBranding, ...brandingData });
 
           // Apply custom CSS variables if colors are defined
-          if (data.primaryColor) {
-            document.documentElement.style.setProperty('--brand-primary', data.primaryColor);
+          if (brandingData.primaryColor) {
+            document.documentElement.style.setProperty('--brand-primary', brandingData.primaryColor);
           }
-          if (data.accentColor) {
-            document.documentElement.style.setProperty('--brand-accent', data.accentColor);
+          if (brandingData.accentColor) {
+            document.documentElement.style.setProperty('--brand-accent', brandingData.accentColor);
           }
         }
       } catch {

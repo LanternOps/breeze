@@ -13,8 +13,10 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
@@ -67,6 +69,18 @@ var statusCmd = &cobra.Command{
 	},
 }
 
+var userHelperCmd = &cobra.Command{
+	Use:   "user-helper",
+	Short: "Run as a per-user session helper (started automatically by the system)",
+	Long: `The user-helper runs in the logged-in user's session context and provides
+desktop notifications, system tray icon, screen capture, clipboard access,
+and user-context script execution. It communicates with the root daemon
+via a local IPC socket and has no direct network access.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		runUserHelper()
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
@@ -75,6 +89,7 @@ func init() {
 	rootCmd.AddCommand(enrollCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(userHelperCmd)
 }
 
 func main() {
@@ -298,4 +313,43 @@ func checkStatus() {
 	fmt.Printf("Heartbeat Interval: %d seconds\n", cfg.HeartbeatIntervalSeconds)
 	fmt.Printf("Metrics Interval: %d seconds\n", cfg.MetricsIntervalSeconds)
 	fmt.Printf("Enabled Collectors: %v\n", cfg.EnabledCollectors)
+}
+
+// runUserHelper starts the per-user session helper process.
+// It connects to the root daemon via IPC and handles user-context operations.
+func runUserHelper() {
+	// Minimal logging for user helper (no config file needed)
+	logging.Init("text", "info", os.Stdout)
+
+	socketPath := ipc.DefaultSocketPath()
+	if cfgFile != "" {
+		// Try to load config for custom socket path
+		if cfg, err := config.Load(cfgFile); err == nil && cfg.IPCSocketPath != "" {
+			socketPath = cfg.IPCSocketPath
+		}
+	}
+
+	log.Info("starting user helper",
+		"version", version,
+		"socket", socketPath,
+		"pid", os.Getpid(),
+	)
+
+	client := userhelper.New(socketPath)
+
+	// Handle shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		log.Info("shutting down user helper")
+		client.Stop()
+	}()
+
+	if err := client.Run(); err != nil {
+		log.Error("user helper error", "error", err)
+		os.Exit(1)
+	}
+
+	log.Info("user helper stopped")
 }

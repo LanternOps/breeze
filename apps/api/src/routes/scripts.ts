@@ -8,8 +8,7 @@ import {
   scriptExecutions,
   scriptExecutionBatches,
   devices,
-  deviceCommands,
-  organizations
+  deviceCommands
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { sendCommandToAgent } from './agentWs';
@@ -24,31 +23,11 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(orgId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
-  if (auth.scope === 'organization') {
-    return auth.orgId === orgId;
-  }
-
-  if (auth.scope === 'partner') {
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(organizations.id, orgId),
-          eq(organizations.partnerId, auth.partnerId as string)
-        )
-      )
-      .limit(1);
-
-    return Boolean(org);
-  }
-
-  // system scope has access to all
-  return true;
+function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+  return auth.canAccessOrg(orgId);
 }
 
-async function getScriptWithOrgCheck(scriptId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getScriptWithOrgCheck(scriptId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [script] = await db
     .select()
     .from(scripts)
@@ -66,7 +45,7 @@ async function getScriptWithOrgCheck(scriptId: string, auth: { scope: string; pa
 
   // Check org access for non-system scripts
   if (script.orgId) {
-    const hasAccess = await ensureOrgAccess(script.orgId, auth);
+    const hasAccess = ensureOrgAccess(script.orgId, auth);
     if (!hasAccess) {
       return null;
     }
@@ -168,7 +147,7 @@ scriptRoutes.get(
       }
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
-        const hasAccess = await ensureOrgAccess(query.orgId, auth);
+        const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
@@ -183,13 +162,7 @@ scriptRoutes.get(
           conditions.push(eq(scripts.orgId, query.orgId));
         }
       } else {
-        // Get scripts from all orgs under this partner
-        const partnerOrgs = await db
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, auth.partnerId as string));
-
-        const orgIds = partnerOrgs.map(o => o.id);
+        const orgIds = auth.accessibleOrgIds ?? [];
         if (orgIds.length === 0 && query.includeSystem !== 'true') {
           return c.json({
             data: [],
@@ -319,7 +292,7 @@ scriptRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (body.orgId) {
-        const hasAccess = await ensureOrgAccess(body.orgId, auth);
+        const hasAccess = ensureOrgAccess(body.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
@@ -422,7 +395,7 @@ scriptRoutes.post(
       if (!orgId) {
         return c.json({ error: 'orgId is required for partner scope' }, 400);
       }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
+      const hasAccess = ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
@@ -617,7 +590,7 @@ scriptRoutes.post(
     // Check access to each device's org
     const validDevices: typeof deviceRecords = [];
     for (const device of deviceRecords) {
-      const hasAccess = await ensureOrgAccess(device.orgId, auth);
+      const hasAccess = ensureOrgAccess(device.orgId, auth);
       if (hasAccess) {
         // Also check OS compatibility
         if (script.osTypes.includes(device.osType)) {
@@ -871,7 +844,7 @@ scriptRoutes.get(
 
     // Check access to the device's org
     if (execution.deviceOrgId) {
-      const hasAccess = await ensureOrgAccess(execution.deviceOrgId, auth);
+      const hasAccess = ensureOrgAccess(execution.deviceOrgId, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access denied' }, 403);
       }
@@ -908,7 +881,7 @@ scriptRoutes.post(
 
     // Check access
     if (execution.deviceOrgId) {
-      const hasAccess = await ensureOrgAccess(execution.deviceOrgId, auth);
+      const hasAccess = ensureOrgAccess(execution.deviceOrgId, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access denied' }, 403);
       }

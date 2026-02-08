@@ -48,7 +48,9 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       partnerId: null,
       orgId: 'org-123',
-      token: { sub: 'user-123' }
+      token: { sub: 'user-123' },
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId: string) => orgId === 'org-123'
     });
     return next();
   }),
