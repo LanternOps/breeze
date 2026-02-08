@@ -123,9 +123,36 @@ type DbRow = {
   userName: string | null;
 };
 
+function resolveActorName(row: DbRow, details?: Record<string, unknown> | null): string {
+  if (row.userName) {
+    return row.userName;
+  }
+
+  if (row.log.actorEmail) {
+    return row.log.actorEmail;
+  }
+
+  const rawActorId = typeof details?.rawActorId === 'string' ? details.rawActorId : null;
+
+  if (row.log.actorType === 'agent') {
+    return rawActorId ? `Agent ${rawActorId.slice(0, 8)}` : 'Agent';
+  }
+
+  if (row.log.actorType === 'api_key') {
+    return rawActorId ? `API Key ${rawActorId.slice(0, 8)}` : 'API Key';
+  }
+
+  if (row.log.actorType === 'system') {
+    return 'System';
+  }
+
+  return 'Unknown User';
+}
+
 function flattenEntry(row: DbRow) {
   const log = row.log;
   const details = log.details as Record<string, unknown> | null;
+  const actorName = resolveActorName(row, details);
   return {
     id: log.id,
     timestamp: log.timestamp.toISOString(),
@@ -137,7 +164,7 @@ function flattenEntry(row: DbRow) {
     userAgent: log.userAgent ?? '',
     sessionId: details?.sessionId ?? null,
     user: {
-      name: row.userName ?? log.actorEmail ?? 'Unknown',
+      name: actorName,
       email: log.actorEmail ?? '',
       role: log.actorType,
       department: ''
@@ -152,12 +179,13 @@ function flattenEntry(row: DbRow) {
 function toFullEntry(row: DbRow) {
   const log = row.log;
   const details = log.details as Record<string, unknown> | null;
+  const actorName = resolveActorName(row, details);
   return {
     id: log.id,
     timestamp: log.timestamp.toISOString(),
     user: {
       id: log.actorId,
-      name: row.userName ?? log.actorEmail ?? 'Unknown',
+      name: actorName,
       email: log.actorEmail ?? '',
       role: log.actorType
     },
@@ -265,11 +293,12 @@ function toCsv(rows: DbRow[]): string {
 
   const csvRows = rows.map((row) => {
     const log = row.log;
+    const actorName = resolveActorName(row, log.details as Record<string, unknown> | null);
     const values = [
       log.id,
       log.timestamp.toISOString(),
       log.actorId,
-      row.userName ?? '',
+      actorName,
       log.actorEmail ?? '',
       log.action,
       log.resourceType,
@@ -292,11 +321,13 @@ function summarizeUsers(rows: DbRow[]) {
 
   for (const row of rows) {
     const userId = row.log.actorId;
+    const details = row.log.details as Record<string, unknown> | null;
+    const actorName = resolveActorName(row, details);
     const existing = byUser.get(userId);
     if (!existing) {
       byUser.set(userId, {
         userId,
-        userName: row.userName ?? row.log.actorEmail ?? 'Unknown',
+        userName: actorName,
         userEmail: row.log.actorEmail ?? '',
         actionCount: 1,
         lastActiveAt: row.log.timestamp.toISOString()
