@@ -149,6 +149,19 @@ const FALLBACK_AUDIT_PREFIXES = [
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
+  // Agent telemetry endpoints are high-volume and many already emit explicit audit events.
+  /^\/api\/v1\/agents\/[^/]+\/heartbeat$/,
+  /^\/api\/v1\/agents\/[^/]+\/security\/status$/,
+  /^\/api\/v1\/agents\/[^/]+\/eventlogs$/,
+  /^\/api\/v1\/agents\/[^/]+\/patches$/,
+  /^\/api\/v1\/agents\/[^/]+\/commands\/[^/]+\/result$/,
+  /^\/api\/v1\/agents\/[^/]+\/hardware$/,
+  /^\/api\/v1\/agents\/[^/]+\/software$/,
+  /^\/api\/v1\/agents\/[^/]+\/disks$/,
+  /^\/api\/v1\/agents\/[^/]+\/network$/,
+  /^\/api\/v1\/agents\/[^/]+\/connections$/,
+  /^\/api\/v1\/agents\/[^/]+\/registry-state$/,
+  /^\/api\/v1\/agents\/[^/]+\/config-state$/,
   /^\/api\/v1\/security\/recommendations\/[^/]+\/(complete|dismiss)$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/processes\/[^/]+\/kill$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/value$/,
