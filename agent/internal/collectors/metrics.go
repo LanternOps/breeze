@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -106,19 +107,24 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 		metrics.DiskUsedGB = float64(diskUsage.Used) / 1024 / 1024 / 1024
 	}
 
+	// Elapsed time since last collection (shared by both aggregate and per-interface)
+	elapsed := now.Sub(c.lastTime).Seconds()
+
 	// Network — aggregate totals (backward-compatible)
 	netIO, err := net.IOCounters(false)
 	if err == nil && len(netIO) > 0 {
 		currentIn := netIO[0].BytesRecv
 		currentOut := netIO[0].BytesSent
 
-		elapsed := now.Sub(c.lastTime).Seconds()
-		if c.lastNetIn > 0 && currentIn >= c.lastNetIn && currentOut >= c.lastNetOut && elapsed > 1 && elapsed < 300 {
-			metrics.NetworkInBytes = currentIn - c.lastNetIn
-			metrics.NetworkOutBytes = currentOut - c.lastNetOut
-
-			metrics.BandwidthInBps = uint64(float64(metrics.NetworkInBytes) / elapsed)
-			metrics.BandwidthOutBps = uint64(float64(metrics.NetworkOutBytes) / elapsed)
+		if c.lastNetIn > 0 && elapsed > 1 && elapsed < 300 {
+			if currentIn >= c.lastNetIn {
+				metrics.NetworkInBytes = currentIn - c.lastNetIn
+				metrics.BandwidthInBps = uint64(float64(metrics.NetworkInBytes) / elapsed)
+			}
+			if currentOut >= c.lastNetOut {
+				metrics.NetworkOutBytes = currentOut - c.lastNetOut
+				metrics.BandwidthOutBps = uint64(float64(metrics.NetworkOutBytes) / elapsed)
+			}
 		}
 
 		c.lastNetIn = currentIn
@@ -128,13 +134,14 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 	// Network — per-interface bandwidth
 	perIface, err := net.IOCounters(true)
 	if err == nil {
-		ifaceElapsed := now.Sub(c.lastTime).Seconds()
-		hasHistory := !c.lastTime.IsZero() && ifaceElapsed > 1 && ifaceElapsed < 300
+		hasHistory := !c.lastTime.IsZero() && elapsed > 1 && elapsed < 300
+		seen := make(map[string]bool)
 
 		for _, iface := range perIface {
 			if skipInterface(iface.Name) {
 				continue
 			}
+			seen[iface.Name] = true
 
 			bw := InterfaceBandwidth{
 				Name:       iface.Name,
@@ -149,10 +156,10 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 			if hasHistory {
 				if prev, ok := c.lastIface[iface.Name]; ok {
 					if iface.BytesRecv >= prev.bytesRecv {
-						bw.InBytesPerS = uint64(float64(iface.BytesRecv-prev.bytesRecv) / ifaceElapsed)
+						bw.InBytesPerS = uint64(float64(iface.BytesRecv-prev.bytesRecv) / elapsed)
 					}
 					if iface.BytesSent >= prev.bytesSent {
-						bw.OutBytesPerS = uint64(float64(iface.BytesSent-prev.bytesSent) / ifaceElapsed)
+						bw.OutBytesPerS = uint64(float64(iface.BytesSent-prev.bytesSent) / elapsed)
 					}
 				}
 			}
@@ -170,6 +177,14 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 				errsOut:     iface.Errout,
 			}
 		}
+
+		// Prune stale entries for interfaces no longer present
+		for name := range c.lastIface {
+			if !seen[name] {
+				delete(c.lastIface, name)
+				delete(c.speedCache, name)
+			}
+		}
 	}
 
 	c.lastTime = now
@@ -185,22 +200,17 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 
 // skipInterface returns true for virtual/loopback interfaces that shouldn't be tracked.
 func skipInterface(name string) bool {
-	switch {
-	case name == "lo" || name == "lo0":
+	if name == "lo" || name == "lo0" {
 		return true
-	case len(name) >= 4 && name[:4] == "veth":
-		return true
-	case len(name) >= 6 && name[:6] == "docker":
-		return true
-	case len(name) >= 3 && name[:3] == "br-":
-		return true
-	// Windows virtual adapters
-	case len(name) >= 6 && name[:6] == "vEther":
-		return true
-	case len(name) >= 8 && name[:8] == "isatap..":
-		return true
-	case len(name) >= 7 && name[:7] == "Teredo ":
-		return true
+	}
+	prefixes := []string{
+		"veth", "docker", "br-",       // Linux container/bridge
+		"vEther", "isatap", "Teredo",  // Windows virtual
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
 	}
 	return false
 }

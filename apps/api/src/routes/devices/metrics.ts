@@ -195,8 +195,8 @@ metricsRoutes.get(
         avgDiskUsedGb: sql<number>`avg(${deviceMetrics.diskUsedGb})`,
         totalNetworkIn: sql<bigint>`sum(${deviceMetrics.networkInBytes})`,
         totalNetworkOut: sql<bigint>`sum(${deviceMetrics.networkOutBytes})`,
-        avgBandwidthIn: sql<number>`avg(${deviceMetrics.bandwidthInBps})`,
-        avgBandwidthOut: sql<number>`avg(${deviceMetrics.bandwidthOutBps})`,
+        avgBandwidthIn: sql<number>`avg(${deviceMetrics.bandwidthInBps})::float8`,
+        avgBandwidthOut: sql<number>`avg(${deviceMetrics.bandwidthOutBps})::float8`,
         avgProcessCount: sql<number>`avg(${deviceMetrics.processCount})`
       })
       .from(deviceMetrics)
