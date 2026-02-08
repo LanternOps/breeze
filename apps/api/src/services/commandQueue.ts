@@ -28,6 +28,7 @@ export const CommandTypes = {
   TASK_RUN: 'task_run',
   TASK_ENABLE: 'task_enable',
   TASK_DISABLE: 'task_disable',
+  TASK_HISTORY: 'task_history',
 
   // Registry (Windows)
   REGISTRY_KEYS: 'registry_keys',

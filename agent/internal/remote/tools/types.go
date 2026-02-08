@@ -31,6 +31,7 @@ const (
 	CmdTaskRun     = "task_run"
 	CmdTaskEnable  = "task_enable"
 	CmdTaskDisable = "task_disable"
+	CmdTaskHistory = "task_history"
 
 	// Registry (Windows)
 	CmdRegistryKeys      = "registry_keys"
@@ -248,6 +249,21 @@ type TaskListResponse struct {
 	Page       int             `json:"page"`
 	Limit      int             `json:"limit"`
 	TotalPages int             `json:"totalPages"`
+}
+
+type TaskHistoryEntry struct {
+	ID         string `json:"id"`
+	EventID    int    `json:"eventId"`
+	Timestamp  string `json:"timestamp"`
+	Level      string `json:"level"`
+	Message    string `json:"message"`
+	ResultCode *int   `json:"resultCode,omitempty"`
+}
+
+type TaskHistoryResponse struct {
+	History []TaskHistoryEntry `json:"history"`
+	Path    string             `json:"path"`
+	Total   int                `json:"total"`
 }
 
 // Registry types

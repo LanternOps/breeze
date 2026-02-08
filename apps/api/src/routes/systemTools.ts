@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { basename } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
@@ -71,6 +72,7 @@ interface EventLogEntry {
   category: string;
   user: string | null;
   computer: string;
+  rawXml?: string;
 }
 
 interface ScheduledTaskInfo {
@@ -92,6 +94,15 @@ interface ScheduledTaskInfo {
     path?: string;
     arguments?: string;
   }>;
+}
+
+interface TaskHistoryEntry {
+  id: string;
+  eventId: number;
+  timestamp: string;
+  level: 'info' | 'warning' | 'error';
+  message: string;
+  resultCode?: number;
 }
 
 interface FileEntryInfo {
@@ -332,6 +343,64 @@ function mapRegistryValueFromAgent(value: unknown): RegistryValue | null {
   };
 }
 
+function normalizeServiceStatus(value?: string): ServiceInfo['status'] {
+  switch ((value ?? '').toLowerCase()) {
+    case 'running':
+      return 'running';
+    case 'stopped':
+      return 'stopped';
+    case 'paused':
+      return 'paused';
+    case 'startpending':
+    case 'starting':
+    case 'continuepending':
+      return 'starting';
+    case 'stoppending':
+    case 'stopping':
+      return 'stopping';
+    default:
+      return 'stopped';
+  }
+}
+
+function normalizeServiceStartType(value?: string): ServiceInfo['startType'] {
+  const raw = (value ?? '').toLowerCase();
+  if (raw.includes('delayed')) return 'auto_delayed';
+  if (raw.includes('automatic') || raw === 'enabled' || raw === 'auto') return 'auto';
+  if (raw.includes('disabled') || raw === 'masked') return 'disabled';
+  if (raw.includes('manual')) return 'manual';
+  return 'manual';
+}
+
+function mapServiceFromAgent(service: unknown): ServiceInfo | null {
+  const record = asRecord(service);
+  if (!record) return null;
+
+  const name = asString(record.name);
+  if (!name) return null;
+
+  const displayName = asString(record.displayName) ?? name;
+  const status = normalizeServiceStatus(asString(record.status));
+  const startType = normalizeServiceStartType(asString(record.startType) ?? asString(record.startupType));
+  const account = asString(record.account) ?? '';
+  const description = asString(record.description) ?? '';
+  const path = asString(record.path) ?? '';
+  const dependencies = Array.isArray(record.dependencies)
+    ? record.dependencies.map((value) => String(value))
+    : [];
+
+  return {
+    name,
+    displayName,
+    status,
+    startType,
+    account,
+    description,
+    path,
+    dependencies
+  };
+}
+
 function normalizeTaskState(value?: string): ScheduledTaskInfo['state'] {
   switch ((value ?? '').toLowerCase()) {
     case 'ready':
@@ -416,6 +485,97 @@ function normalizeScheduledTask(task: unknown): ScheduledTaskInfo | null {
   };
 }
 
+function normalizeTaskHistoryLevel(value?: string): TaskHistoryEntry['level'] {
+  switch ((value ?? '').toLowerCase()) {
+    case 'error':
+    case 'critical':
+      return 'error';
+    case 'warning':
+      return 'warning';
+    default:
+      return 'info';
+  }
+}
+
+function mapTaskHistoryFromAgent(entry: unknown): TaskHistoryEntry | null {
+  const record = asRecord(entry);
+  if (!record) return null;
+
+  const id = asString(record.id);
+  const eventId = asOptionalNumber(record.eventId);
+  const timestamp = asString(record.timestamp);
+  const message = asString(record.message);
+  if (!id || eventId === null || !timestamp || !message) return null;
+
+  const resultCode = asOptionalNumber(record.resultCode);
+
+  return {
+    id,
+    eventId,
+    timestamp,
+    level: normalizeTaskHistoryLevel(asString(record.level)),
+    message,
+    ...(resultCode === null ? {} : { resultCode })
+  };
+}
+
+function normalizeEventLevel(value?: string): EventLogEntry['level'] {
+  switch ((value ?? '').toLowerCase()) {
+    case 'critical':
+      return 'critical';
+    case 'error':
+      return 'error';
+    case 'warning':
+      return 'warning';
+    case 'verbose':
+      return 'verbose';
+    case 'information':
+    case 'info':
+    default:
+      return 'information';
+  }
+}
+
+function mapEventLogFromAgent(log: unknown): EventLogInfo | null {
+  const record = asRecord(log);
+  if (!record) return null;
+
+  const name = asString(record.name);
+  if (!name) return null;
+
+  return {
+    name,
+    displayName: asString(record.displayName) ?? name,
+    recordCount: asNumber(record.recordCount) ?? 0,
+    maxSize: asNumber(record.maxSizeBytes) ?? asNumber(record.maxSize) ?? 0,
+    retentionDays: asNumber(record.retentionDays) ?? 0,
+    lastWriteTime: asString(record.lastWriteTime) ?? ''
+  };
+}
+
+function mapEventEntryFromAgent(entry: unknown): EventLogEntry | null {
+  const record = asRecord(entry);
+  if (!record) return null;
+
+  const recordId = asOptionalNumber(record.recordId);
+  if (recordId === null) return null;
+
+  const eventId = asOptionalNumber(record.eventId);
+
+  return {
+    recordId,
+    timeCreated: asString(record.timeCreated) ?? '',
+    level: normalizeEventLevel(asString(record.level)),
+    source: asString(record.source) ?? '',
+    eventId: eventId ?? 0,
+    message: asString(record.message) ?? '',
+    category: asString(record.category) ?? '',
+    user: asString(record.userId) ?? asString(record.user) ?? null,
+    computer: asString(record.computer) ?? asString(record.machineName) ?? '',
+    rawXml: asString(record.rawXml) ?? '',
+  };
+}
+
 // ============================================
 // VALIDATION SCHEMAS
 // ============================================
@@ -493,7 +653,15 @@ const taskPathParamSchema = z.object({
   path: z.string().min(1).max(512)
 });
 
+const taskHistoryQuerySchema = z.object({
+  limit: z.string().optional()
+});
+
 const fileListQuerySchema = z.object({
+  path: z.string().min(1).max(2048)
+});
+
+const fileDownloadQuerySchema = z.object({
   path: z.string().min(1).max(2048)
 });
 
@@ -570,8 +738,22 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.GET_PROCESS, {
+      pid
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to get process details';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      return c.json({ data: payload });
+    } catch (error) {
+      console.error('Failed to parse agent response for process details:', error);
+      return c.json({ error: 'Failed to parse agent response for process details' }, 502);
+    }
   }
 );
 
@@ -673,10 +855,13 @@ systemToolsRoutes.get(
 
     try {
       const data = JSON.parse(result.stdout || '{}');
+      const services = (Array.isArray(data.services) ? data.services : [])
+        .map(mapServiceFromAgent)
+        .filter((service: ServiceInfo | null): service is ServiceInfo => Boolean(service));
       return c.json({
-        data: data.services || [],
+        data: services,
         meta: {
-          total: data.total || 0,
+          total: typeof data.total === 'number' ? data.total : services.length,
           page: data.page || page,
           limit: data.limit || limit,
           totalPages: data.totalPages || 1
@@ -704,8 +889,26 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.GET_SERVICE, {
+      name
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to get service';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const service = mapServiceFromAgent(payload);
+      if (!service) {
+        return c.json({ error: 'Invalid service payload from agent' }, 502);
+      }
+      return c.json({ data: service });
+    } catch (error) {
+      console.error('Failed to parse agent response for service details:', error);
+      return c.json({ error: 'Failed to parse agent response for service details' }, 502);
+    }
   }
 );
 
@@ -724,8 +927,33 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.START_SERVICE, {
+      name
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'start_service',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: { name },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
+    });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to start service';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    return c.json({
+      success: true,
+      message: `Service ${name} started successfully`
+    });
   }
 );
 
@@ -744,8 +972,33 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.STOP_SERVICE, {
+      name
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'stop_service',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: { name },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
+    });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to stop service';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    return c.json({
+      success: true,
+      message: `Service ${name} stopped successfully`
+    });
   }
 );
 
@@ -764,8 +1017,33 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.RESTART_SERVICE, {
+      name
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'restart_service',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: { name },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
+    });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to restart service';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    return c.json({
+      success: true,
+      message: `Service ${name} restarted successfully`
+    });
   }
 );
 
@@ -803,7 +1081,7 @@ systemToolsRoutes.get(
       const payload = JSON.parse(result.stdout || '{}');
       const keys = (Array.isArray(payload.keys) ? payload.keys : [])
         .map(mapRegistryKeyFromAgent)
-        .filter((entry): entry is RegistryKey => Boolean(entry));
+        .filter((entry: RegistryKey | null): entry is RegistryKey => Boolean(entry));
       return c.json({ data: keys });
     } catch (error) {
       console.error('Failed to parse agent response for registry keys:', error);
@@ -842,7 +1120,7 @@ systemToolsRoutes.get(
       const payload = JSON.parse(result.stdout || '{}');
       const values = (Array.isArray(payload.values) ? payload.values : [])
         .map(mapRegistryValueFromAgent)
-        .filter((entry): entry is RegistryValue => Boolean(entry));
+        .filter((entry: RegistryValue | null): entry is RegistryValue => Boolean(entry));
       return c.json({ data: values });
     } catch (error) {
       console.error('Failed to parse agent response for registry values:', error);
@@ -1156,8 +1434,25 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.EVENT_LOGS_LIST, {}, {
+      userId: auth.user?.id,
+      timeoutMs: 30000
+    });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to list event logs' }, 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const logs = (Array.isArray(payload.logs) ? payload.logs : [])
+        .map(mapEventLogFromAgent)
+        .filter((entry: EventLogInfo | null): entry is EventLogInfo => Boolean(entry));
+      return c.json({ data: logs });
+    } catch (error) {
+      console.error('Failed to parse agent response for event logs:', error);
+      return c.json({ error: 'Failed to parse agent response for event logs' }, 502);
+    }
   }
 );
 
@@ -1176,8 +1471,31 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.EVENT_LOGS_LIST, {}, {
+      userId: auth.user?.id,
+      timeoutMs: 30000
+    });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to get event log info' }, 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const logs = (Array.isArray(payload.logs) ? payload.logs : [])
+        .map(mapEventLogFromAgent)
+        .filter((entry: EventLogInfo | null): entry is EventLogInfo => Boolean(entry));
+
+      const log = logs.find((entry: EventLogInfo) => entry.name.toLowerCase() === name.toLowerCase());
+      if (!log) {
+        return c.json({ error: 'Event log not found' }, 404);
+      }
+
+      return c.json({ data: log });
+    } catch (error) {
+      console.error('Failed to parse agent response for event log info:', error);
+      return c.json({ error: 'Failed to parse agent response for event log info' }, 502);
+    }
   }
 );
 
@@ -1198,8 +1516,40 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const { page, limit } = getPagination(query);
+
+    const result = await executeCommand(deviceId, CommandTypes.EVENT_LOGS_QUERY, {
+      logName: name,
+      level: query.level ?? '',
+      source: query.source ?? '',
+      eventId: query.eventId ?? 0,
+      page,
+      limit
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to query event logs' }, 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const events = (Array.isArray(payload.events) ? payload.events : [])
+        .map((entry: unknown) => mapEventEntryFromAgent(entry))
+        .filter((entry: EventLogEntry | null): entry is EventLogEntry => Boolean(entry));
+
+      return c.json({
+        data: events,
+        meta: {
+          total: typeof payload.total === 'number' ? payload.total : events.length,
+          page: typeof payload.page === 'number' ? payload.page : page,
+          limit: typeof payload.limit === 'number' ? payload.limit : limit,
+          totalPages: typeof payload.totalPages === 'number' ? payload.totalPages : 1
+        }
+      });
+    } catch (error) {
+      console.error('Failed to parse agent response for event query:', error);
+      return c.json({ error: 'Failed to parse agent response for event query' }, 502);
+    }
   }
 );
 
@@ -1218,8 +1568,27 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.EVENT_LOG_GET, {
+      logName: name,
+      recordId
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to get event';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const event = mapEventEntryFromAgent(payload);
+      if (!event) {
+        return c.json({ error: 'Invalid event payload from agent' }, 502);
+      }
+      return c.json({ data: event });
+    } catch (error) {
+      console.error('Failed to parse agent response for event detail:', error);
+      return c.json({ error: 'Failed to parse agent response for event detail' }, 502);
+    }
   }
 );
 
@@ -1262,7 +1631,7 @@ systemToolsRoutes.get(
       const rawTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
       const tasks = rawTasks
         .map(normalizeScheduledTask)
-        .filter((task): task is ScheduledTaskInfo => Boolean(task));
+        .filter((task: ScheduledTaskInfo | null): task is ScheduledTaskInfo => Boolean(task));
 
       return c.json({
         data: tasks,
@@ -1314,6 +1683,57 @@ systemToolsRoutes.get(
     } catch (error) {
       console.error('Failed to parse agent response for task details:', error);
       return c.json({ error: 'Failed to parse agent response for task details' }, 502);
+    }
+  }
+);
+
+// GET /api/v1/system-tools/devices/:deviceId/tasks/:path/history - Get task history
+systemToolsRoutes.get(
+  '/devices/:deviceId/tasks/:path/history',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', taskPathParamSchema),
+  zValidator('query', taskHistoryQuerySchema),
+  async (c) => {
+    const { deviceId, path } = c.req.valid('param');
+    const { limit: limitRaw } = c.req.valid('query');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const limitParsed = Number.parseInt(limitRaw ?? '50', 10);
+    const limit = Number.isFinite(limitParsed) ? Math.min(200, Math.max(1, limitParsed)) : 50;
+
+    const result = await executeCommand(deviceId, CommandTypes.TASK_HISTORY, {
+      path,
+      limit
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to get task history';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const history = (Array.isArray(payload.history) ? payload.history : [])
+        .map(mapTaskHistoryFromAgent)
+        .filter((entry: TaskHistoryEntry | null): entry is TaskHistoryEntry => Boolean(entry));
+
+      return c.json({
+        data: history,
+        meta: {
+          total: typeof payload.total === 'number' ? payload.total : history.length,
+          path: typeof payload.path === 'string' ? payload.path : path,
+          limit
+        }
+      });
+    } catch (error) {
+      console.error('Failed to parse agent response for task history:', error);
+      return c.json({ error: 'Failed to parse agent response for task history' }, 502);
     }
   }
 );
@@ -1488,6 +1908,54 @@ systemToolsRoutes.get(
       return c.json({ data: data.entries || [] });
     } catch {
       return c.json({ error: 'Failed to parse agent response for file listing' }, 502);
+    }
+  }
+);
+
+// GET /api/v1/system-tools/devices/:deviceId/files/download - Download a file
+systemToolsRoutes.get(
+  '/devices/:deviceId/files/download',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('query', fileDownloadQuerySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { path } = c.req.valid('query');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const result = await executeCommand(deviceId, CommandTypes.FILE_READ, {
+      path,
+      encoding: 'base64'
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to read file';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const encodedContent = typeof payload.content === 'string' ? payload.content : '';
+      if (!encodedContent) {
+        return c.json({ error: 'Invalid file payload from agent' }, 502);
+      }
+
+      const fileData = Buffer.from(encodedContent, 'base64');
+      const filename = basename(typeof payload.path === 'string' ? payload.path : path) || 'download.bin';
+
+      c.header('Content-Type', 'application/octet-stream');
+      c.header('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '\\"')}"`);
+      c.header('Content-Length', String(fileData.length));
+      return c.body(fileData);
+    } catch (error) {
+      console.error('Failed to parse agent response for file download:', error);
+      return c.json({ error: 'Failed to parse agent response for file download' }, 502);
     }
   }
 );

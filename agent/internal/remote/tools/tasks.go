@@ -50,3 +50,17 @@ func DisableTask(payload map[string]any) CommandResult {
 	path := GetPayloadString(payload, "path", "")
 	return disableTaskOS(path, startTime)
 }
+
+// GetTaskHistory returns recent task scheduler history for a task path
+func GetTaskHistory(payload map[string]any) CommandResult {
+	startTime := time.Now()
+	path := GetPayloadString(payload, "path", "")
+	limit := GetPayloadInt(payload, "limit", 50)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return getTaskHistoryOS(path, limit, startTime)
+}

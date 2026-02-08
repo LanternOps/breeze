@@ -37,6 +37,7 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdTaskRun:     handleTaskRun,
 	tools.CmdTaskEnable:  handleTaskEnable,
 	tools.CmdTaskDisable: handleTaskDisable,
+	tools.CmdTaskHistory: handleTaskHistory,
 
 	// Registry (Windows)
 	tools.CmdRegistryKeys:      handleRegistryKeys,
@@ -154,6 +155,10 @@ func handleTaskEnable(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleTaskDisable(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.DisableTask(cmd.Payload)
+}
+
+func handleTaskHistory(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.GetTaskHistory(cmd.Payload)
 }
 
 func handleRegistryKeys(_ *Heartbeat, cmd Command) tools.CommandResult {

@@ -138,3 +138,23 @@ func TestExecutePatchRollbackCommandCallsProviderUninstall(t *testing.T) {
 		t.Fatalf("expected rolledBackCount 1, got %#v", summary["rolledBackCount"])
 	}
 }
+
+func TestInstalledPatchesToMapsOmitsUnknownInstalledAt(t *testing.T) {
+	h := &Heartbeat{}
+
+	items := h.installedPatchesToMaps([]patching.InstalledPatch{
+		{
+			ID:       "windows-update:kb5050001",
+			Provider: "windows-update",
+			Title:    "2026-01 Cumulative Update for Windows 11 (KB5050001)",
+			Version:  "10.0.1",
+		},
+	})
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 mapped item, got %d", len(items))
+	}
+	if _, ok := items[0]["installedAt"]; ok {
+		t.Fatalf("expected installedAt to be omitted when unknown")
+	}
+}

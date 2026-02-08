@@ -108,6 +108,15 @@ type ApiTask = {
   actions?: Array<{ type: string; path?: string; arguments?: string }>;
 };
 
+type ApiTaskHistory = {
+  id: string;
+  eventId: number;
+  timestamp: string;
+  level: string;
+  message: string;
+  resultCode?: number;
+};
+
 const normalizeDeviceOs = (value?: string | null): DeviceOs => {
   switch (value) {
     case 'windows':
@@ -230,7 +239,7 @@ const mapEventEntry = (entry: ApiEventEntry, logName: string): EventLogEntry => 
   eventId: entry.eventId,
   message: entry.message,
   taskCategory: entry.category,
-  userId: entry.user,
+  userId: entry.user ?? undefined,
   computerName: entry.computer,
   rawXml: entry.rawXml
 });
@@ -344,6 +353,27 @@ const mapTaskDetails = (task: ApiTask): TaskDetails => {
     }
   };
 };
+
+const mapTaskHistoryLevel = (level?: string): TaskHistory['level'] => {
+  switch ((level ?? '').toLowerCase()) {
+    case 'error':
+    case 'critical':
+      return 'error';
+    case 'warning':
+      return 'warning';
+    default:
+      return 'info';
+  }
+};
+
+const mapTaskHistoryEntry = (entry: ApiTaskHistory): TaskHistory => ({
+  id: String(entry.id),
+  eventId: Number(entry.eventId ?? 0),
+  timestamp: entry.timestamp ?? '',
+  level: mapTaskHistoryLevel(entry.level),
+  message: entry.message ?? '',
+  ...(entry.resultCode === undefined ? {} : { resultCode: Number(entry.resultCode) })
+});
 
 export default function RemoteToolsPage({
   deviceId,
@@ -570,9 +600,16 @@ export default function RemoteToolsPage({
     return mapTaskDetails(json.data as ApiTask);
   }, [deviceId]);
 
-  const handleGetTaskHistory = useCallback(async (): Promise<TaskHistory[]> => {
-    return [];
-  }, []);
+  const handleGetTaskHistory = useCallback(async (path: string): Promise<TaskHistory[]> => {
+    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/history?limit=100`);
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || 'Failed to load task history');
+    }
+    const json = await res.json();
+    const data: ApiTaskHistory[] = Array.isArray(json.data) ? json.data : [];
+    return data.map(mapTaskHistoryEntry);
+  }, [deviceId]);
 
   const handleEnableTask = useCallback(async (path: string) => {
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/enable`, {
