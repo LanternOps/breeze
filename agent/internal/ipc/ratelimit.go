@@ -12,7 +12,11 @@ type RateLimiter struct {
 	window      time.Duration
 	mu          sync.Mutex
 	attempts    map[uint32][]time.Time
+	lastCleanup time.Time
 }
+
+// cleanupInterval controls how often we scan for and remove stale UIDs.
+const cleanupInterval = 5 * time.Minute
 
 // NewRateLimiter creates a rate limiter with the given max attempts per window.
 func NewRateLimiter(maxAttempts int, window time.Duration) *RateLimiter {
@@ -20,6 +24,7 @@ func NewRateLimiter(maxAttempts int, window time.Duration) *RateLimiter {
 		maxAttempts: maxAttempts,
 		window:      window,
 		attempts:    make(map[uint32][]time.Time),
+		lastCleanup: time.Now(),
 	}
 }
 
@@ -31,9 +36,26 @@ func (r *RateLimiter) Allow(uid uint32) bool {
 	now := time.Now()
 	cutoff := now.Add(-r.window)
 
-	// Prune expired entries
+	// Periodically prune departed UIDs
+	if now.Sub(r.lastCleanup) > cleanupInterval {
+		for u, times := range r.attempts {
+			allExpired := true
+			for _, t := range times {
+				if t.After(cutoff) {
+					allExpired = false
+					break
+				}
+			}
+			if allExpired {
+				delete(r.attempts, u)
+			}
+		}
+		r.lastCleanup = now
+	}
+
+	// Prune expired entries for this UID (allocate new slice to avoid retaining old data)
 	existing := r.attempts[uid]
-	pruned := existing[:0]
+	pruned := make([]time.Time, 0, len(existing))
 	for _, t := range existing {
 		if t.After(cutoff) {
 			pruned = append(pruned, t)

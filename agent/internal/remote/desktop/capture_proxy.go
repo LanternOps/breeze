@@ -57,8 +57,14 @@ func (p *proxyCapturer) GetScreenBounds() (width, height int, err error) {
 		return 0, 0, fmt.Errorf("proxy: unmarshal bounds: %w", err)
 	}
 
-	w, _ := result["width"].(float64)
-	h, _ := result["height"].(float64)
+	w, wOK := result["width"].(float64)
+	h, hOK := result["height"].(float64)
+	if !wOK || !hOK {
+		return 0, 0, fmt.Errorf("proxy: screen bounds missing width/height fields")
+	}
+	if int(w) <= 0 || int(h) <= 0 {
+		return 0, 0, fmt.Errorf("proxy: invalid screen bounds %dx%d", int(w), int(h))
+	}
 	return int(w), int(h), nil
 }
 
@@ -104,6 +110,13 @@ func (p *proxyCapturer) captureViaIPC(x, y, width, height int) (*image.RGBA, err
 		return nil, fmt.Errorf("proxy: unmarshal frame: %w", err)
 	}
 
+	if frameData.Width <= 0 || frameData.Height <= 0 {
+		return nil, fmt.Errorf("proxy: invalid frame dimensions %dx%d", frameData.Width, frameData.Height)
+	}
+	expected := frameData.Width * frameData.Height * 4
+	if len(frameData.Data) != expected {
+		return nil, fmt.Errorf("proxy: frame data size mismatch: got %d bytes, expected %d (%dx%dx4)", len(frameData.Data), expected, frameData.Width, frameData.Height)
+	}
 	img := image.NewRGBA(image.Rect(0, 0, frameData.Width, frameData.Height))
 	copy(img.Pix, frameData.Data)
 	return img, nil

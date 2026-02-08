@@ -1,6 +1,7 @@
 package ipc
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"net"
 	"testing"
@@ -153,6 +154,82 @@ func TestConnSequenceReplay(t *testing.T) {
 	}
 	if recv2.Seq != 2 {
 		t.Errorf("expected seq 2, got %d", recv2.Seq)
+	}
+}
+
+func TestConnSequenceReplayRejection(t *testing.T) {
+	serverConn, clientConn := createSocketPair(t)
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	server := NewConn(serverConn)
+	client := NewConn(clientConn)
+
+	// Send first legitimate message (seq=1)
+	payload, _ := json.Marshal("first")
+	go client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload})
+
+	server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err := server.Recv()
+	if err != nil {
+		t.Fatalf("first recv: %v", err)
+	}
+
+	// Send second legitimate message (seq=2)
+	payload2, _ := json.Marshal("second")
+	go client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload2})
+
+	server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err = server.Recv()
+	if err != nil {
+		t.Fatalf("second recv: %v", err)
+	}
+
+	// Now craft a raw message with seq=1 (replay) and write it directly
+	replayEnv := Envelope{ID: "replay", Seq: 1, Type: TypePing, Payload: payload}
+	// Compute HMAC with zero key (no session key set)
+	replayEnv.HMAC = server.computeHMAC(&replayEnv)
+	rawBytes, _ := json.Marshal(replayEnv)
+
+	// Write directly to the raw connection (bypass Conn.Send which auto-increments seq)
+	header := make([]byte, 4)
+	binary.BigEndian.PutUint32(header, uint32(len(rawBytes)))
+	go func() {
+		clientConn.Write(header)
+		clientConn.Write(rawBytes)
+	}()
+
+	server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err = server.Recv()
+	if err == nil {
+		t.Fatal("expected replay rejection error, got nil")
+	}
+}
+
+func TestConnSequenceZeroRejection(t *testing.T) {
+	serverConn, clientConn := createSocketPair(t)
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	server := NewConn(serverConn)
+
+	// Craft a message with seq=0 and write directly
+	payload, _ := json.Marshal("zero")
+	env := Envelope{ID: "zero", Seq: 0, Type: TypePing, Payload: payload}
+	env.HMAC = server.computeHMAC(&env)
+	rawBytes, _ := json.Marshal(env)
+
+	header := make([]byte, 4)
+	binary.BigEndian.PutUint32(header, uint32(len(rawBytes)))
+	go func() {
+		clientConn.Write(header)
+		clientConn.Write(rawBytes)
+	}()
+
+	server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err := server.Recv()
+	if err == nil {
+		t.Fatal("expected seq=0 rejection, got nil")
 	}
 }
 

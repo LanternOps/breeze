@@ -2,6 +2,7 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -61,7 +62,10 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 	}
 
 	select {
-	case resp := <-ch:
+	case resp, ok := <-ch:
+		if !ok || resp == nil {
+			return nil, fmt.Errorf("session closed while waiting for response")
+		}
 		return resp, nil
 	case <-time.After(timeout):
 		return nil, ErrCommandTimeout

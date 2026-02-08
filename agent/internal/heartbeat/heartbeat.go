@@ -341,9 +341,6 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
-		if h.sessionBroker != nil {
-			h.sessionBroker.Close()
-		}
 		if h.backupMgr != nil {
 			h.backupMgr.Stop()
 		}
@@ -351,6 +348,8 @@ func (h *Heartbeat) Stop() {
 			h.auditLog.Log(audit.EventAgentStop, "", nil)
 			h.auditLog.Close()
 		}
+		// Close stopChan first — this signals broker.Listen() to call broker.Close()
+		// internally. The broker's Close() is idempotent via its closed flag.
 		close(h.stopChan)
 	})
 }
