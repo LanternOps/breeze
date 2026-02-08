@@ -96,8 +96,12 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	m.setLowLatency(transform)
 
 	// Begin streaming
-	comCall(transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
-	comCall(transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+	if _, err := comCall(transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0); err != nil {
+		slog.Warn("MFT BeginStreaming failed (non-fatal)", "error", err)
+	}
+	if _, err := comCall(transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0); err != nil {
+		slog.Warn("MFT StartOfStream failed (non-fatal)", "error", err)
+	}
 
 	m.transform = transform
 	m.width = width
@@ -511,55 +515,78 @@ func (m *mftEncoder) createSample(nv12 []byte) (uintptr, error) {
 }
 
 func (m *mftEncoder) drainOutput() ([]byte, error) {
-	// Create output buffer
-	var pOutputBuffer uintptr
-	outputBufSize := m.width * m.height // generous estimate for H264
-	hr, _, _ := procMFCreateMemoryBuffer.Call(
-		uintptr(uint32(outputBufSize)),
-		uintptr(unsafe.Pointer(&pOutputBuffer)),
-	)
-	if int32(hr) < 0 {
-		return nil, fmt.Errorf("MFCreateMemoryBuffer for output: 0x%08X", uint32(hr))
-	}
+	var allNALs []byte
 
-	// Create output sample
-	var pOutputSample uintptr
-	hr, _, _ = procMFCreateSample.Call(uintptr(unsafe.Pointer(&pOutputSample)))
-	if int32(hr) < 0 {
-		comRelease(pOutputBuffer)
-		return nil, fmt.Errorf("MFCreateSample for output: 0x%08X", uint32(hr))
-	}
-	comCall(pOutputSample, vtblAddBuffer, pOutputBuffer)
-	comRelease(pOutputBuffer) // sample owns it now
+	for {
+		// Create output buffer
+		var pOutputBuffer uintptr
+		outputBufSize := m.width * m.height // generous estimate for H264
+		hr, _, _ := procMFCreateMemoryBuffer.Call(
+			uintptr(uint32(outputBufSize)),
+			uintptr(unsafe.Pointer(&pOutputBuffer)),
+		)
+		if int32(hr) < 0 {
+			return allNALs, fmt.Errorf("MFCreateMemoryBuffer for output: 0x%08X", uint32(hr))
+		}
 
-	outputData := mftOutputDataBuffer{
-		dwStreamID: 0,
-		pSample:    pOutputSample,
-	}
-	var status uint32
+		// Create output sample
+		var pOutputSample uintptr
+		hr, _, _ = procMFCreateSample.Call(uintptr(unsafe.Pointer(&pOutputSample)))
+		if int32(hr) < 0 {
+			comRelease(pOutputBuffer)
+			return allNALs, fmt.Errorf("MFCreateSample for output: 0x%08X", uint32(hr))
+		}
+		comCall(pOutputSample, vtblAddBuffer, pOutputBuffer)
+		comRelease(pOutputBuffer) // sample owns it now
 
-	ret, _, _ := syscall.SyscallN(
-		m.vtblFn(vtblProcessOutput),
-		m.transform,
-		0, // flags
-		1, // output buffer count
-		uintptr(unsafe.Pointer(&outputData)),
-		uintptr(unsafe.Pointer(&status)),
-	)
+		outputData := mftOutputDataBuffer{
+			dwStreamID: 0,
+			pSample:    pOutputSample,
+		}
+		var status uint32
 
-	if uint32(ret) == mfETransformNeedInput {
+		ret, _, _ := syscall.SyscallN(
+			m.vtblFn(vtblProcessOutput),
+			m.transform,
+			0, // flags
+			1, // output buffer count
+			uintptr(unsafe.Pointer(&outputData)),
+			uintptr(unsafe.Pointer(&status)),
+		)
+
+		if uint32(ret) == mfETransformNeedInput {
+			comRelease(pOutputSample)
+			if len(allNALs) > 0 {
+				return allNALs, nil
+			}
+			return nil, nil // No output ready yet
+		}
+		if int32(ret) < 0 {
+			comRelease(pOutputSample)
+			return allNALs, fmt.Errorf("ProcessOutput: 0x%08X", uint32(ret))
+		}
+
+		// Extract encoded data from output sample
+		nalChunk, err := m.extractSampleData(pOutputSample)
 		comRelease(pOutputSample)
-		return nil, nil // No output ready yet
-	}
-	if int32(ret) < 0 {
-		comRelease(pOutputSample)
-		return nil, fmt.Errorf("ProcessOutput: 0x%08X", uint32(ret))
+		if err != nil {
+			return allNALs, err
+		}
+
+		allNALs = append(allNALs, nalChunk...)
+
+		// If MFT_OUTPUT_DATA_BUFFER_INCOMPLETE is set, more output is available
+		if outputData.dwStatus&mftOutputDataBufferIncomplete == 0 {
+			break
+		}
 	}
 
-	// Extract encoded data from output sample
+	return allNALs, nil
+}
+
+func (m *mftEncoder) extractSampleData(pSample uintptr) ([]byte, error) {
 	var pContiguous uintptr
-	_, err := comCall(pOutputSample, vtblConvertToContiguous, uintptr(unsafe.Pointer(&pContiguous)))
-	comRelease(pOutputSample)
+	_, err := comCall(pSample, vtblConvertToContiguous, uintptr(unsafe.Pointer(&pContiguous)))
 	if err != nil {
 		return nil, fmt.Errorf("ConvertToContiguousBuffer: %w", err)
 	}
@@ -576,13 +603,11 @@ func (m *mftEncoder) drainOutput() ([]byte, error) {
 		return nil, fmt.Errorf("output buffer Lock: %w", err)
 	}
 
-	// Copy NAL data
 	nalData := make([]byte, dataLen)
 	src := unsafe.Slice((*byte)(unsafe.Pointer(pData)), dataLen)
 	copy(nalData, src)
 
 	comCall(pContiguous, vtblBufUnlock)
-
 	return nalData, nil
 }
 
@@ -590,7 +615,7 @@ func (m *mftEncoder) drainOutput() ([]byte, error) {
 
 func (m *mftEncoder) SetCodec(codec Codec) error {
 	if codec != CodecH264 {
-		return fmt.Errorf("MFT encoder only supports H264")
+		return fmt.Errorf("%w: MFT encoder only supports H264, got %s", ErrInvalidCodec, codec)
 	}
 	return nil
 }
@@ -651,10 +676,13 @@ func (m *mftEncoder) shutdown() {
 	procMFShutdown.Call()
 	procCoUninitialize.Call()
 
-	if m.threadLocked {
-		runtime.UnlockOSThread()
-		m.threadLocked = false
-	}
+	// NOTE: We intentionally do NOT call runtime.UnlockOSThread() here.
+	// LockOSThread was called from the capture goroutine via Encode→initialize.
+	// shutdown() may be called from a different goroutine (e.g., Session.Stop).
+	// Calling UnlockOSThread from the wrong goroutine would unlock that goroutine's
+	// thread instead. The locked thread is released when the capture goroutine exits.
+	m.threadLocked = false
+
 	slog.Info("MFT H264 encoder shut down")
 }
 
