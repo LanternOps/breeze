@@ -135,6 +135,9 @@ func handleScheduleReboot(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	delayMinutes := tools.GetPayloadInt(cmd.Payload, "delayMinutes", 60)
+	if delayMinutes < 1 || delayMinutes > 10080 { // 1 min to 7 days
+		return tools.NewErrorResult(fmt.Errorf("delayMinutes must be 1-10080, got %d", delayMinutes), time.Since(start).Milliseconds())
+	}
 	reason := tools.GetPayloadString(cmd.Payload, "reason", "Scheduled by administrator")
 	source := tools.GetPayloadString(cmd.Payload, "source", "manual")
 
@@ -153,9 +156,7 @@ func handleScheduleReboot(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	state := h.rebootMgr.State()
-	stateJSON, _ := json.Marshal(state)
-	var stateMap map[string]any
-	json.Unmarshal(stateJSON, &stateMap)
+	stateMap := rebootStateToMap(state)
 
 	return tools.NewSuccessResult(stateMap, time.Since(start).Milliseconds())
 }
@@ -180,11 +181,21 @@ func handleGetRebootStatus(h *Heartbeat, _ Command) tools.CommandResult {
 	}
 
 	state := h.rebootMgr.State()
-	stateJSON, _ := json.Marshal(state)
-	var stateMap map[string]any
-	json.Unmarshal(stateJSON, &stateMap)
+	stateMap := rebootStateToMap(state)
 
 	return tools.NewSuccessResult(stateMap, time.Since(start).Milliseconds())
+}
+
+func rebootStateToMap(state patching.RebootState) map[string]any {
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	var stateMap map[string]any
+	if err := json.Unmarshal(stateJSON, &stateMap); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	return stateMap
 }
 
 func handleBackupRun(h *Heartbeat, _ Command) tools.CommandResult {

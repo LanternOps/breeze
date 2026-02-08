@@ -21,13 +21,28 @@ type comGUID struct {
 
 // comCall invokes a COM vtable method at the given index.
 // obj is a pointer to a COM interface (pointer to pointer to vtable).
+// Uses a stack-allocated array for up to 4 args to avoid heap allocations in the hot path.
 func comCall(obj uintptr, vtableIdx int, args ...uintptr) (uintptr, error) {
 	vtablePtr := *(*uintptr)(unsafe.Pointer(obj))
 	fnPtr := *(*uintptr)(unsafe.Pointer(vtablePtr + uintptr(vtableIdx)*unsafe.Sizeof(uintptr(0))))
-	allArgs := make([]uintptr, 0, 1+len(args))
-	allArgs = append(allArgs, obj)
-	allArgs = append(allArgs, args...)
-	ret, _, _ := syscall.SyscallN(fnPtr, allArgs...)
+
+	var ret uintptr
+	switch len(args) {
+	case 0:
+		ret, _, _ = syscall.SyscallN(fnPtr, obj)
+	case 1:
+		ret, _, _ = syscall.SyscallN(fnPtr, obj, args[0])
+	case 2:
+		ret, _, _ = syscall.SyscallN(fnPtr, obj, args[0], args[1])
+	case 3:
+		ret, _, _ = syscall.SyscallN(fnPtr, obj, args[0], args[1], args[2])
+	default:
+		allArgs := make([]uintptr, 0, 1+len(args))
+		allArgs = append(allArgs, obj)
+		allArgs = append(allArgs, args...)
+		ret, _, _ = syscall.SyscallN(fnPtr, allArgs...)
+	}
+
 	if int32(ret) < 0 {
 		return ret, fmt.Errorf("COM vtable[%d] HRESULT 0x%08X", vtableIdx, uint32(ret))
 	}

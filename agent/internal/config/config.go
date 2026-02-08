@@ -78,7 +78,7 @@ func Default() *Config {
 		PatchMinDiskSpaceGB:        2.0,
 		PatchRequireACPower:        true,
 		PatchRebootMaxPerDay:       3,
-		PatchAutoAcceptEula:        true,
+		PatchAutoAcceptEula:        false,
 	}
 }
 

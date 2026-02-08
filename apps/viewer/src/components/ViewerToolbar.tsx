@@ -50,7 +50,7 @@ export default function ViewerToolbar({
   const PowerIcon = Power as unknown as ComponentType<{ className?: string }>;
   const KeyboardIcon = Keyboard as unknown as ComponentType<{ className?: string }>;
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
 
   // Update duration every second
@@ -62,14 +62,21 @@ export default function ViewerToolbar({
     return () => clearInterval(interval);
   }, [connectedAt]);
 
+  // Sync fullscreen state with browser (handles Escape key exit, etc.)
+  useEffect(() => {
+    function onFullscreenChange() {
+      setIsFullscreen(!!document.fullscreenElement);
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
   const toggleFullscreen = async () => {
     try {
       if (!document.fullscreenElement) {
         await document.documentElement.requestFullscreen();
-        setIsFullscreen(true);
       } else {
         await document.exitFullscreen();
-        setIsFullscreen(false);
       }
     } catch {
       // Fullscreen not supported or denied

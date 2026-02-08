@@ -182,7 +182,7 @@ export function scaleVideoCoords(
   const relY = clientY - rect.top - offsetY;
 
   return {
-    x: Math.round((relX * videoW) / displayW),
-    y: Math.round((relY * videoH) / displayH),
+    x: Math.max(0, Math.min(videoW, Math.round((relX * videoW) / displayW))),
+    y: Math.max(0, Math.min(videoH, Math.round((relY * videoH) / displayH))),
   };
 }
