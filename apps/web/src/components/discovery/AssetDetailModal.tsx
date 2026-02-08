@@ -29,6 +29,7 @@ type AssetDetailModalProps = {
   devices?: { id: string; name: string }[];
   onClose: () => void;
   onLinked?: (assetId: string) => void;
+  onDeleted?: (assetId: string) => void;
 };
 
 export default function AssetDetailModal({
@@ -36,7 +37,8 @@ export default function AssetDetailModal({
   asset,
   devices = [],
   onClose,
-  onLinked
+  onLinked,
+  onDeleted
 }: AssetDetailModalProps) {
   const [selectedDevice, setSelectedDevice] = useState(asset?.linkedDeviceId ?? '');
   const [linking, setLinking] = useState(false);
@@ -47,6 +49,8 @@ export default function AssetDetailModal({
   const [showEnableForm, setShowEnableForm] = useState(false);
   const [disabling, setDisabling] = useState(false);
   const [disableError, setDisableError] = useState<string>();
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string>();
 
   useEffect(() => {
     if (asset?.linkedDeviceId) {
@@ -56,6 +60,7 @@ export default function AssetDetailModal({
     }
     setLinkError(undefined);
     setShowEnableForm(false);
+    setDeleteError(undefined);
   }, [asset]);
 
   useEffect(() => {
@@ -122,6 +127,31 @@ export default function AssetDetailModal({
       setLinkError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLinking(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    const name = asset.hostname || asset.ip;
+    if (!confirm(`Delete discovered asset "${name}"?`)) {
+      return;
+    }
+
+    try {
+      setDeleting(true);
+      setDeleteError(undefined);
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete asset');
+      }
+
+      onDeleted?.(asset.id);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -329,6 +359,23 @@ export default function AssetDetailModal({
                   {linkError}
                 </div>
               )}
+
+              <div className="mt-4 border-t pt-4">
+                <p className="text-xs text-muted-foreground">Remove this discovered asset from discovery results.</p>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="mt-2 h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {deleting ? 'Deleting...' : 'Delete Asset'}
+                </button>
+                {deleteError && (
+                  <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {deleteError}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

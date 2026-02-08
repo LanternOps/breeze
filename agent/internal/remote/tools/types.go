@@ -97,6 +97,12 @@ const (
 	// SNMP polling
 	CmdSnmpPoll = "snmp_poll"
 
+	// Network monitoring
+	CmdNetworkPing      = "network_ping"
+	CmdNetworkTcpCheck  = "network_tcp_check"
+	CmdNetworkHttpCheck = "network_http_check"
+	CmdNetworkDnsCheck  = "network_dns_check"
+
 	// Script management (executor)
 	CmdScriptCancel      = "script_cancel"
 	CmdScriptListRunning = "script_list_running"

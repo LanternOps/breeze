@@ -12,6 +12,7 @@ import {
   X
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import NetworkMonitorList from '../monitors/NetworkMonitorList';
 
 type MonitoredAsset = {
   id: string;
@@ -94,6 +95,7 @@ interface DiscoveryMonitoringDashboardProps {
 }
 
 export default function DiscoveryMonitoringDashboard({ onViewAssets }: DiscoveryMonitoringDashboardProps) {
+  const [subTab, setSubTab] = useState<'snmp' | 'network'>('snmp');
   const [assets, setAssets] = useState<MonitoredAsset[]>([]);
   const [monitoringMap, setMonitoringMap] = useState<Map<string, MonitoringStatus>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -248,6 +250,36 @@ export default function DiscoveryMonitoringDashboard({ onViewAssets }: Discovery
 
   return (
     <div className="space-y-6">
+      {/* Sub-tab Navigation */}
+      <div className="flex items-center gap-1 rounded-lg border bg-muted/30 p-1">
+        <button
+          type="button"
+          onClick={() => setSubTab('snmp')}
+          className={`rounded-md px-4 py-2 text-sm font-medium transition ${
+            subTab === 'snmp'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          SNMP Devices
+        </button>
+        <button
+          type="button"
+          onClick={() => setSubTab('network')}
+          className={`rounded-md px-4 py-2 text-sm font-medium transition ${
+            subTab === 'network'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Network Monitors
+        </button>
+      </div>
+
+      {subTab === 'network' ? (
+        <NetworkMonitorList />
+      ) : (
+      <>
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-lg border bg-card p-4 shadow-sm">
@@ -463,6 +495,8 @@ export default function DiscoveryMonitoringDashboard({ onViewAssets }: Discovery
           onDisable={() => handleDisable(editingAssetId)}
           disabling={actionLoading === editingAssetId}
         />
+      )}
+      </>
       )}
     </div>
   );

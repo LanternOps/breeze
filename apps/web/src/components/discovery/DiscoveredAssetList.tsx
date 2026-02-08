@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { EyeOff, Info, Signal, CheckCircle2 } from 'lucide-react';
+import { EyeOff, Info, Signal, CheckCircle2, Trash2 } from 'lucide-react';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -171,6 +171,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   const [selectedAsset, setSelectedAsset] = useState<AssetDetail | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
 
   const fetchAssets = useCallback(async () => {
     try {
@@ -228,6 +229,31 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       await fetchAssets();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
+    }
+  };
+
+  const handleDelete = async (asset: DiscoveredAsset) => {
+    const name = asset.hostname || asset.ip;
+    if (!confirm(`Delete discovered asset "${name}"?`)) {
+      return;
+    }
+
+    try {
+      setError(undefined);
+      setDeletingAssetId(asset.id);
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete asset');
+      }
+
+      await fetchAssets();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setDeletingAssetId(null);
     }
   };
 
@@ -384,6 +410,18 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                       >
                         <EyeOff className="h-4 w-4" />
                       </button>
+                      <button
+                        type="button"
+                        onClick={event => {
+                          event.stopPropagation();
+                          void handleDelete(asset);
+                        }}
+                        disabled={deletingAssetId === asset.id}
+                        className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+                        title="Delete asset"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -399,6 +437,10 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         devices={devices}
         onClose={() => setSelectedAsset(null)}
         onLinked={async () => {
+          setSelectedAsset(null);
+          await fetchAssets();
+        }}
+        onDeleted={async () => {
           setSelectedAsset(null);
           await fetchAssets();
         }}
