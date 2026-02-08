@@ -78,6 +78,10 @@ func (n *nvencEncoder) SetFPS(fps int) error {
 	return nil
 }
 
+func (n *nvencEncoder) SetDimensions(width, height int) error {
+	return nil
+}
+
 func (n *nvencEncoder) Close() error {
 	return nil
 }

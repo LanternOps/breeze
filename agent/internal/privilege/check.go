@@ -19,6 +19,9 @@ var elevatedCommandTypes = map[string]bool{
 	tools.CmdRegistryKeyDelete: true,
 	tools.CmdTaskEnable:        true,
 	tools.CmdTaskDisable:       true,
+	tools.CmdDownloadPatches:   true,
+	tools.CmdScheduleReboot:    true,
+	tools.CmdCancelReboot:      true,
 }
 
 // RequiresElevation returns true if the command type needs root/admin privileges.

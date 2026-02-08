@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults, remoteSessions } from '../db/schema';
 import { handleTerminalOutput } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/discoveryWorker';
@@ -552,7 +552,51 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
         // Handle command_result for terminal/desktop commands (non-UUID IDs)
         if (message.type === 'command_result' && typeof message.commandId === 'string' &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
-          // Ephemeral command results don't map to DB records - just acknowledge
+          // Store WebRTC answer from start_desktop command results
+          if (message.commandId.startsWith('desk-') &&
+              message.status === 'completed' &&
+              typeof message.result === 'object' && message.result !== null) {
+            const desktopResult = message.result as Record<string, unknown>;
+            const sessionId = typeof desktopResult.sessionId === 'string' ? desktopResult.sessionId : null;
+            const answer = typeof desktopResult.answer === 'string' ? desktopResult.answer : null;
+            if (sessionId && answer && answer.length < 65536) {
+              try {
+                // Verify this agent owns the session's device
+                const [device] = await db
+                  .select({ id: devices.id })
+                  .from(devices)
+                  .where(eq(devices.agentId, agentId))
+                  .limit(1);
+
+                if (device) {
+                  const result = await db
+                    .update(remoteSessions)
+                    .set({
+                      webrtcAnswer: answer,
+                      status: 'active',
+                      startedAt: new Date()
+                    })
+                    .where(
+                      and(
+                        eq(remoteSessions.id, sessionId),
+                        eq(remoteSessions.deviceId, device.id),
+                        eq(remoteSessions.status, 'connecting')
+                      )
+                    )
+                    .returning({ id: remoteSessions.id });
+
+                  if (result.length > 0) {
+                    console.log(`[AgentWs] Stored WebRTC answer for session ${sessionId}`);
+                  } else {
+                    console.warn(`[AgentWs] Session ${sessionId} not found or not owned by agent ${agentId}`);
+                  }
+                }
+              } catch (err) {
+                console.error(`[AgentWs] Failed to store WebRTC answer:`, err);
+              }
+            }
+          }
+
           ws.send(JSON.stringify({
             type: 'ack',
             commandId: message.commandId

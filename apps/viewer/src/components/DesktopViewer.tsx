@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
+import { createWebRTCSession, scaleVideoCoords, type WebRTCSession } from '../lib/webrtc';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import ViewerToolbar from './ViewerToolbar';
 
@@ -10,15 +11,20 @@ interface Props {
 }
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+type Transport = 'webrtc' | 'websocket';
 
 export default function DesktopViewer({ params, onDisconnect, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const webrtcRef = useRef<WebRTCSession | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
+  const [transport, setTransport] = useState<Transport | null>(null);
   const [fps, setFps] = useState(0);
   const [quality, setQuality] = useState(60);
   const [scale, setScale] = useState(0.5);
   const [maxFps, setMaxFps] = useState(15);
+  const [bitrate, setBitrate] = useState(2500);
   const [hostname, setHostname] = useState('');
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
 
@@ -29,8 +35,40 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // Remote screen size (actual pixels from agent)
   const remoteScreenRef = useRef({ width: 1920, height: 1080 });
 
-  // Connect WebSocket
-  useEffect(() => {
+  // ── WebRTC connection ──────────────────────────────────────────────
+
+  const connectWebRTC = useCallback(async (): Promise<boolean> => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return false;
+
+    try {
+      const session = await createWebRTCSession(params, videoEl);
+      webrtcRef.current = session;
+
+      // Monitor connection state
+      session.pc.onconnectionstatechange = () => {
+        const state = session.pc.connectionState;
+        if (state === 'connected') {
+          setStatus('connected');
+          setConnectedAt(new Date());
+        } else if (state === 'failed' || state === 'closed') {
+          setStatus('disconnected');
+        }
+      };
+
+      setTransport('webrtc');
+      setHostname('Remote Desktop');
+      // Connection state will flip to 'connected' via onconnectionstatechange
+      return true;
+    } catch (err) {
+      console.warn('WebRTC connection failed:', err);
+      return false;
+    }
+  }, [params]);
+
+  // ── WebSocket connection (fallback) ────────────────────────────────
+
+  const connectWebSocket = useCallback(() => {
     const wsUrl = buildWsUrl(params);
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
@@ -42,12 +80,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        // Binary JPEG frame
         renderFrame(new Uint8Array(event.data));
         return;
       }
 
-      // JSON message
       try {
         const msg = JSON.parse(event.data);
         switch (msg.type) {
@@ -79,12 +115,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       onError('WebSocket connection error');
     };
 
-    // FPS counter
-    fpsIntervalRef.current = setInterval(() => {
-      setFps(frameCountRef.current);
-      frameCountRef.current = 0;
-    }, 1000);
-
     // Ping keep-alive
     const pingInterval = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -92,8 +122,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       }
     }, 15000);
 
+    setTransport('websocket');
+
     return () => {
-      clearInterval(fpsIntervalRef.current);
       clearInterval(pingInterval);
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close();
@@ -102,23 +133,74 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     };
   }, [params, onError]);
 
-  // Render a JPEG frame on the canvas
+  // ── Connection lifecycle ───────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+    let wsCleanup: (() => void) | null = null;
+
+    async function connect() {
+      // Try WebRTC first
+      const webrtcOk = await connectWebRTC();
+      if (cancelled) {
+        webrtcRef.current?.close();
+        return;
+      }
+
+      if (!webrtcOk) {
+        // Fall back to WebSocket
+        wsCleanup = connectWebSocket();
+      }
+    }
+
+    connect();
+
+    // FPS counter
+    fpsIntervalRef.current = setInterval(() => {
+      setFps(frameCountRef.current);
+      frameCountRef.current = 0;
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(fpsIntervalRef.current);
+      wsCleanup?.();
+      webrtcRef.current?.close();
+      webrtcRef.current = null;
+    };
+  }, [connectWebRTC, connectWebSocket]);
+
+  // Count WebRTC video frames via requestVideoFrameCallback
+  useEffect(() => {
+    if (transport !== 'webrtc') return;
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    let active = true;
+    function countFrame() {
+      if (!active) return;
+      frameCountRef.current++;
+      videoEl!.requestVideoFrameCallback(countFrame);
+    }
+    videoEl.requestVideoFrameCallback(countFrame);
+    return () => { active = false; };
+  }, [transport]);
+
+  // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
+
   const renderFrame = useCallback((data: Uint8Array) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Copy into a plain ArrayBuffer to avoid SharedArrayBuffer type issues
     const copy = new Uint8Array(data);
     const blob = new Blob([copy], { type: 'image/jpeg' });
     createImageBitmap(blob).then((bitmap) => {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Update remote screen dimensions from actual frame size
       remoteScreenRef.current.width = bitmap.width;
       remoteScreenRef.current.height = bitmap.height;
 
-      // Resize canvas to match frame
       if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
         canvas.width = bitmap.width;
         canvas.height = bitmap.height;
@@ -132,8 +214,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     });
   }, []);
 
-  // Compute scale from canvas coordinates to remote screen coordinates
+  // ── Input: coordinate scaling ──────────────────────────────────────
+
   const scaleCoords = useCallback((clientX: number, clientY: number) => {
+    if (transport === 'webrtc') {
+      const videoEl = videoRef.current;
+      if (!videoEl) return { x: 0, y: 0 };
+      return scaleVideoCoords(clientX, clientY, videoEl);
+    }
+
+    // WebSocket canvas path
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
 
@@ -145,17 +235,27 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       x: Math.round((clientX - rect.left) * scaleX),
       y: Math.round((clientY - rect.top) * scaleY),
     };
-  }, []);
+  }, [transport]);
 
-  // Send input event
+  // ── Input: send event ──────────────────────────────────────────────
+
   const sendInput = useCallback((event: Record<string, unknown>) => {
+    if (transport === 'webrtc') {
+      const ch = webrtcRef.current?.inputChannel;
+      if (ch && ch.readyState === 'open') {
+        ch.send(JSON.stringify(event));
+      }
+      return;
+    }
+
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'input', event }));
     }
-  }, []);
+  }, [transport]);
 
-  // Mouse handlers
+  // ── Input: mouse handlers ──────────────────────────────────────────
+
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const { x, y } = scaleCoords(e.clientX, e.clientY);
     sendInput({ type: 'mouse_move', x, y });
@@ -184,7 +284,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     e.preventDefault();
   }, []);
 
-  // Keyboard handlers
+  // ── Input: keyboard handlers ───────────────────────────────────────
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
     if (isModifierOnly(e.nativeEvent)) return;
@@ -200,36 +301,55 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     e.preventDefault();
   }, []);
 
-  // Config change handler
+  // ── Toolbar: config changes ────────────────────────────────────────
+
   const handleConfigChange = useCallback((newQuality: number, newScale: number, newMaxFps: number) => {
     setQuality(newQuality);
     setScale(newScale);
     setMaxFps(newMaxFps);
 
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'config',
-        quality: newQuality,
-        scaleFactor: newScale,
-        maxFps: newMaxFps,
-      }));
+    if (transport === 'websocket') {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'config',
+          quality: newQuality,
+          scaleFactor: newScale,
+          maxFps: newMaxFps,
+        }));
+      }
+    }
+  }, [transport]);
+
+  const handleBitrateChange = useCallback((newBitrate: number) => {
+    setBitrate(newBitrate);
+    const ch = webrtcRef.current?.controlChannel;
+    if (ch && ch.readyState === 'open') {
+      ch.send(JSON.stringify({ type: 'set_bitrate', value: newBitrate * 1000 }));
     }
   }, []);
 
-  // Ctrl+Alt+Del handler
   const handleCtrlAltDel = useCallback(() => {
     sendInput({ type: 'key_press', key: 'delete', modifiers: ['ctrl', 'alt'] });
   }, [sendInput]);
 
-  // Disconnect handler
   const handleDisconnect = useCallback(() => {
-    const ws = wsRef.current;
-    if (ws) {
-      ws.close();
-    }
+    wsRef.current?.close();
+    webrtcRef.current?.close();
     onDisconnect();
   }, [onDisconnect]);
+
+  // ── Render ─────────────────────────────────────────────────────────
+
+  const interactionProps = {
+    onMouseMove: handleMouseMove,
+    onMouseDown: handleMouseDown,
+    onMouseUp: handleMouseUp,
+    onWheel: handleWheel,
+    onContextMenu: handleContextMenu,
+    onKeyDown: handleKeyDown,
+    onKeyUp: handleKeyUp,
+  };
 
   return (
     <div className="flex flex-col h-screen bg-gray-900">
@@ -238,27 +358,38 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         hostname={hostname}
         connectedAt={connectedAt}
         fps={fps}
+        transport={transport}
         quality={quality}
         scale={scale}
         maxFps={maxFps}
+        bitrate={bitrate}
         onConfigChange={handleConfigChange}
+        onBitrateChange={handleBitrateChange}
         onCtrlAltDel={handleCtrlAltDel}
         onDisconnect={handleDisconnect}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black">
+        {/* WebRTC: <video> element (hardware H264 decode) */}
+        <video
+          ref={videoRef}
+          tabIndex={0}
+          autoPlay
+          playsInline
+          muted
+          className={`max-w-full max-h-full object-contain outline-none cursor-default ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          style={{ imageRendering: 'auto' }}
+          {...interactionProps}
+        />
+
+        {/* WebSocket: <canvas> element (JPEG software decode) */}
         <canvas
           ref={canvasRef}
           tabIndex={0}
-          className="max-w-full max-h-full object-contain outline-none cursor-default"
-          onMouseMove={handleMouseMove}
-          onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
-          onWheel={handleWheel}
-          onContextMenu={handleContextMenu}
-          onKeyDown={handleKeyDown}
-          onKeyUp={handleKeyUp}
+          className={`max-w-full max-h-full object-contain outline-none cursor-default ${transport !== 'websocket' ? 'hidden' : ''}`}
           style={{ imageRendering: 'auto' }}
+          {...interactionProps}
         />
+
         {status === 'connecting' && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
             <div className="text-center">

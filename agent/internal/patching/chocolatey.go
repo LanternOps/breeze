@@ -83,9 +83,14 @@ func (c *ChocolateyProvider) Uninstall(patchID string) error {
 
 // GetInstalled returns installed Chocolatey packages.
 func (c *ChocolateyProvider) GetInstalled() ([]InstalledPatch, error) {
-	output, err := exec.Command("choco", "list", "--localonly", "-r").Output()
+	// Try without --localonly first (Chocolatey v2+, where list is local-only by default).
+	// Fall back to --localonly for Chocolatey v1.
+	output, err := exec.Command("choco", "list", "-r").Output()
 	if err != nil {
-		return nil, fmt.Errorf("choco list failed: %w", err)
+		output, err = exec.Command("choco", "list", "--localonly", "-r").Output()
+		if err != nil {
+			return nil, fmt.Errorf("choco list failed: %w", err)
+		}
 	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(output))

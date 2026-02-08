@@ -3,6 +3,7 @@ package desktop
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -14,11 +15,11 @@ import (
 )
 
 const (
-	frameRate    = 15
+	frameRate    = 30
 	frameTimeout = time.Second / frameRate
 )
 
-// Session represents a remote desktop WebRTC session
+// Session represents a remote desktop WebRTC session with H264 encoding.
 type Session struct {
 	id            string
 	peerConn      *webrtc.PeerConnection
@@ -26,11 +27,20 @@ type Session struct {
 	dataChannel   *webrtc.DataChannel
 	inputHandler  InputHandler
 	capturer      ScreenCapturer
+	encoder       *VideoEncoder
 	clipboardSync *clipboard.ClipboardSync
 	fileDropHandler *filedrop.FileDropHandler
 	done          chan struct{}
 	mu            sync.RWMutex
 	isActive      bool
+
+	// Optimized pipeline components (shared with WS path)
+	differ   *frameDiffer
+	cursor   *cursorOverlay
+	metrics  *StreamMetrics
+	adaptive *AdaptiveBitrate
+
+	frameIdx uint64
 }
 
 // SessionManager manages remote desktop sessions
@@ -61,9 +71,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string) (string, e
 		return "", fmt.Errorf("failed to create peer connection: %w", err)
 	}
 
-	// Create video track
+	// Create H264 video track
 	videoTrack, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
+		webrtc.RTPCodecCapability{
+			MimeType:    webrtc.MimeTypeH264,
+			ClockRate:   90000,
+			SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f",
+		},
 		"video",
 		"desktop",
 	)
@@ -78,11 +92,40 @@ func (m *SessionManager) StartSession(sessionID string, offer string) (string, e
 		return "", fmt.Errorf("failed to add video track: %w", err)
 	}
 
-	// Create screen capturer using existing interface
+	// Create screen capturer
 	capturer, err := NewScreenCapturer(DefaultConfig())
 	if err != nil {
 		peerConn.Close()
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
+	}
+
+	// Create H264 encoder via factory (will use MFT on Windows)
+	enc, err := NewVideoEncoder(EncoderConfig{
+		Codec:          CodecH264,
+		Quality:        QualityAuto,
+		Bitrate:        2_500_000,
+		FPS:            frameRate,
+		PreferHardware: true,
+	})
+	if err != nil {
+		capturer.Close()
+		peerConn.Close()
+		return "", fmt.Errorf("failed to create H264 encoder: %w", err)
+	}
+
+	// Set encoder dimensions from screen bounds
+	w, h, err := capturer.GetScreenBounds()
+	if err != nil {
+		enc.Close()
+		capturer.Close()
+		peerConn.Close()
+		return "", fmt.Errorf("failed to get screen bounds: %w", err)
+	}
+	if err := enc.SetDimensions(w, h); err != nil {
+		enc.Close()
+		capturer.Close()
+		peerConn.Close()
+		return "", fmt.Errorf("failed to set encoder dimensions: %w", err)
 	}
 
 	// Create session
@@ -92,14 +135,30 @@ func (m *SessionManager) StartSession(sessionID string, offer string) (string, e
 		videoTrack:   videoTrack,
 		inputHandler: NewInputHandler(),
 		capturer:     capturer,
+		encoder:      enc,
 		done:         make(chan struct{}),
 		isActive:     true,
+		differ:       newFrameDiffer(),
+		cursor:       newCursorOverlay(),
+		metrics:      newStreamMetrics(),
 	}
 
-	// Create clipboard DataChannel for clipboard sync
+	// Create adaptive bitrate controller
+	adaptive, err := NewAdaptiveBitrate(AdaptiveConfig{
+		Encoder:    enc,
+		MinBitrate: 500_000,
+		MaxBitrate: 5_000_000,
+		MinQuality: QualityLow,
+		MaxQuality: QualityUltra,
+	})
+	if err == nil {
+		session.adaptive = adaptive
+	}
+
+	// Create clipboard DataChannel
 	clipboardDC, err := peerConn.CreateDataChannel("clipboard", nil)
 	if err != nil {
-		fmt.Printf("Desktop session %s: failed to create clipboard DataChannel: %v\n", sessionID, err)
+		slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", err)
 	} else if clipboardDC != nil {
 		session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard())
 		clipboardDC.OnOpen(func() {
@@ -107,52 +166,58 @@ func (m *SessionManager) StartSession(sessionID string, offer string) (string, e
 		})
 	}
 
-	// Create filedrop DataChannel for file transfers
+	// Create filedrop DataChannel
 	filedropDC, err := peerConn.CreateDataChannel("filedrop", nil)
 	if err != nil {
-		fmt.Printf("Desktop session %s: failed to create filedrop DataChannel: %v\n", sessionID, err)
+		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err)
 	} else if filedropDC != nil {
 		session.fileDropHandler = filedrop.NewFileDropHandler(filedropDC, "")
 	}
 
-	// Handle data channel for input events
+	// Handle incoming data channels (input + control from viewer)
 	peerConn.OnDataChannel(func(dc *webrtc.DataChannel) {
-		session.mu.Lock()
-		session.dataChannel = dc
-		session.mu.Unlock()
-
-		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			session.handleInputMessage(msg.Data)
-		})
+		switch dc.Label() {
+		case "input":
+			session.mu.Lock()
+			session.dataChannel = dc
+			session.mu.Unlock()
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				session.handleInputMessage(msg.Data)
+			})
+		case "control":
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				session.handleControlMessage(msg.Data)
+			})
+		}
 	})
 
 	// Handle connection state changes
 	peerConn.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		fmt.Printf("Desktop session %s connection state: %s\n", sessionID, state.String())
+		slog.Info("Desktop WebRTC connection state", "session", sessionID, "state", state.String())
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			m.StopSession(sessionID)
 		}
 	})
 
-	// Set remote description (offer)
+	// Set remote description (offer from viewer)
 	if err := peerConn.SetRemoteDescription(webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer,
 		SDP:  offer,
 	}); err != nil {
-		peerConn.Close()
+		session.cleanup()
 		return "", fmt.Errorf("failed to set remote description: %w", err)
 	}
 
 	// Create answer
 	answer, err := peerConn.CreateAnswer(nil)
 	if err != nil {
-		peerConn.Close()
+		session.cleanup()
 		return "", fmt.Errorf("failed to create answer: %w", err)
 	}
 
 	// Set local description
 	if err := peerConn.SetLocalDescription(answer); err != nil {
-		peerConn.Close()
+		session.cleanup()
 		return "", fmt.Errorf("failed to set local description: %w", err)
 	}
 
@@ -165,8 +230,15 @@ func (m *SessionManager) StartSession(sessionID string, offer string) (string, e
 	m.sessions[sessionID] = session
 	m.mu.Unlock()
 
-	// Start capture loop
+	// Start capture loop and metrics logger
 	go session.captureLoop()
+	go session.metricsLogger()
+
+	slog.Info("Desktop WebRTC session started",
+		"session", sessionID,
+		"width", w,
+		"height", h,
+	)
 
 	return peerConn.LocalDescription().SDP, nil
 }
@@ -196,20 +268,37 @@ func (s *Session) Stop() {
 	s.mu.Unlock()
 
 	close(s.done)
+	s.cleanup()
+
+	snap := s.metrics.Snapshot()
+	slog.Info("Desktop WebRTC session stopped",
+		"session", s.id,
+		"totalCaptured", snap.FramesCaptured,
+		"totalSent", snap.FramesSent,
+		"totalSkipped", snap.FramesSkipped,
+		"uptime", snap.Uptime.Round(time.Second),
+	)
+}
+
+func (s *Session) cleanup() {
 	if s.clipboardSync != nil {
 		s.clipboardSync.Stop()
 	}
 	if s.fileDropHandler != nil {
 		s.fileDropHandler.Close()
 	}
+	if s.encoder != nil {
+		s.encoder.Close()
+	}
 	if s.capturer != nil {
 		s.capturer.Close()
 	}
-	s.peerConn.Close()
-	fmt.Printf("Desktop session %s stopped\n", s.id)
+	if s.peerConn != nil {
+		s.peerConn.Close()
+	}
 }
 
-// captureLoop continuously captures and sends screen frames
+// captureLoop continuously captures and sends encoded H264 frames
 func (s *Session) captureLoop() {
 	ticker := time.NewTicker(frameTimeout)
 	defer ticker.Stop()
@@ -224,7 +313,7 @@ func (s *Session) captureLoop() {
 	}
 }
 
-// captureAndSendFrame captures the screen and sends it via WebRTC
+// captureAndSendFrame captures, encodes H264, and sends via WebRTC
 func (s *Session) captureAndSendFrame() {
 	s.mu.RLock()
 	if !s.isActive {
@@ -233,22 +322,79 @@ func (s *Session) captureAndSendFrame() {
 	}
 	s.mu.RUnlock()
 
-	// Capture screen
+	// 1. Capture screen (uses persistent GDI handles + pooled images)
+	t0 := time.Now()
 	img, err := s.capturer.Capture()
 	if err != nil {
 		return
 	}
+	s.metrics.RecordCapture(time.Since(t0))
 
-	// Encode to VP8 (simplified - in production use a proper encoder)
-	// For now, we'll send raw RGBA data which won't work with standard WebRTC
-	// A real implementation would use libvpx or similar
-	sample := media.Sample{
-		Data:     img.Pix,
-		Duration: frameTimeout,
+	// 2. Frame differencing — skip if unchanged
+	if !s.differ.HasChanged(img.Pix) {
+		captureImagePool.Put(img)
+		s.metrics.RecordSkip()
+		return
 	}
 
+	// 3. Cursor compositing (at full resolution)
+	s.cursor.CompositeCursor(img)
+
+	// 4. Encode to H264 via MFT (BGRA→NV12→H264 internally)
+	t1 := time.Now()
+	h264Data, err := s.encoder.Encode(img.Pix)
+	encodeTime := time.Since(t1)
+	captureImagePool.Put(img)
+
+	if err != nil {
+		slog.Warn("H264 encode error", "session", s.id, "error", err)
+		return
+	}
+	if h264Data == nil {
+		// MFT is buffering, no output yet
+		return
+	}
+
+	s.metrics.RecordEncode(encodeTime, len(h264Data))
+
+	// 5. Write as pion media.Sample
+	sample := media.Sample{
+		Data:     h264Data,
+		Duration: frameTimeout,
+	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		fmt.Printf("Failed to write video sample: %v\n", err)
+		slog.Warn("Failed to write H264 sample", "session", s.id, "error", err)
+		s.metrics.RecordDrop()
+		return
+	}
+
+	s.metrics.RecordSend(len(h264Data))
+}
+
+// metricsLogger periodically logs streaming metrics
+func (s *Session) metricsLogger() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			snap := s.metrics.Snapshot()
+			slog.Info("Desktop WebRTC metrics",
+				"session", s.id,
+				"captured", snap.FramesCaptured,
+				"encoded", snap.FramesEncoded,
+				"sent", snap.FramesSent,
+				"skipped", snap.FramesSkipped,
+				"dropped", snap.FramesDropped,
+				"encodeMs", fmt.Sprintf("%.1f", snap.EncodeMs),
+				"frameBytes", snap.LastFrameSize,
+				"bandwidthKBps", fmt.Sprintf("%.1f", snap.BandwidthKBps),
+				"uptime", snap.Uptime.Round(time.Second),
+			)
+		}
 	}
 }
 
@@ -256,12 +402,34 @@ func (s *Session) captureAndSendFrame() {
 func (s *Session) handleInputMessage(data []byte) {
 	var event InputEvent
 	if err := json.Unmarshal(data, &event); err != nil {
-		fmt.Printf("Failed to parse input event: %v\n", err)
+		slog.Warn("Failed to parse input event", "session", s.id, "error", err)
 		return
 	}
 
 	if err := s.inputHandler.HandleEvent(event); err != nil {
-		fmt.Printf("Failed to handle input event: %v\n", err)
+		slog.Warn("Failed to handle input event", "session", s.id, "error", err)
+	}
+}
+
+// handleControlMessage processes control messages (bitrate, quality changes)
+func (s *Session) handleControlMessage(data []byte) {
+	var msg struct {
+		Type  string `json:"type"`
+		Value int    `json:"value"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return
+	}
+
+	switch msg.Type {
+	case "set_bitrate":
+		if msg.Value > 0 {
+			s.encoder.SetBitrate(msg.Value)
+		}
+	case "set_fps":
+		if msg.Value > 0 && msg.Value <= 60 {
+			s.encoder.SetFPS(msg.Value)
+		}
 	}
 }
 

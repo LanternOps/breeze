@@ -373,6 +373,29 @@ func (c *Client) SendDesktopFrame(sessionId string, data []byte) error {
 	}
 }
 
+// SendPatchProgress sends a patch download/install progress event to the server.
+// Non-blocking: drops if send channel is full.
+func (c *Client) SendPatchProgress(commandID string, event any) error {
+	msg := map[string]any{
+		"type":      "patch_progress",
+		"commandId": commandID,
+		"progress":  event,
+	}
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal patch progress: %w", err)
+	}
+
+	select {
+	case c.sendChan <- msgBytes:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("send channel full, dropping progress")
+	}
+}
+
 // SendTerminalOutput sends terminal output data to the server
 func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
 	msg := map[string]any{

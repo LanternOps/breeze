@@ -78,6 +78,12 @@ const (
 	CmdPatchScan       = "patch_scan"
 	CmdInstallPatches  = "install_patches"
 	CmdRollbackPatches = "rollback_patches"
+	CmdDownloadPatches = "download_patches"
+
+	// Reboot management
+	CmdScheduleReboot  = "schedule_reboot"
+	CmdCancelReboot    = "cancel_reboot"
+	CmdGetRebootStatus = "get_reboot_status"
 
 	// Security
 	CmdSecurityCollectStatus    = "security_collect_status"

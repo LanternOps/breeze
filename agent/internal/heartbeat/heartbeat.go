@@ -81,6 +81,7 @@ type Heartbeat struct {
 	terminalMgr         *terminal.Manager
 	executor            *executor.Executor
 	backupMgr           *backup.BackupManager
+	rebootMgr           *patching.RebootManager
 	securityScanner     *security.SecurityScanner
 	wsClient            *websocket.Client
 	mu                  sync.Mutex
@@ -133,7 +134,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		softwareCol:     collectors.NewSoftwareCollector(),
 		inventoryCol:    collectors.NewInventoryCollector(),
 		patchCol:        collectors.NewPatchCollector(),
-		patchMgr:        patching.NewDefaultManager(),
+		patchMgr:        patching.NewDefaultManager(cfg),
 		connectionsCol:  collectors.NewConnectionsCollector(),
 		eventLogCol:     collectors.NewEventLogCollector(),
 		agentVersion:    version,
@@ -170,6 +171,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		log.Info("user helper IPC enabled", "socket", socketPath)
 	}
+
+	// Initialize reboot manager (uses session broker for user notifications)
+	h.rebootMgr = patching.NewRebootManager(func(title, body, urgency string) {
+		if h.sessionBroker != nil {
+			h.sessionBroker.BroadcastNotification(title, body, urgency)
+		}
+	}, cfg.PatchRebootMaxPerDay)
 
 	// Initialize backup manager if enabled
 	if cfg.BackupEnabled && len(cfg.BackupPaths) > 0 {
@@ -347,6 +355,9 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
+		if h.rebootMgr != nil {
+			h.rebootMgr.Stop()
+		}
 		if h.backupMgr != nil {
 			h.backupMgr.Stop()
 		}
@@ -529,13 +540,26 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any,
 func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []map[string]any {
 	items := make([]map[string]any, len(patches))
 	for i, p := range patches {
+		severity := p.Severity
+		if severity == "" {
+			severity = "unknown"
+		}
+		category := p.Category
+		if category == "" {
+			category = h.mapPatchProviderCategory(p.Provider)
+		}
 		items[i] = map[string]any{
-			"name":        p.Title,
-			"version":     p.Version,
-			"category":    h.mapPatchProviderCategory(p.Provider),
-			"severity":    "unknown",
-			"description": p.Description,
-			"source":      h.mapPatchProviderSource(p.Provider),
+			"name":            p.Title,
+			"version":         p.Version,
+			"category":        category,
+			"severity":        severity,
+			"description":     p.Description,
+			"source":          h.mapPatchProviderSource(p.Provider),
+			"externalId":      p.KBNumber,
+			"kbNumber":        p.KBNumber,
+			"size":            p.Size,
+			"requiresRestart": p.RebootRequired,
+			"releaseDate":     p.ReleaseDate,
 		}
 	}
 	return items
@@ -544,12 +568,23 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []map[string]any {
 	items := make([]map[string]any, len(patches))
 	for i, p := range patches {
-		items[i] = map[string]any{
-			"name":        p.Title,
-			"version":     p.Version,
-			"category":    h.mapPatchProviderCategory(p.Provider),
-			"source":      h.mapPatchProviderSource(p.Provider),
+		category := p.Category
+		if category == "" {
+			category = h.mapPatchProviderCategory(p.Provider)
 		}
+		m := map[string]any{
+			"name":     p.Title,
+			"version":  p.Version,
+			"category": category,
+			"source":   h.mapPatchProviderSource(p.Provider),
+		}
+		if p.KBNumber != "" {
+			m["kbNumber"] = p.KBNumber
+		}
+		if p.InstalledAt != "" {
+			m["installedAt"] = p.InstalledAt
+		}
+		items[i] = m
 	}
 	return items
 }
@@ -730,6 +765,10 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.MetricsAvailable = &metricsAvailable
 	}
 
+	// Check for pending reboot
+	pendingReboot, _ := patching.DetectPendingReboot()
+	payload.PendingReboot = pendingReboot
+
 	// Include user helper session info in heartbeat
 	if h.sessionBroker != nil {
 		sessions := h.sessionBroker.AllSessions()
@@ -903,6 +942,10 @@ func isEphemeralCommand(cmdType string) bool {
 func (h *Heartbeat) markCommandSeen(id string) bool {
 	h.seenCommandsMu.Lock()
 	defer h.seenCommandsMu.Unlock()
+
+	if h.seenCommands == nil {
+		h.seenCommands = make(map[string]time.Time)
+	}
 
 	if _, seen := h.seenCommands[id]; seen {
 		return false

@@ -78,6 +78,10 @@ func (v *videotoolboxEncoder) SetFPS(fps int) error {
 	return nil
 }
 
+func (v *videotoolboxEncoder) SetDimensions(width, height int) error {
+	return nil
+}
+
 func (v *videotoolboxEncoder) Close() error {
 	return nil
 }
