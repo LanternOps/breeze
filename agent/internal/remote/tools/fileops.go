@@ -85,6 +85,10 @@ func ReadFile(payload map[string]any) CommandResult {
 	if path == "" {
 		return NewErrorResult(fmt.Errorf("path is required"), time.Since(start).Milliseconds())
 	}
+	encoding := strings.ToLower(GetPayloadString(payload, "encoding", "text"))
+	if encoding != "text" && encoding != "base64" {
+		return NewErrorResult(fmt.Errorf("unsupported encoding: %s", encoding), time.Since(start).Milliseconds())
+	}
 
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
@@ -110,10 +114,16 @@ func ReadFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("failed to read file: %w", err), time.Since(start).Milliseconds())
 	}
 
+	contentValue := string(content)
+	if encoding == "base64" {
+		contentValue = base64.StdEncoding.EncodeToString(content)
+	}
+
 	return NewSuccessResult(map[string]any{
 		"path":     cleanPath,
 		"size":     len(content),
-		"content":  string(content),
+		"encoding": encoding,
+		"content":  contentValue,
 		"modified": info.ModTime().Format(time.RFC3339),
 	}, time.Since(start).Milliseconds())
 }

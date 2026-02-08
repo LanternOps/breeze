@@ -1226,7 +1226,7 @@ const submitPatchesSchema = z.object({
     version: z.string().optional(),
     category: z.string().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
-    installedAt: z.string()
+    installedAt: z.string().optional()
   })).optional()
 });
 
@@ -1357,7 +1357,7 @@ agentRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (
 
         if (patch) {
           // Upsert the device-patch relationship as "installed"
-          const installedAt = patchData.installedAt ? new Date(patchData.installedAt) : new Date();
+          const installedAt = parseDate(patchData.installedAt);
           await tx
             .insert(devicePatches)
             .values({

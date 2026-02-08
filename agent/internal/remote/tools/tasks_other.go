@@ -41,3 +41,10 @@ func disableTaskOS(path string, startTime time.Time) CommandResult {
 		time.Since(startTime).Milliseconds(),
 	)
 }
+
+func getTaskHistoryOS(path string, limit int, startTime time.Time) CommandResult {
+	return NewErrorResult(
+		fmt.Errorf("scheduled tasks are only supported on Windows"),
+		time.Since(startTime).Milliseconds(),
+	)
+}

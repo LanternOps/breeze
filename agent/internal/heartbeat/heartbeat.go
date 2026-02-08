@@ -543,7 +543,6 @@ func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []
 			"version":     p.Version,
 			"category":    h.mapPatchProviderCategory(p.Provider),
 			"source":      h.mapPatchProviderSource(p.Provider),
-			"installedAt": "",
 		}
 	}
 	return items

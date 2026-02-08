@@ -16,7 +16,7 @@ var allCommandTypes = []string{
 	tools.CmdStopService, tools.CmdRestartService,
 	tools.CmdEventLogsList, tools.CmdEventLogsQuery, tools.CmdEventLogGet,
 	tools.CmdTasksList, tools.CmdTaskGet, tools.CmdTaskRun,
-	tools.CmdTaskEnable, tools.CmdTaskDisable,
+	tools.CmdTaskEnable, tools.CmdTaskDisable, tools.CmdTaskHistory,
 	tools.CmdRegistryKeys, tools.CmdRegistryValues, tools.CmdRegistryGet,
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,

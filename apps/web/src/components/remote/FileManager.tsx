@@ -97,7 +97,6 @@ function formatDate(dateString?: string): string {
 export default function FileManager({
   deviceId,
   deviceHostname,
-  sessionId,
   initialPath = '/',
   onError,
   className
@@ -217,30 +216,30 @@ export default function FileManager({
     }]);
 
     try {
-      // Create transfer record via API
-      const response = await fetchWithAuth('/remote/transfers', {
-        method: 'POST',
-        body: JSON.stringify({
-          deviceId,
-          sessionId,
-          direction: 'download',
-          remotePath: entry.path,
-          localFilename: entry.name,
-          sizeBytes: entry.size || 0
-        })
-      });
+      setTransfers(prev => prev.map(t =>
+        t.id === transferId ? { ...t, status: 'transferring', progress: 25 } : t
+      ));
 
+      const params = new URLSearchParams({ path: entry.path });
+      const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/download?${params}`);
       if (!response.ok) {
-        throw new Error('Failed to initiate download');
+        const err = await response.json().catch(() => ({ error: 'Download failed' }));
+        throw new Error(err.error || 'Download failed');
       }
 
-      // Simulate transfer progress
-      for (let progress = 0; progress <= 100; progress += 10) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        setTransfers(prev => prev.map(t =>
-          t.id === transferId ? { ...t, status: 'transferring', progress } : t
-        ));
-      }
+      setTransfers(prev => prev.map(t =>
+        t.id === transferId ? { ...t, progress: 80 } : t
+      ));
+
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = entry.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(downloadUrl);
 
       setTransfers(prev => prev.map(t =>
         t.id === transferId ? { ...t, status: 'completed', progress: 100 } : t
@@ -254,7 +253,7 @@ export default function FileManager({
         } : t
       ));
     }
-  }, [deviceId, sessionId]);
+  }, [deviceId]);
 
   // Handle file upload
   const handleUpload = useCallback(async (files: FileList) => {
@@ -351,15 +350,7 @@ export default function FileManager({
 
   // Cancel transfer
   const cancelTransfer = useCallback(async (transferId: string) => {
-    try {
-      await fetchWithAuth(`/remote/transfers/${transferId}/cancel`, {
-        method: 'POST'
-      });
-
-      setTransfers(prev => prev.filter(t => t.id !== transferId));
-    } catch (error) {
-      console.error('Failed to cancel transfer:', error);
-    }
+    setTransfers(prev => prev.filter(t => t.id !== transferId));
   }, []);
 
   // Remove completed transfer from list

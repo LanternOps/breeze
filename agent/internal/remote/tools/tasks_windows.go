@@ -4,6 +4,7 @@ package tools
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -118,6 +119,83 @@ func disableTaskOS(path string, startTime time.Time) CommandResult {
 	}
 
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
+}
+
+func getTaskHistoryOS(path string, limit int, startTime time.Time) CommandResult {
+	if path == "" {
+		return NewErrorResult(fmt.Errorf("task path is required"), time.Since(startTime).Milliseconds())
+	}
+
+	escapedPath := strings.ReplaceAll(path, "'", "''")
+	script := fmt.Sprintf(`$taskPath = '%s'
+$limit = %d
+$maxScan = 2000
+$events = Get-WinEvent -LogName 'Microsoft-Windows-TaskScheduler/Operational' -ErrorAction SilentlyContinue -MaxEvents $maxScan
+$history = @()
+foreach ($event in $events) {
+  try {
+    $xml = [xml]$event.ToXml()
+    $taskNode = $xml.Event.EventData.Data | Where-Object { $_.Name -eq 'TaskName' } | Select-Object -First 1
+    if (-not $taskNode) { continue }
+    $eventTaskPath = [string]$taskNode.'#text'
+    if ($eventTaskPath -ne $taskPath) { continue }
+
+    $resultCodeNode = $xml.Event.EventData.Data | Where-Object { $_.Name -eq 'ResultCode' } | Select-Object -First 1
+    $resultCode = $null
+    if ($resultCodeNode) {
+      $rawResult = [string]$resultCodeNode.'#text'
+      if ($rawResult -match '^0x[0-9a-fA-F]+$') {
+        $resultCode = [int]$rawResult
+      } elseif ($rawResult -match '^-?\d+$') {
+        $resultCode = [int]$rawResult
+      }
+    }
+
+    $history += [PSCustomObject]@{
+      id = [string]$event.RecordId
+      eventId = [int]$event.Id
+      timestamp = $event.TimeCreated.ToString('o')
+      level = [string]$event.LevelDisplayName
+      message = [string]$event.Message
+      resultCode = $resultCode
+    }
+    if ($history.Count -ge $limit) { break }
+  } catch {
+    continue
+  }
+}
+
+$history | ConvertTo-Json -Depth 4 -Compress`, escapedPath, limit)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	output, err := cmd.Output()
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to read task history: %w", err), time.Since(startTime).Milliseconds())
+	}
+
+	outputText := strings.TrimSpace(string(output))
+	if outputText == "" {
+		return NewSuccessResult(TaskHistoryResponse{
+			History: []TaskHistoryEntry{},
+			Path:    path,
+			Total:   0,
+		}, time.Since(startTime).Milliseconds())
+	}
+
+	history := []TaskHistoryEntry{}
+	if err := json.Unmarshal(output, &history); err != nil {
+		var single TaskHistoryEntry
+		if errSingle := json.Unmarshal(output, &single); errSingle != nil {
+			return NewErrorResult(fmt.Errorf("failed to parse task history: %w", err), time.Since(startTime).Milliseconds())
+		}
+		history = []TaskHistoryEntry{single}
+	}
+
+	return NewSuccessResult(TaskHistoryResponse{
+		History: history,
+		Path:    path,
+		Total:   len(history),
+	}, time.Since(startTime).Milliseconds())
 }
 
 func parseTaskList(output, folder, search string) []ScheduledTask {

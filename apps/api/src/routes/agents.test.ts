@@ -3,6 +3,9 @@ import { Hono } from 'hono';
 import { agentRoutes } from './agents';
 
 vi.mock('../services', () => ({}));
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn()
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -303,6 +306,75 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('PUT /agents/:id/patches', () => {
+    it('accepts installed patches with empty installedAt values', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'device-123',
+              agentId: 'agent-123',
+              osType: 'windows',
+              orgId: 'org-123'
+            }])
+          })
+        })
+      } as any);
+
+      const pendingInsertValues = vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'patch-1'
+          }])
+        })
+      });
+
+      const devicePatchInsertValues = vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined)
+      });
+
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(undefined)
+          })
+        }),
+        insert: vi.fn()
+          .mockReturnValueOnce({
+            values: pendingInsertValues
+          })
+          .mockReturnValueOnce({
+            values: devicePatchInsertValues
+          })
+      };
+
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as any));
+
+      const res = await app.request('/agents/agent-123/patches', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patches: [],
+          installed: [
+            {
+              name: 'Security Intelligence Update for Microsoft Defender',
+              source: 'microsoft',
+              category: 'definitions',
+              installedAt: ''
+            }
+          ]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(devicePatchInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          installedAt: null
+        })
+      );
     });
   });
 });

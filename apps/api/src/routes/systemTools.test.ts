@@ -8,20 +8,30 @@ vi.mock('../services/commandQueue', () => ({
   executeCommand: (...args: unknown[]) => mockExecuteCommand(...args),
   CommandTypes: {
     LIST_PROCESSES: 'LIST_PROCESSES',
+    GET_PROCESS: 'GET_PROCESS',
     KILL_PROCESS: 'KILL_PROCESS',
     LIST_SERVICES: 'LIST_SERVICES',
+    GET_SERVICE: 'GET_SERVICE',
+    START_SERVICE: 'START_SERVICE',
+    STOP_SERVICE: 'STOP_SERVICE',
+    RESTART_SERVICE: 'RESTART_SERVICE',
     TASKS_LIST: 'TASKS_LIST',
     TASK_GET: 'TASK_GET',
     TASK_RUN: 'TASK_RUN',
     TASK_ENABLE: 'TASK_ENABLE',
     TASK_DISABLE: 'TASK_DISABLE',
+    TASK_HISTORY: 'TASK_HISTORY',
     REGISTRY_KEYS: 'REGISTRY_KEYS',
     REGISTRY_VALUES: 'REGISTRY_VALUES',
     REGISTRY_GET: 'REGISTRY_GET',
     REGISTRY_SET: 'REGISTRY_SET',
     REGISTRY_DELETE: 'REGISTRY_DELETE',
     REGISTRY_KEY_CREATE: 'REGISTRY_KEY_CREATE',
-    REGISTRY_KEY_DELETE: 'REGISTRY_KEY_DELETE'
+    REGISTRY_KEY_DELETE: 'REGISTRY_KEY_DELETE',
+    EVENT_LOGS_LIST: 'EVENT_LOGS_LIST',
+    EVENT_LOGS_QUERY: 'EVENT_LOGS_QUERY',
+    EVENT_LOG_GET: 'EVENT_LOG_GET',
+    FILE_READ: 'FILE_READ'
   }
 }));
 
@@ -50,7 +60,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next())
 }));
 
 import { db } from '../db';
@@ -114,12 +124,24 @@ describe('system tools routes', () => {
     expect(body.error).toContain('Failed to parse agent response');
   });
 
-  it('returns 501 for process details endpoint until agent integration is implemented', async () => {
+  it('gets process details via agent command', async () => {
     mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        pid: 2048,
+        name: 'svchost.exe',
+        cpuPercent: 0.2,
+        memoryMb: 84
+      })
+    });
 
     const res = await app.request(`/system-tools/devices/${deviceId}/processes/2048`);
 
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.pid).toBe(2048);
+    expect(body.data.name).toBe('svchost.exe');
   });
 
   it('kills a process and logs audit', async () => {
@@ -145,7 +167,7 @@ describe('system tools routes', () => {
     mockExecuteCommand.mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({
-        services: [{ name: 'WinRM', status: 'stopped' }],
+        services: [{ name: 'WinRM', displayName: 'Windows Remote Management', status: 'Running', startupType: 'Automatic' }],
         total: 1,
         page: 1,
         limit: 50,
@@ -158,25 +180,82 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toHaveLength(1);
+    expect(body.data[0].status).toBe('running');
+    expect(body.data[0].startType).toBe('auto');
     expect(body.meta.total).toBe(1);
   });
 
-  it('returns 501 for service details endpoint until agent integration is implemented', async () => {
+  it('gets service details via agent command', async () => {
     mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        name: 'WinRM',
+        displayName: 'Windows Remote Management',
+        status: 'Stopped',
+        startupType: 'Manual',
+        account: 'LocalSystem'
+      })
+    });
 
-    const res = await app.request(`/system-tools/devices/${deviceId}/services/UnknownService`);
+    const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM`);
 
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.name).toBe('WinRM');
+    expect(body.data.status).toBe('stopped');
+    expect(body.data.startType).toBe('manual');
   });
 
-  it('returns 501 for service start endpoint until agent integration is implemented', async () => {
+  it('starts a service via agent command', async () => {
     mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ success: true })
+    });
 
     const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM/start`, {
       method: 'POST'
     });
 
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  it('stops a service via agent command', async () => {
+    mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ success: true })
+    });
+
+    const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM/stop`, {
+      method: 'POST'
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  it('restarts a service via agent command', async () => {
+    mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ success: true })
+    });
+
+    const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM/restart`, {
+      method: 'POST'
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('lists registry keys', async () => {
@@ -328,32 +407,85 @@ describe('system tools routes', () => {
     expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
-  it('returns 501 for event log listing until agent integration is implemented', async () => {
+  it('lists event logs via agent command', async () => {
     mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        logs: [
+          { name: 'System', displayName: 'System', recordCount: 1000 },
+          { name: 'Application', displayName: 'Application', recordCount: 800 }
+        ]
+      })
+    });
 
     const res = await app.request(`/system-tools/devices/${deviceId}/eventlogs`);
 
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(2);
+    expect(body.data[0].name).toBe('System');
   });
 
-  it('returns 501 for event log query until agent integration is implemented', async () => {
+  it('queries event logs via agent command', async () => {
     mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        events: [
+          {
+            recordId: 15234,
+            timeCreated: '2026-02-08T10:00:00.000Z',
+            level: 'Error',
+            source: 'Service Control Manager',
+            eventId: 7001,
+            message: 'A service failed to start',
+            computer: 'KIT',
+            userId: 'S-1-5-18'
+          }
+        ],
+        total: 1,
+        page: 1,
+        limit: 50,
+        totalPages: 1
+      })
+    });
 
     const res = await app.request(
       `/system-tools/devices/${deviceId}/eventlogs/System/events?level=critical&eventId=6008`
     );
 
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].recordId).toBe(15234);
+    expect(body.meta.total).toBe(1);
   });
 
-  it('returns 501 for event log detail until agent integration is implemented', async () => {
+  it('gets event log details via agent command', async () => {
     mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        recordId: 15234,
+        timeCreated: '2026-02-08T10:00:00.000Z',
+        level: 'Warning',
+        source: 'Kernel-General',
+        eventId: 16,
+        message: 'The access history in hive was cleared',
+        computer: 'KIT',
+        userId: 'S-1-5-18'
+      })
+    });
 
     const res = await app.request(
       `/system-tools/devices/${deviceId}/eventlogs/System/events/15234`
     );
 
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.recordId).toBe(15234);
+    expect(body.data.level).toBe('warning');
   });
 
   it('lists scheduled tasks via agent command', async () => {
@@ -476,5 +608,54 @@ describe('system tools routes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  it('gets scheduled task history via agent command', async () => {
+    mockDeviceSelect();
+    const encodedPath = encodeURIComponent('\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan');
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        path: '\\Microsoft\\Windows\\Windows Defender\\Windows Defender Scheduled Scan',
+        total: 1,
+        history: [{
+          id: '321',
+          eventId: 102,
+          timestamp: '2026-02-08T09:30:00.000Z',
+          level: 'Information',
+          message: 'Task completed',
+          resultCode: 0
+        }]
+      })
+    });
+
+    const res = await app.request(`/system-tools/devices/${deviceId}/tasks/${encodedPath}/history?limit=10`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].level).toBe('info');
+    expect(body.data[0].resultCode).toBe(0);
+  });
+
+  it('downloads file content via agent command', async () => {
+    mockDeviceSelect();
+    const encoded = Buffer.from('hello from device', 'utf8').toString('base64');
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        path: '/tmp/example.txt',
+        size: 17,
+        encoding: 'base64',
+        content: encoded
+      })
+    });
+
+    const res = await app.request(`/system-tools/devices/${deviceId}/files/download?path=%2Ftmp%2Fexample.txt`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toContain('example.txt');
+    const content = Buffer.from(await res.arrayBuffer()).toString('utf8');
+    expect(content).toBe('hello from device');
   });
 });
