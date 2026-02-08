@@ -182,7 +182,7 @@ async function processScheduler(): Promise<{ enqueued: number }> {
     .where(
       and(
         eq(networkMonitors.isActive, true),
-        sql`(${networkMonitors.lastChecked} IS NULL OR ${networkMonitors.lastChecked} + make_interval(secs => ${networkMonitors.pollingInterval}) <= ${now})`
+        sql`(${networkMonitors.lastChecked} IS NULL OR ${networkMonitors.lastChecked} + make_interval(secs => ${networkMonitors.pollingInterval}) <= ${now.toISOString()})`
       )
     );
 

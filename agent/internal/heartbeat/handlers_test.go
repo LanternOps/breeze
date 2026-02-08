@@ -19,6 +19,7 @@ var allCommandTypes = []string{
 	tools.CmdTaskEnable, tools.CmdTaskDisable,
 	tools.CmdRegistryKeys, tools.CmdRegistryValues, tools.CmdRegistryGet,
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
+	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
 	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock,
 	tools.CmdCollectSoftware,
 	tools.CmdFileList, tools.CmdFileRead, tools.CmdFileWrite,
@@ -41,6 +42,8 @@ var allCommandTypes = []string{
 
 	// handlers_network.go init()
 	tools.CmdNetworkDiscovery, tools.CmdSnmpPoll,
+	tools.CmdNetworkPing, tools.CmdNetworkTcpCheck,
+	tools.CmdNetworkHttpCheck, tools.CmdNetworkDnsCheck,
 
 	// handlers_security.go init()
 	tools.CmdSecurityCollectStatus, tools.CmdSecurityScan,

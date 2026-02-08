@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle, AlertTriangle, Apple, Package, ExternalLink } from 'lucide-react';
+import {
+  CheckCircle,
+  AlertTriangle,
+  Apple,
+  Package,
+  ExternalLink,
+  Monitor,
+  Server,
+  type LucideIcon
+} from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import type { OSType } from './DeviceList';
 
 type PatchItem = {
   id?: string;
@@ -31,37 +41,187 @@ type PatchPayload = {
 type DevicePatchStatusTabProps = {
   deviceId: string;
   timezone?: string;
-};
-
-const severityStyles: Record<string, string> = {
-  critical: 'text-red-600',
-  important: 'text-orange-600',
-  moderate: 'text-yellow-600',
-  low: 'text-blue-600'
+  osType?: OSType;
 };
 
 const categoryBadges: Record<string, { label: string; className: string }> = {
-  system: { label: 'OS Update', className: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' },
+  system: { label: 'System', className: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' },
   security: { label: 'Security', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
   application: { label: 'App', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
-  homebrew: { label: 'Homebrew', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' }
+  homebrew: { label: 'Homebrew', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
+  definitions: { label: 'Definitions', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
+  driver: { label: 'Driver', className: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300' },
+  feature: { label: 'Feature', className: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' }
 };
 
-function getCategoryBadge(patch: PatchItem) {
+type PatchDisplayCopy = {
+  nativeIcon: LucideIcon;
+  pendingNativeTitle: string;
+  pendingNativeEmpty: string;
+  pendingNativePrimaryColumn: string;
+  pendingThirdPartyTitle: string;
+  pendingThirdPartyEmpty: string;
+  pendingThirdPartyPrimaryColumn: string;
+  pendingThirdPartySecondaryColumn: string;
+  installedNativeTitle: string;
+  installedNativeEmpty: string;
+  installedNativePrimaryColumn: string;
+  installedThirdPartyTitle: string;
+};
+
+function getPatchDisplayCopy(osType: OSType): PatchDisplayCopy {
+  switch (osType) {
+    case 'windows':
+      return {
+        nativeIcon: Monitor,
+        pendingNativeTitle: 'Pending Windows Updates',
+        pendingNativeEmpty: 'No pending Windows updates.',
+        pendingNativePrimaryColumn: 'Update',
+        pendingThirdPartyTitle: 'Pending Third-Party Updates',
+        pendingThirdPartyEmpty: 'No pending third-party updates.',
+        pendingThirdPartyPrimaryColumn: 'Software',
+        pendingThirdPartySecondaryColumn: 'Category',
+        installedNativeTitle: 'Installed Windows Updates',
+        installedNativeEmpty: 'No Windows updates reported.',
+        installedNativePrimaryColumn: 'Update',
+        installedThirdPartyTitle: 'Installed Third-Party Updates'
+      };
+    case 'linux':
+      return {
+        nativeIcon: Server,
+        pendingNativeTitle: 'Pending Linux Updates',
+        pendingNativeEmpty: 'No pending Linux updates.',
+        pendingNativePrimaryColumn: 'Package',
+        pendingThirdPartyTitle: 'Pending Third-Party Updates',
+        pendingThirdPartyEmpty: 'No pending third-party updates.',
+        pendingThirdPartyPrimaryColumn: 'Software',
+        pendingThirdPartySecondaryColumn: 'Category',
+        installedNativeTitle: 'Installed Linux Updates',
+        installedNativeEmpty: 'No Linux updates reported.',
+        installedNativePrimaryColumn: 'Package',
+        installedThirdPartyTitle: 'Installed Third-Party Updates'
+      };
+    case 'macos':
+    default:
+      return {
+        nativeIcon: Apple,
+        pendingNativeTitle: 'Pending Apple Updates',
+        pendingNativeEmpty: 'No pending Apple updates.',
+        pendingNativePrimaryColumn: 'Update',
+        pendingThirdPartyTitle: 'Pending Package Updates',
+        pendingThirdPartyEmpty: 'No pending package updates.',
+        pendingThirdPartyPrimaryColumn: 'Package',
+        pendingThirdPartySecondaryColumn: 'Type',
+        installedNativeTitle: 'Installed Apple Updates',
+        installedNativeEmpty: 'No Apple updates reported.',
+        installedNativePrimaryColumn: 'Update',
+        installedThirdPartyTitle: 'Installed Third-Party Updates'
+      };
+  }
+}
+
+function getCategoryBadge(patch: PatchItem, osType: OSType) {
+  const name = (patch.name || patch.title || '').toLowerCase();
+  const category = (patch.category || '').toLowerCase();
+
+  if (category === 'homebrew-cask') {
+    return categoryBadges.homebrew;
+  }
+
+  if (categoryBadges[category]) {
+    return categoryBadges[category];
+  }
+
+  if (osType === 'macos') {
+    if (name.startsWith('macos') || name.startsWith('mac os')) {
+      return categoryBadges.system;
+    }
+    if (name.includes('security') || name.includes('xprotect') || name.includes('gatekeeper') || name.includes('mrt')) {
+      return categoryBadges.security;
+    }
+  }
+
+  if (osType === 'windows') {
+    if (name.includes('security intelligence')) {
+      return categoryBadges.definitions;
+    }
+    if (name.includes('driver')) {
+      return categoryBadges.driver;
+    }
+    if (name.includes('security update') || name.includes('cumulative update')) {
+      return categoryBadges.security;
+    }
+  }
+
+  return null;
+}
+
+function isApplePatch(patch: PatchItem) {
+  const source = (patch.source || '').toLowerCase();
+  const category = (patch.category || '').toLowerCase();
   const name = (patch.name || patch.title || '').toLowerCase();
 
-  // Auto-detect macOS updates by name
-  if (name.startsWith('macos') || name.startsWith('mac os')) {
-    return categoryBadges.system;
-  }
-  // Auto-detect security updates
-  if (name.includes('security') || name.includes('xprotect') || name.includes('gatekeeper') || name.includes('mrt')) {
-    return categoryBadges.security;
+  if (category === 'homebrew' || category === 'homebrew-cask') {
+    return false;
   }
 
-  // Use category from data if available
+  if (source === 'apple') {
+    return true;
+  }
+  if (source === 'microsoft' || source === 'linux' || source === 'third_party' || source === 'custom') {
+    return false;
+  }
+
+  return category === 'system' ||
+    category === 'security' ||
+    category === 'application' ||
+    name.startsWith('macos') ||
+    name.startsWith('mac os') ||
+    name.includes('xprotect') ||
+    name.includes('gatekeeper') ||
+    name.includes('rosetta');
+}
+
+function isWindowsPatch(patch: PatchItem) {
+  const source = (patch.source || '').toLowerCase();
   const category = (patch.category || '').toLowerCase();
-  return categoryBadges[category] || null;
+  const name = (patch.name || patch.title || '').toLowerCase();
+
+  if (source === 'microsoft') {
+    return true;
+  }
+  if (source === 'apple' || source === 'linux' || source === 'third_party' || source === 'custom') {
+    return false;
+  }
+
+  if (category === 'security' || category === 'definitions' || category === 'driver' || category === 'feature' || category === 'system') {
+    return true;
+  }
+
+  return name.includes('windows') ||
+    name.includes('cumulative update') ||
+    name.includes('security intelligence update') ||
+    /kb\d{4,8}/i.test(name);
+}
+
+function isLinuxPatch(patch: PatchItem) {
+  const source = (patch.source || '').toLowerCase();
+  const category = (patch.category || '').toLowerCase();
+
+  if (source === 'linux') {
+    return true;
+  }
+  if (source === 'apple' || source === 'microsoft' || source === 'third_party' || source === 'custom') {
+    return false;
+  }
+
+  return category === 'system' || category === 'security';
+}
+
+function isNativePatchForOs(patch: PatchItem, osType: OSType) {
+  if (osType === 'windows') return isWindowsPatch(patch);
+  if (osType === 'linux') return isLinuxPatch(patch);
+  return isApplePatch(patch);
 }
 
 function formatDate(value?: string, timezone?: string) {
@@ -98,7 +258,7 @@ function getHomebrewUrl(patch: PatchItem): string | null {
   return `${baseUrl}${baseName}`;
 }
 
-export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatchStatusTabProps) {
+export default function DevicePatchStatusTab({ deviceId, timezone, osType }: DevicePatchStatusTabProps) {
   const [payload, setPayload] = useState<PatchPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -130,7 +290,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
     fetchPatchStatus();
   }, [fetchPatchStatus]);
 
-  const { pendingApple, pendingOther, installedApple, installedThirdParty, compliancePercent } = useMemo(() => {
+  const normalizedOsType: OSType = osType ?? 'macos';
+  const displayCopy = useMemo(() => getPatchDisplayCopy(normalizedOsType), [normalizedOsType]);
+  const NativeIcon = displayCopy.nativeIcon;
+
+  const { pendingNative, pendingOther, installedNative, installedThirdParty, compliancePercent } = useMemo(() => {
     const data = payload ?? {};
     const pendingList = data.pending ?? data.pendingPatches ?? data.available ?? [];
     const installedList = data.installed ?? data.installedPatches ?? data.applied ?? [];
@@ -143,46 +307,23 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
       ? installedList
       : patches.filter(patch => (patch.status || '').toLowerCase() === 'installed');
 
-    // Helper to determine if patch is from Apple (not Homebrew)
-    const isApplePatch = (patch: PatchItem) => {
-      const category = (patch.category || '').toLowerCase();
-      const name = (patch.name || patch.title || '').toLowerCase();
+    const nativePending = inferredPending.filter(patch => isNativePatchForOs(patch, normalizedOsType));
+    const otherPending = inferredPending.filter(patch => !isNativePatchForOs(patch, normalizedOsType));
 
-      // Exclude Homebrew packages (they have source=apple but category=homebrew)
-      if (category === 'homebrew' || category === 'homebrew-cask') {
-        return false;
-      }
-
-      // Apple system/security/app updates
-      return category === 'system' ||
-        category === 'security' ||
-        category === 'application' ||
-        name.startsWith('macos') ||
-        name.startsWith('mac os') ||
-        name.includes('xprotect') ||
-        name.includes('gatekeeper') ||
-        name.includes('rosetta');
-    };
-
-    // Split pending patches
-    const applePending = inferredPending.filter(isApplePatch);
-    const otherPending = inferredPending.filter(p => !isApplePatch(p));
-
-    // Split installed patches
-    const appleInstalled = inferredInstalled.filter(isApplePatch);
-    const thirdPartyInstalled = inferredInstalled.filter(p => !isApplePatch(p));
+    const nativeInstalled = inferredInstalled.filter(patch => isNativePatchForOs(patch, normalizedOsType));
+    const thirdPartyInstalled = inferredInstalled.filter(patch => !isNativePatchForOs(patch, normalizedOsType));
 
     const total = inferredPending.length + inferredInstalled.length;
     const compliance = data.compliancePercent ?? data.compliance ?? (total > 0 ? Math.round((inferredInstalled.length / total) * 100) : 100);
 
     return {
-      pendingApple: applePending,
+      pendingNative: nativePending,
       pendingOther: otherPending,
-      installedApple: appleInstalled,
+      installedNative: nativeInstalled,
       installedThirdParty: thirdPartyInstalled,
       compliancePercent: compliance
     };
-  }, [payload]);
+  }, [payload, normalizedOsType]);
 
   if (loading) {
     return (
@@ -228,21 +369,20 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
             <div className="h-full rounded-full bg-primary" style={{ width: `${compliancePercent}%` }} />
           </div>
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span>{pendingApple.length + pendingOther.length} pending</span>
-            <span>{installedApple.length + installedThirdParty.length} installed</span>
+            <span>{pendingNative.length + pendingOther.length} pending</span>
+            <span>{installedNative.length + installedThirdParty.length} installed</span>
           </div>
         </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Pending Apple Updates */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
-            <Apple className="h-4 w-4 text-gray-600" />
-            <h3 className="font-semibold">Pending Apple Updates</h3>
-            {pendingApple.length > 0 && (
+            <NativeIcon className="h-4 w-4 text-gray-600" />
+            <h3 className="font-semibold">{displayCopy.pendingNativeTitle}</h3>
+            {pendingNative.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
-                {pendingApple.length}
+                {pendingNative.length}
               </span>
             )}
           </div>
@@ -251,27 +391,31 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">Update</th>
+                    <th className="px-4 py-3">{displayCopy.pendingNativePrimaryColumn}</th>
                     <th className="px-4 py-3">Category</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {pendingApple.length === 0 ? (
+                  {pendingNative.length === 0 ? (
                     <tr>
                       <td colSpan={2} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        No pending Apple updates.
+                        {displayCopy.pendingNativeEmpty}
                       </td>
                     </tr>
                   ) : (
-                    pendingApple.map((patch, index) => {
-                      const badge = getCategoryBadge(patch);
+                    pendingNative.map((patch, index) => {
+                      const badge = getCategoryBadge(patch, normalizedOsType);
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-apple'}-${index}`} className="text-sm">
                           <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
                           <td className="px-4 py-3">
-                            {badge && (
+                            {badge ? (
                               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
                                 {badge.label}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground capitalize">
+                                {patch.category || 'Uncategorized'}
                               </span>
                             )}
                           </td>
@@ -285,11 +429,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
           </div>
         </div>
 
-        {/* Pending Other Updates (Homebrew, etc.) */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
-            <h3 className="font-semibold">Pending Package Updates</h3>
+            <h3 className="font-semibold">{displayCopy.pendingThirdPartyTitle}</h3>
             {pendingOther.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
                 {pendingOther.length}
@@ -301,21 +444,21 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">Package</th>
-                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">{displayCopy.pendingThirdPartyPrimaryColumn}</th>
+                    <th className="px-4 py-3">{displayCopy.pendingThirdPartySecondaryColumn}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {pendingOther.length === 0 ? (
                     <tr>
                       <td colSpan={2} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        No pending package updates.
+                        {displayCopy.pendingThirdPartyEmpty}
                       </td>
                     </tr>
                   ) : (
                     pendingOther.map((patch, index) => {
-                      const badge = getCategoryBadge(patch);
-                      const brewUrl = getHomebrewUrl(patch);
+                      const badge = getCategoryBadge(patch, normalizedOsType);
+                      const brewUrl = normalizedOsType === 'macos' ? getHomebrewUrl(patch) : null;
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-other'}-${index}`} className="text-sm">
                           <td className="px-4 py-3 font-medium">
@@ -334,9 +477,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            {badge && (
+                            {badge ? (
                               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
                                 {badge.label}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground capitalize">
+                                {patch.category || 'Third-party'}
                               </span>
                             )}
                           </td>
@@ -350,41 +497,44 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
           </div>
         </div>
 
-        {/* Installed Apple Updates */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
-            <Apple className="h-4 w-4 text-gray-600" />
-            <h3 className="font-semibold">Installed Apple Updates</h3>
-            <span className="text-xs text-muted-foreground">({installedApple.length})</span>
+            <NativeIcon className="h-4 w-4 text-gray-600" />
+            <h3 className="font-semibold">{displayCopy.installedNativeTitle}</h3>
+            <span className="text-xs text-muted-foreground">({installedNative.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
             <div className="max-h-64 overflow-y-auto">
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">Update</th>
+                    <th className="px-4 py-3">{displayCopy.installedNativePrimaryColumn}</th>
                     <th className="px-4 py-3">Category</th>
                     <th className="px-4 py-3">Installed</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {installedApple.length === 0 ? (
+                  {installedNative.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        No Apple updates reported.
+                        {displayCopy.installedNativeEmpty}
                       </td>
                     </tr>
                   ) : (
-                    installedApple.map((patch, index) => {
-                      const badge = getCategoryBadge(patch);
+                    installedNative.map((patch, index) => {
+                      const badge = getCategoryBadge(patch, normalizedOsType);
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'apple'}-${index}`} className="text-sm">
                           <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
                           <td className="px-4 py-3">
-                            {badge && (
+                            {badge ? (
                               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
                                 {badge.label}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground capitalize">
+                                {patch.category || 'Uncategorized'}
                               </span>
                             )}
                           </td>
@@ -400,13 +550,12 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
         </div>
       </div>
 
-      {/* Installed Third-Party Updates */}
       {installedThirdParty.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <Package className="h-4 w-4 text-blue-500" />
-            <h3 className="font-semibold">Installed Third-Party Updates</h3>
+            <h3 className="font-semibold">{displayCopy.installedThirdPartyTitle}</h3>
             <span className="text-xs text-muted-foreground">({installedThirdParty.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
@@ -420,7 +569,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone }: DevicePatch
                 </thead>
                 <tbody className="divide-y">
                   {installedThirdParty.map((patch, index) => {
-                    const brewUrl = getHomebrewUrl(patch);
+                    const brewUrl = normalizedOsType === 'macos' ? getHomebrewUrl(patch) : null;
                     return (
                       <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'thirdparty'}-${index}`} className="text-sm">
                         <td className="px-4 py-3 font-medium">

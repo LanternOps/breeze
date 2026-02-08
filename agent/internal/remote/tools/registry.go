@@ -58,3 +58,23 @@ func DeleteRegistryValue(payload map[string]any) CommandResult {
 
 	return deleteRegistryValueOS(hive, path, name, startTime)
 }
+
+// CreateRegistryKey creates a registry key
+func CreateRegistryKey(payload map[string]any) CommandResult {
+	startTime := time.Now()
+
+	hive := GetPayloadString(payload, "hive", "HKLM")
+	path := GetPayloadString(payload, "path", "")
+
+	return createRegistryKeyOS(hive, path, startTime)
+}
+
+// DeleteRegistryKey deletes a registry key
+func DeleteRegistryKey(payload map[string]any) CommandResult {
+	startTime := time.Now()
+
+	hive := GetPayloadString(payload, "hive", "HKLM")
+	path := GetPayloadString(payload, "path", "")
+
+	return deleteRegistryKeyOS(hive, path, startTime)
+}

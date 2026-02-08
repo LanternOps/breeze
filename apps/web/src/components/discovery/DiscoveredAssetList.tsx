@@ -172,6 +172,8 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const fetchAssets = useCallback(async () => {
     try {
@@ -187,7 +189,10 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       }
       const data = await response.json();
       const items = data.data ?? data.assets ?? data ?? [];
-      setAssets(items.map(mapAsset));
+      const mappedAssets = items.map(mapAsset);
+      setAssets(mappedAssets);
+      const validIds = new Set(mappedAssets.map((asset: DiscoveredAsset) => asset.id));
+      setSelectedAssetIds(prev => new Set([...prev].filter(id => validIds.has(id))));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -249,11 +254,77 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         throw new Error('Failed to delete asset');
       }
 
+      setSelectedAssetIds(prev => {
+        const next = new Set(prev);
+        next.delete(asset.id);
+        return next;
+      });
       await fetchAssets();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setDeletingAssetId(null);
+    }
+  };
+
+  const toggleAssetSelection = (assetId: string) => {
+    setSelectedAssetIds(prev => {
+      const next = new Set(prev);
+      if (next.has(assetId)) {
+        next.delete(assetId);
+      } else {
+        next.add(assetId);
+      }
+      return next;
+    });
+  };
+
+  const allVisibleSelected = assets.length > 0 && assets.every(asset => selectedAssetIds.has(asset.id));
+  const selectedCount = assets.filter(asset => selectedAssetIds.has(asset.id)).length;
+
+  const toggleSelectAllVisible = () => {
+    setSelectedAssetIds(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const asset of assets) next.delete(asset.id);
+      } else {
+        for (const asset of assets) next.add(asset.id);
+      }
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    const selectedIds = assets
+      .filter(asset => selectedAssetIds.has(asset.id))
+      .map(asset => asset.id);
+
+    if (selectedIds.length === 0) return;
+    if (!confirm(`Delete ${selectedIds.length} discovered asset(s)?`)) return;
+
+    try {
+      setBulkDeleting(true);
+      setError(undefined);
+
+      const results = await Promise.allSettled(
+        selectedIds.map(async (assetId) => {
+          const response = await fetchWithAuth(`/discovery/assets/${assetId}`, { method: 'DELETE' });
+          if (!response.ok) throw new Error(assetId);
+        })
+      );
+
+      const failedCount = results.filter(result => result.status === 'rejected').length;
+      if (failedCount > 0) {
+        const deletedCount = selectedIds.length - failedCount;
+        setError(`Deleted ${deletedCount} asset(s), failed to delete ${failedCount}.`);
+      }
+
+      setSelectedAssetIds(new Set());
+      await fetchAssets();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -328,10 +399,45 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         )}
       </div>
 
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleSelectAllVisible}
+          className="h-8 rounded-md border px-3 text-xs font-medium hover:bg-muted"
+        >
+          {allVisibleSelected ? 'Deselect all visible' : 'Select all visible'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setSelectedAssetIds(new Set())}
+          disabled={selectedCount === 0}
+          className="h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Clear selection
+        </button>
+        <button
+          type="button"
+          onClick={handleBulkDelete}
+          disabled={selectedCount === 0 || bulkDeleting}
+          className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {bulkDeleting ? 'Deleting selected...' : `Delete selected (${selectedCount})`}
+        </button>
+      </div>
+
       <div className="mt-4 overflow-hidden rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-3 w-10">
+                <input
+                  type="checkbox"
+                  aria-label="Select all visible assets"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAllVisible}
+                  className="h-4 w-4 rounded border-muted-foreground/40"
+                />
+              </th>
               <th className="px-4 py-3">IP Address</th>
               <th className="px-4 py-3">MAC</th>
               <th className="px-4 py-3">Hostname</th>
@@ -347,7 +453,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           <tbody className="divide-y">
             {assets.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={11} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No assets discovered yet.
                 </td>
               </tr>
@@ -358,6 +464,16 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                   onClick={() => setSelectedAsset(toDetail(asset))}
                   className="cursor-pointer transition hover:bg-muted/40"
                 >
+                  <td className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select asset ${asset.hostname || asset.ip}`}
+                      checked={selectedAssetIds.has(asset.id)}
+                      onClick={event => event.stopPropagation()}
+                      onChange={() => toggleAssetSelection(asset.id)}
+                      className="h-4 w-4 rounded border-muted-foreground/40"
+                    />
+                  </td>
                   <td className="px-4 py-3 text-sm font-medium">{asset.ip}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{asset.mac}</td>
                   <td className="px-4 py-3 text-sm">{asset.hostname || '—'}</td>
@@ -416,7 +532,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                           event.stopPropagation();
                           void handleDelete(asset);
                         }}
-                        disabled={deletingAssetId === asset.id}
+                        disabled={deletingAssetId === asset.id || bulkDeleting}
                         className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
                         title="Delete asset"
                       >

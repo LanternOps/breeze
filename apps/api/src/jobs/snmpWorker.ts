@@ -325,7 +325,7 @@ async function processScheduler(): Promise<{ enqueued: number }> {
     .where(
       and(
         eq(snmpDevices.isActive, true),
-        sql`(${snmpDevices.lastPolled} IS NULL OR ${snmpDevices.lastPolled} + make_interval(secs => ${snmpDevices.pollingInterval}) <= ${now})`
+        sql`(${snmpDevices.lastPolled} IS NULL OR ${snmpDevices.lastPolled} + make_interval(secs => ${snmpDevices.pollingInterval}) <= ${now.toISOString()})`
       )
     );
 

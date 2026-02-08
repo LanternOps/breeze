@@ -35,6 +35,8 @@ export const CommandTypes = {
   REGISTRY_GET: 'registry_get',
   REGISTRY_SET: 'registry_set',
   REGISTRY_DELETE: 'registry_delete',
+  REGISTRY_KEY_CREATE: 'registry_key_create',
+  REGISTRY_KEY_DELETE: 'registry_key_delete',
 
   // File operations
   FILE_LIST: 'file_list',
@@ -106,6 +108,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.TASK_DISABLE,
   CommandTypes.REGISTRY_SET,
   CommandTypes.REGISTRY_DELETE,
+  CommandTypes.REGISTRY_KEY_CREATE,
+  CommandTypes.REGISTRY_KEY_DELETE,
   CommandTypes.FILE_WRITE,
   CommandTypes.FILE_DELETE,
   CommandTypes.FILE_MKDIR,

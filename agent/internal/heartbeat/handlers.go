@@ -39,11 +39,13 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdTaskDisable: handleTaskDisable,
 
 	// Registry (Windows)
-	tools.CmdRegistryKeys:   handleRegistryKeys,
-	tools.CmdRegistryValues: handleRegistryValues,
-	tools.CmdRegistryGet:    handleRegistryGet,
-	tools.CmdRegistrySet:    handleRegistrySet,
-	tools.CmdRegistryDelete: handleRegistryDelete,
+	tools.CmdRegistryKeys:      handleRegistryKeys,
+	tools.CmdRegistryValues:    handleRegistryValues,
+	tools.CmdRegistryGet:       handleRegistryGet,
+	tools.CmdRegistrySet:       handleRegistrySet,
+	tools.CmdRegistryDelete:    handleRegistryDelete,
+	tools.CmdRegistryKeyCreate: handleRegistryKeyCreate,
+	tools.CmdRegistryKeyDelete: handleRegistryKeyDelete,
 
 	// System
 	tools.CmdReboot:   handleReboot,
@@ -172,6 +174,14 @@ func handleRegistrySet(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleRegistryDelete(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.DeleteRegistryValue(cmd.Payload)
+}
+
+func handleRegistryKeyCreate(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.CreateRegistryKey(cmd.Payload)
+}
+
+func handleRegistryKeyDelete(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.DeleteRegistryKey(cmd.Payload)
 }
 
 func handleReboot(_ *Heartbeat, cmd Command) tools.CommandResult {

@@ -49,7 +49,7 @@ interface RegistryKey {
 interface RegistryValue {
   name: string;
   type: 'REG_SZ' | 'REG_EXPAND_SZ' | 'REG_BINARY' | 'REG_DWORD' | 'REG_QWORD' | 'REG_MULTI_SZ';
-  data: string | number | string[];
+  data: string | number | string[] | number[];
 }
 
 interface EventLogInfo {
@@ -76,7 +76,7 @@ interface EventLogEntry {
 interface ScheduledTaskInfo {
   path: string;
   name: string;
-  state: 'ready' | 'running' | 'disabled' | 'queued';
+  state: 'ready' | 'running' | 'disabled' | 'queued' | 'unknown';
   lastRunTime: string | null;
   lastRunResult: number | null;
   nextRunTime: string | null;
@@ -102,11 +102,6 @@ interface FileEntryInfo {
   modified?: string;
   permissions?: string;
 }
-
-type RegistryOverrides = {
-  added: Set<string>;
-  removed: Set<string>;
-};
 
 // ============================================
 // HELPER FUNCTIONS
@@ -157,14 +152,268 @@ async function getDeviceWithOrgCheck(
 }
 
 
-const registryKeyOverrides = new Map<string, RegistryOverrides>();
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
 
-function getRegistryOverrides(key: string): RegistryOverrides {
-  const existing = registryKeyOverrides.get(key);
-  if (existing) return existing;
-  const created = { added: new Set<string>(), removed: new Set<string>() };
-  registryKeyOverrides.set(key, created);
-  return created;
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function asOptionalNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function parseNumericLike(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = /^0x/i.test(trimmed)
+    ? Number.parseInt(trimmed.slice(2), 16)
+    : Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeRegistryValueName(name: string): string {
+  return name === '(Default)' ? '' : name;
+}
+
+function presentRegistryValueName(name: string): string {
+  return name === '' ? '(Default)' : name;
+}
+
+function parseBinaryString(value: string): number[] {
+  const compact = value.replace(/[^0-9a-fA-F]/g, '');
+  if (!compact) return [];
+  const padded = compact.length % 2 === 0 ? compact : `0${compact}`;
+  const bytes: number[] = [];
+  for (let i = 0; i < padded.length; i += 2) {
+    const parsed = Number.parseInt(padded.slice(i, i + 2), 16);
+    if (!Number.isFinite(parsed)) continue;
+    bytes.push(parsed);
+  }
+  return bytes;
+}
+
+function parseBinaryObject(value: Record<string, unknown>): number[] {
+  const sorted = Object.entries(value)
+    .filter(([key, val]) => /^\d+$/.test(key) && typeof val === 'number')
+    .sort((a, b) => Number.parseInt(a[0], 10) - Number.parseInt(b[0], 10))
+    .map(([, val]) => Number(val))
+    .filter((num) => Number.isFinite(num) && num >= 0 && num <= 255);
+  return sorted;
+}
+
+function normalizeRegistryValueData(type: string, data: unknown): string | number | string[] | number[] {
+  switch (type) {
+    case 'REG_DWORD':
+    case 'REG_QWORD': {
+      if (typeof data === 'number') return data;
+      if (typeof data === 'string') {
+        const parsed = parseNumericLike(data);
+        return parsed ?? data;
+      }
+      return String(data ?? '');
+    }
+    case 'REG_MULTI_SZ': {
+      if (Array.isArray(data)) {
+        return data.map((entry) => String(entry));
+      }
+      if (typeof data === 'string') {
+        return data
+          .split(/\r?\n|\u0000/g)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+      }
+      return [];
+    }
+    case 'REG_BINARY': {
+      if (Array.isArray(data)) {
+        return data
+          .map((entry) => (typeof entry === 'number' ? entry : Number(entry)))
+          .filter((num) => Number.isFinite(num) && num >= 0 && num <= 255);
+      }
+      if (typeof data === 'string') {
+        return parseBinaryString(data);
+      }
+      const record = asRecord(data);
+      if (record) return parseBinaryObject(record);
+      return [];
+    }
+    default:
+      if (typeof data === 'string') return data;
+      if (typeof data === 'number') return String(data);
+      return String(data ?? '');
+  }
+}
+
+function toRegistryCommandData(type: string, data: unknown): string {
+  switch (type) {
+    case 'REG_DWORD':
+    case 'REG_QWORD': {
+      if (typeof data === 'number' && Number.isFinite(data)) return String(Math.trunc(data));
+      if (typeof data === 'string') {
+        const parsed = parseNumericLike(data);
+        return parsed !== null ? String(Math.trunc(parsed)) : data;
+      }
+      return String(data ?? '');
+    }
+    case 'REG_MULTI_SZ':
+      if (Array.isArray(data)) return data.map((entry) => String(entry)).join('\n');
+      return String(data ?? '');
+    case 'REG_BINARY':
+      if (Array.isArray(data)) {
+        return data
+          .map((entry) => (typeof entry === 'number' ? entry : Number(entry)))
+          .filter((num) => Number.isFinite(num) && num >= 0 && num <= 255)
+          .map((num) => num.toString(16).padStart(2, '0'))
+          .join(' ')
+          .toUpperCase();
+      }
+      if (typeof data === 'string') {
+        return data;
+      }
+      if (data instanceof Uint8Array) {
+        return Array.from(data).map((num) => num.toString(16).padStart(2, '0')).join(' ').toUpperCase();
+      }
+      {
+        const record = asRecord(data);
+        if (record) {
+          return parseBinaryObject(record)
+            .map((num) => num.toString(16).padStart(2, '0'))
+            .join(' ')
+            .toUpperCase();
+        }
+      }
+      return '';
+    default:
+      return String(data ?? '');
+  }
+}
+
+function mapRegistryKeyFromAgent(key: unknown): RegistryKey | null {
+  const record = asRecord(key);
+  if (!record) return null;
+
+  const name = asString(record.name);
+  const path = asString(record.path);
+  if (!name || path === undefined) return null;
+
+  return {
+    name,
+    path,
+    subKeyCount: asNumber(record.subKeyCount) ?? 0,
+    valueCount: asNumber(record.valueCount) ?? 0,
+    lastModified: asString(record.lastModified) ?? ''
+  };
+}
+
+function mapRegistryValueFromAgent(value: unknown): RegistryValue | null {
+  const record = asRecord(value);
+  if (!record) return null;
+
+  const name = asString(record.name);
+  const type = asString(record.type);
+  if (name === undefined || !type) return null;
+
+  return {
+    name: presentRegistryValueName(name),
+    type: type as RegistryValue['type'],
+    data: normalizeRegistryValueData(type, record.data)
+  };
+}
+
+function normalizeTaskState(value?: string): ScheduledTaskInfo['state'] {
+  switch ((value ?? '').toLowerCase()) {
+    case 'ready':
+    case 'running':
+    case 'disabled':
+    case 'queued':
+      return value!.toLowerCase() as ScheduledTaskInfo['state'];
+    default:
+      return 'unknown';
+  }
+}
+
+function normalizeTaskTrigger(trigger: unknown): ScheduledTaskInfo['triggers'][number] | null {
+  if (typeof trigger === 'string') {
+    const text = trigger.trim();
+    if (!text) return null;
+    return { type: text, enabled: true };
+  }
+
+  const record = asRecord(trigger);
+  if (!record) return null;
+
+  const type = asString(record.type) ?? asString(record.name) ?? asString(record.description) ?? 'Schedule';
+  const schedule = asString(record.schedule) ?? asString(record.startBoundary) ?? asString(record.nextRunTime);
+  const enabledRaw = record.enabled;
+  const enabled = typeof enabledRaw === 'boolean'
+    ? enabledRaw
+    : typeof enabledRaw === 'string'
+      ? enabledRaw.toLowerCase() !== 'false'
+      : true;
+
+  return schedule ? { type, enabled, schedule } : { type, enabled };
+}
+
+function normalizeTaskAction(action: unknown): ScheduledTaskInfo['actions'][number] | null {
+  if (typeof action === 'string') {
+    const path = action.trim();
+    if (!path) return null;
+    return { type: 'execute', path };
+  }
+
+  const record = asRecord(action);
+  if (!record) return null;
+
+  const type = asString(record.type) ?? 'execute';
+  const path = asString(record.path) ?? asString(record.command);
+  const args = asString(record.arguments) ?? asString(record.args);
+
+  return {
+    type,
+    ...(path ? { path } : {}),
+    ...(args ? { arguments: args } : {})
+  };
+}
+
+function normalizeScheduledTask(task: unknown): ScheduledTaskInfo | null {
+  const record = asRecord(task);
+  if (!record) return null;
+
+  const path = asString(record.path) ?? asString(record.taskPath) ?? '';
+  const derivedName = path.split('\\').filter(Boolean).pop() ?? path;
+  const name = asString(record.name) ?? (derivedName || 'Unknown Task');
+
+  const triggers = Array.isArray(record.triggers)
+    ? record.triggers.map(normalizeTaskTrigger).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    : [];
+  const actions = Array.isArray(record.actions)
+    ? record.actions.map(normalizeTaskAction).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    : [];
+
+  return {
+    path,
+    name,
+    state: normalizeTaskState(asString(record.state) ?? asString(record.status)),
+    lastRunTime: asString(record.lastRunTime) ?? asString(record.lastRun) ?? null,
+    lastRunResult: asOptionalNumber(record.lastRunResult ?? record.lastResult),
+    nextRunTime: asString(record.nextRunTime) ?? asString(record.nextRun) ?? null,
+    author: asString(record.author) ?? '',
+    description: asString(record.description) ?? '',
+    triggers,
+    actions
+  };
 }
 
 // ============================================
@@ -199,7 +448,13 @@ const registryValueBodySchema = z.object({
   path: z.string().min(0).max(1024),
   name: z.string().min(0).max(256),
   type: z.enum(['REG_SZ', 'REG_EXPAND_SZ', 'REG_BINARY', 'REG_DWORD', 'REG_QWORD', 'REG_MULTI_SZ']),
-  data: z.union([z.string(), z.number(), z.array(z.string())])
+  data: z.union([
+    z.string(),
+    z.number(),
+    z.array(z.string()),
+    z.array(z.number()),
+    z.record(z.number())
+  ])
 });
 
 const registryKeyBodySchema = z.object({
@@ -535,32 +790,25 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    const prefix = path ? `${path}\\` : '';
-    const mockKeys: RegistryKey[] = [
-      { name: 'SOFTWARE', path: `${prefix}SOFTWARE`, subKeyCount: 15, valueCount: 0, lastModified: '2024-01-10T10:00:00Z' },
-      { name: 'SYSTEM', path: `${prefix}SYSTEM`, subKeyCount: 8, valueCount: 0, lastModified: '2024-01-12T14:30:00Z' },
-      { name: 'HARDWARE', path: `${prefix}HARDWARE`, subKeyCount: 3, valueCount: 2, lastModified: '2024-01-01T00:00:00Z' }
-    ];
+    const result = await executeCommand(deviceId, CommandTypes.REGISTRY_KEYS, {
+      hive,
+      path
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    const overrideKey = `${deviceId}:${hive}:${path}`;
-    const overrides = registryKeyOverrides.get(overrideKey);
-    const keys = overrides
-      ? [
-          ...mockKeys.filter(key => !overrides.removed.has(key.name)),
-          ...Array.from(overrides.added)
-            .filter(name => !mockKeys.some(key => key.name === name))
-            .map(name => ({
-              name,
-              path: `${prefix}${name}`,
-              subKeyCount: 0,
-              valueCount: 0,
-              lastModified: new Date().toISOString()
-            }))
-        ]
-      : mockKeys;
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to load registry keys' }, 500);
+    }
 
-    return c.json({ data: keys });
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const keys = (Array.isArray(payload.keys) ? payload.keys : [])
+        .map(mapRegistryKeyFromAgent)
+        .filter((entry): entry is RegistryKey => Boolean(entry));
+      return c.json({ data: keys });
+    } catch (error) {
+      console.error('Failed to parse agent response for registry keys:', error);
+      return c.json({ error: 'Failed to parse agent response for registry keys' }, 502);
+    }
   }
 );
 
@@ -573,6 +821,7 @@ systemToolsRoutes.get(
   zValidator('query', registryQuerySchema),
   async (c) => {
     const { deviceId } = c.req.valid('param');
+    const { hive, path } = c.req.valid('query');
     const auth = c.get('auth');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -580,16 +829,25 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    const mockValues: RegistryValue[] = [
-      { name: '(Default)', type: 'REG_SZ', data: '' },
-      { name: 'ProductName', type: 'REG_SZ', data: 'Windows 11 Pro' },
-      { name: 'CurrentVersion', type: 'REG_SZ', data: '6.3' },
-      { name: 'InstallDate', type: 'REG_DWORD', data: 1704067200 },
-      { name: 'PathName', type: 'REG_EXPAND_SZ', data: '%SystemRoot%' }
-    ];
+    const result = await executeCommand(deviceId, CommandTypes.REGISTRY_VALUES, {
+      hive,
+      path
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    return c.json({ data: mockValues });
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to load registry values' }, 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const values = (Array.isArray(payload.values) ? payload.values : [])
+        .map(mapRegistryValueFromAgent)
+        .filter((entry): entry is RegistryValue => Boolean(entry));
+      return c.json({ data: values });
+    } catch (error) {
+      console.error('Failed to parse agent response for registry values:', error);
+      return c.json({ error: 'Failed to parse agent response for registry values' }, 502);
+    }
   }
 );
 
@@ -610,19 +868,38 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    const mockValue: RegistryValue = {
-      name: name || '(Default)',
-      type: 'REG_SZ',
-      data: 'Windows 11 Pro'
-    };
+    const result = await executeCommand(deviceId, CommandTypes.REGISTRY_GET, {
+      hive,
+      path,
+      name: normalizeRegistryValueName(name)
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    return c.json({
-      data: {
-        ...mockValue,
-        fullPath: `${hive}\\${path}\\${name}`
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to get registry value';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const value = mapRegistryValueFromAgent(payload);
+      if (!value) {
+        return c.json({ error: 'Invalid registry value payload from agent' }, 502);
       }
-    });
+
+      const fullPath = value.name === '(Default)'
+        ? `${hive}\\${path}`
+        : `${hive}\\${path}\\${value.name}`;
+
+      return c.json({
+        data: {
+          ...value,
+          fullPath
+        }
+      });
+    } catch (error) {
+      console.error('Failed to parse agent response for registry value:', error);
+      return c.json({ error: 'Failed to parse agent response for registry value' }, 502);
+    }
   }
 );
 
@@ -643,6 +920,16 @@ systemToolsRoutes.put(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    const normalizedName = normalizeRegistryValueName(name);
+    const commandData = toRegistryCommandData(type, data);
+    const result = await executeCommand(deviceId, CommandTypes.REGISTRY_SET, {
+      hive,
+      path,
+      name: normalizedName,
+      type,
+      data: commandData
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
     // Audit log for sensitive operation
     await createAuditLog({
       orgId: device.orgId,
@@ -655,24 +942,29 @@ systemToolsRoutes.put(
       details: {
         hive,
         path,
-        name,
+        name: normalizedName,
         type,
-        data: typeof data === 'string' ? data.substring(0, 200) : data // Truncate for audit
+        data: commandData.substring(0, 200)
       },
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
     });
 
-    // TODO: Replace with actual agent call
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to set registry value';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
     return c.json({
       success: true,
-      message: `Registry value ${name} set successfully`,
+      message: `Registry value ${name || '(Default)'} set successfully`,
       data: {
         hive,
         path,
-        name,
+        name: name || '(Default)',
         type,
-        data
+        data: normalizeRegistryValueData(type, data)
       }
     });
   }
@@ -695,6 +987,13 @@ systemToolsRoutes.delete(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    const normalizedName = normalizeRegistryValueName(name);
+    const result = await executeCommand(deviceId, CommandTypes.REGISTRY_DELETE, {
+      hive,
+      path,
+      name: normalizedName
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
     // Audit log for sensitive operation
     await createAuditLog({
       orgId: device.orgId,
@@ -707,16 +1006,21 @@ systemToolsRoutes.delete(
       details: {
         hive,
         path,
-        name
+        name: normalizedName
       },
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
     });
 
-    // TODO: Replace with actual agent call
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to delete registry value';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
     return c.json({
       success: true,
-      message: `Registry value ${name} deleted successfully`
+      message: `Registry value ${name || '(Default)'} deleted successfully`
     });
   }
 );
@@ -739,18 +1043,14 @@ systemToolsRoutes.post(
     }
 
     const normalizedPath = path.replace(/\\+$/, '');
-    const parts = normalizedPath.split('\\');
-    const name = parts.pop();
-    const parentPath = parts.join('\\');
-
-    if (!name) {
+    if (!normalizedPath) {
       return c.json({ error: 'Invalid registry key path' }, 400);
     }
 
-    const overrideKey = `${deviceId}:${hive}:${parentPath}`;
-    const overrides = getRegistryOverrides(overrideKey);
-    overrides.added.add(name);
-    overrides.removed.delete(name);
+    const result = await executeCommand(deviceId, CommandTypes.REGISTRY_KEY_CREATE, {
+      hive,
+      path: normalizedPath
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
 
     await createAuditLog({
       orgId: device.orgId,
@@ -765,8 +1065,14 @@ systemToolsRoutes.post(
         path: normalizedPath
       },
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
     });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to create registry key';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
 
     return c.json({
       success: true,
@@ -793,18 +1099,14 @@ systemToolsRoutes.delete(
     }
 
     const normalizedPath = path.replace(/\\+$/, '');
-    const parts = normalizedPath.split('\\');
-    const name = parts.pop();
-    const parentPath = parts.join('\\');
-
-    if (!name) {
+    if (!normalizedPath) {
       return c.json({ error: 'Invalid registry key path' }, 400);
     }
 
-    const overrideKey = `${deviceId}:${hive}:${parentPath}`;
-    const overrides = getRegistryOverrides(overrideKey);
-    overrides.removed.add(name);
-    overrides.added.delete(name);
+    const result = await executeCommand(deviceId, CommandTypes.REGISTRY_KEY_DELETE, {
+      hive,
+      path: normalizedPath
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
 
     await createAuditLog({
       orgId: device.orgId,
@@ -819,8 +1121,14 @@ systemToolsRoutes.delete(
         path: normalizedPath
       },
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-      result: 'success'
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
     });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to delete registry key';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
 
     return c.json({
       success: true,
@@ -928,6 +1236,9 @@ systemToolsRoutes.get(
   zValidator('query', paginationQuerySchema),
   async (c) => {
     const { deviceId } = c.req.valid('param');
+    const { page, limit } = getPagination(c.req.valid('query'));
+    const folder = c.req.query('folder') || '\\';
+    const search = c.req.query('search') || '';
     const auth = c.get('auth');
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -935,8 +1246,37 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.TASKS_LIST, {
+      folder,
+      search,
+      page,
+      limit
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to list tasks' }, 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const rawTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+      const tasks = rawTasks
+        .map(normalizeScheduledTask)
+        .filter((task): task is ScheduledTaskInfo => Boolean(task));
+
+      return c.json({
+        data: tasks,
+        meta: {
+          total: typeof payload.total === 'number' ? payload.total : tasks.length,
+          page: typeof payload.page === 'number' ? payload.page : page,
+          limit: typeof payload.limit === 'number' ? payload.limit : limit,
+          totalPages: typeof payload.totalPages === 'number' ? payload.totalPages : 1
+        }
+      });
+    } catch (error) {
+      console.error('Failed to parse agent response for task listing:', error);
+      return c.json({ error: 'Failed to parse agent response for task listing' }, 502);
+    }
   }
 );
 
@@ -955,8 +1295,26 @@ systemToolsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.TASK_GET, {
+      path
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to get task';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    try {
+      const payload = JSON.parse(result.stdout || '{}');
+      const task = normalizeScheduledTask(payload);
+      if (!task) {
+        return c.json({ error: 'Invalid task payload from agent' }, 502);
+      }
+      return c.json({ data: task });
+    } catch (error) {
+      console.error('Failed to parse agent response for task details:', error);
+      return c.json({ error: 'Failed to parse agent response for task details' }, 502);
+    }
   }
 );
 
@@ -975,8 +1333,33 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.TASK_RUN, {
+      path
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'run_scheduled_task',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: { path },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
+    });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to run task';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    return c.json({
+      success: true,
+      message: `Task ${path} started successfully`
+    });
   }
 );
 
@@ -995,8 +1378,33 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.TASK_ENABLE, {
+      path
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'enable_scheduled_task',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: { path },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
+    });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to enable task';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    return c.json({
+      success: true,
+      message: `Task ${path} enabled successfully`
+    });
   }
 );
 
@@ -1015,8 +1423,33 @@ systemToolsRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    // TODO: Replace with actual agent call
-    return c.json({ error: 'Not yet implemented - agent integration pending' }, 501);
+    const result = await executeCommand(deviceId, CommandTypes.TASK_DISABLE, {
+      path
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'disable_scheduled_task',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: { path },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: result.status === 'completed' ? 'success' : 'failure',
+      errorMessage: result.error
+    });
+
+    if (result.status === 'failed') {
+      const error = result.error || 'Failed to disable task';
+      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    }
+
+    return c.json({
+      success: true,
+      message: `Task ${path} disabled successfully`
+    });
   }
 );
 
