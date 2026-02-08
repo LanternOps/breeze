@@ -33,6 +33,7 @@ type Session struct {
 	done          chan struct{}
 	mu            sync.RWMutex
 	isActive      bool
+	cleanupOnce   sync.Once
 
 	// Optimized pipeline components (shared with WS path)
 	differ   *frameDiffer
@@ -204,20 +205,20 @@ func (m *SessionManager) StartSession(sessionID string, offer string) (string, e
 		Type: webrtc.SDPTypeOffer,
 		SDP:  offer,
 	}); err != nil {
-		session.cleanup()
+		session.doCleanup()
 		return "", fmt.Errorf("failed to set remote description: %w", err)
 	}
 
 	// Create answer
 	answer, err := peerConn.CreateAnswer(nil)
 	if err != nil {
-		session.cleanup()
+		session.doCleanup()
 		return "", fmt.Errorf("failed to create answer: %w", err)
 	}
 
 	// Set local description
 	if err := peerConn.SetLocalDescription(answer); err != nil {
-		session.cleanup()
+		session.doCleanup()
 		return "", fmt.Errorf("failed to set local description: %w", err)
 	}
 
@@ -268,7 +269,7 @@ func (s *Session) Stop() {
 	s.mu.Unlock()
 
 	close(s.done)
-	s.cleanup()
+	s.doCleanup()
 
 	snap := s.metrics.Snapshot()
 	slog.Info("Desktop WebRTC session stopped",
@@ -280,22 +281,24 @@ func (s *Session) Stop() {
 	)
 }
 
-func (s *Session) cleanup() {
-	if s.clipboardSync != nil {
-		s.clipboardSync.Stop()
-	}
-	if s.fileDropHandler != nil {
-		s.fileDropHandler.Close()
-	}
-	if s.encoder != nil {
-		s.encoder.Close()
-	}
-	if s.capturer != nil {
-		s.capturer.Close()
-	}
-	if s.peerConn != nil {
-		s.peerConn.Close()
-	}
+func (s *Session) doCleanup() {
+	s.cleanupOnce.Do(func() {
+		if s.clipboardSync != nil {
+			s.clipboardSync.Stop()
+		}
+		if s.fileDropHandler != nil {
+			s.fileDropHandler.Close()
+		}
+		if s.encoder != nil {
+			s.encoder.Close()
+		}
+		if s.capturer != nil {
+			s.capturer.Close()
+		}
+		if s.peerConn != nil {
+			s.peerConn.Close()
+		}
+	})
 }
 
 // captureLoop continuously captures and sends encoded H264 frames
@@ -421,9 +424,10 @@ func (s *Session) handleControlMessage(data []byte) {
 		return
 	}
 
+	const maxBitrate = 20_000_000 // 20 Mbps cap
 	switch msg.Type {
 	case "set_bitrate":
-		if msg.Value > 0 {
+		if msg.Value > 0 && msg.Value <= maxBitrate {
 			s.encoder.SetBitrate(msg.Value)
 		}
 	case "set_fps":

@@ -15,7 +15,12 @@ func getNV12Buffer(w, h int) []byte {
 	if nv12Pool.w == w && nv12Pool.h == h {
 		nv12Pool.mu.Unlock()
 		if v := nv12Pool.pool.Get(); v != nil {
-			return v.([]byte)
+			buf := v.([]byte)
+			// Verify pooled buffer is correct size (resolution might have changed
+			// between Put and Get if pool was not fully drained)
+			if len(buf) == size {
+				return buf
+			}
 		}
 		return make([]byte, size)
 	}
@@ -34,6 +39,11 @@ func putNV12Buffer(buf []byte) {
 // NV12 layout: [Y plane: w*h bytes] [UV interleaved plane: w*h/2 bytes]
 // Uses BT.601 coefficients with fixed-point integer arithmetic.
 func bgraToNV12(bgra []byte, width, height, stride int) []byte {
+	expectedSize := height * stride
+	if len(bgra) < expectedSize {
+		return getNV12Buffer(width, height) // return zeroed buffer on short input
+	}
+
 	nv12 := getNV12Buffer(width, height)
 	yPlane := nv12[:width*height]
 	uvPlane := nv12[width*height:]
@@ -61,8 +71,6 @@ func bgraToNV12(bgra []byte, width, height, stride int) []byte {
 
 			// Subsample UV: one UV pair per 2x2 block
 			if y%2 == 0 && x%2 == 0 {
-				// Average the 2x2 block for better chroma quality
-				// For simplicity and speed, use top-left pixel only
 				uVal := (-38*r - 74*g + 112*b + 128) >> 8
 				uVal += 128
 				if uVal > 240 {

@@ -27,6 +27,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [bitrate, setBitrate] = useState(2500);
   const [hostname, setHostname] = useState('');
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Frame rate tracking
   const frameCountRef = useRef(0);
@@ -51,6 +52,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         if (state === 'connected') {
           setStatus('connected');
           setConnectedAt(new Date());
+          setErrorMessage(null);
         } else if (state === 'failed' || state === 'closed') {
           setStatus('disconnected');
         }
@@ -91,12 +93,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setStatus('connected');
             setHostname(msg.device?.hostname || 'Unknown');
             setConnectedAt(new Date());
+            setErrorMessage(null);
             break;
           case 'pong':
             break;
           case 'error':
             console.error('Server error:', msg.message);
             if (msg.code === 'AUTH_FAILED' || msg.code === 'AGENT_OFFLINE') {
+              setErrorMessage(msg.message);
               onError(msg.message);
             }
             break;
@@ -112,6 +116,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     ws.onerror = () => {
       setStatus('error');
+      setErrorMessage('WebSocket connection error');
       onError('WebSocket connection error');
     };
 
@@ -144,6 +149,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       const webrtcOk = await connectWebRTC();
       if (cancelled) {
         webrtcRef.current?.close();
+        webrtcRef.current = null;
         return;
       }
 
@@ -186,6 +192,21 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     return () => { active = false; };
   }, [transport]);
 
+  // Native wheel handler to enable preventDefault on non-passive listener
+  useEffect(() => {
+    const el = transport === 'webrtc' ? videoRef.current : canvasRef.current;
+    if (!el) return;
+
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
+      sendInputFn({ type: 'mouse_scroll', x, y, delta: Math.sign(e.deltaY) * 3 });
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  });
+
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
   const renderFrame = useCallback((data: Uint8Array) => {
@@ -216,7 +237,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── Input: coordinate scaling ──────────────────────────────────────
 
-  const scaleCoords = useCallback((clientX: number, clientY: number) => {
+  const scaleCoordsFn = useCallback((clientX: number, clientY: number) => {
     if (transport === 'webrtc') {
       const videoEl = videoRef.current;
       if (!videoEl) return { x: 0, y: 0 };
@@ -239,7 +260,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── Input: send event ──────────────────────────────────────────────
 
-  const sendInput = useCallback((event: Record<string, unknown>) => {
+  const sendInputFn = useCallback((event: Record<string, unknown>) => {
     if (transport === 'webrtc') {
       const ch = webrtcRef.current?.inputChannel;
       if (ch && ch.readyState === 'open') {
@@ -257,28 +278,22 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // ── Input: mouse handlers ──────────────────────────────────────────
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    const { x, y } = scaleCoords(e.clientX, e.clientY);
-    sendInput({ type: 'mouse_move', x, y });
-  }, [scaleCoords, sendInput]);
+    const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
+    sendInputFn({ type: 'mouse_move', x, y });
+  }, [scaleCoordsFn, sendInputFn]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    const { x, y } = scaleCoords(e.clientX, e.clientY);
+    const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
     const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
-    sendInput({ type: 'mouse_down', x, y, button });
-  }, [scaleCoords, sendInput]);
+    sendInputFn({ type: 'mouse_down', x, y, button });
+  }, [scaleCoordsFn, sendInputFn]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
-    const { x, y } = scaleCoords(e.clientX, e.clientY);
+    const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
     const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
-    sendInput({ type: 'mouse_up', x, y, button });
-  }, [scaleCoords, sendInput]);
-
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const { x, y } = scaleCoords(e.clientX, e.clientY);
-    sendInput({ type: 'mouse_scroll', x, y, delta: Math.sign(e.deltaY) * 3 });
-  }, [scaleCoords, sendInput]);
+    sendInputFn({ type: 'mouse_up', x, y, button });
+  }, [scaleCoordsFn, sendInputFn]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -294,8 +309,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!key) return;
 
     const modifiers = getModifiers(e.nativeEvent);
-    sendInput({ type: 'key_press', key, modifiers });
-  }, [sendInput]);
+    sendInputFn({ type: 'key_press', key, modifiers });
+  }, [sendInputFn]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -330,8 +345,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, []);
 
   const handleCtrlAltDel = useCallback(() => {
-    sendInput({ type: 'key_press', key: 'delete', modifiers: ['ctrl', 'alt'] });
-  }, [sendInput]);
+    sendInputFn({ type: 'key_press', key: 'delete', modifiers: ['ctrl', 'alt'] });
+  }, [sendInputFn]);
 
   const handleDisconnect = useCallback(() => {
     wsRef.current?.close();
@@ -345,7 +360,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     onMouseMove: handleMouseMove,
     onMouseDown: handleMouseDown,
     onMouseUp: handleMouseUp,
-    onWheel: handleWheel,
     onContextMenu: handleContextMenu,
     onKeyDown: handleKeyDown,
     onKeyUp: handleKeyUp,
@@ -395,6 +409,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             <div className="text-center">
               <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-4" />
               <p className="text-gray-300">Connecting to remote desktop...</p>
+            </div>
+          </div>
+        )}
+        {status === 'error' && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
+            <div className="text-center">
+              <p className="text-red-400 mb-2">Connection Error</p>
+              {errorMessage && <p className="text-gray-400 text-sm mb-4">{errorMessage}</p>}
+              <button
+                onClick={onDisconnect}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-white"
+              >
+                Close
+              </button>
             </div>
           </div>
         )}
