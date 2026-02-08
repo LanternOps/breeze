@@ -28,9 +28,25 @@ export async function createWebRTCSession(
   params: ConnectionParams,
   videoEl: HTMLVideoElement,
 ): Promise<WebRTCSession> {
-  const pc = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-  });
+  // Fetch ICE servers (includes TURN credentials if configured)
+  let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+  try {
+    const iceResp = await apiFetch(
+      params.apiUrl,
+      '/api/v1/remote/ice-servers',
+      params.token,
+    );
+    if (iceResp.ok) {
+      const iceData = await iceResp.json();
+      if (Array.isArray(iceData.iceServers) && iceData.iceServers.length > 0) {
+        iceServers = iceData.iceServers;
+      }
+    }
+  } catch {
+    // Fall back to STUN only
+  }
+
+  const pc = new RTCPeerConnection({ iceServers });
 
   // Receive-only video transceiver (agent sends H264 video track)
   pc.addTransceiver('video', { direction: 'recvonly' });

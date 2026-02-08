@@ -12,8 +12,52 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { sendCommandToAgent } from './agentWs';
+import { createHmac } from 'crypto';
+import { saveChunk, assembleChunks, getFileStream, getFileSize, hasAssembledFile, getTotalBytesReceived, MAX_TRANSFER_SIZE_BYTES } from '../services/fileStorage';
+import { Readable } from 'stream';
 
 export const remoteRoutes = new Hono();
+
+// ============================================
+// TURN CREDENTIAL GENERATION (RFC 5389 time-limited HMAC)
+// ============================================
+
+function generateTurnCredentials(): { username: string; credential: string } | null {
+  const secret = process.env.TURN_SECRET;
+  if (!secret) return null;
+
+  const ttl = 86400; // 24 hours
+  const expiry = Math.floor(Date.now() / 1000) + ttl;
+  const username = `${expiry}:breeze`;
+  const credential = createHmac('sha1', secret).update(username).digest('base64');
+
+  return { username, credential };
+}
+
+function getIceServers(): Array<{ urls: string | string[]; username?: string; credential?: string }> {
+  const servers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [
+    { urls: 'stun:stun.l.google.com:19302' }
+  ];
+
+  const turnHost = process.env.TURN_HOST;
+  const turnPort = process.env.TURN_PORT || '3478';
+
+  if (turnHost) {
+    const creds = generateTurnCredentials();
+    if (creds) {
+      servers.push({
+        urls: [
+          `turn:${turnHost}:${turnPort}?transport=udp`,
+          `turn:${turnHost}:${turnPort}?transport=tcp`
+        ],
+        username: creds.username,
+        credential: creds.credential
+      });
+    }
+  }
+
+  return servers;
+}
 
 // ============================================
 // HELPER FUNCTIONS
@@ -662,6 +706,15 @@ remoteRoutes.get(
   }
 );
 
+// GET /remote/ice-servers - Get ICE server configuration (including TURN credentials)
+remoteRoutes.get(
+  '/ice-servers',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    return c.json({ iceServers: getIceServers() });
+  }
+);
+
 // POST /remote/sessions/:id/offer - Submit WebRTC offer (from web client)
 remoteRoutes.post(
   '/sessions/:id/offer',
@@ -712,14 +765,14 @@ remoteRoutes.post(
       c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
     );
 
-    // Send start_desktop command to agent with the offer
+    // Send start_desktop command to agent with the offer and ICE servers
     // The agent will create a pion PeerConnection and return the answer
     let agentReachable = false;
     if (device.agentId) {
       agentReachable = sendCommandToAgent(device.agentId, {
         id: `desk-${sessionId}`,
         type: 'start_desktop',
-        payload: { sessionId, offer: data.offer }
+        payload: { sessionId, offer: data.offer, iceServers: getIceServers() }
       });
       if (!agentReachable) {
         console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
@@ -1236,6 +1289,93 @@ remoteRoutes.post(
   }
 );
 
+// POST /remote/transfers/:id/chunks - Upload a chunk (from agent, multipart)
+remoteRoutes.post(
+  '/transfers/:id/chunks',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const transferId = c.req.param('id');
+
+    const result = await getTransferWithOrgCheck(transferId, auth);
+    if (!result) {
+      return c.json({ error: 'Transfer not found' }, 404);
+    }
+
+    const { transfer } = result;
+
+    if (!['pending', 'transferring'].includes(transfer.status)) {
+      return c.json({ error: 'Cannot upload chunks in current state', status: transfer.status }, 400);
+    }
+
+    // Parse multipart form data
+    const formData = await c.req.formData();
+    const chunkIndexStr = formData.get('chunkIndex');
+    const chunkFile = formData.get('data');
+
+    if (chunkIndexStr === null || !chunkFile) {
+      return c.json({ error: 'Missing chunkIndex or data' }, 400);
+    }
+
+    const chunkIndex = parseInt(String(chunkIndexStr), 10);
+    if (isNaN(chunkIndex) || chunkIndex < 0) {
+      return c.json({ error: 'Invalid chunkIndex' }, 400);
+    }
+
+    let chunkData: Buffer;
+    if (chunkFile instanceof File) {
+      chunkData = Buffer.from(await chunkFile.arrayBuffer());
+    } else {
+      chunkData = Buffer.from(String(chunkFile));
+    }
+
+    // Check total size doesn't exceed limit
+    const currentBytes = getTotalBytesReceived(transferId);
+    if (currentBytes + chunkData.length > MAX_TRANSFER_SIZE_BYTES) {
+      return c.json({ error: `Transfer exceeds maximum size of ${MAX_TRANSFER_SIZE_BYTES / (1024 * 1024)}MB` }, 413);
+    }
+
+    await saveChunk(transferId, chunkIndex, chunkData);
+
+    // Update progress
+    const totalReceived = currentBytes + chunkData.length;
+    const sizeBytes = Number(transfer.sizeBytes);
+    const progressPercent = sizeBytes > 0
+      ? Math.min(100, Math.round((totalReceived / sizeBytes) * 100))
+      : 0;
+
+    const updates: Record<string, unknown> = {
+      status: 'transferring',
+      progressPercent
+    };
+
+    // If all bytes received, assemble and mark complete
+    if (sizeBytes > 0 && totalReceived >= sizeBytes) {
+      try {
+        await assembleChunks(transferId);
+        updates.status = 'completed';
+        updates.progressPercent = 100;
+        updates.completedAt = new Date();
+      } catch (err) {
+        updates.status = 'failed';
+        updates.errorMessage = `Assembly failed: ${err instanceof Error ? err.message : 'unknown'}`;
+      }
+    }
+
+    await db
+      .update(fileTransfers)
+      .set(updates)
+      .where(eq(fileTransfers.id, transferId));
+
+    return c.json({
+      chunkIndex,
+      bytesReceived: totalReceived,
+      progressPercent: updates.progressPercent,
+      status: updates.status
+    });
+  }
+);
+
 // GET /remote/transfers/:id/download - Download completed file (upload direction)
 remoteRoutes.get(
   '/transfers/:id/download',
@@ -1266,15 +1406,25 @@ remoteRoutes.get(
       }, 400);
     }
 
-    // In a real implementation, this would stream the file from storage
-    // For now, return a placeholder response with download metadata
-    return c.json({
-      id: transfer.id,
-      filename: transfer.localFilename,
-      sizeBytes: Number(transfer.sizeBytes),
-      // downloadUrl would point to actual file storage (S3, etc.)
-      downloadUrl: `/api/storage/transfers/${transfer.id}/file`,
-      expiresAt: new Date(Date.now() + 3600000).toISOString() // 1 hour expiry
+    if (!hasAssembledFile(transferId)) {
+      return c.json({ error: 'File not found in storage' }, 404);
+    }
+
+    const fileSize = getFileSize(transferId);
+    const stream = getFileStream(transferId);
+    if (!stream) {
+      return c.json({ error: 'Failed to read file' }, 500);
+    }
+
+    // Convert Node.js Readable to a web ReadableStream
+    const webStream = Readable.toWeb(stream) as ReadableStream;
+
+    return new Response(webStream, {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(transfer.localFilename)}"`,
+        'Content-Length': String(fileSize),
+      },
     });
   }
 );
