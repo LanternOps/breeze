@@ -75,6 +75,20 @@ const heartbeatSchema = z.object({
     diskUsedGb: z.number(),
     networkInBytes: z.number().int().optional(),
     networkOutBytes: z.number().int().optional(),
+    bandwidthInBps: z.number().int().min(0).optional(),
+    bandwidthOutBps: z.number().int().min(0).optional(),
+    interfaceStats: z.array(z.object({
+      name: z.string().min(1),
+      inBytesPerSec: z.number().int().min(0),
+      outBytesPerSec: z.number().int().min(0),
+      inBytes: z.number().int().min(0),
+      outBytes: z.number().int().min(0),
+      inPackets: z.number().int().min(0),
+      outPackets: z.number().int().min(0),
+      inErrors: z.number().int().min(0),
+      outErrors: z.number().int().min(0),
+      speed: z.number().int().min(0).optional()
+    })).max(100).optional(),
     processCount: z.number().int().optional()
   }),
   status: z.enum(['ok', 'warning', 'error']),
@@ -694,8 +708,11 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
       ramUsedMb: data.metrics.ramUsedMb,
       diskPercent: data.metrics.diskPercent,
       diskUsedGb: data.metrics.diskUsedGb,
-      networkInBytes: data.metrics.networkInBytes ? BigInt(data.metrics.networkInBytes) : null,
-      networkOutBytes: data.metrics.networkOutBytes ? BigInt(data.metrics.networkOutBytes) : null,
+      networkInBytes: data.metrics.networkInBytes != null ? BigInt(data.metrics.networkInBytes) : null,
+      networkOutBytes: data.metrics.networkOutBytes != null ? BigInt(data.metrics.networkOutBytes) : null,
+      bandwidthInBps: data.metrics.bandwidthInBps != null ? BigInt(data.metrics.bandwidthInBps) : null,
+      bandwidthOutBps: data.metrics.bandwidthOutBps != null ? BigInt(data.metrics.bandwidthOutBps) : null,
+      interfaceStats: data.metrics.interfaceStats ?? null,
       processCount: data.metrics.processCount
     });
 
