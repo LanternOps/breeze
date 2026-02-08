@@ -28,6 +28,7 @@ var zeroKey = make([]byte, 32)
 type Conn struct {
 	conn       net.Conn
 	sessionKey []byte
+	keyMu      sync.RWMutex   // protects sessionKey
 	sendSeq    atomic.Uint64
 	recvSeq    atomic.Uint64
 	mu         sync.Mutex // serializes writes
@@ -44,11 +45,15 @@ func NewConn(conn net.Conn) *Conn {
 
 // SetSessionKey sets the HMAC key after auth handshake.
 func (c *Conn) SetSessionKey(key []byte) {
+	c.keyMu.Lock()
 	c.sessionKey = key
+	c.keyMu.Unlock()
 }
 
 // SessionKey returns the current session key.
 func (c *Conn) SessionKey() []byte {
+	c.keyMu.RLock()
+	defer c.keyMu.RUnlock()
 	return c.sessionKey
 }
 
@@ -143,9 +148,12 @@ func (c *Conn) Recv() (*Envelope, error) {
 		return nil, fmt.Errorf("ipc: HMAC mismatch")
 	}
 
-	// Validate sequence number (must be strictly increasing)
+	// Validate sequence number (must be > 0 and strictly increasing)
+	if env.Seq == 0 {
+		return nil, fmt.Errorf("ipc: invalid sequence number 0")
+	}
 	prevSeq := c.recvSeq.Load()
-	if env.Seq <= prevSeq && prevSeq > 0 {
+	if env.Seq <= prevSeq {
 		return nil, fmt.Errorf("ipc: sequence number %d <= last %d (replay/duplicate)", env.Seq, prevSeq)
 	}
 	c.recvSeq.Store(env.Seq)
@@ -179,7 +187,9 @@ func (c *Conn) SendError(id, msgType, errMsg string) error {
 
 // computeHMAC calculates HMAC-SHA256(key, id||seq||type||payload).
 func (c *Conn) computeHMAC(env *Envelope) string {
+	c.keyMu.RLock()
 	key := c.sessionKey
+	c.keyMu.RUnlock()
 	if key == nil {
 		key = zeroKey
 	}

@@ -39,7 +39,10 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 		}
 
 		sessionID := fields[0]
-		uid, _ := strconv.ParseUint(fields[1], 10, 32)
+		uid, err := strconv.ParseUint(fields[1], 10, 32)
+		if err != nil {
+			continue // skip sessions with unparseable UID
+		}
 		username := fields[2]
 
 		// Get session details

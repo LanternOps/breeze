@@ -78,11 +78,9 @@ func (c *Client) connect() error {
 	var err error
 
 	if runtime.GOOS == "windows" {
-		// Windows: try TCP fallback (development) or named pipe
-		conn, err = net.DialTimeout("tcp", "127.0.0.1:0", 5*time.Second)
-		if err != nil {
-			return fmt.Errorf("connect to named pipe: %w", err)
-		}
+		// Windows named pipe IPC is not yet implemented.
+		// TODO: implement proper named pipe support.
+		return fmt.Errorf("user helper is not yet supported on Windows")
 	} else {
 		conn, err = net.DialTimeout("unix", c.socketPath, 5*time.Second)
 		if err != nil {
@@ -176,7 +174,9 @@ func (c *Client) commandLoop() error {
 		if err != nil {
 			if isTimeout(err) {
 				// Send ping to keep alive
-				c.conn.SendTyped("ping", ipc.TypePing, nil)
+				if pingErr := c.conn.SendTyped("ping", ipc.TypePing, nil); pingErr != nil {
+					return fmt.Errorf("keepalive ping failed: %w", pingErr)
+				}
 				continue
 			}
 			return fmt.Errorf("recv: %w", err)
@@ -184,7 +184,9 @@ func (c *Client) commandLoop() error {
 
 		switch env.Type {
 		case ipc.TypePing:
-			c.conn.SendTyped(env.ID, ipc.TypePong, nil)
+			if err := c.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
+				return fmt.Errorf("pong send failed: %w", err)
+			}
 
 		case ipc.TypeCommand:
 			go c.handleCommand(env)
@@ -223,17 +225,21 @@ func (c *Client) commandLoop() error {
 func (c *Client) handleCommand(env *ipc.Envelope) {
 	var cmd ipc.IPCCommand
 	if err := json.Unmarshal(env.Payload, &cmd); err != nil {
-		c.conn.SendTyped(env.ID, ipc.TypeCommandResult, ipc.IPCCommandResult{
+		if sendErr := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, ipc.IPCCommandResult{
 			CommandID: env.ID,
 			Status:    "failed",
 			Error:     fmt.Sprintf("invalid command payload: %v", err),
-		})
+		}); sendErr != nil {
+			log.Warn("failed to send command error response", "id", env.ID, "error", sendErr)
+		}
 		return
 	}
 
 	// Execute using the standard executor (runs in user context since this process is the user)
 	result := c.executeScript(cmd)
-	c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result)
+	if err := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result); err != nil {
+		log.Warn("failed to send command result", "id", env.ID, "error", err)
+	}
 }
 
 func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
@@ -268,11 +274,18 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		status = "failed"
 	}
 
-	resultJSON, _ := json.Marshal(map[string]any{
+	resultJSON, err := json.Marshal(map[string]any{
 		"exitCode": result.ExitCode,
 		"stdout":   result.Stdout,
 		"stderr":   result.Stderr,
 	})
+	if err != nil {
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     fmt.Sprintf("marshal result: %v", err),
+		}
+	}
 
 	return ipc.IPCCommandResult{
 		CommandID: cmd.CommandID,
@@ -286,13 +299,18 @@ func (c *Client) handleNotify(env *ipc.Envelope) {
 	var req ipc.NotifyRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		log.Warn("invalid notify payload", "error", err)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeNotifyResult, fmt.Sprintf("invalid payload: %v", err)); sendErr != nil {
+			log.Warn("failed to send notify error", "error", sendErr)
+		}
 		return
 	}
 
 	delivered := showNotification(req)
-	c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, ipc.NotifyResult{
+	if err := c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, ipc.NotifyResult{
 		Delivered: delivered,
-	})
+	}); err != nil {
+		log.Warn("failed to send notify result", "id", env.ID, "error", err)
+	}
 }
 
 func (c *Client) handleTrayUpdate(env *ipc.Envelope) {
@@ -302,6 +320,7 @@ func (c *Client) handleTrayUpdate(env *ipc.Envelope) {
 		return
 	}
 	updateTray(update)
+	log.Debug("tray update applied", "status", update.Status)
 }
 
 func (c *Client) handleDesktopStart(env *ipc.Envelope) {

@@ -136,6 +136,13 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 		)
 	}
 
+	if resp == nil {
+		return tools.NewErrorResult(
+			fmt.Errorf("user helper session closed during command"),
+			time.Since(start).Milliseconds(),
+		)
+	}
+
 	var result ipc.IPCCommandResult
 	if err := json.Unmarshal(resp.Payload, &result); err != nil {
 		return tools.NewErrorResult(
@@ -154,7 +161,9 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 	// Parse the nested result for stdout/stderr/exitCode
 	if result.Result != nil {
 		var nested map[string]any
-		if err := json.Unmarshal(result.Result, &nested); err == nil {
+		if err := json.Unmarshal(result.Result, &nested); err != nil {
+			log.Warn("failed to unmarshal nested result from user helper", "commandId", cmd.ID, "error", err)
+		} else {
 			if stdout, ok := nested["stdout"].(string); ok {
 				cmdResult.Stdout = stdout
 			}

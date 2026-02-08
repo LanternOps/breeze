@@ -90,8 +90,10 @@ func handleNotifyUser(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	var result ipc.NotifyResult
-	if resp.Payload != nil {
-		json.Unmarshal(resp.Payload, &result)
+	if resp != nil && resp.Payload != nil {
+		if err := json.Unmarshal(resp.Payload, &result); err != nil {
+			log.Warn("failed to unmarshal notify result", "error", err)
+		}
 	}
 
 	return tools.NewSuccessResult(map[string]any{

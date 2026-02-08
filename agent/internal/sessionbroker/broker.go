@@ -246,7 +246,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Verify UID matches peer credentials
 	if authReq.UID != creds.UID {
 		log.Warn("auth UID mismatch", "claimed", authReq.UID, "actual", creds.UID)
-		conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted: false,
 			Reason:   "UID mismatch",
 		})
@@ -254,14 +254,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Verify binary hash
-	if authReq.BinaryHash != "" && b.selfHash != "" && authReq.BinaryHash != b.selfHash {
+	// Verify binary hash (require non-empty hash from client)
+	if b.selfHash != "" && authReq.BinaryHash != b.selfHash {
 		log.Warn("binary hash mismatch",
 			"uid", creds.UID,
 			"expected", b.selfHash,
 			"got", authReq.BinaryHash,
 		)
-		conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted: false,
 			Reason:   "binary hash mismatch",
 		})
@@ -316,10 +316,15 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	session.RecvLoop(func(s *Session, env *ipc.Envelope) {
 		switch env.Type {
 		case ipc.TypePing:
-			s.conn.SendTyped(env.ID, ipc.TypePong, nil)
+			if err := s.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
+				log.Warn("failed to send pong", "uid", s.UID, "error", err)
+				return
+			}
 		case ipc.TypeCapabilities:
 			var caps ipc.Capabilities
-			if err := json.Unmarshal(env.Payload, &caps); err == nil {
+			if err := json.Unmarshal(env.Payload, &caps); err != nil {
+				log.Warn("invalid capabilities payload", "uid", s.UID, "error", err)
+			} else {
 				s.SetCapabilities(&caps)
 				log.Info("capabilities received",
 					"uid", s.UID,
@@ -397,16 +402,9 @@ func (b *Broker) setupUnixSocket() error {
 }
 
 func (b *Broker) setupNamedPipe() error {
-	// On Windows, use standard TCP listener on localhost as a fallback.
-	// A production implementation would use the Windows named pipe API.
-	// For now, this provides a working cross-platform implementation.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
-	}
-	b.listener = listener
-	log.Info("windows IPC using TCP fallback", "addr", listener.Addr())
-	return nil
+	// Windows named pipe IPC is not yet implemented.
+	// TODO: implement proper named pipe support with SDDL ACLs.
+	return fmt.Errorf("user helper IPC is not yet supported on Windows")
 }
 
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
