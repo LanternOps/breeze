@@ -20,7 +20,7 @@ const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
     ok,
     status,
     json: vi.fn().mockResolvedValue(payload)
-  }) as Response;
+  }) as unknown as Response;
 
 describe('deviceActions service', () => {
   beforeEach(() => {
@@ -176,7 +176,7 @@ describe('deviceActions service', () => {
         ok: false,
         status: 500,
         json: vi.fn().mockRejectedValue(new Error('invalid json'))
-      } as Response);
+      } as unknown as Response);
 
       await expect(executeScript('script-1', ['dev-1'])).rejects.toThrow('Failed to execute script');
     });

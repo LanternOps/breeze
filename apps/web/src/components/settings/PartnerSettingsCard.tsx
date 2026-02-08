@@ -3,7 +3,7 @@ import { Building2 } from 'lucide-react';
 import { useOrgStore } from '../../stores/orgStore';
 
 export default function PartnerSettingsCard() {
-  const { scope, isContextLoaded } = useOrgStore();
+  const { currentPartnerId, isLoading } = useOrgStore();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -11,7 +11,7 @@ export default function PartnerSettingsCard() {
   }, []);
 
   // Don't render anything until we know the scope
-  if (!mounted || !isContextLoaded || scope !== 'partner') {
+  if (!mounted || isLoading || !currentPartnerId) {
     return null;
   }
 

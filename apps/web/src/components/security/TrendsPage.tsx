@@ -67,7 +67,7 @@ export default function TrendsPage() {
   const [visibleLines, setVisibleLines] = useState<Set<string>>(
     new Set(['overall', 'antivirus', 'firewall', 'encryption'])
   );
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
     setError(undefined);

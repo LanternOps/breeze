@@ -75,7 +75,7 @@ export default function RecommendationsPage() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async (page = 1) => {
     setError(undefined);

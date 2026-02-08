@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiPageContext, AiStreamEvent } from '@breeze/shared/types';
+import type { AiPageContext, AiStreamEvent } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 
 interface AiMessage {
@@ -397,4 +397,6 @@ function processStreamEvent(
       set(() => ({ isStreaming: false }));
       return null;
   }
+
+  return null;
 }

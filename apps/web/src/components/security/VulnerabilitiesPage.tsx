@@ -51,7 +51,7 @@ export default function VulnerabilitiesPage() {
   const [status, setStatus] = useState('');
   const [category, setCategory] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);

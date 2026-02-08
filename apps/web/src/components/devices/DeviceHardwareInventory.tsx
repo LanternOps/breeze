@@ -12,8 +12,12 @@ type DiskDrive = {
   usedGb?: number | string;
   usedGB?: number | string;
   used?: number | string;
+  totalGb?: number | string;
+  usedPercent?: number | string;
   percentUsed?: number | string;
   usagePercent?: number | string;
+  mountPoint?: string;
+  device?: string;
   health?: string;
   status?: string;
 };

@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
-import type { ReportFormat, ReportSchedule, ReportType } from './ReportsList';
+import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 
 type TemplatePreview = {
@@ -52,25 +52,35 @@ type TemplateApiItem = Omit<Partial<ReportTemplate>, 'preview'> & {
   format?: ReportFormat;
 };
 
-const reportTypeValues: ReportType[] = [
+type TemplateReportType = ReportBuilderFormValues['type'];
+
+const reportTypeValues: TemplateReportType[] = [
   'device_inventory',
   'software_inventory',
   'alert_summary',
   'compliance',
   'performance',
-  'executive_summary'
+  'executive_summary',
+  'devices',
+  'alerts',
+  'patches',
+  'activity'
 ];
 
 const scheduleValues: ReportSchedule[] = ['one_time', 'daily', 'weekly', 'monthly'];
 const formatValues: ReportFormat[] = ['csv', 'pdf', 'excel'];
 
-const reportTypeLabels: Record<ReportType, string> = {
+const reportTypeLabels: Record<string, string> = {
   device_inventory: 'Device Inventory',
   software_inventory: 'Software Inventory',
   alert_summary: 'Alert Summary',
   compliance: 'Compliance Report',
   performance: 'Performance Report',
-  executive_summary: 'Executive Summary'
+  executive_summary: 'Executive Summary',
+  devices: 'Devices',
+  alerts: 'Alerts',
+  patches: 'Patches',
+  activity: 'Activity'
 };
 
 const scheduleLabels: Record<ReportSchedule, string> = {
@@ -250,7 +260,7 @@ const defaultTemplates: ReportTemplate[] = [
   }
 ];
 
-const typeAliases: Record<string, ReportType> = {
+const typeAliases: Record<string, TemplateReportType> = {
   device_health: 'performance',
   patch_compliance: 'compliance',
   alert_summary: 'alert_summary',
@@ -259,14 +269,17 @@ const typeAliases: Record<string, ReportType> = {
   billing_usage: 'software_inventory'
 };
 
-const resolveReportType = (value: string | undefined, fallback: ReportType): ReportType => {
+const resolveReportType = (
+  value: string | undefined,
+  fallback: TemplateReportType
+): TemplateReportType => {
   if (!value) return fallback;
-  if (reportTypeValues.includes(value as ReportType)) {
-    return value as ReportType;
+  if (reportTypeValues.includes(value as TemplateReportType)) {
+    return value as TemplateReportType;
   }
   const normalized = value.toLowerCase().replace(/\s+/g, '_');
-  if (reportTypeValues.includes(normalized as ReportType)) {
-    return normalized as ReportType;
+  if (reportTypeValues.includes(normalized as TemplateReportType)) {
+    return normalized as TemplateReportType;
   }
   return typeAliases[normalized] ?? fallback;
 };

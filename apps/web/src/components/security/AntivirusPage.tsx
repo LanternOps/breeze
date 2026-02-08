@@ -59,7 +59,7 @@ export default function AntivirusPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [osFilter, setOsFilter] = useState('');
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);

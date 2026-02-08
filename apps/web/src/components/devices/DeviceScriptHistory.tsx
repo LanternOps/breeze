@@ -250,7 +250,9 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchHistory}
+          onClick={() => {
+            void fetchHistory();
+          }}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           Retry

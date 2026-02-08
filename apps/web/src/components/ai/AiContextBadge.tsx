@@ -1,13 +1,14 @@
+import type { ReactNode } from 'react';
 import { Monitor, Bell, LayoutDashboard, Tag } from 'lucide-react';
-import type { AiPageContext } from '@breeze/shared/types';
+import type { AiPageContext } from '@breeze/shared';
 
 interface AiContextBadgeProps {
   context: AiPageContext;
 }
 
 export default function AiContextBadge({ context }: AiContextBadgeProps) {
-  let icon: React.ReactNode;
-  let label: string;
+  let icon: ReactNode = <Tag className="h-3 w-3" />;
+  let label = 'Context';
 
   switch (context.type) {
     case 'device':

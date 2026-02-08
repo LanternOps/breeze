@@ -78,7 +78,7 @@ const DEFAULT_BUSINESS_HOURS: Record<string, DaySchedule> = {
 };
 
 export default function PartnerSettingsPage() {
-  const { scope } = useOrgStore();
+  const { currentPartnerId, isLoading: contextLoading } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -136,12 +136,12 @@ export default function PartnerSettingsPage() {
   }, []);
 
   useEffect(() => {
-    if (scope === 'partner') {
+    if (currentPartnerId) {
       fetchPartner();
     } else {
-      setLoading(false);
+      setLoading(contextLoading);
     }
-  }, [scope, fetchPartner]);
+  }, [currentPartnerId, contextLoading, fetchPartner]);
 
   const handleSave = async () => {
     try {
@@ -194,7 +194,7 @@ export default function PartnerSettingsPage() {
   };
 
   // Not partner-scoped
-  if (scope !== 'partner') {
+  if (!currentPartnerId) {
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-950">
         <Building2 className="mx-auto h-12 w-12 text-amber-500" />

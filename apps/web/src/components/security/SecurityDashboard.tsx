@@ -243,14 +243,17 @@ const normalizeRecommendations = (raw: unknown): Recommendation[] => {
             ? item.details
             : undefined;
 
-      return {
+      const recommendation: Recommendation = {
         id: String(item.id ?? `${title}-${index}`),
         title: String(title),
-        description,
         priority
       };
+      if (description !== undefined) {
+        recommendation.description = description;
+      }
+      return recommendation;
     })
-    .filter((item): item is Recommendation => Boolean(item));
+    .filter((item): item is Recommendation => item !== null);
 };
 
 const normalizeAdminAudit = (raw: unknown) => {
@@ -277,13 +280,16 @@ const normalizeAdminAudit = (raw: unknown) => {
               ? item.summary
               : undefined;
 
-      return {
+      const device: AdminDevice = {
         id: String(item.id ?? name ?? index),
-        name: String(name),
-        issue
+        name: String(name)
       };
+      if (issue !== undefined) {
+        device.issue = issue;
+      }
+      return device;
     })
-    .filter((item): item is AdminDevice => Boolean(item));
+    .filter((item): item is AdminDevice => item !== null);
 
   const defaultAccounts = pickNumber(
     record.defaultAccounts,

@@ -54,7 +54,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string>();
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchThreats = useCallback(async () => {
     setError(undefined);

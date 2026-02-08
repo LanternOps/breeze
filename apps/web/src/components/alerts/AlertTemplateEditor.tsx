@@ -429,8 +429,9 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       const data = await response.json();
       const template = (data.data ?? data.template ?? data) as AlertTemplateResponse;
 
-      const conditionsPayload = template.conditions ?? {};
-      const thresholdDefaultsPayload = conditionsPayload.thresholdDefaults ?? {};
+      const conditionsPayload: Partial<TemplateConditionsPayload> = template.conditions ?? {};
+      const thresholdDefaultsPayload: Partial<ThresholdDefaults> =
+        conditionsPayload.thresholdDefaults ?? {};
       const normalizedThresholds = {
         value: normalizeNumber(thresholdDefaultsPayload.value, defaultThresholdDefaults.value),
         durationMinutes: normalizeNumber(
@@ -544,9 +545,16 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
   }, [loadTemplate, fetchOrganizations, fetchSites, fetchGroups, fetchAutomations]);
 
   const handleConditionUpdate = (id: string, updates: Partial<AlertCondition>) => {
-    setConditions(prev =>
-      prev.map(condition => (condition.id === id ? { ...condition, ...updates } : condition))
-    );
+    const { type: _ignoredType, ...safeUpdates } = updates;
+    setConditions(prev => prev.map(condition => {
+      if (condition.id !== id) {
+        return condition;
+      }
+      if (condition.type === 'event') {
+        return { ...condition, ...(safeUpdates as Partial<EventCondition>) };
+      }
+      return { ...condition, ...(safeUpdates as Partial<MetricCondition>) };
+    }));
   };
 
   const handleConditionTypeChange = (id: string, type: AlertCondition['type']) => {

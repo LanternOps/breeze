@@ -33,7 +33,7 @@ export default function SecurityScanManager() {
   const [loading, setLoading] = useState(true);
   const [runningScan, setRunningScan] = useState(false);
   const [error, setError] = useState<string>();
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   const selectedDevices = useMemo(
     () => devices.filter((device) => selectedIds.has(device.deviceId)),

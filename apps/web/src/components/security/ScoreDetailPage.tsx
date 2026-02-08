@@ -35,7 +35,7 @@ export default function ScoreDetailPage() {
   const [data, setData] = useState<ScoreBreakdown | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
     setError(undefined);

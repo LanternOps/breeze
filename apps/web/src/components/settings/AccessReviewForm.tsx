@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 const accessReviewSchema = z.object({
   name: z.string().min(1, 'Review name is required').max(255),
   description: z.string().optional(),
-  scope: z.enum(['current', 'organization', 'partner']).default('current'),
+  scope: z.enum(['current', 'organization', 'partner']),
   reviewerIds: z.array(z.string()).optional(),
   dueDate: z.string().optional(),
   notifyReviewers: z.boolean().optional()

@@ -248,47 +248,6 @@ export default function EventViewer({
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(30);
 
-  // Reset events when no query handler is set and no events are provided
-  useEffect(() => {
-    if (!initialEvents && !onQueryEvents) {
-      setEvents([]);
-    }
-  }, [initialEvents, onQueryEvents, selectedLog]);
-
-  useEffect(() => {
-    setLoading(externalLoading);
-  }, [externalLoading]);
-
-  // Auto-refresh effect
-  useEffect(() => {
-    if (!autoRefresh) return;
-    
-    const interval = setInterval(() => {
-      handleRefresh();
-    }, refreshInterval * 1000);
-    
-    return () => clearInterval(interval);
-  }, [autoRefresh, refreshInterval, selectedLog]);
-
-  useEffect(() => {
-    if (!onQueryEvents) return;
-    handleRefresh();
-  }, [handleRefresh, onQueryEvents, selectedLog]);
-
-  // Handle log selection
-  const handleSelectLog = useCallback((logName: string) => {
-    setSelectedLog(logName);
-    setCurrentPage(1);
-    setSelectedEvent(null);
-    setDetailPanelOpen(false);
-    setFetchError(null);
-    onSelectLog?.(logName);
-
-    if (!onQueryEvents) {
-      setEvents([]);
-    }
-  }, [onSelectLog, onQueryEvents]);
-
   // Handle refresh
   const handleRefresh = useCallback(async () => {
     if (!onQueryEvents) return;
@@ -310,6 +269,47 @@ export default function EventViewer({
       setLoading(false);
     }
   }, [onQueryEvents, selectedLog, levelFilters, query, eventIdFilter]);
+
+  // Reset events when no query handler is set and no events are provided
+  useEffect(() => {
+    if (!initialEvents && !onQueryEvents) {
+      setEvents([]);
+    }
+  }, [initialEvents, onQueryEvents, selectedLog]);
+
+  useEffect(() => {
+    setLoading(externalLoading);
+  }, [externalLoading]);
+
+  // Auto-refresh effect
+  useEffect(() => {
+    if (!autoRefresh) return;
+
+    const interval = setInterval(() => {
+      void handleRefresh();
+    }, refreshInterval * 1000);
+
+    return () => clearInterval(interval);
+  }, [autoRefresh, refreshInterval, handleRefresh]);
+
+  useEffect(() => {
+    if (!onQueryEvents) return;
+    void handleRefresh();
+  }, [handleRefresh, onQueryEvents]);
+
+  // Handle log selection
+  const handleSelectLog = useCallback((logName: string) => {
+    setSelectedLog(logName);
+    setCurrentPage(1);
+    setSelectedEvent(null);
+    setDetailPanelOpen(false);
+    setFetchError(null);
+    onSelectLog?.(logName);
+
+    if (!onQueryEvents) {
+      setEvents([]);
+    }
+  }, [onSelectLog, onQueryEvents]);
 
   // Handle event selection
   const handleSelectEvent = useCallback(async (event: EventLogEntry) => {

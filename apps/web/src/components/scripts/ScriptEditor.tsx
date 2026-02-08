@@ -483,10 +483,11 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
       const data = await response.json();
       const updated: ScriptRecord = data.script ?? data;
       setScript(updated);
-      if (updated.version) {
+      const nextVersion = updated.version;
+      if (typeof nextVersion === 'number') {
         setVersionHistory(prev => {
           const last = prev[0];
-          if (last?.version === updated.version) {
+          if (last?.version === nextVersion) {
             return [
               {
                 ...last,
@@ -497,8 +498,8 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
           }
           return [
             {
-              id: `version-${updated.version}`,
-              version: updated.version,
+              id: `version-${nextVersion}`,
+              version: nextVersion,
               updatedAt: updated.updatedAt ?? new Date().toISOString(),
               label: 'Current'
             },

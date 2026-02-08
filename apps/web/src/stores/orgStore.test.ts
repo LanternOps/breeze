@@ -14,7 +14,7 @@ const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
     ok,
     status,
     json: vi.fn().mockResolvedValue(payload)
-  }) as Response;
+  }) as unknown as Response;
 
 async function flushAsync(): Promise<void> {
   await Promise.resolve();

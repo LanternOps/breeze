@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactElement } from 'react';
 import { Download, FileJson2, FileSpreadsheet, Info, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -24,7 +24,7 @@ const formatLabels: Record<'csv' | 'json', string> = {
   json: 'JSON'
 };
 
-const formatIcons: Record<'csv' | 'json', JSX.Element> = {
+const formatIcons: Record<'csv' | 'json', ReactElement> = {
   csv: <FileSpreadsheet className="h-4 w-4" />,
   json: <FileJson2 className="h-4 w-4" />
 };

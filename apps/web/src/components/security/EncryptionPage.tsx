@@ -50,7 +50,7 @@ export default function EncryptionPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [osFilter, setOsFilter] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
