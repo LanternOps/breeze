@@ -1,8 +1,14 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { alerts, alertRules, alertTemplates, automationPolicies } from '../db/schema';
 import { createAlert, resolveAlert } from './alertService';
 import { getEventBus } from './eventBus';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const POLICY_TEMPLATE_NAME = 'Policy Compliance Violation';
 const POLICY_RULE_PREFIX = 'Policy Violation Rule';
@@ -208,7 +214,9 @@ export function subscribeToPolicyEvents(): void {
 
   eventBus.subscribe('policy.violation', async (event) => {
     try {
-      await handlePolicyViolation(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
+      await runWithSystemDbAccess(async () => {
+        await handlePolicyViolation(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
+      });
     } catch (error) {
       console.error('[PolicyAlertBridge] Failed to handle policy violation:', error);
     }
@@ -216,7 +224,9 @@ export function subscribeToPolicyEvents(): void {
 
   eventBus.subscribe('policy.compliant', async (event) => {
     try {
-      await handlePolicyCompliant(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
+      await runWithSystemDbAccess(async () => {
+        await handlePolicyCompliant(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
+      });
     } catch (error) {
       console.error('[PolicyAlertBridge] Failed to handle policy compliant event:', error);
     }

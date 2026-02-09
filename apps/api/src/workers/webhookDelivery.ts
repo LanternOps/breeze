@@ -2,6 +2,12 @@ import { createHmac, randomUUID } from 'crypto';
 import { getRedisConnection } from '../services/redis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
 import { validateWebhookUrlSafety } from '../services/notificationSenders/webhookSender';
+import * as dbModule from '../db';
+
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 // Webhook delivery configuration
 const WEBHOOK_TIMEOUT_MS = 30000;
@@ -395,14 +401,16 @@ export async function initializeWebhookDelivery(
   // Subscribe to all events
   eventBus.subscribe('*', async (event) => {
     try {
-      // Get webhooks configured for this event type in this org
-      const webhooks = await getWebhooksForEvent(event.orgId, event.type);
+      await runWithSystemDbAccess(async () => {
+        // Get webhooks configured for this event type in this org
+        const webhooks = await getWebhooksForEvent(event.orgId, event.type);
 
-      // Queue delivery for each webhook
-      for (const webhook of webhooks) {
-        const deliveryId = createDeliveryRecord ? await createDeliveryRecord(webhook, event) : null;
-        await worker.queueDelivery(webhook, event, deliveryId ?? undefined);
-      }
+        // Queue delivery for each webhook
+        for (const webhook of webhooks) {
+          const deliveryId = createDeliveryRecord ? await createDeliveryRecord(webhook, event) : null;
+          await worker.queueDelivery(webhook, event, deliveryId ?? undefined);
+        }
+      });
     } catch (err) {
       console.error('[WebhookDelivery] Error routing event to webhooks:', err);
     }

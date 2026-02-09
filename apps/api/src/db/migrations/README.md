@@ -1,6 +1,8 @@
 # Database Migrations
 
-This directory contains SQL migrations that must be run manually against the PostgreSQL database.
+This directory contains SQL migrations for changes that are not managed by Drizzle's generated migrations.
+Date-prefixed files (for example `2026-02-09-*.sql`) are applied automatically by `pnpm db:migrate`
+via `src/db/migrations/run.ts`.
 
 ## Prerequisites
 
@@ -50,17 +52,25 @@ TimescaleDB is available on:
 
 ## Running Migrations
 
-### Using psql
+### Using psql (manual)
 
 ```bash
 # Connect to your database and run the migration
 psql -h localhost -U postgres -d breeze -f timescaledb-setup.sql
 ```
 
-### Using npm script (if configured)
+### Using npm script
 
 ```bash
 pnpm db:migrate
+```
+
+`pnpm db:migrate` runs Drizzle migrations first, then applies dated SQL files in this folder.
+
+To run only the manual SQL migration runner:
+
+```bash
+pnpm --filter @breeze/api db:migrate:sql
 ```
 
 ## Migration Files

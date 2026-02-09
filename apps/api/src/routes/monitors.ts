@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, eq, like, desc, sql, gte, lte, or } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, devices } from '../db/schema';
+import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, devices, discoveredAssets } from '../db/schema';
 import { isRedisAvailable } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -115,6 +115,7 @@ const updateMonitorSchema = z.object({
 
 const listMonitorsSchema = z.object({
   orgId: z.string().uuid().optional(),
+  assetId: z.string().uuid().optional(),
   monitorType: z.enum(monitorTypes).optional(),
   status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
   search: z.string().optional()
@@ -151,11 +152,24 @@ monitorRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
+
+    let inferredOrgId = query.orgId;
+    if (!inferredOrgId && query.assetId) {
+      const [asset] = await db
+        .select({ orgId: discoveredAssets.orgId })
+        .from(discoveredAssets)
+        .where(eq(discoveredAssets.id, query.assetId))
+        .limit(1);
+      if (!asset) return c.json({ error: 'Asset not found' }, 404);
+      inferredOrgId = asset.orgId;
+    }
+
+    const orgResult = resolveOrgId(auth, inferredOrgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [];
     if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
+    if (query.assetId) conditions.push(eq(networkMonitors.assetId, query.assetId));
     if (query.monitorType) conditions.push(eq(networkMonitors.monitorType, query.monitorType));
     if (query.status) conditions.push(eq(networkMonitors.lastStatus, query.status));
     if (query.search) {
@@ -213,8 +227,23 @@ monitorRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth, payload.orgId, true);
+
+    let assetOrgId: string | null = null;
+    if (payload.assetId) {
+      const [asset] = await db
+        .select({ orgId: discoveredAssets.orgId })
+        .from(discoveredAssets)
+        .where(eq(discoveredAssets.id, payload.assetId))
+        .limit(1);
+      if (!asset) return c.json({ error: 'Asset not found' }, 404);
+      assetOrgId = asset.orgId;
+    }
+
+    const orgResult = resolveOrgId(auth, payload.orgId ?? assetOrgId ?? undefined, true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    if (assetOrgId && orgResult.orgId !== assetOrgId) {
+      return c.json({ error: 'Asset does not belong to the selected organization' }, 403);
+    }
 
     const [monitor] = await db.insert(networkMonitors).values({
       orgId: orgResult.orgId!,

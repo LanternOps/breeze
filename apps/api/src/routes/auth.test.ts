@@ -51,7 +51,8 @@ vi.mock('../db', () => ({
         where: vi.fn(() => Promise.resolve())
       }))
     }))
-  }
+  },
+  withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

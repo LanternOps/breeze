@@ -6,11 +6,17 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { devices, deviceMetrics, organizations } from '../db/schema';
 import { eq, and, gte, desc, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { evaluateDeviceAlerts, checkAllAutoResolve } from '../services/alertService';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 // Queue name
 const ALERT_QUEUE = 'alert-evaluation';
@@ -56,21 +62,23 @@ export function createAlertWorker(): Worker<AlertJobData> {
   return new Worker<AlertJobData>(
     ALERT_QUEUE,
     async (job: Job<AlertJobData>) => {
-      const startTime = Date.now();
+      return runWithSystemDbAccess(async () => {
+        const startTime = Date.now();
 
-      switch (job.data.type) {
-        case 'evaluate-all':
-          return await processEvaluateAll(job.data);
+        switch (job.data.type) {
+          case 'evaluate-all':
+            return await processEvaluateAll(job.data);
 
-        case 'evaluate-device':
-          return await processEvaluateDevice(job.data);
+          case 'evaluate-device':
+            return await processEvaluateDevice(job.data);
 
-        case 'auto-resolve':
-          return await processAutoResolve(job.data);
+          case 'auto-resolve':
+            return await processAutoResolve(job.data);
 
-        default:
-          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-      }
+          default:
+            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+        }
+      });
     },
     {
       connection: getRedisConnection(),

@@ -11,7 +11,8 @@ vi.mock('../services/redis', () => ({
 vi.mock('../db', () => ({
   db: {
     select: vi.fn()
-  }
+  },
+  withDbAccessContext: vi.fn(async (_context, fn) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -38,7 +39,7 @@ import { Hono } from 'hono';
 import { authMiddleware, requireScope } from './auth';
 import { verifyToken } from '../services/jwt';
 import { getRedis } from '../services/redis';
-import { db } from '../db';
+import { db, withDbAccessContext } from '../db';
 
 const basePayload = {
   sub: 'user-123',
@@ -195,6 +196,14 @@ describe('authMiddleware', () => {
       orgId: basePayload.orgId,
       scope: basePayload.scope
     });
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
+      {
+        scope: basePayload.scope,
+        orgId: basePayload.orgId,
+        accessibleOrgIds: [basePayload.orgId]
+      },
+      expect.any(Function)
+    );
   });
 
   it('rejects revoked access tokens', async () => {

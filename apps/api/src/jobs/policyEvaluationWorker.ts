@@ -6,10 +6,16 @@
 
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { automationPolicies } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 import { evaluatePolicy } from '../services/policyEvaluationService';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const POLICY_EVALUATION_QUEUE = 'policy-evaluation';
 const SCAN_INTERVAL_MS = 60 * 1000;
@@ -126,11 +132,13 @@ export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> 
   return new Worker<PolicyEvaluationJobData>(
     POLICY_EVALUATION_QUEUE,
     async (job: Job<PolicyEvaluationJobData>) => {
-      if (job.data.type === 'scan-due-policies') {
-        return processScanDuePolicies();
-      }
+      return runWithSystemDbAccess(async () => {
+        if (job.data.type === 'scan-due-policies') {
+          return processScanDuePolicies();
+        }
 
-      return processEvaluatePolicy(job.data.policyId);
+        return processEvaluatePolicy(job.data.policyId);
+      });
     },
     {
       connection: getRedisConnection(),

@@ -38,6 +38,7 @@ export const ssoRoutes = new Hono();
 // ============================================
 
 const createProviderSchema = z.object({
+  orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['oidc', 'saml']),
   preset: z.string().optional(),
@@ -58,7 +59,7 @@ const createProviderSchema = z.object({
   enforceSSO: z.boolean().optional()
 });
 
-const updateProviderSchema = createProviderSchema.partial();
+const updateProviderSchema = createProviderSchema.omit({ orgId: true }).partial();
 const tokenExchangeSchema = z.object({
   code: z.string().min(1)
 });
@@ -201,6 +202,56 @@ function getClientIP(c: any): string {
     'unknown';
 }
 
+function resolveOrgIdForProviderRoute(
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
+  requestedOrgId?: string
+): { orgId: string } | { error: string; status: 400 | 403 } {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) {
+      return { error: 'Organization ID required', status: 400 };
+    }
+    if (requestedOrgId && requestedOrgId !== auth.orgId) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId: auth.orgId };
+  }
+
+  if (auth.scope === 'partner') {
+    if (requestedOrgId) {
+      if (!auth.canAccessOrg(requestedOrgId)) {
+        return { error: 'Access to this organization denied', status: 403 };
+      }
+      return { orgId: requestedOrgId };
+    }
+
+    if (auth.orgId) {
+      return { orgId: auth.orgId };
+    }
+
+    const orgIds = auth.accessibleOrgIds ?? [];
+    if (orgIds.length === 1 && orgIds[0]) {
+      return { orgId: orgIds[0] };
+    }
+
+    return { error: 'Organization ID required', status: 400 };
+  }
+
+  if (requestedOrgId) {
+    return { orgId: requestedOrgId };
+  }
+
+  if (auth.orgId) {
+    return { orgId: auth.orgId };
+  }
+
+  const orgIds = auth.accessibleOrgIds ?? [];
+  if (orgIds.length === 1 && orgIds[0]) {
+    return { orgId: orgIds[0] };
+  }
+
+  return { error: 'Organization ID required', status: 400 };
+}
+
 // ============================================
 // Provider Management Routes (Admin)
 // ============================================
@@ -218,10 +269,9 @@ ssoRoutes.get('/presets', authMiddleware, requireScope('organization', 'partner'
 // List SSO providers for organization
 ssoRoutes.get('/providers', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const orgId = c.req.query('orgId') || auth.orgId;
-
-  if (!orgId) {
-    return c.json({ error: 'Organization ID required' }, 400);
+  const orgResult = resolveOrgIdForProviderRoute(auth, c.req.query('orgId'));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
 
   const providers = await db
@@ -236,13 +286,14 @@ ssoRoutes.get('/providers', authMiddleware, requireScope('organization', 'partne
       createdAt: ssoProviders.createdAt
     })
     .from(ssoProviders)
-    .where(eq(ssoProviders.orgId, orgId));
+    .where(eq(ssoProviders.orgId, orgResult.orgId));
 
   return c.json({ data: providers });
 });
 
 // Get SSO provider details
 ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
 
   const [provider] = await db
@@ -255,6 +306,10 @@ ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'pa
     return c.json({ error: 'Provider not found' }, 404);
   }
 
+  if (!auth.canAccessOrg(provider.orgId)) {
+    return c.json({ error: 'Access denied' }, 403);
+  }
+
   // Don't return client secret
   const { clientSecret, ...safeProvider } = provider;
 
@@ -265,10 +320,9 @@ ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'pa
 ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('json', createProviderSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const body = c.req.valid('json');
-  const orgId = auth.orgId;
-
-  if (!orgId) {
-    return c.json({ error: 'Organization ID required' }, 400);
+  const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
 
   // Apply preset if specified
@@ -300,7 +354,7 @@ ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partn
   const [provider] = await db
     .insert(ssoProviders)
     .values({
-      orgId,
+      orgId: orgResult.orgId,
       name: body.name,
       type: body.type,
       issuer: body.issuer,
@@ -340,8 +394,24 @@ ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partn
 
 // Update SSO provider
 ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('json', updateProviderSchema), async (c) => {
+  const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
   const body = c.req.valid('json');
+
+  const [existing] = await db
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .from(ssoProviders)
+    .where(eq(ssoProviders.id, providerId))
+    .limit(1);
+
+  if (!existing) {
+    return c.json({ error: 'Provider not found' }, 404);
+  }
+
+  if (!auth.canAccessOrg(existing.orgId)) {
+    return c.json({ error: 'Access denied' }, 403);
+  }
+
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
     ...body,
     updatedAt: new Date()
@@ -354,7 +424,7 @@ ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', '
   const [updated] = await db
     .update(ssoProviders)
     .set(updates)
-    .where(eq(ssoProviders.id, providerId))
+    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
     .returning();
 
   if (!updated) {
@@ -376,7 +446,22 @@ ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', '
 
 // Delete SSO provider
 ssoRoutes.delete('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
+
+  const [existing] = await db
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .from(ssoProviders)
+    .where(eq(ssoProviders.id, providerId))
+    .limit(1);
+
+  if (!existing) {
+    return c.json({ error: 'Provider not found' }, 404);
+  }
+
+  if (!auth.canAccessOrg(existing.orgId)) {
+    return c.json({ error: 'Access denied' }, 403);
+  }
 
   // Delete related records first
   await db.delete(ssoSessions).where(eq(ssoSessions.providerId, providerId));
@@ -384,7 +469,7 @@ ssoRoutes.delete('/providers/:id', authMiddleware, requireScope('organization', 
 
   const [deleted] = await db
     .delete(ssoProviders)
-    .where(eq(ssoProviders.id, providerId))
+    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
     .returning();
 
   if (!deleted) {
@@ -404,13 +489,28 @@ ssoRoutes.delete('/providers/:id', authMiddleware, requireScope('organization', 
 
 // Activate/Deactivate provider
 ssoRoutes.post('/providers/:id/status', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('json', z.object({ status: z.enum(['active', 'inactive', 'testing']) })), async (c) => {
+  const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
   const { status } = c.req.valid('json');
+
+  const [existing] = await db
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .from(ssoProviders)
+    .where(eq(ssoProviders.id, providerId))
+    .limit(1);
+
+  if (!existing) {
+    return c.json({ error: 'Provider not found' }, 404);
+  }
+
+  if (!auth.canAccessOrg(existing.orgId)) {
+    return c.json({ error: 'Access denied' }, 403);
+  }
 
   const [updated] = await db
     .update(ssoProviders)
     .set({ status, updatedAt: new Date() })
-    .where(eq(ssoProviders.id, providerId))
+    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
     .returning();
 
   if (!updated) {
@@ -431,6 +531,7 @@ ssoRoutes.post('/providers/:id/status', authMiddleware, requireScope('organizati
 
 // Test provider configuration
 ssoRoutes.post('/providers/:id/test', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+  const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
 
   const [provider] = await db
@@ -441,6 +542,10 @@ ssoRoutes.post('/providers/:id/test', authMiddleware, requireScope('organization
 
   if (!provider) {
     return c.json({ error: 'Provider not found' }, 404);
+  }
+
+  if (!auth.canAccessOrg(provider.orgId)) {
+    return c.json({ error: 'Access denied' }, 403);
   }
 
   if (provider.type !== 'oidc') {
@@ -587,6 +692,27 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect('/login?error=provider_not_found');
   }
 
+  let validatedDefaultRoleId: string | null = null;
+  if (provider.defaultRoleId) {
+    const [defaultRole] = await db
+      .select({ id: roles.id })
+      .from(roles)
+      .where(
+        and(
+          eq(roles.id, provider.defaultRoleId),
+          eq(roles.scope, 'organization'),
+          eq(roles.orgId, provider.orgId)
+        )
+      )
+      .limit(1);
+
+    if (!defaultRole) {
+      return c.redirect('/login?error=invalid_provider_configuration');
+    }
+
+    validatedDefaultRoleId = defaultRole.id;
+  }
+
   try {
     const config = getOIDCConfig(provider);
     const baseUrl = c.req.header('origin') || process.env.PUBLIC_URL || 'http://localhost:3000';
@@ -634,6 +760,10 @@ ssoRoutes.get('/callback', async (c) => {
         return c.redirect('/login?error=user_not_found');
       }
 
+      if (!validatedDefaultRoleId) {
+        return c.redirect('/login?error=default_role_required');
+      }
+
       // Create new user
       const [newUser] = await db
         .insert(users)
@@ -651,14 +781,36 @@ ssoRoutes.get('/callback', async (c) => {
 
       user = newUser;
 
-      // Assign default role if configured
-      if (provider.defaultRoleId) {
-        await db.insert(organizationUsers).values({
-          orgId: provider.orgId,
-          userId: user.id,
-          roleId: provider.defaultRoleId
-        });
-      }
+      await db.insert(organizationUsers).values({
+        orgId: provider.orgId,
+        userId: user.id,
+        roleId: validatedDefaultRoleId
+      });
+    }
+
+    const [orgUser] = await db
+      .select({
+        orgId: organizationUsers.orgId,
+        roleId: organizationUsers.roleId,
+        roleName: roles.name,
+        roleScope: roles.scope
+      })
+      .from(organizationUsers)
+      .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
+      .where(
+        and(
+          eq(organizationUsers.userId, user.id),
+          eq(organizationUsers.orgId, provider.orgId)
+        )
+      )
+      .limit(1);
+
+    if (!orgUser) {
+      return c.redirect('/login?error=no_org_access');
+    }
+
+    if (orgUser.roleScope !== 'organization') {
+      return c.redirect('/login?error=invalid_role_scope');
     }
 
     // Update or create SSO identity link
@@ -711,19 +863,6 @@ ssoRoutes.get('/callback', async (c) => {
     // Clean up SSO session
     await db.delete(ssoSessions).where(eq(ssoSessions.id, session.id));
 
-    // Get user's organization and role for JWT
-    const [orgUser] = await db
-      .select({
-        orgId: organizationUsers.orgId,
-        roleId: organizationUsers.roleId,
-        roleName: roles.name,
-        roleScope: roles.scope
-      })
-      .from(organizationUsers)
-      .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
-      .where(eq(organizationUsers.userId, user.id))
-      .limit(1);
-
     // Create session and tokens
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
@@ -731,10 +870,10 @@ ssoRoutes.get('/callback', async (c) => {
     const tokenPayload = {
       sub: user.id,
       email: user.email,
-      roleId: orgUser?.roleId || null,
-      orgId: orgUser?.orgId || null,
+      roleId: orgUser.roleId,
+      orgId: provider.orgId,
       partnerId: null,
-      scope: (orgUser?.roleScope || 'organization') as 'system' | 'partner' | 'organization'
+      scope: 'organization' as const
     };
 
     const { accessToken, refreshToken, expiresInSeconds } = await createTokenPair(tokenPayload);

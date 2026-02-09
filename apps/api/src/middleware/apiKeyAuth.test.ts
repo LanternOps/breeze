@@ -4,7 +4,8 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
     update: vi.fn()
-  }
+  },
+  withDbAccessContext: vi.fn(async (_context, fn) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -35,7 +36,7 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 import type { Context } from 'hono';
-import { db } from '../db';
+import { db, withDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import * as apiKeyAuthModule from './apiKeyAuth';
 
@@ -271,6 +272,14 @@ describe('apiKeyAuth middleware', () => {
     expect(c.get('apiKeyOrgId')).toBe('org-2');
     expect(next).toHaveBeenCalled();
     expect(execute).toHaveBeenCalled();
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
+      {
+        scope: 'organization',
+        orgId: 'org-2',
+        accessibleOrgIds: ['org-2']
+      },
+      expect.any(Function)
+    );
   });
 });
 

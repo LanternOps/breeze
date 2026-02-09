@@ -6,7 +6,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import {
   discoveryProfiles,
   discoveryJobs,
@@ -18,6 +18,12 @@ import {
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 // Queue name
 const DISCOVERY_QUEUE = 'discovery';
@@ -86,14 +92,16 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
   return new Worker<DiscoveryJobData>(
     DISCOVERY_QUEUE,
     async (job: Job<DiscoveryJobData>) => {
-      switch (job.data.type) {
-        case 'dispatch-scan':
-          return await processDispatchScan(job.data);
-        case 'process-results':
-          return await processResults(job.data);
-        default:
-          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-      }
+      return runWithSystemDbAccess(async () => {
+        switch (job.data.type) {
+          case 'dispatch-scan':
+            return await processDispatchScan(job.data);
+          case 'process-results':
+            return await processResults(job.data);
+          default:
+            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+        }
+      });
     },
     {
       connection: getRedisConnection(),

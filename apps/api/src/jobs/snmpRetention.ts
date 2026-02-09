@@ -6,10 +6,16 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { snmpMetrics } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const QUEUE_NAME = 'snmp-retention';
 const DEFAULT_RETENTION_DAYS = 7;
@@ -33,17 +39,19 @@ function createSnmpRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
     async (job: Job<RetentionJobData>) => {
-      const startTime = Date.now();
-      const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
-      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      return runWithSystemDbAccess(async () => {
+        const startTime = Date.now();
+        const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
-      await db
-        .delete(snmpMetrics)
-        .where(lt(snmpMetrics.timestamp, cutoff));
+        await db
+          .delete(snmpMetrics)
+          .where(lt(snmpMetrics.timestamp, cutoff));
 
-      const durationMs = Date.now() - startTime;
-      console.log(`[SnmpRetention] Pruned metrics older than ${retentionDays} days in ${durationMs}ms`);
-      return { durationMs };
+        const durationMs = Date.now() - startTime;
+        console.log(`[SnmpRetention] Pruned metrics older than ${retentionDays} days in ${durationMs}ms`);
+        return { durationMs };
+      });
     },
     {
       connection: getRedisConnection(),

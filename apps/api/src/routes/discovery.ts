@@ -9,6 +9,7 @@ import {
   discoveryJobs,
   discoveredAssets,
   networkTopology,
+  networkMonitors,
   snmpDevices,
   snmpAlertThresholds,
   snmpMetrics,
@@ -54,6 +55,32 @@ function resolveOrgId(
 
   if (requireForNonOrg && !requestedOrgId) return { error: 'orgId is required', status: 400 } as const;
   return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
+}
+
+async function resolveOrgIdForAsset(
+  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
+  assetId: string,
+  requestedOrgId?: string
+) {
+  const orgResult = resolveOrgId(auth, requestedOrgId);
+  if (!('error' in orgResult)) return orgResult;
+
+  const needsAssetResolution = (
+    orgResult.error === 'orgId is required for partner scope'
+    || orgResult.error === 'orgId is required for system scope'
+    || orgResult.error === 'orgId is required'
+  );
+  if (!needsAssetResolution) return orgResult;
+
+  const [asset] = await db
+    .select({ orgId: discoveredAssets.orgId })
+    .from(discoveredAssets)
+    .where(eq(discoveredAssets.id, assetId))
+    .limit(1);
+  if (!asset) return { error: 'Asset not found', status: 404 } as const;
+  if (!auth.canAccessOrg(asset.orgId)) return { error: 'Access to this organization denied', status: 403 } as const;
+
+  return { orgId: asset.orgId } as const;
 }
 
 // --- Zod Schemas ---
@@ -565,13 +592,22 @@ discoveryRoutes.get(
     const results = await db
       .select({
         asset: discoveredAssets,
-        snmpDeviceId: snmpDevices.id,
-        snmpIsActive: snmpDevices.isActive,
+        snmpMonitoringEnabled: sql<boolean>`exists (
+          select 1
+          from ${snmpDevices}
+          where ${snmpDevices.assetId} = ${discoveredAssets.id}
+            and ${snmpDevices.isActive} = true
+        )`,
+        networkMonitoringEnabled: sql<boolean>`exists (
+          select 1
+          from ${networkMonitors}
+          where ${networkMonitors.assetId} = ${discoveredAssets.id}
+            and ${networkMonitors.isActive} = true
+        )`,
         linkedDeviceHostname: devices.hostname,
         linkedDeviceDisplayName: devices.displayName
       })
       .from(discoveredAssets)
-      .leftJoin(snmpDevices, and(eq(discoveredAssets.id, snmpDevices.assetId), eq(snmpDevices.isActive, true)))
       .leftJoin(devices, eq(discoveredAssets.linkedDeviceId, devices.id))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
@@ -593,7 +629,9 @@ discoveryRoutes.get(
           responseTimeMs: a.responseTimeMs,
           linkedDeviceId: a.linkedDeviceId,
           linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
-          monitoringEnabled: row.snmpDeviceId !== null && row.snmpIsActive === true,
+          snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
+          networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
+          monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
           discoveryMethods: a.discoveryMethods,
           firstSeenAt: a.firstSeenAt.toISOString(),
           lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
@@ -613,7 +651,7 @@ discoveryRoutes.post(
     const auth = c.get('auth');
     const assetId = c.req.param('id');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
@@ -653,7 +691,7 @@ discoveryRoutes.post(
     const auth = c.get('auth');
     const assetId = c.req.param('id');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
@@ -694,7 +732,7 @@ discoveryRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const assetId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
@@ -721,6 +759,8 @@ discoveryRoutes.delete(
 
       await tx.delete(snmpDevices)
         .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, existing.orgId)));
+      await tx.delete(networkMonitors)
+        .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, existing.orgId)));
       await tx.delete(discoveredAssets).where(eq(discoveredAssets.id, assetId));
     });
 
@@ -766,7 +806,7 @@ discoveryRoutes.post(
     const auth = c.get('auth');
     const assetId = c.req.param('id');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
@@ -828,7 +868,7 @@ discoveryRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const assetId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
@@ -839,19 +879,29 @@ discoveryRoutes.delete(
       .where(and(...conditions)).limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
-    const [updated] = await db.update(snmpDevices)
+    const disabledSnmp = await db.update(snmpDevices)
       .set({ isActive: false })
       .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), eq(snmpDevices.isActive, true)))
       .returning();
 
-    if (!updated) return c.json({ error: 'No active monitoring found for this asset' }, 404);
+    const disabledNetworkMonitors = await db.update(networkMonitors)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, asset.orgId), eq(networkMonitors.isActive, true)))
+      .returning({ id: networkMonitors.id });
+
+    if (disabledSnmp.length === 0 && disabledNetworkMonitors.length === 0) {
+      return c.json({ error: 'No active monitoring found for this asset' }, 404);
+    }
 
     writeRouteAudit(c, {
       orgId: asset.orgId,
       action: 'discovery.asset.disable_monitoring',
       resourceType: 'discovered_asset',
       resourceId: assetId,
-      details: { snmpDeviceId: updated.id }
+      details: {
+        disabledSnmpDeviceIds: disabledSnmp.map((row) => row.id),
+        disabledNetworkMonitorCount: disabledNetworkMonitors.length
+      }
     });
 
     return c.json({ success: true });
@@ -864,13 +914,13 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const assetId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
 
-    const [asset] = await db.select({ id: discoveredAssets.id })
+    const [asset] = await db.select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
       .from(discoveredAssets)
       .where(and(...conditions)).limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
@@ -880,8 +930,30 @@ discoveryRoutes.get(
       .where(eq(snmpDevices.assetId, assetId))
       .limit(1);
 
+    const [networkMonitorTotal] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(networkMonitors)
+      .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, asset.orgId)));
+
+    const [networkMonitorActive] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(networkMonitors)
+      .where(and(
+        eq(networkMonitors.assetId, assetId),
+        eq(networkMonitors.orgId, asset.orgId),
+        eq(networkMonitors.isActive, true)
+      ));
+
     if (!snmpDevice) {
-      return c.json({ enabled: false, snmpDevice: null, recentMetrics: [] });
+      return c.json({
+        enabled: Number(networkMonitorActive?.count ?? 0) > 0,
+        snmpDevice: null,
+        networkMonitors: {
+          totalCount: Number(networkMonitorTotal?.count ?? 0),
+          activeCount: Number(networkMonitorActive?.count ?? 0)
+        },
+        recentMetrics: []
+      });
     }
 
     const recentMetrics = await db.select()
@@ -891,7 +963,7 @@ discoveryRoutes.get(
       .limit(20);
 
     return c.json({
-      enabled: snmpDevice.isActive,
+      enabled: snmpDevice.isActive || Number(networkMonitorActive?.count ?? 0) > 0,
       snmpDevice: {
         id: snmpDevice.id,
         snmpVersion: snmpDevice.snmpVersion,
@@ -900,6 +972,10 @@ discoveryRoutes.get(
         isActive: snmpDevice.isActive,
         lastPolled: snmpDevice.lastPolled?.toISOString() ?? null,
         lastStatus: snmpDevice.lastStatus
+      },
+      networkMonitors: {
+        totalCount: Number(networkMonitorTotal?.count ?? 0),
+        activeCount: Number(networkMonitorActive?.count ?? 0)
       },
       recentMetrics: recentMetrics.map(m => ({
         id: m.id,
@@ -935,7 +1011,7 @@ discoveryRoutes.patch(
     const auth = c.get('auth');
     const assetId = c.req.param('id');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];

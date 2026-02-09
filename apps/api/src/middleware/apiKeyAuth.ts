@@ -2,7 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
 import { eq, and } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbAccessContext } from '../db';
 import { apiKeys, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 
@@ -146,7 +146,16 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   });
   c.set('apiKeyOrgId', apiKey.orgId);
 
-  await next();
+  await withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId: apiKey.orgId,
+      accessibleOrgIds: [apiKey.orgId]
+    },
+    async () => {
+      await next();
+    }
+  );
 }
 
 /**

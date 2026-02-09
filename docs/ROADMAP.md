@@ -1,501 +1,313 @@
-# Breeze RMM - Development Roadmap
+# Breeze RMM — Roadmap
 
-> Last Updated: 2026-01-13
-> Progress: Phase 1-8 Complete | Overall: 100%
-
----
-
-## Quick Status
-
-| Phase | Name | Status | Progress |
-|-------|------|--------|----------|
-| 1 | Foundation | ✅ Complete | 100% |
-| 2 | Agent Core | ✅ Complete | 100% |
-| 3 | Device Management | ✅ Complete | 100% |
-| 4 | Scripting | ✅ Complete | 100% |
-| 5 | Alerting | ✅ Complete | 100% |
-| 6 | Remote Access | ✅ Complete | 100% |
-| 7 | Automation | ✅ Complete | 100% |
-| 8 | Enterprise | ✅ Complete | 100% |
-
-**Legend:** ✅ Complete | 🟡 In Progress | ⬜ Not Started | ❌ Blocked
+> Last Updated: 2026-02-08
+> Brain Connector: See `docs/plans/brain-connector-roadmap.md` (separate track)
+> Historical docs: See `docs/archive/` for superseded planning documents
 
 ---
 
-## Phase 1: Foundation ✅
+## Current State Summary
 
-### 1.1 Project Scaffolding ✅
-- [x] Monorepo structure (Turborepo + pnpm workspaces)
-- [x] Astro web app with React islands
-- [x] Hono API server structure
-- [x] Shared packages (types, validators, constants)
-- [x] Docker Compose configuration (PostgreSQL, Redis, MinIO)
-- [x] Development setup scripts
+**Backend (API + Schema)**: Feature-complete. 99 route files, 34+ schema tables covering devices, patches, backup, security, discovery, SNMP, AI, integrations, PSA, automation, policies, reports, analytics.
 
-### 1.2 Database Schema ✅
-- [x] Drizzle ORM setup
-- [x] Core tables: partners, organizations, sites
-- [x] User tables: users, partner_users, organization_users, roles
-- [x] Device tables: devices, device_hardware, device_network, device_metrics, device_software
-- [x] Scripting tables: scripts, script_executions
-- [x] Automation tables: automations, automation_runs, policies, policy_compliance
-- [x] Alert tables: alert_rules, alerts, notification_channels
-- [x] Audit tables: audit_logs, sessions
-- [x] Remote access tables: remote_sessions, file_transfers
+**Agent (Go)**: Feature-complete. Collectors, patching (apt/yum/homebrew/apple), remote desktop/terminal/file transfer, security (Defender/WSC), discovery (ARP/SNMP/ports), backup (S3/Azure/GCP/local), SNMP polling, script execution.
 
-### 1.3 Authentication ✅
-- [x] Password hashing (Argon2id)
-- [x] JWT access/refresh tokens (jose)
-- [x] Login/logout endpoints
-- [x] Registration endpoint
-- [x] Password reset flow (forgot + reset)
-- [x] MFA/TOTP setup and verification (otplib)
-- [x] Recovery codes generation
-- [x] Rate limiting (Redis sliding window)
-- [x] Auth middleware with scope checking
-- [x] Auth store (Zustand + persist)
-- [x] Auth UI components (LoginForm, RegisterForm, MFASetupForm, etc.)
-- [x] Auth pages (login, register, forgot-password, reset-password)
+**Frontend**: Structurally complete but significant mock-data-to-API wiring gaps. Many components render demo data instead of API responses.
 
-### 1.4 Basic RBAC ✅
-- [x] Role schema (system, partner, organization scopes)
-- [x] Permission schema (resource + action)
-- [x] Permission checking middleware (requirePermission, requireOrgAccess, requireSiteAccess)
-- [x] Permission constants and helpers (services/permissions.ts)
-- [x] Database seed for default roles and permissions
-- [x] Role assignment UI
-- [x] Permission guards on routes
+**Security**: Observability pipeline done (WSC, Defender, threat detection, scan/quarantine commands). Code review in progress (53 findings, ~40 remediated).
 
-### 1.5 Organization Management ✅
-- [x] Partner CRUD API (GET/POST/PATCH/DELETE /partners)
-- [x] Organization CRUD API (GET/POST/PATCH/DELETE /organizations)
-- [x] Site CRUD API (GET/POST/PATCH/DELETE /sites)
-- [x] Organization list component (OrganizationList.tsx)
-- [x] Organization form component (OrganizationForm.tsx)
-- [x] Site list component (SiteList.tsx)
-- [x] Site form component (SiteForm.tsx)
-- [x] Partner/Org switcher UI (OrgSwitcher.tsx)
-- [x] Organization settings page (Astro page)
-- [x] User invitation flow
-
-### 1.6 User Management ✅
-- [x] User list/detail API (GET /users, GET /users/:id)
-- [x] User CRUD operations (PATCH/DELETE /users/:id)
-- [x] User invitation API (POST /users/invite)
-- [x] Role assignment API (POST /users/:id/role, GET /roles)
-- [x] User list component (UserList.tsx)
-- [x] User invite form component (UserInviteForm.tsx)
-- [x] Role selector component (RoleSelector.tsx)
-- [x] User profile page (ProfilePage.tsx)
-- [x] User settings (password change, MFA management)
+**Testing**: Route tests exist for high-risk domains. Agent unit tests sparse. E2E test framework exists (YAML-driven). Frontend test coverage minimal.
 
 ---
 
-## Phase 2: Agent Core ✅
+## Priority Tiers
 
-### 2.1 Go Agent Skeleton ✅
-- [x] CLI structure (cobra)
-- [x] Configuration management (viper)
-- [x] Logging setup (zap)
-- [x] Build scripts (Makefile)
-- [x] Cross-platform builds (Windows, macOS, Linux)
-- [x] Binary builds successfully (10.5MB)
-
-### 2.2 Enrollment Flow ✅
-- [x] Enrollment key generation (API)
-- [x] Agent enrollment endpoint
-- [x] Agent authentication token
-- [x] Initial device registration
-- [x] Enrollment UI (generate keys, show status)
-- [x] Device info collection (enrollment/device.go)
-
-### 2.3 Heartbeat System ✅
-- [x] Agent heartbeat loop (configurable interval)
-- [x] Heartbeat API endpoint
-- [x] Command queue in heartbeat response
-- [x] Config updates via heartbeat
-- [x] Agent version checking
-- [x] Device online/offline status tracking
-- [x] Exponential backoff on failures
-- [x] Command processor with priority queue
-
-### 2.4 System Collectors ✅
-- [x] Hardware info collector (gopsutil)
-- [x] Software inventory collector (platform-specific)
-- [x] Network interface collector
-- [x] Real-time metrics collector (CPU, RAM, disk)
-- [x] Process list collector
-
-### 2.5 Metrics Pipeline ✅
-- [x] Metrics ingestion endpoint
-- [x] Time-series storage
-- [x] Metrics aggregation (1m, 5m, 1h, 1d intervals)
-- [x] Metrics API with date range filtering
+| Tier | Criteria | Timeline |
+|------|----------|----------|
+| **P0 — Ship Blockers** | Must work correctly for any real deployment | Now |
+| **P1 — Core Value** | Features users expect from an RMM on day one | Next |
+| **P2 — Competitive** | NinjaOne parity gaps that matter for sales | After P1 |
+| **P3 — Differentiators** | Brain connector, AI, features competitors don't have | Parallel track |
+| **P4 — Future** | Nice-to-have, enterprise-only, or aspirational | Later |
 
 ---
 
-## Phase 3: Device Management ✅
+## P0: Ship Blockers
 
-### 3.1 Device List & Details ✅
-- [x] Device list API (paginated, filtered, sorted)
-- [x] Device detail API
-- [x] Device list page (DeviceList.tsx with search/filter)
-- [x] Device detail page (DeviceDetails.tsx with tabs)
-- [x] Device status indicators
-- [x] Device card component (DeviceCard.tsx)
+These must be verified working end-to-end before any real deployment. The code exists but hasn't been validated with real data/devices in many cases.
 
-### 3.2 Device Groups ✅
-- [x] Static device groups CRUD
-- [x] Dynamic groups (rule-based membership)
-- [x] Group membership management
-- [x] Bulk operations on groups
+### P0.1 UI → API Wiring Audit
 
-### 3.3 Inventory Views ✅
-- [x] Hardware inventory display
-- [x] Software inventory (searchable, sortable)
-- [x] Software version tracking
-- [x] Export capabilities
+The single biggest risk. Backend routes exist but many frontend components use hardcoded/mock data.
 
-### 3.4 Real-time Dashboard ✅
-- [x] Dashboard widgets (DashboardWidgets.tsx)
-- [x] Live metrics charts (DeviceMetricsChart.tsx)
-- [x] Recent alerts widget
-- [x] Activity feed (RecentActivity.tsx)
-- [x] Device status chart (DeviceStatusChart.tsx)
+| Module | UI Components | API Routes | Wiring Status | Priority |
+|--------|--------------|------------|---------------|----------|
+| **Device details** | Tabs (hardware, software, patches, alerts, metrics) | `devices/:id/*` | Partial — verify each tab | P0 |
+| **Patches** | PatchList, PatchApproval, PatchDeployment, PatchCompliance | `patches/*` | Needs full audit | P0 |
+| **Discovery** | DiscoveryProfiles, ScanResults, AssetList, TopologyMap | `discovery/*` | Needs full audit | P0 |
+| **Backup** | BackupDashboard, ConfigEditor, JobList, RestoreWizard | `backup/*` | Needs full audit | P0 |
+| **Security** | SecurityDashboard, ThreatList, ScanManager | `security/*` | Mostly done (per tracker) | P0 |
+| **Monitoring** | MonitorList, MonitorResults, AlertRules | `monitors/*` | Needs audit | P0 |
+| **Analytics** | MetricsCharts, TrendData, OSDistribution | `analytics/*` | Needs audit | P1 |
+| **Integrations** | WebhookList, PSAConnections, PluginManager | `integrations/*` | Needs audit | P1 |
+| **Reports** | ReportBuilder, ReportPreview, ScheduledReports | `reports/*` | Needs audit | P1 |
 
-### 3.5 Device Actions ✅
-- [x] Device rename/tag
-- [x] Device site reassignment
-- [x] Device decommission
-- [x] Force check-in
-- [x] Device actions component (DeviceActions.tsx)
-- [x] Device filters component (DeviceFilters.tsx)
+**Action**: Systematic page-by-page walkthrough. For each page: does it fetch from API? Does it display real data? Do mutations work?
 
----
+### P0.2 Code Review Findings
 
-## Phase 4: Scripting ✅
+53 findings logged in `CODEBASE_REVIEW_TRACKER.md`. ~40 remediated. Remaining:
 
-### 4.1 Script Library ✅
-- [x] Script CRUD API
-- [x] Script library page (ScriptLibrary.tsx)
-- [x] Script categories
-- [x] Script import/export
+| Finding | Severity | Status |
+|---------|----------|--------|
+| F-003: Frontend API contract drift | High | Partially mitigated |
+| Agent unit tests (A5) | Medium | TODO |
+| WSC live validation (B5) | Medium | TODO |
+| Rollout checklist (E4) | Medium | TODO |
+| Cross-tenant data exposure audit (3.2) | High | Pending |
 
-### 4.2 Script Editor ✅
-- [x] Monaco editor integration
-- [x] Syntax highlighting (PowerShell, Bash, Python, CMD)
-- [x] Script parameters schema
-- [x] Script validation
-- [x] Script form component (ScriptForm.tsx)
+**Action**: Close all High-severity findings before deployment.
 
-### 4.3 Script Execution ✅
-- [x] Execute on single device
-- [x] Execute on device group (batch execution)
-- [x] Parameter input UI
-- [x] Execution scheduling
-- [x] Script execution modal (ScriptExecutionModal.tsx)
-- [x] Go agent executor (executor/executor.go)
-- [x] Security validation (executor/security.go)
-- [x] Shell helpers (executor/shell.go)
+### P0.3 Database Migrations
 
-### 4.4 Execution Management ✅
-- [x] Execution history (paginated, filtered)
-- [x] Execution detail view (ExecutionDetail.tsx)
-- [x] Cancel running execution
-- [x] Re-run previous execution
-- [x] Execution list component (ExecutionList.tsx)
+Currently using `pnpm db:push` (Drizzle push). Production needs proper migration files.
+
+- [ ] Generate migration files for current schema state
+- [ ] Test migration up/down on clean database
+- [ ] Migration runner for production deployments
+- [ ] Seed data for default roles, permissions, alert templates
+
+### P0.4 Environment & Deployment
+
+- [ ] Production docker-compose with proper secrets management
+- [ ] Health check endpoints for load balancer
+- [ ] Graceful shutdown handling (API, agent connections)
+- [ ] Log levels and structured logging for production
+- [ ] Redis persistence configuration
+- [ ] PostgreSQL backup/restore procedures
+- [ ] Agent auto-update flow (updater module exists, needs testing)
+
+### P0.5 Agent Installation Flow
+
+Agent builds exist. Installation needs to be smooth:
+
+- [ ] Verify Windows MSI/EXE installer works end-to-end
+- [ ] Verify macOS PKG installer works end-to-end
+- [ ] Verify Linux DEB/RPM installer works end-to-end
+- [ ] Enrollment key generation → agent install → enrollment → first heartbeat flow
+- [ ] Agent uninstall/cleanup
+- [ ] Agent upgrade path (existing enrolled agents)
 
 ---
 
-## Phase 5: Alerting ✅
+## P1: Core Value
 
-### 5.1 Alert Rules ✅
-- [x] Alert rule CRUD API
-- [x] Rule builder UI (AlertRuleForm.tsx)
-- [x] Metric-based alerts
-- [x] Status alerts (offline detection)
-- [x] Software change alerts
-- [x] Custom metric alerts
+Features that define the RMM experience. Backend mostly exists — focus is on UX polish and E2E validation.
 
-### 5.2 Alert Processing ✅
-- [x] Alert evaluation job (BullMQ)
-- [x] Alert creation/resolution logic
-- [x] Cooldown period handling
-- [x] Alert severity levels
-- [x] Alert suppression
+### P1.1 Editor Pages
 
-### 5.3 Notifications ✅
-- [x] Notification channel CRUD
-- [x] Email notifications
-- [x] Slack integration
-- [x] Microsoft Teams integration
-- [x] Webhook notifications
-- [x] PagerDuty integration
-- [x] Notification channel components (NotificationChannelList.tsx, NotificationChannelForm.tsx)
+These are the primary content-creation UIs that users interact with daily:
 
-### 5.4 Alert UI ✅
-- [x] Active alerts dashboard (AlertsPage.tsx)
-- [x] Alert detail view
-- [x] Acknowledge/resolve actions
-- [x] Alert history
-- [x] Alert list component (AlertList.tsx)
+| Editor | Path | Exists | Wired to API | Polish |
+|--------|------|--------|-------------|--------|
+| Script Editor | `/scripts/[id]` | Monaco editor exists | Partial | Needs parameter UI, version history, test execution |
+| Policy Editor | `/policies/[id]` | Form exists | Partial | Needs rule builder, compliance preview, target scope |
+| Automation Editor | `/automations/[id]` | Form exists | Partial | Needs trigger config, action sequencing, test run |
+| Alert Template Editor | `/settings/alert-templates/[id]` | Form exists | Partial | Needs condition builder, threshold config, escalation |
 
-### 5.5 Escalation ✅
-- [x] Escalation policy configuration
-- [x] Multi-tier escalation support
+### P1.2 Remote Access Polish
 
----
+Core remote features work. Polish needed:
 
-## Phase 6: Remote Access ✅
+- [ ] Terminal session stability under network disruption
+- [ ] Desktop streaming adaptive quality (backend exists, frontend controls?)
+- [ ] File manager breadcrumb navigation and path handling
+- [ ] Session recording playback (schema exists, encoding partial)
+- [ ] Multi-monitor selection UI
 
-### 6.1 WebRTC Infrastructure ✅
-- [x] Signaling endpoints (remote.ts)
-- [x] ICE candidate exchange
-- [x] Session management
-- [x] Session audit logging
+### P1.3 Alert Experience
 
-### 6.2 Agent WebRTC ✅
-- [x] WebRTC data channel handling
-- [x] Terminal PTY support
-- [x] File transfer protocol
+- [ ] Alert noise reduction (correlation rules work? UI shows grouped alerts?)
+- [ ] Alert → investigation workflow (click alert → see device → take action)
+- [ ] Notification delivery verification (Slack, email, webhook actually send?)
+- [ ] Escalation policy testing (multi-tier actually escalates?)
 
-### 6.3 Web Terminal ✅
-- [x] xterm.js integration (@xterm/xterm)
-- [x] Terminal session UI (RemoteTerminal.tsx)
-- [x] Session resize handling
-- [x] Copy/paste support
-- [x] Remote terminal page (RemoteTerminalPage.tsx)
+### P1.4 Patch Management E2E
 
-### 6.4 File Transfer ✅
-- [x] File browser UI (FileManager.tsx)
-- [x] Upload to device
-- [x] Download from device
-- [x] Transfer progress tracking
-- [x] Transfer history
-- [x] Remote files page (RemoteFilesPage.tsx)
+Backend and agent modules exist. Needs validation:
 
-### 6.5 Session History ✅
-- [x] Session history component (SessionHistory.tsx)
-- [x] Session history page (SessionHistoryPage.tsx)
-- [x] Session detail modal
-- [x] Export session data
+- [ ] Windows patch scan → available patches populated in UI
+- [ ] Patch approval workflow (approve → deploy → verify → report)
+- [ ] Scheduled patch deployment via maintenance window
+- [ ] Patch rollback flow
+- [ ] Compliance dashboard with real data
+- [ ] macOS/Linux patch flows
+
+### P1.5 Dashboard & Navigation
+
+- [ ] Dashboard widgets load real data (device count, alert count, patch compliance)
+- [ ] Global search / command palette (Cmd+K)
+- [ ] Sidebar navigation reflects available features
+- [ ] Notification center (in-app notifications)
+- [ ] Dark/light mode toggle
 
 ---
 
-## Phase 7: Automation ✅
+## P2: Competitive (NinjaOne Parity Gaps)
 
-### 7.1 Automation Builder ✅
-- [x] Automation CRUD API
-- [x] Automation form (AutomationForm.tsx)
-- [x] Trigger configuration
-- [x] Condition builder
-- [x] Action sequencing
+Overall NinjaOne parity: ~85%. Key gaps below.
 
-### 7.2 Triggers ✅
-- [x] Schedule triggers (cron)
-- [x] Event triggers (device.enrolled, alert.triggered, etc.)
-- [x] Webhook triggers
-- [x] Manual triggers
+### P2.1 IT Documentation (43% parity)
+- [ ] Knowledge base / wiki system
+- [ ] Credential vault (encrypted, per-org, access-controlled)
+- [ ] Custom documentation templates
+- [ ] Asset documentation linking (device → related docs)
+- [ ] Runbook storage and retrieval
 
-### 7.3 Workflow Engine ✅
-- [x] Automation execution (automations.ts routes)
-- [x] Action runners (script, notify, wait, condition)
-- [x] Error handling
-- [x] Execution logging
-- [x] Automation runs tracking
+### P2.2 Third-Party Patching (82% parity)
+- [ ] Chocolatey package catalog (200+ Windows apps)
+- [ ] Homebrew cask catalog (macOS apps)
+- [ ] Auto-detection of third-party software needing updates
+- [ ] Formal patch ring deployment (test → pilot → production)
 
-### 7.4 Policy Engine ✅
-- [x] Policy CRUD API
-- [x] Desired state rules
-- [x] Compliance checking
-- [x] Compliance dashboard
-- [x] Policy list component (PolicyList.tsx)
-- [x] Policy form component (PolicyForm.tsx)
+### P2.3 Visual Workflow Builder
+- [ ] Drag-drop automation builder (currently form-based only)
+- [ ] Visual flow editor with node connections
+- [ ] Conditional branching visualization
+- [ ] Execution path highlighting
 
-### 7.5 Automation UI ✅
-- [x] Automation list page (AutomationsPage.tsx)
-- [x] Automation list component (AutomationList.tsx)
-- [x] Execution history
-- [x] Policy management page
-- [x] Compliance page (CompliancePage.tsx)
+### P2.4 Backup Enhancements (71% parity)
+- [ ] Bare metal recovery
+- [ ] Microsoft 365 backup (Exchange, OneDrive, SharePoint)
+- [ ] Google Workspace backup (Gmail, Drive)
+- [ ] Self-service restore portal for end users
 
----
+### P2.5 Mobile App (83% parity)
+- [ ] iOS/Android app build verification
+- [ ] Push notification delivery testing
+- [ ] Remote actions from mobile
+- [ ] Alert management from mobile
 
-## Phase 8: Enterprise ✅
-
-### 8.1 SSO Integration ✅
-- [x] SAML 2.0 support (SP metadata, AuthnRequest, Response parsing, provider presets)
-- [x] OIDC support (services/sso.ts with PKCE, discovery, token exchange)
-- [x] Azure AD integration (OIDC + SAML provider presets)
-- [x] Okta integration (OIDC + SAML provider presets)
-- [x] Google Workspace integration (OIDC + SAML provider presets)
-- [x] Auth0 integration (provider preset)
-- [x] OneLogin SAML integration (provider preset)
-- [x] ADFS SAML integration (provider preset)
-- [x] SSO routes (providers CRUD, login flow, callback)
-- [x] SSO UI components (SsoProviderList, SsoProviderForm, SsoProvidersPage)
-
-### 8.2 Advanced RBAC ✅
-- [x] Custom role creation (routes/roles.ts)
-- [x] Resource-level permissions (permission matrix)
-- [x] Permission templates (clone existing roles)
-- [x] Role inheritance (parent roles, inherited permissions)
-- [x] Access reviews (access-reviews.ts routes, periodic certification)
-- [x] Roles UI (RoleManager, RolesPage, roles.astro)
-
-### 8.3 Audit & Compliance ✅
-- [x] Comprehensive audit logging (audit.ts)
-- [x] Audit log search/filter
-- [x] Audit log export (CSV, JSON)
-- [x] Session audit for remote access
-
-### 8.4 API Keys ✅
-- [x] API key generation (routes/apiKeys.ts)
-- [x] Scoped permissions (devices, scripts, alerts, reports, users)
-- [x] Usage tracking (lastUsedAt, usageCount)
-- [x] Key rotation (POST /api-keys/:id/rotate)
-- [x] Rate limiting per key
-- [x] API key middleware (middleware/apiKeyAuth.ts)
-- [x] API Keys UI (ApiKeyList, ApiKeyForm, ApiKeysPage)
-
-### 8.5 Multi-Region ⬜
-- [ ] Regional deployment support
-- [ ] Data residency compliance
-- [ ] Cross-region sync
-- [ ] Regional failover
-
-### 8.6 Reporting ✅
-- [x] Report builder (ReportBuilder.tsx)
-- [x] Report templates
-- [x] Report preview (ReportPreview.tsx)
-- [x] Export formats (PDF, CSV, XLSX)
-- [x] Scheduled reports
-- [x] Reports API (reports.ts)
+### P2.6 Third-Party AV Integration
+- [ ] SentinelOne API integration
+- [ ] Bitdefender API integration
+- [ ] Webroot API integration
+- [ ] Unified security dashboard across AV vendors
 
 ---
 
-## Infrastructure & DevOps
+## P3: Differentiators (Brain Connector)
 
-### Docker Deployment ✅
-- [x] docker-compose.yml (full stack)
-- [x] API Dockerfile (multi-stage)
-- [x] Web Dockerfile (multi-stage)
-- [x] .env.example configuration
-- [x] .dockerignore optimization
+**See `docs/plans/brain-connector-roadmap.md` for detailed plan.**
+**See `docs/plans/phase1-brain-connector-implementation.md` for Phase 1 implementation guide.**
 
-### CI/CD ✅
-- [x] GitHub Actions workflow (.github/workflows/ci.yml)
-- [x] Automated testing (lint, typecheck, test jobs)
-- [x] Build pipeline (API, Web, Agent builds)
-- [x] Release workflow (.github/workflows/release.yml)
-- [x] Release management (semantic versioning, changelogs)
-- [x] Dependabot configuration (.github/dependabot.yml)
+This runs as a parallel track. Summary:
 
-### Monitoring ✅
-- [x] Application metrics (Prometheus - metrics endpoint, prometheus.yml)
-- [x] Grafana dashboards (monitoring/grafana/dashboards/)
-- [x] Alertmanager configuration (monitoring/alertmanager.yml)
-- [x] Monitoring documentation (docs/MONITORING.md)
-- [ ] Log aggregation (future enhancement)
-- [ ] Error tracking - Sentry (future enhancement)
-- [ ] Performance monitoring (future enhancement)
-- [ ] Uptime monitoring (future enhancement)
-
-### Documentation ✅
-- [x] API documentation (OpenAPI 3.0.3 spec at /api/v1/docs)
-- [x] Swagger UI (interactive API explorer)
-- [x] User documentation (docs/USER_GUIDE.md)
-- [x] Admin documentation (docs/ADMIN_GUIDE.md)
-- [x] Agent installation guides (docs/AGENT_INSTALLATION.md)
-- [x] Developer documentation (docs/DEVELOPER_GUIDE.md)
+| Phase | Scope | Depends On |
+|-------|-------|-----------|
+| Brain Phase 1: Foundation | Tool catalog, risk engine, approvals, auth, events | P0 complete |
+| Brain Phase 2: BYOK | Free-tier AI agent loop | Brain Phase 1 |
+| Brain Phase 3: LanternOps RMM | Connection interface for commercial brain | Brain Phase 1 |
+| Brain Phase 4: LanternOps Cloud | Commercial multi-agent orchestration | Brain Phase 3, separate repo |
+| Brain Phase 5: Intelligence | Memory, cross-tenant, playbooks | Brain Phase 4 |
+| Brain Phase 6: Polish | Token optimization, tech routing, client portal | Brain Phase 4 |
 
 ---
 
-## Recently Completed
+## P4: Future
 
-### 2026-01-13 (Session 5 - Final)
-- ✅ **Phase 8 Complete - Project at 100%**
-  - **SAML 2.0**: Full implementation with SP metadata, AuthnRequest, Response parsing
-  - **SAML Presets**: Azure AD, Okta, OneLogin, ADFS, Google Workspace
-  - **Role Inheritance**: Parent roles with inherited permissions
-  - **Access Reviews**: Periodic access certification with reviewers
-  - **User Documentation**: Comprehensive USER_GUIDE.md
-  - **Admin Documentation**: Complete ADMIN_GUIDE.md
-  - **Developer Documentation**: Full DEVELOPER_GUIDE.md
-  - **Monitoring Config**: Prometheus, Grafana, Alertmanager configuration
-  - **TypeScript Fixes**: All compilation errors resolved
+### P4.1 Mobile Device Management (MDM)
+- iOS/iPadOS management via Apple Push Notification Service
+- Android Enterprise enrollment
+- Configuration profiles
+- Remote lock/wipe
+- App deployment
 
-### 2026-01-13 (Session 4)
-- ✅ Phase 8 Enterprise Features (~85%)
-  - **SSO Integration**: OIDC foundation with PKCE, provider presets (Azure AD, Okta, Google, Auth0)
-  - **SSO UI**: SsoProviderList, SsoProviderForm, SsoProvidersPage, sso.astro
-  - **Advanced RBAC**: Custom role creation, permission matrix, role cloning
-  - **Roles UI**: RoleManager, RolesPage, roles.astro, sidebar navigation
-  - **API Keys**: Schema, routes, middleware, scoped permissions, rotation
-  - **API Keys UI**: ApiKeyList, ApiKeyForm, ApiKeysPage, api-keys.astro
-  - **CI/CD**: GitHub Actions workflow (ci.yml, release.yml), Dependabot
-  - **OpenAPI**: Complete OpenAPI 3.0.3 spec, Swagger UI at /api/v1/docs
-  - **Documentation**: Agent installation guide (AGENT_INSTALLATION.md)
+### P4.2 Multi-Region
+- Regional deployment support
+- Data residency compliance
+- Cross-region failover
+- Edge caching for agent communication
 
-### 2026-01-13 (Session 3)
-- ✅ Phase 8 Polish & Deploy
-  - Docker deployment configuration (docker-compose.yml, Dockerfiles)
-  - Fixed all TypeScript errors in API (agents.ts, scripts.ts, devices.ts, automations.ts, reports.ts, remote.ts)
-  - Fixed web app compilation (xterm packages, type errors)
-  - Go agent binary built successfully (10.5MB)
-  - All builds verified passing
+### P4.3 Observability
+- Log aggregation (ELK or Loki)
+- Error tracking (Sentry integration)
+- Distributed tracing (APM)
+- Uptime monitoring
 
-### 2026-01-13 (Session 2)
-- ✅ Phases 2-7 Implementation
-  - Go Agent: collectors, heartbeat, enrollment, executor
-  - Device Management: APIs, UI components, groups
-  - Scripting: library, editor, execution, batch operations
-  - Alerting: rules, notifications, escalation
-  - Remote Access: WebRTC, terminal, file transfer
-  - Automation: builder, policies, compliance
-  - Reporting: builder, preview, exports
-
-### 2026-01-13 (Session 1)
-- ✅ Phase 1 Foundation
-  - Complete authentication system
-  - RBAC permission system
-  - Organization/User management
-  - Settings UI components
+### P4.4 Advanced Security
+- Full EDR capabilities
+- CVE-based vulnerability scanning
+- Hardware warranty tracking
+- License management
 
 ---
 
-## Up Next (Future Enhancements)
+## Execution Strategy
 
-1. **Multi-Region** - Regional deployment and data residency
-2. **Log Aggregation** - Centralized logging with ELK stack or Loki
-3. **Error Tracking** - Sentry integration for error monitoring
-4. **Performance Monitoring** - APM with distributed tracing
-5. **Mobile App** - iOS/Android companion app for alerts
+### Phase A: Stabilize (P0 items)
+1. UI wiring audit — page-by-page verification
+2. Close remaining code review findings
+3. Database migration tooling
+4. Production deployment configuration
+5. Agent installation E2E verification
+
+### Phase B: Polish (P1 items)
+1. Editor pages (script, policy, automation, alert template)
+2. Remote access UX polish
+3. Alert experience end-to-end
+4. Patch management E2E validation
+5. Dashboard real data
+
+### Phase C: Compete (P2 items)
+1. IT documentation system
+2. Third-party patch catalog
+3. Visual workflow builder
+4. Backup enhancements
+5. Mobile app verification
+
+### Phase D: Differentiate (P3 items — parallel)
+Brain connector foundation → BYOK → LanternOps
+(See `docs/plans/brain-connector-roadmap.md`)
 
 ---
 
-## Notes
+## E2E Verification Status
 
-### Codex Delegation Strategy
-Based on testing, delegate to Codex:
-- Mechanical UI components (forms, lists, modals)
-- Type definitions and validators
-- Test boilerplate
-- Data transformation utilities
+"Code exists" ≠ "feature works."
 
-Keep in Claude:
-- Security-critical code (auth, encryption)
-- Architecture decisions
-- Complex business logic
-- Integration work
+| Category | Code Exists | Wired E2E | Verified Working | Confidence |
+|----------|-------------|-----------|------------------|------------|
+| Auth (login, MFA, SSO) | 100% | 100% | High | Tested |
+| RBAC & Permissions | 100% | 95% | High | Tested |
+| Device Monitoring | 100% | 90% | High | Agent verified |
+| Script Execution | 100% | 90% | High | Agent verified |
+| Terminal/Desktop | 100% | 85% | High | Known fixes applied |
+| Alerting | 100% | 75% | Medium | Notification delivery? |
+| Patching | 100% | 60% | Medium | Agent modules built, E2E? |
+| Discovery | 100% | 70% | Medium | Fixed bugs, non-root limits |
+| Security | 100% | 85% | Medium-High | Per tracker, mostly done |
+| Backup | 100% | 50% | Low | Agent module built, UI wiring? |
+| Integrations/PSA | 100% | 40% | Low | Schema+routes exist, UI? |
+| Reports | 100% | 50% | Low | Builder exists, real data? |
+| Analytics | 100% | 40% | Low | Schema exists, charts mock? |
+| SNMP Monitoring | 100% | 60% | Medium | Agent poller built, UI? |
+| AI/Brain | 100% | 80% | Medium-High | Chat works, tools work |
 
-### Performance Targets
-- Support 10,000+ agents
-- Sub-second dashboard load
-- Real-time metrics (<5s delay)
-- 99.9% uptime target
+**Honest overall: ~65-70% verified working E2E** despite 100% code existing.
 
-### Build Artifacts
-- API: `apps/api/dist/` (273KB ESM)
-- Web: `apps/web/dist/` (Astro SSR)
-- Agent: `agent/breeze-agent` (10.5MB binary)
+The gap is almost entirely **UI wiring** and **E2E validation**, not missing functionality.
+
+---
+
+## Related Documents
+
+| Document | Purpose |
+|----------|---------|
+| `docs/CODEBASE_REVIEW_TRACKER.md` | Active code review findings (P0.2) |
+| `docs/SECURITY_IMPLEMENTATION_TRACKER.md` | Security workstream status |
+| `docs/plans/brain-connector-roadmap.md` | Brain connector detailed roadmap (P3) |
+| `docs/plans/phase1-brain-connector-implementation.md` | Brain Phase 1 implementation guide |
+| `docs/plans/brain-connector-deep-dive.md` | Architecture deep dive |
+| `docs/plans/rmm-lanternops-architecture.md` | LanternOps integration design |
+| `docs/archive/` | Superseded planning docs (Phases 1-8, Phase 9, Phase 11, etc.) |

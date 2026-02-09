@@ -6,12 +6,18 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { networkMonitors, networkMonitorResults, devices } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { buildMonitorCommand } from '../routes/monitors';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const MONITOR_QUEUE = 'monitors';
 
@@ -59,16 +65,18 @@ function createMonitorWorker(): Worker<MonitorJobData> {
   return new Worker<MonitorJobData>(
     MONITOR_QUEUE,
     async (job: Job<MonitorJobData>) => {
-      switch (job.data.type) {
-        case 'monitor-scheduler':
-          return await processScheduler();
-        case 'check-monitor':
-          return await processCheckMonitor(job.data);
-        case 'process-check-result':
-          return await processCheckResult(job.data);
-        default:
-          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-      }
+      return runWithSystemDbAccess(async () => {
+        switch (job.data.type) {
+          case 'monitor-scheduler':
+            return await processScheduler();
+          case 'check-monitor':
+            return await processCheckMonitor(job.data);
+          case 'process-check-result':
+            return await processCheckResult(job.data);
+          default:
+            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+        }
+      });
     },
     {
       connection: getRedisConnection(),

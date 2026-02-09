@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { users, sessions, partners, partnerUsers, roles, organizationUsers, organizations } from '../db/schema';
 import {
   hashPassword,
@@ -35,6 +35,12 @@ import { createAuditLogAsync } from '../services/auditService';
 import type { RequestLike } from '../services/auditEvents';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 export const authRoutes = new Hono();
 
@@ -141,97 +147,101 @@ async function isTokenRevokedForUser(userId: string): Promise<boolean> {
 }
 
 async function resolveCurrentUserTokenContext(userId: string): Promise<UserTokenContext> {
-  let roleId: string | null = null;
-  let partnerId: string | null = null;
-  let orgId: string | null = null;
-  let scope: 'system' | 'partner' | 'organization' = 'system';
+  return runWithSystemDbAccess(async () => {
+    let roleId: string | null = null;
+    let partnerId: string | null = null;
+    let orgId: string | null = null;
+    let scope: 'system' | 'partner' | 'organization' = 'system';
 
-  let partnerUsersTable:
-    | { partnerId?: unknown; roleId?: unknown; userId?: unknown }
-    | undefined;
-  try {
-    partnerUsersTable = partnerUsers as unknown as { partnerId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
-  } catch {
-    partnerUsersTable = undefined;
-  }
-
-  if (partnerUsersTable?.partnerId && partnerUsersTable?.roleId && partnerUsersTable?.userId) {
-    const [partnerAssoc] = await db
-      .select({
-        partnerId: partnerUsers.partnerId,
-        roleId: partnerUsers.roleId
-      })
-      .from(partnerUsers)
-      .where(eq(partnerUsers.userId, userId))
-      .limit(1);
-
-    if (partnerAssoc?.partnerId && partnerAssoc?.roleId) {
-      return {
-        roleId: partnerAssoc.roleId,
-        partnerId: partnerAssoc.partnerId,
-        orgId: null,
-        scope: 'partner'
-      };
+    let partnerUsersTable:
+      | { partnerId?: unknown; roleId?: unknown; userId?: unknown }
+      | undefined;
+    try {
+      partnerUsersTable = partnerUsers as unknown as { partnerId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+    } catch {
+      partnerUsersTable = undefined;
     }
-  }
 
-  let organizationUsersTable:
-    | { orgId?: unknown; roleId?: unknown; userId?: unknown }
-    | undefined;
-  try {
-    organizationUsersTable = organizationUsers as unknown as { orgId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
-  } catch {
-    organizationUsersTable = undefined;
-  }
-
-  if (organizationUsersTable?.orgId && organizationUsersTable?.roleId && organizationUsersTable?.userId) {
-    const [orgAssoc] = await db
-      .select({
-        orgId: organizationUsers.orgId,
-        roleId: organizationUsers.roleId
-      })
-      .from(organizationUsers)
-      .where(eq(organizationUsers.userId, userId))
-      .limit(1);
-
-    if (orgAssoc?.orgId && orgAssoc?.roleId) {
-      orgId = orgAssoc.orgId;
-      roleId = orgAssoc.roleId;
-      scope = 'organization';
-
-      const [org] = await db
-        .select({ partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, orgAssoc.orgId))
+    if (partnerUsersTable?.partnerId && partnerUsersTable?.roleId && partnerUsersTable?.userId) {
+      const [partnerAssoc] = await db
+        .select({
+          partnerId: partnerUsers.partnerId,
+          roleId: partnerUsers.roleId
+        })
+        .from(partnerUsers)
+        .where(eq(partnerUsers.userId, userId))
         .limit(1);
 
-      partnerId = org?.partnerId ?? null;
+      if (partnerAssoc?.partnerId && partnerAssoc?.roleId) {
+        return {
+          roleId: partnerAssoc.roleId,
+          partnerId: partnerAssoc.partnerId,
+          orgId: null,
+          scope: 'partner'
+        };
+      }
     }
-  }
 
-  return { roleId, partnerId, orgId, scope };
+    let organizationUsersTable:
+      | { orgId?: unknown; roleId?: unknown; userId?: unknown }
+      | undefined;
+    try {
+      organizationUsersTable = organizationUsers as unknown as { orgId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
+    } catch {
+      organizationUsersTable = undefined;
+    }
+
+    if (organizationUsersTable?.orgId && organizationUsersTable?.roleId && organizationUsersTable?.userId) {
+      const [orgAssoc] = await db
+        .select({
+          orgId: organizationUsers.orgId,
+          roleId: organizationUsers.roleId
+        })
+        .from(organizationUsers)
+        .where(eq(organizationUsers.userId, userId))
+        .limit(1);
+
+      if (orgAssoc?.orgId && orgAssoc?.roleId) {
+        orgId = orgAssoc.orgId;
+        roleId = orgAssoc.roleId;
+        scope = 'organization';
+
+        const [org] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, orgAssoc.orgId))
+          .limit(1);
+
+        partnerId = org?.partnerId ?? null;
+      }
+    }
+
+    return { roleId, partnerId, orgId, scope };
+  });
 }
 
 const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 
 async function resolveUserAuditOrgId(userId: string): Promise<string | null> {
-  try {
-    const orgUsersTable = organizationUsers as unknown as { orgId?: unknown; userId?: unknown } | undefined;
-    if (!orgUsersTable?.orgId || !orgUsersTable?.userId) {
+  return runWithSystemDbAccess(async () => {
+    try {
+      const orgUsersTable = organizationUsers as unknown as { orgId?: unknown; userId?: unknown } | undefined;
+      if (!orgUsersTable?.orgId || !orgUsersTable?.userId) {
+        return null;
+      }
+
+      const [orgAssoc] = await db
+        .select({ orgId: organizationUsers.orgId })
+        .from(organizationUsers)
+        .where(eq(organizationUsers.userId, userId))
+        .limit(1);
+
+      return orgAssoc?.orgId ?? null;
+    } catch (err) {
+      console.error('[audit] Failed to resolve orgId for user:', userId, err);
       return null;
     }
-
-    const [orgAssoc] = await db
-      .select({ orgId: organizationUsers.orgId })
-      .from(organizationUsers)
-      .where(eq(organizationUsers.userId, userId))
-      .limit(1);
-
-    return orgAssoc?.orgId ?? null;
-  } catch (err) {
-    console.error('[audit] Failed to resolve orgId for user:', userId, err);
-    return null;
-  }
+  });
 }
 
 function writeAuthAudit(
@@ -395,155 +405,158 @@ authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), 
   const { companyName, email, password, name, acceptTerms } = c.req.valid('json');
   const ip = getClientIP(c);
 
-  // Rate limit registration - stricter for partner registration
-  const redis = getRedis();
-  if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
-  }
-  const rateCheck = await rateLimiter(redis, `register-partner:${ip}`, 3, 3600);
-  if (!rateCheck.allowed) {
-    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
-  }
+  return runWithSystemDbAccess(async () => {
 
-  // Validate password strength
-  const passwordCheck = isPasswordStrong(password);
-  if (!passwordCheck.valid) {
-    return c.json({ error: passwordCheck.errors[0] }, 400);
-  }
+    // Rate limit registration - stricter for partner registration
+    const redis = getRedis();
+    if (!redis) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    const rateCheck = await rateLimiter(redis, `register-partner:${ip}`, 3, 3600);
+    if (!rateCheck.allowed) {
+      return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+    }
 
-  // Check if user exists
-  const existingUser = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, email.toLowerCase()))
-    .limit(1);
+    // Validate password strength
+    const passwordCheck = isPasswordStrong(password);
+    if (!passwordCheck.valid) {
+      return c.json({ error: passwordCheck.errors[0] }, 400);
+    }
 
-  if (existingUser.length > 0) {
-    return c.json({ error: 'An account with this email already exists' }, 400);
-  }
-
-  // Generate slug from company name
-  const baseSlug = companyName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 50);
-
-  // Check if slug exists and make unique if needed
-  let slug = baseSlug;
-  let suffix = 1;
-  while (true) {
-    const existingPartner = await db
-      .select({ id: partners.id })
-      .from(partners)
-      .where(eq(partners.slug, slug))
+    // Check if user exists
+    const existingUser = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email.toLowerCase()))
       .limit(1);
 
-    if (existingPartner.length === 0) break;
-    slug = `${baseSlug}-${suffix}`;
-    suffix++;
-    if (suffix > 100) {
-      return c.json({ error: 'Unable to generate unique company identifier' }, 500);
-    }
-  }
-
-  // Start transaction - create partner, role, user, and association
-  try {
-    // Create partner
-    const [newPartner] = await db
-      .insert(partners)
-      .values({
-        name: companyName,
-        slug,
-        type: 'msp',
-        plan: 'free'
-      })
-      .returning();
-
-    if (!newPartner) {
-      return c.json({ error: 'Failed to create company' }, 500);
+    if (existingUser.length > 0) {
+      return c.json({ error: 'An account with this email already exists' }, 400);
     }
 
-    // Create Partner Admin role for this partner
-    const [adminRole] = await db
-      .insert(roles)
-      .values({
+    // Generate slug from company name
+    const baseSlug = companyName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 50);
+
+    // Check if slug exists and make unique if needed
+    let slug = baseSlug;
+    let suffix = 1;
+    while (true) {
+      const existingPartner = await db
+        .select({ id: partners.id })
+        .from(partners)
+        .where(eq(partners.slug, slug))
+        .limit(1);
+
+      if (existingPartner.length === 0) break;
+      slug = `${baseSlug}-${suffix}`;
+      suffix++;
+      if (suffix > 100) {
+        return c.json({ error: 'Unable to generate unique company identifier' }, 500);
+      }
+    }
+
+    // Start transaction - create partner, role, user, and association
+    try {
+      // Create partner
+      const [newPartner] = await db
+        .insert(partners)
+        .values({
+          name: companyName,
+          slug,
+          type: 'msp',
+          plan: 'free'
+        })
+        .returning();
+
+      if (!newPartner) {
+        return c.json({ error: 'Failed to create company' }, 500);
+      }
+
+      // Create Partner Admin role for this partner
+      const [adminRole] = await db
+        .insert(roles)
+        .values({
+          partnerId: newPartner.id,
+          scope: 'partner',
+          name: 'Partner Admin',
+          description: 'Full access to partner and all organizations',
+          isSystem: true
+        })
+        .returning();
+
+      if (!adminRole) {
+        // Cleanup partner
+        await db.delete(partners).where(eq(partners.id, newPartner.id));
+        return c.json({ error: 'Failed to create admin role' }, 500);
+      }
+
+      // Create user
+      const passwordHash = await hashPassword(password);
+      const [newUser] = await db
+        .insert(users)
+        .values({
+          email: email.toLowerCase(),
+          name,
+          passwordHash,
+          status: 'active'
+        })
+        .returning();
+
+      if (!newUser) {
+        // Cleanup
+        await db.delete(roles).where(eq(roles.id, adminRole.id));
+        await db.delete(partners).where(eq(partners.id, newPartner.id));
+        return c.json({ error: 'Failed to create user' }, 500);
+      }
+
+      // Associate user with partner
+      await db.insert(partnerUsers).values({
         partnerId: newPartner.id,
-        scope: 'partner',
-        name: 'Partner Admin',
-        description: 'Full access to partner and all organizations',
-        isSystem: true
-      })
-      .returning();
+        userId: newUser.id,
+        roleId: adminRole.id,
+        orgAccess: 'all'
+      });
 
-    if (!adminRole) {
-      // Cleanup partner
-      await db.delete(partners).where(eq(partners.id, newPartner.id));
-      return c.json({ error: 'Failed to create admin role' }, 500);
-    }
-
-    // Create user
-    const passwordHash = await hashPassword(password);
-    const [newUser] = await db
-      .insert(users)
-      .values({
-        email: email.toLowerCase(),
-        name,
-        passwordHash,
-        status: 'active'
-      })
-      .returning();
-
-    if (!newUser) {
-      // Cleanup
-      await db.delete(roles).where(eq(roles.id, adminRole.id));
-      await db.delete(partners).where(eq(partners.id, newPartner.id));
-      return c.json({ error: 'Failed to create user' }, 500);
-    }
-
-    // Associate user with partner
-    await db.insert(partnerUsers).values({
-      partnerId: newPartner.id,
-      userId: newUser.id,
-      roleId: adminRole.id,
-      orgAccess: 'all'
-    });
-
-    // Create tokens with partner scope
-    const tokens = await createTokenPair({
-      sub: newUser.id,
-      email: newUser.email,
-      roleId: adminRole.id,
-      orgId: null,
-      partnerId: newPartner.id,
-      scope: 'partner'
-    });
-
-    // Update last login
-    await db
-      .update(users)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(users.id, newUser.id));
-
-    return c.json({
-      user: {
-        id: newUser.id,
+      // Create tokens with partner scope
+      const tokens = await createTokenPair({
+        sub: newUser.id,
         email: newUser.email,
-        name: newUser.name,
-        mfaEnabled: false
-      },
-      partner: {
-        id: newPartner.id,
-        name: newPartner.name,
-        slug: newPartner.slug
-      },
-      tokens,
-      mfaRequired: false
-    });
-  } catch (err) {
-    console.error('Partner registration error:', err);
-    return c.json({ error: 'Registration failed. Please try again.' }, 500);
-  }
+        roleId: adminRole.id,
+        orgId: null,
+        partnerId: newPartner.id,
+        scope: 'partner'
+      });
+
+      // Update last login
+      await db
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.id, newUser.id));
+
+      return c.json({
+        user: {
+          id: newUser.id,
+          email: newUser.email,
+          name: newUser.name,
+          mfaEnabled: false
+        },
+        partner: {
+          id: newPartner.id,
+          name: newPartner.name,
+          slug: newPartner.slug
+        },
+        tokens,
+        mfaRequired: false
+      });
+    } catch (err) {
+      console.error('Partner registration error:', err);
+      return c.json({ error: 'Registration failed. Please try again.' }, 500);
+    }
+  });
 });
 
 // Login
@@ -634,87 +647,11 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   }
 
   // Look up user's partner/org context
-  let roleId: string | null = null;
-  let partnerId: string | null = null;
-  let orgId: string | null = null;
-  let scope: 'system' | 'partner' | 'organization' = 'system';
-
-  // Check for partner association first
-  let partnerAssoc:
-    | {
-        partnerId: string;
-        roleId: string;
-      }
-    | undefined;
-
-  let partnerUsersTable:
-    | { partnerId?: unknown; roleId?: unknown; userId?: unknown }
-    | undefined;
-  try {
-    partnerUsersTable = partnerUsers as unknown as { partnerId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
-  } catch {
-    partnerUsersTable = undefined;
-  }
-  if (partnerUsersTable?.partnerId && partnerUsersTable?.roleId && partnerUsersTable?.userId) {
-    [partnerAssoc] = await db
-      .select({
-        partnerId: partnerUsers.partnerId,
-        roleId: partnerUsers.roleId
-      })
-      .from(partnerUsers)
-      .where(eq(partnerUsers.userId, user.id))
-      .limit(1);
-  }
-
-  if (partnerAssoc) {
-    partnerId = partnerAssoc.partnerId;
-    roleId = partnerAssoc.roleId;
-    scope = 'partner';
-  } else {
-    // Check for organization association
-    let orgAssoc:
-      | {
-          orgId: string;
-          roleId: string;
-        }
-      | undefined;
-
-    let organizationUsersTable:
-      | { orgId?: unknown; roleId?: unknown; userId?: unknown }
-      | undefined;
-    try {
-      organizationUsersTable = organizationUsers as unknown as { orgId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
-    } catch {
-      organizationUsersTable = undefined;
-    }
-    if (organizationUsersTable?.orgId && organizationUsersTable?.roleId && organizationUsersTable?.userId) {
-      [orgAssoc] = await db
-        .select({
-          orgId: organizationUsers.orgId,
-          roleId: organizationUsers.roleId
-        })
-        .from(organizationUsers)
-        .where(eq(organizationUsers.userId, user.id))
-        .limit(1);
-    }
-
-    if (orgAssoc) {
-      orgId = orgAssoc.orgId;
-      roleId = orgAssoc.roleId;
-      scope = 'organization';
-
-      // Get partnerId from org
-      const [org] = await db
-        .select({ partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, orgAssoc.orgId))
-        .limit(1);
-
-      if (org) {
-        partnerId = org.partnerId;
-      }
-    }
-  }
+  const context = await resolveCurrentUserTokenContext(user.id);
+  const roleId = context.roleId;
+  const partnerId = context.partnerId;
+  const orgId = context.orgId;
+  const scope = context.scope;
 
   // Create tokens with user's context
   const tokens = await createTokenPair({
@@ -949,78 +886,11 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     await redis.del(`mfa:pending:${tempToken}`);
 
     // Look up user's partner/org context
-    let mfaRoleId: string | null = null;
-    let mfaPartnerId: string | null = null;
-    let mfaOrgId: string | null = null;
-    let mfaScope: 'system' | 'partner' | 'organization' = 'system';
-
-    let mfaPartnerAssoc:
-      | {
-          partnerId: string;
-          roleId: string;
-        }
-      | undefined;
-
-    let partnerUsersTable:
-      | { partnerId?: unknown; roleId?: unknown; userId?: unknown }
-      | undefined;
-    try {
-      partnerUsersTable = partnerUsers as unknown as { partnerId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
-    } catch {
-      partnerUsersTable = undefined;
-    }
-    if (partnerUsersTable?.partnerId && partnerUsersTable?.roleId && partnerUsersTable?.userId) {
-      [mfaPartnerAssoc] = await db
-        .select({ partnerId: partnerUsers.partnerId, roleId: partnerUsers.roleId })
-        .from(partnerUsers)
-        .where(eq(partnerUsers.userId, user.id))
-        .limit(1);
-    }
-
-    if (mfaPartnerAssoc) {
-      mfaPartnerId = mfaPartnerAssoc.partnerId;
-      mfaRoleId = mfaPartnerAssoc.roleId;
-      mfaScope = 'partner';
-    } else {
-      let mfaOrgAssoc:
-        | {
-            orgId: string;
-            roleId: string;
-          }
-        | undefined;
-
-      let organizationUsersTable:
-        | { orgId?: unknown; roleId?: unknown; userId?: unknown }
-        | undefined;
-      try {
-        organizationUsersTable = organizationUsers as unknown as { orgId?: unknown; roleId?: unknown; userId?: unknown } | undefined;
-      } catch {
-        organizationUsersTable = undefined;
-      }
-      if (organizationUsersTable?.orgId && organizationUsersTable?.roleId && organizationUsersTable?.userId) {
-        [mfaOrgAssoc] = await db
-          .select({ orgId: organizationUsers.orgId, roleId: organizationUsers.roleId })
-          .from(organizationUsers)
-          .where(eq(organizationUsers.userId, user.id))
-          .limit(1);
-      }
-
-      if (mfaOrgAssoc) {
-        mfaOrgId = mfaOrgAssoc.orgId;
-        mfaRoleId = mfaOrgAssoc.roleId;
-        mfaScope = 'organization';
-
-        const [mfaOrg] = await db
-          .select({ partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(eq(organizations.id, mfaOrgAssoc.orgId))
-          .limit(1);
-
-        if (mfaOrg) {
-          mfaPartnerId = mfaOrg.partnerId;
-        }
-      }
-    }
+    const mfaContext = await resolveCurrentUserTokenContext(user.id);
+    const mfaRoleId = mfaContext.roleId;
+    const mfaPartnerId = mfaContext.partnerId;
+    const mfaOrgId = mfaContext.orgId;
+    const mfaScope = mfaContext.scope;
 
     // Create tokens with user's context
     const tokens = await createTokenPair({

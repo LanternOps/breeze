@@ -6,7 +6,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import {
   alerts,
   alertRules,
@@ -28,6 +28,12 @@ import {
   type AlertSeverity
 } from './notificationSenders';
 import { getEventBus } from './eventBus';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 // Queue name
 const NOTIFICATION_QUEUE = 'alert-notifications';
@@ -69,16 +75,18 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
   return new Worker<NotificationJobData>(
     NOTIFICATION_QUEUE,
     async (job: Job<NotificationJobData>) => {
-      switch (job.data.type) {
-        case 'send':
-          return await processSendNotification(job.data);
+      return runWithSystemDbAccess(async () => {
+        switch (job.data.type) {
+          case 'send':
+            return await processSendNotification(job.data);
 
-        case 'process-alert':
-          return await processAlertNotifications(job.data);
+          case 'process-alert':
+            return await processAlertNotifications(job.data);
 
-        default:
-          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-      }
+          default:
+            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+        }
+      });
     },
     {
       connection: getRedisConnection(),

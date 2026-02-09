@@ -95,7 +95,6 @@ interface DiscoveryMonitoringDashboardProps {
 }
 
 export default function DiscoveryMonitoringDashboard({ onViewAssets }: DiscoveryMonitoringDashboardProps) {
-  const [subTab, setSubTab] = useState<'snmp' | 'network'>('snmp');
   const [assets, setAssets] = useState<MonitoredAsset[]>([]);
   const [monitoringMap, setMonitoringMap] = useState<Map<string, MonitoringStatus>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -116,7 +115,7 @@ export default function DiscoveryMonitoringDashboard({ onViewAssets }: Discovery
       const items = data.data ?? data.assets ?? data ?? [];
 
       const monitored = items
-        .filter((a: Record<string, unknown>) => a.monitoringEnabled === true)
+        .filter((a: Record<string, unknown>) => a.snmpMonitoringEnabled === true)
         .map((a: Record<string, unknown>) => ({
           id: a.id as string,
           hostname: (a.hostname ?? '') as string,
@@ -250,36 +249,6 @@ export default function DiscoveryMonitoringDashboard({ onViewAssets }: Discovery
 
   return (
     <div className="space-y-6">
-      {/* Sub-tab Navigation */}
-      <div className="flex items-center gap-1 rounded-lg border bg-muted/30 p-1">
-        <button
-          type="button"
-          onClick={() => setSubTab('snmp')}
-          className={`rounded-md px-4 py-2 text-sm font-medium transition ${
-            subTab === 'snmp'
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          SNMP Devices
-        </button>
-        <button
-          type="button"
-          onClick={() => setSubTab('network')}
-          className={`rounded-md px-4 py-2 text-sm font-medium transition ${
-            subTab === 'network'
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          Network Monitors
-        </button>
-      </div>
-
-      {subTab === 'network' ? (
-        <NetworkMonitorList />
-      ) : (
-      <>
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-lg border bg-card p-4 shadow-sm">
@@ -355,9 +324,9 @@ export default function DiscoveryMonitoringDashboard({ onViewAssets }: Discovery
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Monitored Devices</h2>
+            <h2 className="text-lg font-semibold">SNMP Device Monitors</h2>
             <p className="text-sm text-muted-foreground">
-              Manage SNMP monitoring for discovered assets.
+              Manage SNMP polling settings for discovered assets.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -496,8 +465,13 @@ export default function DiscoveryMonitoringDashboard({ onViewAssets }: Discovery
           disabling={actionLoading === editingAssetId}
         />
       )}
-      </>
-      )}
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold">Network Monitors</h2>
+        <p className="text-sm text-muted-foreground">
+          Ping/TCP/HTTP/DNS checks linked to assets or standalone targets.
+        </p>
+      </div>
+      <NetworkMonitorList />
     </div>
   );
 }

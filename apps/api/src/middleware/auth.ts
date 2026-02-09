@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { getRedis } from '../services/redis';
-import { db } from '../db';
+import { db, withDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
 import { and, eq, inArray, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -124,20 +124,32 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
       return accessibleOrgIds.includes(orgId);
     };
 
-    c.set('auth', {
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name
+    await withDbAccessContext(
+      {
+        scope: payload.scope,
+        orgId: payload.orgId,
+        accessibleOrgIds
       },
-      token: payload,
-      partnerId: payload.partnerId,
-      orgId: payload.orgId,
-      scope: payload.scope,
-      accessibleOrgIds,
-      orgCondition,
-      canAccessOrg
-    });
+      async () => {
+        c.set('auth', {
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name
+          },
+          token: payload,
+          partnerId: payload.partnerId,
+          orgId: payload.orgId,
+          scope: payload.scope,
+          accessibleOrgIds,
+          orgCondition,
+          canAccessOrg
+        });
+
+        await next();
+      }
+    );
+    return;
   }
 
   await next();
@@ -290,22 +302,31 @@ export async function authMiddleware(c: Context, next: Next) {
     return accessibleOrgIds.includes(orgId);
   };
 
-  c.set('auth', {
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name
+  await withDbAccessContext(
+    {
+      scope: payload.scope,
+      orgId: payload.orgId,
+      accessibleOrgIds
     },
-    token: payload,
-    partnerId: payload.partnerId,
-    orgId: payload.orgId,
-    scope: payload.scope,
-    accessibleOrgIds,
-    orgCondition,
-    canAccessOrg
-  });
+    async () => {
+      c.set('auth', {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name
+        },
+        token: payload,
+        partnerId: payload.partnerId,
+        orgId: payload.orgId,
+        scope: payload.scope,
+        accessibleOrgIds,
+        orgCondition,
+        canAccessOrg
+      });
 
-  await next();
+      await next();
+    }
+  );
 }
 
 export function requireScope(...scopes: Array<'system' | 'partner' | 'organization'>) {

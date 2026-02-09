@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity } from 'lucide-react';
+import { Activity, ArrowDown, ArrowUp } from 'lucide-react';
 import {
+  AreaChart,
+  Area,
   LineChart,
   Line,
   XAxis,
@@ -19,7 +21,16 @@ type MetricPoint = {
   cpu: number;
   ram: number;
   disk: number;
+  bandwidthInBps: number;
+  bandwidthOutBps: number;
 };
+
+function formatBandwidth(bps: number): string {
+  if (bps >= 1_000_000_000) return `${(bps / 1_000_000_000).toFixed(1)} Gbps`;
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} Kbps`;
+  return `${Math.round(bps)} bps`;
+}
 
 type DevicePerformanceGraphsProps = {
   deviceId: string;
@@ -82,7 +93,9 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             timestamp: String(point.timestamp ?? point.time ?? point.ts ?? ''),
             cpu: Number(point.cpu ?? point.cpuPercent ?? 0),
             ram: Number(point.ram ?? point.ramPercent ?? 0),
-            disk: Number(point.disk ?? point.diskPercent ?? 0)
+            disk: Number(point.disk ?? point.diskPercent ?? 0),
+            bandwidthInBps: Number(point.bandwidthInBps ?? 0),
+            bandwidthOutBps: Number(point.bandwidthOutBps ?? 0)
           }))
         : [];
       setData(normalized);
@@ -98,6 +111,22 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
   }, [fetchMetrics]);
 
   const latest = useMemo(() => data[data.length - 1], [data]);
+  const hasBandwidth = useMemo(() => data.some(d => d.bandwidthInBps > 0 || d.bandwidthOutBps > 0), [data]);
+
+  const bandwidthDomain = useMemo(() => {
+    if (!hasBandwidth) return [0, 1000];
+    const maxVal = Math.max(
+      ...data.map(d => Math.max(d.bandwidthInBps, d.bandwidthOutBps))
+    );
+    return [0, Math.ceil(maxVal * 1.1)];
+  }, [data, hasBandwidth]);
+
+  function formatBandwidthTick(value: number): string {
+    if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(0)}G`;
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(0)}M`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`;
+    return `${value}`;
+  }
 
   if (loading) {
     return (
@@ -133,7 +162,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
           <div>
             <h3 className="text-lg font-semibold">Performance Graphs</h3>
             {!compact && (
-              <p className="text-sm text-muted-foreground">CPU, RAM, and disk usage over time</p>
+              <p className="text-sm text-muted-foreground">CPU, RAM, disk usage and network bandwidth over time</p>
             )}
           </div>
         </div>
@@ -205,6 +234,91 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             <div className="mt-1 text-2xl font-bold">{Math.round(latest.disk)}%</div>
           </div>
         </div>
+      )}
+
+      {/* Network Bandwidth Chart */}
+      {hasBandwidth && (
+        <>
+          <div className={compact ? 'mt-4' : 'mt-8'}>
+            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Network Bandwidth</h4>
+          </div>
+          <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data}>
+                <defs>
+                  <linearGradient id="bandwidthInGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="bandwidthOutGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f97316" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis
+                  dataKey="timestamp"
+                  tickFormatter={(value) => formatTimestamp(value, timeRange)}
+                  tick={{ fontSize: 12 }}
+                  className="text-muted-foreground"
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  domain={bandwidthDomain}
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={formatBandwidthTick}
+                  className="text-muted-foreground"
+                  width={50}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--card))',
+                    border: '1px solid hsl(var(--border))',
+                    borderRadius: '0.5rem'
+                  }}
+                  labelFormatter={(value) => new Date(value).toLocaleString()}
+                  formatter={(value: number, name: string) => [formatBandwidth(value), name]}
+                />
+                {!compact && <Legend />}
+                <Area
+                  type="monotone"
+                  dataKey="bandwidthInBps"
+                  stroke="#06b6d4"
+                  strokeWidth={2}
+                  fill="url(#bandwidthInGrad)"
+                  name="Download"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="bandwidthOutBps"
+                  stroke="#f97316"
+                  strokeWidth={2}
+                  fill="url(#bandwidthOutGrad)"
+                  name="Upload"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {!compact && latest && (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-md border p-4">
+                <div className="flex items-center gap-2">
+                  <ArrowDown className="h-3.5 w-3.5 text-cyan-500" />
+                  <span className="text-sm font-medium">Download (latest)</span>
+                </div>
+                <div className="mt-1 text-2xl font-bold">{formatBandwidth(latest.bandwidthInBps)}</div>
+              </div>
+              <div className="rounded-md border p-4">
+                <div className="flex items-center gap-2">
+                  <ArrowUp className="h-3.5 w-3.5 text-orange-500" />
+                  <span className="text-sm font-medium">Upload (latest)</span>
+                </div>
+                <div className="mt-1 text-2xl font-bold">{formatBandwidth(latest.bandwidthOutBps)}</div>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

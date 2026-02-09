@@ -107,6 +107,8 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       orgId: 'org-123',
       partnerId: null,
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: () => true,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -127,17 +129,29 @@ import { discoverOIDCConfig } from '../services/sso';
 describe('sso routes', () => {
   let app: Hono;
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  const setAuthContext = (overrides: Partial<{
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    partnerId: string | null;
+    accessibleOrgIds: string[] | null;
+    canAccessOrg: (orgId: string) => boolean;
+  }> = {}) => {
     vi.mocked(authMiddleware).mockImplementation((c, next) => {
       c.set('auth', {
-        scope: 'organization',
-        orgId: 'org-123',
-        partnerId: null,
+        scope: overrides.scope ?? 'organization',
+        orgId: 'orgId' in overrides ? overrides.orgId : 'org-123',
+        partnerId: 'partnerId' in overrides ? overrides.partnerId : null,
+        accessibleOrgIds: 'accessibleOrgIds' in overrides ? overrides.accessibleOrgIds : ['org-123'],
+        canAccessOrg: overrides.canAccessOrg ?? (() => true),
         user: { id: 'user-123', email: 'test@example.com' }
       });
       return next();
     });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuthContext();
     app = new Hono();
     app.route('/sso', ssoRoutes);
   });
@@ -171,15 +185,7 @@ describe('sso routes', () => {
   });
 
   it('requires an orgId when listing providers', async () => {
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
-      c.set('auth', {
-        scope: 'organization',
-        orgId: null,
-        partnerId: null,
-        user: { id: 'user-123', email: 'test@example.com' }
-      });
-      return next();
-    });
+    setAuthContext({ orgId: null, accessibleOrgIds: [] });
 
     const res = await app.request('/sso/providers', {
       method: 'GET',
@@ -189,12 +195,30 @@ describe('sso routes', () => {
     expect(res.status).toBe(400);
   });
 
+  it('denies partner access to providers outside accessible organizations', async () => {
+    setAuthContext({
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'partner-123',
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId) => orgId === 'org-123'
+    });
+
+    const res = await app.request('/sso/providers?orgId=org-999', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+  });
+
   it('returns provider details without secrets', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
             id: 'provider-1',
+            orgId: 'org-123',
             name: 'Okta',
             type: 'oidc',
             issuer: 'https://issuer.example.com',
@@ -213,6 +237,38 @@ describe('sso routes', () => {
     const body = await res.json();
     expect(body.data.clientSecret).toBeUndefined();
     expect(body.data.hasClientSecret).toBe(true);
+  });
+
+  it('denies provider detail access when provider org is outside scope', async () => {
+    setAuthContext({
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'partner-123',
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId) => orgId === 'org-123'
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'provider-1',
+            orgId: 'org-999',
+            name: 'Other Provider',
+            type: 'oidc',
+            issuer: 'https://issuer.example.com',
+            clientSecret: 'secret'
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/sso/providers/provider-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
   });
 
   it('creates an OIDC provider with preset and discovery metadata', async () => {
@@ -279,6 +335,14 @@ describe('sso routes', () => {
   });
 
   it('updates a provider', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'provider-1', orgId: 'org-123' }])
+        })
+      })
+    } as any);
+
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -299,6 +363,14 @@ describe('sso routes', () => {
   });
 
   it('deletes a provider and related records', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'provider-1', orgId: 'org-123' }])
+        })
+      })
+    } as any);
+
     vi.mocked(db.delete)
       .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
       .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)

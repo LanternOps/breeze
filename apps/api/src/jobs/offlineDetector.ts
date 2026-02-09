@@ -6,13 +6,19 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
 import { eq, and, lt, inArray, or } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { createAlert } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 // Queue name
 const OFFLINE_QUEUE = 'offline-detection';
@@ -57,16 +63,18 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
   return new Worker<OfflineJobData>(
     OFFLINE_QUEUE,
     async (job: Job<OfflineJobData>) => {
-      switch (job.data.type) {
-        case 'detect-offline':
-          return await processDetectOffline(job.data);
+      return runWithSystemDbAccess(async () => {
+        switch (job.data.type) {
+          case 'detect-offline':
+            return await processDetectOffline(job.data);
 
-        case 'mark-offline':
-          return await processMarkOffline(job.data);
+          case 'mark-offline':
+            return await processMarkOffline(job.data);
 
-        default:
-          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-      }
+          default:
+            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+        }
+      });
     },
     {
       connection: getRedisConnection(),

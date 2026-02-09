@@ -19,7 +19,8 @@
     "clean": "rm -rf dist",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:sql": "tsx src/db/migrations/run.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {

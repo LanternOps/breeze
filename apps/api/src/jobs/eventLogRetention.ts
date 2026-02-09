@@ -6,10 +6,16 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { deviceEventLogs } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const QUEUE_NAME = 'event-log-retention';
 const DEFAULT_RETENTION_DAYS = 30;
@@ -33,18 +39,20 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
     async (job: Job<RetentionJobData>) => {
-      const startTime = Date.now();
-      const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
-      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      return runWithSystemDbAccess(async () => {
+        const startTime = Date.now();
+        const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
-      const result = await db
-        .delete(deviceEventLogs)
-        .where(lt(deviceEventLogs.timestamp, cutoff));
+        const result = await db
+          .delete(deviceEventLogs)
+          .where(lt(deviceEventLogs.timestamp, cutoff));
 
-      const durationMs = Date.now() - startTime;
-      console.log(`[EventLogRetention] Pruned events older than ${retentionDays} days in ${durationMs}ms`);
+        const durationMs = Date.now() - startTime;
+        console.log(`[EventLogRetention] Pruned events older than ${retentionDays} days in ${durationMs}ms`);
 
-      return { durationMs };
+        return { durationMs };
+      });
     },
     {
       connection: getRedisConnection(),

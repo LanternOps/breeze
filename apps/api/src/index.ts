@@ -75,9 +75,15 @@ import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { isRedisAvailable } from './services/redis';
 import { writeAuditEvent } from './services/auditEvents';
-import { db } from './db';
+import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const app = new Hono();
 
@@ -548,89 +554,95 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
   const webhookWorker = getWebhookWorker();
 
   webhookWorker.setDeliveryCallback(async (result) => {
-    const deliveryStatus = result.success ? 'delivered' : 'failed';
-    const deliveredAt = result.success ? new Date(result.deliveredAt ?? new Date().toISOString()) : null;
-    const responseTimeMs = typeof result.responseTimeMs === 'number'
-      ? Math.max(0, Math.round(result.responseTimeMs))
-      : null;
+    await runWithSystemDbAccess(async () => {
+      const deliveryStatus = result.success ? 'delivered' : 'failed';
+      const deliveredAt = result.success ? new Date(result.deliveredAt ?? new Date().toISOString()) : null;
+      const responseTimeMs = typeof result.responseTimeMs === 'number'
+        ? Math.max(0, Math.round(result.responseTimeMs))
+        : null;
 
-    await db
-      .update(webhookDeliveries)
-      .set({
-        status: deliveryStatus,
-        attempts: result.attempts,
-        responseStatus: result.responseStatus ?? null,
-        responseBody: result.responseBody ?? null,
-        responseTimeMs,
-        errorMessage: result.errorMessage ?? null,
-        deliveredAt
-      })
-      .where(eq(webhookDeliveries.id, result.deliveryId));
+      await db
+        .update(webhookDeliveries)
+        .set({
+          status: deliveryStatus,
+          attempts: result.attempts,
+          responseStatus: result.responseStatus ?? null,
+          responseBody: result.responseBody ?? null,
+          responseTimeMs,
+          errorMessage: result.errorMessage ?? null,
+          deliveredAt
+        })
+        .where(eq(webhookDeliveries.id, result.deliveryId));
 
-    const aggregateUpdate = result.success
-      ? {
-        successCount: sql`${webhooksTable.successCount} + 1`,
-        lastSuccessAt: new Date(),
-        lastDeliveryAt: new Date()
-      }
-      : {
-        failureCount: sql`${webhooksTable.failureCount} + 1`,
-        lastDeliveryAt: new Date()
-      };
+      const aggregateUpdate = result.success
+        ? {
+          successCount: sql`${webhooksTable.successCount} + 1`,
+          lastSuccessAt: new Date(),
+          lastDeliveryAt: new Date()
+        }
+        : {
+          failureCount: sql`${webhooksTable.failureCount} + 1`,
+          lastDeliveryAt: new Date()
+        };
 
-    await db
-      .update(webhooksTable)
-      .set(aggregateUpdate)
-      .where(eq(webhooksTable.id, result.webhookId));
+      await db
+        .update(webhooksTable)
+        .set(aggregateUpdate)
+        .where(eq(webhooksTable.id, result.webhookId));
+    });
   });
 
   await initializeWebhookDelivery(
     async (orgId, eventType) => {
-      const rows = await db
-        .select()
-        .from(webhooksTable)
-        .where(
-          and(
-            eq(webhooksTable.orgId, orgId),
-            eq(webhooksTable.status, 'active')
-          )
-        );
+      return runWithSystemDbAccess(async () => {
+        const rows = await db
+          .select()
+          .from(webhooksTable)
+          .where(
+            and(
+              eq(webhooksTable.orgId, orgId),
+              eq(webhooksTable.status, 'active')
+            )
+          );
 
-      return rows
-        .filter((webhook) => {
-          const events = webhook.events ?? [];
-          return events.includes(eventType) || events.includes('*');
-        })
-        .map((webhook) => ({
-          id: webhook.id,
-          orgId: webhook.orgId,
-          name: webhook.name,
-          url: webhook.url,
-          secret: webhook.secret ?? undefined,
-          events: webhook.events ?? [],
-          headers: headersToRecord(webhook.headers),
-          retryPolicy: (webhook.retryPolicy ?? undefined) as {
-            maxRetries: number;
-            backoffMultiplier: number;
-            initialDelayMs: number;
-            maxDelayMs: number;
-          } | undefined
-        }));
+        return rows
+          .filter((webhook) => {
+            const events = webhook.events ?? [];
+            return events.includes(eventType) || events.includes('*');
+          })
+          .map((webhook) => ({
+            id: webhook.id,
+            orgId: webhook.orgId,
+            name: webhook.name,
+            url: webhook.url,
+            secret: webhook.secret ?? undefined,
+            events: webhook.events ?? [],
+            headers: headersToRecord(webhook.headers),
+            retryPolicy: (webhook.retryPolicy ?? undefined) as {
+              maxRetries: number;
+              backoffMultiplier: number;
+              initialDelayMs: number;
+              maxDelayMs: number;
+            } | undefined
+          }));
+      });
     },
     async (webhook, event) => {
-      const [delivery] = await db
-        .insert(webhookDeliveries)
-        .values({
-          webhookId: webhook.id,
-          eventType: event.type,
-          eventId: event.id,
-          payload: event.payload,
-          status: 'pending',
-          attempts: 0
-        })
-        .returning({ id: webhookDeliveries.id });
+      return runWithSystemDbAccess(async () => {
+        const [delivery] = await db
+          .insert(webhookDeliveries)
+          .values({
+            webhookId: webhook.id,
+            eventType: event.type,
+            eventId: event.id,
+            payload: event.payload,
+            status: 'pending',
+            attempts: 0
+          })
+          .returning({ id: webhookDeliveries.id });
 
-      return delivery?.id ?? null;
+        return delivery?.id ?? null;
+      });
     }
   );
 }

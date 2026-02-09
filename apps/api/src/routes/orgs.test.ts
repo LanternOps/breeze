@@ -67,17 +67,29 @@ describe('org routes', () => {
     partnerId: string | null;
     orgId: string | null;
     scope: 'system' | 'partner' | 'organization';
+    accessibleOrgIds: string[] | null;
+    canAccessOrg: (orgId: string) => boolean;
   }> = {}) => {
+    const scope = overrides.scope ?? 'system';
+    const accessibleOrgIds = 'accessibleOrgIds' in overrides
+      ? overrides.accessibleOrgIds
+      : scope === 'partner'
+        ? ['org-1']
+        : null;
+
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         user: { id: 'user-123', email: 'test@example.com', name: 'Test User', ...overrides.user },
         token: overrides.token ?? {},
         partnerId: 'partnerId' in overrides ? overrides.partnerId : 'partner-123',
         orgId: 'orgId' in overrides ? overrides.orgId : 'org-123',
-        scope: overrides.scope ?? 'system',
-        accessibleOrgIds: null,
+        scope,
+        accessibleOrgIds,
         orgCondition: () => undefined,
-        canAccessOrg: () => true
+        canAccessOrg: overrides.canAccessOrg ?? ((orgId: string) => {
+          if (!Array.isArray(accessibleOrgIds)) return true;
+          return accessibleOrgIds.includes(orgId);
+        })
       } as any);
       return next();
     });
@@ -388,6 +400,20 @@ describe('org routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    it('should block partner access when org is outside selected scope', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['org-1'],
+        canAccessOrg: (orgId) => orgId === 'org-1'
+      });
+
+      const res = await app.request('/orgs/organizations/org-999');
+
+      expect(res.status).toBe(404);
+      expect(db.select).not.toHaveBeenCalled();
+    });
   });
 
   describe('PATCH /orgs/organizations/:id', () => {
@@ -551,15 +577,12 @@ describe('org routes', () => {
     });
 
     it('should allow partner scope access for matching org', async () => {
-      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111']
+      });
       vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'org-1' }])
-            })
-          })
-        } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ count: 1 }])
@@ -590,6 +613,22 @@ describe('org routes', () => {
       const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
 
       expect(res.status).toBe(403);
+    });
+
+    it('should return empty list for partner with no accessible orgs', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: []
+      });
+
+      const res = await app.request('/orgs/sites');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

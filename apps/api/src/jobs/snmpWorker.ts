@@ -6,11 +6,17 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const SNMP_QUEUE = 'snmp';
 
@@ -56,16 +62,18 @@ function createSnmpWorker(): Worker<SnmpJobData> {
   return new Worker<SnmpJobData>(
     SNMP_QUEUE,
     async (job: Job<SnmpJobData>) => {
-      switch (job.data.type) {
-        case 'poll-scheduler':
-          return await processScheduler();
-        case 'poll-device':
-          return await processPollDevice(job.data);
-        case 'process-poll-results':
-          return await processPollResults(job.data);
-        default:
-          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-      }
+      return runWithSystemDbAccess(async () => {
+        switch (job.data.type) {
+          case 'poll-scheduler':
+            return await processScheduler();
+          case 'poll-device':
+            return await processPollDevice(job.data);
+          case 'process-poll-results':
+            return await processPollResults(job.data);
+          default:
+            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+        }
+      });
     },
     {
       connection: getRedisConnection(),
