@@ -272,7 +272,18 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 6: Verify identity — SID on Windows, UID on Unix
+	// Step 6: Verify protocol version
+	if authReq.ProtocolVersion != ipc.ProtocolVersion {
+		log.Warn("protocol version mismatch", "got", authReq.ProtocolVersion, "want", ipc.ProtocolVersion)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted: false,
+			Reason:   fmt.Sprintf("unsupported protocol version %d (expected %d)", authReq.ProtocolVersion, ipc.ProtocolVersion),
+		})
+		conn.Close()
+		return
+	}
+
+	// Step 7: Verify identity — SID on Windows, UID on Unix
 	if runtime.GOOS == "windows" {
 		if authReq.SID == "" {
 			log.Warn("auth missing SID on Windows", "pid", creds.PID)
@@ -318,6 +329,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
+
+	// Step 9: Reject duplicate session IDs
+	b.mu.RLock()
+	if _, exists := b.sessions[authReq.SessionID]; exists {
+		b.mu.RUnlock()
+		log.Warn("duplicate session ID", "sessionId", authReq.SessionID, "identity", identityKey)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted: false,
+			Reason:   "session ID already in use",
+		})
+		conn.Close()
+		return
+	}
+	b.mu.RUnlock()
 
 	// Generate session key
 	sessionKey, err := ipc.GenerateSessionKey()
@@ -388,10 +413,13 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		case ipc.TypeDisconnect:
 			log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
 			s.Close()
-		default:
+		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
 			if b.onMessage != nil {
 				b.onMessage(s, env)
 			}
+		default:
+			log.Warn("unknown message type from helper, ignoring",
+				"type", env.Type, "identity", s.IdentityKey, "sessionId", s.SessionID)
 		}
 	})
 
