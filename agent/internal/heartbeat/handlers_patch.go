@@ -23,10 +23,17 @@ func init() {
 	handlerRegistry[tools.CmdBackupStop] = handleBackupStop
 }
 
-func handlePatchScan(h *Heartbeat, _ Command) tools.CommandResult {
+func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	source := tools.GetPayloadString(cmd.Payload, "source", "")
+
+	if source != "" {
+		log.Info("patch scan requested", "source", source)
+	}
+
 	pendingItems, installedItems, err := h.collectPatchInventory()
 	if err != nil && len(pendingItems) == 0 && len(installedItems) == 0 {
+		log.Error("patch scan failed", "source", source, "error", err)
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
@@ -34,6 +41,21 @@ func handlePatchScan(h *Heartbeat, _ Command) tools.CommandResult {
 		"patches":   pendingItems,
 		"installed": installedItems,
 	}, fmt.Sprintf("patches (%d pending, %d installed)", len(pendingItems), len(installedItems)))
+
+	if err != nil {
+		log.Warn("patch scan completed with warning",
+			"source", source,
+			"pendingCount", len(pendingItems),
+			"installedCount", len(installedItems),
+			"error", err,
+		)
+	} else {
+		log.Info("patch scan completed",
+			"source", source,
+			"pendingCount", len(pendingItems),
+			"installedCount", len(installedItems),
+		)
+	}
 
 	return tools.NewSuccessResult(map[string]any{
 		"pendingCount":   len(pendingItems),

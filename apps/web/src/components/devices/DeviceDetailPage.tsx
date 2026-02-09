@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, CheckCircle, XCircle } from 'lucide-react';
 import DeviceDetails from './DeviceDetails';
 import DeviceSettingsModal from './DeviceSettingsModal';
-import ScriptPickerModal, { type Script } from './ScriptPickerModal';
+import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice } from '../../services/deviceActions';
@@ -157,12 +157,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     }
   };
 
-  const handleScriptSelect = async (script: Script) => {
+  const handleScriptSelect = async (script: Script, runAs: ScriptRunAsSelection) => {
     if (actionInProgress || !device) return;
 
     try {
       setActionInProgress(true);
-      await executeScript(script.id, [device.id]);
+      await executeScript(script.id, [device.id], undefined, runAs);
       showToast('success', `Script "${script.name}" queued for ${device.hostname}`);
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : 'Failed to queue script');

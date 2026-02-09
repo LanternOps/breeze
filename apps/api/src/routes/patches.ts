@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, eq, sql, inArray, desc } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { queueCommand } from '../services/commandQueue';
+import { queueCommand, queueCommandForExecution } from '../services/commandQueue';
 import { writeRouteAudit, type AuthContext } from '../services/auditEvents';
 import {
   patches,
@@ -310,13 +310,25 @@ patchRoutes.post(
     const queueResults = await Promise.all(
       accessibleDevices.map(async (device) => {
         try {
-          const command = await queueCommand(
+          const queued = await queueCommandForExecution(
             device.id,
             'patch_scan',
             { source: data.source ?? null },
-            auth.user.id
+            {
+              userId: auth.user.id,
+              preferHeartbeat: false
+            }
           );
-          return { ok: true as const, commandId: command.id };
+
+          if (!queued.command) {
+            return { ok: false as const, deviceId: device.id };
+          }
+
+          return {
+            ok: true as const,
+            commandId: queued.command.id,
+            commandStatus: queued.command.status
+          };
         } catch {
           return { ok: false as const, deviceId: device.id };
         }
@@ -325,6 +337,12 @@ patchRoutes.post(
 
     const queuedCommandIds = queueResults
       .filter((r): r is { ok: true; commandId: string } => r.ok)
+      .map((r) => r.commandId);
+    const dispatchedCommandIds = queueResults
+      .filter((r): r is { ok: true; commandId: string; commandStatus: string } => r.ok && r.commandStatus === 'sent')
+      .map((r) => r.commandId);
+    const pendingCommandIds = queueResults
+      .filter((r): r is { ok: true; commandId: string; commandStatus: string } => r.ok && r.commandStatus !== 'sent')
       .map((r) => r.commandId);
     const failedDeviceIDs = queueResults
       .filter((r): r is { ok: false; deviceId: string } => !r.ok)
@@ -340,6 +358,8 @@ patchRoutes.post(
           source: data.source ?? null,
           deviceCount: accessibleDevices.length,
           queuedCommandIds,
+          dispatchedCommandIds,
+          pendingCommandIds,
           failedDeviceIds: failedDeviceIDs
         }
       }
@@ -350,6 +370,8 @@ patchRoutes.post(
       jobId: `scan-${Date.now()}`,
       deviceCount: accessibleDevices.length,
       queuedCommandIds,
+      dispatchedCommandIds,
+      pendingCommandIds,
       failedDeviceIds: failedDeviceIDs,
       skipped: {
         missingDeviceIds: missingDeviceIDs,

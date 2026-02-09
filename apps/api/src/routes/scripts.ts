@@ -103,7 +103,8 @@ const updateScriptSchema = z.object({
 const executeScriptSchema = z.object({
   deviceIds: z.array(z.string().uuid()).min(1),
   parameters: z.record(z.any()).optional(),
-  triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional()
+  triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional(),
+  runAs: z.enum(['system', 'user']).optional()
 });
 
 const listExecutionsSchema = z.object({
@@ -608,6 +609,7 @@ scriptRoutes.post(
 
     const triggerType = data.triggerType ?? 'manual';
     const parameters = data.parameters ?? {};
+    const runAs = data.runAs ?? script.runAs;
 
     // Create batch if multiple devices
     let batchId: string | null = null;
@@ -664,7 +666,7 @@ scriptRoutes.post(
             content: script.content,
             parameters,
             timeoutSeconds: script.timeoutSeconds,
-            runAs: script.runAs
+            runAs
           },
           status: 'pending',
           createdBy: auth.user.id
@@ -719,7 +721,8 @@ scriptRoutes.post(
       details: {
         batchId,
         devicesTargeted: validDevices.length,
-        triggerType
+        triggerType,
+        runAs
       }
     });
 

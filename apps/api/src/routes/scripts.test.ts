@@ -433,4 +433,17 @@ describe('scripts routes', () => {
 
     expect(res.status).toBe(400);
   });
+
+  it('should reject unsupported runAs override on execute', async () => {
+    const res = await app.request('/scripts/script-1/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        deviceIds: ['11111111-1111-1111-1111-111111111111'],
+        runAs: 'elevated'
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
 });

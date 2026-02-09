@@ -12,6 +12,7 @@ export type Script = {
   language: ScriptLanguage;
   category: string;
   osTypes: OSType[];
+  runAs?: 'system' | 'user' | 'elevated';
   lastRun?: string;
   status?: ScriptStatus;
   createdAt: string;

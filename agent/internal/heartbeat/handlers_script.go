@@ -29,6 +29,7 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 		Timeout:    tools.GetPayloadInt(cmd.Payload, "timeoutSeconds", 300),
 		RunAs:      tools.GetPayloadString(cmd.Payload, "runAs", ""),
 	}
+	script.RunAs = strings.TrimSpace(script.RunAs)
 	if params, ok := cmd.Payload["parameters"].(map[string]any); ok {
 		script.Parameters = make(map[string]string, len(params))
 		for k, v := range params {
@@ -47,10 +48,12 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// Phase 3: If runAs is specified and a user helper is connected, forward via IPC
 	if script.RunAs != "" && h.sessionBroker != nil {
-		if session := h.sessionBroker.SessionForUser(script.RunAs); session != nil {
+		if session := resolveRunAsSession(h.sessionBroker, script.RunAs); session != nil {
 			return h.executeViaUserHelper(session, cmd, script.Timeout)
 		}
-		log.Debug("no user helper for runAs user, falling back to sudo", "runAs", script.RunAs)
+		if !strings.EqualFold(script.RunAs, "system") && !strings.EqualFold(script.RunAs, "elevated") {
+			log.Debug("no user helper for runAs value, falling back to local executor", "runAs", script.RunAs)
+		}
 	}
 
 	scriptResult, execErr := h.executor.Execute(script)
@@ -73,6 +76,32 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 		Error:      scriptResult.Error,
 		DurationMs: time.Since(start).Milliseconds(),
 	}
+}
+
+func resolveRunAsSession(broker *sessionbroker.Broker, runAs string) *sessionbroker.Session {
+	target := strings.TrimSpace(runAs)
+	if target == "" || strings.EqualFold(target, "system") || strings.EqualFold(target, "elevated") {
+		return nil
+	}
+
+	// runAs=user means "current interactive user". Use the most recently active
+	// connected helper session.
+	if strings.EqualFold(target, "user") {
+		sessions := broker.AllSessions()
+		if len(sessions) == 0 {
+			return nil
+		}
+		selected := sessions[0]
+		for i := 1; i < len(sessions); i++ {
+			if sessions[i].LastSeen.After(selected.LastSeen) {
+				selected = sessions[i]
+			}
+		}
+		return broker.SessionForUser(selected.Username)
+	}
+
+	// Legacy path: explicit usernames still resolve directly.
+	return broker.SessionForUser(target)
 }
 
 func handleScriptCancel(h *Heartbeat, cmd Command) tools.CommandResult {

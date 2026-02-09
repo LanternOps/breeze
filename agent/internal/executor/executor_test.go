@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"os/exec"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -127,5 +129,54 @@ func TestBuildEnvironmentIncludesBreezeMetadataAndParameters(t *testing.T) {
 	}
 	if !hasEnvEntry(env, "BREEZE_PARAM_SITE", "hq") {
 		t.Fatal("missing parameter env for site")
+	}
+}
+
+func TestConfigureRunAsSystemNoOp(t *testing.T) {
+	e := newTestExecutor()
+	cmd := exec.Command("echo", "hello")
+	originalPath := cmd.Path
+	originalArgs := append([]string(nil), cmd.Args...)
+
+	if err := e.configureRunAs(cmd, "system"); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cmd.Path != originalPath {
+		t.Fatalf("path changed unexpectedly: got %q want %q", cmd.Path, originalPath)
+	}
+	if !reflect.DeepEqual(cmd.Args, originalArgs) {
+		t.Fatalf("args changed unexpectedly: got %#v want %#v", cmd.Args, originalArgs)
+	}
+}
+
+func TestConfigureRunAsUserRequiresHelperSession(t *testing.T) {
+	e := newTestExecutor()
+	cmd := exec.Command("echo", "hello")
+
+	err := e.configureRunAs(cmd, "user")
+	if err == nil {
+		t.Fatal("expected runAs=user to require helper session")
+	}
+	if !strings.Contains(err.Error(), "requires a connected user helper session") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigureRunAsRootUsesSudoOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sudo runAs path applies to Unix only")
+	}
+
+	e := newTestExecutor()
+	cmd := exec.Command("bash", "-lc", "echo hello")
+
+	if err := e.configureRunAs(cmd, "root"); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cmd.Path != "/usr/bin/sudo" {
+		t.Fatalf("expected sudo path, got %q", cmd.Path)
+	}
+	if len(cmd.Args) < 3 || cmd.Args[0] != "sudo" || cmd.Args[1] != "-n" || cmd.Args[2] != "bash" {
+		t.Fatalf("unexpected sudo args: %#v", cmd.Args)
 	}
 }

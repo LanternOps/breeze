@@ -3,7 +3,7 @@ import { List, Grid, Plus, CheckCircle, XCircle, Copy, Loader2, X } from 'lucide
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceStatus, type OSType } from './DeviceList';
 import DeviceCard from './DeviceCard';
-import ScriptPickerModal, { type Script } from './ScriptPickerModal';
+import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
@@ -249,13 +249,13 @@ export default function DevicesPage() {
     setScriptTargetDevices([]);
   };
 
-  const handleScriptSelect = async (script: Script) => {
+  const handleScriptSelect = async (script: Script, runAs: ScriptRunAsSelection) => {
     if (actionInProgress) return;
 
     try {
       setActionInProgress(true);
       const deviceIds = scriptTargetDevices.map(d => d.id);
-      const result = await executeScript(script.id, deviceIds);
+      const result = await executeScript(script.id, deviceIds, undefined, runAs);
 
       if (scriptTargetDevices.length === 1) {
         showToast('success', `Script "${script.name}" queued for ${scriptTargetDevices[0].hostname}`);

@@ -13,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/privilege"
 )
 
 var log = logging.L("executor")
@@ -41,13 +42,13 @@ type ScriptExecution struct {
 
 // ScriptResult represents the result of a script execution
 type ScriptResult struct {
-	ExecutionID    string   `json:"executionId"`
-	ExitCode       int      `json:"exitCode"`
-	Stdout         string   `json:"stdout"`
-	Stderr         string   `json:"stderr"`
-	Error          string   `json:"error,omitempty"`
-	StartedAt      string   `json:"startedAt"`
-	CompletedAt    string   `json:"completedAt"`
+	ExecutionID     string   `json:"executionId"`
+	ExitCode        int      `json:"exitCode"`
+	Stdout          string   `json:"stdout"`
+	Stderr          string   `json:"stderr"`
+	Error           string   `json:"error,omitempty"`
+	StartedAt       string   `json:"startedAt"`
+	CompletedAt     string   `json:"completedAt"`
 	TruncatedFields []string `json:"truncatedFields,omitempty"`
 }
 
@@ -326,27 +327,38 @@ func (e *Executor) buildEnvironment(script ScriptExecution) []string {
 
 // configureRunAs configures the command to run as a different user
 func (e *Executor) configureRunAs(cmd *exec.Cmd, runAs string) error {
-	if runAs == "" {
+	target := strings.TrimSpace(runAs)
+	if target == "" || strings.EqualFold(target, "system") {
 		return nil
+	}
+
+	if strings.EqualFold(target, "user") {
+		return fmt.Errorf("runAs=user requires a connected user helper session")
+	}
+
+	if strings.EqualFold(target, "elevated") {
+		// If we're already elevated (root/admin), nothing else to do.
+		if privilege.IsRunningAsRoot() {
+			return nil
+		}
+		if runtime.GOOS == "windows" {
+			return fmt.Errorf("runAs=elevated requires the agent service to run with administrator privileges")
+		}
+		target = "root"
 	}
 
 	switch runtime.GOOS {
 	case "windows":
-		return fmt.Errorf("runAs on Windows is not yet implemented")
+		return fmt.Errorf("runAs on Windows is not yet implemented for %q", target)
 
 	case "linux", "darwin":
 		// On Unix systems, we can use sudo
-		if runAs == "root" {
-			originalPath := cmd.Path
-			originalArgs := cmd.Args
-
-			cmd.Path = "/usr/bin/sudo"
+		originalArgs := cmd.Args
+		cmd.Path = "/usr/bin/sudo"
+		if strings.EqualFold(target, "root") {
 			cmd.Args = append([]string{"sudo", "-n"}, originalArgs...)
-			cmd.Args[2] = originalPath
 		} else {
-			cmd.Path = "/usr/bin/sudo"
-			originalArgs := cmd.Args
-			cmd.Args = append([]string{"sudo", "-n", "-u", runAs}, originalArgs...)
+			cmd.Args = append([]string{"sudo", "-n", "-u", target}, originalArgs...)
 		}
 		return nil
 

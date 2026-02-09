@@ -171,6 +171,26 @@ describe('deviceActions service', () => {
       expect(result).toEqual(execution);
     });
 
+    it('executes script with runAs override', async () => {
+      const execution = {
+        batchId: 'batch-2',
+        scriptId: 'script-2',
+        devicesTargeted: 1,
+        executions: [],
+        status: 'queued'
+      };
+
+      fetchWithAuthMock.mockResolvedValue(makeResponse(execution));
+
+      const result = await executeScript('script-2', ['dev-9'], undefined, 'user');
+
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/scripts/script-2/execute', {
+        method: 'POST',
+        body: JSON.stringify({ deviceIds: ['dev-9'], runAs: 'user' })
+      });
+      expect(result).toEqual(execution);
+    });
+
     it('falls back to default message when error body is unreadable', async () => {
       fetchWithAuthMock.mockResolvedValue({
         ok: false,

@@ -2111,7 +2111,12 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                 properties: {
                   deviceIds: { type: 'array', items: { type: 'string', format: 'uuid' }, minItems: 1 },
                   parameters: { type: 'object' },
-                  triggerType: { type: 'string', enum: ['manual', 'scheduled', 'alert', 'policy'] }
+                  triggerType: { type: 'string', enum: ['manual', 'scheduled', 'alert', 'policy'] },
+                  runAs: {
+                    type: 'string',
+                    enum: ['system', 'user'],
+                    description: 'Optional execution context override'
+                  }
                 },
                 required: ['deviceIds']
               }

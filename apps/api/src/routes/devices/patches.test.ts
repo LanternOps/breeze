@@ -64,12 +64,12 @@ vi.mock('./helpers', () => ({
 }));
 
 vi.mock('../../services/commandQueue', () => ({
-  queueCommand: vi.fn()
+  queueCommandForExecution: vi.fn()
 }));
 
 import { db } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
-import { queueCommand } from '../../services/commandQueue';
+import { queueCommandForExecution } from '../../services/commandQueue';
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -188,7 +188,12 @@ describe('device patch routes', () => {
     vi.mocked(db.select).mockReturnValueOnce(selectWhereResult([
       { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
     ]) as any);
-    vi.mocked(queueCommand).mockResolvedValue({ id: 'cmd-install-1' } as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: {
+        id: 'cmd-install-1',
+        status: 'sent'
+      }
+    } as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
       method: 'POST',
@@ -201,16 +206,17 @@ describe('device patch routes', () => {
 
     expect(body.success).toBe(true);
     expect(body.commandId).toBe('cmd-install-1');
+    expect(body.commandStatus).toBe('sent');
     expect(body.patchCount).toBe(1);
 
-    expect(queueCommand).toHaveBeenCalledWith(
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
       DEVICE_ID,
       'install_patches',
       {
         patchIds: [PATCH_ID],
         patches: [{ id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }]
       },
-      USER_ID
+      { userId: USER_ID, preferHeartbeat: false }
     );
   });
 
@@ -234,7 +240,12 @@ describe('device patch routes', () => {
     vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
       { id: PATCH_ID, source: 'apple', externalId: 'apple:example', title: 'Example Patch' }
     ]) as any);
-    vi.mocked(queueCommand).mockResolvedValue({ id: 'cmd-rollback-1' } as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: {
+        id: 'cmd-rollback-1',
+        status: 'sent'
+      }
+    } as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches/${PATCH_ID}/rollback`, {
       method: 'POST',
@@ -246,16 +257,17 @@ describe('device patch routes', () => {
 
     expect(body.success).toBe(true);
     expect(body.commandId).toBe('cmd-rollback-1');
+    expect(body.commandStatus).toBe('sent');
     expect(body.patchId).toBe(PATCH_ID);
 
-    expect(queueCommand).toHaveBeenCalledWith(
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
       DEVICE_ID,
       'rollback_patches',
       {
         patchIds: [PATCH_ID],
         patches: [{ id: PATCH_ID, source: 'apple', externalId: 'apple:example', title: 'Example Patch' }]
       },
-      USER_ID
+      { userId: USER_ID, preferHeartbeat: false }
     );
   });
 });

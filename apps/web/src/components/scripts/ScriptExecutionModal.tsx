@@ -27,7 +27,12 @@ type ScriptExecutionModalProps = {
   sites?: Site[];
   isOpen: boolean;
   onClose: () => void;
-  onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>) => Promise<void>;
+  onExecute: (
+    scriptId: string,
+    deviceIds: string[],
+    parameters: Record<string, string | number | boolean>,
+    runAs: 'system' | 'user'
+  ) => Promise<void>;
 };
 
 type ExecutionState = 'idle' | 'executing' | 'success' | 'error';
@@ -52,6 +57,7 @@ export default function ScriptExecutionModal({
   const [statusFilter, setStatusFilter] = useState<string>('online');
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
   const [parameters, setParameters] = useState<Record<string, string | number | boolean>>({});
+  const [runAs, setRunAs] = useState<'system' | 'user'>('system');
   const [executionState, setExecutionState] = useState<ExecutionState>('idle');
   const [errorMessage, setErrorMessage] = useState<string>();
   const [showConfirm, setShowConfirm] = useState(false);
@@ -90,6 +96,10 @@ export default function ScriptExecutionModal({
       setParameters(defaults);
     }
   }, [script.parameters]);
+
+  useEffect(() => {
+    setRunAs(script.runAs === 'user' ? 'user' : 'system');
+  }, [script.id, script.runAs, isOpen]);
 
   // Filter devices based on script OS requirements
   const compatibleDevices = useMemo(() => {
@@ -168,7 +178,7 @@ export default function ScriptExecutionModal({
     setErrorMessage(undefined);
 
     try {
-      await onExecute(script.id, Array.from(selectedDeviceIds), parameters);
+      await onExecute(script.id, Array.from(selectedDeviceIds), parameters, runAs);
       setExecutionState('success');
       setTimeout(() => {
         onClose();
@@ -233,6 +243,24 @@ export default function ScriptExecutionModal({
             {script.description && (
               <p className="mt-3 text-sm text-muted-foreground">{script.description}</p>
             )}
+          </div>
+
+          {/* Execution Context */}
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold">Run As</h3>
+            <select
+              value={runAs}
+              onChange={e => setRunAs(e.target.value as 'system' | 'user')}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-80"
+            >
+              <option value="system">System</option>
+              <option value="user">Logged-in user</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {runAs === 'system'
+                ? 'Runs in the agent service context.'
+                : 'Runs in the currently logged-in user context when a user helper is connected.'}
+            </p>
           </div>
 
           {/* Parameters */}
@@ -440,6 +468,7 @@ export default function ScriptExecutionModal({
               </p>
               <p className="text-sm text-yellow-600 mt-1">
                 You are about to execute "{script.name}" on {selectedDeviceIds.size} device(s).
+                Run as: {runAs === 'system' ? 'System' : 'Logged-in user'}.
                 This action cannot be undone.
               </p>
             </div>

@@ -45,10 +45,13 @@ type PatchPayload = {
 type PatchScanResponse = {
   jobId?: string;
   queuedCommandIds?: string[];
+  dispatchedCommandIds?: string[];
+  pendingCommandIds?: string[];
 };
 
 type PatchInstallResponse = {
   commandId?: string;
+  commandStatus?: string;
   patchCount?: number;
 };
 
@@ -396,11 +399,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       }
 
       const queuedCount = Array.isArray(body.queuedCommandIds) ? body.queuedCommandIds.length : 0;
+      const dispatchedCount = Array.isArray(body.dispatchedCommandIds) ? body.dispatchedCommandIds.length : 0;
       const jobSuffix = body.jobId ? ` (job ${body.jobId})` : '';
       const commandSuffix = queuedCount > 0 ? ` - ${queuedCount} command queued` : '';
+      const dispatchSuffix = dispatchedCount > 0 ? ` - ${dispatchedCount} dispatched now` : '';
       setControlNotice({
         kind: 'success',
-        message: `${label} queued${commandSuffix}${jobSuffix}.`
+        message: `${label} queued${commandSuffix}${dispatchSuffix}${jobSuffix}.`
       });
     } catch (err) {
       setControlNotice({
@@ -439,9 +444,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
 
       const commandSuffix = body.commandId ? ` (command ${body.commandId})` : '';
       const patchCount = typeof body.patchCount === 'number' ? body.patchCount : patchIds.length;
+      const dispatchSuffix = body.commandStatus === 'sent' ? ' and dispatched now' : '';
       setControlNotice({
         kind: 'success',
-        message: `${label} queued for ${patchCount} patches${commandSuffix}.`
+        message: `${label} queued for ${patchCount} patches${commandSuffix}${dispatchSuffix}.`
       });
     } catch (err) {
       setControlNotice({

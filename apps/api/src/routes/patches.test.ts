@@ -87,7 +87,8 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../services/commandQueue', () => ({
-  queueCommand: vi.fn()
+  queueCommand: vi.fn(),
+  queueCommandForExecution: vi.fn()
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -115,7 +116,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
-import { queueCommand } from '../services/commandQueue';
+import { queueCommand, queueCommandForExecution } from '../services/commandQueue';
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -169,11 +170,16 @@ describe('patch routes', () => {
       { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID }
     ]) as any);
 
-    vi.mocked(queueCommand).mockImplementation(async (deviceId: string) => {
+    vi.mocked(queueCommandForExecution).mockImplementation(async (deviceId: string) => {
       if (deviceId === DEVICE_C) {
-        throw new Error('queue failure');
+        return { error: 'queue failure' } as any;
       }
-      return { id: `cmd-${deviceId}` } as any;
+      return {
+        command: {
+          id: `cmd-${deviceId}`,
+          status: 'sent'
+        }
+      } as any;
     });
 
     const res = await app.request('/patches/scan', {
@@ -191,12 +197,19 @@ describe('patch routes', () => {
     expect(body.success).toBe(false);
     expect(body.deviceCount).toBe(2);
     expect(body.queuedCommandIds).toEqual([`cmd-${DEVICE_A}`]);
+    expect(body.dispatchedCommandIds).toEqual([`cmd-${DEVICE_A}`]);
+    expect(body.pendingCommandIds).toEqual([]);
     expect(body.failedDeviceIds).toEqual([DEVICE_C]);
     expect(body.skipped.missingDeviceIds).toEqual([DEVICE_D]);
     expect(body.skipped.inaccessibleDeviceIds).toEqual([DEVICE_B]);
 
-    expect(queueCommand).toHaveBeenCalledTimes(2);
-    expect(queueCommand).toHaveBeenCalledWith(DEVICE_A, 'patch_scan', { source: 'apple' }, USER_ID);
+    expect(queueCommandForExecution).toHaveBeenCalledTimes(2);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_A,
+      'patch_scan',
+      { source: 'apple' },
+      { userId: USER_ID, preferHeartbeat: false }
+    );
   });
 
   it('infers patch os from source when osTypes is missing', async () => {

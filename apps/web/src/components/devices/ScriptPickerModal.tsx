@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type OSType = 'windows' | 'macos' | 'linux';
+export type ScriptRunAsSelection = 'system' | 'user';
 
 export type Script = {
   id: string;
@@ -19,7 +20,7 @@ export type Script = {
 type ScriptPickerModalProps = {
   isOpen: boolean;
   onClose: () => void;
-  onSelect: (script: Script) => void;
+  onSelect: (script: Script, runAs: ScriptRunAsSelection) => void;
   deviceHostname?: string;
   deviceOs?: OSType | OSType[];
 };
@@ -43,9 +44,11 @@ export default function ScriptPickerModal({
   const [error, setError] = useState<string>();
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [runAs, setRunAs] = useState<ScriptRunAsSelection>('system');
 
   useEffect(() => {
     if (isOpen) {
+      setRunAs('system');
       fetchScripts();
     }
   }, [isOpen]);
@@ -108,7 +111,7 @@ export default function ScriptPickerModal({
   }, [scripts, query, categoryFilter, deviceOs]);
 
   const handleSelect = (script: Script) => {
-    onSelect(script);
+    onSelect(script, runAs);
     onClose();
   };
 
@@ -163,6 +166,14 @@ export default function ScriptPickerModal({
                 ))}
               </select>
             )}
+            <select
+              value={runAs}
+              onChange={e => setRunAs(e.target.value as ScriptRunAsSelection)}
+              className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="system">Run as: System</option>
+              <option value="user">Run as: Logged-in user</option>
+            </select>
           </div>
         </div>
 

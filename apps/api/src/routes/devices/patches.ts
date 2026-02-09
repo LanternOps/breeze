@@ -6,7 +6,7 @@ import { db } from '../../db';
 import { patches, devicePatches } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck } from './helpers';
-import { queueCommand } from '../../services/commandQueue';
+import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 
 export const patchesRoutes = new Hono();
@@ -168,15 +168,24 @@ patchesRoutes.post(
       return c.json({ error: 'No matching patches found' }, 404);
     }
 
-    const command = await queueCommand(
+    const queued = await queueCommandForExecution(
       deviceId,
       'install_patches',
       {
         patchIds: data.patchIds,
         patches: patchRefs
       },
-      auth.user.id
+      {
+        userId: auth.user.id,
+        preferHeartbeat: false
+      }
     );
+
+    if (!queued.command) {
+      return c.json({ error: queued.error || 'Failed to queue install_patches command' }, 503);
+    }
+
+    const command = queued.command;
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -186,6 +195,7 @@ patchesRoutes.post(
       resourceName: device.hostname,
       details: {
         commandId: command.id,
+        commandStatus: command.status,
         patchCount: data.patchIds.length
       }
     });
@@ -193,6 +203,7 @@ patchesRoutes.post(
     return c.json({
       success: true,
       commandId: command.id,
+      commandStatus: command.status,
       patchCount: data.patchIds.length
     });
   }
@@ -227,15 +238,24 @@ patchesRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    const command = await queueCommand(
+    const queued = await queueCommandForExecution(
       deviceId,
       'rollback_patches',
       {
         patchIds: [patchId],
         patches: [patch]
       },
-      auth.user.id
+      {
+        userId: auth.user.id,
+        preferHeartbeat: false
+      }
     );
+
+    if (!queued.command) {
+      return c.json({ error: queued.error || 'Failed to queue rollback_patches command' }, 503);
+    }
+
+    const command = queued.command;
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -245,6 +265,7 @@ patchesRoutes.post(
       resourceName: device.hostname,
       details: {
         commandId: command.id,
+        commandStatus: command.status,
         patchId
       }
     });
@@ -252,6 +273,7 @@ patchesRoutes.post(
     return c.json({
       success: true,
       commandId: command.id,
+      commandStatus: command.status,
       patchId
     });
   }

@@ -68,13 +68,17 @@ export interface ScriptExecuteResult {
   status: string;
 }
 
+export type ScriptRunAsOverride = 'system' | 'user';
+
 export async function executeScript(
   scriptId: string,
   deviceIds: string[],
-  parameters?: Record<string, unknown>
+  parameters?: Record<string, unknown>,
+  runAs?: ScriptRunAsOverride
 ): Promise<ScriptExecuteResult> {
   const body: Record<string, unknown> = { deviceIds };
   if (parameters) body.parameters = parameters;
+  if (runAs) body.runAs = runAs;
 
   const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
     method: 'POST',

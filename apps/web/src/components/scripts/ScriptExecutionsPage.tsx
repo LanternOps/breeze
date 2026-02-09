@@ -106,11 +106,12 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   const handleExecute = async (
     _scriptId: string,
     deviceIds: string[],
-    parameters: Record<string, string | number | boolean>
+    parameters: Record<string, string | number | boolean>,
+    runAs: 'system' | 'user'
   ) => {
     const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
       method: 'POST',
-      body: JSON.stringify({ deviceIds, parameters })
+      body: JSON.stringify({ deviceIds, parameters, runAs })
     });
 
     if (!response.ok) {
