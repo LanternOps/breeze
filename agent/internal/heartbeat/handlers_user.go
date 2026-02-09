@@ -63,6 +63,14 @@ func handleNotifyUser(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	if !session.HasScope("notify") {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "session does not have notify scope",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	// Build actions list
 	var actions []string
 	if rawActions, ok := cmd.Payload["actions"].([]any); ok {
@@ -143,6 +151,10 @@ func handleTrayUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	for _, info := range sessions {
 		session := h.sessionBroker.SessionForIdentity(info.IdentityKey)
 		if session != nil {
+			if !session.HasScope("tray") {
+				log.Warn("session lacks tray scope, skipping", "identity", info.IdentityKey)
+				continue
+			}
 			if err := session.SendNotify(cmd.ID, ipc.TypeTrayUpdate, update); err != nil {
 				log.Warn("tray update failed for session", "uid", info.UID, "error", err)
 			} else {

@@ -377,6 +377,111 @@ func TestNamedPipeMissingSIDRejected(t *testing.T) {
 	t.Logf("Missing SID correctly rejected: %s", authResp.Reason)
 }
 
+func TestNamedPipeSessionIDCollisionRejected(t *testing.T) {
+	pipeName := testPipeName(t) + "-collision"
+	stopChan := make(chan struct{})
+
+	broker := New(pipeName, nil)
+	defer func() {
+		close(stopChan)
+		time.Sleep(100 * time.Millisecond)
+		broker.Close()
+	}()
+
+	go broker.Listen(stopChan)
+	time.Sleep(200 * time.Millisecond)
+
+	cu, err := user.Current()
+	if err != nil {
+		t.Fatalf("user.Current: %v", err)
+	}
+	binaryHash := computeTestBinaryHash(t)
+	collisionID := fmt.Sprintf("collision-test-%d", os.Getpid())
+
+	// --- First helper: should succeed ---
+	timeout := 2 * time.Second
+	raw1, err := winio.DialPipe(pipeName, &timeout)
+	if err != nil {
+		t.Fatalf("DialPipe #1: %v", err)
+	}
+	defer raw1.Close()
+
+	conn1 := ipc.NewConn(raw1)
+	err = conn1.SendTyped("auth", ipc.TypeAuthRequest, ipc.AuthRequest{
+		ProtocolVersion: ipc.ProtocolVersion,
+		UID:             0,
+		SID:             cu.Uid,
+		Username:        cu.Username,
+		SessionID:       collisionID,
+		DisplayEnv:      "windows",
+		PID:             os.Getpid(),
+		BinaryHash:      binaryHash,
+	})
+	if err != nil {
+		t.Fatalf("send auth #1: %v", err)
+	}
+
+	env1, err := conn1.Recv()
+	if err != nil {
+		t.Fatalf("recv auth #1: %v", err)
+	}
+	var resp1 ipc.AuthResponse
+	if err := json.Unmarshal(env1.Payload, &resp1); err != nil {
+		t.Fatalf("unmarshal #1: %v", err)
+	}
+	if !resp1.Accepted {
+		t.Fatalf("first connection should be accepted, got rejected: %s", resp1.Reason)
+	}
+	t.Log("First helper accepted")
+
+	// Give broker time to register the session
+	time.Sleep(200 * time.Millisecond)
+
+	// --- Second helper: same SessionID, should be rejected ---
+	raw2, err := winio.DialPipe(pipeName, &timeout)
+	if err != nil {
+		t.Fatalf("DialPipe #2: %v", err)
+	}
+	defer raw2.Close()
+
+	conn2 := ipc.NewConn(raw2)
+	err = conn2.SendTyped("auth", ipc.TypeAuthRequest, ipc.AuthRequest{
+		ProtocolVersion: ipc.ProtocolVersion,
+		UID:             0,
+		SID:             cu.Uid,
+		Username:        cu.Username,
+		SessionID:       collisionID, // same ID!
+		DisplayEnv:      "windows",
+		PID:             os.Getpid(),
+		BinaryHash:      binaryHash,
+	})
+	if err != nil {
+		t.Fatalf("send auth #2: %v", err)
+	}
+
+	env2, err := conn2.Recv()
+	if err != nil {
+		t.Fatalf("recv auth #2: %v", err)
+	}
+	var resp2 ipc.AuthResponse
+	if err := json.Unmarshal(env2.Payload, &resp2); err != nil {
+		t.Fatalf("unmarshal #2: %v", err)
+	}
+	if resp2.Accepted {
+		t.Fatal("second connection with same SessionID should be REJECTED")
+	}
+	if resp2.Reason != "session ID already in use" {
+		t.Errorf("expected reason 'session ID already in use', got %q", resp2.Reason)
+	}
+
+	// Verify the original session is still there
+	if broker.SessionCount() != 1 {
+		t.Errorf("expected 1 session still active, got %d", broker.SessionCount())
+	}
+
+	t.Logf("SessionID collision correctly rejected: %s", resp2.Reason)
+}
+
 func computeTestBinaryHash(t *testing.T) string {
 	t.Helper()
 	exePath, err := os.Executable()
