@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Monitor, Loader2, AlertCircle, Folder } from 'lucide-react';
 import FileManager from './FileManager';
+import { getInitialFilePath, type DeviceOs } from './filePathUtils';
 
 type Device = {
   id: string;
@@ -56,19 +57,11 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
     console.error('File manager error:', errorMessage);
   };
 
-  // Determine initial path based on OS
-  const getInitialPath = () => {
+  const getInitialPath = (): string => {
     if (!device) return '/';
-    switch (device.osType) {
-      case 'windows':
-        return 'C:\\Users';
-      case 'macos':
-        return '/Users';
-      case 'linux':
-        return '/home';
-      default:
-        return '/';
-    }
+    const osMap: Record<string, DeviceOs> = { windows: 'windows', macos: 'macos', darwin: 'macos', linux: 'linux' };
+    const os = osMap[device.osType] ?? 'linux';
+    return getInitialFilePath(os);
   };
 
   if (loading) {

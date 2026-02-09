@@ -20,6 +20,7 @@ import RegistryEditor from './RegistryEditor';
 import RemoteTerminal from './RemoteTerminal';
 import FileManager from './FileManager';
 import ConnectDesktopButton from './ConnectDesktopButton';
+import { getInitialFilePath } from './filePathUtils';
 
 type RemoteToolsPageProps = {
   deviceId: string;
@@ -427,7 +428,10 @@ export default function RemoteToolsPage({
     const fetchDevice = async () => {
       try {
         const response = await fetchWithAuth(`/devices/${deviceId}`);
-        if (!response.ok) return;
+        if (!response.ok) {
+          console.error(`[RemoteToolsPage] Failed to load device info: HTTP ${response.status}`);
+          return;
+        }
         const data: DeviceApiResponse = await response.json();
         if (!mounted) return;
         setResolvedDeviceName(data.displayName || data.hostname || deviceName);
@@ -846,6 +850,8 @@ export default function RemoteToolsPage({
           <FileManager
             deviceId={deviceId}
             deviceHostname={resolvedDeviceName}
+            initialPath={getInitialFilePath(resolvedDeviceOs)}
+            onError={(msg) => console.error('[RemoteToolsPage] File manager error:', msg)}
           />
         )}
       </div>
