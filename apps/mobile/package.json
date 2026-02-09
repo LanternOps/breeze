@@ -29,7 +29,7 @@
     "react-native-vector-icons": "^10.0.0",
     "@react-navigation/native": "^6.0.0",
     "@react-navigation/native-stack": "^6.0.0",
-    "@react-navigation/bottom-tabs": "^6.0.0",
+    "@react-navigation/bottom-tabs": "^7.12.0",
     "@reduxjs/toolkit": "^2.0.0",
     "react-redux": "^9.0.0"
   },
