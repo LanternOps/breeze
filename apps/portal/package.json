@@ -22,7 +22,7 @@
     "lucide-react": "^0.563.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-hook-form": "^7.71.0",
+    "react-hook-form": "^7.71.1",
     "tailwind-merge": "^2.6.0",
     "zod": "^3.24.1",
     "zustand": "^5.0.2"
