@@ -99,7 +99,6 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 		if err != nil {
 			return fmt.Errorf("install failed: %w", err)
 		}
-		defer installResultVar.Clear()
 
 		installResult := installResultVar.ToIDispatch()
 		if installResult == nil {
@@ -117,7 +116,6 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 		updateResultVar, urErr := oleutil.CallMethod(installResult, "GetUpdateResult", 0)
 		if urErr == nil {
 			updateResult := updateResultVar.ToIDispatch()
-			updateResultVar.Clear()
 			if updateResult != nil {
 				hresult, _ := w.getIntProperty(updateResult, "HResult")
 				result.HResult = hresult
@@ -179,7 +177,6 @@ func (w *WindowsUpdateProvider) Uninstall(patchID string) error {
 		if err != nil {
 			return fmt.Errorf("uninstall failed: %w", err)
 		}
-		defer uninstallResultVar.Clear()
 
 		uninstallResult := uninstallResultVar.ToIDispatch()
 		if uninstallResult == nil {
@@ -254,7 +251,6 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 	if err != nil {
 		return nil, fmt.Errorf("create searcher failed: %w", err)
 	}
-	defer searcherVar.Clear()
 
 	searcher := searcherVar.ToIDispatch()
 	if searcher == nil {
@@ -268,7 +264,6 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
-	defer resultVar.Clear()
 
 	result := resultVar.ToIDispatch()
 	if result == nil {
@@ -280,7 +275,6 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 	if err != nil {
 		return nil, fmt.Errorf("updates collection failed: %w", err)
 	}
-	defer updatesVar.Clear()
 
 	updates := updatesVar.ToIDispatch()
 	if updates == nil {
@@ -303,7 +297,6 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 			continue
 		}
 		update := itemVar.ToIDispatch()
-		itemVar.Clear()
 		if update == nil {
 			continue
 		}
@@ -330,7 +323,6 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 	if err != nil {
 		return AvailablePatch{}, err
 	}
-	defer identityVar.Clear()
 
 	identity := identityVar.ToIDispatch()
 	if identity == nil {
@@ -390,7 +382,6 @@ func (w *WindowsUpdateProvider) getKBNumber(update *ole.IDispatch) string {
 	if err != nil {
 		return ""
 	}
-	defer kbIDsVar.Clear()
 
 	kbIDs := kbIDsVar.ToIDispatch()
 	if kbIDs == nil {
@@ -427,7 +418,6 @@ func (w *WindowsUpdateProvider) mapCategory(update *ole.IDispatch) string {
 	if err != nil {
 		return "application"
 	}
-	defer catsVar.Clear()
 
 	cats := catsVar.ToIDispatch()
 	if cats == nil {
@@ -449,7 +439,6 @@ func (w *WindowsUpdateProvider) mapCategory(update *ole.IDispatch) string {
 	if err != nil {
 		return "application"
 	}
-	defer itemVar.Clear()
 
 	cat := itemVar.ToIDispatch()
 	if cat == nil {
@@ -481,7 +470,6 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 	if err != nil {
 		return nil, fmt.Errorf("create searcher failed: %w", err)
 	}
-	defer searcherVar.Clear()
 
 	searcher := searcherVar.ToIDispatch()
 	if searcher == nil {
@@ -493,7 +481,6 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
-	defer resultVar.Clear()
 
 	result := resultVar.ToIDispatch()
 	if result == nil {
@@ -505,7 +492,6 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 	if err != nil {
 		return nil, fmt.Errorf("updates collection failed: %w", err)
 	}
-	defer updatesVar.Clear()
 
 	updates := updatesVar.ToIDispatch()
 	if updates == nil {
@@ -527,7 +513,6 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 		}
 
 		update := itemVar.ToIDispatch()
-		itemVar.Clear()
 		if update == nil {
 			continue
 		}
@@ -539,7 +524,6 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 		}
 
 		identity := identityVar.ToIDispatch()
-		identityVar.Clear()
 		if identity == nil {
 			update.Release()
 			continue
@@ -580,7 +564,6 @@ func (w *WindowsUpdateProvider) createInstaller(session *ole.IDispatch, update *
 		collection.Release()
 		return nil, fmt.Errorf("create installer failed: %w", err)
 	}
-	defer installerVar.Clear()
 
 	installer := installerVar.ToIDispatch()
 	if installer == nil {
@@ -675,7 +658,6 @@ func (w *WindowsUpdateProvider) Download(patchIDs []string, progress ProgressCal
 		if err != nil {
 			return fmt.Errorf("create downloader failed: %w", err)
 		}
-		defer downloaderVar.Clear()
 
 		downloader := downloaderVar.ToIDispatch()
 		if downloader == nil {
@@ -708,7 +690,6 @@ func (w *WindowsUpdateProvider) Download(patchIDs []string, progress ProgressCal
 		if err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
-		defer downloadResultVar.Clear()
 
 		downloadResult := downloadResultVar.ToIDispatch()
 		if downloadResult == nil {
@@ -731,7 +712,6 @@ func (w *WindowsUpdateProvider) Download(patchIDs []string, progress ProgressCal
 			}
 
 			updateResult := updateResultVar.ToIDispatch()
-			updateResultVar.Clear()
 			if updateResult == nil {
 				results = append(results, DownloadResult{
 					PatchID: info.id,

@@ -61,7 +61,23 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
-	answer, err := h.desktopMgr.StartSession(sessionID, offer)
+
+	// Parse optional ICE servers from payload
+	var iceServers []desktop.ICEServerConfig
+	if raw, ok := cmd.Payload["iceServers"].([]interface{}); ok {
+		for _, item := range raw {
+			if m, ok := item.(map[string]interface{}); ok {
+				s := desktop.ICEServerConfig{
+					URLs:       m["urls"],
+					Username:   fmt.Sprintf("%v", m["username"]),
+					Credential: fmt.Sprintf("%v", m["credential"]),
+				}
+				iceServers = append(iceServers, s)
+			}
+		}
+	}
+
+	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}

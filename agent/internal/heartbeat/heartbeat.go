@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,6 +171,12 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		log.Info("user helper IPC enabled", "socket", socketPath)
+	}
+
+	// Register winget provider (dispatches via user helper for user-context execution)
+	if runtime.GOOS == "windows" && h.sessionBroker != nil {
+		h.patchMgr.RegisterProvider(patching.NewWingetProvider(h.makeUserExecFunc()))
+		log.Info("winget provider registered (via user helper IPC)")
 	}
 
 	// Initialize reboot manager (uses session broker for user notifications)
@@ -1328,4 +1335,84 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 	}
 
 	log.Info("update successful", "targetVersion", targetVersion)
+}
+
+// makeUserExecFunc returns a UserExecFunc that dispatches commands to a connected
+// user helper via the session broker IPC. This enables providers like winget that
+// require user-context execution.
+func (h *Heartbeat) makeUserExecFunc() patching.UserExecFunc {
+	return func(name string, args []string, timeout time.Duration) (string, string, int, error) {
+		if h.sessionBroker == nil {
+			return "", "", -1, fmt.Errorf("no session broker available")
+		}
+
+		// Find first available user helper session
+		sessions := h.sessionBroker.AllSessions()
+		if len(sessions) == 0 {
+			return "", "", -1, fmt.Errorf("no user helper connected")
+		}
+
+		session := h.sessionBroker.SessionForUser(sessions[0].Username)
+		if session == nil {
+			return "", "", -1, fmt.Errorf("user helper session not found")
+		}
+
+		if !session.HasScope("run_as_user") {
+			return "", "", -1, fmt.Errorf("user helper does not have run_as_user scope")
+		}
+
+		// Build a script execution command payload
+		payload := map[string]any{
+			"type":    "exec",
+			"command": name,
+			"args":    args,
+		}
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			return "", "", -1, fmt.Errorf("marshal exec payload: %w", err)
+		}
+
+		cmdID := fmt.Sprintf("winget-%d", time.Now().UnixNano())
+		ipcCmd := ipc.IPCCommand{
+			CommandID: cmdID,
+			Type:      "exec",
+			Payload:   payloadBytes,
+		}
+
+		resp, err := session.SendCommand(cmdID, ipc.TypeCommand, ipcCmd, timeout+5*time.Second)
+		if err != nil {
+			return "", "", -1, fmt.Errorf("user helper exec: %w", err)
+		}
+		if resp == nil {
+			return "", "", -1, fmt.Errorf("user helper session closed during exec")
+		}
+
+		var result ipc.IPCCommandResult
+		if err := json.Unmarshal(resp.Payload, &result); err != nil {
+			return "", "", -1, fmt.Errorf("unmarshal exec result: %w", err)
+		}
+
+		var stdout, stderr string
+		var exitCode int
+		if result.Result != nil {
+			var nested map[string]any
+			if err := json.Unmarshal(result.Result, &nested); err == nil {
+				if s, ok := nested["stdout"].(string); ok {
+					stdout = s
+				}
+				if s, ok := nested["stderr"].(string); ok {
+					stderr = s
+				}
+				if c, ok := nested["exitCode"].(float64); ok {
+					exitCode = int(c)
+				}
+			}
+		}
+
+		if result.Status == "failed" {
+			return stdout, stderr, exitCode, fmt.Errorf("exec failed: %s", result.Error)
+		}
+
+		return stdout, stderr, exitCode, nil
+	}
 }

@@ -26,6 +26,7 @@ import { reportRoutes } from './routes/reports';
 import { searchRoutes } from './routes/search';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
+import { enrollmentKeyRoutes } from './routes/enrollmentKeys';
 import { ssoRoutes } from './routes/sso';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
@@ -73,6 +74,7 @@ import { initializeSnmpRetention } from './jobs/snmpRetention';
 import { initializePolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
+import { initializeTransferCleanup } from './workers/transferCleanup';
 import { isRedisAvailable } from './services/redis';
 import { writeAuditEvent } from './services/auditEvents';
 import * as dbModule from './db';
@@ -435,6 +437,7 @@ api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebS
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
+api.route('/enrollment-keys', enrollmentKeyRoutes);
 api.route('/sso', ssoRoutes);
 api.route('/docs', docsRoutes);
 api.route('/access-reviews', accessReviewRoutes);
@@ -689,3 +692,6 @@ async function initializeWorkers(): Promise<void> {
 initializeWorkers().catch((err) => {
   console.error('[CRITICAL] Worker initialization failed unexpectedly:', err);
 });
+
+// Transfer file cleanup (no Redis required)
+initializeTransferCleanup();
