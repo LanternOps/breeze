@@ -34,7 +34,7 @@
     "drizzle-orm": "^0.38.2",
     "firebase-admin": "^12.6.0",
     "hono": "^4.11.9",
-    "ioredis": "^5.4.2",
+    "ioredis": "^5.9.2",
     "jose": "^5.9.6",
     "nanoid": "^5.0.9",
     "otplib": "^13.1.0",
