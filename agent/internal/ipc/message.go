@@ -52,6 +52,7 @@ type Envelope struct {
 type AuthRequest struct {
 	ProtocolVersion int    `json:"protocolVersion"`
 	UID             uint32 `json:"uid"`
+	SID             string `json:"sid,omitempty"` // Windows Security Identifier
 	Username        string `json:"username"`
 	SessionID       string `json:"sessionId"`
 	DisplayEnv      string `json:"displayEnv"`

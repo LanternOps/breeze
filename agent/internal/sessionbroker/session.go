@@ -14,7 +14,8 @@ var log = logging.L("sessionbroker")
 
 // Session represents a connected user helper with verified identity.
 type Session struct {
-	UID           uint32
+	UID           uint32 // Numeric UID (0 on Windows; kept for logging/compat)
+	IdentityKey   string // Platform identity: UID string on Unix, SID on Windows
 	Username      string
 	DisplayEnv    string
 	SessionID     string
@@ -29,9 +30,10 @@ type Session struct {
 }
 
 // NewSession creates a new session for a verified user helper connection.
-func NewSession(conn *ipc.Conn, uid uint32, username, displayEnv, sessionID string, scopes []string) *Session {
+func NewSession(conn *ipc.Conn, uid uint32, identityKey, username, displayEnv, sessionID string, scopes []string) *Session {
 	return &Session{
 		UID:           uid,
+		IdentityKey:   identityKey,
 		Username:      username,
 		DisplayEnv:    displayEnv,
 		SessionID:     sessionID,
@@ -137,9 +139,10 @@ func (s *Session) Close() error {
 	return s.conn.Close()
 }
 
-// Info returns a summary of this session for status reporting.
+// SessionInfo is a serializable summary of a session for status reporting.
 type SessionInfo struct {
 	UID          uint32             `json:"uid"`
+	IdentityKey  string             `json:"identityKey"`
 	Username     string             `json:"username"`
 	DisplayEnv   string             `json:"displayEnv"`
 	SessionID    string             `json:"sessionId"`
@@ -154,6 +157,7 @@ func (s *Session) Info() SessionInfo {
 	defer s.mu.Unlock()
 	return SessionInfo{
 		UID:          s.UID,
+		IdentityKey:  s.IdentityKey,
 		Username:     s.Username,
 		DisplayEnv:   s.DisplayEnv,
 		SessionID:    s.SessionID,

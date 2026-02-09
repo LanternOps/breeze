@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -22,10 +23,10 @@ const (
 	// IdleTimeout disconnects helpers that send no messages for this duration.
 	IdleTimeout = 30 * time.Minute
 
-	// MaxConnectionsPerUID limits concurrent connections per user.
-	MaxConnectionsPerUID = 3
+	// MaxConnectionsPerIdentity limits concurrent connections per user identity.
+	MaxConnectionsPerIdentity = 3
 
-	// RateLimitAttempts is max connection attempts per UID per window.
+	// RateLimitAttempts is max connection attempts per identity per window.
 	RateLimitAttempts = 5
 
 	// RateLimitWindow is the sliding window for rate limiting.
@@ -48,10 +49,10 @@ type Broker struct {
 	listener    net.Listener
 	rateLimiter *ipc.RateLimiter
 
-	mu       sync.RWMutex
-	sessions map[string]*Session // sessionID -> Session
-	byUID    map[uint32][]*Session
-	closed   bool
+	mu         sync.RWMutex
+	sessions   map[string]*Session   // sessionID -> Session
+	byIdentity map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
+	closed     bool
 
 	onMessage MessageHandler
 	selfHash  string // SHA-256 of our own binary
@@ -63,7 +64,7 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		socketPath:  socketPath,
 		rateLimiter: ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
 		sessions:    make(map[string]*Session),
-		byUID:       make(map[uint32][]*Session),
+		byIdentity:  make(map[string][]*Session),
 		onMessage:   onMessage,
 	}
 	b.selfHash = b.computeSelfHash()
@@ -146,14 +147,22 @@ func (b *Broker) SessionForUser(username string) *Session {
 	return nil
 }
 
-// SessionForUID returns the first active session for the given UID.
-func (b *Broker) SessionForUID(uid uint32) *Session {
+// SessionForIdentity returns the first active session for the given identity key.
+// The key is a UID string on Unix or a SID on Windows.
+func (b *Broker) SessionForIdentity(key string) *Session {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	if sessions, ok := b.byUID[uid]; ok && len(sessions) > 0 {
+	if sessions, ok := b.byIdentity[key]; ok && len(sessions) > 0 {
 		return sessions[0]
 	}
 	return nil
+}
+
+// SessionForUID returns the first active session for the given UID.
+// Deprecated: Use SessionForIdentity for cross-platform identity.
+// On Windows, UID is always 0; this method only works correctly on Unix.
+func (b *Broker) SessionForUID(uid uint32) *Session {
+	return b.SessionForIdentity(strconv.FormatUint(uint64(uid), 10))
 }
 
 // AllSessions returns info about all connected sessions.
@@ -209,19 +218,21 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 2: Rate limit check
-	if !b.rateLimiter.Allow(creds.UID) {
-		log.Warn("connection rate limited", "uid", creds.UID, "pid", creds.PID)
+	identityKey := creds.IdentityKey()
+
+	// Step 2: Rate limit check (per identity: UID on Unix, SID on Windows)
+	if !b.rateLimiter.Allow(identityKey) {
+		log.Warn("connection rate limited", "identity", identityKey, "pid", creds.PID)
 		rawConn.Close()
 		return
 	}
 
-	// Step 3: Check max connections per UID
+	// Step 3: Check max connections per identity
 	b.mu.RLock()
-	uidCount := len(b.byUID[creds.UID])
+	identityCount := len(b.byIdentity[identityKey])
 	b.mu.RUnlock()
-	if uidCount >= MaxConnectionsPerUID {
-		log.Warn("max connections per UID exceeded", "uid", creds.UID, "count", uidCount)
+	if identityCount >= MaxConnectionsPerIdentity {
+		log.Warn("max connections exceeded", "identity", identityKey, "count", identityCount)
 		rawConn.Close()
 		return
 	}
@@ -229,7 +240,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Step 4: Verify binary path
 	if !b.verifyBinaryPath(creds.BinaryPath) {
 		log.Warn("binary path verification failed",
-			"uid", creds.UID,
+			"identity", identityKey,
 			"pid", creds.PID,
 			"path", creds.BinaryPath,
 		)
@@ -243,7 +254,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Step 5: Read auth request
 	env, err := conn.Recv()
 	if err != nil {
-		log.Warn("auth request read failed", "uid", creds.UID, "error", err)
+		log.Warn("auth request read failed", "identity", identityKey, "error", err)
 		conn.Close()
 		return
 	}
@@ -261,21 +272,42 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Verify UID matches peer credentials
-	if authReq.UID != creds.UID {
-		log.Warn("auth UID mismatch", "claimed", authReq.UID, "actual", creds.UID)
-		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-			Accepted: false,
-			Reason:   "UID mismatch",
-		})
-		conn.Close()
-		return
+	// Step 6: Verify identity — SID on Windows, UID on Unix
+	if runtime.GOOS == "windows" {
+		if authReq.SID == "" {
+			log.Warn("auth missing SID on Windows", "pid", creds.PID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted: false,
+				Reason:   "SID required on Windows",
+			})
+			conn.Close()
+			return
+		}
+		if authReq.SID != creds.SID {
+			log.Warn("auth SID mismatch", "claimed", authReq.SID, "actual", creds.SID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted: false,
+				Reason:   "SID mismatch",
+			})
+			conn.Close()
+			return
+		}
+	} else {
+		if authReq.UID != creds.UID {
+			log.Warn("auth UID mismatch", "claimed", authReq.UID, "actual", creds.UID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted: false,
+				Reason:   "UID mismatch",
+			})
+			conn.Close()
+			return
+		}
 	}
 
-	// Verify binary hash (require non-empty hash from client)
+	// Step 7: Verify binary hash (require non-empty hash from client)
 	if b.selfHash != "" && authReq.BinaryHash != b.selfHash {
 		log.Warn("binary hash mismatch",
-			"uid", creds.UID,
+			"identity", identityKey,
 			"expected", b.selfHash,
 			"got", authReq.BinaryHash,
 		)
@@ -314,16 +346,16 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	rawConn.SetDeadline(time.Time{})
 
 	// Create session
-	session := NewSession(conn, creds.UID, authReq.Username, authReq.DisplayEnv, authReq.SessionID, defaultScopes)
+	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, defaultScopes)
 
 	// Register session
 	b.mu.Lock()
 	b.sessions[authReq.SessionID] = session
-	b.byUID[creds.UID] = append(b.byUID[creds.UID], session)
+	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
 	b.mu.Unlock()
 
 	log.Info("user helper connected",
-		"uid", creds.UID,
+		"identity", identityKey,
 		"username", authReq.Username,
 		"sessionId", authReq.SessionID,
 		"display", authReq.DisplayEnv,
@@ -374,56 +406,20 @@ func (b *Broker) removeSession(session *Session) {
 
 	delete(b.sessions, session.SessionID)
 
-	uid := session.UID
-	sessions := b.byUID[uid]
+	key := session.IdentityKey
+	sessions := b.byIdentity[key]
 	for i, s := range sessions {
 		if s == session {
-			b.byUID[uid] = append(sessions[:i], sessions[i+1:]...)
+			b.byIdentity[key] = append(sessions[:i], sessions[i+1:]...)
 			break
 		}
 	}
-	if len(b.byUID[uid]) == 0 {
-		delete(b.byUID, uid)
+	if len(b.byIdentity[key]) == 0 {
+		delete(b.byIdentity, key)
 	}
 }
 
-func (b *Broker) setupSocket() error {
-	if runtime.GOOS == "windows" {
-		return b.setupNamedPipe()
-	}
-	return b.setupUnixSocket()
-}
-
-func (b *Broker) setupUnixSocket() error {
-	// Remove stale socket file
-	os.Remove(b.socketPath)
-
-	// Ensure directory exists
-	dir := filepath.Dir(b.socketPath)
-	if err := os.MkdirAll(dir, 0770); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-
-	listener, err := net.Listen("unix", b.socketPath)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", b.socketPath, err)
-	}
-
-	// Set socket permissions: 0770 (owner + group can read/write)
-	if err := os.Chmod(b.socketPath, 0770); err != nil {
-		listener.Close()
-		return fmt.Errorf("chmod %s: %w", b.socketPath, err)
-	}
-
-	b.listener = listener
-	return nil
-}
-
-func (b *Broker) setupNamedPipe() error {
-	// Windows named pipe IPC is not yet implemented.
-	// TODO: implement proper named pipe support with SDDL ACLs.
-	return fmt.Errorf("user helper IPC is not yet supported on Windows")
-}
+// setupSocket is implemented in broker_windows.go and broker_unix.go.
 
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
 	expected, err := os.Executable()

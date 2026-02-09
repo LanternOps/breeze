@@ -17,6 +17,7 @@ import "C"
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -89,6 +90,12 @@ func GetPeerCredentials(conn net.Conn) (*PeerCredentials, error) {
 		GID:        gid,
 		BinaryPath: exePath,
 	}, nil
+}
+
+// IdentityKey returns the platform identity key for this peer.
+// On macOS, this is the kernel-verified UID as a string.
+func (p *PeerCredentials) IdentityKey() string {
+	return strconv.FormatUint(uint64(p.UID), 10)
 }
 
 // DefaultSocketPath returns the default IPC socket path for macOS.

@@ -52,7 +52,7 @@ func handleNotifyUser(h *Heartbeat, cmd Command) tools.CommandResult {
 		// Try first available session if no username specified
 		sessions := h.sessionBroker.AllSessions()
 		if len(sessions) > 0 && username == "" {
-			session = h.sessionBroker.SessionForUID(sessions[0].UID)
+			session = h.sessionBroker.SessionForIdentity(sessions[0].IdentityKey)
 		}
 	}
 	if session == nil {
@@ -141,7 +141,7 @@ func handleTrayUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	sessions := h.sessionBroker.AllSessions()
 	sent := 0
 	for _, info := range sessions {
-		session := h.sessionBroker.SessionForUID(info.UID)
+		session := h.sessionBroker.SessionForIdentity(info.IdentityKey)
 		if session != nil {
 			if err := session.SendNotify(cmd.ID, ipc.TypeTrayUpdate, update); err != nil {
 				log.Warn("tray update failed for session", "uid", info.UID, "error", err)

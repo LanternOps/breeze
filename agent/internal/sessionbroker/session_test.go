@@ -14,7 +14,7 @@ func createTestSession(t *testing.T) (*Session, *ipc.Conn) {
 	serverConn, clientConn := createSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
-	session := NewSession(serverIPC, 1000, "testuser", "x11:0", "test-session-1", []string{"notify", "tray", "run_as_user"})
+	session := NewSession(serverIPC, 1000, "1000", "testuser", "x11:0", "test-session-1", []string{"notify", "tray", "run_as_user"})
 	return session, clientIPC
 }
 

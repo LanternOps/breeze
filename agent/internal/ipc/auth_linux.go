@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 
 	"golang.org/x/sys/unix"
 )
@@ -55,6 +56,12 @@ func GetPeerCredentials(conn net.Conn) (*PeerCredentials, error) {
 		GID:        cred.Gid,
 		BinaryPath: exePath,
 	}, nil
+}
+
+// IdentityKey returns the platform identity key for this peer.
+// On Linux, this is the kernel-verified UID as a string.
+func (p *PeerCredentials) IdentityKey() string {
+	return strconv.FormatUint(uint64(p.UID), 10)
 }
 
 // DefaultSocketPath returns the default IPC socket path for Linux.

@@ -74,23 +74,15 @@ func (c *Client) Stop() {
 }
 
 func (c *Client) connect() error {
-	var conn net.Conn
-	var err error
-
-	if runtime.GOOS == "windows" {
-		// Windows named pipe IPC is not yet implemented.
-		// TODO: implement proper named pipe support.
-		return fmt.Errorf("user helper is not yet supported on Windows")
-	} else {
-		conn, err = net.DialTimeout("unix", c.socketPath, 5*time.Second)
-		if err != nil {
-			return fmt.Errorf("connect to %s: %w", c.socketPath, err)
-		}
+	conn, err := c.dialIPC()
+	if err != nil {
+		return err
 	}
-
 	c.conn = ipc.NewConn(conn)
 	return nil
 }
+
+// dialIPC is implemented in client_windows.go and client_unix.go.
 
 func (c *Client) authenticate() error {
 	cu, err := user.Current()
@@ -99,9 +91,11 @@ func (c *Client) authenticate() error {
 	}
 
 	uid, err := strconv.ParseUint(cu.Uid, 10, 32)
+	var sid string
 	if err != nil {
-		// On Windows, UID is a SID string
+		// On Windows, cu.Uid is the SID string (e.g., "S-1-5-21-...")
 		uid = 0
+		sid = cu.Uid
 	}
 
 	binaryHash, _ := computeSelfHash()
@@ -111,6 +105,7 @@ func (c *Client) authenticate() error {
 	authReq := ipc.AuthRequest{
 		ProtocolVersion: ipc.ProtocolVersion,
 		UID:             uint32(uid),
+		SID:             sid,
 		Username:        cu.Username,
 		SessionID:       sessionID,
 		DisplayEnv:      displayEnv,

@@ -5,17 +5,18 @@ import (
 	"time"
 )
 
-// RateLimiter provides per-UID connection rate limiting.
+// RateLimiter provides per-identity connection rate limiting.
 // Max attempts per window (sliding). In-memory only — IPC is local.
+// Keys are identity strings: UID on Unix, SID on Windows.
 type RateLimiter struct {
 	maxAttempts int
 	window      time.Duration
 	mu          sync.Mutex
-	attempts    map[uint32][]time.Time
+	attempts    map[string][]time.Time
 	lastCleanup time.Time
 }
 
-// cleanupInterval controls how often we scan for and remove stale UIDs.
+// cleanupInterval controls how often we scan for and remove stale entries.
 const cleanupInterval = 5 * time.Minute
 
 // NewRateLimiter creates a rate limiter with the given max attempts per window.
@@ -23,22 +24,22 @@ func NewRateLimiter(maxAttempts int, window time.Duration) *RateLimiter {
 	return &RateLimiter{
 		maxAttempts: maxAttempts,
 		window:      window,
-		attempts:    make(map[uint32][]time.Time),
+		attempts:    make(map[string][]time.Time),
 		lastCleanup: time.Now(),
 	}
 }
 
-// Allow checks whether a UID is allowed to connect. If allowed, it records the attempt.
-func (r *RateLimiter) Allow(uid uint32) bool {
+// Allow checks whether an identity key is allowed to connect. If allowed, it records the attempt.
+func (r *RateLimiter) Allow(key string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	now := time.Now()
 	cutoff := now.Add(-r.window)
 
-	// Periodically prune departed UIDs
+	// Periodically prune departed identities
 	if now.Sub(r.lastCleanup) > cleanupInterval {
-		for u, times := range r.attempts {
+		for k, times := range r.attempts {
 			allExpired := true
 			for _, t := range times {
 				if t.After(cutoff) {
@@ -47,14 +48,14 @@ func (r *RateLimiter) Allow(uid uint32) bool {
 				}
 			}
 			if allExpired {
-				delete(r.attempts, u)
+				delete(r.attempts, k)
 			}
 		}
 		r.lastCleanup = now
 	}
 
-	// Prune expired entries for this UID (allocate new slice to avoid retaining old data)
-	existing := r.attempts[uid]
+	// Prune expired entries for this key
+	existing := r.attempts[key]
 	pruned := make([]time.Time, 0, len(existing))
 	for _, t := range existing {
 		if t.After(cutoff) {
@@ -63,11 +64,11 @@ func (r *RateLimiter) Allow(uid uint32) bool {
 	}
 
 	if len(pruned) >= r.maxAttempts {
-		r.attempts[uid] = pruned
+		r.attempts[key] = pruned
 		return false
 	}
 
-	r.attempts[uid] = append(pruned, now)
+	r.attempts[key] = append(pruned, now)
 	return true
 }
 
@@ -75,5 +76,5 @@ func (r *RateLimiter) Allow(uid uint32) bool {
 func (r *RateLimiter) Reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.attempts = make(map[uint32][]time.Time)
+	r.attempts = make(map[string][]time.Time)
 }
