@@ -26,7 +26,15 @@ import {
 import { createHash, randomBytes } from 'crypto';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
 import { writeAuditEvent } from '../services/auditEvents';
-import { parseFilesystemAnalysisStdout, saveFilesystemSnapshot } from '../services/filesystemAnalysis';
+import {
+  getFilesystemScanState,
+  mergeFilesystemAnalysisPayload,
+  parseFilesystemAnalysisStdout,
+  readCheckpointPendingDirectories,
+  readHotDirectories,
+  saveFilesystemSnapshot,
+  upsertFilesystemScanState,
+} from '../services/filesystemAnalysis';
 
 export const agentRoutes = new Hono();
 
@@ -185,8 +193,7 @@ function parseEnvBoundedNumber(raw: string | undefined, fallback: number, min: n
 
 function getFilesystemThresholdScanPath(osType: unknown): string {
   if (osType === 'windows') return 'C:\\';
-  if (osType === 'macos') return '/Users';
-  return '/home';
+  return '/';
 }
 
 async function maybeQueueThresholdFilesystemAnalysis(
@@ -239,11 +246,13 @@ async function maybeQueueThresholdFilesystemAnalysis(
       path,
       trigger: 'threshold',
       thresholdPercent: filesystemDiskThresholdPercent,
-      maxDepth: 6,
+      maxDepth: 32,
       topFiles: 50,
       topDirs: 30,
-      maxEntries: 200000,
-      timeoutSeconds: 20,
+      maxEntries: 2_000_000,
+      workers: 6,
+      timeoutSeconds: 300,
+      scanMode: 'baseline',
       followSymlinks: false,
     },
     status: 'pending',
@@ -580,16 +589,74 @@ async function handleFilesystemAnalysisCommandResult(
 
   const payload = isObject(command.payload) ? command.payload : {};
   const trigger = asString(payload.trigger);
-  if (trigger !== 'threshold') {
-    return;
-  }
+  const snapshotTrigger = trigger === 'threshold' ? 'threshold' : 'on_demand';
+  const scanMode = asString(payload.scanMode) === 'incremental' ? 'incremental' : 'baseline';
 
   const parsed = parseFilesystemAnalysisStdout(resultData.stdout ?? '');
   if (Object.keys(parsed).length === 0) {
     return;
   }
 
-  await saveFilesystemSnapshot(command.deviceId, 'threshold', parsed);
+  const currentState = await getFilesystemScanState(command.deviceId);
+  const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
+  const mergedPayload = scanMode === 'baseline'
+    ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
+    : parsed;
+  const pendingDirs = readCheckpointPendingDirectories(mergedPayload.checkpoint, 50_000);
+  const hasCheckpoint = scanMode === 'baseline' && pendingDirs.length > 0;
+  const snapshotPayload = hasCheckpoint
+    ? {
+      ...mergedPayload,
+      partial: true,
+      reason: `checkpoint pending ${pendingDirs.length} directories`,
+      checkpoint: { pendingDirs },
+      scanMode,
+    }
+    : {
+      ...mergedPayload,
+      scanMode,
+    };
+
+  await saveFilesystemSnapshot(command.deviceId, snapshotTrigger, snapshotPayload);
+
+  const [disk] = await db
+    .select({ usedPercent: deviceDisks.usedPercent })
+    .from(deviceDisks)
+    .where(eq(deviceDisks.deviceId, command.deviceId))
+    .limit(1);
+  const currentDiskUsedPercent = typeof disk?.usedPercent === 'number' ? disk.usedPercent : null;
+
+  const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
+  const mergedHotDirectories = Array.from(
+    new Set([
+      ...hotFromRun,
+      ...readHotDirectories(currentState?.hotDirectories, 24),
+    ])
+  ).slice(0, 24);
+
+  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0 && !Boolean(snapshotPayload.partial);
+  await upsertFilesystemScanState(command.deviceId, {
+    lastRunMode: scanMode,
+    lastBaselineCompletedAt: baselineCompleted
+      ? new Date()
+      : currentState?.lastBaselineCompletedAt ?? null,
+    lastDiskUsedPercent: currentDiskUsedPercent ?? currentState?.lastDiskUsedPercent ?? null,
+    checkpoint: hasCheckpoint ? { pendingDirs } : {},
+    aggregate: scanMode === 'baseline' && !baselineCompleted ? mergedPayload : {},
+    hotDirectories: mergedHotDirectories,
+  });
+}
+
+function extractHotDirectoriesFromSnapshotPayload(payload: Record<string, unknown>, limit: number): string[] {
+  const rootPath = asString(payload.path);
+  const rawDirs = Array.isArray(payload.topLargestDirectories) ? payload.topLargestDirectories : [];
+  const paths = rawDirs
+    .map((entry) => {
+      if (!isObject(entry)) return null;
+      return asString(entry.path) ?? null;
+    })
+    .filter((path): path is string => path !== null && path !== rootPath);
+  return Array.from(new Set(paths)).slice(0, limit);
 }
 
 // Generate a unique agent ID
@@ -961,6 +1028,7 @@ agentRoutes.post(
         status: data.status === 'completed' ? 'completed' : 'failed',
         completedAt: new Date(),
         result: {
+          status: data.status,
           exitCode: data.exitCode,
           stdout: data.stdout,
           stderr: data.stderr,

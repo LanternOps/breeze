@@ -99,6 +99,11 @@ export interface QueuedCommand {
   result: CommandResult | null;
 }
 
+export interface QueueCommandForExecutionResult {
+  command?: QueuedCommand;
+  error?: string;
+}
+
 // Commands that modify system state and should always be audit-logged
 const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.KILL_PROCESS,
@@ -229,6 +234,62 @@ export async function waitForCommandResult(
 }
 
 /**
+ * Queue a command and attempt immediate dispatch to the agent websocket.
+ */
+export async function queueCommandForExecution(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  options: {
+    userId?: string;
+    preferHeartbeat?: boolean;
+  } = {}
+): Promise<QueueCommandForExecutionResult> {
+  const { userId, preferHeartbeat = false } = options;
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) {
+    return { error: 'Device not found' };
+  }
+
+  if (device.status !== 'online') {
+    return { error: `Device is ${device.status}, cannot execute command` };
+  }
+
+  const command = await queueCommand(deviceId, type, payload, userId);
+
+  if (device.agentId && !preferHeartbeat) {
+    const sent = sendCommandToAgent(device.agentId, {
+      id: command.id,
+      type,
+      payload
+    });
+    if (sent) {
+      const executedAt = new Date();
+      await db
+        .update(deviceCommands)
+        .set({ status: 'sent', executedAt })
+        .where(eq(deviceCommands.id, command.id));
+
+      return {
+        command: {
+          ...command,
+          status: 'sent',
+          executedAt
+        } as QueuedCommand
+      };
+    }
+  }
+
+  return { command };
+}
+
+/**
  * Execute a command and wait for result (convenience wrapper)
  */
 export async function executeCommand(
@@ -238,52 +299,21 @@ export async function executeCommand(
   options: {
     userId?: string;
     timeoutMs?: number;
+    preferHeartbeat?: boolean;
   } = {}
 ): Promise<CommandResult> {
-  const { userId, timeoutMs = 30000 } = options;
+  const { timeoutMs = 30000, ...queueOptions } = options;
+  const queueResult = await queueCommandForExecution(deviceId, type, payload, queueOptions);
 
-  // Verify device exists and is online
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device) {
+  if (!queueResult.command) {
     return {
       status: 'failed',
-      error: 'Device not found'
+      error: queueResult.error || 'Failed to queue command'
     };
-  }
-
-  if (device.status !== 'online') {
-    return {
-      status: 'failed',
-      error: `Device is ${device.status}, cannot execute command`
-    };
-  }
-
-  // Queue the command
-  const command = await queueCommand(deviceId, type, payload, userId);
-
-  // Try to dispatch via WebSocket for immediate execution
-  if (device.agentId) {
-    const sent = sendCommandToAgent(device.agentId, {
-      id: command.id,
-      type,
-      payload
-    });
-    if (sent) {
-      // Mark as sent so heartbeat won't re-dispatch
-      await db
-        .update(deviceCommands)
-        .set({ status: 'sent', executedAt: new Date() })
-        .where(eq(deviceCommands.id, command.id));
-    }
   }
 
   // Wait for result
-  const result = await waitForCommandResult(command.id, timeoutMs);
+  const result = await waitForCommandResult(queueResult.command.id, timeoutMs);
 
   return result.result ?? {
     status: 'failed',

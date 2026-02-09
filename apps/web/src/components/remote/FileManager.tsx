@@ -62,12 +62,14 @@ type DiskLargestDirectory = {
   path: string;
   sizeBytes: number;
   fileCount: number;
+  estimated?: boolean;
 };
 
 type DiskAnalysisSnapshot = {
   id: string;
   capturedAt: string;
   trigger: 'on_demand' | 'threshold';
+  scanMode?: string;
   partial: boolean;
   summary: DiskAnalysisSummary;
   topLargestFiles: DiskLargestFile[];
@@ -96,6 +98,12 @@ type DiskCleanupResult = {
   bytesReclaimed: number;
   selectedCount: number;
   failedCount: number;
+};
+
+type DeviceCommandDetail = {
+  id: string;
+  status?: string;
+  result?: unknown;
 };
 
 export type FileManagerProps = {
@@ -179,6 +187,7 @@ export default function FileManager({
   const [cleanupPreview, setCleanupPreview] = useState<DiskCleanupPreview | null>(null);
   const [selectedCleanupPaths, setSelectedCleanupPaths] = useState<Set<string>>(new Set());
   const [cleanupResult, setCleanupResult] = useState<DiskCleanupResult | null>(null);
+  const [scanCommand, setScanCommand] = useState<{ id: string; status: string } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -497,20 +506,60 @@ export default function FileManager({
     }
   }, [deviceId]);
 
+  const pollScanCommand = useCallback(async (commandId: string, timeoutMs: number) => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const response = await fetchWithAuth(`/devices/${deviceId}/commands/${commandId}`);
+      if (!response.ok) {
+        const json = await response.json().catch(() => ({ error: 'Failed to fetch scan status' }));
+        throw new Error(json.error || 'Failed to fetch scan status');
+      }
+
+      const json = await response.json();
+      const command = (json.data ?? null) as DeviceCommandDetail | null;
+      if (!command) {
+        throw new Error('Scan command was not found');
+      }
+
+      const status = command.status ?? 'pending';
+      setScanCommand({ id: commandId, status });
+
+      if (status === 'completed') {
+        return;
+      }
+
+      if (status === 'failed') {
+        const result = command.result;
+        const error = result && typeof result === 'object' && typeof (result as Record<string, unknown>).error === 'string'
+          ? String((result as Record<string, unknown>).error)
+          : 'Filesystem analysis failed';
+        throw new Error(error);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    throw new Error('Filesystem scan is still running. Refresh in a few moments.');
+  }, [deviceId]);
+
   const runFilesystemScan = useCallback(async () => {
     setDiskLoadingAction('scan');
     setDiskError(null);
     setCleanupResult(null);
+    setScanCommand(null);
     try {
+      const timeoutSeconds = 300;
       const response = await fetchWithAuth(`/devices/${deviceId}/filesystem/scan`, {
         method: 'POST',
         body: JSON.stringify({
           path: currentPath,
-          maxDepth: 6,
+          maxDepth: 32,
           topFiles: 50,
           topDirs: 30,
-          maxEntries: 200000,
-          timeoutSeconds: 20
+          maxEntries: 2000000,
+          workers: 6,
+          timeoutSeconds
         })
       });
 
@@ -520,18 +569,27 @@ export default function FileManager({
       }
 
       const json = await response.json();
-      setDiskSnapshot((json.data ?? null) as DiskAnalysisSnapshot | null);
+      const commandId = typeof json?.data?.commandId === 'string' ? json.data.commandId : null;
+      if (!commandId) {
+        throw new Error('Scan command was not queued');
+      }
+
+      setScanCommand({ id: commandId, status: 'pending' });
+      await pollScanCommand(commandId, Math.max(120_000, (timeoutSeconds + 90) * 1000));
+      await loadLatestFilesystemSnapshot();
       setCleanupPreview(null);
       setSelectedCleanupPaths(new Set());
       setDiskError(null);
+      setScanCommand(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Filesystem analysis failed';
       setDiskError(message);
       onError?.(message);
+      setScanCommand(null);
     } finally {
       setDiskLoadingAction(null);
     }
-  }, [currentPath, deviceId, onError]);
+  }, [currentPath, deviceId, loadLatestFilesystemSnapshot, onError, pollScanCommand]);
 
   const runCleanupPreview = useCallback(async () => {
     setDiskLoadingAction('preview');
@@ -774,11 +832,18 @@ export default function FileManager({
           </div>
         )}
 
+        {scanCommand && (
+          <div className="mt-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            Scan running ({scanCommand.status})
+          </div>
+        )}
+
         {diskSnapshot && (
           <div className="mt-3 space-y-2">
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>Captured: {formatDate(diskSnapshot.capturedAt)}</span>
               <span>Trigger: {diskSnapshot.trigger === 'threshold' ? 'Threshold' : 'On demand'}</span>
+              <span>Mode: {diskSnapshot.scanMode === 'incremental' ? 'Incremental' : 'Baseline'}</span>
               <span>Scanned: {diskSnapshot.summary.filesScanned.toLocaleString()} files</span>
               <span>Data: {formatSize(diskSnapshot.summary.bytesScanned)}</span>
               {diskSnapshot.partial && <span className="text-amber-600">Partial scan</span>}
@@ -797,11 +862,14 @@ export default function FileManager({
               </div>
               <div className="rounded-md border bg-background p-2">
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Directories</p>
+                {diskSnapshot.topLargestDirectories.some((dir) => dir.estimated) && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">{'>='} indicates lower-bound size.</p>
+                )}
                 <div className="mt-1 space-y-1">
                   {diskSnapshot.topLargestDirectories.slice(0, 5).map((dir) => (
                     <div key={dir.path} className="flex items-center justify-between gap-2 text-xs">
                       <span className="truncate">{dir.path}</span>
-                      <span className="font-medium">{formatSize(dir.sizeBytes)}</span>
+                      <span className="font-medium">{dir.estimated ? '>=' : ''}{formatSize(dir.sizeBytes)}</span>
                     </div>
                   ))}
                 </div>

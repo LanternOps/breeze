@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, sql, desc } from 'drizzle-orm';
+import { eq, sql, desc, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
@@ -239,5 +239,38 @@ commandsRoutes.get(
         total
       }
     });
+  }
+);
+
+// GET /devices/:id/commands/:commandId - Get a single command
+commandsRoutes.get(
+  '/:id/commands/:commandId',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+    const commandId = c.req.param('commandId');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const [command] = await db
+      .select()
+      .from(deviceCommands)
+      .where(
+        and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.deviceId, deviceId)
+        )
+      )
+      .limit(1);
+
+    if (!command) {
+      return c.json({ error: 'Command not found' }, 404);
+    }
+
+    return c.json({ data: command });
   }
 );

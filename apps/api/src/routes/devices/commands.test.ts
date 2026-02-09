@@ -150,4 +150,37 @@ describe('device commands routes', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe('GET /devices/:id/commands/:commandId', () => {
+    it('returns a single command for the device', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'cmd-123',
+              deviceId: 'device-a',
+              type: 'filesystem_analysis',
+              status: 'sent'
+            }])
+          })
+        })
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands/cmd-123', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.id).toBe('cmd-123');
+      expect(body.data.status).toBe('sent');
+    });
+  });
 });

@@ -8,7 +8,12 @@ vi.mock('../services/auditEvents', () => ({
 }));
 vi.mock('../services/filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
-  saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' }))
+  saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),
+  getFilesystemScanState: vi.fn(() => Promise.resolve(null)),
+  mergeFilesystemAnalysisPayload: vi.fn((_existing, incoming) => incoming),
+  readCheckpointPendingDirectories: vi.fn(() => []),
+  readHotDirectories: vi.fn(() => []),
+  upsertFilesystemScanState: vi.fn(() => Promise.resolve({ deviceId: 'device-123' })),
 }));
 
 vi.mock('../db', () => ({
@@ -439,6 +444,46 @@ describe('agent routes', () => {
       expect(saveFilesystemSnapshot).toHaveBeenCalledWith(
         'device-123',
         'threshold',
+        expect.any(Object)
+      );
+    });
+
+    it('persists on-demand filesystem analysis command results', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'cmd-fs-2',
+              type: 'filesystem_analysis',
+              payload: { trigger: 'on_demand' },
+              deviceId: 'device-123',
+              createdAt: new Date()
+            }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const res = await app.request('/agents/agent-123/commands/cmd-fs-2/result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'completed',
+          exitCode: 0,
+          stdout: '{"summary":{"filesScanned":42}}',
+          durationMs: 750
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(saveFilesystemSnapshot).toHaveBeenCalledWith(
+        'device-123',
+        'on_demand',
         expect.any(Object)
       );
     });

@@ -1,15 +1,17 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceFilesystemCleanupRuns } from '../../db/schema';
+import { deviceDisks, deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
-import { CommandTypes, executeCommand } from '../../services/commandQueue';
+import { CommandTypes, executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
   buildCleanupPreview,
+  getFilesystemScanState,
   getLatestFilesystemSnapshot,
-  parseFilesystemAnalysisStdout,
-  saveFilesystemSnapshot,
+  readCheckpointPendingDirectories,
+  readHotDirectories,
   safeCleanupCategories,
 } from '../../services/filesystemAnalysis';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -25,11 +27,13 @@ const deviceIdParamSchema = z.object({
 
 const scanFilesystemBodySchema = z.object({
   path: z.string().min(1).max(2048),
-  maxDepth: z.number().int().min(1).max(12).optional(),
+  strategy: z.enum(['auto', 'baseline', 'incremental']).optional(),
+  maxDepth: z.number().int().min(1).max(64).optional(),
   topFiles: z.number().int().min(1).max(500).optional(),
   topDirs: z.number().int().min(1).max(200).optional(),
-  maxEntries: z.number().int().min(1000).max(1_000_000).optional(),
-  timeoutSeconds: z.number().int().min(5).max(120).optional(),
+  maxEntries: z.number().int().min(1000).max(5_000_000).optional(),
+  workers: z.number().int().min(1).max(32).optional(),
+  timeoutSeconds: z.number().int().min(5).max(900).optional(),
   followSymlinks: z.boolean().optional(),
 });
 
@@ -40,6 +44,50 @@ const cleanupPreviewBodySchema = z.object({
 const cleanupExecuteBodySchema = z.object({
   paths: z.array(z.string().min(1).max(4096)).min(1).max(200),
 });
+
+function readSnapshotReason(snapshot: { rawPayload?: unknown } | null | undefined): string | null {
+  if (!snapshot || typeof snapshot.rawPayload !== 'object' || snapshot.rawPayload === null) {
+    return null;
+  }
+  const raw = snapshot.rawPayload as Record<string, unknown>;
+  return typeof raw.reason === 'string' && raw.reason.length > 0 ? raw.reason : null;
+}
+
+function readSnapshotPath(snapshot: { rawPayload?: unknown } | null | undefined): string | null {
+  if (!snapshot || typeof snapshot.rawPayload !== 'object' || snapshot.rawPayload === null) {
+    return null;
+  }
+  const raw = snapshot.rawPayload as Record<string, unknown>;
+  return typeof raw.path === 'string' && raw.path.length > 0 ? raw.path : null;
+}
+
+function readSnapshotScanMode(snapshot: { rawPayload?: unknown } | null | undefined): string | null {
+  if (!snapshot || typeof snapshot.rawPayload !== 'object' || snapshot.rawPayload === null) {
+    return null;
+  }
+  const raw = snapshot.rawPayload as Record<string, unknown>;
+  return typeof raw.scanMode === 'string' && raw.scanMode.length > 0 ? raw.scanMode : null;
+}
+
+async function readCurrentDiskUsedPercent(deviceId: string): Promise<number | null> {
+  const [disk] = await db
+    .select({ usedPercent: deviceDisks.usedPercent })
+    .from(deviceDisks)
+    .where(eq(deviceDisks.deviceId, deviceId))
+    .orderBy(desc(deviceDisks.usedPercent))
+    .limit(1);
+  return typeof disk?.usedPercent === 'number' ? disk.usedPercent : null;
+}
+
+function withinPercentDelta(current: number | null, baseline: number | null | undefined, maxDelta: number): boolean {
+  if (current === null || baseline === null || baseline === undefined) return false;
+  return Math.abs(current - baseline) <= maxDelta;
+}
+
+function getDefaultScanPathForOs(osType: unknown): string {
+  if (osType === 'windows') return 'C:\\';
+  return '/';
+}
 
 filesystemRoutes.get(
   '/:id/filesystem',
@@ -66,6 +114,9 @@ filesystemRoutes.get(
         capturedAt: snapshot.capturedAt,
         trigger: snapshot.trigger,
         partial: snapshot.partial,
+        reason: readSnapshotReason(snapshot),
+        path: readSnapshotPath(snapshot),
+        scanMode: readSnapshotScanMode(snapshot),
         summary: snapshot.summary,
         topLargestFiles: snapshot.largestFiles,
         topLargestDirectories: snapshot.largestDirs,
@@ -96,21 +147,70 @@ filesystemRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const timeoutMs = Math.max(15_000, ((payload.timeoutSeconds ?? 20) + 10) * 1000);
-    const result = await executeCommand(
-      deviceId,
-      CommandTypes.FILESYSTEM_ANALYSIS,
-      payload,
-      { userId: auth.user.id, timeoutMs }
-    );
+    const scanState = await getFilesystemScanState(deviceId);
+    const hotDirectories = readHotDirectories(scanState?.hotDirectories, 12);
+    const checkpointDirs = readCheckpointPendingDirectories(scanState?.checkpoint, 50_000);
+    const currentUsedPercent = await readCurrentDiskUsedPercent(deviceId);
+    const fullRescanDeltaPercent = 3;
 
-    if (result.status !== 'completed') {
-      const error = result.error || 'Filesystem analysis failed';
-      return c.json({ error }, 502);
+    let scanMode: 'baseline' | 'incremental' = 'baseline';
+    let checkpointPayload: { pendingDirs: Array<{ path: string; depth: number }> } | undefined;
+    let targetDirectories: string[] | undefined;
+
+    const strategy = payload.strategy ?? 'auto';
+    const isRootScopedScan = payload.path === getDefaultScanPathForOs((device as { osType?: unknown }).osType);
+    if (strategy === 'baseline') {
+      scanMode = 'baseline';
+    } else if (strategy === 'incremental') {
+      if (hotDirectories.length > 0) {
+        scanMode = 'incremental';
+        targetDirectories = hotDirectories;
+      }
+    } else {
+      if (!isRootScopedScan) {
+        scanMode = 'baseline';
+      } else if (checkpointDirs.length > 0) {
+        scanMode = 'baseline';
+        checkpointPayload = { pendingDirs: checkpointDirs };
+      } else if (!scanState?.lastBaselineCompletedAt) {
+        scanMode = 'baseline';
+      } else if (!withinPercentDelta(currentUsedPercent, scanState.lastDiskUsedPercent, fullRescanDeltaPercent)) {
+        scanMode = 'baseline';
+      } else if (hotDirectories.length > 0) {
+        scanMode = 'incremental';
+        targetDirectories = hotDirectories;
+      }
     }
 
-    const parsed = parseFilesystemAnalysisStdout(result.stdout ?? '{}');
-    const snapshot = await saveFilesystemSnapshot(deviceId, 'on_demand', parsed);
+    if (scanMode === 'baseline' && !checkpointPayload && checkpointDirs.length > 0) {
+      checkpointPayload = { pendingDirs: checkpointDirs };
+    }
+
+    const timeoutSeconds = payload.timeoutSeconds ?? (scanMode === 'baseline' ? 300 : 120);
+    const commandPayload = {
+      ...payload,
+      timeoutSeconds,
+      trigger: 'on_demand',
+      scanMode,
+      checkpoint: checkpointPayload,
+      targetDirectories,
+    };
+    delete (commandPayload as { strategy?: string }).strategy;
+
+    const queued = await queueCommandForExecution(
+      deviceId,
+      CommandTypes.FILESYSTEM_ANALYSIS,
+      commandPayload,
+      {
+        userId: auth.user.id,
+        // Prefer websocket dispatch when available so scans start immediately.
+        preferHeartbeat: false,
+      }
+    );
+
+    if (!queued.command) {
+      return c.json({ error: queued.error || 'Failed to queue filesystem analysis' }, 502);
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -119,35 +219,25 @@ filesystemRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname,
       details: {
-        snapshotId: snapshot?.id ?? null,
+        commandId: queued.command.id,
         path: payload.path,
         maxDepth: payload.maxDepth ?? null,
+        scanMode,
+        strategy,
       },
-      result: snapshot ? 'success' : 'failure',
+      result: 'success',
     });
-
-    if (!snapshot) {
-      return c.json({ error: 'Failed to persist filesystem snapshot' }, 500);
-    }
 
     return c.json({
       success: true,
       data: {
-        id: snapshot.id,
-        capturedAt: snapshot.capturedAt,
-        partial: snapshot.partial,
-        summary: snapshot.summary,
-        topLargestFiles: snapshot.largestFiles,
-        topLargestDirectories: snapshot.largestDirs,
-        tempAccumulation: snapshot.tempAccumulation,
-        oldDownloads: snapshot.oldDownloads,
-        unrotatedLogs: snapshot.unrotatedLogs,
-        trashUsage: snapshot.trashUsage,
-        duplicateCandidates: snapshot.duplicateCandidates,
-        cleanupCandidates: snapshot.cleanupCandidates,
-        errors: snapshot.errors,
+        commandId: queued.command.id,
+        status: queued.command.status,
+        createdAt: queued.command.createdAt,
+        scanMode,
+        strategy,
       },
-    });
+    }, 202);
   }
 );
 

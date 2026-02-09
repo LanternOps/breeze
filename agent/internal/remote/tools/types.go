@@ -329,6 +329,7 @@ type FilesystemLargestDirectory struct {
 	Path      string `json:"path"`
 	SizeBytes int64  `json:"sizeBytes"`
 	FileCount int64  `json:"fileCount"`
+	Estimated bool   `json:"estimated,omitempty"`
 }
 
 // FilesystemAccumulation captures grouped byte totals for cleanup categories.
@@ -394,11 +395,13 @@ type FilesystemAnalysisSummary struct {
 // FilesystemAnalysisResponse captures the full analysis payload.
 type FilesystemAnalysisResponse struct {
 	Path                string                         `json:"path"`
+	ScanMode            string                         `json:"scanMode,omitempty"`
 	StartedAt           string                         `json:"startedAt"`
 	CompletedAt         string                         `json:"completedAt"`
 	DurationMs          int64                          `json:"durationMs"`
 	Partial             bool                           `json:"partial"`
 	Reason              string                         `json:"reason,omitempty"`
+	Checkpoint          map[string]any                 `json:"checkpoint,omitempty"`
 	Summary             FilesystemAnalysisSummary      `json:"summary"`
 	TopLargestFiles     []FilesystemLargestFile        `json:"topLargestFiles"`
 	TopLargestDirs      []FilesystemLargestDirectory   `json:"topLargestDirectories"`

@@ -666,11 +666,12 @@ registerTool({
         deviceId: { type: 'string', description: 'The device UUID' },
         refresh: { type: 'boolean', description: 'If true, run a fresh filesystem analysis before returning results' },
         path: { type: 'string', description: 'Root path to scan when refreshing (required for refresh)' },
-        maxDepth: { type: 'number', description: 'Max traversal depth (1-12)' },
+        maxDepth: { type: 'number', description: 'Max traversal depth (1-64)' },
         topFiles: { type: 'number', description: 'Largest file rows to keep (1-500)' },
         topDirs: { type: 'number', description: 'Largest directory rows to keep (1-200)' },
-        maxEntries: { type: 'number', description: 'Hard traversal cap (1k-1M)' },
-        timeoutSeconds: { type: 'number', description: 'Scan timeout in seconds (5-120)' }
+        maxEntries: { type: 'number', description: 'Hard traversal cap (1k-5M)' },
+        workers: { type: 'number', description: 'Parallel directory workers (1-32)' },
+        timeoutSeconds: { type: 'number', description: 'Scan timeout in seconds (5-900)' }
       },
       required: ['deviceId']
     }
@@ -683,24 +684,24 @@ registerTool({
     if ('error' in access) return JSON.stringify({ error: access.error });
     const defaultPath = access.device.osType === 'windows'
       ? 'C:\\'
-      : access.device.osType === 'macos'
-        ? '/Users'
-        : '/home';
+      : '/';
     const scanPath = typeof input.path === 'string' && input.path.length > 0 ? input.path : defaultPath;
 
     let snapshot = await getLatestFilesystemSnapshot(deviceId);
 
     if (refresh || !snapshot) {
       const { executeCommand } = await getCommandQueue();
-      const timeoutMs = Math.max(15_000, ((Number(input.timeoutSeconds) || 20) + 10) * 1000);
+      const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
       const commandResult = await executeCommand(deviceId, 'filesystem_analysis', {
+        trigger: 'on_demand',
         path: scanPath,
         maxDepth: input.maxDepth,
         topFiles: input.topFiles,
         topDirs: input.topDirs,
         maxEntries: input.maxEntries,
+        workers: input.workers,
         timeoutSeconds: input.timeoutSeconds,
-      }, { userId: auth.user.id, timeoutMs });
+      }, { userId: auth.user.id, timeoutMs, preferHeartbeat: true });
 
       if (commandResult.status !== 'completed') {
         return JSON.stringify({ error: commandResult.error || 'Filesystem analysis failed' });

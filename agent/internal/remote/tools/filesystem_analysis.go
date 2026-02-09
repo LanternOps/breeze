@@ -7,18 +7,25 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	defaultFSMaxDepth      = 6
-	defaultFSTopFiles      = 50
-	defaultFSTopDirs       = 30
-	defaultFSMaxEntries    = 200000
-	defaultFSTimeoutSecs   = 20
-	maxFSErrors            = 200
-	maxFSCleanupCandidates = 1000
-	unrotatedLogMinBytes   = 100 * 1024 * 1024
+	defaultFSBaselineMaxDepth    = 32
+	defaultFSIncrementalMaxDepth = 12
+	maxFSMaxDepth                = 64
+	defaultFSTopFiles            = 50
+	defaultFSTopDirs             = 30
+	defaultFSMaxEntries          = 2_000_000
+	maxFSMaxEntries              = 5_000_000
+	defaultFSTimeoutSecs         = 20
+	maxFSErrors                  = 200
+	maxFSCleanupCandidates       = 1000
+	unrotatedLogMinBytes         = 100 * 1024 * 1024
+	defaultFSWorkerCap           = 8
+	maxFSWorkers                 = 32
 )
 
 type scanDirFrame struct {
@@ -27,11 +34,12 @@ type scanDirFrame struct {
 }
 
 type fsDirAggregate struct {
-	Path      string
-	Parent    string
-	Depth     int
-	SizeBytes int64
-	FileCount int64
+	Path       string
+	Parent     string
+	Depth      int
+	SizeBytes  int64
+	FileCount  int64
+	Incomplete bool
 }
 
 type duplicateGroup struct {
@@ -50,12 +58,24 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		return *errResult
 	}
 
-	maxDepth := clampInt(GetPayloadInt(payload, "maxDepth", defaultFSMaxDepth), 1, 12)
+	scanMode := parseFilesystemScanMode(GetPayloadString(payload, "scanMode", "baseline"))
+	defaultMaxDepth := defaultFSBaselineMaxDepth
+	if scanMode == "incremental" {
+		defaultMaxDepth = defaultFSIncrementalMaxDepth
+	}
+
+	maxDepth := clampInt(GetPayloadInt(payload, "maxDepth", defaultMaxDepth), 1, maxFSMaxDepth)
 	topFilesLimit := clampInt(GetPayloadInt(payload, "topFiles", defaultFSTopFiles), 1, 500)
 	topDirsLimit := clampInt(GetPayloadInt(payload, "topDirs", defaultFSTopDirs), 1, 200)
-	maxEntries := clampInt(GetPayloadInt(payload, "maxEntries", defaultFSMaxEntries), 1000, 1000000)
-	timeoutSecs := clampInt(GetPayloadInt(payload, "timeoutSeconds", defaultFSTimeoutSecs), 5, 120)
+	maxEntries := clampInt(GetPayloadInt(payload, "maxEntries", defaultFSMaxEntries), 1000, maxFSMaxEntries)
+	timeoutSecs := clampInt(GetPayloadInt(payload, "timeoutSeconds", defaultFSTimeoutSecs), 5, 900)
 	followSymlinks := GetPayloadBool(payload, "followSymlinks", false)
+
+	defaultWorkers := clampInt(runtime.NumCPU(), 2, defaultFSWorkerCap)
+	if scanMode == "incremental" {
+		defaultWorkers = clampInt(defaultWorkers, 1, 4)
+	}
+	workerCount := clampInt(GetPayloadInt(payload, "workers", defaultWorkers), 1, maxFSWorkers)
 
 	cleanRoot := filepath.Clean(rootPath)
 	rootInfo, err := os.Stat(cleanRoot)
@@ -70,15 +90,49 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	deadline := now.Add(time.Duration(timeoutSecs) * time.Second)
 	oldDownloadsThreshold := now.Add(-30 * 24 * time.Hour)
 
-	dirStats := map[string]*fsDirAggregate{
-		cleanRoot: {
-			Path:   cleanRoot,
-			Parent: "",
-			Depth:  0,
-		},
+	dirStats := map[string]*fsDirAggregate{}
+	dirStack := []scanDirFrame{}
+	visitedDirs := map[string]struct{}{}
+
+	checkpointFrames := readCheckpointFrames(payload["checkpoint"])
+	if len(checkpointFrames) > 0 {
+		dirStack = append(dirStack, checkpointFrames...)
+		for _, frame := range checkpointFrames {
+			visitedDirs[frame.path] = struct{}{}
+			if _, ok := dirStats[frame.path]; !ok {
+				dirStats[frame.path] = &fsDirAggregate{
+					Path:   frame.path,
+					Parent: "",
+					Depth:  frame.depth,
+				}
+			}
+		}
+	} else {
+		targets := readTargetDirectories(payload["targetDirectories"])
+		if scanMode == "incremental" && len(targets) > 0 {
+			for _, target := range targets {
+				if _, statErr := os.Stat(target); statErr != nil {
+					continue
+				}
+				dirStack = append(dirStack, scanDirFrame{path: target, depth: 0})
+				visitedDirs[target] = struct{}{}
+				dirStats[target] = &fsDirAggregate{
+					Path:   target,
+					Parent: "",
+					Depth:  0,
+				}
+			}
+		}
+		if len(dirStack) == 0 {
+			dirStack = []scanDirFrame{{path: cleanRoot, depth: 0}}
+			visitedDirs[cleanRoot] = struct{}{}
+			dirStats[cleanRoot] = &fsDirAggregate{
+				Path:   cleanRoot,
+				Parent: "",
+				Depth:  0,
+			}
+		}
 	}
-	dirStack := []scanDirFrame{{path: cleanRoot, depth: 0}}
-	visitedDirs := map[string]struct{}{cleanRoot: {}}
 
 	tempBytes := make(map[string]int64)
 	duplicateByKey := make(map[string]*duplicateGroup)
@@ -96,50 +150,72 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	var bytesScanned int64
 	var permissionDeniedCount int64
 	var maxDepthReached int
-	entriesSeen := 0
+	entriesSeen := int64(0)
 	partial := false
 	reason := ""
+	stopping := false
+	done := len(dirStack) == 0
+	activeWorkers := 0
+	var queueMu sync.Mutex
+	queueCond := sync.NewCond(&queueMu)
+	var statsMu sync.Mutex
 
-outer:
-	for len(dirStack) > 0 {
-		if time.Now().After(deadline) {
-			partial = true
-			reason = "timeout reached"
-			break
+	notePartial := func(partialReason string) {
+		queueMu.Lock()
+		partial = true
+		if reason == "" && partialReason != "" {
+			reason = partialReason
 		}
+		queueMu.Unlock()
+	}
 
-		// DFS-style pop keeps memory bounded for deep trees.
-		idx := len(dirStack) - 1
-		frame := dirStack[idx]
-		dirStack = dirStack[:idx]
+	requestStop := func(stopReason string) {
+		queueMu.Lock()
+		partial = true
+		stopping = true
+		if stopReason != "" && (reason == "" || reason == "max depth reached") {
+			reason = stopReason
+		}
+		queueCond.Broadcast()
+		queueMu.Unlock()
+	}
+
+	processDir := func(frame scanDirFrame) {
+		if time.Now().After(deadline) {
+			requestStop("timeout reached")
+			queueMu.Lock()
+			dirStack = append(dirStack, frame)
+			queueCond.Broadcast()
+			queueMu.Unlock()
+			return
+		}
 
 		entries, readErr := os.ReadDir(frame.path)
 		if readErr != nil {
+			statsMu.Lock()
+			markDirAndAncestorsIncomplete(dirStats, frame.path)
 			appendScanError(&scanErrors, frame.path, readErr, &permissionDeniedCount)
-			continue
+			statsMu.Unlock()
+			return
 		}
+
+		statsMu.Lock()
 		dirsScanned++
 		if frame.depth > maxDepthReached {
 			maxDepthReached = frame.depth
 		}
+		statsMu.Unlock()
 
+		maxEntriesExceeded := false
 		for _, entry := range entries {
-			if time.Now().After(deadline) {
-				partial = true
-				reason = "timeout reached"
-				break outer
-			}
-			entriesSeen++
-			if entriesSeen > maxEntries {
-				partial = true
-				reason = "max entries reached"
-				break outer
-			}
-
+			currentEntries := atomic.AddInt64(&entriesSeen, 1)
 			entryPath := filepath.Join(frame.path, entry.Name())
+
 			info, infoErr := entry.Info()
 			if infoErr != nil {
+				statsMu.Lock()
 				appendScanError(&scanErrors, entryPath, infoErr, &permissionDeniedCount)
+				statsMu.Unlock()
 				continue
 			}
 
@@ -152,7 +228,9 @@ outer:
 			if mode&os.ModeSymlink != 0 && followSymlinks {
 				targetInfo, statErr := os.Stat(entryPath)
 				if statErr != nil {
+					statsMu.Lock()
 					appendScanError(&scanErrors, entryPath, statErr, &permissionDeniedCount)
+					statsMu.Unlock()
 					continue
 				}
 				info = targetInfo
@@ -162,6 +240,9 @@ outer:
 			if isDir {
 				childDepth := frame.depth + 1
 				normalizedPath := entryPath
+				shouldQueue := false
+
+				statsMu.Lock()
 				if _, ok := dirStats[normalizedPath]; !ok {
 					dirStats[normalizedPath] = &fsDirAggregate{
 						Path:   normalizedPath,
@@ -172,8 +253,22 @@ outer:
 				if childDepth <= maxDepth {
 					if _, seen := visitedDirs[normalizedPath]; !seen {
 						visitedDirs[normalizedPath] = struct{}{}
-						dirStack = append(dirStack, scanDirFrame{path: normalizedPath, depth: childDepth})
+						shouldQueue = true
 					}
+				} else {
+					markDirAndAncestorsIncomplete(dirStats, normalizedPath)
+				}
+				statsMu.Unlock()
+
+				if childDepth > maxDepth {
+					notePartial("max depth reached")
+				}
+
+				if shouldQueue {
+					queueMu.Lock()
+					dirStack = append(dirStack, scanDirFrame{path: normalizedPath, depth: childDepth})
+					queueCond.Signal()
+					queueMu.Unlock()
 				}
 				continue
 			}
@@ -182,15 +277,16 @@ outer:
 			if fileSize < 0 {
 				fileSize = 0
 			}
+
+			modifiedAt := info.ModTime().UTC().Format(time.RFC3339)
+			statsMu.Lock()
 			filesScanned++
 			bytesScanned += fileSize
-
 			if parentAgg, ok := dirStats[frame.path]; ok {
 				parentAgg.SizeBytes += fileSize
 				parentAgg.FileCount++
 			}
 
-			modifiedAt := info.ModTime().UTC().Format(time.RFC3339)
 			addTopLargestFile(&topLargestFiles, FilesystemLargestFile{
 				Path:       entryPath,
 				SizeBytes:  fileSize,
@@ -210,7 +306,7 @@ outer:
 				}, maxFSCleanupCandidates)
 			}
 
-			if isOldDownload(entryPath, info.ModTime(), oldDownloadsThreshold) {
+			if isOldDownload(entryPath, fileSize, info.ModTime(), oldDownloadsThreshold) {
 				oldDownloads = append(oldDownloads, FilesystemOldDownload{
 					Path:       entryPath,
 					SizeBytes:  fileSize,
@@ -228,7 +324,75 @@ outer:
 			}
 
 			addDuplicateCandidate(duplicateByKey, entryPath, fileSize)
+			statsMu.Unlock()
+
+			if currentEntries > int64(maxEntries) {
+				requestStop("max entries reached")
+				statsMu.Lock()
+				markDirAndAncestorsIncomplete(dirStats, frame.path)
+				statsMu.Unlock()
+				maxEntriesExceeded = true
+				break
+			}
 		}
+
+		if maxEntriesExceeded {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			requestStop("timeout reached")
+		}
+	}
+
+	var workers sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				queueMu.Lock()
+				for len(dirStack) == 0 && !done && !stopping {
+					queueCond.Wait()
+				}
+				if stopping || done {
+					queueMu.Unlock()
+					return
+				}
+
+				idx := len(dirStack) - 1
+				frame := dirStack[idx]
+				dirStack = dirStack[:idx]
+				activeWorkers++
+				queueMu.Unlock()
+
+				processDir(frame)
+
+				queueMu.Lock()
+				activeWorkers--
+				if !stopping && len(dirStack) == 0 && activeWorkers == 0 {
+					done = true
+				}
+				queueCond.Broadcast()
+				queueMu.Unlock()
+			}
+		}()
+	}
+
+	queueMu.Lock()
+	for !done && !(stopping && activeWorkers == 0) {
+		queueCond.Wait()
+	}
+	pendingFrames := append([]scanDirFrame(nil), dirStack...)
+	queueMu.Unlock()
+	workers.Wait()
+
+	if len(pendingFrames) > 0 {
+		statsMu.Lock()
+		for _, pending := range pendingFrames {
+			markDirAndAncestorsIncomplete(dirStats, pending.path)
+		}
+		statsMu.Unlock()
 	}
 
 	// Aggregate child directory sizes into parents.
@@ -249,6 +413,9 @@ outer:
 		}
 		parent.SizeBytes += agg.SizeBytes
 		parent.FileCount += agg.FileCount
+		if agg.Incomplete {
+			parent.Incomplete = true
+		}
 	}
 
 	for _, agg := range dirStats {
@@ -256,6 +423,7 @@ outer:
 			Path:      agg.Path,
 			SizeBytes: agg.SizeBytes,
 			FileCount: agg.FileCount,
+			Estimated: agg.Incomplete,
 		}, topDirsLimit)
 	}
 	sort.Slice(oldDownloads, func(i, j int) bool { return oldDownloads[i].SizeBytes > oldDownloads[j].SizeBytes })
@@ -312,13 +480,16 @@ outer:
 	cleanupCandidates := mapCleanupCandidates(cleanupByPath, maxFSCleanupCandidates)
 
 	completedAt := time.Now()
+	pendingCheckpoint := buildCheckpointPayload(pendingFrames, 50000)
 	response := FilesystemAnalysisResponse{
 		Path:        cleanRoot,
+		ScanMode:    scanMode,
 		StartedAt:   start.UTC().Format(time.RFC3339),
 		CompletedAt: completedAt.UTC().Format(time.RFC3339),
 		DurationMs:  completedAt.Sub(start).Milliseconds(),
 		Partial:     partial,
 		Reason:      reason,
+		Checkpoint:  pendingCheckpoint,
 		Summary: FilesystemAnalysisSummary{
 			FilesScanned:          filesScanned,
 			DirsScanned:           dirsScanned,
@@ -338,6 +509,96 @@ outer:
 	}
 
 	return NewSuccessResult(response, response.DurationMs)
+}
+
+func parseFilesystemScanMode(value string) string {
+	mode := strings.TrimSpace(strings.ToLower(value))
+	if mode == "incremental" {
+		return "incremental"
+	}
+	return "baseline"
+}
+
+func readCheckpointFrames(raw any) []scanDirFrame {
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	pending, ok := obj["pendingDirs"].([]any)
+	if !ok {
+		return nil
+	}
+	frames := make([]scanDirFrame, 0, len(pending))
+	for _, item := range pending {
+		entry, entryOk := item.(map[string]any)
+		if !entryOk {
+			continue
+		}
+		pathRaw, hasPath := entry["path"].(string)
+		if !hasPath || pathRaw == "" {
+			continue
+		}
+		path := filepath.Clean(pathRaw)
+		depth := clampInt(GetPayloadInt(entry, "depth", 0), 0, maxFSMaxDepth)
+		frames = append(frames, scanDirFrame{path: path, depth: depth})
+	}
+	return frames
+}
+
+func readTargetDirectories(raw any) []string {
+	entries, ok := raw.([]any)
+	if !ok || len(entries) == 0 {
+		return nil
+	}
+	dirs := make([]string, 0, len(entries))
+	seen := make(map[string]struct{})
+	for _, item := range entries {
+		pathRaw, ok := item.(string)
+		if !ok || pathRaw == "" {
+			continue
+		}
+		path := filepath.Clean(pathRaw)
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		dirs = append(dirs, path)
+	}
+	return dirs
+}
+
+func buildCheckpointPayload(frames []scanDirFrame, limit int) map[string]any {
+	if len(frames) == 0 {
+		return map[string]any{}
+	}
+	if limit <= 0 {
+		limit = len(frames)
+	}
+	items := make([]map[string]any, 0, minInt(len(frames), limit))
+	for idx, frame := range frames {
+		if idx >= limit {
+			break
+		}
+		items = append(items, map[string]any{
+			"path":  frame.path,
+			"depth": frame.depth,
+		})
+	}
+	result := map[string]any{
+		"pendingDirs": items,
+	}
+	if len(frames) > limit {
+		result["truncated"] = true
+		result["remainingCount"] = len(frames)
+	}
+	return result
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func clampInt(value, min, max int) int {
@@ -382,6 +643,21 @@ func addTopLargestDir(top *[]FilesystemLargestDirectory, dir FilesystemLargestDi
 	}
 	(*top)[minIdx] = dir
 	sort.Slice(*top, func(i, j int) bool { return (*top)[i].SizeBytes > (*top)[j].SizeBytes })
+}
+
+func markDirAndAncestorsIncomplete(dirStats map[string]*fsDirAggregate, path string) {
+	currentPath := path
+	for currentPath != "" {
+		agg, ok := dirStats[currentPath]
+		if !ok {
+			return
+		}
+		if agg.Incomplete {
+			return
+		}
+		agg.Incomplete = true
+		currentPath = agg.Parent
+	}
 }
 
 func appendScanError(errors *[]FilesystemScanError, path string, err error, permissionDeniedCount *int64) {
@@ -432,12 +708,38 @@ func classifyCleanupCategory(path string) string {
 	}
 }
 
-func isOldDownload(path string, modifiedAt time.Time, threshold time.Time) bool {
+func isOldDownload(path string, sizeBytes int64, modifiedAt time.Time, threshold time.Time) bool {
+	if sizeBytes <= 0 {
+		return false
+	}
 	if modifiedAt.After(threshold) {
 		return false
 	}
 	n := normalizePathForChecks(path)
-	return strings.Contains(n, "/downloads/") || strings.HasSuffix(n, "/downloads")
+	if strings.Contains(n, "/library/caches/") ||
+		strings.Contains(n, "/.cache/") ||
+		strings.Contains(n, "/appdata/local/temp/") {
+		return false
+	}
+
+	segments := strings.Split(strings.Trim(n, "/"), "/")
+	for i, segment := range segments {
+		if segment != "downloads" {
+			continue
+		}
+
+		// macOS/Linux user download roots.
+		if i >= 2 && (segments[0] == "users" || segments[0] == "home") {
+			return true
+		}
+
+		// Windows path roots after slash normalization: c:/users/<user>/downloads
+		if i >= 3 && strings.HasSuffix(segments[0], ":") && segments[1] == "users" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func isUnrotatedLog(path string, sizeBytes int64) bool {
@@ -526,19 +828,57 @@ func mapCleanupCandidates(existing map[string]FilesystemCleanupCandidate, limit 
 }
 
 func getTrashPaths() []string {
-	paths := make([]string, 0, 4)
+	paths := make([]string, 0, 12)
+	seen := make(map[string]struct{})
+	addPath := func(p string) {
+		if p == "" {
+			return
+		}
+		clean := filepath.Clean(p)
+		if _, ok := seen[clean]; ok {
+			return
+		}
+		seen[clean] = struct{}{}
+		paths = append(paths, clean)
+	}
+
 	home, _ := os.UserHomeDir()
 	switch runtime.GOOS {
 	case "windows":
-		paths = append(paths, `C:\$Recycle.Bin`)
+		addPath(`C:\$Recycle.Bin`)
 	case "darwin":
 		if home != "" {
-			paths = append(paths, filepath.Join(home, ".Trash"))
+			addPath(filepath.Join(home, ".Trash"))
+		}
+		if entries, err := os.ReadDir("/Users"); err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if strings.HasPrefix(name, ".") {
+					continue
+				}
+				addPath(filepath.Join("/Users", name, ".Trash"))
+			}
 		}
 	case "linux":
 		if home != "" {
-			paths = append(paths, filepath.Join(home, ".local", "share", "Trash"))
+			addPath(filepath.Join(home, ".local", "share", "Trash"))
 		}
+		if entries, err := os.ReadDir("/home"); err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if strings.HasPrefix(name, ".") {
+					continue
+				}
+				addPath(filepath.Join("/home", name, ".local", "share", "Trash"))
+			}
+		}
+		addPath(filepath.Join("/root", ".local", "share", "Trash"))
 	}
 	return paths
 }

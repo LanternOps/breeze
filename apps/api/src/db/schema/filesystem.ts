@@ -6,6 +6,7 @@ import {
   boolean,
   jsonb,
   bigint,
+  real,
   text,
   index
 } from 'drizzle-orm/pg-core';
@@ -53,3 +54,15 @@ export const deviceFilesystemCleanupRuns = pgTable('device_filesystem_cleanup_ru
 }, (table) => ({
   deviceRequestedIdx: index('idx_device_filesystem_cleanup_runs_device_requested').on(table.deviceId, table.requestedAt),
 }));
+
+export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state', {
+  deviceId: uuid('device_id').primaryKey().references(() => devices.id),
+  lastRunMode: text('last_run_mode').notNull().default('baseline'),
+  lastBaselineCompletedAt: timestamp('last_baseline_completed_at'),
+  lastDiskUsedPercent: real('last_disk_used_percent'),
+  checkpoint: jsonb('checkpoint').notNull().default({}),
+  aggregate: jsonb('aggregate').notNull().default({}),
+  hotDirectories: jsonb('hot_directories').notNull().default([]),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+});

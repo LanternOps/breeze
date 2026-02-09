@@ -3,11 +3,16 @@ import { Hono } from 'hono';
 
 vi.mock('../../db', () => ({
   db: {
+    select: vi.fn(),
     insert: vi.fn(),
   }
 }));
 
 vi.mock('../../db/schema', () => ({
+  deviceDisks: {
+    deviceId: 'deviceId',
+    usedPercent: 'usedPercent',
+  },
   deviceFilesystemCleanupRuns: {
     id: 'id',
   },
@@ -34,6 +39,7 @@ vi.mock('./helpers', () => ({
 
 vi.mock('../../services/commandQueue', () => ({
   executeCommand: vi.fn(),
+  queueCommandForExecution: vi.fn(),
   CommandTypes: {
     FILESYSTEM_ANALYSIS: 'filesystem_analysis',
     FILE_DELETE: 'file_delete',
@@ -42,6 +48,9 @@ vi.mock('../../services/commandQueue', () => ({
 
 vi.mock('../../services/filesystemAnalysis', () => ({
   getLatestFilesystemSnapshot: vi.fn(),
+  getFilesystemScanState: vi.fn(),
+  readHotDirectories: vi.fn(() => []),
+  readCheckpointPendingDirectories: vi.fn(() => []),
   parseFilesystemAnalysisStdout: vi.fn(),
   saveFilesystemSnapshot: vi.fn(),
   buildCleanupPreview: vi.fn(),
@@ -55,11 +64,12 @@ vi.mock('../../services/auditEvents', () => ({
 import { db } from '../../db';
 import { filesystemRoutes } from './filesystem';
 import { getDeviceWithOrgCheck } from './helpers';
-import { executeCommand } from '../../services/commandQueue';
+import { executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
   getLatestFilesystemSnapshot,
-  parseFilesystemAnalysisStdout,
-  saveFilesystemSnapshot,
+  getFilesystemScanState,
+  readHotDirectories,
+  readCheckpointPendingDirectories,
   buildCleanupPreview,
 } from '../../services/filesystemAnalysis';
 
@@ -102,25 +112,24 @@ describe('device filesystem routes', () => {
 
   it('runs on-demand scan and persists snapshot', async () => {
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
-    vi.mocked(executeCommand).mockResolvedValue({
-      status: 'completed',
-      stdout: '{"summary":{"filesScanned":50}}'
+    vi.mocked(getFilesystemScanState).mockResolvedValue(null as never);
+    vi.mocked(readHotDirectories).mockReturnValue([]);
+    vi.mocked(readCheckpointPendingDirectories).mockReturnValue([]);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      })
     } as never);
-    vi.mocked(parseFilesystemAnalysisStdout).mockReturnValue({ summary: { filesScanned: 50 } } as never);
-    vi.mocked(saveFilesystemSnapshot).mockResolvedValue({
-      id: 'snap-2',
-      capturedAt: new Date('2026-02-09T00:10:00Z'),
-      partial: false,
-      summary: { filesScanned: 50 },
-      largestFiles: [],
-      largestDirs: [],
-      tempAccumulation: [],
-      oldDownloads: [],
-      unrotatedLogs: [],
-      trashUsage: [],
-      duplicateCandidates: [],
-      cleanupCandidates: [],
-      errors: []
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: {
+        id: 'cmd-1',
+        status: 'sent',
+        createdAt: new Date('2026-02-09T00:10:00Z')
+      }
     } as never);
 
     const res = await app.request(`/devices/${deviceId}/filesystem/scan`, {
@@ -129,15 +138,15 @@ describe('device filesystem routes', () => {
       body: JSON.stringify({ path: '/tmp', timeoutSeconds: 10 })
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(body.data.id).toBe('snap-2');
-    expect(executeCommand).toHaveBeenCalledWith(
+    expect(body.data.commandId).toBe('cmd-1');
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
       deviceId,
       'filesystem_analysis',
-      expect.objectContaining({ path: '/tmp' }),
-      expect.objectContaining({ userId: 'user-123' })
+      expect.objectContaining({ path: '/tmp', scanMode: 'baseline' }),
+      expect.objectContaining({ userId: 'user-123', preferHeartbeat: false })
     );
   });
 
