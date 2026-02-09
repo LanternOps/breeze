@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
 
 export type FileEntry = {
   name: string;
@@ -46,7 +47,7 @@ export type FileManagerProps = {
   deviceId: string;
   deviceHostname: string;
   sessionId?: string;
-  initialPath?: string;
+  initialPath: string;
   onError?: (error: string) => void;
   className?: string;
 };
@@ -97,13 +98,14 @@ function formatDate(dateString?: string): string {
 export default function FileManager({
   deviceId,
   deviceHostname,
-  initialPath = '/',
+  initialPath,
   onError,
   className
 }: FileManagerProps) {
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [transfers, setTransfers] = useState<TransferItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -121,16 +123,19 @@ export default function FileManager({
       const params = new URLSearchParams({ path });
       const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files?${params}`);
       if (!response.ok) {
-        const json = await response.json();
+        const json = await response.json().catch(() => ({ error: 'Failed to load directory' }));
         throw new Error(json.error || 'Failed to load directory');
       }
       const json = await response.json();
       const entriesData = Array.isArray(json.data) ? json.data : [];
       setEntries(entriesData);
       setCurrentPath(path);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load directory';
+      setError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load directory';
+      console.error('[FileManager] Failed to load directory:', err);
       onError?.(message);
+      setError(message);
       setEntries([]);
     } finally {
       setLoading(false);
@@ -144,14 +149,14 @@ export default function FileManager({
 
   // Go up one directory
   const goUp = useCallback(() => {
-    const parentPath = currentPath.split('/').slice(0, -1).join('/') || '/';
+    const parentPath = getParentPath(currentPath);
     navigateTo(parentPath);
   }, [currentPath, navigateTo]);
 
   // Go to home
   const goHome = useCallback(() => {
-    navigateTo('/');
-  }, [navigateTo]);
+    navigateTo(initialPath);
+  }, [initialPath, navigateTo]);
 
   // Handle item click
   const handleItemClick = useCallback((entry: FileEntry, event: React.MouseEvent) => {
@@ -193,14 +198,6 @@ export default function FileManager({
       }
     }
   }, [navigateTo, selectedItems]);
-
-  // Handle double click
-  const handleDoubleClick = useCallback((entry: FileEntry) => {
-    if (entry.type === 'file') {
-      // Initiate download
-      initiateDownload(entry);
-    }
-  }, []);
 
   // Initiate file download
   const initiateDownload = useCallback(async (entry: FileEntry) => {
@@ -245,6 +242,7 @@ export default function FileManager({
         t.id === transferId ? { ...t, status: 'completed', progress: 100 } : t
       ));
     } catch (error) {
+      console.error('[FileManager] Download failed:', error);
       setTransfers(prev => prev.map(t =>
         t.id === transferId ? {
           ...t,
@@ -254,6 +252,13 @@ export default function FileManager({
       ));
     }
   }, [deviceId]);
+
+  // Handle double click
+  const handleDoubleClick = useCallback((entry: FileEntry) => {
+    if (entry.type === 'file') {
+      initiateDownload(entry);
+    }
+  }, [initiateDownload]);
 
   // Handle file upload
   const handleUpload = useCallback(async (files: FileList) => {
@@ -292,9 +297,7 @@ export default function FileManager({
         ));
 
         // Upload file content to agent via system tools API
-        const remotePath = currentPath.endsWith('/')
-          ? `${currentPath}${file.name}`
-          : `${currentPath}/${file.name}`;
+        const remotePath = joinRemotePath(currentPath, file.name);
 
         const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/upload`, {
           method: 'POST',
@@ -317,6 +320,7 @@ export default function FileManager({
         // Refresh directory to show new file
         fetchDirectory(currentPath);
       } catch (error) {
+        console.error('[FileManager] Upload failed:', error);
         setTransfers(prev => prev.map(t =>
           t.id === transferId ? {
             ...t,
@@ -408,8 +412,7 @@ export default function FileManager({
     fetchDirectory(initialPath);
   }, [fetchDirectory, initialPath]);
 
-  // Parse breadcrumb path
-  const breadcrumbs = currentPath.split('/').filter(Boolean);
+  const breadcrumbs = buildBreadcrumbs(currentPath);
 
   const activeTransfers = transfers.filter(t => ['pending', 'transferring'].includes(t.status));
   const completedTransfers = transfers.filter(t => ['completed', 'failed'].includes(t.status));
@@ -481,7 +484,7 @@ export default function FileManager({
         <button
           type="button"
           onClick={goUp}
-          disabled={currentPath === '/'}
+          disabled={isPathRoot(currentPath)}
           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
           title="Go up"
         >
@@ -491,20 +494,20 @@ export default function FileManager({
         <div className="flex items-center gap-1 text-sm">
           <button
             type="button"
-            onClick={() => navigateTo('/')}
+            onClick={() => navigateTo(breadcrumbs.rootPath)}
             className="hover:text-primary"
           >
-            /
+            {breadcrumbs.rootLabel}
           </button>
-          {breadcrumbs.map((part, index) => (
-            <span key={index} className="flex items-center gap-1">
+          {breadcrumbs.segments.map((segment) => (
+            <span key={segment.path} className="flex items-center gap-1">
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
               <button
                 type="button"
-                onClick={() => navigateTo('/' + breadcrumbs.slice(0, index + 1).join('/'))}
+                onClick={() => navigateTo(segment.path)}
                 className="hover:text-primary"
               >
-                {part}
+                {segment.label}
               </button>
             </span>
           ))}
@@ -569,6 +572,22 @@ export default function FileManager({
               <tr>
                 <td colSpan={5} className="px-4 py-8 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
+                </td>
+              </tr>
+            ) : error ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-8 text-center">
+                  <div className="flex flex-col items-center gap-2">
+                    <AlertCircle className="h-6 w-6 text-red-500" />
+                    <p className="text-sm text-red-500">{error}</p>
+                    <button
+                      type="button"
+                      onClick={() => fetchDirectory(currentPath)}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Retry
+                    </button>
+                  </div>
                 </td>
               </tr>
             ) : getSortedEntries().length === 0 ? (
