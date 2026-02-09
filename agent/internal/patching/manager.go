@@ -164,6 +164,13 @@ func (m *PatchManager) formatPatchID(providerID, patchID string) string {
 	return providerID + patchIDSeparator + patchID
 }
 
+// RegisterProvider adds a provider to the manager after construction.
+// This supports providers that depend on runtime state (e.g. session broker).
+func (m *PatchManager) RegisterProvider(provider PatchProvider) {
+	m.providers = append(m.providers, provider)
+	m.providerIndex[provider.ID()] = provider
+}
+
 // GetProvider returns a provider by ID.
 func (m *PatchManager) GetProvider(providerID string) (PatchProvider, bool) {
 	p, ok := m.providerIndex[providerID]

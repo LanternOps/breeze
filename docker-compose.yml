@@ -70,6 +70,10 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-noreply@breeze.local}
+      TURN_HOST: ${TURN_HOST:-}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-}
+      TURN_REALM: ${TURN_REALM:-breeze.local}
       # Shared with monitoring/prometheus.yml bearer credentials for /metrics/scrape.
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-REDACTED_DEV_TOKEN}
     ports:
@@ -141,6 +145,31 @@ services:
       start_period: 10s
     profiles:
       - storage
+
+  # coturn TURN relay for WebRTC behind NAT/firewalls
+  # Enable with: docker compose --profile turn up -d
+  coturn:
+    image: coturn/coturn:latest
+    container_name: breeze-coturn
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./docker/turnserver.conf:/etc/turnserver.conf:ro
+    environment:
+      TURN_SECRET: ${TURN_SECRET:-breeze-turn-secret-change-me}
+    command: >
+      turnserver
+      --no-tls
+      --no-dtls
+      --listening-port=${TURN_PORT:-3478}
+      --realm=${TURN_REALM:-breeze.local}
+      --use-auth-secret
+      --static-auth-secret=${TURN_SECRET:-breeze-turn-secret-change-me}
+      --log-file=stdout
+      --no-cli
+      --fingerprint
+    profiles:
+      - turn
 
   # ============================================
   # Monitoring Stack (Optional)

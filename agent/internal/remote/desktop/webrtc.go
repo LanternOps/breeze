@@ -57,13 +57,55 @@ func NewSessionManager() *SessionManager {
 	}
 }
 
-// StartSession creates and starts a new remote desktop session
-func (m *SessionManager) StartSession(sessionID string, offer string) (string, error) {
+// ICEServerConfig represents an ICE server from the API payload.
+type ICEServerConfig struct {
+	URLs       interface{} `json:"urls"`
+	Username   string      `json:"username,omitempty"`
+	Credential string      `json:"credential,omitempty"`
+}
+
+// parseICEServers converts API ICE server configs into pion ICEServer structs.
+func parseICEServers(raw []ICEServerConfig) []webrtc.ICEServer {
+	if len(raw) == 0 {
+		return []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
+	}
+
+	servers := make([]webrtc.ICEServer, 0, len(raw))
+	for _, s := range raw {
+		var urls []string
+		switch v := s.URLs.(type) {
+		case string:
+			urls = []string{v}
+		case []interface{}:
+			for _, u := range v {
+				if str, ok := u.(string); ok {
+					urls = append(urls, str)
+				}
+			}
+		}
+		if len(urls) == 0 {
+			continue
+		}
+		server := webrtc.ICEServer{URLs: urls}
+		if s.Username != "" {
+			server.Username = s.Username
+			server.Credential = s.Credential
+			server.CredentialType = webrtc.ICECredentialTypePassword
+		}
+		servers = append(servers, server)
+	}
+	if len(servers) == 0 {
+		return []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
+	}
+	return servers
+}
+
+// StartSession creates and starts a new remote desktop session.
+// iceServers is optional; if nil, falls back to Google STUN.
+func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig) (string, error) {
 	// Create WebRTC configuration
 	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-		},
+		ICEServers: parseICEServers(iceServers),
 	}
 
 	// Create peer connection
