@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "react": "^18.3.1",
+    "react": "^19.2.4",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.2",
     "lucide-react": "^0.563.0",
@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
-    "@types/react": "^18.3.5",
+    "@types/react": "^19.2.13",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
