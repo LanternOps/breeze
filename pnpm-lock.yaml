@@ -109,8 +109,8 @@ importers:
   apps/mobile:
     dependencies:
       '@expo/vector-icons':
-        specifier: ^14.0.0
-        version: 14.1.0(expo-font@11.10.3(expo@50.0.21(@babel/core@7.28.6)(@react-native/babel-preset@0.73.21(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)
+        specifier: ^15.0.3
+        version: 15.0.3(expo-font@11.10.3(expo@50.0.21(@babel/core@7.28.6)(@react-native/babel-preset@0.73.21(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)
       '@react-native-async-storage/async-storage':
         specifier: 1.21.0
         version: 1.21.0(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))
@@ -2162,6 +2162,13 @@ packages:
     resolution: {integrity: sha512-7T09UE9h8QDTsUeMGymB4i+iqvtEeaO5VvUjryFB4tugDTG/bkzViWA74hm5pfjjDEhYMXWaX112mcvhccmIwQ==}
     peerDependencies:
       expo-font: '*'
+      react: '*'
+      react-native: '*'
+
+  '@expo/vector-icons@15.0.3':
+    resolution: {integrity: sha512-SBUyYKphmlfUBqxSfDdJ3jAdEVSALS2VUPOUyqn48oZmb2TL/O7t7/PQm5v4NQujYEPLPMTLn9KVw6H7twwbTA==}
+    peerDependencies:
+      expo-font: '>=14.0.4'
       react: '*'
       react-native: '*'
 
@@ -11048,6 +11055,12 @@ snapshots:
   '@expo/sudo-prompt@9.3.2': {}
 
   '@expo/vector-icons@14.1.0(expo-font@11.10.3(expo@50.0.21(@babel/core@7.28.6)(@react-native/babel-preset@0.73.21(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)':
+    dependencies:
+      expo-font: 11.10.3(expo@50.0.21(@babel/core@7.28.6)(@react-native/babel-preset@0.73.21(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0))
+      react: 18.2.0
+      react-native: 0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0)
+
+  '@expo/vector-icons@15.0.3(expo-font@11.10.3(expo@50.0.21(@babel/core@7.28.6)(@react-native/babel-preset@0.73.21(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0)':
     dependencies:
       expo-font: 11.10.3(expo@50.0.21(@babel/core@7.28.6)(@react-native/babel-preset@0.73.21(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6)))(react-native@0.73.0(@babel/core@7.28.6)(@babel/preset-env@7.28.6(@babel/core@7.28.6))(react@18.2.0))(react@18.2.0))
       react: 18.2.0
