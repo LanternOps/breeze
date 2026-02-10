@@ -7,6 +7,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { buildPortalApiUrl } from './api';
 
+const CSRF_HEADER_NAME = 'x-breeze-csrf';
+const CSRF_HEADER_VALUE = '1';
+
 export interface PortalUser {
   id: string;
   email: string;
@@ -20,7 +23,6 @@ export interface PortalUser {
 
 export interface Tokens {
   accessToken: string;
-  refreshToken: string;
   expiresInSeconds: number;
 }
 
@@ -76,10 +78,14 @@ export const usePortalAuth = create<PortalAuthState>()(
     {
       name: 'portal-auth',
       partialize: (state) => ({
-        user: state.user,
-        tokens: state.tokens,
-        isAuthenticated: state.isAuthenticated
-      })
+        user: state.user
+      }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state.setUser(state.user);
+          state.setLoading(false);
+        }
+      }
     }
   )
 );
@@ -105,6 +111,7 @@ export async function portalLogin(
     const response = await fetch(buildPortalApiUrl('/portal/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(payload)
     });
 
@@ -131,7 +138,6 @@ export async function portalLogin(
 
     const tokens: Tokens = data.tokens ?? {
       accessToken: data.accessToken,
-      refreshToken: data.accessToken,
       expiresInSeconds
     };
 
@@ -149,20 +155,19 @@ export async function portalLogin(
  * Portal logout
  */
 export async function portalLogout(): Promise<void> {
-  const { tokens, logout } = usePortalAuth.getState();
+  const { logout } = usePortalAuth.getState();
 
-  if (tokens?.accessToken) {
-    try {
-      await fetch(buildPortalApiUrl('/portal/auth/logout'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${tokens.accessToken}`
-        }
-      });
-    } catch {
-      // Ignore errors, logout anyway
-    }
+  try {
+    await fetch(buildPortalApiUrl('/portal/auth/logout'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE
+      },
+      credentials: 'include'
+    });
+  } catch {
+    // Ignore errors, logout anyway
   }
 
   logout();
@@ -184,6 +189,7 @@ export async function portalForgotPassword(email: string): Promise<{
     const response = await fetch(buildPortalApiUrl('/portal/auth/forgot-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(payload)
     });
 
@@ -213,6 +219,7 @@ export async function portalResetPassword(
     const response = await fetch(buildPortalApiUrl('/portal/auth/reset-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ token, password })
     });
 

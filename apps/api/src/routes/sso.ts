@@ -29,6 +29,7 @@ import {
 } from '../services/sso';
 import { createTokenPair, createSession } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
+import { getTrustedClientIp } from '../services/clientIp';
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 
 export const ssoRoutes = new Hono();
@@ -177,6 +178,25 @@ function normalizeRedirectPath(redirectParam: string | undefined): string {
   }
 }
 
+function getCanonicalPublicBaseUrl(): string {
+  const configuredBaseUrl = (
+    process.env.PUBLIC_URL
+    || process.env.PUBLIC_APP_URL
+    || process.env.DASHBOARD_URL
+    || 'http://localhost:3000'
+  ).trim();
+
+  try {
+    return new URL(configuredBaseUrl).origin;
+  } catch {
+    return 'http://localhost:3000';
+  }
+}
+
+function buildSsoCallbackUri(): string {
+  return `${getCanonicalPublicBaseUrl()}/api/v1/sso/callback`;
+}
+
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
   const decryptedClientSecret = decryptSecret(provider.clientSecret);
 
@@ -197,9 +217,7 @@ function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
 }
 
 function getClientIP(c: any): string {
-  return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
-    c.req.header('x-real-ip') ||
-    'unknown';
+  return getTrustedClientIp(c);
 }
 
 function resolveOrgIdForProviderRoute(
@@ -637,8 +655,7 @@ ssoRoutes.get('/login/:orgId', async (c) => {
   });
 
   // Build callback URL
-  const baseUrl = c.req.header('origin') || process.env.PUBLIC_URL || 'http://localhost:3000';
-  const callbackUri = `${baseUrl}/api/v1/sso/callback`;
+  const callbackUri = buildSsoCallbackUri();
 
   // Build authorization URL
   const authUrl = buildAuthorizationUrl({
@@ -715,8 +732,7 @@ ssoRoutes.get('/callback', async (c) => {
 
   try {
     const config = getOIDCConfig(provider);
-    const baseUrl = c.req.header('origin') || process.env.PUBLIC_URL || 'http://localhost:3000';
-    const callbackUri = `${baseUrl}/api/v1/sso/callback`;
+    const callbackUri = buildSsoCallbackUri();
 
     // Exchange code for tokens
     const tokens = await exchangeCodeForTokens({

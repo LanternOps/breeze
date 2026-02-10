@@ -4,6 +4,8 @@
  */
 
 const API_BASE = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+const CSRF_HEADER_NAME = 'x-breeze-csrf';
+const CSRF_HEADER_VALUE = '1';
 
 export function buildPortalApiUrl(path: string): string {
   if (path.startsWith('http://') || path.startsWith('https://')) {
@@ -31,24 +33,6 @@ export interface ApiResponse<T> {
 }
 
 /**
- * Get the current auth token from storage
- */
-function getAuthToken(): string | null {
-  if (typeof window === 'undefined') return null;
-
-  try {
-    const stored = localStorage.getItem('portal-auth');
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      return parsed.state?.tokens?.accessToken || null;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-/**
  * Clear auth from storage (logout)
  */
 function clearAuth(): void {
@@ -64,17 +48,16 @@ export async function apiRequest<T>(
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
   const url = buildPortalApiUrl(endpoint);
-  const token = getAuthToken();
+  const method = (options.method ?? 'GET').toUpperCase();
 
   const headers = new Headers(options.headers);
   headers.set('Content-Type', 'application/json');
-
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    headers.set(CSRF_HEADER_NAME, CSRF_HEADER_VALUE);
   }
 
   try {
-    let response = await fetch(url, { ...options, headers });
+    const response = await fetch(url, { ...options, headers, credentials: 'include' });
 
     // Portal auth uses in-memory sessions; 401 means session expired/invalid.
     if (response.status === 401) {

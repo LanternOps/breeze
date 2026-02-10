@@ -6,6 +6,7 @@
  */
 
 import { isIP } from 'net';
+import { lookup } from 'dns/promises';
 
 export interface WebhookNotificationPayload {
   alertId: string;
@@ -24,7 +25,7 @@ export interface WebhookNotificationPayload {
 
 export interface WebhookConfig {
   url: string;
-  method?: 'POST' | 'PUT';
+  method?: 'POST' | 'PUT' | 'PATCH';
   headers?: Record<string, string>;
   authType?: 'none' | 'bearer' | 'basic' | 'api_key';
   authToken?: string;
@@ -67,6 +68,12 @@ function isPrivateIpv4(hostname: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 192 && b === 0 && octets[2] === 0) return true;
+  if (a === 192 && b === 0 && octets[2] === 2) return true;
+  if (a === 198 && b >= 18 && b <= 19) return true;
+  if (a === 198 && b === 51 && octets[2] === 100) return true;
+  if (a === 203 && b === 0 && octets[2] === 113) return true;
+  if (a >= 224) return true;
   if (a === 0) return true;
   return false;
 }
@@ -126,6 +133,45 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
   return errors;
 }
 
+export async function validateWebhookUrlSafetyWithDns(rawUrl: string): Promise<string[]> {
+  const errors = validateWebhookUrlSafety(rawUrl);
+  if (errors.length > 0) {
+    return errors;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return ['Invalid URL format'];
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const ipVersion = isIP(hostname);
+  if (ipVersion !== 0) {
+    return errors;
+  }
+
+  try {
+    const resolved = await lookup(hostname, { all: true, verbatim: true });
+    if (resolved.length === 0) {
+      return ['Webhook URL hostname could not be resolved'];
+    }
+
+    const blockedTargets = resolved
+      .map((entry) => entry.address)
+      .filter((address) => isPrivateIpv4(address) || isPrivateIpv6(address));
+
+    if (blockedTargets.length > 0) {
+      errors.push(`Webhook URL resolves to blocked address space: ${blockedTargets.join(', ')}`);
+    }
+  } catch {
+    errors.push('Webhook URL hostname could not be resolved');
+  }
+
+  return errors;
+}
+
 /**
  * Send a webhook notification for an alert
  */
@@ -133,7 +179,7 @@ export async function sendWebhookNotification(
   config: WebhookConfig,
   payload: WebhookNotificationPayload
 ): Promise<SendResult> {
-  const safetyErrors = validateWebhookUrlSafety(config.url);
+  const safetyErrors = await validateWebhookUrlSafetyWithDns(config.url);
   if (safetyErrors.length > 0) {
     return {
       success: false,
@@ -204,7 +250,8 @@ export async function sendWebhookNotification(
         method,
         headers,
         body,
-        signal: controller.signal
+        signal: controller.signal,
+        redirect: 'error'
       });
 
       clearTimeout(timeoutId);
@@ -327,8 +374,8 @@ export function validateWebhookConfig(config: unknown): { valid: boolean; errors
   }
 
   // Validate method if provided
-  if (c.method && !['POST', 'PUT'].includes(c.method as string)) {
-    errors.push('Method must be POST or PUT');
+  if (c.method && !['POST', 'PUT', 'PATCH'].includes(c.method as string)) {
+    errors.push('Method must be POST, PUT, or PATCH');
   }
 
   // Validate auth type if provided

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
@@ -27,14 +28,22 @@ import {
   smsPhoneVerifyUserLimiter,
   smsLoginSendLimiter,
   smsLoginGlobalLimiter,
-  phoneConfirmLimiter
+  phoneConfirmLimiter,
+  isUserTokenRevoked,
+  revokeAllUserTokens,
+  isRefreshTokenJtiRevoked,
+  revokeRefreshTokenJti,
+  getTrustedClientIp
 } from '../services';
 import { getTwilioService } from '../services/twilio';
+import { getEmailService } from '../services/email';
 import { authMiddleware } from '../middleware/auth';
 import { createAuditLogAsync } from '../services/auditService';
 import type { RequestLike } from '../services/auditEvents';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
+import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { DEFAULT_ALLOWED_ORIGINS } from '../services/corsOrigins';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -106,18 +115,151 @@ const mfaEnableSchema = z.object({
   code: z.string().length(6)
 });
 
-const refreshSchema = z.object({
-  refreshToken: z.string()
-});
-
 // ============================================
 // Helpers
 // ============================================
 
 function getClientIP(c: RequestLike): string {
-  return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
-    c.req.header('x-real-ip') ||
-    'unknown';
+  return getTrustedClientIp(c);
+}
+
+const REFRESH_COOKIE_NAME = 'breeze_refresh_token';
+const REFRESH_COOKIE_PATH = '/api/v1/auth';
+const REFRESH_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+const CSRF_HEADER_NAME = 'x-breeze-csrf';
+
+function isSecureCookieEnvironment(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
+function buildRefreshTokenCookie(refreshToken: string): string {
+  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
+  return `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}; Path=${REFRESH_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}${secure}`;
+}
+
+function buildClearRefreshTokenCookie(): string {
+  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
+  return `${REFRESH_COOKIE_NAME}=; Path=${REFRESH_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+}
+
+function setRefreshTokenCookie(c: Context, refreshToken: string): void {
+  c.header('Set-Cookie', buildRefreshTokenCookie(refreshToken), { append: true });
+}
+
+function clearRefreshTokenCookie(c: Context): void {
+  c.header('Set-Cookie', buildClearRefreshTokenCookie(), { append: true });
+}
+
+function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  const target = `${name}=`;
+
+  for (const part of cookieHeader.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(target)) {
+      const value = trimmed.slice(target.length);
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function resolveRefreshToken(c: Context): string | null {
+  return getCookieValue(c.req.header('cookie'), REFRESH_COOKIE_NAME);
+}
+
+function getAllowedOrigins(): Set<string> {
+  const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+
+  return new Set<string>([...DEFAULT_ALLOWED_ORIGINS, ...configuredOrigins]);
+}
+
+function isAllowedOrigin(origin: string): boolean {
+  const allowList = getAllowedOrigins();
+  if (allowList.has(origin)) {
+    return true;
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const parsed = new URL(origin);
+      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+function validateCookieCsrfRequest(c: Context): string | null {
+  const csrfHeader = c.req.header(CSRF_HEADER_NAME);
+  if (!csrfHeader || csrfHeader.trim().length === 0) {
+    return 'Missing CSRF header';
+  }
+
+  const origin = c.req.header('origin');
+  if (origin && !isAllowedOrigin(origin)) {
+    return 'Invalid request origin';
+  }
+
+  return null;
+}
+
+type PublicTokenPayload = {
+  accessToken: string;
+  expiresInSeconds: number;
+};
+
+function toPublicTokens(tokens: { accessToken: string; expiresInSeconds: number }): PublicTokenPayload {
+  return {
+    accessToken: tokens.accessToken,
+    expiresInSeconds: tokens.expiresInSeconds
+  };
+}
+
+function encryptMfaSecret(secret: string | null | undefined): string | null {
+  return encryptSecret(secret);
+}
+
+function decryptMfaSecret(secret: string | null | undefined): string | null {
+  if (!secret) return null;
+  try {
+    return decryptSecret(secret);
+  } catch {
+    return null;
+  }
+}
+
+function getRecoveryCodePepper(): string {
+  return (
+    process.env.MFA_RECOVERY_CODE_PEPPER
+    || process.env.APP_ENCRYPTION_KEY
+    || process.env.SECRET_ENCRYPTION_KEY
+    || process.env.JWT_SECRET
+    || (process.env.NODE_ENV === 'test' ? 'test-mfa-recovery-code-pepper' : '')
+  );
+}
+
+function hashRecoveryCode(code: string): string {
+  const normalizedCode = code.trim().toUpperCase();
+  return createHash('sha256')
+    .update(`${getRecoveryCodePepper()}:${normalizedCode}`)
+    .digest('hex');
+}
+
+function hashRecoveryCodes(codes: string[]): string[] {
+  return codes.map(hashRecoveryCode);
 }
 
 function genericAuthError() {
@@ -131,19 +273,26 @@ type UserTokenContext = {
   scope: 'system' | 'partner' | 'organization';
 };
 
-async function isTokenRevokedForUser(userId: string): Promise<boolean> {
-  const redis = getRedis();
-  if (!redis) {
-    return false;
+async function isTokenRevokedForUser(userId: string, tokenIssuedAt?: number): Promise<boolean> {
+  return isUserTokenRevoked(userId, tokenIssuedAt);
+}
+
+async function revokeCurrentRefreshTokenJti(c: Context, expectedUserId?: string): Promise<void> {
+  const refreshToken = resolveRefreshToken(c);
+  if (!refreshToken) {
+    return;
   }
 
-  try {
-    const revoked = await redis.get(`token:revoked:${userId}`);
-    return Boolean(revoked);
-  } catch (error) {
-    console.warn('[auth] Failed to check token revocation state:', error);
-    return false;
+  const payload = await verifyToken(refreshToken);
+  if (!payload || payload.type !== 'refresh' || !payload.jti) {
+    return;
   }
+
+  if (expectedUserId && payload.sub !== expectedUserId) {
+    return;
+  }
+
+  await revokeRefreshTokenJti(payload.jti);
 }
 
 async function resolveCurrentUserTokenContext(userId: string): Promise<UserTokenContext> {
@@ -355,7 +504,11 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
     .limit(1);
 
   if (existingUsers.length > 0) {
-    return c.json({ error: 'An account with this email already exists' }, 400);
+    // Security: use a generic success response to prevent email enumeration.
+    return c.json({
+      success: true,
+      message: 'If registration can proceed, you will receive next steps shortly.'
+    });
   }
 
   const passwordHash = await hashPassword(password);
@@ -388,6 +541,8 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, newUser.id));
 
+  setRefreshTokenCookie(c, tokens.refreshToken);
+
   return c.json({
     user: {
       id: newUser.id,
@@ -395,7 +550,7 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
       name: newUser.name,
       mfaEnabled: false
     },
-    tokens,
+    tokens: toPublicTokens(tokens),
     mfaRequired: false
   });
 });
@@ -537,6 +692,8 @@ authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), 
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, newUser.id));
 
+      setRefreshTokenCookie(c, tokens.refreshToken);
+
       return c.json({
         user: {
           id: newUser.id,
@@ -549,7 +706,7 @@ authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), 
           name: newPartner.name,
           slug: newPartner.slug
         },
-        tokens,
+        tokens: toPublicTokens(tokens),
         mfaRequired: false
       });
     } catch (err) {
@@ -675,6 +832,8 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     console.warn('[audit] Skipping login audit for non-org-scoped user', { userId: user.id, scope });
   }
 
+  setRefreshTokenCookie(c, tokens.refreshToken);
+
   return c.json({
     user: {
       id: user.id,
@@ -683,7 +842,7 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       mfaEnabled: user.mfaEnabled,
       avatarUrl: user.avatarUrl
     },
-    tokens,
+    tokens: toPublicTokens(tokens),
     mfaRequired: false
   });
 });
@@ -692,13 +851,8 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
 authRoutes.post('/logout', authMiddleware, async (c) => {
   const auth = c.get('auth');
 
-  // Invalidate all sessions for this user (optional: could invalidate just current session)
-  // For now, we're using JWTs which are stateless, but we can add to a blacklist
-  const redis = getRedis();
-  if (!redis) {
-    return c.json({ success: true, warning: 'Session logged out but token may remain valid briefly' }, 200);
-  }
-  await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1'); // Revoke for access token lifetime
+  await revokeAllUserTokens(auth.user.id);
+  await revokeCurrentRefreshTokenJti(c, auth.user.id);
 
   if (auth.orgId) {
     createAuditLogAsync({
@@ -717,20 +871,39 @@ authRoutes.post('/logout', authMiddleware, async (c) => {
     console.warn('[audit] Skipping logout audit for non-org-scoped user', { userId: auth.user.id, scope: auth.scope });
   }
 
+  clearRefreshTokenCookie(c);
   return c.json({ success: true });
 });
 
 // Refresh token
-authRoutes.post('/refresh', zValidator('json', refreshSchema), async (c) => {
-  const { refreshToken } = c.req.valid('json');
+authRoutes.post('/refresh', async (c) => {
+  const refreshToken = resolveRefreshToken(c);
 
-  const payload = await verifyToken(refreshToken);
-
-  if (!payload || payload.type !== 'refresh') {
+  if (!refreshToken) {
+    clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  if (await isTokenRevokedForUser(payload.sub)) {
+  const csrfError = validateCookieCsrfRequest(c);
+  if (csrfError) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: csrfError }, 403);
+  }
+
+  const payload = await verifyToken(refreshToken);
+
+  if (!payload || payload.type !== 'refresh' || !payload.jti) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  if (await isRefreshTokenJtiRevoked(payload.jti)) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  if (await isTokenRevokedForUser(payload.sub, payload.iat)) {
+    clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
@@ -742,6 +915,7 @@ authRoutes.post('/refresh', zValidator('json', refreshSchema), async (c) => {
     .limit(1);
 
   if (!user || user.status !== 'active') {
+    clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
@@ -757,7 +931,9 @@ authRoutes.post('/refresh', zValidator('json', refreshSchema), async (c) => {
     scope: context.scope
   });
 
-  return c.json({ tokens });
+  await revokeRefreshTokenJti(payload.jti);
+  setRefreshTokenCookie(c, tokens.refreshToken);
+  return c.json({ tokens: toPublicTokens(tokens) });
 });
 
 // MFA setup (requires auth)
@@ -865,10 +1041,11 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
       valid = result.valid;
     } else {
       // TOTP verification
-      if (!user.mfaSecret) {
+      const decryptedMfaSecret = decryptMfaSecret(user.mfaSecret);
+      if (!decryptedMfaSecret) {
         return c.json({ error: 'Invalid MFA configuration' }, 400);
       }
-      valid = await verifyMFAToken(user.mfaSecret, code);
+      valid = await verifyMFAToken(decryptedMfaSecret, code);
     }
 
     if (!valid) {
@@ -914,6 +1091,8 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
       console.warn('[audit] Skipping MFA login audit for non-org-scoped user', { userId: user.id, scope: mfaScope });
     }
 
+    setRefreshTokenCookie(c, tokens.refreshToken);
+
     return c.json({
       user: {
         id: user.id,
@@ -921,7 +1100,7 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
         name: user.name,
         mfaEnabled: true
       },
-      tokens,
+      tokens: toPublicTokens(tokens),
       mfaRequired: false
     });
   }
@@ -938,7 +1117,7 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
     return c.json({ error: 'Invalid token' }, 401);
   }
 
-  if (await isTokenRevokedForUser(payload.sub)) {
+  if (await isTokenRevokedForUser(payload.sub, payload.iat)) {
     return c.json({ error: 'Invalid token' }, 401);
   }
 
@@ -977,9 +1156,10 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
   await db
     .update(users)
     .set({
-      mfaSecret: secret,
+      mfaSecret: encryptMfaSecret(secret),
       mfaEnabled: true,
       mfaMethod: 'totp',
+      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
       updatedAt: new Date()
     })
     .where(eq(users.id, payload.sub));
@@ -997,8 +1177,6 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
 
   // Clear setup data
   await redis.del(`mfa:setup:${payload.sub}`);
-
-  // TODO: Store recovery codes hashed in database
 
   return c.json({ success: true, message: 'MFA enabled successfully' });
 });
@@ -1070,10 +1248,11 @@ authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySche
     }
   } else {
     // TOTP
-    if (!user.mfaSecret) {
+    const decryptedMfaSecret = decryptMfaSecret(user.mfaSecret);
+    if (!decryptedMfaSecret) {
       return c.json({ error: 'Invalid MFA configuration' }, 400);
     }
-    const valid = await verifyMFAToken(user.mfaSecret, code);
+    const valid = await verifyMFAToken(decryptedMfaSecret, code);
     if (!valid) {
       if (auth.orgId) {
         writeAuthAudit(c, {
@@ -1299,7 +1478,7 @@ authRoutes.post('/mfa/sms/enable', authMiddleware, async (c) => {
       mfaEnabled: true,
       mfaMethod: 'sms',
       mfaSecret: null,
-      mfaRecoveryCodes: recoveryCodes,
+      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
       updatedAt: new Date()
     })
     .where(eq(users.id, auth.user.id));
@@ -1437,7 +1616,22 @@ authRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), as
     // Store token with 1 hour expiry
     await redis.setex(`reset:${tokenHash}`, 3600, user.id);
 
-    // TODO: Send email with reset link
+    const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+    const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+    const emailService = getEmailService();
+    if (emailService) {
+      try {
+        await emailService.sendPasswordReset({
+          to: user.email,
+          resetUrl
+        });
+      } catch (error) {
+        console.error(`[Auth] Failed to send password reset email to ${user.email}:`, error);
+      }
+    } else {
+      console.warn('[Auth] Email service not configured; password reset email was not sent');
+    }
+
     // Log token only in non-production environments
     if (process.env.NODE_ENV !== 'production') {
       console.log(`Password reset token for ${email}: ${resetToken}`);
@@ -1490,6 +1684,7 @@ authRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), asyn
 
   // Invalidate all sessions
   await invalidateAllUserSessions(userId);
+  await revokeAllUserTokens(userId);
 
   return c.json({ success: true, message: 'Password reset successfully' });
 });
@@ -1533,10 +1728,8 @@ authRoutes.post('/change-password', authMiddleware, zValidator('json', changePas
     .where(eq(users.id, auth.user.id));
 
   await invalidateAllUserSessions(auth.user.id);
-  const redis = getRedis();
-  if (redis) {
-    await redis.setex(`token:revoked:${auth.user.id}`, 15 * 60, '1');
-  }
+  await revokeAllUserTokens(auth.user.id);
+  await revokeCurrentRefreshTokenJti(c, auth.user.id);
 
   return c.json({ success: true, message: 'Password changed successfully' });
 });
@@ -1593,10 +1786,10 @@ authRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchem
   await db
     .update(users)
     .set({
-      mfaSecret: secret,
+      mfaSecret: encryptMfaSecret(secret),
       mfaEnabled: true,
       mfaMethod: 'totp',
-      mfaRecoveryCodes: recoveryCodes,
+      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
       updatedAt: new Date()
     })
     .where(eq(users.id, auth.user.id));
@@ -1637,7 +1830,7 @@ authRoutes.post('/mfa/recovery-codes', authMiddleware, async (c) => {
   await db
     .update(users)
     .set({
-      mfaRecoveryCodes: recoveryCodes,
+      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
       updatedAt: new Date()
     })
     .where(eq(users.id, auth.user.id));

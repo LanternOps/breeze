@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'crypto';
 import { getRedisConnection } from '../services/redis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
-import { validateWebhookUrlSafety } from '../services/notificationSenders/webhookSender';
+import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import * as dbModule from '../db';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -79,7 +79,7 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
   const deliveryId = job.id;
   const timestamp = Date.now();
 
-  const urlErrors = validateWebhookUrlSafety(webhook.url);
+  const urlErrors = await validateWebhookUrlSafetyWithDns(webhook.url);
   if (urlErrors.length > 0) {
     return {
       deliveryId,
@@ -133,7 +133,8 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       method: 'POST',
       headers,
       body: payload,
-      signal: controller.signal
+      signal: controller.signal,
+      redirect: 'error'
     });
 
     clearTimeout(timeoutId);

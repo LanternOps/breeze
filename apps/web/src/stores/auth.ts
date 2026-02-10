@@ -11,7 +11,6 @@ export interface User {
 
 export interface Tokens {
   accessToken: string;
-  refreshToken: string;
   expiresInSeconds: number;
 }
 
@@ -78,13 +77,12 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'breeze-auth',
       partialize: (state) => ({
-        user: state.user,
-        tokens: state.tokens,
-        isAuthenticated: state.isAuthenticated
+        user: state.user
       }),
       onRehydrateStorage: () => (state) => {
         // Set isLoading to false after rehydration completes
         if (state) {
+          state.setUser(state.user);
           state.setLoading(false);
         }
       }
@@ -95,6 +93,8 @@ export const useAuthStore = create<AuthState>()(
 // API helper functions
 // In development, point directly to API server. In production, use relative path (proxied).
 const API_HOST = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+const CSRF_HEADER_NAME = 'x-breeze-csrf';
+const CSRF_HEADER_VALUE = '1';
 
 // Helper to build full API URL - converts /path to /api/v1/path
 function buildApiUrl(path: string): string {
@@ -128,23 +128,31 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
 
   headers.set('Content-Type', 'application/json');
 
-  let response = await fetch(buildApiUrl(url), { ...options, headers });
+  let response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
 
-  // If unauthorized and we have a refresh token, try to refresh
-  if (response.status === 401 && tokens?.refreshToken) {
+  // If unauthorized, attempt cookie-backed refresh once
+  if (response.status === 401) {
     const refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: tokens.refreshToken })
+      headers: {
+        'Content-Type': 'application/json',
+        [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE
+      },
+      credentials: 'include',
+      body: JSON.stringify({})
     });
 
     if (refreshResponse.ok) {
-      const { tokens: newTokens } = await refreshResponse.json();
+      const { tokens: newTokens } = await refreshResponse.json() as { tokens?: Tokens };
+      if (!newTokens?.accessToken) {
+        logout();
+        return response;
+      }
       setTokens(newTokens);
 
       // Retry original request with new token
       headers.set('Authorization', `Bearer ${newTokens.accessToken}`);
-      response = await fetch(buildApiUrl(url), { ...options, headers });
+      response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
     } else {
       // Refresh failed, logout
       logout();
@@ -170,6 +178,7 @@ export async function apiLogin(email: string, password: string): Promise<{
     const response = await fetch(buildApiUrl('/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ email, password })
     });
 
@@ -209,6 +218,7 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
     const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ code, tempToken, method })
     });
 
@@ -248,6 +258,7 @@ export async function apiRegister(
     const response = await fetch(buildApiUrl('/auth/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ email, password, name })
     });
 
@@ -283,6 +294,7 @@ export async function apiRegisterPartner(
     const response = await fetch(buildApiUrl('/auth/register-partner'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ companyName, email, password, name, acceptTerms: true })
     });
 
@@ -313,7 +325,8 @@ export async function apiLogout(): Promise<void> {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${tokens.accessToken}`
-        }
+        },
+        credentials: 'include'
       });
     } catch {
       // Ignore errors, logout anyway
@@ -331,6 +344,7 @@ export async function apiForgotPassword(email: string): Promise<{
     const response = await fetch(buildApiUrl('/auth/forgot-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ email })
     });
 
@@ -354,6 +368,7 @@ export async function apiResetPassword(token: string, password: string): Promise
     const response = await fetch(buildApiUrl('/auth/reset-password'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ token, password })
     });
 

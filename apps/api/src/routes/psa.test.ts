@@ -41,7 +41,8 @@ vi.mock('../middleware/auth', () => ({
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
-  })
+  }),
+  requirePermission: vi.fn(() => async (_c, next) => next())
 }));
 
 import { db } from '../db';

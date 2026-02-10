@@ -2,8 +2,10 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PERMISSIONS } from '../services/permissions';
+import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 
 export const psaRoutes = new Hono();
 
@@ -14,7 +16,7 @@ type PsaConnection = {
   orgId: string;
   provider: PsaProvider;
   name: string;
-  credentials: Record<string, unknown>;
+  credentialsEncrypted: string | null;
   settings: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
@@ -57,13 +59,40 @@ async function ensureOrgAccess(
   return true;
 }
 
+function encryptCredentials(credentials: Record<string, unknown>): string | null {
+  return encryptSecret(JSON.stringify(credentials));
+}
+
+function decryptCredentials(value: string | null): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const decrypted = decryptSecret(value);
+    if (!decrypted) return null;
+    const parsed = JSON.parse(decrypted) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function serializeConnection(connection: PsaConnection, includeCredentials: boolean) {
+  const { credentialsEncrypted, ...rest } = connection;
+  const response = {
+    ...rest,
+    hasCredentials: Boolean(credentialsEncrypted)
+  };
+
   if (includeCredentials) {
-    return connection;
+    return {
+      ...response,
+      credentials: decryptCredentials(credentialsEncrypted)
+    };
   }
 
-  const { credentials, ...rest } = connection;
-  return rest;
+  return response;
 }
 
 const providerSchema = z.enum(['jira', 'servicenow', 'connectwise', 'autotask', 'freshservice', 'zendesk']);
@@ -123,6 +152,7 @@ async function resolveOrgIds(
 psaRoutes.get(
   '/connections',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', listConnectionsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -163,6 +193,7 @@ psaRoutes.get(
 psaRoutes.post(
   '/connections',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   zValidator('json', createConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -195,7 +226,7 @@ psaRoutes.post(
       orgId: orgId as string,
       provider: data.provider,
       name: data.name,
-      credentials: data.credentials,
+      credentialsEncrypted: encryptCredentials(data.credentials),
       settings: data.settings ?? {},
       createdAt: now,
       updatedAt: now,
@@ -214,13 +245,14 @@ psaRoutes.post(
       details: { provider: connection.provider }
     });
 
-    return c.json(serializeConnection(connection, true), 201);
+    return c.json(serializeConnection(connection, false), 201);
   }
 );
 
 psaRoutes.get(
   '/connections/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id');
@@ -235,13 +267,14 @@ psaRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    return c.json({ data: serializeConnection(connection, true) });
+    return c.json({ data: serializeConnection(connection, false) });
   }
 );
 
 psaRoutes.patch(
   '/connections/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   zValidator('json', updateConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -266,7 +299,7 @@ psaRoutes.patch(
       connection.name = data.name;
     }
     if (data.credentials !== undefined) {
-      connection.credentials = data.credentials;
+      connection.credentialsEncrypted = encryptCredentials(data.credentials);
     }
     if (data.settings !== undefined) {
       connection.settings = data.settings;
@@ -284,13 +317,14 @@ psaRoutes.patch(
       details: { changedFields: Object.keys(data) }
     });
 
-    return c.json(serializeConnection(connection, true));
+    return c.json(serializeConnection(connection, false));
   }
 );
 
 psaRoutes.delete(
   '/connections/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id');
@@ -323,6 +357,7 @@ psaRoutes.delete(
 psaRoutes.post(
   '/connections/:id/test',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id');
@@ -359,6 +394,7 @@ psaRoutes.post(
 psaRoutes.post(
   '/connections/:id/sync',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id');
@@ -397,6 +433,7 @@ psaRoutes.post(
 psaRoutes.post(
   '/connections/:id/status',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id');
@@ -434,6 +471,7 @@ psaRoutes.post(
 psaRoutes.get(
   '/tickets',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', listTicketsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -463,6 +501,7 @@ psaRoutes.get(
 psaRoutes.get(
   '/connections/:id/tickets',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', listTicketsSchema),
   async (c) => {
     const auth = c.get('auth');

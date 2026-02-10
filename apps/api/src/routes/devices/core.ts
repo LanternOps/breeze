@@ -18,6 +18,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 
 export const coreRoutes = new Hono();
 
@@ -60,13 +61,14 @@ coreRoutes.post(
     }
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
+    const keyHash = hashEnrollmentKey(key);
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     await db.insert(enrollmentKeys).values({
       orgId,
       siteId: site.id,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
-      key,
+      key: keyHash,
       maxUsage: 10,
       expiresAt,
       createdBy: auth.user.id,

@@ -21,10 +21,15 @@ vi.mock('../services', () => ({
   createSession: vi.fn(),
   invalidateSession: vi.fn(),
   invalidateAllUserSessions: vi.fn(),
+  isUserTokenRevoked: vi.fn().mockResolvedValue(false),
+  revokeAllUserTokens: vi.fn().mockResolvedValue(undefined),
+  isRefreshTokenJtiRevoked: vi.fn().mockResolvedValue(false),
+  revokeRefreshTokenJti: vi.fn().mockResolvedValue(undefined),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
   mfaLimiter: { limit: 5, windowSeconds: 300 },
+  getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   getRedis: vi.fn(() => ({
     setex: vi.fn(),
     get: vi.fn(),
@@ -92,6 +97,11 @@ import {
   verifyMFAToken,
   generateRecoveryCodes,
   invalidateAllUserSessions,
+  isUserTokenRevoked,
+  revokeAllUserTokens,
+  isRefreshTokenJtiRevoked,
+  revokeRefreshTokenJti,
+  getTrustedClientIp,
   rateLimiter,
   getRedis
 } from '../services';
@@ -102,6 +112,9 @@ describe('auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
     app = new Hono();
     app.route('/auth', authRoutes);
   });
@@ -199,6 +212,37 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('should return generic success for duplicate email', async () => {
+      vi.mocked(rateLimiter).mockResolvedValue({
+        allowed: true,
+        remaining: 4,
+        resetAt: new Date()
+      });
+      vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'existing-user-id' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'existing@example.com',
+          password: 'StrongPass123',
+          name: 'Duplicate User'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.tokens).toBeUndefined();
     });
   });
 
@@ -398,12 +442,6 @@ describe('auth routes', () => {
 
   describe('POST /auth/refresh', () => {
     it('should refresh tokens successfully', async () => {
-      const mockRedis = {
-        get: vi.fn().mockResolvedValue(null),
-        setex: vi.fn(),
-        del: vi.fn()
-      };
-      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
@@ -411,7 +449,9 @@ describe('auth routes', () => {
         orgId: null,
         partnerId: null,
         scope: 'system',
-        type: 'refresh'
+        type: 'refresh',
+        iat: 123456,
+        jti: 'refresh-jti-1'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -442,10 +482,11 @@ describe('auth routes', () => {
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          refreshToken: 'valid-refresh-token'
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': '1',
+          Cookie: 'breeze_refresh_token=valid-refresh-token'
+        }
       });
 
       expect(res.status).toBe(200);
@@ -457,6 +498,7 @@ describe('auth routes', () => {
         orgId: null,
         partnerId: null
       }));
+      expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-1');
     });
 
     it('should reject invalid refresh token', async () => {
@@ -464,10 +506,11 @@ describe('auth routes', () => {
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          refreshToken: 'invalid-token'
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': '1',
+          Cookie: 'breeze_refresh_token=invalid-token'
+        }
       });
 
       expect(res.status).toBe(401);
@@ -486,22 +529,18 @@ describe('auth routes', () => {
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          refreshToken: 'access-token-not-refresh'
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': '1',
+          Cookie: 'breeze_refresh_token=access-token-not-refresh'
+        }
       });
 
       expect(res.status).toBe(401);
     });
 
     it('should reject revoked refresh token sessions', async () => {
-      const mockRedis = {
-        get: vi.fn().mockResolvedValue('1'),
-        setex: vi.fn(),
-        del: vi.fn()
-      };
-      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(true);
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
@@ -509,15 +548,18 @@ describe('auth routes', () => {
         orgId: 'org-old',
         partnerId: 'partner-old',
         scope: 'partner',
-        type: 'refresh'
+        type: 'refresh',
+        iat: 123456,
+        jti: 'refresh-jti-2'
       });
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          refreshToken: 'revoked-refresh-token'
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': '1',
+          Cookie: 'breeze_refresh_token=revoked-refresh-token'
+        }
       });
 
       expect(res.status).toBe(401);
@@ -525,12 +567,6 @@ describe('auth routes', () => {
     });
 
     it('should re-derive token claims from current memberships', async () => {
-      const mockRedis = {
-        get: vi.fn().mockResolvedValue(null),
-        setex: vi.fn(),
-        del: vi.fn()
-      };
-      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
@@ -538,7 +574,9 @@ describe('auth routes', () => {
         orgId: null,
         partnerId: 'stale-partner',
         scope: 'partner',
-        type: 'refresh'
+        type: 'refresh',
+        iat: 123456,
+        jti: 'refresh-jti-3'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -579,10 +617,11 @@ describe('auth routes', () => {
 
       const res = await app.request('/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          refreshToken: 'refresh-token-live-context'
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': '1',
+          Cookie: 'breeze_refresh_token=refresh-token-live-context'
+        }
       });
 
       expect(res.status).toBe(200);
@@ -593,6 +632,7 @@ describe('auth routes', () => {
         orgId: 'org-live',
         partnerId: 'partner-live'
       }));
+      expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-3');
     });
   });
 
@@ -671,6 +711,7 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
     });
 
     it('should reject weak new password', async () => {
@@ -717,12 +758,6 @@ describe('auth routes', () => {
     it('POST /auth/change-password should change password for authenticated user', async () => {
       vi.mocked(verifyPassword).mockResolvedValue(true);
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
-      const mockRedis = {
-        get: vi.fn(),
-        setex: vi.fn().mockResolvedValue('OK'),
-        del: vi.fn()
-      };
-      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -754,7 +789,7 @@ describe('auth routes', () => {
       expect(body.message).toBe('Password changed successfully');
       expect(hashPassword).toHaveBeenCalledWith('NewStrongPass123');
       expect(invalidateAllUserSessions).toHaveBeenCalledWith('user-123');
-      expect(mockRedis.setex).toHaveBeenCalledWith('token:revoked:user-123', 900, '1');
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
     });
 
     it('POST /auth/mfa/enable should enable MFA and return recovery codes', async () => {
@@ -890,6 +925,7 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
     });
   });
 });

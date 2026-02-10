@@ -18,7 +18,6 @@ const baseUser: User = {
 
 const baseTokens: Tokens = {
   accessToken: 'access-old',
-  refreshToken: 'refresh-1',
   expiresInSeconds: 3600
 };
 
@@ -73,7 +72,6 @@ describe('auth store fetchWithAuth', () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const refreshedTokens: Tokens = {
       accessToken: 'access-new',
-      refreshToken: 'refresh-2',
       expiresInSeconds: 3600
     };
 
@@ -96,7 +94,8 @@ describe('auth store fetchWithAuth', () => {
     const refreshCall = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(refreshCall[0]).toBe('http://localhost:3001/api/v1/auth/refresh');
     expect(refreshCall[1].method).toBe('POST');
-    expect(refreshCall[1].body).toBe(JSON.stringify({ refreshToken: baseTokens.refreshToken }));
+    expect(refreshCall[1].body).toBe(JSON.stringify({}));
+    expect(new Headers(refreshCall[1].headers).get('x-breeze-csrf')).toBe('1');
 
     const retryCall = fetchMock.mock.calls[2] as [string, RequestInit];
     const retryHeaders = retryCall[1].headers as Headers;
@@ -161,7 +160,6 @@ describe('auth API helpers', () => {
   it('apiVerifyMFA returns user/tokens on success', async () => {
     const tokens: Tokens = {
       accessToken: 'access-new',
-      refreshToken: 'refresh-new',
       expiresInSeconds: 3600
     };
     const fetchMock = vi.fn().mockResolvedValue(

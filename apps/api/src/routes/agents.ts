@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   devices,
@@ -36,6 +36,7 @@ import {
   saveFilesystemSnapshot,
   upsertFilesystemScanState,
 } from '../services/filesystemAnalysis';
+import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
 
 export const agentRoutes = new Hono();
 
@@ -756,6 +757,7 @@ function generateApiKey(): string {
 // Agent enrollment
 agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
   const data = c.req.valid('json');
+  const hashedEnrollmentKey = hashEnrollmentKey(data.enrollmentKey);
 
   // Validate enrollment key
   const [key] = await db
@@ -763,7 +765,10 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
     .from(enrollmentKeys)
     .where(
       and(
-        eq(enrollmentKeys.key, data.enrollmentKey),
+        or(
+          eq(enrollmentKeys.key, data.enrollmentKey),
+          eq(enrollmentKeys.key, hashedEnrollmentKey)
+        ),
         sql`(${enrollmentKeys.expiresAt} IS NULL OR ${enrollmentKeys.expiresAt} > NOW())`,
         sql`(${enrollmentKeys.maxUsage} IS NULL OR ${enrollmentKeys.usageCount} < ${enrollmentKeys.maxUsage})`
       )

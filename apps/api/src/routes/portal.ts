@@ -16,6 +16,9 @@ import {
 } from '../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../services/password';
 import { writeAuditEvent } from '../services/auditEvents';
+import { getTrustedClientIp } from '../services/clientIp';
+import { getEmailService } from '../services/email';
+import { DEFAULT_ALLOWED_ORIGINS } from '../services/corsOrigins';
 
 export const portalRoutes = new Hono();
 
@@ -38,6 +41,7 @@ type PortalAuthContext = {
     status: string;
   };
   token: string;
+  authMethod: 'bearer' | 'cookie';
 };
 
 declare module 'hono' {
@@ -56,12 +60,16 @@ const portalRateLimitBuckets = new Map<string, {
 }>();
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
+const SESSION_TTL_SECONDS = Math.floor(SESSION_TTL_MS / 1000);
 const RESET_TTL_MS = 1000 * 60 * 60;
 const PORTAL_SESSION_CAP = 20000;
 const PORTAL_RESET_TOKEN_CAP = 20000;
 const PORTAL_RATE_BUCKET_CAP = 50000;
 const STATE_SWEEP_INTERVAL_MS = 60 * 1000;
 const RATE_LIMIT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const PORTAL_SESSION_COOKIE_NAME = 'breeze_portal_session';
+const PORTAL_SESSION_COOKIE_PATH = '/api/v1/portal';
+const CSRF_HEADER_NAME = 'x-breeze-csrf';
 
 const LOGIN_RATE_LIMIT = {
   windowMs: 5 * 60 * 1000,
@@ -93,9 +101,40 @@ function normalizeEmail(email: string) {
 }
 
 function getClientIp(c: Context): string {
-  return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
-    c.req.header('x-real-ip') ||
-    'unknown';
+  return getTrustedClientIp(c);
+}
+
+function isSecureCookieEnvironment(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
+function buildPortalSessionCookie(token: string): string {
+  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
+  return `${PORTAL_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=${PORTAL_SESSION_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`;
+}
+
+function buildClearPortalSessionCookie(): string {
+  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
+  return `${PORTAL_SESSION_COOKIE_NAME}=; Path=${PORTAL_SESSION_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+}
+
+function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  const target = `${name}=`;
+
+  for (const part of cookieHeader.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(target)) {
+      const value = trimmed.slice(target.length);
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+
+  return null;
 }
 
 function capMapByOldest<T>(
@@ -243,22 +282,80 @@ function writePortalAudit(
   writeAuditEvent(c, event);
 }
 
+function getAllowedOrigins(): Set<string> {
+  const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+
+  return new Set<string>([...DEFAULT_ALLOWED_ORIGINS, ...configuredOrigins]);
+}
+
+function isAllowedOrigin(origin: string): boolean {
+  const allowedOrigins = getAllowedOrigins();
+  if (allowedOrigins.has(origin)) {
+    return true;
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const parsed = new URL(origin);
+      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+function validatePortalCookieCsrfRequest(c: Context): string | null {
+  const auth = c.get('portalAuth');
+  if (auth.authMethod !== 'cookie') {
+    return null;
+  }
+
+  const csrfHeader = c.req.header(CSRF_HEADER_NAME);
+  if (!csrfHeader || csrfHeader.trim().length === 0) {
+    return 'Missing CSRF header';
+  }
+
+  const origin = c.req.header('origin');
+  if (origin && !isAllowedOrigin(origin)) {
+    return 'Invalid request origin';
+  }
+
+  return null;
+}
+
 async function portalAuthMiddleware(c: Context, next: Next) {
   sweepPortalState();
 
   const authHeader = c.req.header('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const cookieToken = getCookieValue(c.req.header('cookie'), PORTAL_SESSION_COOKIE_NAME);
+  const token = bearerToken || cookieToken;
+  const authMethod = bearerToken ? 'bearer' : 'cookie';
+
+  if (!token) {
     return c.json({ error: 'Missing or invalid authorization header' }, 401);
   }
 
-  const token = authHeader.slice(7);
   const session = portalSessions.get(token);
   if (!session) {
+    if (cookieToken) {
+      c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+    }
     return c.json({ error: 'Invalid or expired session' }, 401);
   }
 
   if (session.expiresAt.getTime() <= Date.now()) {
     portalSessions.delete(token);
+    if (cookieToken) {
+      c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+    }
     return c.json({ error: 'Invalid or expired session' }, 401);
   }
 
@@ -277,6 +374,9 @@ async function portalAuthMiddleware(c: Context, next: Next) {
 
   if (!user) {
     portalSessions.delete(token);
+    if (cookieToken) {
+      c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+    }
     return c.json({ error: 'Portal user not found' }, 401);
   }
 
@@ -284,7 +384,7 @@ async function portalAuthMiddleware(c: Context, next: Next) {
     return c.json({ error: 'Account is not active' }, 403);
   }
 
-  c.set('portalAuth', { user, token });
+  c.set('portalAuth', { user, token, authMethod });
   return next();
 }
 
@@ -517,13 +617,14 @@ portalRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   const resolvedAccountRateKey = `portal:login:account:${user.orgId}:${normalizedEmail}`;
   clearRateLimitKeys([ipRateKey, accountRateKey, resolvedAccountRateKey]);
 
+  c.header('Set-Cookie', buildPortalSessionCookie(token), { append: true });
+
   return c.json({
     user: buildPortalUserPayload(user),
     accessToken: token,
     expiresAt,
     tokens: {
       accessToken: token,
-      refreshToken: token,
       expiresInSeconds: Math.floor(SESSION_TTL_MS / 1000)
     }
   });
@@ -562,6 +663,24 @@ portalRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSche
     const expiresAt = new Date(Date.now() + RESET_TTL_MS);
     portalResetTokens.set(tokenHash, { userId: user.id, expiresAt, createdAt: new Date() });
     capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
+
+    const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+    const orgQuery = orgId ? `&orgId=${encodeURIComponent(orgId)}` : '';
+    const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}${orgQuery}`;
+    const emailService = getEmailService();
+
+    if (emailService) {
+      try {
+        await emailService.sendPasswordReset({
+          to: user.email,
+          resetUrl
+        });
+      } catch (error) {
+        console.error(`[PortalAuth] Failed to send password reset email to ${user.email}:`, error);
+      }
+    } else {
+      console.warn('[PortalAuth] Email service not configured; password reset email was not sent');
+    }
   }
 
   return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
@@ -618,8 +737,14 @@ portalRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema
 });
 
 portalRoutes.post('/auth/logout', portalAuthMiddleware, async (c) => {
+  const csrfError = validatePortalCookieCsrfRequest(c);
+  if (csrfError) {
+    return c.json({ error: csrfError }, 403);
+  }
+
   const auth = c.get('portalAuth');
   portalSessions.delete(auth.token);
+  c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
   return c.json({ success: true });
 });
 
@@ -704,6 +829,11 @@ portalRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
 });
 
 portalRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) => {
+  const csrfError = validatePortalCookieCsrfRequest(c);
+  if (csrfError) {
+    return c.json({ error: csrfError }, 403);
+  }
+
   const auth = c.get('portalAuth');
   const payload = c.req.valid('json');
   const now = new Date();
@@ -800,6 +930,11 @@ portalRoutes.post(
   zValidator('param', ticketParamSchema),
   zValidator('json', commentSchema),
   async (c) => {
+    const csrfError = validatePortalCookieCsrfRequest(c);
+    if (csrfError) {
+      return c.json({ error: csrfError }, 403);
+    }
+
     const auth = c.get('portalAuth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
@@ -913,6 +1048,11 @@ portalRoutes.post(
   zValidator('param', assetParamSchema),
   zValidator('json', checkoutSchema),
   async (c) => {
+    const csrfError = validatePortalCookieCsrfRequest(c);
+    if (csrfError) {
+      return c.json({ error: csrfError }, 403);
+    }
+
     const auth = c.get('portalAuth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
@@ -992,6 +1132,11 @@ portalRoutes.post(
   zValidator('param', assetParamSchema),
   zValidator('json', checkinSchema),
   async (c) => {
+    const csrfError = validatePortalCookieCsrfRequest(c);
+    if (csrfError) {
+      return c.json({ error: csrfError }, 403);
+    }
+
     const auth = c.get('portalAuth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
@@ -1053,6 +1198,11 @@ portalRoutes.get('/profile', async (c) => {
 });
 
 portalRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (c) => {
+  const csrfError = validatePortalCookieCsrfRequest(c);
+  if (csrfError) {
+    return c.json({ error: csrfError }, 403);
+  }
+
   const auth = c.get('portalAuth');
   const payload = c.req.valid('json');
   const updates: {
@@ -1115,6 +1265,11 @@ portalRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (c
 });
 
 portalRoutes.post('/profile/password', zValidator('json', changePasswordSchema), async (c) => {
+  const csrfError = validatePortalCookieCsrfRequest(c);
+  if (csrfError) {
+    return c.json({ error: csrfError }, 403);
+  }
+
   const auth = c.get('portalAuth');
   const { currentPassword, newPassword } = c.req.valid('json');
 

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const queueDeliveryMock = vi.fn();
+const { queueDeliveryMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => ({
+  queueDeliveryMock: vi.fn(),
+  validateWebhookUrlSafetyWithDnsMock: vi.fn()
+}));
 
 vi.mock('../workers/webhookDelivery', () => ({
   getWebhookWorker: vi.fn(() => ({
@@ -11,6 +14,10 @@ vi.mock('../workers/webhookDelivery', () => ({
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
+}));
+
+vi.mock('../services/notificationSenders/webhookSender', () => ({
+  validateWebhookUrlSafetyWithDns: validateWebhookUrlSafetyWithDnsMock
 }));
 
 vi.mock('../db', () => ({
@@ -108,6 +115,7 @@ describe('webhook routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
 
     vi.mocked(authMiddleware).mockImplementation((c, next) => {
       c.set('auth', {
@@ -161,10 +169,12 @@ describe('webhook routes', () => {
     const body = await res.json();
     expect(body.id).toBe('webhook-1');
     expect(body.hasSecret).toBe(true);
-    expect(body.secret).toBe('secret-123');
+    expect(body.secret).toBeUndefined();
   });
 
   it('rejects unsafe webhook URLs', async () => {
+    validateWebhookUrlSafetyWithDnsMock.mockResolvedValueOnce(['Webhook URL must use HTTPS']);
+
     const res = await app.request('/webhooks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
