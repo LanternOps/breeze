@@ -367,5 +367,5 @@ You can use, modify, and self-host Breeze freely. If you modify Breeze and offer
 ---
 
 <p align="center">
-  Built by <a href="https://lanternops.io">LanternOps</a> · Made for MSPs
+  Built by <a href="https://lanternops.io">LanternOps</a>
 </p>
