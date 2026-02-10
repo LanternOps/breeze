@@ -9,6 +9,8 @@ import { authMiddleware, requireScope, type AuthContext } from '../middleware/au
 export const tagRoutes = new Hono();
 
 type TagSummary = {
+  id: string;
+  name: string;
   tag: string;
   deviceCount: number;
 };
@@ -76,7 +78,12 @@ tagRoutes.get(
 
     // Convert to array and apply search filter
     let results: TagSummary[] = Array.from(tagCounts.entries())
-      .map(([tag, deviceCount]) => ({ tag, deviceCount }))
+      .map(([tag, deviceCount]) => ({
+        id: tag,
+        name: tag,
+        tag,
+        deviceCount
+      }))
       .sort((a, b) => b.deviceCount - a.deviceCount || a.tag.localeCompare(b.tag));
 
     if (query.search) {

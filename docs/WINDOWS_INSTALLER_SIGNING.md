@@ -1,5 +1,7 @@
 # Windows Agent Installer & Code Signing
 
+See also: `docs/ARTIFACT_SIGNING_OPERATIONS.md` for official Breeze signing vs independent fork/self-host signing responsibilities.
+
 ## Current State
 
 Raw `.exe` binaries built via `go build` with ldflags version embedding, distributed through GitHub Releases with SHA256 checksums. No signing, no installer, no Windows resource metadata.
@@ -41,6 +43,10 @@ The installer needs to:
 - Create `C:\ProgramData\Breeze\` for config/data/logs
 - Register the Windows Service (or scheduled task for user-helper)
 - Accept enrollment parameters (`ENROLLMENT_KEY`, `SERVER_URL`) as MSI properties
+- Treat enrollment secrets as sensitive MSI data:
+  - Add `ENROLLMENT_KEY` to `MsiHiddenProperties` so it is redacted in Windows Installer logs
+  - Add `ENROLLMENT_KEY;SERVER_URL` to `SecureCustomProperties` so values survive the elevation boundary
+  - Pass values to deferred custom actions only via `CustomActionData` (not direct property reads)
 - Support silent install: `msiexec /i breeze-agent.msi /qn ENROLLMENT_KEY=xxx SERVER_URL=https://...`
 - Handle upgrades (WiX `MajorUpgrade` element)
 
@@ -51,23 +57,64 @@ Build sequence:
 go-winres make → go build (with .syso) → sign .exe → wix build → sign .msi → upload to release
 ```
 
-**For Azure Trusted Signing in GitHub Actions:**
+**For Azure Trusted Signing in GitHub Actions (OIDC + profile separation):**
 ```yaml
-- uses: azure/trusted-signing-action@v0.5.0
+- uses: azure/login@v2
   with:
-    azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-    azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-    azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-    endpoint: https://eus.codesigning.azure.net/
-    trusted-signing-account-name: breeze-signing
-    certificate-profile-name: breeze-rmm
-    files-folder: ${{ github.workspace }}/dist
+    client-id: ${{ secrets.AZURE_CLIENT_ID }}
+    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+    allow-no-subscriptions: true
+
+- uses: azure/artifact-signing-action@v1
+  with:
+    endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+    signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+    certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+    files: ${{ github.workspace }}\dist\breeze-agent-windows-amd64.exe
     file-digest: SHA256
+    timestamp-rfc3161: http://timestamp.acs.microsoft.com
+    timestamp-digest: SHA256
 ```
+
+Recommended environment setup in GitHub:
+- `signing-production` environment: holds production profile secret(s), requires reviewer approval.
+- `signing-prerelease` environment: holds prerelease profile secret(s), lower-friction approvals.
+
+Secrets used by the current release workflow:
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SIGNING_ENDPOINT`
+- `AZURE_SIGNING_ACCOUNT_NAME`
+- `AZURE_CERT_PROFILE_PROD`
+- `AZURE_CERT_PROFILE_PRERELEASE`
 
 **For traditional OV/EV certs:**
 - Use `signtool.exe` (Windows SDK) or `osslsigncode` (cross-platform)
 - Store cert in GitHub Secrets (PFX + password) or use cloud HSM
+
+### 5. WiX v4 Build Commands (Implementation Baseline)
+
+Assuming WiX v4 CLI is installed (`wix --version`) and `agent/installer/breeze.wxs` exists:
+
+```bash
+# from repo root
+mkdir -p dist
+
+# Build the Windows agent binary first
+cd agent
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
+  -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
+  -o ../dist/breeze-agent.exe ./cmd/breeze-agent
+cd ..
+
+# Build MSI with WiX v4
+wix build agent/installer/breeze.wxs \
+  -arch x64 \
+  -d AgentExePath=dist/breeze-agent.exe \
+  -o dist/breeze-agent.msi
+```
+
+If using signing, sign `dist/breeze-agent.exe` before `wix build`, then sign `dist/breeze-agent.msi` after build.
 
 ## Enrollment Integration
 
@@ -81,7 +128,7 @@ Manual: breeze-agent enroll <KEY> --server <URL>
   → Then: breeze-agent run
 ```
 
-The agent already supports `BREEZE_` env vars via Viper (`config.go` lines 97-98).
+The agent already supports `BREEZE_` env vars via Viper in `agent/internal/config/config.go` (`viper.AutomaticEnv()` + `viper.SetEnvPrefix("BREEZE")`).
 
 ### MSI Install Sequence (Custom Actions)
 
@@ -100,6 +147,11 @@ msiexec /i breeze-agent.msi /qn SERVER_URL=https://rmm.example.com ENROLLMENT_KE
 5. **Start service** - `breeze-agent.exe run`
 
 The enrollment custom action must be **deferred** (not immediate) because it needs SYSTEM privileges and the files need to be on disk first.
+
+For security and correctness with deferred custom actions:
+- Schedule an immediate custom action that writes `CustomActionData` for the deferred action.
+- Mark sensitive properties as hidden (`MsiHiddenProperties=ENROLLMENT_KEY`).
+- Do not log command lines containing raw enrollment keys.
 
 ### Deployment Models
 
@@ -122,8 +174,12 @@ That dynamically generates (or serves a cached) MSI with the server URL and enro
 |---|---|
 | `agent/resources/winres.json` | go-winres config (version, icon, manifest) |
 | `agent/resources/icon.ico` | App icon (multi-size) |
+| `agent/resources/breeze.manifest` | UAC/security manifest for embedded resources |
 | `agent/installer/breeze.wxs` | WiX installer definition |
-| `agent/installer/install-task.xml` | Scheduled task XML (already exists at `agent/service/windows/`) |
+| `agent/installer/build-msi.ps1` | Reproducible WiX build wrapper script |
+| `agent/installer/enroll-agent.ps1` | Deferred custom action for enrollment |
+| `agent/installer/remove-windows-task.ps1` | Uninstall custom action to remove helper task |
+| `agent/service/windows/breeze-agent-user-task.xml` | Scheduled task XML (already exists; reference from installer) |
 | `.github/workflows/release.yml` | Updated with signing + MSI steps |
 
 ## Estimated Effort
@@ -153,3 +209,29 @@ That dynamically generates (or serves a cached) MSI with the server URL and enro
 ### Phase 3: Self-Service (pre-baked installers)
 9. Server-side installer generation endpoint
 10. Per-customer download links in Breeze dashboard
+
+## Acceptance Checks (Required Before Release)
+
+Run these on a clean Windows VM:
+
+```powershell
+# Silent install with enrollment properties
+msiexec /i breeze-agent.msi /qn /l*v install.log SERVER_URL=https://rmm.example.com ENROLLMENT_KEY=ek_abc123
+
+# Verify service/task is present and running
+sc query "BreezeAgent"
+schtasks /Query /TN "Breeze Agent User Task"
+
+# Verify upgrade path (install old MSI, then new MSI with same UpgradeCode)
+msiexec /i breeze-agent-old.msi /qn
+msiexec /i breeze-agent-new.msi /qn /l*v upgrade.log
+
+# Silent uninstall
+msiexec /x breeze-agent.msi /qn /l*v uninstall.log
+```
+
+Expected outcomes:
+- Install succeeds silently (`ExitCode=0`) and agent is enrolled/started.
+- Upgrade replaces prior version without orphaned files/services/tasks.
+- Uninstall removes binaries/services/tasks and leaves only intentional persistent data.
+- `install.log` / `upgrade.log` do not expose raw `ENROLLMENT_KEY` values.

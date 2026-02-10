@@ -80,3 +80,7 @@ export const db = new Proxy(baseDb, {
 }) as typeof baseDb;
 
 export type Database = typeof db;
+
+export async function closeDb(): Promise<void> {
+  await client.end();
+}

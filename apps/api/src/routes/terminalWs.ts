@@ -1,10 +1,9 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
-import { verifyToken } from '../services/jwt';
-import { getRedis } from '../services/redis';
+import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 
 // Types for terminal messages
@@ -43,39 +42,30 @@ type TerminalOutputCallback = (data: string) => void;
 const terminalOutputCallbacks = new Map<string, TerminalOutputCallback>();
 
 /**
- * Validate user token and session access
+ * Validate one-time WS ticket and session access
  */
 async function validateTerminalAccess(
   sessionId: string,
-  token: string | undefined
+  ticket: string | undefined
 ): Promise<{ valid: boolean; error?: string; session?: typeof remoteSessions.$inferSelect; device?: typeof devices.$inferSelect; userId?: string }> {
-  if (!token) {
-    return { valid: false, error: 'Missing authentication token' };
+  if (!ticket) {
+    return { valid: false, error: 'Missing connection ticket' };
   }
 
-  // Verify JWT token
-  const payload = await verifyToken(token);
-  if (!payload || payload.type !== 'access') {
-    return { valid: false, error: 'Invalid or expired token' };
+  const ticketRecord = consumeWsTicket(ticket);
+  if (!ticketRecord) {
+    return { valid: false, error: 'Invalid or expired connection ticket' };
   }
 
-  const redis = getRedis();
-  if (redis) {
-    try {
-      const revoked = await redis.get(`token:revoked:${payload.sub}`);
-      if (revoked) {
-        return { valid: false, error: 'Invalid or expired token' };
-      }
-    } catch (error) {
-      console.warn('[terminalWs] Failed to check token revocation state:', error);
-    }
+  if (ticketRecord.sessionId !== sessionId || ticketRecord.sessionType !== 'terminal') {
+    return { valid: false, error: 'Connection ticket does not match terminal session' };
   }
 
   // Check user exists and is active
   const [user] = await db
     .select({ id: users.id, status: users.status })
     .from(users)
-    .where(eq(users.id, payload.sub))
+    .where(eq(users.id, ticketRecord.userId))
     .limit(1);
 
   if (!user || user.status !== 'active') {
@@ -157,9 +147,9 @@ export function getActiveTerminalSession(sessionId: string): TerminalSession | u
 /**
  * Create WebSocket handlers for terminal session
  */
-function createTerminalWsHandlers(sessionId: string, token: string | undefined) {
+function createTerminalWsHandlers(sessionId: string, ticket: string | undefined) {
   let validationResult: Awaited<ReturnType<typeof validateTerminalAccess>> | null = null;
-  const validationPromise = validateTerminalAccess(sessionId, token).then(result => {
+  const validationPromise = validateTerminalAccess(sessionId, ticket).then(result => {
     validationResult = result;
   });
 
@@ -389,13 +379,13 @@ export function createTerminalWsRoutes(upgradeWebSocket: Function): Hono {
   const app = new Hono();
 
   // WebSocket route for terminal sessions
-  // GET /api/v1/remote/sessions/:id/ws?token=xxx
+  // GET /api/v1/remote/sessions/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
     upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined } }) => {
       const sessionId = c.req.param('id');
-      const token = c.req.query('token');
-      return createTerminalWsHandlers(sessionId, token);
+      const ticket = c.req.query('ticket');
+      return createTerminalWsHandlers(sessionId, ticket);
     })
   );
 

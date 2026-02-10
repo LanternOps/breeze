@@ -127,8 +127,16 @@ export default function NotificationChannelsPage() {
         break;
       case 'sms':
         config = {
-          phoneNumbers: values.smsPhoneNumbers?.map(p => p.value).filter(v => v) ?? []
+          phoneNumbers: values.smsPhoneNumbers
+            ?.map(p => p.value.trim())
+            .filter(v => v) ?? []
         };
+        if (values.smsFrom?.trim()) {
+          config.from = values.smsFrom.trim();
+        }
+        if (values.smsMessagingServiceSid?.trim()) {
+          config.messagingServiceSid = values.smsMessagingServiceSid.trim();
+        }
         break;
     }
 
@@ -176,6 +184,8 @@ export default function NotificationChannelsPage() {
         base.smsPhoneNumbers = Array.isArray(config.phoneNumbers)
           ? (config.phoneNumbers as string[]).map(v => ({ value: v }))
           : [{ value: '' }];
+        base.smsFrom = config.from as string;
+        base.smsMessagingServiceSid = config.messagingServiceSid as string;
         break;
     }
 

@@ -31,14 +31,7 @@ if (-not (Test-Path $TaskXmlPath)) {
 
 # Register scheduled task
 try {
-    # Remove existing task if present
-    $existing = Get-ScheduledTask -TaskName "AgentUserHelper" -TaskPath "\Breeze\" -ErrorAction SilentlyContinue
-    if ($existing) {
-        Unregister-ScheduledTask -TaskName "AgentUserHelper" -TaskPath "\Breeze\" -Confirm:$false
-        Write-Host "  Removed existing scheduled task"
-    }
-
-    Register-ScheduledTask -Xml (Get-Content $TaskXmlPath -Raw) -TaskName "AgentUserHelper" -TaskPath "\Breeze\"
+    Register-ScheduledTask -Xml (Get-Content $TaskXmlPath -Raw) -TaskName "AgentUserHelper" -TaskPath "\Breeze\" -Force
     Write-Host "  Scheduled task registered: $TaskName"
 } catch {
     Write-Error "Failed to register scheduled task: $_"

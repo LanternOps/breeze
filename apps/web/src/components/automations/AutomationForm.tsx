@@ -68,7 +68,9 @@ const automationSchema = z.object({
   triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']),
   cronExpression: z.string().optional(),
   eventType: z.string().optional(),
+  webhookSecret: z.string().optional(),
   conditions: z.array(conditionSchema).optional(),
+  targetConfig: z.custom<DeploymentTargetConfig>().optional(),
   actions: z.array(actionSchema).min(1, 'At least one action is required'),
   onFailure: z.enum(['stop', 'continue', 'notify']),
   notifyOnFailureChannelId: z.string().optional()
@@ -181,8 +183,12 @@ export default function AutomationForm({
   notificationChannels = []
 }: AutomationFormProps) {
   const [conditionsExpanded, setConditionsExpanded] = useState(true);
-  const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>('simple');
-  const [automationTargetConfig, setAutomationTargetConfig] = useState<DeploymentTargetConfig>({ type: 'all' });
+  const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>(
+    defaultValues?.targetConfig ? 'advanced' : 'simple'
+  );
+  const [automationTargetConfig, setAutomationTargetConfig] = useState<DeploymentTargetConfig>(
+    defaultValues?.targetConfig ?? { type: 'all' }
+  );
 
   const {
     register,
@@ -199,6 +205,7 @@ export default function AutomationForm({
       triggerType: 'manual',
       cronExpression: '0 9 * * *',
       eventType: 'device.offline',
+      webhookSecret: '',
       conditions: [],
       actions: [{ type: 'run_script' }],
       onFailure: 'stop',
@@ -245,7 +252,11 @@ export default function AutomationForm({
   return (
     <form
       onSubmit={handleSubmit(async values => {
-        await onSubmit?.(values);
+        await onSubmit?.({
+          ...values,
+          conditions: conditionMode === 'simple' ? (values.conditions ?? []) : values.conditions,
+          targetConfig: conditionMode === 'advanced' ? automationTargetConfig : undefined
+        });
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
     >
@@ -417,6 +428,18 @@ export default function AutomationForm({
                   A webhook URL will be generated after saving.
                 </p>
               )}
+              <div className="space-y-2 pt-1">
+                <label htmlFor="webhook-secret" className="text-sm font-medium">
+                  Webhook Secret (optional)
+                </label>
+                <input
+                  id="webhook-secret"
+                  type="text"
+                  placeholder="Leave blank to auto-generate"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('webhookSecret')}
+                />
+              </div>
               <p className="flex items-center gap-1 text-xs text-muted-foreground">
                 <HelpCircle className="h-3 w-3" />
                 Send a POST request to this URL to trigger the automation

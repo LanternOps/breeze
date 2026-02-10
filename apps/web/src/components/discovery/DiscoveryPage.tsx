@@ -219,6 +219,8 @@ export default function DiscoveryPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ApiDiscoveryProfile | null>(null);
   const [jobsProfileFilter, setJobsProfileFilter] = useState<string | null>(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
+  const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
 
   const tabLabels: Record<DiscoveryTab, string> = {
     profiles: 'Profiles',
@@ -538,8 +540,20 @@ export default function DiscoveryPage() {
 
       {activeTab === 'templates' && (
         <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
-          <SNMPTemplateList />
-          <SNMPTemplateEditor />
+          <SNMPTemplateList
+            selectedTemplateId={selectedTemplateId}
+            refreshToken={templateRefreshToken}
+            onSelectTemplate={setSelectedTemplateId}
+            onCreateTemplate={() => setSelectedTemplateId('')}
+          />
+          <SNMPTemplateEditor
+            selectedTemplateId={selectedTemplateId}
+            refreshToken={templateRefreshToken}
+            onTemplateSaved={(templateId) => {
+              setSelectedTemplateId(templateId);
+              setTemplateRefreshToken((value) => value + 1);
+            }}
+          />
         </div>
       )}
     </div>

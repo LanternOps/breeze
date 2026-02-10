@@ -430,7 +430,18 @@ function escapeCsv(value: string): string {
   return value;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function buildPdfHtml(selectedDevices: DeviceComparisonData[], osLabels: Record<OSType, string>, generatedDate: string): string {
+  const safe = (value: unknown): string => escapeHtml(String(value ?? '-'));
+
   const specsRows = [
     { label: 'OS', getValue: (device: DeviceComparisonData) => `${osLabels[device.os]} ${device.osVersion}` },
     { label: 'CPU', getValue: (device: DeviceComparisonData) => device.cpuModel || 'Unknown' },
@@ -440,22 +451,22 @@ function buildPdfHtml(selectedDevices: DeviceComparisonData[], osLabels: Record<
   ];
 
   const specsTableRows = specsRows.map(row =>
-    `<tr><td>${row.label}</td>${selectedDevices.map(device => `<td>${row.getValue(device)}</td>`).join('')}</tr>`
+    `<tr><td>${safe(row.label)}</td>${selectedDevices.map(device => `<td>${safe(row.getValue(device))}</td>`).join('')}</tr>`
   ).join('');
 
   const softwareSection = selectedDevices.map(device => {
     const list = device.software.map(item => item.name).join(', ');
-    return `<div><strong>${device.hostname}:</strong> ${list || 'No software data'}</div>`;
+    return `<div><strong>${safe(device.hostname)}:</strong> ${safe(list || 'No software data')}</div>`;
   }).join('');
 
   const patchesSection = selectedDevices.map(device => {
     const missing = device.patches.filter(patch => patch.status === 'missing').map(patch => patch.name);
-    return `<div><strong>${device.hostname} missing:</strong> ${missing.join(', ') || 'None'}</div>`;
+    return `<div><strong>${safe(device.hostname)} missing:</strong> ${safe(missing.join(', ') || 'None')}</div>`;
   }).join('');
 
   const configKeys = Array.from(new Set(selectedDevices.flatMap(device => Object.keys(device.config))));
   const configRows = configKeys.map(key =>
-    `<tr><td>${key}</td>${selectedDevices.map(device => `<td>${device.config[key] ?? '-'}</td>`).join('')}</tr>`
+    `<tr><td>${safe(key)}</td>${selectedDevices.map(device => `<td>${safe(device.config[key] ?? '-')}</td>`).join('')}</tr>`
   ).join('');
 
   return `<!DOCTYPE html>
@@ -474,13 +485,13 @@ function buildPdfHtml(selectedDevices: DeviceComparisonData[], osLabels: Record<
   </head>
   <body>
     <h1>Device Comparison Report</h1>
-    <div>Generated ${generatedDate}</div>
+    <div>Generated ${safe(generatedDate)}</div>
     <h2>Specs</h2>
     <table>
       <thead>
         <tr>
           <th>Spec</th>
-          ${selectedDevices.map(device => `<th>${device.hostname}</th>`).join('')}
+          ${selectedDevices.map(device => `<th>${safe(device.hostname)}</th>`).join('')}
         </tr>
       </thead>
       <tbody>
@@ -496,7 +507,7 @@ function buildPdfHtml(selectedDevices: DeviceComparisonData[], osLabels: Record<
       <thead>
         <tr>
           <th>Key</th>
-          ${selectedDevices.map(device => `<th>${device.hostname}</th>`).join('')}
+          ${selectedDevices.map(device => `<th>${safe(device.hostname)}</th>`).join('')}
         </tr>
       </thead>
       <tbody>

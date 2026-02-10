@@ -8,7 +8,14 @@ import { fetchWithAuth } from '../../stores/auth';
 
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
-  avatarUrl: z.string().optional()
+  avatarUrl: z
+    .string()
+    .max(2048, 'Avatar URL is too long')
+    .refine(
+      (value) => value.trim() === '' || /^https?:\/\//i.test(value.trim()),
+      'Avatar URL must start with http:// or https://'
+    )
+    .optional()
 });
 
 type ProfileFormValues = z.infer<typeof profileSchema>;
@@ -44,6 +51,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     register,
     handleSubmit,
     reset,
+    watch,
     formState: { errors, isSubmitting }
   } = useForm<ProfileFormValues>({
     resolver: zodResolver(profileSchema),
@@ -57,6 +65,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     () => isUpdatingProfile || isSubmitting,
     [isUpdatingProfile, isSubmitting]
   );
+  const previewAvatarUrl = watch('avatarUrl')?.trim() || user?.avatarUrl || '';
 
   // Fetch user data on mount
   useEffect(() => {
@@ -100,9 +109,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     clearMessages();
     try {
       setIsUpdatingProfile(true);
+      const payload = {
+        name: values.name.trim(),
+        avatarUrl: values.avatarUrl?.trim() ?? ''
+      };
+
       const response = await fetchWithAuth('/users/me', {
         method: 'PATCH',
-        body: JSON.stringify(values)
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -112,6 +126,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       const updatedUser = await response.json();
       setUser(updatedUser);
+      reset({
+        name: updatedUser.name ?? '',
+        avatarUrl: updatedUser.avatarUrl ?? ''
+      });
       setProfileSuccess('Profile updated successfully');
     } catch (error) {
       setProfileError(error instanceof Error ? error.message : 'Failed to update profile');
@@ -278,10 +296,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
         <div className="flex items-center gap-4">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted text-lg font-medium text-muted-foreground">
-            {user?.avatarUrl ? (
+            {previewAvatarUrl ? (
               <img
-                src={user.avatarUrl}
-                alt={user.name}
+                src={previewAvatarUrl}
+                alt={user?.name ?? 'User avatar'}
                 className="h-16 w-16 rounded-full object-cover"
               />
             ) : (
@@ -291,9 +309,24 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           <div className="space-y-1">
             <p className="text-sm font-medium">Avatar</p>
             <p className="text-xs text-muted-foreground">
-              Click to upload a new avatar (coming soon)
+              Provide an image URL to update your avatar.
             </p>
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="avatarUrl" className="text-sm font-medium">
+            Avatar image URL
+          </label>
+          <input
+            id="avatarUrl"
+            type="url"
+            autoComplete="url"
+            placeholder="https://example.com/avatar.png"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            {...register('avatarUrl')}
+          />
+          {errors.avatarUrl && <p className="text-sm text-destructive">{errors.avatarUrl.message}</p>}
         </div>
 
         <div className="space-y-2">

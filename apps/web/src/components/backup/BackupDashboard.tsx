@@ -57,6 +57,17 @@ type AttentionItem = {
   severity?: 'warning' | 'critical' | 'info' | 'success';
 };
 
+type UsageHistoryProvider = {
+  provider: string;
+  bytes: number;
+};
+
+type UsageHistoryPoint = {
+  timestamp: string;
+  totalBytes?: number;
+  providers: UsageHistoryProvider[];
+};
+
 const statusConfig = {
   success: {
     icon: CheckCircle2,
@@ -101,6 +112,16 @@ const providerColorMap: Record<string, string> = {
   wasabi: 'bg-violet-500'
 };
 
+const providerStrokeMap: Record<string, string> = {
+  'aws s3': '#10b981',
+  's3': '#10b981',
+  'azure blob': '#0ea5e9',
+  'azure': '#0ea5e9',
+  'local vault': '#f59e0b',
+  'local': '#f59e0b',
+  wasabi: '#8b5cf6'
+};
+
 const attentionIconMap: Record<string, typeof AlertTriangle> = {
   warning: AlertTriangle,
   critical: XCircle,
@@ -108,11 +129,187 @@ const attentionIconMap: Record<string, typeof AlertTriangle> = {
   success: CheckCircle2
 };
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function parseUsageHistory(payload: unknown): UsageHistoryPoint[] {
+  const root = asRecord(payload);
+  const data = asRecord(root?.data);
+  const rawPoints = Array.isArray(data?.points)
+    ? data.points
+    : Array.isArray(root?.points)
+      ? root.points
+      : [];
+
+  const parsed: UsageHistoryPoint[] = [];
+
+  for (const rawPoint of rawPoints) {
+    const point = asRecord(rawPoint);
+    if (!point) continue;
+
+    const rawProviders = Array.isArray(point.providers) ? point.providers : [];
+    const providers: UsageHistoryProvider[] = [];
+
+    for (const rawProvider of rawProviders) {
+      const provider = asRecord(rawProvider);
+      if (!provider) continue;
+
+      const providerName = String(provider.provider ?? provider.name ?? '').trim();
+      const providerBytes = Number(provider.bytes ?? provider.usedBytes ?? provider.value ?? 0);
+      if (!providerName || !Number.isFinite(providerBytes)) continue;
+
+      providers.push({
+        provider: providerName,
+        bytes: Math.max(0, providerBytes)
+      });
+    }
+
+    const timestamp = String(point.timestamp ?? point.date ?? '');
+    if (!timestamp) continue;
+
+    const totalBytesRaw = Number(point.totalBytes);
+    const totalBytes = Number.isFinite(totalBytesRaw)
+      ? totalBytesRaw
+      : providers.reduce((sum, provider) => sum + provider.bytes, 0);
+
+    parsed.push({
+      timestamp,
+      totalBytes: Math.max(0, totalBytes),
+      providers
+    });
+  }
+
+  return parsed;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function buildLinePath(values: number[], maxValue: number): string {
+  if (values.length === 0) return '';
+
+  return values
+    .map((value, index) => {
+      const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100;
+      const y = 100 - (value / maxValue) * 100;
+      return `${x},${Math.max(0, Math.min(100, y))}`;
+    })
+    .join(' ');
+}
+
+function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
+  const providers = Array.from(
+    new Set(points.flatMap((point) => point.providers.map((provider) => provider.provider)))
+  );
+
+  if (providers.length === 0 || points.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+        No provider timeline available yet.
+      </div>
+    );
+  }
+
+  const normalized = points.map((point) => {
+    const byProvider = new Map(point.providers.map((provider) => [provider.provider, provider.bytes]));
+    const totalBytes = typeof point.totalBytes === 'number'
+      ? point.totalBytes
+      : providers.reduce((sum, providerName) => sum + (byProvider.get(providerName) ?? 0), 0);
+
+    return {
+      timestamp: point.timestamp,
+      totalBytes,
+      byProvider
+    };
+  });
+
+  const maxValue = Math.max(
+    1,
+    ...normalized.flatMap((point) => [
+      point.totalBytes,
+      ...providers.map((provider) => point.byProvider.get(provider) ?? 0)
+    ])
+  );
+
+  const first = normalized[0];
+  const last = normalized[normalized.length - 1];
+
+  return (
+    <div className="space-y-3">
+      <div className="h-28 rounded-md border bg-muted/20 p-2">
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="h-full w-full"
+          aria-label="Provider usage history chart"
+        >
+          <polyline
+            fill="none"
+            stroke="#475569"
+            strokeWidth="2"
+            strokeDasharray="4 3"
+            points={buildLinePath(normalized.map((point) => point.totalBytes), maxValue)}
+          />
+          {providers.map((provider) => (
+            <polyline
+              key={provider}
+              fill="none"
+              stroke={providerStrokeMap[provider.toLowerCase()] ?? '#2563eb'}
+              strokeWidth="3"
+              points={buildLinePath(normalized.map((point) => point.byProvider.get(provider) ?? 0), maxValue)}
+            />
+          ))}
+        </svg>
+      </div>
+      <div className="grid gap-2 text-xs">
+        <div className="flex flex-wrap gap-2">
+          {providers.map((provider) => (
+            <span
+              key={provider}
+              className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-muted-foreground"
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: providerStrokeMap[provider.toLowerCase()] ?? '#2563eb' }}
+              />
+              {provider}
+            </span>
+          ))}
+          <span className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-muted-foreground">
+            <span className="h-2 w-2 rounded-full bg-slate-600" />
+            Total
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-muted-foreground">
+          <span>{new Date(first.timestamp).toLocaleDateString()}</span>
+          <span className="font-medium text-foreground">{formatBytes(last.totalBytes)}</span>
+          <span>{new Date(last.timestamp).toLocaleDateString()}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function BackupDashboard() {
   const [stats, setStats] = useState<BackupStat[]>([]);
   const [recentJobs, setRecentJobs] = useState<BackupJob[]>([]);
   const [overdueDevices, setOverdueDevices] = useState<OverdueDevice[]>([]);
   const [storageProviders, setStorageProviders] = useState<StorageProvider[]>([]);
+  const [usageHistory, setUsageHistory] = useState<UsageHistoryPoint[]>([]);
+  const [usageHistoryError, setUsageHistoryError] = useState<string>();
   const [attentionItems, setAttentionItems] = useState<AttentionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -121,6 +318,7 @@ export default function BackupDashboard() {
     try {
       setLoading(true);
       setError(undefined);
+      setUsageHistoryError(undefined);
       const response = await fetchWithAuth('/backup/dashboard');
       if (!response.ok) {
         throw new Error('Failed to fetch backup overview');
@@ -157,6 +355,21 @@ export default function BackupDashboard() {
             ? overview.alerts
             : []
       );
+
+      try {
+        const usageResponse = await fetchWithAuth('/backup/usage-history?days=14');
+        if (!usageResponse.ok) {
+          throw new Error('Usage history is currently unavailable');
+        }
+
+        const usagePayload = await usageResponse.json();
+        setUsageHistory(parseUsageHistory(usagePayload));
+      } catch (usageErr) {
+        setUsageHistory([]);
+        setUsageHistoryError(
+          usageErr instanceof Error ? usageErr.message : 'Usage history is currently unavailable'
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -174,8 +387,16 @@ export default function BackupDashboard() {
       recentJobs.length > 0 ||
       overdueDevices.length > 0 ||
       storageProviders.length > 0 ||
+      usageHistory.length > 0 ||
       attentionItems.length > 0,
-    [attentionItems.length, overdueDevices.length, recentJobs.length, stats.length, storageProviders.length]
+    [
+      attentionItems.length,
+      overdueDevices.length,
+      recentJobs.length,
+      stats.length,
+      storageProviders.length,
+      usageHistory.length
+    ]
   );
 
   const resolveChangeType = (stat: BackupStat): StatChangeType => {
@@ -412,9 +633,17 @@ export default function BackupDashboard() {
                 );
               })
             )}
-            <div className="rounded-md border border-dashed bg-muted/40 p-3 text-xs text-muted-foreground">
-              Chart placeholder: integrate provider usage history.
-            </div>
+            {usageHistoryError ? (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                {usageHistoryError}
+              </div>
+            ) : usageHistory.length === 0 ? (
+              <div className="rounded-md border border-dashed bg-muted/40 p-3 text-xs text-muted-foreground">
+                No usage history data available yet.
+              </div>
+            ) : (
+              <UsageHistoryChart points={usageHistory} />
+            )}
           </div>
         </div>
       </div>

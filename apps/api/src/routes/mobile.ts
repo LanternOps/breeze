@@ -6,6 +6,8 @@ import { createHash } from 'crypto';
 import { db } from '../db';
 import {
   alerts,
+  alertRules,
+  alertTemplates,
   deviceCommands,
   devices,
   mobileDevices,
@@ -13,7 +15,9 @@ import {
   scripts
 } from '../db/schema';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { setCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
+import { publishEvent } from '../services/eventBus';
 
 export const mobileRoutes = new Hono();
 
@@ -529,6 +533,23 @@ mobileRoutes.post(
       .where(eq(alerts.id, alertId))
       .returning();
 
+    try {
+      await publishEvent(
+        'alert.acknowledged',
+        alert.orgId,
+        {
+          alertId: updated?.id ?? alertId,
+          ruleId: alert.ruleId,
+          deviceId: alert.deviceId,
+          acknowledgedBy: auth.user.id
+        },
+        'mobile-routes',
+        { userId: auth.user.id }
+      );
+    } catch (error) {
+      console.error('[MobileRoutes] Failed to publish alert.acknowledged event:', error);
+    }
+
     writeRouteAudit(c, {
       orgId: alert.orgId,
       action: 'mobile.alert.acknowledge',
@@ -570,6 +591,47 @@ mobileRoutes.post(
       })
       .where(eq(alerts.id, alertId))
       .returning();
+
+    try {
+      const [rule] = await db
+        .select()
+        .from(alertRules)
+        .where(eq(alertRules.id, alert.ruleId))
+        .limit(1);
+
+      if (rule) {
+        const [template] = await db
+          .select()
+          .from(alertTemplates)
+          .where(eq(alertTemplates.id, rule.templateId))
+          .limit(1);
+
+        const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
+        const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
+          template?.cooldownMinutes ?? 15;
+        await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+      }
+    } catch (error) {
+      console.error('[MobileRoutes] Failed to set alert cooldown on resolve:', error);
+    }
+
+    try {
+      await publishEvent(
+        'alert.resolved',
+        alert.orgId,
+        {
+          alertId: updated?.id ?? alertId,
+          ruleId: alert.ruleId,
+          deviceId: alert.deviceId,
+          resolvedBy: auth.user.id,
+          resolutionNote: data.note
+        },
+        'mobile-routes',
+        { userId: auth.user.id }
+      );
+    } catch (error) {
+      console.error('[MobileRoutes] Failed to publish alert.resolved event:', error);
+    }
 
     writeRouteAudit(c, {
       orgId: alert.orgId,

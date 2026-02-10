@@ -14,7 +14,7 @@ import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
-import { automationRoutes } from './routes/automations';
+import { automationRoutes, automationWebhookRoutes } from './routes/automations';
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { orgRoutes } from './routes/orgs';
@@ -63,20 +63,25 @@ import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 
 // Workers
-import { initializeAlertWorkers } from './jobs/alertWorker';
-import { initializeOfflineDetector } from './jobs/offlineDetector';
-import { initializeNotificationDispatcher } from './services/notificationDispatcher';
-import { initializeEventLogRetention } from './jobs/eventLogRetention';
-import { initializeDiscoveryWorker } from './jobs/discoveryWorker';
-import { initializeSnmpWorker } from './jobs/snmpWorker';
-import { initializeMonitorWorker } from './jobs/monitorWorker';
-import { initializeSnmpRetention } from './jobs/snmpRetention';
-import { initializePolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
+import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
+import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offlineDetector';
+import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
+import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
+import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
+import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
+import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
+import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
+import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
+import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
+import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
+import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
-import { initializeTransferCleanup } from './workers/transferCleanup';
-import { isRedisAvailable } from './services/redis';
+import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
+import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
+import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
+import { createCorsOriginResolver } from './services/corsOrigins';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
@@ -87,10 +92,42 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+function envFlag(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+const REQUIRE_DB_ON_STARTUP = envFlag('REQUIRE_DB_ON_STARTUP', true);
+const REQUIRE_REDIS_ON_STARTUP = envFlag('REQUIRE_REDIS_ON_STARTUP', false);
+
 const app = new Hono();
+
+const readinessState: {
+  dbOk: boolean;
+  redisOk: boolean;
+  workersHealthy: boolean;
+  checkedAt: string | null;
+} = {
+  dbOk: false,
+  redisOk: false,
+  workersHealthy: false,
+  checkedAt: null
+};
+
+function isReady(): boolean {
+  const redisReady = REQUIRE_REDIS_ON_STARTUP ? readinessState.redisOk : true;
+  return readinessState.dbOk && redisReady && readinessState.workersHealthy;
+}
 
 // Create WebSocket helpers (must be done before routes are registered)
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+const resolveCorsOrigin = createCorsOriginResolver({
+  configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
+  nodeEnv: process.env.NODE_ENV
+});
 
 // Global middleware
 app.use('*', logger());
@@ -99,12 +136,9 @@ app.use('*', prettyJSON());
 app.use(
   '*',
   cors({
-    origin: (origin) => {
-      const allowedOrigins = ['http://localhost:4321', 'http://localhost:4322', 'http://localhost:1420', 'tauri://localhost'];
-      return allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
-    },
+    origin: (origin) => resolveCorsOrigin(origin),
     credentials: true,
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Breeze-CSRF'],
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     exposeHeaders: ['Content-Length', 'X-Request-Id'],
     maxAge: 86400
@@ -116,8 +150,28 @@ app.get('/health', (c) => {
   return c.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '0.1.0'
+    version: '0.1.0',
+    readiness: {
+      db: readinessState.dbOk,
+      redis: readinessState.redisOk,
+      workers: readinessState.workersHealthy,
+      checkedAt: readinessState.checkedAt
+    }
   });
+});
+
+app.get('/ready', (c) => {
+  const ready = isReady();
+  return c.json(
+    {
+      ready,
+      db: readinessState.dbOk,
+      redis: readinessState.redisOk,
+      workers: readinessState.workersHealthy,
+      checkedAt: readinessState.checkedAt
+    },
+    ready ? 200 : 503
+  );
 });
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
@@ -423,6 +477,7 @@ api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
 api.route('/scripts', scriptRoutes);
 api.route('/script-library', scriptLibraryRoutes);
+api.route('/automations/webhooks', automationWebhookRoutes);
 api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
@@ -504,25 +559,15 @@ app.onError((err, c) => {
 
 const port = parseInt(process.env.API_PORT || '3001', 10);
 
-console.log(`Breeze API starting on port ${port}...`);
-
-const server = serve({
-  fetch: app.fetch,
-  port
-});
-
-// Inject WebSocket support into the HTTP server
-injectWebSocket(server);
-
-console.log(`Breeze API running at http://localhost:${port}`);
-console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
-
 // Initialize background workers (only if Redis is available)
 const workerStatus: Record<string, boolean> = {};
 export function areWorkersHealthy(): boolean {
-  return Object.keys(workerStatus).length > 0 && Object.values(workerStatus).every(Boolean);
+  return readinessState.workersHealthy;
 }
 export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
+
+let server: ReturnType<typeof serve> | null = null;
+let shutdownInProgress = false;
 
 function headersToRecord(headers: unknown): Record<string, string> {
   if (!headers) return {};
@@ -651,8 +696,10 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
 }
 
 async function initializeWorkers(): Promise<void> {
-  if (!isRedisAvailable()) {
+  if (!readinessState.redisOk || !isRedisAvailable()) {
     console.warn('[WARN] Redis not available - background workers disabled');
+    readinessState.workersHealthy = !REQUIRE_REDIS_ON_STARTUP;
+    readinessState.checkedAt = new Date().toISOString();
     return;
   }
 
@@ -662,25 +709,33 @@ async function initializeWorkers(): Promise<void> {
     ['notificationDispatcher', initializeNotificationDispatcher],
     ['webhookDelivery', initializeWebhookDeliveryWorker],
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
+    ['automationWorker', initializeAutomationWorker],
+    ['securityPostureWorker', initializeSecurityPostureWorker],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
+    ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
   ];
 
-  for (const [name, init] of workers) {
-    try {
-      await init();
-      workerStatus[name] = true;
-    } catch (error) {
-      workerStatus[name] = false;
-      console.error(`[CRITICAL] Failed to initialize ${name}:`, error);
-    }
-  }
+  await Promise.allSettled(
+    workers.map(async ([name, init]) => {
+      try {
+        await init();
+        workerStatus[name] = true;
+      } catch (error) {
+        workerStatus[name] = false;
+        console.error(`[CRITICAL] Failed to initialize ${name}:`, error);
+      }
+    })
+  );
 
   const failed = Object.entries(workerStatus).filter(([, ok]) => !ok).map(([n]) => n);
+  readinessState.workersHealthy = failed.length === 0;
+  readinessState.checkedAt = new Date().toISOString();
+
   if (failed.length === 0) {
     console.log('All background workers initialized');
   } else {
@@ -688,10 +743,136 @@ async function initializeWorkers(): Promise<void> {
   }
 }
 
-// Run worker initialization
-initializeWorkers().catch((err) => {
-  console.error('[CRITICAL] Worker initialization failed unexpectedly:', err);
-});
+async function checkDatabaseConnectivity(): Promise<boolean> {
+  try {
+    await runWithSystemDbAccess(async () => {
+      await db.execute(sql`select 1`);
+    });
+    return true;
+  } catch (error) {
+    console.error('[startup] Database connectivity check failed:', error);
+    return false;
+  }
+}
 
-// Transfer file cleanup (no Redis required)
-initializeTransferCleanup();
+async function checkRedisConnectivity(): Promise<boolean> {
+  try {
+    const redis = getRedis();
+    if (!redis) {
+      return false;
+    }
+
+    await redis.ping();
+    return true;
+  } catch (error) {
+    console.error('[startup] Redis connectivity check failed:', error);
+    return false;
+  }
+}
+
+async function runStartupChecks(): Promise<void> {
+  const [dbOk, redisOk] = await Promise.all([
+    checkDatabaseConnectivity(),
+    checkRedisConnectivity()
+  ]);
+
+  readinessState.dbOk = dbOk;
+  readinessState.redisOk = redisOk;
+  readinessState.checkedAt = new Date().toISOString();
+
+  if (REQUIRE_DB_ON_STARTUP && !dbOk) {
+    throw new Error('Database is required at startup but is unreachable');
+  }
+
+  if (REQUIRE_REDIS_ON_STARTUP && !redisOk) {
+    throw new Error('Redis is required at startup but is unreachable');
+  }
+}
+
+async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
+  if (shutdownInProgress) {
+    return;
+  }
+
+  shutdownInProgress = true;
+  console.log(`[shutdown] Received ${signal}, shutting down gracefully...`);
+
+  stopTransferCleanup();
+  getWebhookWorker().stop();
+
+  const shutdownTasks: Array<() => Promise<void>> = [
+    shutdownPatchComplianceReportWorker,
+    shutdownSnmpRetention,
+    shutdownMonitorWorker,
+    shutdownSnmpWorker,
+    shutdownDiscoveryWorker,
+    shutdownEventLogRetention,
+    shutdownSecurityPostureWorker,
+    shutdownAutomationWorker,
+    shutdownPolicyEvaluationWorker,
+    shutdownNotificationDispatcher,
+    shutdownOfflineDetector,
+    shutdownAlertWorkers,
+    async () => getEventBus().close(),
+    closeRedis,
+    async () => {
+      const closeDb = dbModule.closeDb;
+      if (typeof closeDb === 'function') {
+        await closeDb();
+      }
+    }
+  ];
+
+  const shutdownResults = await Promise.allSettled(shutdownTasks.map((task) => task()));
+  const shutdownFailures = shutdownResults.filter((result) => result.status === 'rejected');
+
+  if (server) {
+    await new Promise<void>((resolve) => {
+      server?.close(() => resolve());
+    });
+  }
+
+  if (shutdownFailures.length > 0) {
+    console.error(`[shutdown] Completed with ${shutdownFailures.length} failure(s)`);
+    process.exit(1);
+    return;
+  }
+
+  console.log('[shutdown] Complete');
+  process.exit(0);
+}
+
+function installSignalHandlers(): void {
+  process.once('SIGINT', () => {
+    void shutdownRuntime('SIGINT');
+  });
+
+  process.once('SIGTERM', () => {
+    void shutdownRuntime('SIGTERM');
+  });
+}
+
+async function bootstrap(): Promise<void> {
+  console.log(`Breeze API starting on port ${port}...`);
+
+  await runStartupChecks();
+
+  server = serve({
+    fetch: app.fetch,
+    port
+  });
+
+  injectWebSocket(server);
+
+  console.log(`Breeze API running at http://localhost:${port}`);
+  console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+  await initializeWorkers();
+  initializeTransferCleanup();
+  installSignalHandlers();
+}
+
+void bootstrap().catch((error) => {
+  console.error('[CRITICAL] API startup failed:', error);
+  process.exit(1);
+});

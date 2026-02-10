@@ -15,6 +15,12 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
+import {
+  getLatestSecurityPostureForDevice,
+  getSecurityPostureTrend,
+  listLatestSecurityPosture
+} from '../services/securityPosture';
+import type { SecurityPostureItem } from '../services/securityPosture';
 
 export const securityRoutes = new Hono();
 
@@ -49,6 +55,9 @@ type StatusRow = {
   threatCount: number;
   firewallEnabled: boolean;
   encryptionStatus: string;
+  encryptionDetails: unknown;
+  localAdminSummary: unknown;
+  passwordPolicySummary: unknown;
   gatekeeperEnabled: boolean | null;
   lastScan: Date | null;
   lastScanType: string | null;
@@ -148,6 +157,16 @@ const recommendationActionSchema = z.object({
 
 const trendsQuerySchema = z.object({
   period: z.enum(['7d', '30d', '90d']).optional().default('30d')
+});
+
+const postureQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  orgId: z.string().uuid().optional(),
+  minScore: z.string().optional(),
+  maxScore: z.string().optional(),
+  riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+  search: z.string().optional()
 });
 
 const firewallQuerySchema = z.object({
@@ -274,19 +293,6 @@ function normalizeEncryption(encryptionStatus: string): 'encrypted' | 'partial' 
   return 'unencrypted';
 }
 
-function rankRisk(level: RiskLevel): number {
-  switch (level) {
-    case 'critical':
-      return 4;
-    case 'high':
-      return 3;
-    case 'medium':
-      return 2;
-    default:
-      return 1;
-  }
-}
-
 function computePosture(row: StatusRow): { status: SecurityState; riskLevel: RiskLevel } {
   if (row.deviceState !== 'online') {
     return { status: 'offline', riskLevel: 'medium' };
@@ -373,6 +379,9 @@ async function listStatusRows(auth: AuthContext, orgId?: string): Promise<Status
       threatCount: securityStatus.threatCount,
       firewallEnabled: securityStatus.firewallEnabled,
       encryptionStatus: securityStatus.encryptionStatus,
+      encryptionDetails: securityStatus.encryptionDetails,
+      localAdminSummary: securityStatus.localAdminSummary,
+      passwordPolicySummary: securityStatus.passwordPolicySummary,
       gatekeeperEnabled: securityStatus.gatekeeperEnabled,
       lastScan: securityStatus.lastScan,
       lastScanType: securityStatus.lastScanType
@@ -395,6 +404,9 @@ async function listStatusRows(auth: AuthContext, orgId?: string): Promise<Status
     threatCount: row.threatCount ?? 0,
     firewallEnabled: row.firewallEnabled ?? false,
     encryptionStatus: row.encryptionStatus ?? 'unknown',
+    encryptionDetails: row.encryptionDetails ?? null,
+    localAdminSummary: row.localAdminSummary ?? null,
+    passwordPolicySummary: row.passwordPolicySummary ?? null,
     gatekeeperEnabled: row.gatekeeperEnabled ?? null,
     lastScan: row.lastScan,
     lastScanType: row.lastScanType
@@ -475,95 +487,6 @@ function computeSecurityScore(statuses: ReturnType<typeof toStatusResponse>[], t
   return Math.max(0, Math.min(100, Math.round(rawScore)));
 }
 
-function buildRecommendations(statuses: ReturnType<typeof toStatusResponse>[], threatRows: ThreatRow[]) {
-  const unprotected = statuses.filter((s) => s.status === 'unprotected');
-  const atRisk = statuses.filter((s) => s.status === 'at_risk');
-  const firewallDisabled = statuses.filter((s) => !s.firewallEnabled);
-  const unencrypted = statuses.filter((s) => s.encryptionStatus === 'unencrypted');
-  const activeThreats = threatRows.filter((t) => t.status === 'active');
-
-  const recommendations = [
-    {
-      id: 'rec-enable-av',
-      title: 'Enable real-time protection on unprotected endpoints',
-      description: 'Some devices are currently unprotected and require AV enablement.',
-      priority: 'critical' as const,
-      category: 'antivirus',
-      impact: 'high' as const,
-      effort: 'low' as const,
-      affectedDevices: unprotected.length,
-      steps: [
-        'Open the Antivirus page and filter to Unprotected devices.',
-        'Queue a quick scan and ensure endpoint AV service is running.',
-        'Verify real-time protection and definitions update status.'
-      ]
-    },
-    {
-      id: 'rec-active-threats',
-      title: 'Contain active threats',
-      description: 'Active detections are present and should be quarantined or removed.',
-      priority: 'critical' as const,
-      category: 'vulnerability_management',
-      impact: 'high' as const,
-      effort: 'low' as const,
-      affectedDevices: new Set(activeThreats.map((t) => t.deviceId)).size,
-      steps: [
-        'Open Vulnerabilities and filter to Active.',
-        'Quarantine or remove critical/high threats first.',
-        'Run a full scan on impacted devices.'
-      ]
-    },
-    {
-      id: 'rec-enable-firewall',
-      title: 'Enable firewall coverage on all devices',
-      description: 'Firewall remains disabled on part of the fleet.',
-      priority: 'high' as const,
-      category: 'firewall',
-      impact: 'high' as const,
-      effort: 'medium' as const,
-      affectedDevices: firewallDisabled.length,
-      steps: [
-        'Review policy exceptions before rollout.',
-        'Enable firewall enforcement by platform policy.',
-        'Validate critical business applications after enforcement.'
-      ]
-    },
-    {
-      id: 'rec-enable-encryption',
-      title: 'Encrypt unprotected disks',
-      description: 'Device disks are still unencrypted on some endpoints.',
-      priority: 'medium' as const,
-      category: 'encryption',
-      impact: 'high' as const,
-      effort: 'high' as const,
-      affectedDevices: unencrypted.length,
-      steps: [
-        'Stage an encryption rollout by risk tier.',
-        'Escrow recovery keys before enforcement.',
-        'Verify encryption completion and recovery paths.'
-      ]
-    },
-    {
-      id: 'rec-password-policy',
-      title: 'Improve password policy compliance',
-      description: 'At-risk endpoints indicate baseline policy drift.',
-      priority: 'medium' as const,
-      category: 'password_policy',
-      impact: 'medium' as const,
-      effort: 'low' as const,
-      affectedDevices: atRisk.length,
-      steps: [
-        'Set minimum password length and complexity requirements.',
-        'Apply lockout thresholds for failed attempts.',
-        'Audit local admin account password age.'
-      ]
-    }
-  ];
-
-  return recommendations
-    .filter((rec) => rec.affectedDevices > 0);
-}
-
 async function getRecommendationStatusMap(auth: AuthContext, orgId?: string): Promise<Map<string, 'dismissed' | 'completed'>> {
   const conditions = [
     eq(auditLogs.resourceType, 'security_recommendation'),
@@ -614,6 +537,563 @@ async function getRecommendationStatusMap(auth: AuthContext, orgId?: string): Pr
   }
 
   return statusMap;
+}
+
+type PostureFactorKey = keyof SecurityPostureItem['factors'];
+
+type PolicyCheckResponse = {
+  rule: string;
+  key: string;
+  pass: boolean;
+  current?: string;
+  required?: string;
+};
+
+type ParsedPasswordPolicy = {
+  checks: PolicyCheckResponse[];
+  compliant: boolean;
+};
+
+type ParsedAdminAccount = {
+  username: string;
+  isBuiltIn: boolean;
+  enabled: boolean;
+  lastLogin: string;
+  passwordAgeDays: number;
+  issues: Array<'default_account' | 'weak_password' | 'stale_account'>;
+};
+
+type ParsedAdminSummary = {
+  accounts: ParsedAdminAccount[];
+  totalAdmins: number;
+  localAccounts: number;
+  issueTypes: Array<'default_account' | 'weak_password' | 'stale_account'>;
+  issueCounts: {
+    defaultAccounts: number;
+    weakPasswords: number;
+    staleAccounts: number;
+  };
+};
+
+type Be9Recommendation = {
+  id: string;
+  title: string;
+  description: string;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  category: string;
+  impact: 'high' | 'medium' | 'low';
+  effort: 'low' | 'medium' | 'high';
+  affectedDevices: number;
+  steps: string[];
+};
+
+const postureComponentModel: Array<{ category: PostureFactorKey; label: string; weight: number }> = [
+  { category: 'patch_compliance', label: 'Patch Compliance', weight: 25 },
+  { category: 'encryption', label: 'Disk Encryption', weight: 15 },
+  { category: 'av_health', label: 'AV Health', weight: 15 },
+  { category: 'firewall', label: 'Firewall Status', weight: 10 },
+  { category: 'open_ports', label: 'Open Ports Exposure', weight: 10 },
+  { category: 'password_policy', label: 'Password Policy', weight: 10 },
+  { category: 'os_currency', label: 'OS Currency', weight: 10 },
+  { category: 'admin_exposure', label: 'Admin Exposure', weight: 5 }
+];
+
+const priorityRank: Record<'critical' | 'high' | 'medium' | 'low', number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1
+};
+
+function resolveScopedOrgIds(
+  auth: AuthContext,
+  orgId?: string
+): { orgIds?: string[]; error?: { status: number; message: string } } {
+  if (orgId) {
+    if (!auth.canAccessOrg(orgId)) {
+      return { error: { status: 403, message: 'Access denied to this organization' } };
+    }
+    return { orgIds: [orgId] };
+  }
+
+  if (auth.orgId) {
+    return { orgIds: [auth.orgId] };
+  }
+  if (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0) {
+    return { orgIds: auth.accessibleOrgIds };
+  }
+  if (auth.scope === 'system') {
+    return {};
+  }
+  return { error: { status: 400, message: 'Organization context required' } };
+}
+
+function toObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function toBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'off', 'disabled'].includes(normalized)) return false;
+  }
+  return null;
+}
+
+function toStringValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
+}
+
+function isOlderThanDays(value: string, days: number): boolean {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return Date.now() - parsed.getTime() > days * 24 * 60 * 60 * 1000;
+}
+
+function normalizeIssueName(raw: string): 'default_account' | 'weak_password' | 'stale_account' | null {
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+  if (value === 'default_account' || value === 'default' || value === 'builtin' || value === 'built_in') {
+    return 'default_account';
+  }
+  if (value === 'weak_password' || value === 'weak' || value === 'password_weak') {
+    return 'weak_password';
+  }
+  if (value === 'stale_account' || value === 'stale' || value === 'inactive') {
+    return 'stale_account';
+  }
+  return null;
+}
+
+function parsePasswordPolicySummary(raw: unknown): ParsedPasswordPolicy {
+  const summary = toObject(raw);
+  if (!summary) {
+    return {
+      checks: [
+        { rule: 'Minimum length (12+)', key: 'min_length', pass: false, current: 'Unknown', required: '12 chars' },
+        { rule: 'Complexity required', key: 'complexity', pass: false, current: 'Unknown', required: 'Enabled' },
+        { rule: 'Maximum age (90 days)', key: 'max_age', pass: false, current: 'Unknown', required: '90 days' },
+        { rule: 'Account lockout (5 attempts)', key: 'lockout', pass: false, current: 'Unknown', required: '1-5 attempts' },
+        { rule: 'Password history (5)', key: 'history', pass: false, current: 'Unknown', required: '5+' }
+      ],
+      compliant: false
+    };
+  }
+
+  const checksRaw = Array.isArray(summary.checks) ? summary.checks : null;
+  if (checksRaw && checksRaw.length > 0) {
+    const checks = checksRaw
+      .map((entry, index) => {
+        const item = toObject(entry);
+        if (!item) return null;
+        const pass = toBoolean(item.pass) ?? false;
+        const key = toStringValue(item.key) ?? `check_${index + 1}`;
+        const rule = toStringValue(item.rule) ?? key;
+        const current = toStringValue(item.current) ?? undefined;
+        const required = toStringValue(item.required) ?? undefined;
+        return { rule, key, pass, current, required };
+      })
+      .filter((entry): entry is PolicyCheckResponse => entry !== null);
+
+    if (checks.length > 0) {
+      return {
+        checks,
+        compliant: checks.every((check) => check.pass)
+      };
+    }
+  }
+
+  const minLength = toNumber(summary.minLength ?? summary.minimumLength ?? summary.passwordMinLength);
+  const complexityEnabled = toBoolean(summary.complexityEnabled ?? summary.complexity ?? summary.passwordComplexity);
+  const maxAgeDays = toNumber(summary.maxAgeDays ?? summary.maxPasswordAgeDays ?? summary.passwordMaxAgeDays);
+  const lockoutThreshold = toNumber(summary.lockoutThreshold ?? summary.accountLockoutThreshold ?? summary.maxFailedAttempts);
+  const historyCount = toNumber(summary.historyCount ?? summary.passwordHistoryCount ?? summary.passwordHistory);
+
+  const checks: PolicyCheckResponse[] = [
+    {
+      rule: 'Minimum length (12+)',
+      key: 'min_length',
+      pass: minLength !== null ? minLength >= 12 : false,
+      current: minLength !== null ? `${Math.round(minLength)} chars` : 'Unknown',
+      required: '12 chars'
+    },
+    {
+      rule: 'Complexity required',
+      key: 'complexity',
+      pass: complexityEnabled !== null ? complexityEnabled : false,
+      current: complexityEnabled !== null ? (complexityEnabled ? 'Enabled' : 'Disabled') : 'Unknown',
+      required: 'Enabled'
+    },
+    {
+      rule: 'Maximum age (90 days)',
+      key: 'max_age',
+      pass: maxAgeDays !== null ? maxAgeDays <= 90 : false,
+      current: maxAgeDays !== null ? `${Math.round(maxAgeDays)} days` : 'Unknown',
+      required: '90 days'
+    },
+    {
+      rule: 'Account lockout (5 attempts)',
+      key: 'lockout',
+      pass: lockoutThreshold !== null ? lockoutThreshold > 0 && lockoutThreshold <= 5 : false,
+      current: lockoutThreshold !== null ? `${Math.round(lockoutThreshold)} attempts` : 'Unknown',
+      required: '1-5 attempts'
+    },
+    {
+      rule: 'Password history (5)',
+      key: 'history',
+      pass: historyCount !== null ? historyCount >= 5 : false,
+      current: historyCount !== null ? `${Math.round(historyCount)}` : 'Unknown',
+      required: '5+'
+    }
+  ];
+
+  return {
+    checks,
+    compliant: checks.every((check) => check.pass)
+  };
+}
+
+function parseLocalAdminSummary(raw: unknown): ParsedAdminSummary {
+  const summary = toObject(raw);
+  if (!summary) {
+    return {
+      accounts: [],
+      totalAdmins: 0,
+      localAccounts: 0,
+      issueTypes: [],
+      issueCounts: { defaultAccounts: 0, weakPasswords: 0, staleAccounts: 0 }
+    };
+  }
+
+  const accountsRaw = Array.isArray(summary.accounts)
+    ? summary.accounts
+    : Array.isArray(summary.adminAccounts)
+      ? summary.adminAccounts
+      : Array.isArray(summary.members)
+        ? summary.members
+        : Array.isArray(summary.users)
+          ? summary.users
+          : [];
+
+  const accounts: ParsedAdminAccount[] = accountsRaw
+    .map((entry, index) => {
+      const account = toObject(entry);
+      if (!account) return null;
+
+      const username = toStringValue(account.username ?? account.name ?? account.accountName) ?? `admin-${index + 1}`;
+      const isBuiltIn = toBoolean(account.isBuiltIn ?? account.builtIn ?? account.defaultAccount) ?? false;
+      const enabled = toBoolean(account.enabled ?? account.isEnabled ?? account.active) ?? true;
+      const lastLogin = toStringValue(account.lastLogin ?? account.lastLoginAt ?? account.lastSeenAt ?? account.lastLogon) ?? '';
+      const passwordAgeDays = Math.max(
+        0,
+        Math.round(toNumber(account.passwordAgeDays ?? account.passwordAge ?? account.passwordAgeInDays) ?? 0)
+      );
+
+      const issueSet = new Set<'default_account' | 'weak_password' | 'stale_account'>();
+      const rawIssues = Array.isArray(account.issues) ? account.issues : [];
+      for (const issue of rawIssues) {
+        if (typeof issue !== 'string') continue;
+        const normalized = normalizeIssueName(issue);
+        if (normalized) issueSet.add(normalized);
+      }
+
+      if ((toBoolean(account.defaultAccount) ?? false) || (isBuiltIn && enabled)) {
+        issueSet.add('default_account');
+      }
+      if ((toBoolean(account.weakPassword) ?? false) || passwordAgeDays > 180) {
+        issueSet.add('weak_password');
+      }
+      if ((toBoolean(account.stale) ?? false) || (lastLogin && isOlderThanDays(lastLogin, 90))) {
+        issueSet.add('stale_account');
+      }
+
+      return {
+        username,
+        isBuiltIn,
+        enabled,
+        lastLogin,
+        passwordAgeDays,
+        issues: Array.from(issueSet)
+      };
+    })
+    .filter((entry): entry is ParsedAdminAccount => entry !== null);
+
+  const derivedCounts = {
+    defaultAccounts: accounts.filter((account) => account.issues.includes('default_account')).length,
+    weakPasswords: accounts.filter((account) => account.issues.includes('weak_password')).length,
+    staleAccounts: accounts.filter((account) => account.issues.includes('stale_account')).length
+  };
+
+  const defaultAccounts = Math.max(
+    0,
+    Math.round(
+      toNumber(summary.defaultAccountCount ?? summary.defaultAccounts ?? summary.defaultCount) ?? derivedCounts.defaultAccounts
+    )
+  );
+  const weakPasswords = Math.max(
+    0,
+    Math.round(toNumber(summary.weakPasswordCount ?? summary.weakPasswords ?? summary.weakCount) ?? derivedCounts.weakPasswords)
+  );
+  const staleAccounts = Math.max(
+    0,
+    Math.round(toNumber(summary.staleAccountCount ?? summary.staleAccounts ?? summary.staleCount) ?? derivedCounts.staleAccounts)
+  );
+
+  const totalAdmins = Math.max(
+    accounts.length,
+    Math.round(toNumber(summary.adminCount ?? summary.totalAdmins ?? summary.count) ?? accounts.length)
+  );
+
+  const localAccounts = Math.max(
+    totalAdmins,
+    Math.round(toNumber(summary.localAccountCount ?? summary.localAccounts ?? summary.accountCount) ?? totalAdmins)
+  );
+
+  const issueSet = new Set<'default_account' | 'weak_password' | 'stale_account'>();
+  if (defaultAccounts > 0) issueSet.add('default_account');
+  if (weakPasswords > 0) issueSet.add('weak_password');
+  if (staleAccounts > 0) issueSet.add('stale_account');
+  for (const account of accounts) {
+    for (const issue of account.issues) {
+      issueSet.add(issue);
+    }
+  }
+
+  return {
+    accounts,
+    totalAdmins,
+    localAccounts,
+    issueTypes: Array.from(issueSet),
+    issueCounts: {
+      defaultAccounts,
+      weakPasswords,
+      staleAccounts
+    }
+  };
+}
+
+function averageFactorScore(posture: SecurityPostureItem[], factor: PostureFactorKey): number {
+  if (posture.length === 0) return 0;
+  return Math.round(
+    posture.reduce((sum, item) => sum + item.factors[factor].score, 0) / posture.length
+  );
+}
+
+function countFactorBelow(posture: SecurityPostureItem[], factor: PostureFactorKey, threshold: number): number {
+  return posture.filter((item) => item.factors[factor].score < threshold).length;
+}
+
+function priorityFromAffected(
+  affectedDevices: number,
+  totalDevices: number,
+  baseline: 'critical' | 'high' | 'medium' | 'low'
+): 'critical' | 'high' | 'medium' | 'low' {
+  if (affectedDevices <= 0 || totalDevices <= 0) return 'low';
+  const ratio = affectedDevices / totalDevices;
+  const dynamic: 'critical' | 'high' | 'medium' | 'low' =
+    ratio >= 0.45 ? 'critical' : ratio >= 0.25 ? 'high' : ratio >= 0.1 ? 'medium' : 'low';
+  return priorityRank[dynamic] > priorityRank[baseline] ? dynamic : baseline;
+}
+
+function impactFromAffected(affectedDevices: number, totalDevices: number): 'high' | 'medium' | 'low' {
+  if (affectedDevices <= 0 || totalDevices <= 0) return 'low';
+  const ratio = affectedDevices / totalDevices;
+  if (ratio >= 0.3) return 'high';
+  if (ratio >= 0.12) return 'medium';
+  return 'low';
+}
+
+async function buildBe9Recommendations(
+  auth: AuthContext,
+  orgId?: string
+): Promise<{ recommendations: Be9Recommendation[]; error?: { status: number; message: string } }> {
+  const scope = resolveScopedOrgIds(auth, orgId);
+  if (scope.error) {
+    return { recommendations: [], error: scope.error };
+  }
+
+  const [posture, threats] = await Promise.all([
+    listLatestSecurityPosture({
+      orgIds: scope.orgIds,
+      limit: 2000
+    }),
+    listThreatRows(auth, undefined, orgId)
+  ]);
+
+  const totalDevices = posture.length;
+  if (totalDevices === 0) {
+    return { recommendations: [] };
+  }
+
+  const activeThreatDevices = new Set(
+    threats.filter((threat) => threat.status === 'active').map((threat) => threat.deviceId)
+  );
+
+  const vulnerabilityDevices = new Set(activeThreatDevices);
+  for (const item of posture) {
+    if (item.factors.open_ports.score < 70 || item.factors.os_currency.score < 70) {
+      vulnerabilityDevices.add(item.deviceId);
+    }
+  }
+
+  const affectedCounts = {
+    antivirus: countFactorBelow(posture, 'av_health', 80),
+    firewall: countFactorBelow(posture, 'firewall', 90),
+    encryption: countFactorBelow(posture, 'encryption', 90),
+    password_policy: countFactorBelow(posture, 'password_policy', 85),
+    admin_accounts: countFactorBelow(posture, 'admin_exposure', 85),
+    patch_compliance: countFactorBelow(posture, 'patch_compliance', 90),
+    vulnerability_management: vulnerabilityDevices.size
+  };
+
+  const definitions: Array<{
+    id: string;
+    category: keyof typeof affectedCounts;
+    title: string;
+    description: string;
+    effort: 'low' | 'medium' | 'high';
+    baseline: 'critical' | 'high' | 'medium' | 'low';
+    steps: string[];
+  }> = [
+    {
+      id: 'rec-enable-av',
+      category: 'antivirus',
+      title: 'Improve antivirus health coverage',
+      description: 'Real-time protection or signature freshness is below target on part of the fleet.',
+      effort: 'medium',
+      baseline: 'high',
+      steps: [
+        'Enable real-time protection and ensure endpoint AV services are healthy.',
+        'Update definitions and verify freshness is within policy target.',
+        'Re-scan endpoints with active detections and confirm remediation.'
+      ]
+    },
+    {
+      id: 'rec-active-threats',
+      category: 'vulnerability_management',
+      title: 'Reduce active threat and exposure risk',
+      description: 'Active threats and/or high-risk exposure factors are increasing incident likelihood.',
+      effort: 'high',
+      baseline: 'critical',
+      steps: [
+        'Contain devices with active threats first.',
+        'Close risky listening services and validate host firewall policy.',
+        'Prioritize OS and patch remediation for devices with lowest posture.'
+      ]
+    },
+    {
+      id: 'rec-enable-firewall',
+      category: 'firewall',
+      title: 'Increase firewall enforcement',
+      description: 'Firewall posture is below policy on a subset of devices.',
+      effort: 'medium',
+      baseline: 'high',
+      steps: [
+        'Audit policy exceptions and remove unnecessary allowances.',
+        'Enforce firewall state through endpoint policy.',
+        'Validate business-critical application traffic post-change.'
+      ]
+    },
+    {
+      id: 'rec-enable-encryption',
+      category: 'encryption',
+      title: 'Increase disk encryption coverage',
+      description: 'Encryption posture indicates incomplete or missing data protection on some endpoints.',
+      effort: 'high',
+      baseline: 'high',
+      steps: [
+        'Escrow recovery materials before enforcement.',
+        'Enable disk encryption for at-risk endpoints in phased waves.',
+        'Verify full volume protection and recovery workflows.'
+      ]
+    },
+    {
+      id: 'rec-password-policy',
+      category: 'password_policy',
+      title: 'Improve password policy compliance',
+      description: 'Password policy baselines are failing for part of the fleet.',
+      effort: 'low',
+      baseline: 'medium',
+      steps: [
+        'Enforce minimum length and complexity requirements.',
+        'Set lockout threshold and password aging limits.',
+        'Re-audit local account policy drift after rollout.'
+      ]
+    },
+    {
+      id: 'rec-admin-accounts',
+      category: 'admin_accounts',
+      title: 'Reduce privileged account exposure',
+      description: 'Local administrative exposure is elevated on some endpoints.',
+      effort: 'medium',
+      baseline: 'medium',
+      steps: [
+        'Remove unused local administrators.',
+        'Rotate passwords for remaining privileged accounts.',
+        'Disable or rename default built-in privileged identities where allowed.'
+      ]
+    },
+    {
+      id: 'rec-patch-compliance',
+      category: 'patch_compliance',
+      title: 'Improve critical patch compliance',
+      description: 'Critical and important patch installation rates are below target.',
+      effort: 'medium',
+      baseline: 'high',
+      steps: [
+        'Prioritize devices with the lowest patch compliance scores.',
+        'Schedule maintenance windows for pending critical updates.',
+        'Reassess posture after deployment and close out exceptions.'
+      ]
+    }
+  ];
+
+  const recommendations = definitions
+    .map((definition) => {
+      const affectedDevices = affectedCounts[definition.category];
+      if (affectedDevices <= 0) return null;
+      return {
+        id: definition.id,
+        title: definition.title,
+        description: definition.description,
+        priority: priorityFromAffected(affectedDevices, totalDevices, definition.baseline),
+        category: definition.category,
+        impact: impactFromAffected(affectedDevices, totalDevices),
+        effort: definition.effort,
+        affectedDevices,
+        steps: definition.steps
+      } as Be9Recommendation;
+    })
+    .filter((entry): entry is Be9Recommendation => entry !== null)
+    .sort((a, b) => {
+      const byPriority = priorityRank[b.priority] - priorityRank[a.priority];
+      if (byPriority !== 0) return byPriority;
+      return b.affectedDevices - a.affectedDevices;
+    });
+
+  return { recommendations };
 }
 
 securityRoutes.use('*', authMiddleware);
@@ -1230,9 +1710,25 @@ securityRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
+    const scope = resolveScopedOrgIds(auth, query.orgId);
+    if (scope.error) {
+      return c.json({ error: scope.error.message }, scope.error.status);
+    }
 
-    const statuses = (await listStatusRows(auth, query.orgId)).map(toStatusResponse);
-    const threats = await listThreatRows(auth, undefined, query.orgId);
+    const [statusRows, threats, posture, recommendationsResult, trendPoints] = await Promise.all([
+      listStatusRows(auth, query.orgId),
+      listThreatRows(auth, undefined, query.orgId),
+      listLatestSecurityPosture({
+        orgIds: scope.orgIds,
+        limit: 2000
+      }),
+      buildBe9Recommendations(auth, query.orgId),
+      getSecurityPostureTrend({
+        orgIds: scope.orgIds,
+        days: 30
+      })
+    ]);
+    const statuses = statusRows.map(toStatusResponse);
 
     const providerCounts = new Map<string, number>();
     for (const status of statuses) {
@@ -1252,20 +1748,86 @@ securityRoutes.get(
       .sort()
       .at(-1) ?? null;
 
+    const totalDevices = posture.length > 0 ? posture.length : statuses.length;
+    const protectedDevices = posture.length > 0
+      ? posture.filter((item) => item.deviceStatus === 'online' && item.riskLevel === 'low').length
+      : statuses.filter((status) => status.status === 'protected').length;
+    const atRiskDevices = posture.length > 0
+      ? posture.filter((item) => item.riskLevel === 'medium' || item.riskLevel === 'high').length
+      : statuses.filter((status) => status.status === 'at_risk').length;
+    const unprotectedDevices = posture.length > 0
+      ? posture.filter((item) => item.riskLevel === 'critical').length
+      : statuses.filter((status) => status.status === 'unprotected').length;
+    const offlineDevices = posture.length > 0
+      ? posture.filter((item) => item.deviceStatus !== 'online').length
+      : statuses.filter((status) => status.status === 'offline').length;
+    const securityScore = posture.length > 0
+      ? Math.round(posture.reduce((sum, item) => sum + item.overallScore, 0) / posture.length)
+      : computeSecurityScore(statuses, threats);
+
+    const passwordPolicyCompliance = averageFactorScore(posture, 'password_policy');
+
+    const parsedAdmins = statusRows.map((row) => parseLocalAdminSummary(row.localAdminSummary));
+    const defaultAccounts = parsedAdmins.reduce((sum, admin) => sum + admin.issueCounts.defaultAccounts, 0);
+    const weakAccounts = parsedAdmins.reduce((sum, admin) => sum + admin.issueCounts.weakPasswords, 0);
+
+    const encryptedStatuses = statuses.filter((status) => status.encryptionStatus !== 'unencrypted');
+    const bitlockerEnabled = encryptedStatuses.filter((status) => status.os === 'windows').length;
+    const filevaultEnabled = encryptedStatuses.filter((status) => status.os === 'macos').length;
+
+    const chartTrend = trendPoints.map((point) => ({
+      timestamp: String(point.timestamp),
+      score: Number(point.overall ?? 0)
+    }));
+
     return c.json({
       data: {
-        totalDevices: statuses.length,
-        protectedDevices: statuses.filter((status) => status.status === 'protected').length,
-        atRiskDevices: statuses.filter((status) => status.status === 'at_risk').length,
-        unprotectedDevices: statuses.filter((status) => status.status === 'unprotected').length,
-        offlineDevices: statuses.filter((status) => status.status === 'offline').length,
+        totalDevices,
+        protectedDevices,
+        atRiskDevices,
+        unprotectedDevices,
+        offlineDevices,
         totalThreatsDetected: threats.length,
         activeThreats: threats.filter((threat) => threat.status === 'active').length,
         quarantinedThreats: threats.filter((threat) => threat.status === 'quarantined').length,
         removedThreats: threats.filter((threat) => threat.status === 'removed').length,
         lastScanAt,
         providers,
-        securityScore: computeSecurityScore(statuses, threats)
+        securityScore,
+        overallScore: securityScore,
+        firewallEnabled: statuses.filter((status) => status.firewallEnabled).length,
+        firewallDisabled: statuses.filter((status) => !status.firewallEnabled).length,
+        encryption: {
+          bitlockerEnabled,
+          filevaultEnabled,
+          total: statuses.length
+        },
+        passwordPolicyCompliance,
+        adminAudit: {
+          defaultAccounts,
+          weakAccounts,
+          deviceCount: statuses.length,
+          devices: statusRows
+            .map((row) => {
+              const parsed = parseLocalAdminSummary(row.localAdminSummary);
+              if (parsed.issueTypes.length === 0) return null;
+              return {
+                id: row.deviceId,
+                name: row.deviceName,
+                issue: parsed.issueTypes[0]
+              };
+            })
+            .filter((row): row is { id: string; name: string; issue: string } => row !== null)
+            .slice(0, 10)
+        },
+        recommendations: (recommendationsResult.error ? [] : recommendationsResult.recommendations).map((rec) => ({
+          id: rec.id,
+          title: rec.title,
+          description: rec.description,
+          priority: rec.priority,
+          category: rec.category
+        })),
+        trend: chartTrend
       }
     });
   }
@@ -1276,39 +1838,34 @@ securityRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const statuses = (await listStatusRows(auth)).map(toStatusResponse);
-    const threats = await listThreatRows(auth);
-    const total = statuses.length;
+    const scope = resolveScopedOrgIds(auth);
+    if (scope.error) {
+      return c.json({ error: scope.error.message }, scope.error.status);
+    }
 
-    const avProtected = statuses.filter((status) => status.realTimeProtection).length;
-    const firewallEnabled = statuses.filter((status) => status.firewallEnabled).length;
-    const encrypted = statuses.filter((status) => status.encryptionStatus !== 'unencrypted').length;
-    const passwordCompliant = statuses.filter((status) => rankRisk(status.riskLevel) <= 2).length;
-    const adminHealthy = statuses.filter((status) => status.status !== 'unprotected').length;
-    const patchCompliant = statuses.filter((status) => status.status === 'protected' || status.status === 'at_risk').length;
-    const vulnManaged = total - threats.filter((threat) => threat.status === 'active').length;
-
-    const scoreOf = (value: number) => (total === 0 ? 0 : Math.round((value / total) * 100));
+    const posture = await listLatestSecurityPosture({
+      orgIds: scope.orgIds,
+      limit: 2000
+    });
+    const total = posture.length;
     const stateOf = (score: number) => (score >= 90 ? 'good' : score >= 75 ? 'warning' : 'critical');
 
-    const components = [
-      { category: 'antivirus', label: 'Antivirus Protection', score: scoreOf(avProtected), weight: 20 },
-      { category: 'firewall', label: 'Firewall Coverage', score: scoreOf(firewallEnabled), weight: 15 },
-      { category: 'encryption', label: 'Disk Encryption', score: scoreOf(encrypted), weight: 15 },
-      { category: 'password_policy', label: 'Password Policy', score: scoreOf(passwordCompliant), weight: 15 },
-      { category: 'admin_accounts', label: 'Admin Account Hygiene', score: scoreOf(adminHealthy), weight: 10 },
-      { category: 'patch_compliance', label: 'Patch Compliance', score: scoreOf(patchCompliant), weight: 15 },
-      { category: 'vulnerability_management', label: 'Vulnerability Management', score: scoreOf(vulnManaged), weight: 10 }
-    ].map((component) => ({
-      ...component,
-      status: stateOf(component.score),
-      affectedDevices: total - Math.round((component.score / 100) * total),
-      totalDevices: total
-    }));
+    const components = postureComponentModel.map((component) => {
+      const score = averageFactorScore(posture, component.category);
+      return {
+        category: component.category,
+        label: component.label,
+        score,
+        weight: component.weight,
+        status: stateOf(score),
+        affectedDevices: countFactorBelow(posture, component.category, 80),
+        totalDevices: total
+      };
+    });
 
-    const overallScore = Math.round(
-      components.reduce((sum, component) => sum + component.score * (component.weight / 100), 0)
-    );
+    const overallScore = total === 0
+      ? 0
+      : Math.round(posture.reduce((sum, item) => sum + item.overallScore, 0) / total);
 
     const grade =
       overallScore >= 90
@@ -1333,40 +1890,120 @@ securityRoutes.get(
 );
 
 securityRoutes.get(
+  '/posture',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', postureQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const { page, limit } = getPagination(query);
+
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const parsedMinScore = query.minScore !== undefined ? Number.parseInt(query.minScore, 10) : undefined;
+    const parsedMaxScore = query.maxScore !== undefined ? Number.parseInt(query.maxScore, 10) : undefined;
+    if (parsedMinScore !== undefined && Number.isNaN(parsedMinScore)) {
+      return c.json({ error: 'Invalid minScore' }, 400);
+    }
+    if (parsedMaxScore !== undefined && Number.isNaN(parsedMaxScore)) {
+      return c.json({ error: 'Invalid maxScore' }, 400);
+    }
+
+    const orgIds = query.orgId
+      ? [query.orgId]
+      : auth.orgId
+        ? [auth.orgId]
+        : auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0
+          ? auth.accessibleOrgIds
+          : undefined;
+
+    if (!orgIds && auth.scope !== 'system') {
+      return c.json({ error: 'Organization context required' }, 400);
+    }
+
+    const data = await listLatestSecurityPosture({
+      orgIds,
+      minScore: parsedMinScore,
+      maxScore: parsedMaxScore,
+      riskLevel: query.riskLevel,
+      search: query.search,
+      limit: Math.max(500, limit * page)
+    });
+
+    const summary = {
+      totalDevices: data.length,
+      averageScore: data.length
+        ? Math.round(data.reduce((sum, item) => sum + item.overallScore, 0) / data.length)
+        : 0,
+      lowRiskDevices: data.filter((item) => item.riskLevel === 'low').length,
+      mediumRiskDevices: data.filter((item) => item.riskLevel === 'medium').length,
+      highRiskDevices: data.filter((item) => item.riskLevel === 'high').length,
+      criticalRiskDevices: data.filter((item) => item.riskLevel === 'critical').length
+    };
+
+    return c.json({
+      ...paginate(data, page, limit),
+      summary
+    });
+  }
+);
+
+securityRoutes.get(
+  '/posture/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceId } = c.req.valid('param');
+
+    const [device] = await db
+      .select({
+        id: devices.id,
+        orgId: devices.orgId
+      })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!auth.canAccessOrg(device.orgId)) {
+      return c.json({ error: 'Access denied to this device' }, 403);
+    }
+
+    const posture = await getLatestSecurityPostureForDevice(deviceId);
+    if (!posture) {
+      return c.json({ error: 'No security posture available for this device yet' }, 404);
+    }
+    return c.json({ data: posture });
+  }
+);
+
+securityRoutes.get(
   '/trends',
   requireScope('organization', 'partner', 'system'),
   zValidator('query', trendsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const { period } = c.req.valid('query');
-    const statuses = (await listStatusRows(auth)).map(toStatusResponse);
-    const threats = await listThreatRows(auth);
-    const currentScore = computeSecurityScore(statuses, threats);
-
     const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
-    const currentTime = Date.now();
 
-    const dataPoints = Array.from({ length: days }, (_, index) => {
-      const date = new Date(currentTime - (days - 1 - index) * 24 * 60 * 60 * 1000);
-      const drift = Math.round((index - days / 2) * 0.2);
-      const jitter = Math.round(Math.sin(index * 1.7) * 3);
-      const overall = Math.max(0, Math.min(100, currentScore + drift + jitter));
+    const orgIds = auth.orgId
+      ? [auth.orgId]
+      : auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0
+        ? auth.accessibleOrgIds
+        : undefined;
 
-      return {
-        timestamp: date.toISOString().split('T')[0],
-        overall,
-        antivirus: Math.max(0, Math.min(100, overall + 6)),
-        firewall: Math.max(0, Math.min(100, overall + 2)),
-        encryption: Math.max(0, Math.min(100, overall + 1)),
-        password_policy: Math.max(0, Math.min(100, overall - 3)),
-        admin_accounts: Math.max(0, Math.min(100, overall - 4)),
-        patch_compliance: Math.max(0, Math.min(100, overall - 2)),
-        vulnerability_management: Math.max(0, Math.min(100, overall - 6))
-      };
+    const dataPoints = await getSecurityPostureTrend({
+      orgIds,
+      days
     });
 
-    const previous = dataPoints[0]?.overall ?? 0;
-    const current = dataPoints[dataPoints.length - 1]?.overall ?? 0;
+    const previous = Number(dataPoints[0]?.overall ?? 0);
+    const current = Number(dataPoints[dataPoints.length - 1]?.overall ?? 0);
 
     return c.json({
       data: {
@@ -1521,35 +2158,20 @@ securityRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
+    const statusRows = await listStatusRows(auth);
 
-    const statuses = (await listStatusRows(auth)).map(toStatusResponse);
-
-    const rules = [
-      { rule: 'Minimum length (12+)', key: 'min_length' },
-      { rule: 'Complexity required', key: 'complexity' },
-      { rule: 'Maximum age (90 days)', key: 'max_age' },
-      { rule: 'Account lockout (5 attempts)', key: 'lockout' },
-      { rule: 'Password history (5)', key: 'history' }
-    ];
-
-    let devicesData = statuses.map((status) => {
-      const failingChecks = status.status === 'unprotected' ? 3 : status.status === 'at_risk' ? 1 : 0;
-      const checks = rules.map((rule, index) => ({
-        rule: rule.rule,
-        key: rule.key,
-        pass: index >= failingChecks,
-        current: index < failingChecks ? (index === 0 ? '8 chars' : index === 1 ? 'Disabled' : '180 days') : undefined,
-        required: index < failingChecks ? (index === 0 ? '12 chars' : index === 1 ? 'Enabled' : '90 days') : undefined
-      }));
+    let devicesData = statusRows.map((row) => {
+      const policy = parsePasswordPolicySummary(row.passwordPolicySummary);
+      const adminSummary = parseLocalAdminSummary(row.localAdminSummary);
 
       return {
-        deviceId: status.deviceId,
-        deviceName: status.deviceName,
-        os: status.os,
-        compliant: failingChecks === 0,
-        checks,
-        localAccounts: status.os === 'windows' ? 4 : 2,
-        adminAccounts: status.os === 'windows' ? 2 : 1
+        deviceId: row.deviceId,
+        deviceName: row.deviceName,
+        os: row.os,
+        compliant: policy.compliant,
+        checks: policy.checks,
+        localAccounts: adminSummary.localAccounts,
+        adminAccounts: adminSummary.totalAdmins
       };
     });
 
@@ -1604,62 +2226,19 @@ securityRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
+    const statusRows = await listStatusRows(auth);
 
-    const statuses = (await listStatusRows(auth)).map(toStatusResponse);
-
-    let rows = statuses.map((status) => {
-      const isHighRisk = status.riskLevel === 'high' || status.riskLevel === 'critical';
-      const accounts = status.os === 'windows'
-        ? [
-            {
-              username: 'Administrator',
-              isBuiltIn: true,
-              enabled: isHighRisk,
-              lastLogin: new Date(Date.now() - (isHighRisk ? 120 : 5) * 86400000).toISOString(),
-              passwordAgeDays: isHighRisk ? 365 : 30,
-              issues: isHighRisk ? ['default_account', 'stale_account'] : []
-            },
-            {
-              username: 'IT-Admin',
-              isBuiltIn: false,
-              enabled: true,
-              lastLogin: new Date(Date.now() - 2 * 86400000).toISOString(),
-              passwordAgeDays: 45,
-              issues: []
-            }
-          ]
-        : status.os === 'macos'
-          ? [
-              {
-                username: 'admin',
-                isBuiltIn: false,
-                enabled: true,
-                lastLogin: new Date(Date.now() - 86400000).toISOString(),
-                passwordAgeDays: 60,
-                issues: []
-              }
-            ]
-          : [
-              {
-                username: 'root',
-                isBuiltIn: true,
-                enabled: true,
-                lastLogin: new Date(Date.now() - (isHighRisk ? 90 : 10) * 86400000).toISOString(),
-                passwordAgeDays: isHighRisk ? 200 : 30,
-                issues: isHighRisk ? ['weak_password', 'stale_account'] : []
-              }
-            ];
-
-      const issueTypes = Array.from(new Set(accounts.flatMap((account) => account.issues)));
-
+    let rows = statusRows.map((row) => {
+      const parsed = parseLocalAdminSummary(row.localAdminSummary);
       return {
-        deviceId: status.deviceId,
-        deviceName: status.deviceName,
-        os: status.os,
-        adminAccounts: accounts,
-        totalAdmins: accounts.length,
-        hasIssues: issueTypes.length > 0,
-        issueTypes
+        deviceId: row.deviceId,
+        deviceName: row.deviceName,
+        os: row.os,
+        adminAccounts: parsed.accounts,
+        totalAdmins: parsed.totalAdmins,
+        hasIssues: parsed.issueTypes.length > 0,
+        issueTypes: parsed.issueTypes,
+        issueCounts: parsed.issueCounts
       };
     });
 
@@ -1684,12 +2263,24 @@ securityRoutes.get(
 
     const devicesWithIssues = rows.filter((row) => row.hasIssues).length;
     const totalAdmins = rows.reduce((sum, row) => sum + row.totalAdmins, 0);
-    const defaultAccounts = rows.reduce((sum, row) => sum + row.adminAccounts.filter((account) => account.issues.includes('default_account')).length, 0);
-    const weakPasswords = rows.reduce((sum, row) => sum + row.adminAccounts.filter((account) => account.issues.includes('weak_password')).length, 0);
-    const staleAccounts = rows.reduce((sum, row) => sum + row.adminAccounts.filter((account) => account.issues.includes('stale_account')).length, 0);
+    const defaultAccounts = rows.reduce((sum, row) => sum + row.issueCounts.defaultAccounts, 0);
+    const weakPasswords = rows.reduce((sum, row) => sum + row.issueCounts.weakPasswords, 0);
+    const staleAccounts = rows.reduce((sum, row) => sum + row.issueCounts.staleAccounts, 0);
 
     return c.json({
-      ...paginate(rows, page, limit),
+      ...paginate(
+        rows.map((row) => ({
+          deviceId: row.deviceId,
+          deviceName: row.deviceName,
+          os: row.os,
+          adminAccounts: row.adminAccounts,
+          totalAdmins: row.totalAdmins,
+          hasIssues: row.hasIssues,
+          issueTypes: row.issueTypes
+        })),
+        page,
+        limit
+      ),
       summary: {
         totalDevices: rows.length,
         devicesWithIssues,
@@ -1710,12 +2301,13 @@ securityRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
-
-    const statuses = (await listStatusRows(auth, query.orgId)).map(toStatusResponse);
-    const threats = await listThreatRows(auth, undefined, query.orgId);
+    const recommendationsResult = await buildBe9Recommendations(auth, query.orgId);
+    if (recommendationsResult.error) {
+      return c.json({ error: recommendationsResult.error.message }, recommendationsResult.error.status);
+    }
     const recommendationStatusMap = await getRecommendationStatusMap(auth, query.orgId);
 
-    let recommendations = buildRecommendations(statuses, threats).map((rec) => ({
+    let recommendations = recommendationsResult.recommendations.map((rec) => ({
       ...rec,
       status: recommendationStatusMap.get(rec.id) ?? 'open'
     }));
@@ -1732,7 +2324,7 @@ securityRoutes.get(
       recommendations = recommendations.filter((rec) => rec.status === query.status);
     }
 
-    const all = buildRecommendations(statuses, threats).map((rec) => ({
+    const all = recommendationsResult.recommendations.map((rec) => ({
       ...rec,
       status: recommendationStatusMap.get(rec.id) ?? 'open'
     }));
@@ -1762,9 +2354,11 @@ securityRoutes.post(
       return c.json({ error: 'Unable to determine organization context' }, 400);
     }
 
-    const statuses = (await listStatusRows(auth, orgId)).map(toStatusResponse);
-    const threats = await listThreatRows(auth, undefined, orgId);
-    const recommendation = buildRecommendations(statuses, threats).find((item) => item.id === id);
+    const recommendationsResult = await buildBe9Recommendations(auth, orgId);
+    if (recommendationsResult.error) {
+      return c.json({ error: recommendationsResult.error.message }, recommendationsResult.error.status);
+    }
+    const recommendation = recommendationsResult.recommendations.find((item) => item.id === id);
     if (!recommendation) {
       return c.json({ error: 'Recommendation not found' }, 404);
     }
@@ -1797,9 +2391,11 @@ securityRoutes.post(
       return c.json({ error: 'Unable to determine organization context' }, 400);
     }
 
-    const statuses = (await listStatusRows(auth, orgId)).map(toStatusResponse);
-    const threats = await listThreatRows(auth, undefined, orgId);
-    const recommendation = buildRecommendations(statuses, threats).find((item) => item.id === id);
+    const recommendationsResult = await buildBe9Recommendations(auth, orgId);
+    if (recommendationsResult.error) {
+      return c.json({ error: recommendationsResult.error.message }, recommendationsResult.error.status);
+    }
+    const recommendation = recommendationsResult.recommendations.find((item) => item.id === id);
     if (!recommendation) {
       return c.json({ error: 'Recommendation not found' }, 404);
     }

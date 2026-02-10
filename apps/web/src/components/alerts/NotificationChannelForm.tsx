@@ -6,6 +6,8 @@ import { Plus, Trash2, Mail, MessageSquare, Bell, Webhook, Phone } from 'lucide-
 import { cn } from '@/lib/utils';
 import type { NotificationChannelType } from './NotificationChannelList';
 
+const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
+
 const emailConfigSchema = z.object({
   recipients: z.array(z.string().email('Invalid email address')).min(1, 'At least one recipient is required')
 });
@@ -59,7 +61,55 @@ const notificationChannelSchema = z.object({
   webhookAuthUsername: z.string().optional(),
   webhookAuthPassword: z.string().optional(),
   webhookAuthToken: z.string().optional(),
-  smsPhoneNumbers: z.array(z.object({ value: z.string() })).optional()
+  smsPhoneNumbers: z.array(z.object({ value: z.string().trim() })).optional(),
+  smsFrom: z.string().optional(),
+  smsMessagingServiceSid: z.string().optional()
+}).superRefine((data, ctx) => {
+  if (data.type !== 'sms') {
+    return;
+  }
+
+  const phoneNumbers = (data.smsPhoneNumbers || [])
+    .map((entry) => entry.value.trim())
+    .filter(Boolean);
+
+  if (phoneNumbers.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['smsPhoneNumbers'],
+      message: 'At least one phone number is required'
+    });
+    return;
+  }
+
+  let hasInvalidPhoneNumber = false;
+  for (const [index, phoneNumber] of phoneNumbers.entries()) {
+    if (!E164_PHONE_REGEX.test(phoneNumber)) {
+      hasInvalidPhoneNumber = true;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['smsPhoneNumbers', index, 'value'],
+        message: 'Phone number must be in E.164 format (e.g. +1234567890)'
+      });
+    }
+  }
+
+  if (hasInvalidPhoneNumber) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['smsPhoneNumbers'],
+      message: 'All SMS phone numbers must use E.164 format (e.g. +1234567890)'
+    });
+  }
+
+  const smsFrom = data.smsFrom?.trim();
+  if (smsFrom && !E164_PHONE_REGEX.test(smsFrom)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['smsFrom'],
+      message: 'From number must be in E.164 format (e.g. +1234567890)'
+    });
+  }
 });
 
 export type NotificationChannelFormValues = z.infer<typeof notificationChannelSchema>;
@@ -114,6 +164,8 @@ export default function NotificationChannelForm({
       webhookAuthPassword: '',
       webhookAuthToken: '',
       smsPhoneNumbers: [{ value: '' }],
+      smsFrom: '',
+      smsMessagingServiceSid: '',
       ...defaultValues
     }
   });
@@ -536,6 +588,40 @@ export default function NotificationChannelForm({
           <p className="mt-2 text-xs text-muted-foreground">
             Enter phone numbers in international format (e.g., +1234567890)
           </p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label htmlFor="sms-from" className="text-sm font-medium">
+                Twilio From Number (optional)
+              </label>
+              <input
+                id="sms-from"
+                placeholder="+1234567890"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                {...register('smsFrom')}
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional override for sender number when not using a messaging service
+              </p>
+              {errors.smsFrom && <p className="text-sm text-destructive">{errors.smsFrom.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="sms-messaging-service" className="text-sm font-medium">
+                Twilio Messaging Service SID (optional)
+              </label>
+              <input
+                id="sms-messaging-service"
+                placeholder="MGXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                {...register('smsMessagingServiceSid')}
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional override for Twilio messaging service per channel
+              </p>
+            </div>
+          </div>
+          {errors.smsPhoneNumbers?.message && (
+            <p className="mt-2 text-sm text-destructive">{errors.smsPhoneNumbers.message}</p>
+          )}
         </div>
       )}
 

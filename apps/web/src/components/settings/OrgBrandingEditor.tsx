@@ -1,5 +1,5 @@
 import { type ChangeEvent, useEffect, useState } from 'react';
-import { Eye, Image, Palette, Save, Wand2, Globe } from 'lucide-react';
+import { Eye, Globe, Image, Palette, Save, Wand2, X } from 'lucide-react';
 
 type BrandingData = {
   logoUrl?: string;
@@ -42,6 +42,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
   const [customCss, setCustomCss] = useState(initialData.customCss || '');
   const [portalSubdomain, setPortalSubdomain] = useState(initialData.portalSubdomain || '');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
   useEffect(() => {
     if (!logoPreview || !logoPreview.startsWith('blob:')) {
@@ -69,7 +70,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
   };
 
   const handlePreview = () => {
-    setStatusMessage('Preview opened in a mock window.');
+    setIsPreviewOpen(true);
   };
 
   const handleSave = () => {
@@ -84,6 +85,9 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
     setStatusMessage('Branding settings saved.');
     onSave?.(data);
   };
+
+  const previewUrl = `https://${portalSubdomain || 'your-org'}.breeze.app`;
+  const isDarkTheme = theme === 'dark';
 
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
@@ -278,6 +282,82 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
           </div>
         </div>
       </div>
+
+      {isPreviewOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+          <div className="w-full max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b px-6 py-4">
+              <div>
+                <h3 className="text-base font-semibold">Portal preview</h3>
+                <p className="text-xs text-muted-foreground">Live draft based on current branding inputs</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPreviewOpen(false)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition hover:text-foreground"
+                aria-label="Close preview"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-6">
+              <div className="overflow-hidden rounded-lg border">
+                <div
+                  className="flex items-center justify-between px-5 py-4"
+                  style={{ backgroundColor: primaryColor, color: '#ffffff' }}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-xs font-semibold">
+                      {logoPreview ? (
+                        <img src={logoPreview} alt="Preview logo" className="h-9 w-9 rounded-full object-cover" />
+                      ) : (
+                        organizationName.slice(0, 2).toUpperCase()
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold">{organizationName} Portal</p>
+                      <p className="text-xs opacity-90">{previewUrl}</p>
+                    </div>
+                  </div>
+                  <span className="rounded-full bg-white/20 px-2 py-1 text-xs uppercase tracking-wide">{theme}</span>
+                </div>
+
+                <div className={isDarkTheme ? 'space-y-4 bg-slate-950 p-5 text-slate-100' : 'space-y-4 bg-white p-5 text-slate-900'}>
+                  <h4 className="text-sm font-semibold">Welcome back</h4>
+                  <p className={isDarkTheme ? 'text-sm text-slate-300' : 'text-sm text-slate-600'}>
+                    This preview reflects your current portal branding draft, including colors and logo choices.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md px-3 py-2 text-xs font-semibold text-white"
+                      style={{ backgroundColor: secondaryColor }}
+                    >
+                      Open support ticket
+                    </button>
+                    <button
+                      type="button"
+                      className={isDarkTheme ? 'rounded-md border border-slate-700 px-3 py-2 text-xs' : 'rounded-md border px-3 py-2 text-xs'}
+                    >
+                      View device list
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                Preview URL: <span className="font-medium text-foreground">{previewUrl}</span>
+              </div>
+
+              <div className="rounded-md border bg-muted/30 p-3">
+                <p className="text-xs font-medium">Custom CSS payload</p>
+                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{customCss || '/* No custom CSS */'}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

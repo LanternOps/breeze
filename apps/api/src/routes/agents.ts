@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   devices,
@@ -12,6 +12,7 @@ import {
   deviceConfigState,
   deviceMetrics,
   deviceCommands,
+  automationPolicies,
   deviceConnections,
   enrollmentKeys,
   softwareInventory,
@@ -21,7 +22,8 @@ import {
   securityStatus,
   securityThreats,
   securityScans,
-  deviceFilesystemSnapshots
+  deviceFilesystemSnapshots,
+  deviceSessions
 } from '../db/schema';
 import { createHash, randomBytes } from 'crypto';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
@@ -36,6 +38,8 @@ import {
   saveFilesystemSnapshot,
   upsertFilesystemScanState,
 } from '../services/filesystemAnalysis';
+import { publishEvent } from '../services/eventBus';
+import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
 
 export const agentRoutes = new Hono();
 
@@ -143,6 +147,9 @@ const securityStatusIngestSchema = z.object({
   threatCount: z.number().int().min(0).optional(),
   firewallEnabled: z.boolean().optional(),
   encryptionStatus: z.string().optional(),
+  encryptionDetails: z.record(z.unknown()).optional(),
+  localAdminSummary: z.record(z.unknown()).optional(),
+  passwordPolicySummary: z.record(z.unknown()).optional(),
   gatekeeperEnabled: z.boolean().optional(),
   guardianEnabled: z.boolean().optional(),
   windowsSecurityCenterAvailable: z.boolean().optional(),
@@ -315,6 +322,140 @@ function normalizeStateValue(value: unknown): string | null {
   return null;
 }
 
+type PolicyRegistryProbeUpdate = {
+  registry_path: string;
+  value_name: string;
+};
+
+type PolicyConfigProbeUpdate = {
+  file_path: string;
+  config_key: string;
+};
+
+type PolicyProbeConfigUpdate = {
+  policy_registry_state_probes: PolicyRegistryProbeUpdate[];
+  policy_config_state_probes: PolicyConfigProbeUpdate[];
+};
+
+function readTrimmedString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function sortPolicyRegistryProbes(probes: PolicyRegistryProbeUpdate[]): PolicyRegistryProbeUpdate[] {
+  return [...probes].sort((left, right) => {
+    const pathCompare = left.registry_path.localeCompare(right.registry_path);
+    if (pathCompare !== 0) return pathCompare;
+    return left.value_name.localeCompare(right.value_name);
+  });
+}
+
+function sortPolicyConfigProbes(probes: PolicyConfigProbeUpdate[]): PolicyConfigProbeUpdate[] {
+  return [...probes].sort((left, right) => {
+    const pathCompare = left.file_path.localeCompare(right.file_path);
+    if (pathCompare !== 0) return pathCompare;
+    return left.config_key.localeCompare(right.config_key);
+  });
+}
+
+function derivePolicyStateProbesFromRules(rules: unknown): {
+  registry: PolicyRegistryProbeUpdate[];
+  config: PolicyConfigProbeUpdate[];
+} {
+  if (!Array.isArray(rules)) {
+    return { registry: [], config: [] };
+  }
+
+  const registryProbes = new Map<string, PolicyRegistryProbeUpdate>();
+  const configProbes = new Map<string, PolicyConfigProbeUpdate>();
+
+  for (const rawRule of rules) {
+    if (!isObject(rawRule)) {
+      continue;
+    }
+
+    const type = readTrimmedString(rawRule.type ?? rawRule.name)?.toLowerCase();
+    if (type === 'registry_check') {
+      const registryPath = readTrimmedString(rawRule.registryPath ?? rawRule.registry_path);
+      const valueName = readTrimmedString(rawRule.registryValueName ?? rawRule.registry_value_name);
+      if (!registryPath || !valueName) {
+        continue;
+      }
+
+      const dedupeKey = `${registryPath.toLowerCase()}::${valueName.toLowerCase()}`;
+      if (!registryProbes.has(dedupeKey)) {
+        registryProbes.set(dedupeKey, {
+          registry_path: registryPath,
+          value_name: valueName
+        });
+      }
+      continue;
+    }
+
+    if (type === 'config_check') {
+      const filePath = readTrimmedString(rawRule.configFilePath ?? rawRule.config_file_path);
+      const configKey = readTrimmedString(rawRule.configKey ?? rawRule.config_key);
+      if (!filePath || !configKey) {
+        continue;
+      }
+
+      const dedupeKey = `${filePath.toLowerCase()}::${configKey.toLowerCase()}`;
+      if (!configProbes.has(dedupeKey)) {
+        configProbes.set(dedupeKey, {
+          file_path: filePath,
+          config_key: configKey
+        });
+      }
+    }
+  }
+
+  return {
+    registry: sortPolicyRegistryProbes(Array.from(registryProbes.values())),
+    config: sortPolicyConfigProbes(Array.from(configProbes.values()))
+  };
+}
+
+async function buildPolicyProbeConfigUpdate(orgId: string | null | undefined): Promise<PolicyProbeConfigUpdate | null> {
+  if (!orgId) {
+    return null;
+  }
+
+  const policyRows = await db
+    .select({ rules: automationPolicies.rules })
+    .from(automationPolicies)
+    .where(
+      and(
+        eq(automationPolicies.orgId, orgId),
+        eq(automationPolicies.enabled, true)
+      )
+    );
+
+  const registryByKey = new Map<string, PolicyRegistryProbeUpdate>();
+  const configByKey = new Map<string, PolicyConfigProbeUpdate>();
+
+  for (const row of policyRows) {
+    const probes = derivePolicyStateProbesFromRules(row.rules);
+    for (const probe of probes.registry) {
+      const key = `${probe.registry_path.toLowerCase()}::${probe.value_name.toLowerCase()}`;
+      if (!registryByKey.has(key)) {
+        registryByKey.set(key, probe);
+      }
+    }
+    for (const probe of probes.config) {
+      const key = `${probe.file_path.toLowerCase()}::${probe.config_key.toLowerCase()}`;
+      if (!configByKey.has(key)) {
+        configByKey.set(key, probe);
+      }
+    }
+  }
+
+  return {
+    policy_registry_state_probes: sortPolicyRegistryProbes(Array.from(registryByKey.values())),
+    policy_config_state_probes: sortPolicyConfigProbes(Array.from(configByKey.values()))
+  };
+}
+
 function normalizeProvider(raw: unknown): SecurityProviderValue {
   if (typeof raw !== 'string') return 'other';
   const value = raw.trim().toLowerCase();
@@ -439,6 +580,9 @@ async function upsertSecurityStatusForDevice(deviceId: string, payload: Security
       threatCount: payload.threatCount ?? 0,
       firewallEnabled: payload.firewallEnabled ?? null,
       encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
+      encryptionDetails: payload.encryptionDetails ?? null,
+      localAdminSummary: payload.localAdminSummary ?? null,
+      passwordPolicySummary: payload.passwordPolicySummary ?? null,
       gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
       updatedAt: new Date()
     })
@@ -455,6 +599,9 @@ async function upsertSecurityStatusForDevice(deviceId: string, payload: Security
         threatCount: payload.threatCount ?? 0,
         firewallEnabled: payload.firewallEnabled ?? null,
         encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
+        encryptionDetails: payload.encryptionDetails ?? null,
+        localAdminSummary: payload.localAdminSummary ?? null,
+        passwordPolicySummary: payload.passwordPolicySummary ?? null,
         gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
         updatedAt: new Date()
       }
@@ -756,6 +903,7 @@ function generateApiKey(): string {
 // Agent enrollment
 agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
   const data = c.req.valid('json');
+  const hashedEnrollmentKey = hashEnrollmentKey(data.enrollmentKey);
 
   // Validate enrollment key
   const [key] = await db
@@ -763,7 +911,10 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
     .from(enrollmentKeys)
     .where(
       and(
-        eq(enrollmentKeys.key, data.enrollmentKey),
+        or(
+          eq(enrollmentKeys.key, data.enrollmentKey),
+          eq(enrollmentKeys.key, hashedEnrollmentKey)
+        ),
         sql`(${enrollmentKeys.expiresAt} IS NULL OR ${enrollmentKeys.expiresAt} > NOW())`,
         sql`(${enrollmentKeys.maxUsage} IS NULL OR ${enrollmentKeys.usageCount} < ${enrollmentKeys.maxUsage})`
       )
@@ -1034,13 +1185,20 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
     }
   }
 
+  let configUpdate: PolicyProbeConfigUpdate | null = null;
+  try {
+    configUpdate = await buildPolicyProbeConfigUpdate(device.orgId);
+  } catch (err) {
+    console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
+  }
+
   return c.json({
     commands: commands.map(cmd => ({
       id: cmd.id,
       type: cmd.type,
       payload: cmd.payload
     })),
-    configUpdate: null,
+    configUpdate,
     upgradeTo: null
   });
 });
@@ -1525,6 +1683,209 @@ agentRoutes.put('/:id/network', zValidator('json', updateNetworkSchema), async (
   });
 
   return c.json({ success: true, count: data.adapters.length });
+});
+
+const sessionTypeSchema = z.enum(['console', 'rdp', 'ssh', 'other']);
+const sessionActivityStateSchema = z.enum(['active', 'idle', 'locked', 'away', 'disconnected']);
+const sessionEventTypeSchema = z.enum(['login', 'logout', 'lock', 'unlock', 'switch']);
+
+const submitSessionsSchema = z.object({
+  sessions: z.array(z.object({
+    username: z.string().min(1).max(255),
+    sessionType: sessionTypeSchema,
+    sessionId: z.string().max(128).optional(),
+    loginAt: z.string().optional(),
+    idleMinutes: z.number().int().min(0).max(10080).optional(),
+    activityState: sessionActivityStateSchema.optional(),
+    loginPerformanceSeconds: z.number().int().min(0).max(36000).optional(),
+    isActive: z.boolean().optional(),
+    lastActivityAt: z.string().optional(),
+  })).max(128).default([]),
+  events: z.array(z.object({
+    type: sessionEventTypeSchema,
+    username: z.string().min(1).max(255),
+    sessionType: sessionTypeSchema,
+    sessionId: z.string().max(128).optional(),
+    timestamp: z.string().optional(),
+    activityState: sessionActivityStateSchema.optional(),
+  })).max(256).optional(),
+  collectedAt: z.string().optional(),
+});
+
+function getSessionIdentityKey(input: {
+  username: string;
+  sessionType: string;
+  osSessionId: string | null;
+}): string {
+  return `${input.username.toLowerCase()}::${input.sessionType}::${input.osSessionId ?? ''}`;
+}
+
+agentRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+
+  const [device] = await db
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      hostname: devices.hostname,
+    })
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  const now = new Date();
+  const activeSessions = data.sessions.filter((session) => session.isActive !== false);
+
+  await db.transaction(async (tx) => {
+    const existingActive = await tx
+      .select({
+        id: deviceSessions.id,
+        username: deviceSessions.username,
+        sessionType: deviceSessions.sessionType,
+        osSessionId: deviceSessions.osSessionId,
+        loginAt: deviceSessions.loginAt,
+      })
+      .from(deviceSessions)
+      .where(
+        and(
+          eq(deviceSessions.deviceId, device.id),
+          eq(deviceSessions.isActive, true)
+        )
+      );
+
+    const existingByKey = new Map(
+      existingActive.map((row) => [
+        getSessionIdentityKey({
+          username: row.username,
+          sessionType: row.sessionType,
+          osSessionId: row.osSessionId ?? null,
+        }),
+        row,
+      ])
+    );
+    const seenKeys = new Set<string>();
+
+    for (const session of activeSessions) {
+      const osSessionId = session.sessionId ?? null;
+      const key = getSessionIdentityKey({
+        username: session.username,
+        sessionType: session.sessionType,
+        osSessionId,
+      });
+      seenKeys.add(key);
+
+      const loginAt = parseDate(session.loginAt) ?? now;
+      const lastActivityAt = parseDate(session.lastActivityAt) ?? now;
+      const existing = existingByKey.get(key);
+
+      if (!existing) {
+        await tx
+          .insert(deviceSessions)
+          .values({
+            orgId: device.orgId,
+            deviceId: device.id,
+            username: session.username,
+            sessionType: session.sessionType,
+            osSessionId,
+            loginAt,
+            idleMinutes: session.idleMinutes ?? 0,
+            activityState: session.activityState ?? 'active',
+            loginPerformanceSeconds: session.loginPerformanceSeconds ?? null,
+            isActive: true,
+            lastActivityAt,
+            updatedAt: now,
+          });
+        continue;
+      }
+
+      await tx
+        .update(deviceSessions)
+        .set({
+          idleMinutes: session.idleMinutes ?? 0,
+          activityState: session.activityState ?? 'active',
+          loginPerformanceSeconds: session.loginPerformanceSeconds ?? null,
+          isActive: true,
+          lastActivityAt,
+          updatedAt: now,
+        })
+        .where(eq(deviceSessions.id, existing.id));
+    }
+
+    for (const stale of existingActive) {
+      const key = getSessionIdentityKey({
+        username: stale.username,
+        sessionType: stale.sessionType,
+        osSessionId: stale.osSessionId ?? null,
+      });
+      if (seenKeys.has(key)) {
+        continue;
+      }
+
+      const durationSeconds = Math.max(0, Math.floor((now.getTime() - stale.loginAt.getTime()) / 1000));
+      await tx
+        .update(deviceSessions)
+        .set({
+          isActive: false,
+          logoutAt: now,
+          durationSeconds,
+          activityState: 'disconnected',
+          updatedAt: now,
+        })
+        .where(eq(deviceSessions.id, stale.id));
+    }
+  });
+
+  const events = data.events ?? [];
+  for (const event of events) {
+    if (event.type !== 'login' && event.type !== 'logout') {
+      continue;
+    }
+
+    const eventType = event.type === 'login' ? 'session.login' : 'session.logout';
+    try {
+      await publishEvent(
+        eventType,
+        device.orgId,
+        {
+          deviceId: device.id,
+          hostname: device.hostname,
+          username: event.username,
+          sessionType: event.sessionType,
+          sessionId: event.sessionId ?? null,
+          activityState: event.activityState ?? null,
+          timestamp: event.timestamp ?? now.toISOString(),
+        },
+        'agent'
+      );
+    } catch (err) {
+      console.error(`[agents] failed to publish ${eventType} for ${device.id}:`, err);
+    }
+  }
+
+  writeAuditEvent(c, {
+    orgId: agent?.orgId ?? device.orgId,
+    actorType: 'agent',
+    actorId: agent?.agentId ?? agentId,
+    action: 'agent.sessions.submit',
+    resourceType: 'device',
+    resourceId: device.id,
+    details: {
+      activeSessions: activeSessions.length,
+      events: events.length,
+    },
+  });
+
+  return c.json({
+    success: true,
+    activeSessions: activeSessions.length,
+    events: events.length,
+  });
 });
 
 // Submit available and installed patches

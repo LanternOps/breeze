@@ -1,6 +1,5 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import SessionHistoryPage from '../../components/remote/SessionHistoryPage';
 ---
 
 <DashboardLayout title="Remote Access">
@@ -8,13 +7,13 @@ import SessionHistoryPage from '../../components/remote/SessionHistoryPage';
     <div>
       <h1 class="text-3xl font-bold tracking-tight">Remote Access</h1>
       <p class="text-muted-foreground">
-        Start remote sessions, transfer files, and view session history.
+        Launch remote tools for online devices.
       </p>
     </div>
 
     <div class="grid gap-4 md:grid-cols-3">
       <a
-        href="/devices"
+        href="/remote/terminal"
         class="rounded-lg border bg-card p-6 hover:bg-muted/50 transition-colors"
       >
         <div class="flex items-center gap-4">
@@ -32,7 +31,7 @@ import SessionHistoryPage from '../../components/remote/SessionHistoryPage';
       </a>
 
       <a
-        href="/devices"
+        href="/remote/files"
         class="rounded-lg border bg-card p-6 hover:bg-muted/50 transition-colors"
       >
         <div class="flex items-center gap-4">
@@ -65,13 +64,6 @@ import SessionHistoryPage from '../../components/remote/SessionHistoryPage';
           </div>
         </div>
       </a>
-    </div>
-
-    <div class="rounded-lg border bg-card">
-      <div class="border-b px-6 py-4">
-        <h2 class="font-semibold">Recent Sessions</h2>
-      </div>
-      <SessionHistoryPage limit={10} client:load />
     </div>
   </div>
 </DashboardLayout>

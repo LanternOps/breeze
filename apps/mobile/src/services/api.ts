@@ -3,6 +3,8 @@ import * as SecureStore from 'expo-secure-store';
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
 const API_CORE_PREFIX = '/api/v1';
+const CSRF_HEADER_NAME = 'x-breeze-csrf';
+const CSRF_HEADER_VALUE = '1';
 
 // Types
 export interface Alert {
@@ -146,6 +148,7 @@ async function requestWithPrefix<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = await getToken();
+  const method = (options.method ?? 'GET').toUpperCase();
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
@@ -156,9 +159,14 @@ async function requestWithPrefix<T>(
     (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
   }
 
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    (headers as Record<string, string>)[CSRF_HEADER_NAME] = CSRF_HEADER_VALUE;
+  }
+
   const response = await fetch(`${API_BASE_URL}${prefix}${endpoint}`, {
     ...options,
     headers,
+    credentials: 'include',
   });
 
   if (!response.ok) {
@@ -268,18 +276,13 @@ export async function logout(): Promise<void> {
 }
 
 export async function refreshToken(): Promise<{ token: string }> {
-  const currentToken = await getToken();
-  if (!currentToken) {
-    throw { message: 'No token available to refresh' } as ApiError;
-  }
-
   const response = await requestWithPrefix<{ tokens?: AuthTokensPayload; accessToken?: string }>(
     '/auth/refresh',
     API_CORE_PREFIX,
     {
-    method: 'POST',
-    body: JSON.stringify({ refreshToken: currentToken })
-  });
+      method: 'POST',
+      body: JSON.stringify({})
+    });
   const token = response.tokens?.accessToken || response.accessToken;
   if (!token) {
     throw { message: 'Failed to refresh token' } as ApiError;

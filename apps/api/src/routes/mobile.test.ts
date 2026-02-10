@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { mobileRoutes } from './mobile';
 
+const { publishEventMock, setCooldownMock } = vi.hoisted(() => ({
+  publishEventMock: vi.fn().mockResolvedValue('event-1'),
+  setCooldownMock: vi.fn().mockResolvedValue(undefined)
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -13,6 +18,8 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   alerts: {},
+  alertRules: {},
+  alertTemplates: {},
   deviceCommands: {},
   devices: {},
   mobileDevices: {},
@@ -32,6 +39,14 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c, next) => next())
+}));
+
+vi.mock('../services/eventBus', () => ({
+  publishEvent: publishEventMock
+}));
+
+vi.mock('../services/alertCooldown', () => ({
+  setCooldown: setCooldownMock
 }));
 
 import { db } from '../db';

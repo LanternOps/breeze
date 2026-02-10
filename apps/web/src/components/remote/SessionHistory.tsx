@@ -15,6 +15,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '@/stores/auth';
 
 const DATE_LOCALE = 'en-US';
 const DATE_TIME_ZONE = 'UTC';
@@ -271,11 +272,7 @@ export default function SessionHistory({
       if (userFilter !== 'all') params.set('userId', userFilter);
       params.set('limit', String(limit ?? 100));
 
-      const response = await fetch(`/api/remote/sessions/history?${params.toString()}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      });
+      const response = await fetchWithAuth(`/remote/sessions/history?${params.toString()}`);
 
       if (response.ok) {
         const data = await response.json();

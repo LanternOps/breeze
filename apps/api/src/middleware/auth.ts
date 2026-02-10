@@ -2,7 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
-import { getRedis } from '../services/redis';
+import { isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
 import { and, eq, inArray, SQL } from 'drizzle-orm';
@@ -48,21 +48,6 @@ declare module 'hono' {
   }
 }
 
-async function isUserTokenRevoked(userId: string): Promise<boolean> {
-  const redis = getRedis();
-  if (!redis) {
-    return false;
-  }
-
-  try {
-    const revoked = await redis.get(`token:revoked:${userId}`);
-    return Boolean(revoked);
-  } catch (error) {
-    console.warn('[auth] Failed to check token revocation state:', error);
-    return false;
-  }
-}
-
 // Optional auth - doesn't throw if not authenticated, just sets auth to null
 export async function optionalAuthMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
@@ -82,7 +67,7 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
     return;
   }
 
-  if (await isUserTokenRevoked(payload.sub)) {
+  if (await isUserTokenRevoked(payload.sub, payload.iat)) {
     // Token has been explicitly revoked - continue without auth context
     await next();
     return;
@@ -250,7 +235,7 @@ export async function authMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid token type' });
   }
 
-  if (await isUserTokenRevoked(payload.sub)) {
+  if (await isUserTokenRevoked(payload.sub, payload.iat)) {
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 

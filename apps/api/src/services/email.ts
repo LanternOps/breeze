@@ -1,3 +1,4 @@
+import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
 
 export interface SendEmailParams {
@@ -44,35 +45,117 @@ interface EmailTemplate {
   text: string;
 }
 
+type EmailProvider = 'resend' | 'smtp' | 'mailgun';
+type EmailProviderSelection = EmailProvider | 'auto';
+
+type ResendProviderConfig = {
+  provider: 'resend';
+  apiKey: string;
+  from: string;
+};
+
+type SmtpProviderConfig = {
+  provider: 'smtp';
+  host: string;
+  port: number;
+  secure: boolean;
+  from: string;
+  user?: string;
+  pass?: string;
+};
+
+type MailgunProviderConfig = {
+  provider: 'mailgun';
+  apiKey: string;
+  domain: string;
+  baseUrl: string;
+  from: string;
+};
+
+type ResolvedProviderConfig = ResendProviderConfig | SmtpProviderConfig | MailgunProviderConfig;
+
 export class EmailService {
-  private resend: Resend;
+  private provider: EmailProvider;
+  private resend: Resend | null = null;
+  private smtpTransport: Transporter | null = null;
+  private mailgunConfig: MailgunProviderConfig | null = null;
   private defaultFrom: string;
 
   constructor() {
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.EMAIL_FROM;
+    const config = resolveEmailProviderConfig();
+    this.provider = config.provider;
+    this.defaultFrom = config.from;
 
-    if (!apiKey) {
-      throw new Error('RESEND_API_KEY is not set');
-    }
-    if (!from) {
-      throw new Error('EMAIL_FROM is not set');
+    if (config.provider === 'resend') {
+      this.resend = new Resend(config.apiKey);
+      return;
     }
 
-    this.resend = new Resend(apiKey);
-    this.defaultFrom = from;
+    if (config.provider === 'mailgun') {
+      this.mailgunConfig = config;
+      return;
+    }
+
+    this.smtpTransport = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: config.user && config.pass
+        ? {
+          user: config.user,
+          pass: config.pass
+        }
+        : undefined
+    });
   }
 
   async sendEmail(params: SendEmailParams): Promise<void> {
     const { to, subject, html, text, from, replyTo } = params;
+    const sender = from ?? this.defaultFrom;
 
-    await this.resend.emails.send({
-      from: from ?? this.defaultFrom,
+    if (this.provider === 'resend') {
+      if (!this.resend) {
+        throw new Error('Resend transport is not initialized');
+      }
+
+      await this.resend.emails.send({
+        from: sender,
+        to,
+        subject,
+        html,
+        text,
+        reply_to: replyTo
+      });
+      return;
+    }
+
+    if (this.provider === 'mailgun') {
+      if (!this.mailgunConfig) {
+        throw new Error('Mailgun config is not initialized');
+      }
+
+      await sendViaMailgun(this.mailgunConfig, {
+        from: sender,
+        to,
+        subject,
+        html,
+        text,
+        replyTo
+      });
+      return;
+    }
+
+    if (!this.smtpTransport) {
+      throw new Error('SMTP transport is not initialized');
+    }
+
+    await this.smtpTransport.sendMail({
+      from: sender,
       to,
       subject,
       html,
       text,
-      reply_to: replyTo
+      replyTo
     });
   }
 
@@ -112,7 +195,7 @@ let emailServiceAvailable: boolean | null = null;
 
 /**
  * Get the email service instance.
- * Returns null if email is not configured (missing RESEND_API_KEY or EMAIL_FROM).
+ * Returns null if email is not configured.
  * This allows graceful degradation - callers should handle null appropriately.
  */
 export function getEmailService(): EmailService | null {
@@ -122,26 +205,230 @@ export function getEmailService(): EmailService | null {
   }
 
   if (!cachedService) {
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.EMAIL_FROM;
-
-    if (!apiKey || !from) {
-      emailServiceAvailable = false;
-      console.warn('Email service not configured: missing RESEND_API_KEY or EMAIL_FROM');
-      return null;
-    }
-
     try {
       cachedService = new EmailService();
       emailServiceAvailable = true;
     } catch (err) {
       emailServiceAvailable = false;
-      console.error('Failed to initialize email service:', err);
+      const reason = err instanceof Error ? err.message : 'unknown error';
+      console.warn(`Email service not configured: ${reason}`);
       return null;
     }
   }
 
   return cachedService;
+}
+
+function getEnvString(name: string): string | undefined {
+  const value = process.env[name];
+  if (!value) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseEmailProviderSelection(): EmailProviderSelection {
+  const raw = (process.env.EMAIL_PROVIDER ?? 'auto').trim().toLowerCase();
+
+  if (raw === 'auto' || raw === 'resend' || raw === 'smtp' || raw === 'mailgun') {
+    return raw;
+  }
+
+  throw new Error(`EMAIL_PROVIDER must be one of: auto, resend, smtp, mailgun (received "${raw}")`);
+}
+
+function parseSmtpPort(): number {
+  const raw = getEnvString('SMTP_PORT');
+  if (!raw) {
+    return 587;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`SMTP_PORT must be an integer between 1 and 65535 (received "${raw}")`);
+  }
+
+  return parsed;
+}
+
+function parseSmtpSecure(): boolean {
+  const raw = getEnvString('SMTP_SECURE');
+  if (!raw) {
+    return false;
+  }
+
+  const normalized = raw.toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`SMTP_SECURE must be a boolean value (received "${raw}")`);
+}
+
+function resolveResendConfig(resendApiKey: string | undefined, emailFrom: string | undefined): ResendProviderConfig {
+  if (!resendApiKey) {
+    throw new Error('RESEND_API_KEY is not set');
+  }
+  if (!emailFrom) {
+    throw new Error('EMAIL_FROM is not set');
+  }
+
+  return {
+    provider: 'resend',
+    apiKey: resendApiKey,
+    from: emailFrom
+  };
+}
+
+function resolveSmtpConfig(
+  smtpHost: string | undefined,
+  smtpFrom: string | undefined,
+  smtpUser: string | undefined,
+  smtpPass: string | undefined
+): SmtpProviderConfig {
+  if (!smtpHost) {
+    throw new Error('SMTP_HOST is not set');
+  }
+  if (!smtpFrom) {
+    throw new Error('SMTP_FROM (or EMAIL_FROM fallback) is not set');
+  }
+  if ((smtpUser && !smtpPass) || (!smtpUser && smtpPass)) {
+    throw new Error('SMTP_USER and SMTP_PASS must either both be set or both be omitted');
+  }
+
+  return {
+    provider: 'smtp',
+    host: smtpHost,
+    port: parseSmtpPort(),
+    secure: parseSmtpSecure(),
+    from: smtpFrom,
+    user: smtpUser,
+    pass: smtpPass
+  };
+}
+
+function resolveMailgunConfig(
+  mailgunApiKey: string | undefined,
+  mailgunDomain: string | undefined,
+  mailgunBaseUrl: string | undefined,
+  mailgunFrom: string | undefined
+): MailgunProviderConfig {
+  if (!mailgunApiKey) {
+    throw new Error('MAILGUN_API_KEY is not set');
+  }
+  if (!mailgunDomain) {
+    throw new Error('MAILGUN_DOMAIN is not set');
+  }
+  if (!mailgunFrom) {
+    throw new Error('MAILGUN_FROM (or EMAIL_FROM fallback) is not set');
+  }
+
+  return {
+    provider: 'mailgun',
+    apiKey: mailgunApiKey,
+    domain: mailgunDomain,
+    baseUrl: normalizeBaseUrl(mailgunBaseUrl ?? 'https://api.mailgun.net'),
+    from: mailgunFrom
+  };
+}
+
+function resolveEmailProviderConfig(): ResolvedProviderConfig {
+  const selection = parseEmailProviderSelection();
+  const resendApiKey = getEnvString('RESEND_API_KEY');
+  const emailFrom = getEnvString('EMAIL_FROM');
+  const smtpHost = getEnvString('SMTP_HOST');
+  const smtpFrom = getEnvString('SMTP_FROM') ?? emailFrom;
+  const smtpUser = getEnvString('SMTP_USER');
+  const smtpPass = process.env.SMTP_PASS && process.env.SMTP_PASS.length > 0
+    ? process.env.SMTP_PASS
+    : undefined;
+  const mailgunApiKey = getEnvString('MAILGUN_API_KEY');
+  const mailgunDomain = getEnvString('MAILGUN_DOMAIN');
+  const mailgunBaseUrl = getEnvString('MAILGUN_BASE_URL');
+  const mailgunFrom = getEnvString('MAILGUN_FROM') ?? emailFrom;
+
+  if (selection === 'resend') {
+    return resolveResendConfig(resendApiKey, emailFrom);
+  }
+
+  if (selection === 'smtp') {
+    return resolveSmtpConfig(smtpHost, smtpFrom, smtpUser, smtpPass);
+  }
+
+  if (selection === 'mailgun') {
+    return resolveMailgunConfig(mailgunApiKey, mailgunDomain, mailgunBaseUrl, mailgunFrom);
+  }
+
+  if (resendApiKey && emailFrom) {
+    return resolveResendConfig(resendApiKey, emailFrom);
+  }
+
+  if (smtpHost && smtpFrom) {
+    return resolveSmtpConfig(smtpHost, smtpFrom, smtpUser, smtpPass);
+  }
+
+  if (mailgunApiKey && mailgunDomain && mailgunFrom) {
+    return resolveMailgunConfig(mailgunApiKey, mailgunDomain, mailgunBaseUrl, mailgunFrom);
+  }
+
+  throw new Error(
+    'Set EMAIL_PROVIDER=resend with RESEND_API_KEY and EMAIL_FROM, EMAIL_PROVIDER=smtp with SMTP_HOST and SMTP_FROM, or EMAIL_PROVIDER=mailgun with MAILGUN_API_KEY and MAILGUN_DOMAIN (EMAIL_FROM/MAILGUN_FROM required)'
+  );
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '');
+}
+
+function buildMailgunEndpoint(config: MailgunProviderConfig): string {
+  return `${config.baseUrl}/v3/${encodeURIComponent(config.domain)}/messages`;
+}
+
+async function sendViaMailgun(
+  config: MailgunProviderConfig,
+  params: SendEmailParams & { from: string }
+): Promise<void> {
+  const body = new URLSearchParams();
+  body.set('from', params.from);
+  body.set('subject', params.subject);
+
+  const recipients = Array.isArray(params.to) ? params.to : [params.to];
+  for (const recipient of recipients) {
+    body.append('to', recipient);
+  }
+
+  if (params.text) {
+    body.set('text', params.text);
+  }
+  body.set('html', params.html);
+
+  if (params.replyTo) {
+    const replyTos = Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo];
+    for (const replyTo of replyTos) {
+      body.append('h:Reply-To', replyTo);
+    }
+  }
+
+  const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
+  const response = await fetch(buildMailgunEndpoint(config), {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${authToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: body.toString()
+  });
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => '');
+    const details = message ? `: ${message}` : '';
+    throw new Error(`Mailgun API error (${response.status})${details}`);
+  }
 }
 
 function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemplate {

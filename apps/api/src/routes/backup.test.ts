@@ -174,4 +174,18 @@ describe('backup routes', () => {
     expect(fetched.id).toBe(restore.id);
     expect(fetched.snapshotId).toBe('snap-001');
   });
+
+  it('should return provider usage history timeline', async () => {
+    const res = await app.request('/backup/usage-history?days=7', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+    expect(payload.data.days).toBe(7);
+    expect(Array.isArray(payload.data.points)).toBe(true);
+    expect(payload.data.points.length).toBe(7);
+    expect(Array.isArray(payload.data.providers)).toBe(true);
+  });
 });

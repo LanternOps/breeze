@@ -10,7 +10,6 @@ import * as dbModule from '../db';
 import {
   alerts,
   alertRules,
-  alertTemplates,
   notificationChannels,
   alertNotifications,
   escalationPolicies,
@@ -24,9 +23,12 @@ import {
   getEmailRecipients,
   sendWebhookNotification,
   sendInAppNotification,
+  sendPagerDutyNotification,
   type WebhookConfig,
+  type PagerDutyConfig,
   type AlertSeverity
 } from './notificationSenders';
+import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
 import { getEventBus } from './eventBus';
 
 const { db } = dbModule;
@@ -190,6 +192,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     .where(
       and(
         eq(notificationChannels.orgId, alert.orgId),
+        eq(notificationChannels.enabled, true),
         inArray(notificationChannels.id, requestedChannelIds)
       )
     );
@@ -260,7 +263,8 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     .where(
       and(
         eq(notificationChannels.id, data.channelId),
-        eq(notificationChannels.orgId, alert.orgId)
+        eq(notificationChannels.orgId, alert.orgId),
+        eq(notificationChannels.enabled, true)
       )
     )
     .limit(1);
@@ -335,13 +339,50 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
         error = webhookResult.error;
         break;
 
-      case 'slack':
-      case 'teams':
-      case 'pagerduty':
       case 'sms':
-        // TODO: Implement these channel types
-        console.log(`[NotificationDispatcher] Channel type ${channel.type} not yet implemented`);
-        error = `Channel type ${channel.type} not implemented`;
+        const smsResult = await sendSmsChannelNotification(
+          channel.config as SmsChannelConfig,
+          alert,
+          device,
+          org
+        );
+        success = smsResult.success;
+        error = smsResult.error;
+        break;
+
+      case 'slack':
+        const slackResult = await sendChatWebhookChannelNotification(
+          'slack',
+          channel.config as Record<string, unknown>,
+          alert,
+          device,
+          org
+        );
+        success = slackResult.success;
+        error = slackResult.error;
+        break;
+
+      case 'teams':
+        const teamsResult = await sendChatWebhookChannelNotification(
+          'teams',
+          channel.config as Record<string, unknown>,
+          alert,
+          device,
+          org
+        );
+        success = teamsResult.success;
+        error = teamsResult.error;
+        break;
+
+      case 'pagerduty':
+        const pagerDutyResult = await sendPagerDutyChannelNotification(
+          channel.config as PagerDutyConfig,
+          alert,
+          device,
+          org
+        );
+        success = pagerDutyResult.success;
+        error = pagerDutyResult.error;
         break;
 
       // In-app notifications are handled automatically in processAlertNotifications
@@ -446,6 +487,114 @@ async function sendWebhookChannelNotification(
 }
 
 /**
+ * Send notification via Slack/Teams webhook channel
+ */
+async function sendChatWebhookChannelNotification(
+  channelType: 'slack' | 'teams',
+  config: Record<string, unknown>,
+  alert: typeof alerts.$inferSelect,
+  device: typeof devices.$inferSelect | undefined,
+  org: typeof organizations.$inferSelect | undefined
+): Promise<{ success: boolean; error?: string }> {
+  const webhookUrl = typeof config.webhookUrl === 'string' ? config.webhookUrl.trim() : '';
+  if (!webhookUrl) {
+    return { success: false, error: `${channelType} channel missing webhookUrl` };
+  }
+
+  const dashboardUrl = process.env.DASHBOARD_URL
+    ? `${process.env.DASHBOARD_URL}/alerts/${alert.id}`
+    : undefined;
+
+  const payloadTemplate = '{"text":"[{{severity}}] {{alertName}}: {{summary}}{{dashboardUrl}}"}';
+
+  return sendWebhookNotification(
+    {
+      url: webhookUrl,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      payloadTemplate
+    },
+    {
+      alertId: alert.id,
+      alertName: alert.title,
+      severity: alert.severity,
+      summary: alert.message || alert.title,
+      deviceId: alert.deviceId,
+      deviceName: device?.displayName || device?.hostname,
+      orgId: alert.orgId,
+      orgName: org?.name,
+      triggeredAt: alert.triggeredAt.toISOString(),
+      ruleId: alert.ruleId,
+      context: {
+        dashboardUrl: dashboardUrl ? ` ${dashboardUrl}` : ''
+      }
+    }
+  );
+}
+
+/**
+ * Send notification via SMS channel
+ */
+export async function sendSmsChannelNotification(
+  config: SmsChannelConfig,
+  alert: typeof alerts.$inferSelect,
+  device: typeof devices.$inferSelect | undefined,
+  org: typeof organizations.$inferSelect | undefined
+): Promise<{ success: boolean; error?: string }> {
+  const dashboardUrl = process.env.DASHBOARD_URL
+    ? `${process.env.DASHBOARD_URL}/alerts/${alert.id}`
+    : undefined;
+
+  const smsResult = await sendSmsNotification(config, {
+    alertName: alert.title,
+    severity: alert.severity as AlertSeverity,
+    summary: alert.message || alert.title,
+    deviceName: device?.displayName || device?.hostname,
+    occurredAt: alert.triggeredAt,
+    dashboardUrl,
+    orgName: org?.name
+  });
+
+  return {
+    success: smsResult.success,
+    error: smsResult.error
+  };
+}
+
+/**
+ * Send notification via PagerDuty channel
+ */
+async function sendPagerDutyChannelNotification(
+  config: PagerDutyConfig,
+  alert: typeof alerts.$inferSelect,
+  device: typeof devices.$inferSelect | undefined,
+  org: typeof organizations.$inferSelect | undefined
+): Promise<{ success: boolean; error?: string }> {
+  const dashboardUrl = process.env.DASHBOARD_URL
+    ? `${process.env.DASHBOARD_URL}/alerts/${alert.id}`
+    : undefined;
+
+  const result = await sendPagerDutyNotification(config, {
+    alertId: alert.id,
+    alertName: alert.title,
+    severity: alert.severity as AlertSeverity,
+    summary: alert.message || alert.title,
+    deviceId: alert.deviceId,
+    deviceName: device?.displayName || device?.hostname,
+    orgId: alert.orgId,
+    orgName: org?.name,
+    triggeredAt: alert.triggeredAt.toISOString(),
+    ruleId: alert.ruleId,
+    dashboardUrl
+  });
+
+  return {
+    success: result.success,
+    error: result.error
+  };
+}
+
+/**
  * Schedule escalation steps based on policy
  */
 async function scheduleEscalation(alertId: string, policyId: string, orgId: string): Promise<void> {
@@ -484,6 +633,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
       .where(
         and(
           eq(notificationChannels.orgId, orgId),
+          eq(notificationChannels.enabled, true),
           inArray(notificationChannels.id, requestedChannelIds)
         )
       )

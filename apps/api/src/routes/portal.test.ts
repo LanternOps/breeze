@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { portalRoutes } from './portal';
 
+const { sendPasswordResetMock } = vi.hoisted(() => ({
+  sendPasswordResetMock: vi.fn().mockResolvedValue(undefined)
+}));
+
 vi.mock('nanoid', () => ({
   nanoid: vi.fn(() => 'nanoid-token')
 }));
@@ -11,6 +15,12 @@ vi.mock('../services/password', () => ({
   hashPassword: vi.fn().mockResolvedValue('hashed-password'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
   verifyPassword: vi.fn()
+}));
+
+vi.mock('../services/email', () => ({
+  getEmailService: vi.fn(() => ({
+    sendPasswordReset: sendPasswordResetMock
+  }))
 }));
 
 vi.mock('../db', () => ({
@@ -248,6 +258,35 @@ describe('portal routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(sendPasswordResetMock).not.toHaveBeenCalled();
+    });
+
+    it('should send password reset email when user exists', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        mockSelectLimit([
+          {
+            id: 'portal-user-1',
+            email: 'portal@example.com',
+            orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
+          }
+        ]) as any
+      );
+
+      const res = await app.request('/portal/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'portal@example.com',
+          orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(sendPasswordResetMock).toHaveBeenCalledTimes(1);
+      expect(sendPasswordResetMock).toHaveBeenCalledWith({
+        to: 'portal@example.com',
+        resetUrl: 'http://localhost:4321/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
+      });
     });
   });
 

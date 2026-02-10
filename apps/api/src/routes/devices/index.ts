@@ -11,6 +11,7 @@ import { scriptsRoutes } from './scripts';
 import { eventsRoutes } from './events';
 import { eventLogsRoutes } from './eventlogs';
 import { filesystemRoutes } from './filesystem';
+import { sessionsRoutes } from './sessions';
 
 export const deviceRoutes = new Hono();
 
@@ -33,6 +34,7 @@ deviceRoutes.route('/', patchesRoutes);
 deviceRoutes.route('/', scriptsRoutes);
 deviceRoutes.route('/', eventsRoutes);
 deviceRoutes.route('/', eventLogsRoutes);
+deviceRoutes.route('/', sessionsRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere
 export * from './helpers';

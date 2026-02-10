@@ -121,6 +121,7 @@ describe('device patch routes', () => {
         lastCheckedAt: '2026-02-09T10:00:00.000Z',
         failureCount: 0,
         lastError: null,
+        externalId: 'apple:OS Update A:1.0.1',
         title: 'OS Update A',
         description: 'Pending update',
         severity: 'important',
@@ -137,6 +138,7 @@ describe('device patch routes', () => {
         lastCheckedAt: '2026-02-09T10:00:00.000Z',
         failureCount: 0,
         lastError: null,
+        externalId: 'third_party:Old package entry:2.1.0',
         title: 'Old package entry',
         description: 'Not seen in latest scan',
         severity: 'unknown',
@@ -153,6 +155,7 @@ describe('device patch routes', () => {
         lastCheckedAt: '2026-02-09T10:00:00.000Z',
         failureCount: 0,
         lastError: null,
+        externalId: 'apple:Installed update:1.0.0',
         title: 'Installed update',
         description: 'Installed',
         severity: 'important',
@@ -174,6 +177,8 @@ describe('device patch routes', () => {
     expect(body.data.pending).toHaveLength(1);
     expect(body.data.pending[0].id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.data.pending[0].status).toBe('pending');
+    expect(body.data.pending[0].externalId).toBe('apple:OS Update A:1.0.1');
+    expect(body.data.pending[0].description).toBe('Pending update');
 
     expect(body.data.missing).toHaveLength(1);
     expect(body.data.missing[0].id).toBe('22222222-2222-4222-8222-222222222222');

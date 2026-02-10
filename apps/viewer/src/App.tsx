@@ -61,7 +61,7 @@ export default function App() {
       setParams(parsed);
       setError(null);
     } else {
-      setError('Invalid connection URL. Expected format: breeze://connect?session=...&token=...&api=...');
+      setError('Invalid connection URL. Expected format: breeze://connect?session=...&code=...&api=...');
     }
   }, [manualUrl]);
 
@@ -99,7 +99,7 @@ export default function App() {
             type="text"
             value={manualUrl}
             onChange={(e) => setManualUrl(e.target.value)}
-            placeholder="breeze://connect?session=...&token=...&api=..."
+            placeholder="breeze://connect?session=...&code=...&api=..."
             className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
             onKeyDown={(e) => e.key === 'Enter' && handleManualConnect()}
           />

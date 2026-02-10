@@ -9,6 +9,7 @@ import { enqueueSnmpPoll, buildSnmpPollCommand } from '../jobs/snmpWorker';
 import { isRedisAvailable } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
+import { buildTopInterfaces } from '../services/snmpDashboardTopInterfaces';
 
 // --- Helpers ---
 
@@ -108,6 +109,23 @@ const metricsHistorySchema = z.object({
   interval: z.enum(['5m', '15m', '1h', '6h', '1d']).optional()
 });
 
+const browseOidsSchema = z.object({
+  query: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional()
+});
+
+const validateOidsSchema = z.object({
+  oids: z.array(
+    z.object({
+      id: z.string().optional(),
+      oid: z.string().min(1),
+      name: z.string().optional(),
+      type: z.string().optional(),
+      description: z.string().optional()
+    })
+  ).min(1)
+});
+
 const createThresholdSchema = z.object({
   deviceId: z.string().uuid(),
   oid: z.string().min(1),
@@ -119,6 +137,72 @@ const createThresholdSchema = z.object({
 });
 
 const updateThresholdSchema = createThresholdSchema.partial().omit({ deviceId: true });
+
+type OidCatalogEntry = {
+  oid: string;
+  name: string;
+  type: string;
+  description: string;
+};
+
+const oidCatalog: OidCatalogEntry[] = [
+  {
+    oid: '1.3.6.1.2.1.1.1.0',
+    name: 'sysDescr',
+    type: 'OctetString',
+    description: 'System description'
+  },
+  {
+    oid: '1.3.6.1.2.1.1.3.0',
+    name: 'sysUpTime',
+    type: 'TimeTicks',
+    description: 'Time since network management system was last initialized'
+  },
+  {
+    oid: '1.3.6.1.2.1.1.5.0',
+    name: 'sysName',
+    type: 'OctetString',
+    description: 'Device hostname'
+  },
+  {
+    oid: '1.3.6.1.2.1.2.2.1.10',
+    name: 'ifInOctets',
+    type: 'Counter64',
+    description: 'Inbound octets per interface'
+  },
+  {
+    oid: '1.3.6.1.2.1.2.2.1.16',
+    name: 'ifOutOctets',
+    type: 'Counter64',
+    description: 'Outbound octets per interface'
+  },
+  {
+    oid: '1.3.6.1.2.1.25.3.3.1.2',
+    name: 'hrProcessorLoad',
+    type: 'Gauge',
+    description: 'Host processor load'
+  },
+  {
+    oid: '1.3.6.1.4.1.2021.4.6.0',
+    name: 'memAvailableReal',
+    type: 'Gauge',
+    description: 'Available physical memory'
+  },
+  {
+    oid: '1.3.6.1.4.1.2021.9.1.9',
+    name: 'dskPercent',
+    type: 'Gauge',
+    description: 'Disk utilization percentage'
+  }
+];
+
+function normalizeOidString(value: string): string {
+  return value.trim().replace(/^\.+/, '');
+}
+
+function isNumericOid(value: string): boolean {
+  return /^\d+(?:\.\d+)+$/.test(value);
+}
 
 // --- Router ---
 
@@ -683,6 +767,131 @@ snmpRoutes.delete(
   }
 );
 
+snmpRoutes.get(
+  '/oids/browse',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', browseOidsSchema),
+  async (c) => {
+    const { query = '', limit = 25 } = c.req.valid('query');
+    const normalizedQuery = query.trim().toLowerCase();
+    const candidates = new Map<string, {
+      oid: string;
+      name: string;
+      type: string;
+      description: string;
+      source: 'catalog' | 'template';
+      templateName?: string;
+    }>();
+
+    for (const entry of oidCatalog) {
+      const normalizedOid = normalizeOidString(entry.oid);
+      candidates.set(normalizedOid, {
+        ...entry,
+        oid: normalizedOid,
+        source: 'catalog'
+      });
+    }
+
+    const templates = await db.select({
+      name: snmpTemplates.name,
+      oids: snmpTemplates.oids
+    }).from(snmpTemplates);
+
+    for (const template of templates) {
+      if (!Array.isArray(template.oids)) continue;
+
+      for (const rawOid of template.oids as Array<Record<string, unknown>>) {
+        const oid = normalizeOidString(String(rawOid.oid ?? ''));
+        if (!oid) continue;
+
+        const existing = candidates.get(oid);
+        const mapped = {
+          oid,
+          name: String(rawOid.name ?? rawOid.label ?? existing?.name ?? 'Unnamed OID'),
+          type: String(rawOid.type ?? existing?.type ?? 'Gauge'),
+          description: String(rawOid.description ?? existing?.description ?? ''),
+          source: existing?.source ?? 'template',
+          templateName: existing?.templateName ?? template.name ?? undefined
+        } as const;
+
+        candidates.set(oid, mapped);
+      }
+    }
+
+    const filtered = Array.from(candidates.values()).filter((entry) => {
+      if (!normalizedQuery) return true;
+
+      const haystack = `${entry.oid} ${entry.name} ${entry.description}`.toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+
+    return c.json({
+      data: {
+        total: filtered.length,
+        results: filtered.slice(0, limit)
+      }
+    });
+  }
+);
+
+snmpRoutes.post(
+  '/oids/validate',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', validateOidsSchema),
+  async (c) => {
+    const payload = c.req.valid('json');
+    const knownOids = new Set(oidCatalog.map((entry) => normalizeOidString(entry.oid)));
+    const templates = await db.select({
+      oids: snmpTemplates.oids
+    }).from(snmpTemplates);
+
+    for (const template of templates) {
+      if (!Array.isArray(template.oids)) continue;
+      for (const rawOid of template.oids as Array<Record<string, unknown>>) {
+        knownOids.add(normalizeOidString(String(rawOid.oid ?? '')));
+      }
+    }
+
+    const seen = new Set<string>();
+    const results = payload.oids.map((item, index) => {
+      const normalizedOid = normalizeOidString(item.oid);
+      const errors: string[] = [];
+      const warnings: string[] = [];
+
+      if (!isNumericOid(normalizedOid)) {
+        errors.push('OID must use dotted numeric format (e.g. 1.3.6.1.2.1.1.3.0).');
+      }
+
+      if (seen.has(normalizedOid)) {
+        errors.push('Duplicate OID in template payload.');
+      } else {
+        seen.add(normalizedOid);
+      }
+
+      if (isNumericOid(normalizedOid) && !knownOids.has(normalizedOid)) {
+        warnings.push('OID not found in catalog/templates. Verify this path exists on the target device.');
+      }
+
+      return {
+        index,
+        id: item.id,
+        oid: item.oid,
+        normalizedOid,
+        valid: errors.length === 0,
+        errors,
+        warnings
+      };
+    });
+
+    return c.json({
+      data: {
+        valid: results.every((result) => result.valid),
+        results
+      }
+    });
+  }
+);
+
 // ==================== METRIC ROUTES ====================
 
 snmpRoutes.get(
@@ -1068,6 +1277,41 @@ snmpRoutes.get(
       .orderBy(desc(snmpDevices.lastPolled))
       .limit(5);
 
+    const interfaceWindowStart = new Date(Date.now() - 30 * 60 * 1000);
+    const interfaceOidFilter = or(
+      like(snmpMetrics.oid, '1.3.6.1.2.1.2.2.1.10%'),
+      like(snmpMetrics.oid, '1.3.6.1.2.1.2.2.1.16%'),
+      like(snmpMetrics.name, '%ifInOctets%'),
+      like(snmpMetrics.name, '%ifOutOctets%')
+    )!;
+    const interfaceMetricFilter = orgFilter
+      ? and(
+          orgFilter,
+          gte(snmpMetrics.timestamp, interfaceWindowStart),
+          interfaceOidFilter
+        )
+      : and(
+          gte(snmpMetrics.timestamp, interfaceWindowStart),
+          interfaceOidFilter
+        );
+
+    const recentInterfaceMetrics = await db
+      .select({
+        deviceId: snmpMetrics.deviceId,
+        deviceName: snmpDevices.name,
+        oid: snmpMetrics.oid,
+        name: snmpMetrics.name,
+        value: snmpMetrics.value,
+        timestamp: snmpMetrics.timestamp
+      })
+      .from(snmpMetrics)
+      .innerJoin(snmpDevices, eq(snmpMetrics.deviceId, snmpDevices.id))
+      .where(interfaceMetricFilter)
+      .orderBy(desc(snmpMetrics.timestamp))
+      .limit(3000);
+
+    const topInterfaces = buildTopInterfaces(recentInterfaceMetrics, 5);
+
     return c.json({
       data: {
         totals: {
@@ -1081,7 +1325,7 @@ snmpRoutes.get(
           name: t.name ?? 'Unassigned',
           deviceCount: Number(t.deviceCount)
         })),
-        topInterfaces: [],
+        topInterfaces,
         recentPolls: recentPolls.map((p) => ({
           deviceId: p.deviceId,
           name: p.name,

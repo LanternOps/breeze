@@ -334,14 +334,12 @@ export default function PartnerSettingsPage() {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Language</label>
-            <select
-              value="en"
-              disabled
-              className="h-10 w-full rounded-md border bg-muted px-3 text-sm text-muted-foreground"
-            >
-              <option value="en">English</option>
-            </select>
-            <p className="text-xs text-muted-foreground">More languages coming soon</p>
+            <div className="flex h-10 w-full items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
+              English
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Default language for partner settings.
+            </p>
           </div>
         </div>
       </section>

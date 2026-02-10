@@ -6,7 +6,7 @@ interface EnrollmentKey {
   orgId: string;
   siteId: string | null;
   name: string;
-  key: string;
+  key?: string | null;
   usageCount: number;
   maxUsage: number | null;
   expiresAt: string | null;
@@ -32,6 +32,7 @@ export default function EnrollmentKeyManager() {
   const [selectedKey, setSelectedKey] = useState<EnrollmentKey | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
@@ -122,6 +123,11 @@ export default function EnrollmentKeyManager() {
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || 'Failed to create enrollment key');
+      }
+
+      const created = await response.json().catch(() => ({} as Record<string, unknown>));
+      if (typeof created.key === 'string' && created.key.length > 0) {
+        setNewlyCreatedKey(created.key);
       }
 
       await fetchKeys(currentPage);
@@ -220,6 +226,33 @@ export default function EnrollmentKeyManager() {
         </div>
       )}
 
+      {newlyCreatedKey && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+          <p className="font-medium text-amber-700 dark:text-amber-300">
+            Save this enrollment key now. It will not be shown again.
+          </p>
+          <code className="mt-2 block overflow-x-auto rounded bg-background px-2 py-1 font-mono text-xs">
+            {newlyCreatedKey}
+          </code>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => handleCopyKey(newlyCreatedKey, '__newly-created__')}
+              className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+            >
+              {copiedId === '__newly-created__' ? 'Copied' : 'Copy key'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setNewlyCreatedKey(null)}
+              className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Keys Table */}
       <div className="rounded-lg border bg-card">
         <div className="overflow-x-auto">
@@ -249,27 +282,31 @@ export default function EnrollmentKeyManager() {
                     <tr key={key.id} className="border-b last:border-b-0 hover:bg-muted/50">
                       <td className="px-4 py-3 font-medium">{key.name}</td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
-                            {key.key.slice(0, 12)}...
-                          </code>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyKey(key.key, key.id)}
-                            className="text-muted-foreground hover:text-foreground"
-                            title="Copy full key"
-                          >
-                            {copiedId === key.id ? (
-                              <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                            ) : (
-                              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                              </svg>
-                            )}
-                          </button>
-                        </div>
+                        {key.key ? (
+                          <div className="flex items-center gap-2">
+                            <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                              {key.key.slice(0, 12)}...
+                            </code>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyKey(key.key as string, key.id)}
+                              className="text-muted-foreground hover:text-foreground"
+                              title="Copy full key"
+                            >
+                              {copiedId === key.id ? (
+                                <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                              ) : (
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                              )}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Hidden</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${status.className}`}>

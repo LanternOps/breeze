@@ -1,30 +1,53 @@
-import { Hono } from 'hono';
+import { randomUUID } from 'crypto';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automations,
   automationRuns,
-  devices
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import {
+  AutomationValidationError,
+  createAutomationRunRecord,
+  normalizeAutomationActions,
+  normalizeAutomationTrigger,
+  normalizeNotificationTargets,
+  withWebhookDefaults,
+} from '../services/automationRuntime';
+import { enqueueAutomationRun } from '../jobs/automationWorker';
 
 export const automationRoutes = new Hono();
+export const automationWebhookRoutes = new Hono();
 
-// Helper functions
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
   const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
   return { page, limit, offset: (page - 1) * limit };
 }
 
-function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+function ensureOrgAccess(orgId: string, auth: AuthContext) {
   return auth.canAccessOrg(orgId);
 }
 
-async function getAutomationWithOrgCheck(automationId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+async function getAutomationWithOrgCheck(automationId: string, auth: AuthContext) {
   const [automation] = await db
     .select()
     .from(automations)
@@ -43,47 +66,154 @@ async function getAutomationWithOrgCheck(automationId: string, auth: { canAccess
   return automation;
 }
 
-// Validation schemas
+function normalizeIncomingTrigger(input: {
+  trigger?: unknown;
+  triggerType?: 'schedule' | 'event' | 'webhook' | 'manual';
+  triggerConfig?: unknown;
+}): unknown {
+  if (input.trigger !== undefined) {
+    return input.trigger;
+  }
 
-// Automations schemas
+  if (!input.triggerType) {
+    return undefined;
+  }
+
+  const triggerConfig = isPlainRecord(input.triggerConfig) ? input.triggerConfig : {};
+
+  if (input.triggerType === 'manual') {
+    return { type: 'manual' };
+  }
+
+  if (input.triggerType === 'schedule') {
+    return {
+      type: 'schedule',
+      cronExpression: asString(triggerConfig.cronExpression) ?? asString(triggerConfig.cron) ?? '0 9 * * *',
+      timezone: asString(triggerConfig.timezone) ?? 'UTC',
+    };
+  }
+
+  if (input.triggerType === 'event') {
+    return {
+      type: 'event',
+      eventType: asString(triggerConfig.eventType) ?? 'device.offline',
+      filter: isPlainRecord(triggerConfig.filter) ? triggerConfig.filter : undefined,
+    };
+  }
+
+  return {
+    type: 'webhook',
+    secret: asString(triggerConfig.secret) ?? asString(triggerConfig.webhookSecret),
+    webhookUrl: asString(triggerConfig.webhookUrl),
+  };
+}
+
+function normalizeIncomingNotificationTargets(input: {
+  notificationTargets?: unknown;
+  notifyOnFailureChannelId?: string;
+}): unknown {
+  if (input.notificationTargets !== undefined) {
+    return input.notificationTargets;
+  }
+
+  if (input.notifyOnFailureChannelId) {
+    return { channelIds: [input.notifyOnFailureChannelId] };
+  }
+
+  return undefined;
+}
+
+function shapeAutomationForResponse(automation: typeof automations.$inferSelect) {
+  const trigger = isPlainRecord(automation.trigger) ? automation.trigger : {};
+  const triggerType = asString(trigger.type) ?? 'manual';
+
+  const triggerConfig = {
+    cronExpression: asString(trigger.cronExpression) ?? asString(trigger.cron),
+    timezone: asString(trigger.timezone),
+    eventType: asString(trigger.eventType),
+    webhookUrl: asString(trigger.webhookUrl),
+  };
+
+  const notificationTargets = isPlainRecord(automation.notificationTargets)
+    ? automation.notificationTargets
+    : {};
+
+  const channelIds = Array.isArray(notificationTargets.channelIds)
+    ? notificationTargets.channelIds.filter((value): value is string => typeof value === 'string')
+    : [];
+
+  return {
+    ...automation,
+    triggerType,
+    triggerConfig,
+    notifyOnFailureChannelId: channelIds[0],
+  };
+}
+
+function toRunStatus(status: (typeof automationRuns.$inferSelect)['status']) {
+  if (status === 'completed') return 'success';
+  return status;
+}
+
+function serializeRunLogs(logs: unknown): string[] {
+  if (!Array.isArray(logs)) return [];
+  return logs
+    .map((entry) => {
+      if (!isPlainRecord(entry)) return null;
+      const level = asString(entry.level) ?? 'info';
+      const message = asString(entry.message) ?? '';
+      if (!message) return null;
+      return `[${level}] ${message}`;
+    })
+    .filter((line): line is string => Boolean(line));
+}
+
 const listAutomationsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
-  enabled: z.enum(['true', 'false']).optional()
+  enabled: z.enum(['true', 'false']).optional(),
 });
+
+const triggerTypeSchema = z.enum(['schedule', 'event', 'webhook', 'manual']);
 
 const createAutomationSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   enabled: z.boolean().default(true),
-  trigger: z.any(), // JSONB for trigger configuration
-  conditions: z.any().optional(), // JSONB for conditions
-  actions: z.any(), // JSONB for actions
+  trigger: z.unknown().optional(),
+  triggerType: triggerTypeSchema.optional(),
+  triggerConfig: z.unknown().optional(),
+  conditions: z.unknown().optional(),
+  actions: z.unknown().optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).default('stop'),
-  notificationTargets: z.any().optional() // JSONB for notification targets
+  notificationTargets: z.unknown().optional(),
+  notifyOnFailureChannelId: z.string().uuid().optional(),
 });
 
 const updateAutomationSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
   enabled: z.boolean().optional(),
-  trigger: z.any().optional(),
-  conditions: z.any().optional(),
-  actions: z.any().optional(),
+  trigger: z.unknown().optional(),
+  triggerType: triggerTypeSchema.optional(),
+  triggerConfig: z.unknown().optional(),
+  conditions: z.unknown().optional(),
+  actions: z.unknown().optional(),
   onFailure: z.enum(['stop', 'continue', 'notify']).optional(),
-  notificationTargets: z.any().optional()
+  notificationTargets: z.unknown().optional(),
+  notifyOnFailureChannelId: z.string().uuid().optional(),
 });
 
-// Apply auth middleware to all routes
+const listRunsSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  status: z.enum(['running', 'completed', 'failed', 'partial']).optional(),
+});
+
 automationRoutes.use('*', authMiddleware);
 
-// ============================================
-// AUTOMATIONS ENDPOINTS
-// ============================================
-
-// GET /automations - List automations with pagination
 automationRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
@@ -93,10 +223,8 @@ automationRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    // Build conditions array
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: SQL<unknown>[] = [];
 
-    // Filter by org access based on scope
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
@@ -114,7 +242,7 @@ automationRoutes.get(
         if (orgIds.length === 0) {
           return c.json({
             data: [],
-            pagination: { page, limit, total: 0 }
+            pagination: { page, limit, total: 0 },
           });
         }
         conditions.push(inArray(automations.orgId, orgIds));
@@ -123,22 +251,19 @@ automationRoutes.get(
       conditions.push(eq(automations.orgId, query.orgId));
     }
 
-    // Additional filters
     if (query.enabled !== undefined) {
       conditions.push(eq(automations.enabled, query.enabled === 'true'));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
-    // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(automations)
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get automations
-    const automationsList = await db
+    const rows = await db
       .select()
       .from(automations)
       .where(whereCondition)
@@ -147,13 +272,12 @@ automationRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: automationsList,
-      pagination: { page, limit, total }
+      data: rows.map(shapeAutomationForResponse),
+      pagination: { page, limit, total },
     });
-  }
+  },
 );
 
-// GET /automations/runs/:runId - Get specific run details (must be before /:id to avoid conflict)
 automationRoutes.get(
   '/runs/:runId',
   requireScope('organization', 'partner', 'system'),
@@ -161,7 +285,6 @@ automationRoutes.get(
     const auth = c.get('auth');
     const runId = c.req.param('runId');
 
-    // Get the run
     const [run] = await db
       .select()
       .from(automationRuns)
@@ -172,7 +295,6 @@ automationRoutes.get(
       return c.json({ error: 'Automation run not found' }, 404);
     }
 
-    // Verify access to parent automation
     const automation = await getAutomationWithOrgCheck(run.automationId, auth);
     if (!automation) {
       return c.json({ error: 'Automation run not found' }, 404);
@@ -180,16 +302,17 @@ automationRoutes.get(
 
     return c.json({
       ...run,
+      status: toRunStatus(run.status),
+      logs: serializeRunLogs(run.logs),
       automation: {
         id: automation.id,
         name: automation.name,
-        orgId: automation.orgId
-      }
+        orgId: automation.orgId,
+      },
     });
-  }
+  },
 );
 
-// GET /automations/:id - Get single automation with run history
 automationRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
@@ -197,7 +320,6 @@ automationRoutes.get(
     const auth = c.get('auth');
     const automationId = c.req.param('id');
 
-    // Skip if this is a route like /automations/runs
     if (automationId === 'runs') {
       return c.notFound();
     }
@@ -207,7 +329,6 @@ automationRoutes.get(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
-    // Get recent run history
     const recentRuns = await db
       .select()
       .from(automationRuns)
@@ -215,31 +336,33 @@ automationRoutes.get(
       .orderBy(desc(automationRuns.startedAt))
       .limit(10);
 
-    // Get run statistics
     const runStats = await db
       .select({
         totalRuns: sql<number>`count(*)`,
         completedRuns: sql<number>`count(*) filter (where ${automationRuns.status} = 'completed')`,
         failedRuns: sql<number>`count(*) filter (where ${automationRuns.status} = 'failed')`,
-        partialRuns: sql<number>`count(*) filter (where ${automationRuns.status} = 'partial')`
+        partialRuns: sql<number>`count(*) filter (where ${automationRuns.status} = 'partial')`,
       })
       .from(automationRuns)
       .where(eq(automationRuns.automationId, automationId));
 
     return c.json({
-      ...automation,
-      recentRuns,
+      ...shapeAutomationForResponse(automation),
+      recentRuns: recentRuns.map((run) => ({
+        ...run,
+        status: toRunStatus(run.status),
+        logs: serializeRunLogs(run.logs),
+      })),
       statistics: {
         totalRuns: Number(runStats[0]?.totalRuns ?? 0),
         completedRuns: Number(runStats[0]?.completedRuns ?? 0),
         failedRuns: Number(runStats[0]?.failedRuns ?? 0),
-        partialRuns: Number(runStats[0]?.partialRuns ?? 0)
-      }
+        partialRuns: Number(runStats[0]?.partialRuns ?? 0),
+      },
     });
-  }
+  },
 );
 
-// POST /automations - Create automation
 automationRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
@@ -248,7 +371,6 @@ automationRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Determine orgId
     let orgId = data.orgId;
 
     if (auth.scope === 'organization') {
@@ -268,65 +390,136 @@ automationRoutes.post(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const [automation] = await db
-      .insert(automations)
-      .values({
-        orgId: orgId!,
-        name: data.name,
-        description: data.description,
-        enabled: data.enabled,
-        trigger: data.trigger,
-        conditions: data.conditions,
-        actions: data.actions,
-        onFailure: data.onFailure,
-        notificationTargets: data.notificationTargets,
-        createdBy: auth.user.id
-      })
-      .returning();
+    const triggerInput = normalizeIncomingTrigger(data);
+    if (triggerInput === undefined) {
+      return c.json({ error: 'trigger or triggerType is required' }, 400);
+    }
 
-    writeRouteAudit(c, {
-      orgId: automation?.orgId,
-      action: 'automation.create',
-      resourceType: 'automation',
-      resourceId: automation?.id,
-      resourceName: automation?.name,
-      details: { enabled: automation?.enabled }
-    });
+    if (data.actions === undefined) {
+      return c.json({ error: 'actions are required' }, 400);
+    }
 
-    return c.json(automation, 201);
-  }
+    try {
+      const automationId = randomUUID();
+      const trigger = withWebhookDefaults(
+        normalizeAutomationTrigger(triggerInput),
+        automationId,
+        c.req.url,
+      );
+      const actions = normalizeAutomationActions(data.actions);
+      const notificationTargets = normalizeNotificationTargets(
+        normalizeIncomingNotificationTargets(data),
+      );
+
+      const [automation] = await db
+        .insert(automations)
+        .values({
+          id: automationId,
+          orgId: orgId!,
+          name: data.name,
+          description: data.description,
+          enabled: data.enabled,
+          trigger,
+          conditions: data.conditions,
+          actions,
+          onFailure: data.onFailure,
+          notificationTargets,
+          createdBy: auth.user.id,
+        })
+        .returning();
+
+      if (!automation) {
+        return c.json({ error: 'Failed to create automation' }, 500);
+      }
+
+      writeRouteAudit(c, {
+        orgId: automation.orgId,
+        action: 'automation.create',
+        resourceType: 'automation',
+        resourceId: automation.id,
+        resourceName: automation.name,
+        details: { enabled: automation.enabled },
+      });
+
+      return c.json(shapeAutomationForResponse(automation), 201);
+    } catch (error) {
+      if (error instanceof AutomationValidationError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  },
 );
 
-// PUT /automations/:id - Update automation
-automationRoutes.put(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('json', updateAutomationSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const automationId = c.req.param('id');
-    const data = c.req.valid('json');
+async function handleUpdateAutomation(c: Context) {
+  const auth = c.get('auth');
+  const automationId = c.req.param('id');
+  const rawPayload = await c.req.json().catch(() => ({}));
+  const parsedPayload = updateAutomationSchema.safeParse(rawPayload);
+  if (!parsedPayload.success) {
+    return c.json({ error: parsedPayload.error.issues[0]?.message ?? 'Invalid update payload' }, 400);
+  }
+  const data = parsedPayload.data;
 
-    if (Object.keys(data).length === 0) {
-      return c.json({ error: 'No updates provided' }, 400);
-    }
+  if (Object.keys(data).length === 0) {
+    return c.json({ error: 'No updates provided' }, 400);
+  }
 
-    const automation = await getAutomationWithOrgCheck(automationId, auth);
-    if (!automation) {
-      return c.json({ error: 'Automation not found' }, 404);
-    }
+  const automation = await getAutomationWithOrgCheck(automationId, auth);
+  if (!automation) {
+    return c.json({ error: 'Automation not found' }, 404);
+  }
 
-    // Build updates object
+  try {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (data.name !== undefined) updates.name = data.name;
     if (data.description !== undefined) updates.description = data.description;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
-    if (data.trigger !== undefined) updates.trigger = data.trigger;
     if (data.conditions !== undefined) updates.conditions = data.conditions;
-    if (data.actions !== undefined) updates.actions = data.actions;
     if (data.onFailure !== undefined) updates.onFailure = data.onFailure;
-    if (data.notificationTargets !== undefined) updates.notificationTargets = data.notificationTargets;
+
+    const triggerProvided = data.trigger !== undefined
+      || data.triggerType !== undefined
+      || data.triggerConfig !== undefined;
+
+    if (triggerProvided) {
+      const triggerInput = normalizeIncomingTrigger(data);
+      if (triggerInput === undefined) {
+        return c.json({ error: 'trigger update is invalid' }, 400);
+      }
+
+      let nextTrigger = normalizeAutomationTrigger(triggerInput);
+      if (nextTrigger.type === 'webhook' && !nextTrigger.secret) {
+        const currentTrigger = isPlainRecord(automation.trigger) ? automation.trigger : {};
+        const currentSecret = asNonEmptyString(currentTrigger.secret) ?? asNonEmptyString(currentTrigger.webhookSecret);
+        if (currentSecret) {
+          nextTrigger = {
+            ...nextTrigger,
+            secret: currentSecret,
+          };
+        }
+      }
+
+      updates.trigger = withWebhookDefaults(
+        nextTrigger,
+        automation.id,
+        c.req.url,
+      );
+    }
+
+    if (data.actions !== undefined) {
+      updates.actions = normalizeAutomationActions(data.actions);
+    }
+
+    const notificationTargetsProvided = data.notificationTargets !== undefined
+      || data.notifyOnFailureChannelId !== undefined;
+
+    if (notificationTargetsProvided) {
+      updates.notificationTargets = normalizeNotificationTargets(
+        normalizeIncomingNotificationTargets(data),
+      );
+    }
 
     const [updated] = await db
       .update(automations)
@@ -334,20 +527,42 @@ automationRoutes.put(
       .where(eq(automations.id, automationId))
       .returning();
 
+    if (!updated) {
+      return c.json({ error: 'Automation not found' }, 404);
+    }
+
     writeRouteAudit(c, {
       orgId: automation.orgId,
       action: 'automation.update',
       resourceType: 'automation',
-      resourceId: updated?.id,
-      resourceName: updated?.name,
-      details: { changedFields: Object.keys(data) }
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: { changedFields: Object.keys(data) },
     });
 
-    return c.json(updated);
+    return c.json(shapeAutomationForResponse(updated));
+  } catch (error) {
+    if (error instanceof AutomationValidationError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
   }
+}
+
+automationRoutes.put(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', updateAutomationSchema),
+  handleUpdateAutomation,
 );
 
-// DELETE /automations/:id - Delete automation
+automationRoutes.patch(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', updateAutomationSchema),
+  handleUpdateAutomation,
+);
+
 automationRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
@@ -360,31 +575,23 @@ automationRoutes.delete(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
-    // Check for running automation runs
     const runningRuns = await db
       .select({ count: sql<number>`count(*)` })
       .from(automationRuns)
-      .where(
-        and(
-          eq(automationRuns.automationId, automationId),
-          eq(automationRuns.status, 'running')
-        )
-      );
+      .where(and(eq(automationRuns.automationId, automationId), eq(automationRuns.status, 'running')));
 
     const runningCount = Number(runningRuns[0]?.count ?? 0);
     if (runningCount > 0) {
       return c.json({
         error: 'Cannot delete automation with running executions',
-        runningExecutions: runningCount
+        runningExecutions: runningCount,
       }, 409);
     }
 
-    // Delete associated runs first
     await db
       .delete(automationRuns)
       .where(eq(automationRuns.automationId, automationId));
 
-    // Delete automation
     await db
       .delete(automations)
       .where(eq(automations.id, automationId));
@@ -394,133 +601,86 @@ automationRoutes.delete(
       action: 'automation.delete',
       resourceType: 'automation',
       resourceId: automation.id,
-      resourceName: automation.name
+      resourceName: automation.name,
     });
 
     return c.json({ success: true });
-  }
+  },
 );
 
-// POST /automations/:id/trigger - Manually trigger automation
+async function triggerAutomationRun(
+  c: Context,
+  automationId: string,
+  triggeredBy: string,
+  details?: Record<string, unknown>,
+) {
+  const auth = c.get('auth');
+
+  const automation = await getAutomationWithOrgCheck(automationId, auth);
+  if (!automation) {
+    return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  if (!automation.enabled) {
+    return c.json({ error: 'Cannot trigger disabled automation' }, 400);
+  }
+
+  const { run, targetDeviceIds } = await createAutomationRunRecord({
+    automation,
+    triggeredBy,
+    details,
+  });
+
+  await enqueueAutomationRun(run.id, targetDeviceIds);
+
+  writeRouteAudit(c, {
+    orgId: automation.orgId,
+    action: 'automation.trigger',
+    resourceType: 'automation',
+    resourceId: automation.id,
+    resourceName: automation.name,
+    details: {
+      runId: run.id,
+      devicesTargeted: targetDeviceIds.length,
+      triggeredBy,
+    },
+  });
+
+  return c.json({
+    message: 'Automation triggered',
+    run: {
+      id: run.id,
+      status: toRunStatus(run.status),
+      devicesTargeted: run.devicesTargeted,
+      startedAt: run.startedAt,
+    },
+  });
+}
+
 automationRoutes.post(
   '/:id/trigger',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id');
-
-    const automation = await getAutomationWithOrgCheck(automationId, auth);
-    if (!automation) {
-      return c.json({ error: 'Automation not found' }, 404);
-    }
-
-    if (!automation.enabled) {
-      return c.json({ error: 'Cannot trigger disabled automation' }, 400);
-    }
-
-    // Get target devices based on automation conditions
-    const targets = automation.trigger as Record<string, unknown>;
-    let targetDeviceIds: string[] = [];
-
-    // Simple device targeting logic - in production would be more sophisticated
-    if (targets?.deviceIds && Array.isArray(targets.deviceIds)) {
-      targetDeviceIds = targets.deviceIds;
-    } else {
-      // Get all devices for the org
-      const orgDevices = await db
-        .select({ id: devices.id })
-        .from(devices)
-        .where(eq(devices.orgId, automation.orgId));
-      targetDeviceIds = orgDevices.map(d => d.id);
-    }
-
-    // Create automation run
-    const [run] = await db
-      .insert(automationRuns)
-      .values({
-        automationId,
-        triggeredBy: `manual:${auth.user.id}`,
-        status: 'running',
-        devicesTargeted: targetDeviceIds.length,
-        devicesSucceeded: 0,
-        devicesFailed: 0,
-        logs: [{
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          message: `Automation triggered manually by user ${auth.user.id}`
-        }]
-      })
-      .returning();
-
-    if (!run) {
-      return c.json({ error: 'Failed to create automation run' }, 500);
-    }
-
-    // Update automation run count and last run time
-    await db
-      .update(automations)
-      .set({
-        runCount: automation.runCount + 1,
-        lastRunAt: new Date(),
-        updatedAt: new Date()
-      })
-      .where(eq(automations.id, automationId));
-
-    // In production, this would queue the actual automation execution
-    // For now, simulate completion
-    setTimeout(async () => {
-      try {
-        await db
-          .update(automationRuns)
-          .set({
-            status: 'completed',
-            devicesSucceeded: targetDeviceIds.length,
-            completedAt: new Date(),
-            logs: [
-              ...(run.logs as Array<{ timestamp: string; level: string; message: string }>),
-              {
-                timestamp: new Date().toISOString(),
-                level: 'info',
-                message: 'Automation completed successfully'
-              }
-            ]
-          })
-          .where(eq(automationRuns.id, run.id));
-      } catch {
-        // Ignore errors in background task
-      }
-    }, 1000);
-
-    writeRouteAudit(c, {
-      orgId: automation.orgId,
-      action: 'automation.trigger',
-      resourceType: 'automation',
-      resourceId: automation.id,
-      resourceName: automation.name,
-      details: { runId: run.id, devicesTargeted: targetDeviceIds.length }
-    });
-
-    return c.json({
-      message: 'Automation triggered',
-      run: {
-        id: run.id,
-        status: run.status,
-        devicesTargeted: run.devicesTargeted,
-        startedAt: run.startedAt
-      }
-    });
-  }
+    return triggerAutomationRun(c, automationId, `manual:${auth.user.id}`);
+  },
 );
 
-// GET /automations/:id/runs - Get run history for automation
+automationRoutes.post(
+  '/:id/run',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const automationId = c.req.param('id');
+    return triggerAutomationRun(c, automationId, `manual:${auth.user.id}`);
+  },
+);
+
 automationRoutes.get(
   '/:id/runs',
   requireScope('organization', 'partner', 'system'),
-  zValidator('query', z.object({
-    page: z.string().optional(),
-    limit: z.string().optional(),
-    status: z.enum(['running', 'completed', 'failed', 'partial']).optional()
-  })),
+  zValidator('query', listRunsSchema),
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id');
@@ -532,8 +692,7 @@ automationRoutes.get(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
-    // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [eq(automationRuns.automationId, automationId)];
+    const conditions: SQL<unknown>[] = [eq(automationRuns.automationId, automationId)];
 
     if (query.status) {
       conditions.push(eq(automationRuns.status, query.status));
@@ -541,15 +700,13 @@ automationRoutes.get(
 
     const whereCondition = and(...conditions);
 
-    // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(automationRuns)
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get runs
-    const runsList = await db
+    const rows = await db
       .select()
       .from(automationRuns)
       .where(whereCondition)
@@ -558,8 +715,69 @@ automationRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: runsList,
-      pagination: { page, limit, total }
+      data: rows.map((run) => ({
+        ...run,
+        status: toRunStatus(run.status),
+        logs: serializeRunLogs(run.logs),
+      })),
+      pagination: { page, limit, total },
     });
-  }
+  },
 );
+
+automationWebhookRoutes.post('/:id', async (c) => {
+  const automationId = c.req.param('id');
+
+  const [automation] = await db
+    .select()
+    .from(automations)
+    .where(eq(automations.id, automationId))
+    .limit(1);
+
+  if (!automation || !automation.enabled) {
+    return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  let trigger;
+  try {
+    trigger = normalizeAutomationTrigger(automation.trigger);
+  } catch {
+    return c.json({ error: 'Invalid automation trigger configuration' }, 400);
+  }
+
+  if (trigger.type !== 'webhook') {
+    return c.json({ error: 'Automation is not configured for webhook triggering' }, 400);
+  }
+
+  const providedSecret = c.req.header('x-automation-secret')
+    ?? c.req.header('x-webhook-secret')
+    ?? c.req.query('secret');
+
+  if (trigger.secret && providedSecret !== trigger.secret) {
+    return c.json({ error: 'Invalid webhook secret' }, 401);
+  }
+
+  const payload = await c.req.json().catch(() => ({}));
+
+  const { run, targetDeviceIds } = await createAutomationRunRecord({
+    automation,
+    triggeredBy: 'webhook',
+    details: {
+      sourceIp: c.req.header('x-forwarded-for') ?? c.req.header('cf-connecting-ip') ?? 'unknown',
+      userAgent: c.req.header('user-agent') ?? 'unknown',
+      payload,
+    },
+  });
+
+  await enqueueAutomationRun(run.id, targetDeviceIds);
+
+  return c.json({
+    accepted: true,
+    run: {
+      id: run.id,
+      status: toRunStatus(run.status),
+      devicesTargeted: run.devicesTargeted,
+      startedAt: run.startedAt,
+    },
+  }, 202);
+});

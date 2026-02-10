@@ -81,12 +81,13 @@ export default function SNMPDashboard() {
       setLoading(true);
       setError(undefined);
 
-      const [dashRes, devicesRes] = await Promise.all([
+      const [dashRes, devicesRes, alertsRes] = await Promise.all([
         fetchWithAuth('/snmp/dashboard'),
-        fetchWithAuth('/snmp/devices')
+        fetchWithAuth('/snmp/devices'),
+        fetchWithAuth('/alerts?status=active&limit=25')
       ]);
 
-      if (dashRes.status === 401 || devicesRes.status === 401) {
+      if (dashRes.status === 401 || devicesRes.status === 401 || alertsRes.status === 401) {
         window.location.href = '/login';
         return;
       }
@@ -100,6 +101,7 @@ export default function SNMPDashboard() {
 
       const dashData = await dashRes.json();
       const devicesData = await devicesRes.json();
+      const alertsData = alertsRes.ok ? await alertsRes.json() : { data: [] };
       const dash = dashData.data ?? dashData;
 
       const onlineCount = dash.status?.online ?? 0;
@@ -122,7 +124,27 @@ export default function SNMPDashboard() {
         lastPolled: d.lastPolledAt ?? d.lastPolled
       })));
 
-      setAlerts([]);
+      const snmpDeviceIds = new Set(rawDevices.map((d: any) => String(d.id)));
+      const rawAlerts = alertsData.data ?? alertsData.alerts ?? (Array.isArray(alertsData) ? alertsData : []);
+      const mappedAlerts = (Array.isArray(rawAlerts) ? rawAlerts : [])
+        .filter((a: any) => {
+          const deviceId = String(a.deviceId ?? '');
+          if (deviceId && snmpDeviceIds.has(deviceId)) return true;
+          const ruleName = String(a.ruleName ?? '').toLowerCase();
+          return ruleName.includes('snmp');
+        })
+        .slice(0, 5)
+        .map((a: any) => {
+          const severity = String(a.severity ?? 'warning').toLowerCase();
+          return {
+            id: String(a.id ?? ''),
+            device: String(a.deviceName ?? a.hostname ?? a.deviceId ?? 'Unknown device'),
+            message: String(a.message ?? a.title ?? 'Alert triggered'),
+            severity: severity === 'critical' ? 'critical' : 'warning',
+            timestamp: String(a.triggeredAt ?? a.createdAt ?? '')
+          } satisfies SnmpAlert;
+        });
+      setAlerts(mappedAlerts);
 
       const topIfaces = dash.topInterfaces ?? [];
       setBandwidthConsumers(topIfaces.map((iface: any) => ({
@@ -275,7 +297,13 @@ export default function SNMPDashboard() {
           <div className="rounded-lg border bg-card p-6 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Device status</h2>
-              <button type="button" className="text-sm font-medium text-primary">
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.href = '/discovery?tab=monitoring';
+                }}
+                className="text-sm font-medium text-primary"
+              >
                 View all
               </button>
             </div>
@@ -312,7 +340,13 @@ export default function SNMPDashboard() {
           <div className="rounded-lg border bg-card p-6 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Recent alerts</h2>
-              <button type="button" className="text-sm font-medium text-primary">
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.href = '/alerts';
+                }}
+                className="text-sm font-medium text-primary"
+              >
                 Manage alerts
               </button>
             </div>

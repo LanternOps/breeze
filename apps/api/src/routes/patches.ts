@@ -2,14 +2,17 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, sql, inArray, desc } from 'drizzle-orm';
+import { readFile } from 'node:fs/promises';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { queueCommand, queueCommandForExecution } from '../services/commandQueue';
 import { writeRouteAudit, type AuthContext } from '../services/auditEvents';
+import { enqueuePatchComplianceReport } from '../jobs/patchComplianceReportWorker';
 import {
   patches,
   devicePatches,
   patchApprovals,
+  patchComplianceReports,
   patchJobs,
   patchRollbacks,
   devices
@@ -93,6 +96,8 @@ const complianceSchema = z.object({
 
 const complianceReportSchema = z.object({
   orgId: z.string().uuid().optional(),
+  source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
+  severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
   format: z.enum(['csv', 'pdf']).optional()
 });
 
@@ -186,6 +191,34 @@ function resolvePatchApprovalOrgId(
   }
 
   return { error: 'Organization context required', status: 400 };
+}
+
+function resolvePatchReportOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    accessibleOrgIds: string[] | null;
+    canAccessOrg: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string
+): { orgId: string } | { error: string; status: 400 | 403 } {
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access denied to this organization', status: 403 };
+    }
+
+    return { orgId: requestedOrgId };
+  }
+
+  if (auth.orgId) {
+    return { orgId: auth.orgId };
+  }
+
+  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    return { orgId: auth.accessibleOrgIds[0]! };
+  }
+
+  return { error: 'orgId is required when multiple organizations are accessible', status: 400 };
 }
 
 // GET /patches - List available patches
@@ -651,16 +684,163 @@ patchRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
 
-    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+    const orgResolution = resolvePatchReportOrgId(auth, query.orgId);
+    if ('error' in orgResolution) {
+      return c.json({ error: orgResolution.error }, orgResolution.status);
+    }
+    const targetOrgId = orgResolution.orgId;
+
+    const [report] = await db
+      .insert(patchComplianceReports)
+      .values({
+        orgId: targetOrgId,
+        requestedBy: auth.user.id,
+        source: query.source ?? null,
+        severity: query.severity ?? null,
+        format: query.format ?? 'csv',
+        status: 'pending'
+      })
+      .returning({
+        id: patchComplianceReports.id,
+        orgId: patchComplianceReports.orgId,
+        status: patchComplianceReports.status,
+        format: patchComplianceReports.format
+      });
+
+    if (!report) {
+      return c.json({ error: 'Failed to create compliance report request' }, 500);
+    }
+
+    await enqueuePatchComplianceReport(report.id);
+
+    writeRouteAudit(c, {
+      orgId: targetOrgId,
+      action: 'patch.compliance.report.queue',
+      resourceType: 'patch_compliance_report',
+      resourceId: report.id,
+      details: {
+        format: report.format,
+        source: query.source ?? null,
+        severity: query.severity ?? null
+      }
+    });
+
+    return c.json({
+      reportId: report.id,
+      status: 'queued',
+      format: report.format,
+      source: query.source ?? null,
+      severity: query.severity ?? null
+    });
+  }
+);
+
+// GET /patches/compliance/report/:id - Report status
+patchRoutes.get(
+  '/compliance/report/:id',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const reportId = c.req.param('id');
+
+    const [report] = await db
+      .select({
+        id: patchComplianceReports.id,
+        orgId: patchComplianceReports.orgId,
+        status: patchComplianceReports.status,
+        format: patchComplianceReports.format,
+        source: patchComplianceReports.source,
+        severity: patchComplianceReports.severity,
+        summary: patchComplianceReports.summary,
+        rowCount: patchComplianceReports.rowCount,
+        errorMessage: patchComplianceReports.errorMessage,
+        startedAt: patchComplianceReports.startedAt,
+        completedAt: patchComplianceReports.completedAt,
+        createdAt: patchComplianceReports.createdAt,
+        outputPath: patchComplianceReports.outputPath
+      })
+      .from(patchComplianceReports)
+      .where(eq(patchComplianceReports.id, reportId))
+      .limit(1);
+
+    if (!report) {
+      return c.json({ error: 'Report not found' }, 404);
+    }
+
+    if (!auth.canAccessOrg(report.orgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
-    // TODO: Queue report generation job
     return c.json({
-      reportId: `report-${Date.now()}`,
-      status: 'queued',
-      format: query.format ?? 'csv'
+      data: {
+        id: report.id,
+        status: report.status,
+        format: report.format,
+        source: report.source,
+        severity: report.severity,
+        summary: report.summary,
+        rowCount: report.rowCount,
+        errorMessage: report.errorMessage,
+        startedAt: report.startedAt,
+        completedAt: report.completedAt,
+        createdAt: report.createdAt,
+        downloadUrl: report.outputPath
+          ? `/api/v1/patches/compliance/report/${report.id}/download`
+          : null
+      }
     });
+  }
+);
+
+// GET /patches/compliance/report/:id/download - Download completed report file
+patchRoutes.get(
+  '/compliance/report/:id/download',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const reportId = c.req.param('id');
+
+    const [report] = await db
+      .select({
+        id: patchComplianceReports.id,
+        orgId: patchComplianceReports.orgId,
+        status: patchComplianceReports.status,
+        format: patchComplianceReports.format,
+        outputPath: patchComplianceReports.outputPath
+      })
+      .from(patchComplianceReports)
+      .where(eq(patchComplianceReports.id, reportId))
+      .limit(1);
+
+    if (!report) {
+      return c.json({ error: 'Report not found' }, 404);
+    }
+
+    if (!auth.canAccessOrg(report.orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    if (report.status !== 'completed') {
+      return c.json({ error: 'Report is not ready for download' }, 409);
+    }
+
+    if (!report.outputPath) {
+      return c.json({ error: 'Report output is unavailable' }, 404);
+    }
+
+    try {
+      const file = await readFile(report.outputPath);
+      const extension = report.format === 'pdf' ? 'pdf' : 'csv';
+      const contentType = report.format === 'pdf' ? 'application/pdf' : 'text/csv; charset=utf-8';
+
+      c.header('Content-Type', contentType);
+      c.header('Content-Disposition', `attachment; filename=\"patch-compliance-${report.id}.${extension}\"`);
+      c.header('Cache-Control', 'no-store');
+
+      return c.body(file);
+    } catch {
+      return c.json({ error: 'Report file not found' }, 404);
+    }
   }
 );
 

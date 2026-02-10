@@ -49,6 +49,7 @@ describe('jwt service', () => {
       expect(decoded).not.toBeNull();
       expect(decoded?.sub).toBe(testPayload.sub);
       expect(decoded?.type).toBe('refresh');
+      expect(decoded?.jti).toBeDefined();
     });
 
     it('should return null for invalid token', async () => {
@@ -82,6 +83,8 @@ describe('jwt service', () => {
 
       expect(accessDecoded?.type).toBe('access');
       expect(refreshDecoded?.type).toBe('refresh');
+      expect(accessDecoded?.jti).toBeUndefined();
+      expect(refreshDecoded?.jti).toBeDefined();
     });
   });
 });

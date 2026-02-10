@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?ifndef Version?>
+<?define Version=0.1.0?>
+<?endif?>
+<?ifndef AgentExePath?>
+<?define AgentExePath=..\breeze-agent-windows-amd64.exe?>
+<?endif?>
+<?ifndef UserTaskXmlPath?>
+<?define UserTaskXmlPath=..\service\windows\breeze-agent-user-task.xml?>
+<?endif?>
+<?ifndef InstallUserHelperScriptPath?>
+<?define InstallUserHelperScriptPath=..\scripts\install\install-windows.ps1?>
+<?endif?>
+<?ifndef RemoveUserHelperScriptPath?>
+<?define RemoveUserHelperScriptPath=remove-windows-task.ps1?>
+<?endif?>
+<?ifndef EnrollAgentScriptPath?>
+<?define EnrollAgentScriptPath=enroll-agent.ps1?>
+<?endif?>
+
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Breeze Agent"
+    Manufacturer="Breeze RMM"
+    Version="$(var.Version)"
+    UpgradeCode="{70A57B7A-4F72-4E18-B8D3-7D2783C2C1A9}"
+    Scope="perMachine"
+    InstallerVersion="500"
+    Language="1033">
+
+    <SummaryInformation Description="Breeze RMM endpoint agent" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of Breeze Agent is already installed."
+      Schedule="afterInstallExecute" />
+
+    <Condition Message="Breeze Agent requires 64-bit Windows.">VersionNT64</Condition>
+    <Condition Message="SERVER_URL and ENROLLMENT_KEY must be provided together."><![CDATA[(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)]]></Condition>
+
+    <Property Id="SERVER_URL" Secure="yes" />
+    <Property Id="ENROLLMENT_KEY" Secure="yes" />
+    <Property Id="MsiHiddenProperties" Value="ENROLLMENT_KEY" />
+    <Property Id="SecureCustomProperties" Value="SERVER_URL;ENROLLMENT_KEY" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="POWERSHELL_EXE" Value="[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Breeze">
+        <Component Id="cmpBreezeAgentExe" Guid="*">
+          <File Id="filBreezeAgentExe" Source="$(var.AgentExePath)" KeyPath="yes" />
+          <ServiceInstall
+            Id="svcInstallBreezeAgent"
+            Name="BreezeAgent"
+            DisplayName="Breeze Agent"
+            Description="Breeze RMM endpoint agent"
+            Type="ownProcess"
+            Arguments="run"
+            Start="demand"
+            ErrorControl="normal"
+            Vital="yes" />
+          <ServiceControl
+            Id="svcControlBreezeAgent"
+            Name="BreezeAgent"
+            Stop="both"
+            Remove="uninstall"
+            Wait="yes" />
+        </Component>
+
+        <Directory Id="INSTALL_SERVICE_DIR" Name="service">
+          <Directory Id="INSTALL_SERVICE_WINDOWS_DIR" Name="windows">
+            <Component Id="cmpUserTaskXml" Guid="*">
+              <File Id="filUserTaskXml" Source="$(var.UserTaskXmlPath)" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
+
+        <Directory Id="INSTALL_SCRIPTS_DIR" Name="scripts">
+          <Directory Id="INSTALL_SCRIPTS_INSTALL_DIR" Name="install">
+            <Component Id="cmpInstallWindowsPs1" Guid="*">
+              <File Id="filInstallWindowsPs1" Source="$(var.InstallUserHelperScriptPath)" KeyPath="yes" />
+            </Component>
+            <Component Id="cmpRemoveWindowsTaskPs1" Guid="*">
+              <File Id="filRemoveWindowsTaskPs1" Source="$(var.RemoveUserHelperScriptPath)" KeyPath="yes" />
+            </Component>
+            <Component Id="cmpEnrollAgentPs1" Guid="*">
+              <File Id="filEnrollAgentPs1" Source="$(var.EnrollAgentScriptPath)" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="ProgramDataBreezeDir" Name="Breeze">
+        <Component Id="cmpProgramDataRoot" Guid="*" Permanent="yes">
+          <CreateFolder />
+        </Component>
+        <Directory Id="ProgramDataBreezeDataDir" Name="data">
+          <Component Id="cmpProgramDataData" Guid="*" Permanent="yes">
+            <CreateFolder />
+          </Component>
+        </Directory>
+        <Directory Id="ProgramDataBreezeLogsDir" Name="logs">
+          <Component Id="cmpProgramDataLogs" Guid="*" Permanent="yes">
+            <CreateFolder />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <CustomAction
+      Id="SetEnrollAgentData"
+      Property="EnrollAgent"
+      Value="SERVER_URL=[SERVER_URL];ENROLLMENT_KEY=[ENROLLMENT_KEY]" />
+
+    <CustomAction
+      Id="RegisterUserHelperTask"
+      Property="POWERSHELL_EXE"
+      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filInstallWindowsPs1]&quot;"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <CustomAction
+      Id="RollbackRegisterUserHelperTask"
+      Property="POWERSHELL_EXE"
+      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filRemoveWindowsTaskPs1]&quot;"
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore" />
+
+    <CustomAction
+      Id="UnregisterUserHelperTask"
+      Property="POWERSHELL_EXE"
+      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filRemoveWindowsTaskPs1]&quot;"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <CustomAction
+      Id="EnrollAgent"
+      Property="POWERSHELL_EXE"
+      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filEnrollAgentPs1]&quot; -CustomActionData &quot;[CustomActionData]&quot;"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check"
+      HideTarget="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="SetEnrollAgentData" Before="EnrollAgent" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
+      <Custom Action="EnrollAgent" After="RegisterUserHelperTask" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
+      <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+    <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
+      <ComponentRef Id="cmpBreezeAgentExe" />
+      <ComponentRef Id="cmpUserTaskXml" />
+      <ComponentRef Id="cmpInstallWindowsPs1" />
+      <ComponentRef Id="cmpRemoveWindowsTaskPs1" />
+      <ComponentRef Id="cmpEnrollAgentPs1" />
+      <ComponentRef Id="cmpProgramDataRoot" />
+      <ComponentRef Id="cmpProgramDataData" />
+      <ComponentRef Id="cmpProgramDataLogs" />
+    </Feature>
+  </Package>
+</Wix>

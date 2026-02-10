@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Monitor, Loader2, AlertCircle } from 'lucide-react';
 import RemoteTerminal from './RemoteTerminal';
+import { fetchWithAuth } from '@/stores/auth';
 
 type Device = {
   id: string;
@@ -24,11 +25,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
   useEffect(() => {
     const fetchDevice = async () => {
       try {
-        const response = await fetch(`/api/devices/${deviceId}`, {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          }
-        });
+        const response = await fetchWithAuth(`/devices/${deviceId}`);
 
         if (!response.ok) {
           if (response.status === 404) {

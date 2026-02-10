@@ -158,3 +158,35 @@ func TestInstalledPatchesToMapsOmitsUnknownInstalledAt(t *testing.T) {
 		t.Fatalf("expected installedAt to be omitted when unknown")
 	}
 }
+
+func TestAvailablePatchesToMapsDerivesHomebrewCaskCategory(t *testing.T) {
+	h := &Heartbeat{}
+
+	items := h.availablePatchesToMaps([]patching.AvailablePatch{
+		{
+			ID:          "homebrew:cask:google-chrome",
+			Provider:    "homebrew",
+			Title:       "google-chrome",
+			Version:     "132.0.1",
+			Description: "installed: 131.0.5",
+		},
+		{
+			ID:          "homebrew:wget",
+			Provider:    "homebrew",
+			Title:       "wget",
+			Version:     "1.25.0",
+			Description: "installed: 1.24.0",
+		},
+	})
+
+	if len(items) != 2 {
+		t.Fatalf("expected 2 mapped items, got %d", len(items))
+	}
+
+	if got := items[0]["category"]; got != "homebrew-cask" {
+		t.Fatalf("expected first category homebrew-cask, got %#v", got)
+	}
+	if got := items[1]["category"]; got != "homebrew" {
+		t.Fatalf("expected second category homebrew, got %#v", got)
+	}
+}

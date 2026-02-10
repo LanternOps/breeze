@@ -1,10 +1,93 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
-import AutomationList, { type Automation, type AutomationRun } from './AutomationList';
+import AutomationList, { type Automation } from './AutomationList';
 import AutomationRunHistory, { type AutomationRun as RunHistoryRun } from './AutomationRunHistory';
 import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'delete' | 'history' | 'run';
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function toListAutomation(raw: unknown): Automation {
+  const item = isPlainRecord(raw) ? raw : {};
+  const trigger = isPlainRecord(item.trigger)
+    ? item.trigger
+    : isPlainRecord(item.triggerConfig)
+      ? item.triggerConfig
+      : {};
+
+  const triggerType = (
+    asString(item.triggerType)
+    ?? asString(trigger.type)
+    ?? 'manual'
+  ) as Automation['triggerType'];
+
+  return {
+    id: asString(item.id) ?? '',
+    name: asString(item.name) ?? 'Untitled Automation',
+    description: asString(item.description),
+    triggerType,
+    triggerConfig: {
+      cronExpression: asString(trigger.cronExpression) ?? asString(trigger.cron),
+      eventType: asString(trigger.eventType),
+      webhookUrl: asString(trigger.webhookUrl)
+    },
+    enabled: Boolean(item.enabled),
+    lastRunAt: asString(item.lastRunAt),
+    lastRunStatus: undefined,
+    recentRuns: undefined,
+    createdAt: asString(item.createdAt) ?? new Date().toISOString(),
+    updatedAt: asString(item.updatedAt) ?? new Date().toISOString()
+  };
+}
+
+function toRunHistoryRun(raw: unknown, automation: Automation): RunHistoryRun {
+  const run = isPlainRecord(raw) ? raw : {};
+
+  const status = asString(run.status) === 'completed'
+    ? 'success'
+    : ((asString(run.status) ?? 'running') as RunHistoryRun['status']);
+
+  const triggeredByRaw = asString(run.triggeredBy) ?? 'manual';
+  const triggeredBy = (triggeredByRaw.split(':')[0] ?? triggeredByRaw) as RunHistoryRun['triggeredBy'];
+
+  const logLines = Array.isArray(run.logs)
+    ? run.logs
+      .map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (isPlainRecord(entry)) {
+          const message = asString(entry.message);
+          if (!message) return null;
+          const level = asString(entry.level) ?? 'info';
+          return `[${level}] ${message}`;
+        }
+        return null;
+      })
+      .filter((value): value is string => Boolean(value))
+    : [];
+
+  return {
+    id: asString(run.id) ?? '',
+    automationId: automation.id,
+    automationName: automation.name,
+    triggeredBy,
+    startedAt: asString(run.startedAt) ?? new Date().toISOString(),
+    completedAt: asString(run.completedAt),
+    status,
+    devicesTotal: Number(run.devicesTargeted ?? 0),
+    devicesSuccess: Number(run.devicesSucceeded ?? 0),
+    devicesFailed: Number(run.devicesFailed ?? 0),
+    devicesSkipped: 0,
+    deviceResults: [],
+    logs: logLines
+  };
+}
 
 export default function AutomationsPage() {
   const [automations, setAutomations] = useState<Automation[]>([]);
@@ -24,7 +107,8 @@ export default function AutomationsPage() {
         throw new Error('Failed to fetch automations');
       }
       const data = await response.json();
-      setAutomations(data.data ?? data.automations ?? []);
+      const rows = data.data ?? data.automations ?? [];
+      setAutomations(Array.isArray(rows) ? rows.map(toListAutomation) : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -32,12 +116,13 @@ export default function AutomationsPage() {
     }
   }, []);
 
-  const fetchRunHistory = useCallback(async (automationId: string) => {
+  const fetchRunHistory = useCallback(async (automation: Automation) => {
     try {
-      const response = await fetchWithAuth(`/automations/${automationId}/runs`);
+      const response = await fetchWithAuth(`/automations/${automation.id}/runs`);
       if (response.ok) {
         const data = await response.json();
-        setRunHistory(data.data ?? data.runs ?? []);
+        const rows = data.data ?? data.runs ?? [];
+        setRunHistory(Array.isArray(rows) ? rows.map((row: unknown) => toRunHistoryRun(row, automation)) : []);
       }
     } catch {
       // Silently fail
@@ -68,7 +153,6 @@ export default function AutomationsPage() {
         throw new Error('Failed to run automation');
       }
 
-      // Refresh list to update status
       await fetchAutomations();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -98,7 +182,7 @@ export default function AutomationsPage() {
 
   const handleViewHistory = async (automation: Automation) => {
     setSelectedAutomation(automation);
-    await fetchRunHistory(automation.id);
+    await fetchRunHistory(automation);
     setModalMode('history');
   };
 

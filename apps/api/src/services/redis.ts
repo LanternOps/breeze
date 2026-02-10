@@ -9,7 +9,7 @@ export function getRedis(): Redis | null {
   }
 
   if (!redisClient) {
-    const url = process.env.REDIS_URL || 'redis://localhost:6379';
+    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
     redisClient = new Redis(url, {
       maxRetriesPerRequest: 3,
       retryStrategy(times) {
@@ -67,7 +67,7 @@ export function getRedisConnection(): Redis {
     throw new Error('Redis connection required but not available');
   }
 
-  const url = process.env.REDIS_URL || 'redis://localhost:6379';
+  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
   // BullMQ requires maxRetriesPerRequest: null for blocking commands
   const connection = new Redis(url, {

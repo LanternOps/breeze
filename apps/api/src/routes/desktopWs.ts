@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
 import type { WSContext } from 'hono/ws';
+import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
-import { verifyToken } from '../services/jwt';
-import { getRedis } from '../services/redis';
+import { createAccessToken } from '../services/jwt';
+import { consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 
 // Types for desktop messages
@@ -49,38 +51,35 @@ const activeDesktopSessions = new Map<string, DesktopSession>();
 type DesktopFrameCallback = (data: Uint8Array) => void;
 const desktopFrameCallbacks = new Map<string, DesktopFrameCallback>();
 
+const desktopConnectExchangeSchema = z.object({
+  sessionId: z.string().min(1),
+  code: z.string().min(1)
+});
+
 /**
- * Validate user token and desktop session access
+ * Validate one-time WS ticket and desktop session access
  */
 async function validateDesktopAccess(
   sessionId: string,
-  token: string | undefined
+  ticket: string | undefined
 ): Promise<{ valid: boolean; error?: string; session?: typeof remoteSessions.$inferSelect; device?: typeof devices.$inferSelect; userId?: string }> {
-  if (!token) {
-    return { valid: false, error: 'Missing authentication token' };
+  if (!ticket) {
+    return { valid: false, error: 'Missing connection ticket' };
   }
 
-  const payload = await verifyToken(token);
-  if (!payload || payload.type !== 'access') {
-    return { valid: false, error: 'Invalid or expired token' };
+  const ticketRecord = consumeWsTicket(ticket);
+  if (!ticketRecord) {
+    return { valid: false, error: 'Invalid or expired connection ticket' };
   }
 
-  const redis = getRedis();
-  if (redis) {
-    try {
-      const revoked = await redis.get(`token:revoked:${payload.sub}`);
-      if (revoked) {
-        return { valid: false, error: 'Invalid or expired token' };
-      }
-    } catch (error) {
-      console.warn('[desktopWs] Failed to check token revocation state:', error);
-    }
+  if (ticketRecord.sessionId !== sessionId || ticketRecord.sessionType !== 'desktop') {
+    return { valid: false, error: 'Connection ticket does not match desktop session' };
   }
 
   const [user] = await db
     .select({ id: users.id, status: users.status })
     .from(users)
-    .where(eq(users.id, payload.sub))
+    .where(eq(users.id, ticketRecord.userId))
     .limit(1);
 
   if (!user || user.status !== 'active') {
@@ -150,9 +149,9 @@ export function unregisterDesktopFrameCallback(sessionId: string): void {
 /**
  * Create WebSocket handlers for desktop session
  */
-function createDesktopWsHandlers(sessionId: string, token: string | undefined) {
+function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) {
   let validationResult: Awaited<ReturnType<typeof validateDesktopAccess>> | null = null;
-  const validationPromise = validateDesktopAccess(sessionId, token).then(result => {
+  const validationPromise = validateDesktopAccess(sessionId, ticket).then(result => {
     validationResult = result;
   });
 
@@ -400,14 +399,54 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
   // Health check for debugging route registration
   app.get('/health', (c) => c.json({ ok: true, route: 'desktop-ws' }));
 
+  // Exchange one-time deep-link connect code for an access token.
+  // This keeps long-lived bearer credentials out of deep-link URLs.
+  app.post(
+    '/connect/exchange',
+    zValidator('json', desktopConnectExchangeSchema),
+    async (c) => {
+      const { sessionId, code } = c.req.valid('json');
+      const codeRecord = consumeDesktopConnectCode(code);
+
+      if (!codeRecord || codeRecord.sessionId !== sessionId) {
+        return c.json({ error: 'Invalid or expired connect code' }, 401);
+      }
+
+      const [session] = await db
+        .select({
+          id: remoteSessions.id,
+          userId: remoteSessions.userId,
+          type: remoteSessions.type,
+          status: remoteSessions.status
+        })
+        .from(remoteSessions)
+        .where(eq(remoteSessions.id, sessionId))
+        .limit(1);
+
+      if (!session || session.type !== 'desktop' || session.userId !== codeRecord.userId) {
+        return c.json({ error: 'Invalid or expired connect code' }, 401);
+      }
+
+      if (!['pending', 'connecting', 'active'].includes(session.status)) {
+        return c.json({ error: 'Session is not available for connection' }, 400);
+      }
+
+      const accessToken = await createAccessToken(codeRecord.tokenPayload);
+      return c.json({
+        accessToken,
+        expiresInSeconds: getViewerAccessTokenExpirySeconds()
+      });
+    }
+  );
+
   // WebSocket route for desktop sessions
-  // GET /api/v1/desktop-ws/:id/ws?token=xxx
+  // GET /api/v1/desktop-ws/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
     upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined } }) => {
       const sessionId = c.req.param('id');
-      const token = c.req.query('token');
-      return createDesktopWsHandlers(sessionId, token);
+      const ticket = c.req.query('ticket');
+      return createDesktopWsHandlers(sessionId, ticket);
     })
   );
 

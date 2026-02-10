@@ -77,6 +77,22 @@ vi.mock('../db/schema', () => ({
     status: 'patchJobs.status',
     createdAt: 'patchJobs.createdAt'
   },
+  patchComplianceReports: {
+    id: 'patchComplianceReports.id',
+    orgId: 'patchComplianceReports.orgId',
+    requestedBy: 'patchComplianceReports.requestedBy',
+    status: 'patchComplianceReports.status',
+    format: 'patchComplianceReports.format',
+    source: 'patchComplianceReports.source',
+    severity: 'patchComplianceReports.severity',
+    summary: 'patchComplianceReports.summary',
+    rowCount: 'patchComplianceReports.rowCount',
+    errorMessage: 'patchComplianceReports.errorMessage',
+    startedAt: 'patchComplianceReports.startedAt',
+    completedAt: 'patchComplianceReports.completedAt',
+    createdAt: 'patchComplianceReports.createdAt',
+    outputPath: 'patchComplianceReports.outputPath'
+  },
   patchRollbacks: {
     deviceId: 'patchRollbacks.deviceId',
     patchId: 'patchRollbacks.patchId',
@@ -89,6 +105,10 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/commandQueue', () => ({
   queueCommand: vi.fn(),
   queueCommandForExecution: vi.fn()
+}));
+
+vi.mock('../jobs/patchComplianceReportWorker', () => ({
+  enqueuePatchComplianceReport: vi.fn(async () => ({ enqueued: true, jobId: 'patch-compliance-report:test' }))
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -117,6 +137,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { queueCommand, queueCommandForExecution } from '../services/commandQueue';
+import { enqueuePatchComplianceReport } from '../jobs/patchComplianceReportWorker';
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -305,6 +326,37 @@ describe('patch routes', () => {
     expect(body.data.summary.pending).toBe(2);
     expect(body.data.summary.failed).toBe(1);
     expect(body.data.filters).toEqual({ source: 'apple', severity: 'critical' });
+  });
+
+  it('queues a compliance report request and returns a persisted report id', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: reportId,
+            orgId: ACCESSIBLE_ORG_ID,
+            status: 'pending',
+            format: 'csv'
+          }
+        ])
+      })
+    } as any);
+
+    const res = await app.request('/patches/compliance/report?source=apple&severity=critical', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.reportId).toBe(reportId);
+    expect(body.status).toBe('queued');
+    expect(body.format).toBe('csv');
+    expect(body.source).toBe('apple');
+    expect(body.severity).toBe('critical');
+    expect(enqueuePatchComplianceReport).toHaveBeenCalledWith(reportId);
   });
 
   it('queues rollback commands for accessible devices', async () => {

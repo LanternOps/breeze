@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
-import { createWebRTCSession, scaleVideoCoords, type WebRTCSession } from '../lib/webrtc';
+import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
+import { createWebRTCSession, scaleVideoCoords, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
 import ViewerToolbar from './ViewerToolbar';
 
@@ -38,12 +39,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
-  const connectWebRTC = useCallback(async (): Promise<boolean> => {
+  const connectWebRTC = useCallback(async (auth: AuthenticatedConnectionParams): Promise<boolean> => {
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
     try {
-      const session = await createWebRTCSession(params, videoEl);
+      const session = await createWebRTCSession(auth, videoEl);
       webrtcRef.current = session;
 
       // Monitor connection state
@@ -66,12 +67,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       console.warn('WebRTC connection failed:', err);
       return false;
     }
-  }, [params]);
+  }, []);
 
   // ── WebSocket connection (fallback) ────────────────────────────────
 
-  const connectWebSocket = useCallback(() => {
-    const wsUrl = buildWsUrl(params);
+  const connectWebSocket = useCallback(async (auth: AuthenticatedConnectionParams) => {
+    const wsTicket = await createDesktopWsTicket(auth.apiUrl, auth.accessToken, auth.sessionId);
+    if (!wsTicket) {
+      setStatus('error');
+      setErrorMessage('Failed to create connection ticket');
+      onError('Failed to create connection ticket');
+      return null;
+    }
+
+    const wsUrl = buildWsUrl(auth.apiUrl, auth.sessionId, wsTicket);
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
@@ -138,7 +147,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       }
       wsRef.current = null;
     };
-  }, [params, onError]);
+  }, [onError]);
 
   // ── Connection lifecycle ───────────────────────────────────────────
 
@@ -147,8 +156,28 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     let wsCleanup: (() => void) | null = null;
 
     async function connect() {
+      const exchange = await exchangeDesktopConnectCode(
+        params.apiUrl,
+        params.sessionId,
+        params.connectCode
+      );
+      if (cancelled) return;
+
+      if (!exchange?.accessToken) {
+        setStatus('error');
+        setErrorMessage('Invalid or expired connection code');
+        onError('Invalid or expired connection code');
+        return;
+      }
+
+      const authParams: AuthenticatedConnectionParams = {
+        sessionId: params.sessionId,
+        apiUrl: params.apiUrl,
+        accessToken: exchange.accessToken
+      };
+
       // Try WebRTC first
-      const webrtcOk = await connectWebRTC();
+      const webrtcOk = await connectWebRTC(authParams);
       if (cancelled) {
         webrtcRef.current?.close();
         webrtcRef.current = null;
@@ -157,7 +186,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
       if (!webrtcOk) {
         // Fall back to WebSocket
-        wsCleanup = connectWebSocket();
+        wsCleanup = await connectWebSocket(authParams);
       }
     }
 
@@ -176,7 +205,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       webrtcRef.current?.close();
       webrtcRef.current = null;
     };
-  }, [connectWebRTC, connectWebSocket]);
+  }, [connectWebRTC, connectWebSocket, onError, params]);
 
   // Count WebRTC video frames via requestVideoFrameCallback
   useEffect(() => {
@@ -199,7 +228,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const el = transport === 'webrtc' ? videoRef.current : canvasRef.current;
     if (!el) return;
 
-    function onWheel(e: WheelEvent) {
+    function onWheel(event: Event) {
+      const e = event as WheelEvent;
       e.preventDefault();
       const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
       sendInputFn({ type: 'mouse_scroll', x, y, delta: Math.sign(e.deltaY) * 3 });

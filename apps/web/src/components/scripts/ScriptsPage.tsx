@@ -133,20 +133,61 @@ export default function ScriptsPage() {
       body: JSON.stringify({ deviceIds, parameters, runAs })
     });
 
+    const data = await response.json().catch(() => ({})) as {
+      error?: string;
+      lastRun?: string;
+      executedAt?: string;
+      startedAt?: string;
+      createdAt?: string;
+      execution?: {
+        lastRun?: string;
+        executedAt?: string;
+        startedAt?: string;
+        createdAt?: string;
+      };
+      executions?: Array<{
+        lastRun?: string;
+        executedAt?: string;
+        startedAt?: string;
+        createdAt?: string;
+      }>;
+    };
+
     if (!response.ok) {
-      const data = await response.json();
       throw new Error(data.error || 'Failed to execute script');
     }
 
-    // Update last run time locally - use fixed timestamp for SSR compatibility
-    const lastRunTime = '2024-01-15T12:00:00.000Z';
-    setScripts(prev =>
-      prev.map(s =>
-        s.id === scriptId
-          ? { ...s, lastRun: lastRunTime }
-          : s
-      )
-    );
+    const candidateTimestamps = [
+      data.lastRun,
+      data.executedAt,
+      data.startedAt,
+      data.createdAt,
+      data.execution?.lastRun,
+      data.execution?.executedAt,
+      data.execution?.startedAt,
+      data.execution?.createdAt,
+      data.executions?.[0]?.lastRun,
+      data.executions?.[0]?.executedAt,
+      data.executions?.[0]?.startedAt,
+      data.executions?.[0]?.createdAt
+    ];
+    const lastRunTime = candidateTimestamps.find(value => {
+      if (!value) return false;
+      return !Number.isNaN(new Date(value).getTime());
+    });
+
+    if (lastRunTime) {
+      setScripts(prev =>
+        prev.map(s =>
+          s.id === scriptId
+            ? { ...s, lastRun: lastRunTime }
+            : s
+        )
+      );
+      return;
+    }
+
+    await fetchScripts();
   };
 
   const handleConfirmDelete = async () => {

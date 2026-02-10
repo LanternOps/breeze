@@ -11,6 +11,8 @@ dist/
 .env
 .env.local
 .env.*.local
+.env.dev
+.env.test
 
 # IDE
 .idea/
@@ -43,6 +45,8 @@ agent/agent.yaml
 # Temporary
 tmp/
 temp/
+.tmp-*
+*.bak.codex
 
 # Rust / Tauri
 target/
@@ -51,8 +55,13 @@ target/
 .playwright-mcp/
 
 # Claude Code
+CLAUDE.md
 .claude/plans/
 .claude/skills/
+.claude/settings.example.json
+
+# Internal docs (not for public repo)
+.internal/
 
 # Stray screenshots
 *.png

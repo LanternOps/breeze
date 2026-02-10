@@ -25,19 +25,96 @@ const ruleSchema = z.object({
     'registry_check',
     'config_check'
   ]),
-  softwareName: z.string().optional(),
-  softwareVersion: z.string().optional(),
+  softwareName: z.string().trim().optional(),
+  softwareVersion: z.string().trim().optional(),
   versionOperator: z.enum(['any', 'exact', 'minimum', 'maximum']).optional(),
   diskSpaceGB: z.coerce.number().optional(),
-  diskPath: z.string().optional(),
+  diskPath: z.string().trim().optional(),
   osType: z.enum(['windows', 'macos', 'linux', 'any']).optional(),
-  osMinVersion: z.string().optional(),
-  registryPath: z.string().optional(),
-  registryValueName: z.string().optional(),
-  registryExpectedValue: z.string().optional(),
-  configFilePath: z.string().optional(),
-  configKey: z.string().optional(),
-  configExpectedValue: z.string().optional()
+  osMinVersion: z.string().trim().optional(),
+  registryPath: z.string().trim().optional(),
+  registryValueName: z.string().trim().optional(),
+  registryExpectedValue: z.string().trim().optional(),
+  configFilePath: z.string().trim().optional(),
+  configKey: z.string().trim().optional(),
+  configExpectedValue: z.string().trim().optional()
+}).superRefine((rule, ctx) => {
+  switch (rule.type) {
+    case 'required_software': {
+      if (!rule.softwareName) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Software name is required',
+          path: ['softwareName']
+        });
+      }
+
+      const operator = rule.versionOperator ?? 'any';
+      if (operator !== 'any' && !rule.softwareVersion) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Version is required for exact/minimum/maximum operators',
+          path: ['softwareVersion']
+        });
+      }
+      break;
+    }
+    case 'prohibited_software':
+      if (!rule.softwareName) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Software name is required',
+          path: ['softwareName']
+        });
+      }
+      break;
+    case 'disk_space_minimum':
+      if (typeof rule.diskSpaceGB !== 'number' || Number.isNaN(rule.diskSpaceGB) || rule.diskSpaceGB <= 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Minimum free space must be greater than 0',
+          path: ['diskSpaceGB']
+        });
+      }
+      break;
+    case 'registry_check':
+      if (!rule.registryPath) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Registry path is required',
+          path: ['registryPath']
+        });
+      }
+      if (!rule.registryValueName) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Registry value name is required',
+          path: ['registryValueName']
+        });
+      }
+      break;
+    case 'config_check':
+      if (!rule.configFilePath) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Config file path is required',
+          path: ['configFilePath']
+        });
+      }
+      if (!rule.configKey) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Config key is required',
+          path: ['configKey']
+        });
+      }
+      break;
+    case 'os_version':
+      // osType and osMinVersion are intentionally optional.
+      break;
+    default:
+      break;
+  }
 });
 
 const policySchema = z.object({

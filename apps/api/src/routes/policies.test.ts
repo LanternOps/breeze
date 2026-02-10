@@ -76,6 +76,8 @@ vi.mock('../middleware/auth', () => ({
       scope: 'system',
       partnerId: null,
       orgId: null,
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -123,6 +125,8 @@ describe('policy routes', () => {
         scope: 'system',
         partnerId: null,
         orgId: null,
+        accessibleOrgIds: null,
+        canAccessOrg: () => true,
         user: { id: 'user-123', email: 'test@example.com' }
       });
       return next();
@@ -209,6 +213,79 @@ describe('policy routes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  it('rejects non-UUID targetIds for non-tag targets', async () => {
+    const res = await app.request('/policies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Scoped Policy',
+        targetType: 'sites',
+        targetIds: ['production'],
+        rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
+      })
+    });
+
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('allows string targetIds for tags and preserves them in targets', async () => {
+    const valuesMock = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{
+        ...basePolicyRow,
+        targets: {
+          targetType: 'tags',
+          targetIds: ['production'],
+          tags: ['production'],
+        },
+      }]),
+    });
+
+    vi.mocked(db.insert).mockReturnValue({
+      values: valuesMock,
+    } as any);
+
+    const res = await app.request('/policies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Tag Policy',
+        targetType: 'tags',
+        targetIds: ['production'],
+        rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
+      })
+    });
+
+    expect(res.status).toBe(201);
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targets: expect.objectContaining({
+          targetType: 'tags',
+          targetIds: ['production'],
+          tags: ['production'],
+        }),
+      })
+    );
+  });
+
+  it('rejects invalid rules during policy creation', async () => {
+    const res = await app.request('/policies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Invalid Rule Policy',
+        targetType: 'all',
+        rules: [{ type: 'required_software', versionOperator: 'minimum' }],
+      })
+    });
+
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
   });
 
   it('evaluates a policy through policyEvaluationService', async () => {

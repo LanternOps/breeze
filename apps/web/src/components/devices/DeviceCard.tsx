@@ -1,12 +1,18 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Monitor, MoreVertical, Terminal, RotateCcw, FileCode, Settings, Trash2 } from 'lucide-react';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
+import { fetchWithAuth } from '../../stores/auth';
 
 type DeviceCardProps = {
   device: Device;
   timezone?: string;
   onClick?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
+};
+
+type MetricHistoryPoint = {
+  cpu: number;
+  ram: number;
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -50,8 +56,53 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
 
-// Placeholder sparkline component
-function MiniSparkline({ data, color }: { data: number[]; color: string }) {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
+}
+
+function toPercent(value: unknown): number | null {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : NaN;
+
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(100, Math.max(0, Number(parsed.toFixed(2))));
+}
+
+function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
+  const rawPayload = asRecord(payload);
+  const directData = rawPayload ? rawPayload.data : null;
+  const metricsArray =
+    Array.isArray(directData)
+      ? directData
+      : Array.isArray(rawPayload?.metrics)
+        ? rawPayload.metrics
+        : Array.isArray(asRecord(directData)?.metrics)
+          ? asRecord(directData)?.metrics
+          : [];
+
+  const parsed: MetricHistoryPoint[] = [];
+
+  for (const rawPoint of metricsArray) {
+    const point = asRecord(rawPoint);
+    if (!point) continue;
+
+    const cpu = toPercent(point.cpu);
+    const ram = toPercent(point.ram);
+    if (cpu === null && ram === null) continue;
+
+    parsed.push({
+      cpu: cpu ?? 0,
+      ram: ram ?? 0
+    });
+  }
+
+  return parsed;
+}
+
+function MiniSparkline({ data, color, testId }: { data: number[]; color: string; testId: string }) {
   const max = Math.max(...data, 100);
   const min = Math.min(...data, 0);
   const range = max - min || 1;
@@ -65,7 +116,7 @@ function MiniSparkline({ data, color }: { data: number[]; color: string }) {
     .join(' ');
 
   return (
-    <svg className="h-8 w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <svg data-testid={testId} className="h-8 w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
       <polyline
         fill="none"
         stroke={color}
@@ -78,13 +129,55 @@ function MiniSparkline({ data, color }: { data: number[]; color: string }) {
 
 export default function DeviceCard({ device, timezone, onClick, onAction }: DeviceCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [historyState, setHistoryState] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
+  const [metricHistory, setMetricHistory] = useState<MetricHistoryPoint[]>([]);
 
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  // Placeholder data for sparklines
-  const cpuHistory = [45, 52, 48, 61, 55, 58, 62, device.cpuPercent];
-  const ramHistory = [60, 62, 58, 65, 63, 68, 70, device.ramPercent];
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadHistory = async () => {
+      setHistoryState('loading');
+      try {
+        const response = await fetchWithAuth(`/devices/${device.id}/metrics?range=1h`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch device metric history');
+        }
+
+        const payload = await response.json();
+        const parsed = parseMetricHistory(payload);
+        if (isCancelled) return;
+
+        if (parsed.length === 0) {
+          setMetricHistory([]);
+          setHistoryState('empty');
+          return;
+        }
+
+        setMetricHistory(parsed);
+        setHistoryState('ready');
+      } catch {
+        if (isCancelled) return;
+        setMetricHistory([]);
+        setHistoryState('error');
+      }
+    };
+
+    void loadHistory();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [device.id]);
+
+  const cpuHistory = historyState === 'ready'
+    ? metricHistory.map(point => point.cpu)
+    : [];
+  const ramHistory = historyState === 'ready'
+    ? metricHistory.map(point => point.ram)
+    : [];
 
   return (
     <div
@@ -189,20 +282,34 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             <span className="text-muted-foreground">CPU</span>
             <span className="font-medium">{device.cpuPercent}%</span>
           </div>
-          <MiniSparkline
-            data={cpuHistory}
-            color={device.cpuPercent > 80 ? '#ef4444' : device.cpuPercent > 60 ? '#eab308' : '#22c55e'}
-          />
+          {historyState === 'ready' ? (
+            <MiniSparkline
+              testId={`cpu-sparkline-${device.id}`}
+              data={cpuHistory}
+              color={device.cpuPercent > 80 ? '#ef4444' : device.cpuPercent > 60 ? '#eab308' : '#22c55e'}
+            />
+          ) : (
+            <div className="flex h-8 items-center text-[11px] text-muted-foreground">
+              {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}
+            </div>
+          )}
         </div>
         <div>
           <div className="mb-1 flex items-center justify-between text-xs">
             <span className="text-muted-foreground">RAM</span>
             <span className="font-medium">{device.ramPercent}%</span>
           </div>
-          <MiniSparkline
-            data={ramHistory}
-            color={device.ramPercent > 80 ? '#ef4444' : device.ramPercent > 60 ? '#eab308' : '#22c55e'}
-          />
+          {historyState === 'ready' ? (
+            <MiniSparkline
+              testId={`ram-sparkline-${device.id}`}
+              data={ramHistory}
+              color={device.ramPercent > 80 ? '#ef4444' : device.ramPercent > 60 ? '#eab308' : '#22c55e'}
+            />
+          ) : (
+            <div className="flex h-8 items-center text-[11px] text-muted-foreground">
+              {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}
+            </div>
+          )}
         </div>
       </div>
 

@@ -65,6 +65,13 @@ type ParsedRule = {
   raw: Record<string, unknown>;
 };
 
+type ParsedRulesResult = {
+  rules: ParsedRule[];
+  inputHadArray: boolean;
+  inputLength: number;
+  invalidCount: number;
+};
+
 type InstalledSoftwareRecord = {
   name: string;
   version: string | null;
@@ -178,31 +185,47 @@ function normalizeTargetConfig(targets: unknown): TargetConfig {
   };
 }
 
-function parsePolicyRules(rules: unknown): ParsedRule[] {
+function parsePolicyRules(rules: unknown): ParsedRulesResult {
   if (!Array.isArray(rules)) {
-    return [];
+    return {
+      rules: [],
+      inputHadArray: false,
+      inputLength: 0,
+      invalidCount: 0,
+    };
   }
 
-  return rules
-    .flatMap((rule) => {
-      if (!rule || typeof rule !== 'object') {
-        return [];
-      }
+  const parsedRules: ParsedRule[] = [];
+  let invalidCount = 0;
 
-      const typedRule = rule as Record<string, unknown>;
-      const type = typeof typedRule.type === 'string'
-        ? typedRule.type
-        : typeof typedRule.name === 'string'
-          ? typedRule.name
-          : null;
+  for (const rule of rules) {
+    if (!rule || typeof rule !== 'object') {
+      invalidCount += 1;
+      continue;
+    }
 
-      if (!type) {
-        return [];
-      }
+    const typedRule = rule as Record<string, unknown>;
+    const typeValue = typeof typedRule.type === 'string'
+      ? typedRule.type
+      : typeof typedRule.name === 'string'
+        ? typedRule.name
+        : null;
 
-      return [{ type, raw: typedRule }];
-    })
-    .filter((value) => value.type.length > 0);
+    const type = typeValue?.trim();
+    if (!type) {
+      invalidCount += 1;
+      continue;
+    }
+
+    parsedRules.push({ type, raw: typedRule });
+  }
+
+  return {
+    rules: parsedRules,
+    inputHadArray: true,
+    inputLength: rules.length,
+    invalidCount,
+  };
 }
 
 function readString(value: unknown): string | null {
@@ -677,22 +700,47 @@ function evaluateRule(
 }
 
 function evaluateDeviceRules(
-  rules: ParsedRule[],
+  parsedRules: ParsedRulesResult,
   context: DeviceEvaluationContext
 ): DeviceRuleEvaluation {
-  if (rules.length === 0) {
+  if (!parsedRules.inputHadArray) {
     return {
-      passed: true,
+      passed: false,
       details: [{
-        ruleType: 'none',
-        passed: true,
+        ruleType: 'policy_rules',
+        passed: false,
+        message: 'Policy rules payload is invalid: expected an array.',
+      }],
+    };
+  }
+
+  if (parsedRules.inputLength === 0) {
+    return {
+      passed: false,
+      details: [{
+        ruleType: 'policy_rules',
+        passed: false,
         message: 'Policy has no rules to evaluate.',
       }],
     };
   }
 
-  const details = rules.map((rule) => evaluateRule(rule, context));
-  const passed = details.every((detail) => detail.passed);
+  const details = parsedRules.rules.map((rule) => evaluateRule(rule, context));
+  if (parsedRules.invalidCount > 0) {
+    details.push({
+      ruleType: 'policy_rules',
+      passed: false,
+      message: `Policy contains ${parsedRules.invalidCount} invalid rule(s).`,
+      data: {
+        invalidRuleCount: parsedRules.invalidCount,
+        totalRules: parsedRules.inputLength,
+      },
+    });
+  }
+
+  const passed = parsedRules.invalidCount === 0
+    && parsedRules.rules.length > 0
+    && details.every((detail) => detail.passed);
 
   return { passed, details };
 }
@@ -1127,7 +1175,7 @@ export async function evaluatePolicy(
   const targetDevices = dedupeTargetDevices(await resolveTargetDevices(policy));
   const targetDeviceIds = targetDevices.map((device) => device.id);
   const parsedRules = parsePolicyRules(policy.rules);
-  const ruleKeys = parsedRules.map((rule) => rule.type);
+  const ruleKeys = parsedRules.rules.map((rule) => rule.type);
 
   let existingComplianceRows: Array<typeof automationPolicyCompliance.$inferSelect> = [];
   let diskRows: Array<{

@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
+import { randomUUID } from 'crypto';
 
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY = '7d';
@@ -19,6 +20,8 @@ export interface TokenPayload {
   partnerId: string | null;
   scope: 'system' | 'partner' | 'organization';
   type: 'access' | 'refresh';
+  iat?: number;
+  jti?: string;
 }
 
 export async function createAccessToken(payload: Omit<TokenPayload, 'type'>): Promise<string> {
@@ -38,6 +41,7 @@ export async function createRefreshToken(payload: Omit<TokenPayload, 'type'>): P
 
   return new SignJWT({ ...payload, type: 'refresh' })
     .setProtectedHeader({ alg: 'HS256' })
+    .setJti(randomUUID())
     .setIssuedAt()
     .setExpirationTime(REFRESH_TOKEN_EXPIRY)
     .setIssuer('breeze')
@@ -60,7 +64,9 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       orgId: payload.orgId as string | null,
       partnerId: payload.partnerId as string | null,
       scope: payload.scope as 'system' | 'partner' | 'organization',
-      type: payload.type as 'access' | 'refresh'
+      type: payload.type as 'access' | 'refresh',
+      iat: typeof payload.iat === 'number' ? payload.iat : undefined,
+      jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };
   } catch {
     return null;

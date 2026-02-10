@@ -29,6 +29,24 @@ export {
   type SendResult as InAppSendResult
 } from './inAppSender';
 
+export {
+  sendSmsNotification,
+  validateSmsConfig,
+  getSmsRecipients,
+  isValidE164PhoneNumber,
+  type SmsChannelConfig,
+  type SmsNotificationPayload,
+  type SendResult as SmsSendResult
+} from './smsSender';
+
+export {
+  sendPagerDutyNotification,
+  validatePagerDutyConfig,
+  type PagerDutyConfig,
+  type PagerDutyNotificationPayload,
+  type SendResult as PagerDutySendResult
+} from './pagerDutySender';
+
 // Re-export AlertSeverity for convenience
 export type { AlertSeverity } from '../email';
 

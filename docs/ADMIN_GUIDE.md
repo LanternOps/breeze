@@ -1183,6 +1183,7 @@ Configure notification channels at the organization level:
 | Microsoft Teams | Connector URL |
 | Webhook | Custom HTTP endpoints |
 | PagerDuty | Integration key |
+| SMS | Twilio sender + recipient phone numbers (E.164) |
 
 ### 7.5 Security Settings
 

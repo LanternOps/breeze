@@ -11,7 +11,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth, useAuthStore } from '@/stores/auth';
+import { fetchWithAuth } from '@/stores/auth';
 
 // xterm.js will be loaded dynamically
 type XTermInstance = {
@@ -184,10 +184,16 @@ export default function RemoteTerminal({
         if (currentSessionId) onSessionCreated?.(currentSessionId);
       }
 
-      // Get access token from auth store
-      const { tokens } = useAuthStore.getState();
-      if (!tokens?.accessToken) {
-        throw new Error('Not authenticated');
+      const ticketResponse = await fetchWithAuth(`/remote/sessions/${currentSessionId}/ws-ticket`, {
+        method: 'POST'
+      });
+      if (!ticketResponse.ok) {
+        const error = await ticketResponse.json().catch(() => ({ error: 'Failed to create connection ticket' }));
+        throw new Error(error.error || 'Failed to create connection ticket');
+      }
+      const { ticket } = await ticketResponse.json() as { ticket?: string };
+      if (!ticket) {
+        throw new Error('Invalid connection ticket response');
       }
 
       // Establish WebSocket connection for terminal data
@@ -195,7 +201,7 @@ export default function RemoteTerminal({
       const apiHost = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
       const wsProtocol = apiHost.startsWith('https') ? 'wss:' : 'ws:';
       const apiHostname = apiHost.replace(/^https?:\/\//, '');
-      const wsUrl = `${wsProtocol}//${apiHostname}/api/v1/remote/sessions/${currentSessionId}/ws?token=${encodeURIComponent(tokens.accessToken)}`;
+      const wsUrl = `${wsProtocol}//${apiHostname}/api/v1/remote/sessions/${currentSessionId}/ws?ticket=${encodeURIComponent(ticket)}`;
 
       const ws = new WebSocket(wsUrl);
       webSocketRef.current = ws;

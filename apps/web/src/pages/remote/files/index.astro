@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import RemoteDeviceLauncherPage from '../../../components/remote/RemoteDeviceLauncherPage';
+---
+
+<DashboardLayout title="Start File Transfer">
+  <RemoteDeviceLauncherPage mode="files" client:load />
+</DashboardLayout>

@@ -89,118 +89,6 @@ const VALUE_TYPE_CONFIG: Record<RegistryValueType, { icon: typeof Type; color: s
 };
 
 // ============================================================================
-// Mock Data Generator
-// ============================================================================
-
-function getMockKeys(hive: string, path: string): RegistryKey[] {
-  // Common Windows registry paths
-  if (hive === 'HKEY_LOCAL_MACHINE' && !path) {
-    return [
-      { name: 'SOFTWARE', path: 'SOFTWARE', hasChildren: true },
-      { name: 'SYSTEM', path: 'SYSTEM', hasChildren: true },
-      { name: 'HARDWARE', path: 'HARDWARE', hasChildren: true },
-      { name: 'SAM', path: 'SAM', hasChildren: true },
-      { name: 'SECURITY', path: 'SECURITY', hasChildren: true },
-    ];
-  }
-
-  if (hive === 'HKEY_LOCAL_MACHINE' && path === 'SOFTWARE') {
-    return [
-      { name: 'Microsoft', path: 'SOFTWARE\\Microsoft', hasChildren: true },
-      { name: 'Classes', path: 'SOFTWARE\\Classes', hasChildren: true },
-      { name: 'Policies', path: 'SOFTWARE\\Policies', hasChildren: true },
-      { name: 'WOW6432Node', path: 'SOFTWARE\\WOW6432Node', hasChildren: true },
-    ];
-  }
-
-  if (hive === 'HKEY_LOCAL_MACHINE' && path === 'SOFTWARE\\Microsoft') {
-    return [
-      { name: 'Windows', path: 'SOFTWARE\\Microsoft\\Windows', hasChildren: true },
-      { name: 'Windows NT', path: 'SOFTWARE\\Microsoft\\Windows NT', hasChildren: true },
-      { name: '.NETFramework', path: 'SOFTWARE\\Microsoft\\.NETFramework', hasChildren: true },
-      { name: 'Office', path: 'SOFTWARE\\Microsoft\\Office', hasChildren: true },
-    ];
-  }
-
-  if (hive === 'HKEY_LOCAL_MACHINE' && path === 'SOFTWARE\\Microsoft\\Windows') {
-    return [
-      { name: 'CurrentVersion', path: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion', hasChildren: true },
-      { name: 'Shell', path: 'SOFTWARE\\Microsoft\\Windows\\Shell', hasChildren: true },
-    ];
-  }
-
-  if (hive === 'HKEY_LOCAL_MACHINE' && path === 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion') {
-    return [
-      { name: 'App Paths', path: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths', hasChildren: true },
-      { name: 'Explorer', path: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer', hasChildren: true },
-      { name: 'Policies', path: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies', hasChildren: true },
-      { name: 'Run', path: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', hasChildren: true },
-      { name: 'RunOnce', path: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce', hasChildren: true },
-      { name: 'Uninstall', path: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall', hasChildren: true },
-    ];
-  }
-
-  if (hive === 'HKEY_CURRENT_USER' && !path) {
-    return [
-      { name: 'SOFTWARE', path: 'SOFTWARE', hasChildren: true },
-      { name: 'Console', path: 'Console', hasChildren: true },
-      { name: 'Control Panel', path: 'Control Panel', hasChildren: true },
-      { name: 'Environment', path: 'Environment', hasChildren: false },
-      { name: 'Keyboard Layout', path: 'Keyboard Layout', hasChildren: true },
-    ];
-  }
-
-  // Generic mock children - use deterministic hasChildren based on path hash
-  const pathHash = path.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return [
-    { name: 'SubKey1', path: path + '\\SubKey1', hasChildren: pathHash % 2 === 0 },
-    { name: 'SubKey2', path: path + '\\SubKey2', hasChildren: pathHash % 3 === 0 },
-  ];
-}
-
-function getMockValues(hive: string, path: string): RegistryValue[] {
-  if (hive === 'HKEY_LOCAL_MACHINE' && path === 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion') {
-    return [
-      { name: '(Default)', type: 'REG_SZ', data: '' },
-      { name: 'CommonFilesDir', type: 'REG_SZ', data: 'C:\\Program Files\\Common Files' },
-      { name: 'CommonFilesDir (x86)', type: 'REG_SZ', data: 'C:\\Program Files (x86)\\Common Files' },
-      { name: 'DevicePath', type: 'REG_EXPAND_SZ', data: '%SystemRoot%\\inf' },
-      { name: 'MediaPathUnexpanded', type: 'REG_EXPAND_SZ', data: '%SystemRoot%\\Media' },
-      { name: 'ProgramFilesDir', type: 'REG_SZ', data: 'C:\\Program Files' },
-      { name: 'ProgramFilesDir (x86)', type: 'REG_SZ', data: 'C:\\Program Files (x86)' },
-      { name: 'ProgramFilesPath', type: 'REG_EXPAND_SZ', data: '%ProgramFiles%' },
-      { name: 'ProgramW6432Dir', type: 'REG_SZ', data: 'C:\\Program Files' },
-      { name: 'SM_ConfigureProgramsName', type: 'REG_SZ', data: 'Set Program Access and Defaults' },
-    ];
-  }
-
-  if (hive === 'HKEY_LOCAL_MACHINE' && path === 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run') {
-    return [
-      { name: '(Default)', type: 'REG_SZ', data: '' },
-      { name: 'SecurityHealth', type: 'REG_EXPAND_SZ', data: '%ProgramFiles%\\Windows Defender\\MSASCuiL.exe' },
-      { name: 'VMware User Process', type: 'REG_SZ', data: '"C:\\Program Files\\VMware\\VMware Tools\\vmtoolsd.exe" -n vmusr' },
-    ];
-  }
-
-  if (hive === 'HKEY_CURRENT_USER' && path === 'Environment') {
-    return [
-      { name: '(Default)', type: 'REG_SZ', data: '' },
-      { name: 'TEMP', type: 'REG_EXPAND_SZ', data: '%USERPROFILE%\\AppData\\Local\\Temp' },
-      { name: 'TMP', type: 'REG_EXPAND_SZ', data: '%USERPROFILE%\\AppData\\Local\\Temp' },
-      { name: 'Path', type: 'REG_EXPAND_SZ', data: '%USERPROFILE%\\AppData\\Local\\Microsoft\\WindowsApps' },
-    ];
-  }
-
-  // Generic mock values
-  return [
-    { name: '(Default)', type: 'REG_SZ', data: '' },
-    { name: 'SampleString', type: 'REG_SZ', data: 'Example value' },
-    { name: 'SampleDword', type: 'REG_DWORD', data: 0x00000001 },
-    { name: 'SampleBinary', type: 'REG_BINARY', data: new Uint8Array([0x00, 0x01, 0x02, 0x03, 0x04, 0x05]) },
-  ];
-}
-
-// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -759,6 +647,7 @@ export default function RegistryEditor({
   const [values, setValues] = useState<RegistryValue[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'name' | 'type' | 'data'>('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
@@ -817,15 +706,18 @@ export default function RegistryEditor({
 
     setLoadingPath(cacheKey);
     try {
-      let keys: RegistryKey[];
-      if (onGetKeys) {
-        keys = await onGetKeys(hive, path);
-      } else {
-        await new Promise(resolve => setTimeout(resolve, 300));
-        keys = getMockKeys(hive, path);
+      if (!onGetKeys) {
+        throw new Error('Registry key provider is not configured');
       }
+      const keys = await onGetKeys(hive, path);
       setKeyCache(prev => ({ ...prev, [cacheKey]: keys }));
+      setLoadError(null);
       return keys;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load registry keys';
+      setLoadError(`Failed to load registry keys: ${message}`);
+      console.error('Failed to load registry keys:', error);
+      return [];
     } finally {
       setLoadingPath(null);
     }
@@ -835,15 +727,15 @@ export default function RegistryEditor({
   const loadValues = useCallback(async () => {
     setLoading(true);
     try {
-      let vals: RegistryValue[];
-      if (onGetValues) {
-        vals = await onGetValues(currentHive, currentPath);
-      } else {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        vals = getMockValues(currentHive, currentPath);
+      if (!onGetValues) {
+        throw new Error('Registry value provider is not configured');
       }
+      const vals = await onGetValues(currentHive, currentPath);
       setValues(vals);
+      setLoadError(null);
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load registry values';
+      setLoadError(`Failed to load registry values: ${message}`);
       console.error('Failed to load values:', error);
       setValues([]);
     } finally {
@@ -933,9 +825,12 @@ export default function RegistryEditor({
       if (onSetValue) {
         await onSetValue(currentHive, currentPath, name, type, data);
       }
+      setLoadError(null);
       setShowValueEditor(false);
       loadValues();
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save registry value';
+      setLoadError(`Failed to save registry value: ${message}`);
       console.error('Failed to save value:', error);
     }
   };
@@ -946,9 +841,12 @@ export default function RegistryEditor({
       if (onDeleteValue) {
         await onDeleteValue(currentHive, currentPath, deleteTarget.name);
       }
+      setLoadError(null);
       setDeleteTarget(null);
       loadValues();
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete registry value';
+      setLoadError(`Failed to delete registry value: ${message}`);
       console.error('Failed to delete value:', error);
     }
   };
@@ -960,6 +858,7 @@ export default function RegistryEditor({
       if (onCreateKey) {
         await onCreateKey(currentHive, newPath);
       }
+      setLoadError(null);
       setShowCreateKey(false);
       // Clear cache to refresh
       const cacheKey = currentPath ? currentHive + '\\' + currentPath : currentHive;
@@ -971,6 +870,8 @@ export default function RegistryEditor({
       // Expand parent
       setExpandedKeys(prev => new Set([...prev, fullPath]));
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to create registry key';
+      setLoadError(`Failed to create registry key: ${message}`);
       console.error('Failed to create key:', error);
     }
   };
@@ -981,6 +882,7 @@ export default function RegistryEditor({
       if (onDeleteKey) {
         await onDeleteKey(currentHive, currentPath);
       }
+      setLoadError(null);
       setDeleteTarget(null);
       // Navigate to parent
       const parentPath = currentPath.split('\\').slice(0, -1).join('\\');
@@ -992,6 +894,8 @@ export default function RegistryEditor({
       });
       setCurrentPath(parentPath);
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete registry key';
+      setLoadError(`Failed to delete registry key: ${message}`);
       console.error('Failed to delete key:', error);
     }
   };
@@ -1158,6 +1062,23 @@ export default function RegistryEditor({
               )}
             </div>
           </div>
+
+          {loadError && (
+            <div className="mx-4 mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div className="flex items-center justify-between gap-3">
+                <span>{loadError}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void loadValues();
+                  }}
+                  className="shrink-0 rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Values Table */}
           <div className="flex-1 overflow-auto">

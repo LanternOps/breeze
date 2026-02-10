@@ -1,4 +1,4 @@
-.PHONY: build build-all clean test install install-service uninstall-service
+.PHONY: build build-all build-winres build-windows-msi clean test install install-service uninstall-service
 
 VERSION ?= 0.1.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -20,6 +20,19 @@ build-darwin:
 
 build-windows:
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-windows-amd64.exe ./cmd/breeze-agent
+
+build-winres:
+	@command -v go-winres >/dev/null 2>&1 || (echo "go-winres not found. Install with: go install github.com/tc-hib/go-winres@latest" && exit 1)
+	cd resources && go-winres make --in winres.json --out ../cmd/breeze-agent/rsrc_windows_amd64.syso
+
+build-windows-msi: build-windows
+ifeq ($(OS),Windows_NT)
+	powershell -ExecutionPolicy Bypass -File installer/build-msi.ps1 -Version $(VERSION) -AgentExePath "$(CURDIR)\\bin\\breeze-agent-windows-amd64.exe" -OutputPath "$(CURDIR)\\..\\dist\\breeze-agent.msi"
+else
+	@echo "build-windows-msi must be run on Windows with wix + PowerShell installed."
+	@echo "Run: pwsh -File agent/installer/build-msi.ps1 -Version $(VERSION) -AgentExePath agent/bin/breeze-agent-windows-amd64.exe -OutputPath dist/breeze-agent.msi"
+	@exit 1
+endif
 
 clean:
 	rm -rf bin/

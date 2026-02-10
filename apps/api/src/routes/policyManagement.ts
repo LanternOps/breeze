@@ -22,7 +22,7 @@ type AuthContext = {
   partnerId: string | null;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
-  canAccessOrg: (orgId: string) => boolean;
+  canAccessOrg?: (orgId: string) => boolean;
   user: {
     id: string;
     email?: string;
@@ -38,16 +38,85 @@ const listPoliciesSchema = z.object({
 });
 
 const targetTypeSchema = z.enum(['all', 'sites', 'groups', 'tags', 'devices']);
+type TargetType = z.infer<typeof targetTypeSchema>;
 
-const createPolicySchema = z.object({
+const versionOperatorSchema = z.enum(['any', 'exact', 'minimum', 'maximum']);
+
+const requiredSoftwareRuleSchema = z.object({
+  type: z.literal('required_software'),
+  softwareName: z.string().trim().min(1),
+  softwareVersion: z.string().trim().optional(),
+  versionOperator: versionOperatorSchema.optional(),
+});
+
+const prohibitedSoftwareRuleSchema = z.object({
+  type: z.literal('prohibited_software'),
+  softwareName: z.string().trim().min(1),
+});
+
+const diskSpaceRuleSchema = z.object({
+  type: z.literal('disk_space_minimum'),
+  diskSpaceGB: z.number().positive(),
+  diskPath: z.string().trim().optional(),
+});
+
+const osVersionRuleSchema = z.object({
+  type: z.literal('os_version'),
+  osType: z.enum(['windows', 'macos', 'linux', 'any']).optional(),
+  osMinVersion: z.string().trim().optional(),
+});
+
+const registryCheckRuleSchema = z.object({
+  type: z.literal('registry_check'),
+  registryPath: z.string().trim().min(1),
+  registryValueName: z.string().trim().min(1),
+  registryExpectedValue: z.string().trim().optional(),
+});
+
+const configCheckRuleSchema = z.object({
+  type: z.literal('config_check'),
+  configFilePath: z.string().trim().min(1),
+  configKey: z.string().trim().min(1),
+  configExpectedValue: z.string().trim().optional(),
+});
+
+const policyRulesSchema = z.array(
+  z.discriminatedUnion('type', [
+    requiredSoftwareRuleSchema,
+    prohibitedSoftwareRuleSchema,
+    diskSpaceRuleSchema,
+    osVersionRuleSchema,
+    registryCheckRuleSchema,
+    configCheckRuleSchema,
+  ])
+).min(1).superRefine((rules, ctx) => {
+  rules.forEach((rule, index) => {
+    if (rule.type !== 'required_software') {
+      return;
+    }
+
+    const operator = rule.versionOperator ?? 'any';
+    if (operator !== 'any' && (!rule.softwareVersion || rule.softwareVersion.length === 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'softwareVersion is required when versionOperator is exact/minimum/maximum',
+        path: [index, 'softwareVersion'],
+      });
+    }
+  });
+});
+
+const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const basePolicyPayloadSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   enabled: z.boolean().default(true),
-  targets: z.any().optional(),
+  targets: z.record(z.unknown()).optional(),
   targetType: targetTypeSchema.optional(),
-  targetIds: z.array(z.string().uuid()).optional(),
-  rules: z.any(),
+  targetIds: z.array(z.string()).optional(),
+  rules: policyRulesSchema,
   enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
   enforcementLevel: z.enum(['monitor', 'warn', 'enforce']).optional(),
   checkIntervalMinutes: z.number().int().min(5).max(10080).default(60),
@@ -55,14 +124,16 @@ const createPolicySchema = z.object({
   type: z.string().optional(),
 });
 
+const createPolicySchema = basePolicyPayloadSchema;
+
 const updatePolicySchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
   enabled: z.boolean().optional(),
-  targets: z.any().optional(),
+  targets: z.record(z.unknown()).optional(),
   targetType: targetTypeSchema.optional(),
-  targetIds: z.array(z.string().uuid()).optional(),
-  rules: z.any().optional(),
+  targetIds: z.array(z.string()).optional(),
+  rules: policyRulesSchema.optional(),
   enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
   enforcementLevel: z.enum(['monitor', 'warn', 'enforce']).optional(),
   checkIntervalMinutes: z.number().int().min(5).max(10080).optional(),
@@ -85,7 +156,24 @@ function getPagination(query: { page?: string; limit?: string }) {
 }
 
 function ensureOrgAccess(orgId: string, auth: AuthContext) {
-  return auth.canAccessOrg(orgId);
+  if (typeof auth.canAccessOrg === 'function') {
+    return auth.canAccessOrg(orgId);
+  }
+
+  if (auth.scope === 'system') {
+    return true;
+  }
+
+  if (auth.scope === 'organization') {
+    return auth.orgId === orgId;
+  }
+
+  if (auth.scope === 'partner') {
+    const orgIds = auth.accessibleOrgIds ?? [];
+    return orgIds.includes(orgId);
+  }
+
+  return false;
 }
 
 async function getPolicyWithOrgCheck(policyId: string, auth: AuthContext) {
@@ -107,45 +195,99 @@ async function getPolicyWithOrgCheck(policyId: string, auth: AuthContext) {
   return policy;
 }
 
-function sanitizeUuidArray(value: unknown): string[] {
+function sanitizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function sanitizeUuidArray(value: unknown): string[] {
+  return sanitizeStringArray(value).filter((item) => uuidRegex.test(item));
+}
+
+function coerceTargetType(value: unknown, fallback: TargetType = 'all'): TargetType {
+  const parsed = targetTypeSchema.safeParse(value);
+  return parsed.success ? parsed.data : fallback;
+}
+
+function validateTargetIdsForType(targetType: string, targetIds: string[]): string | null {
+  if (targetType === 'all') {
+    return null;
+  }
+
+  if (targetIds.length === 0) {
+    return 'targetIds are required when targetType is not all';
+  }
+
+  if (targetType === 'tags') {
+    return null;
+  }
+
+  if (targetIds.some((id) => !uuidRegex.test(id))) {
+    return `targetIds must be UUIDs when targetType is ${targetType}`;
+  }
+
+  return null;
 }
 
 function normalizeTargets(payload: {
   targets?: unknown;
-  targetType?: z.infer<typeof targetTypeSchema>;
+  targetType?: TargetType;
   targetIds?: string[];
 }) {
   if (payload.targets && typeof payload.targets === 'object') {
     const rawTargets = payload.targets as Record<string, unknown>;
+    const payloadTargetType = payload.targetType ?? 'all';
+    const targetType = coerceTargetType(rawTargets.targetType, payloadTargetType);
+    const candidateTargetIds = sanitizeStringArray(rawTargets.targetIds);
+    const targetIds = candidateTargetIds.length > 0
+      ? candidateTargetIds
+      : sanitizeStringArray(payload.targetIds);
+
+    const tags = sanitizeStringArray(rawTargets.tags);
+    const normalizedTags = tags.length > 0
+      ? tags
+      : targetType === 'tags'
+        ? targetIds
+        : [];
+
     const normalized = {
       ...rawTargets,
-      targetType: typeof rawTargets.targetType === 'string'
-        ? rawTargets.targetType
-        : payload.targetType ?? 'all',
-      targetIds: sanitizeUuidArray(rawTargets.targetIds) ?? payload.targetIds ?? [],
+      targetType,
+      targetIds,
       deviceIds: sanitizeUuidArray(rawTargets.deviceIds),
       siteIds: sanitizeUuidArray(rawTargets.siteIds),
       groupIds: sanitizeUuidArray(rawTargets.groupIds),
-      tags: sanitizeUuidArray(rawTargets.tags),
+      tags: normalizedTags,
     };
+
+    if (normalized.deviceIds.length === 0 && targetType === 'devices') {
+      normalized.deviceIds = sanitizeUuidArray(targetIds);
+    }
+    if (normalized.siteIds.length === 0 && targetType === 'sites') {
+      normalized.siteIds = sanitizeUuidArray(targetIds);
+    }
+    if (normalized.groupIds.length === 0 && targetType === 'groups') {
+      normalized.groupIds = sanitizeUuidArray(targetIds);
+    }
 
     return normalized;
   }
 
   const targetType = payload.targetType ?? 'all';
-  const targetIds = payload.targetIds ?? [];
+  const targetIds = sanitizeStringArray(payload.targetIds);
 
   return {
     targetType,
     targetIds,
-    deviceIds: targetType === 'devices' ? targetIds : [],
-    siteIds: targetType === 'sites' ? targetIds : [],
-    groupIds: targetType === 'groups' ? targetIds : [],
+    deviceIds: targetType === 'devices' ? sanitizeUuidArray(targetIds) : [],
+    siteIds: targetType === 'sites' ? sanitizeUuidArray(targetIds) : [],
+    groupIds: targetType === 'groups' ? sanitizeUuidArray(targetIds) : [],
     tags: targetType === 'tags' ? targetIds : [],
   };
 }
@@ -157,7 +299,7 @@ function resolveTargetInfo(targets: unknown): { targetType: string; targetIds: s
 
   const rawTargets = targets as Record<string, unknown>;
   const explicitType = typeof rawTargets.targetType === 'string' ? rawTargets.targetType : undefined;
-  const explicitIds = sanitizeUuidArray(rawTargets.targetIds);
+  const explicitIds = sanitizeStringArray(rawTargets.targetIds);
 
   if (explicitType) {
     return {
@@ -169,7 +311,7 @@ function resolveTargetInfo(targets: unknown): { targetType: string; targetIds: s
   const deviceIds = sanitizeUuidArray(rawTargets.deviceIds);
   const siteIds = sanitizeUuidArray(rawTargets.siteIds);
   const groupIds = sanitizeUuidArray(rawTargets.groupIds);
-  const tags = sanitizeUuidArray(rawTargets.tags);
+  const tags = sanitizeStringArray(rawTargets.tags);
 
   if (deviceIds.length > 0) return { targetType: 'devices', targetIds: deviceIds };
   if (siteIds.length > 0) return { targetType: 'sites', targetIds: siteIds };
@@ -780,10 +922,16 @@ policyRoutes.post(
       targetType: data.targetType,
       targetIds: data.targetIds,
     });
+    const normalizedTargetIds = sanitizeStringArray(normalizedTargets.targetIds);
 
-    if (normalizedTargets.targetType !== 'all' && (!normalizedTargets.targetIds || normalizedTargets.targetIds.length === 0)) {
-      return c.json({ error: 'targetIds are required when targetType is not all' }, 400);
+    const targetValidationError = validateTargetIdsForType(
+      normalizedTargets.targetType,
+      normalizedTargetIds
+    );
+    if (targetValidationError) {
+      return c.json({ error: targetValidationError }, 400);
     }
+    normalizedTargets.targetIds = normalizedTargetIds;
 
     if (data.remediationScriptId) {
       const [script] = await db
@@ -888,10 +1036,16 @@ async function handleUpdatePolicy(c: any) {
       targetType: data.targetType,
       targetIds: data.targetIds,
     });
+    const normalizedTargetIds = sanitizeStringArray(normalizedTargets.targetIds);
 
-    if (normalizedTargets.targetType !== 'all' && (!normalizedTargets.targetIds || normalizedTargets.targetIds.length === 0)) {
-      return c.json({ error: 'targetIds are required when targetType is not all' }, 400);
+    const targetValidationError = validateTargetIdsForType(
+      normalizedTargets.targetType,
+      normalizedTargetIds
+    );
+    if (targetValidationError) {
+      return c.json({ error: targetValidationError }, 400);
     }
+    normalizedTargets.targetIds = normalizedTargetIds;
 
     updates.targets = normalizedTargets;
   }

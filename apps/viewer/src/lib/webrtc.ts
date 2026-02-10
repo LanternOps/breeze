@@ -4,7 +4,12 @@
  */
 
 import { apiFetch } from './api';
-import type { ConnectionParams } from './protocol';
+
+export interface AuthenticatedConnectionParams {
+  sessionId: string;
+  apiUrl: string;
+  accessToken: string;
+}
 
 export interface WebRTCSession {
   pc: RTCPeerConnection;
@@ -25,7 +30,7 @@ export interface WebRTCSession {
  * 6. Set remote description → ICE completes → video flows
  */
 export async function createWebRTCSession(
-  params: ConnectionParams,
+  params: AuthenticatedConnectionParams,
   videoEl: HTMLVideoElement,
 ): Promise<WebRTCSession> {
   // Fetch ICE servers (includes TURN credentials if configured)
@@ -34,7 +39,7 @@ export async function createWebRTCSession(
     const iceResp = await apiFetch(
       params.apiUrl,
       '/api/v1/remote/ice-servers',
-      params.token,
+      params.accessToken,
     );
     if (iceResp.ok) {
       const iceData = await iceResp.json();
@@ -78,7 +83,7 @@ export async function createWebRTCSession(
   const offerResp = await apiFetch(
     params.apiUrl,
     `/api/v1/remote/sessions/${params.sessionId}/offer`,
-    params.token,
+    params.accessToken,
     {
       method: 'POST',
       body: JSON.stringify({ offer: localDesc.sdp }),
@@ -137,14 +142,14 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<
 /**
  * Poll GET /remote/sessions/:id until webrtcAnswer is populated.
  */
-async function pollForAnswer(params: ConnectionParams, timeoutMs: number): Promise<string> {
+async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: number): Promise<string> {
   const start = Date.now();
 
   while (Date.now() - start < timeoutMs) {
     const resp = await apiFetch(
       params.apiUrl,
       `/api/v1/remote/sessions/${params.sessionId}`,
-      params.token,
+      params.accessToken,
     );
 
     if (resp.ok) {

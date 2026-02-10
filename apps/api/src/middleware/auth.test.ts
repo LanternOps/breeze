@@ -4,8 +4,8 @@ vi.mock('../services/jwt', () => ({
   verifyToken: vi.fn()
 }));
 
-vi.mock('../services/redis', () => ({
-  getRedis: vi.fn()
+vi.mock('../services/tokenRevocation', () => ({
+  isUserTokenRevoked: vi.fn().mockResolvedValue(false)
 }));
 
 vi.mock('../db', () => ({
@@ -38,7 +38,7 @@ vi.mock('../db/schema', () => ({
 import { Hono } from 'hono';
 import { authMiddleware, requireScope } from './auth';
 import { verifyToken } from '../services/jwt';
-import { getRedis } from '../services/redis';
+import { isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
 
 const basePayload = {
@@ -113,7 +113,7 @@ describe('authMiddleware', () => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReset();
     vi.mocked(verifyToken).mockReset();
-    vi.mocked(getRedis).mockReturnValue(null);
+    vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
   });
 
   it('rejects missing authorization header', async () => {
@@ -209,9 +209,7 @@ describe('authMiddleware', () => {
   it('rejects revoked access tokens', async () => {
     const app = buildAuthApp();
     vi.mocked(verifyToken).mockResolvedValue(basePayload);
-    vi.mocked(getRedis).mockReturnValue({
-      get: vi.fn().mockResolvedValue('1')
-    } as any);
+    vi.mocked(isUserTokenRevoked).mockResolvedValue(true);
 
     const res = await app.request('/test', {
       headers: { Authorization: 'Bearer token' }

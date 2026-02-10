@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, ExternalLink, Download } from 'lucide-react';
-import { fetchWithAuth, useAuthStore } from '@/stores/auth';
+import { fetchWithAuth } from '@/stores/auth';
 
 interface Props {
   deviceId: string;
@@ -39,15 +39,22 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       const session = await response.json();
 
-      // Get access token
-      const { tokens } = useAuthStore.getState();
-      if (!tokens?.accessToken) {
-        throw new Error('Not authenticated');
+      // Create one-time desktop connect code for deep-link handoff
+      const codeResponse = await fetchWithAuth(`/remote/sessions/${session.id}/desktop-connect-code`, {
+        method: 'POST',
+      });
+      if (!codeResponse.ok) {
+        const err = await codeResponse.json().catch(() => ({ error: 'Failed to create desktop connect code' }));
+        throw new Error(err.error || 'Failed to create desktop connect code');
+      }
+      const codeData = await codeResponse.json() as { code?: string };
+      if (!codeData.code) {
+        throw new Error('Invalid desktop connect code response');
       }
 
       // Build deep link URL
       const apiUrl = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
-      const deepLink = `breeze://connect?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(tokens.accessToken)}&api=${encodeURIComponent(apiUrl)}`;
+      const deepLink = `breeze://connect?session=${encodeURIComponent(session.id)}&code=${encodeURIComponent(codeData.code)}&api=${encodeURIComponent(apiUrl)}`;
 
       setStatus('launching');
 

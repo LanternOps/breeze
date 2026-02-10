@@ -50,6 +50,9 @@ type SecurityStatus struct {
 	ThreatCount                    int         `json:"threatCount"`
 	FirewallEnabled                bool        `json:"firewallEnabled"`
 	EncryptionStatus               string      `json:"encryptionStatus"`
+	EncryptionDetails              any         `json:"encryptionDetails,omitempty"`
+	LocalAdminSummary              any         `json:"localAdminSummary,omitempty"`
+	PasswordPolicySummary          any         `json:"passwordPolicySummary,omitempty"`
 	GatekeeperEnabled              *bool       `json:"gatekeeperEnabled,omitempty"`
 	GuardianEnabled                *bool       `json:"guardianEnabled,omitempty"`
 	WindowsSecurityCenterAvailable bool        `json:"windowsSecurityCenterAvailable,omitempty"`
@@ -453,6 +456,510 @@ func getGatekeeperStatusDarwin() (bool, error) {
 	return false, fmt.Errorf("unexpected gatekeeper status output: %s", strings.TrimSpace(output))
 }
 
+func parseJSONValue(output string) (any, error) {
+	var value any
+	if err := json.Unmarshal([]byte(output), &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func toObjectSlice(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			record, ok := item.(map[string]any)
+			if ok {
+				out = append(out, record)
+			}
+		}
+		return out
+	case map[string]any:
+		return []map[string]any{typed}
+	default:
+		return nil
+	}
+}
+
+func floatFromAny(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func collectEncryptionDetailsWindows() (map[string]any, error) {
+	output, err := runCommand(
+		10*time.Second,
+		"powershell",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		"Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus,EncryptionMethod,VolumeStatus,EncryptionPercentage | ConvertTo-Json -Compress",
+	)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parseJSONValue(output)
+	if err != nil {
+		return nil, err
+	}
+
+	rawVolumes := toObjectSlice(parsed)
+	volumes := make([]map[string]any, 0, len(rawVolumes))
+	for _, item := range rawVolumes {
+		mountPoint, _ := stringFromAny(item["MountPoint"])
+		method, _ := stringFromAny(item["EncryptionMethod"])
+		if method == "" {
+			method = "bitlocker"
+		}
+		volumeStatus, _ := stringFromAny(item["VolumeStatus"])
+
+		protected := false
+		if value, ok := boolFromAny(item["ProtectionStatus"]); ok {
+			protected = value
+		} else if value, ok := stringFromAny(item["ProtectionStatus"]); ok {
+			normalized := strings.ToLower(strings.TrimSpace(value))
+			protected = normalized == "on" || normalized == "protected" || normalized == "1"
+		}
+
+		entry := map[string]any{
+			"mount":     mountPoint,
+			"method":    strings.ToLower(method),
+			"protected": protected,
+			"status":    volumeStatus,
+		}
+		if percent, ok := floatFromAny(item["EncryptionPercentage"]); ok {
+			entry["percentEncrypted"] = percent
+		}
+		volumes = append(volumes, entry)
+	}
+
+	return map[string]any{
+		"source":  "bitlocker",
+		"volumes": volumes,
+	}, nil
+}
+
+func collectEncryptionDetailsDarwin() (map[string]any, error) {
+	output, err := runCommand(6*time.Second, "fdesetup", "status")
+	if err != nil {
+		return nil, err
+	}
+	lower := strings.ToLower(output)
+	protected := strings.Contains(lower, "filevault is on")
+	return map[string]any{
+		"source": "filevault",
+		"volumes": []map[string]any{
+			{
+				"mount":     "/",
+				"method":    "filevault",
+				"protected": protected,
+				"status":    strings.TrimSpace(output),
+			},
+		},
+	}, nil
+}
+
+func collectEncryptionDetailsLinux() (map[string]any, error) {
+	type lsblkNode struct {
+		Name       string      `json:"name"`
+		Type       string      `json:"type"`
+		Mountpoint string      `json:"mountpoint"`
+		Fstype     string      `json:"fstype"`
+		Children   []lsblkNode `json:"children"`
+	}
+	type lsblkPayload struct {
+		Blockdevices []lsblkNode `json:"blockdevices"`
+	}
+
+	output, err := runCommand(8*time.Second, "lsblk", "-J", "-o", "NAME,TYPE,MOUNTPOINT,FSTYPE")
+	if err != nil {
+		return nil, err
+	}
+
+	var payload lsblkPayload
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return nil, err
+	}
+
+	volumes := make([]map[string]any, 0)
+	var walk func(node lsblkNode, inheritedProtected bool)
+	walk = func(node lsblkNode, inheritedProtected bool) {
+		isProtected := inheritedProtected ||
+			strings.EqualFold(node.Type, "crypt") ||
+			strings.Contains(strings.ToLower(node.Fstype), "luks")
+
+		if strings.TrimSpace(node.Mountpoint) != "" {
+			method := "none"
+			if isProtected {
+				method = "luks"
+			}
+			volumes = append(volumes, map[string]any{
+				"mount":     node.Mountpoint,
+				"device":    node.Name,
+				"method":    method,
+				"protected": isProtected,
+			})
+		}
+
+		for _, child := range node.Children {
+			walk(child, isProtected)
+		}
+	}
+
+	for _, node := range payload.Blockdevices {
+		walk(node, false)
+	}
+
+	return map[string]any{
+		"source":  "lsblk",
+		"volumes": volumes,
+	}, nil
+}
+
+func collectEncryptionDetails() (map[string]any, error) {
+	switch runtime.GOOS {
+	case "windows":
+		return collectEncryptionDetailsWindows()
+	case "darwin":
+		return collectEncryptionDetailsDarwin()
+	case "linux":
+		return collectEncryptionDetailsLinux()
+	default:
+		return nil, ErrNotSupported
+	}
+}
+
+func collectLocalAdminSummaryWindows() (map[string]any, error) {
+	output, err := runCommand(
+		10*time.Second,
+		"powershell",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		"Get-LocalGroupMember -Group 'Administrators' | Select-Object Name,ObjectClass,SID,PrincipalSource | ConvertTo-Json -Compress",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := parseJSONValue(output)
+	if err != nil {
+		return nil, err
+	}
+
+	members := toObjectSlice(parsed)
+	accounts := make([]map[string]any, 0, len(members))
+	for _, member := range members {
+		username, _ := stringFromAny(member["Name"])
+		if username == "" {
+			continue
+		}
+		sid, _ := stringFromAny(member["SID"])
+		isBuiltIn := strings.HasSuffix(strings.TrimSpace(sid), "-500") ||
+			strings.EqualFold(username, "Administrator")
+		entry := map[string]any{
+			"username":   username,
+			"isBuiltIn":  isBuiltIn,
+			"enabled":    true,
+			"objectType": member["ObjectClass"],
+		}
+		if isBuiltIn {
+			entry["defaultAccount"] = true
+		}
+		accounts = append(accounts, entry)
+	}
+
+	return map[string]any{
+		"source":            "windows_local_group",
+		"adminCount":        len(accounts),
+		"localAccountCount": len(accounts),
+		"accounts":          accounts,
+	}, nil
+}
+
+func collectLocalAdminSummaryDarwin() (map[string]any, error) {
+	output, err := runCommand(6*time.Second, "dscl", ".", "-read", "/Groups/admin", "GroupMembership")
+	if err != nil {
+		return nil, err
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(output), ":", 2)
+	if len(parts) < 2 {
+		return map[string]any{
+			"source":            "dscl_admin_group",
+			"adminCount":        0,
+			"localAccountCount": 0,
+			"accounts":          []map[string]any{},
+		}, nil
+	}
+
+	usernames := strings.Fields(strings.TrimSpace(parts[1]))
+	accounts := make([]map[string]any, 0, len(usernames))
+	for _, username := range usernames {
+		accounts = append(accounts, map[string]any{
+			"username":  username,
+			"isBuiltIn": username == "root",
+			"enabled":   true,
+		})
+	}
+
+	return map[string]any{
+		"source":            "dscl_admin_group",
+		"adminCount":        len(accounts),
+		"localAccountCount": len(accounts),
+		"accounts":          accounts,
+	}, nil
+}
+
+func parseGroupMembers(output string) []string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return nil
+	}
+	parts := strings.Split(trimmed, ":")
+	if len(parts) < 4 {
+		return nil
+	}
+	memberField := strings.TrimSpace(parts[3])
+	if memberField == "" {
+		return nil
+	}
+	rawMembers := strings.Split(memberField, ",")
+	members := make([]string, 0, len(rawMembers))
+	for _, member := range rawMembers {
+		name := strings.TrimSpace(member)
+		if name == "" {
+			continue
+		}
+		members = append(members, name)
+	}
+	return members
+}
+
+func collectLocalAdminSummaryLinux() (map[string]any, error) {
+	members := []string{}
+	if output, err := runCommand(5*time.Second, "getent", "group", "sudo"); err == nil {
+		members = parseGroupMembers(output)
+	}
+	if len(members) == 0 {
+		if output, err := runCommand(5*time.Second, "getent", "group", "wheel"); err == nil {
+			members = parseGroupMembers(output)
+		}
+	}
+
+	accounts := make([]map[string]any, 0, len(members))
+	for _, username := range members {
+		accounts = append(accounts, map[string]any{
+			"username":  username,
+			"isBuiltIn": username == "root",
+			"enabled":   true,
+		})
+	}
+
+	return map[string]any{
+		"source":            "getent_admin_group",
+		"adminCount":        len(accounts),
+		"localAccountCount": len(accounts),
+		"accounts":          accounts,
+	}, nil
+}
+
+func collectLocalAdminSummary() (map[string]any, error) {
+	switch runtime.GOOS {
+	case "windows":
+		return collectLocalAdminSummaryWindows()
+	case "darwin":
+		return collectLocalAdminSummaryDarwin()
+	case "linux":
+		return collectLocalAdminSummaryLinux()
+	default:
+		return nil, ErrNotSupported
+	}
+}
+
+func collectPasswordPolicySummaryWindows() (map[string]any, error) {
+	output, err := runCommand(
+		10*time.Second,
+		"powershell",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		"$p=Get-CimInstance -ClassName Win32_AccountPolicy; [pscustomobject]@{minLength=[int]$p.MinPasswordLength;maxAgeDays=[int]$p.MaxPasswordAge.TotalDays;lockoutThreshold=[int]$p.LockoutThreshold;historyCount=[int]$p.PasswordHistorySize} | ConvertTo-Json -Compress",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := parseJSONValue(output)
+	if err != nil {
+		return nil, err
+	}
+	record, ok := parsed.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected windows password policy payload")
+	}
+	record["source"] = "win32_account_policy"
+	return record, nil
+}
+
+func parsePwPolicyDarwin(output string) map[string]any {
+	result := map[string]any{
+		"source": "pwpolicy",
+	}
+	tokens := strings.Fields(output)
+	parsed := map[string]string{}
+	for _, token := range tokens {
+		parts := strings.SplitN(token, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		parsed[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+
+	if value, ok := parsed["minChars"]; ok {
+		if n, err := strconv.Atoi(value); err == nil {
+			result["minLength"] = n
+		}
+	}
+	requiresAlpha := parsed["requiresAlpha"] == "1"
+	requiresNumeric := parsed["requiresNumeric"] == "1"
+	if _, hasAlpha := parsed["requiresAlpha"]; hasAlpha {
+		result["complexityEnabled"] = requiresAlpha && requiresNumeric
+	}
+	if value, ok := parsed["maxMinutesUntilChangePassword"]; ok {
+		if n, err := strconv.Atoi(value); err == nil && n > 0 {
+			result["maxAgeDays"] = int(float64(n) / 1440.0)
+		}
+	}
+	if value, ok := parsed["maxFailedLoginAttempts"]; ok {
+		if n, err := strconv.Atoi(value); err == nil {
+			result["lockoutThreshold"] = n
+		}
+	}
+	if value, ok := parsed["usingHistory"]; ok {
+		if n, err := strconv.Atoi(value); err == nil {
+			result["historyCount"] = n
+		}
+	}
+
+	return result
+}
+
+func collectPasswordPolicySummaryDarwin() (map[string]any, error) {
+	output, err := runCommand(6*time.Second, "pwpolicy", "-getglobalpolicy")
+	if err != nil {
+		return nil, err
+	}
+	return parsePwPolicyDarwin(output), nil
+}
+
+func parseLoginDefsPolicy(content string) map[string]any {
+	result := map[string]any{
+		"source": "login.defs",
+	}
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 2 {
+			continue
+		}
+		key := strings.ToUpper(fields[0])
+		value := fields[1]
+		switch key {
+		case "PASS_MIN_LEN":
+			if n, err := strconv.Atoi(value); err == nil {
+				result["minLength"] = n
+			}
+		case "PASS_MAX_DAYS":
+			if n, err := strconv.Atoi(value); err == nil {
+				result["maxAgeDays"] = n
+			}
+		}
+	}
+	return result
+}
+
+func collectPasswordPolicySummaryLinux() (map[string]any, error) {
+	result := map[string]any{
+		"source": "linux_password_policy",
+	}
+
+	if content, err := os.ReadFile("/etc/login.defs"); err == nil {
+		for key, value := range parseLoginDefsPolicy(string(content)) {
+			result[key] = value
+		}
+	}
+
+	pamCandidates := []string{
+		"/etc/pam.d/common-password",
+		"/etc/pam.d/system-auth",
+		"/etc/pam.d/password-auth",
+	}
+	for _, path := range pamCandidates {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		lower := strings.ToLower(string(content))
+		if strings.Contains(lower, "pam_pwquality") || strings.Contains(lower, "pam_cracklib") {
+			result["complexityEnabled"] = true
+			break
+		}
+	}
+
+	if content, err := os.ReadFile("/etc/security/faillock.conf"); err == nil {
+		for _, line := range strings.Split(string(content), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "deny") {
+				parts := strings.SplitN(trimmed, "=", 2)
+				if len(parts) == 2 {
+					if n, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
+						result["lockoutThreshold"] = n
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+func collectPasswordPolicySummary() (map[string]any, error) {
+	switch runtime.GOOS {
+	case "windows":
+		return collectPasswordPolicySummaryWindows()
+	case "darwin":
+		return collectPasswordPolicySummaryDarwin()
+	case "linux":
+		return collectPasswordPolicySummaryLinux()
+	default:
+		return nil, ErrNotSupported
+	}
+}
+
 // CollectStatus gathers AV/firewall/encryption posture for this endpoint.
 func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	var status SecurityStatus
@@ -575,6 +1082,17 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		errs = append(errs, encErr)
 	}
 	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
+	if details, err := collectEncryptionDetails(); err == nil {
+		status.EncryptionDetails = details
+	}
+
+	if localAdmins, err := collectLocalAdminSummary(); err == nil {
+		status.LocalAdminSummary = localAdmins
+	}
+
+	if passwordPolicy, err := collectPasswordPolicySummary(); err == nil {
+		status.PasswordPolicySummary = passwordPolicy
+	}
 
 	if runtime.GOOS == "darwin" {
 		gatekeeperEnabled, gatekeeperErr := getGatekeeperStatusDarwin()

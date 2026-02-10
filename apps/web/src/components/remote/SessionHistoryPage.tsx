@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { History, X } from 'lucide-react';
 import SessionHistory, { normalizeRemoteSession, type RemoteSession, type RemoteSessionApi } from './SessionHistory';
+import { fetchWithAuth } from '@/stores/auth';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -15,18 +16,13 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
 
   const handleExport = useCallback(async () => {
     try {
-      const authHeaders = {
-        'Authorization': `Bearer ${localStorage.getItem('token')}`
-      };
       const sessions: RemoteSession[] = [];
       const pageSize = 100;
       let page = 1;
       let total = Number.POSITIVE_INFINITY;
 
       while (sessions.length < total) {
-        const response = await fetch(`/api/remote/sessions/history?limit=${pageSize}&page=${page}`, {
-          headers: authHeaders
-        });
+        const response = await fetchWithAuth(`/remote/sessions/history?limit=${pageSize}&page=${page}`);
 
         if (!response.ok) {
           throw new Error('Failed to fetch sessions for export');

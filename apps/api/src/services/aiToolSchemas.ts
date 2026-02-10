@@ -89,6 +89,19 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     aggregation: z.enum(['raw', 'hourly', 'daily']).optional(),
   }),
 
+  get_active_users: z.object({
+    deviceId: uuid.optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+    idleThresholdMinutes: z.number().int().min(1).max(1440).optional(),
+  }),
+
+  get_user_experience_metrics: z.object({
+    deviceId: uuid.optional(),
+    username: z.string().max(255).optional(),
+    daysBack: z.number().int().min(1).max(365).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }),
+
   manage_alerts: z.object({
     action: z.enum(['list', 'get', 'acknowledge', 'resolve']),
     alertId: uuid.optional(),
@@ -151,6 +164,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     },
     { message: 'threatId is required for quarantine/remove/restore actions' }
   ),
+
+  get_security_posture: z.object({
+    deviceId: uuid.optional(),
+    orgId: uuid.optional(),
+    minScore: z.number().int().min(0).max(100).optional(),
+    maxScore: z.number().int().min(0).max(100).optional(),
+    riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+    includeRecommendations: z.boolean().optional(),
+    limit: z.number().int().min(1).max(500).optional()
+  }),
 
   file_operations: z.object({
     deviceId: uuid,

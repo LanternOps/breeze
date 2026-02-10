@@ -8,7 +8,18 @@ export const pluginStatusEnum = pgEnum('plugin_status', ['active', 'disabled', '
 export const webhookStatusEnum = pgEnum('webhook_status', ['active', 'disabled', 'error']);
 export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['pending', 'delivered', 'failed', 'retrying']);
 export const eventBusPriorityEnum = pgEnum('event_bus_priority', ['low', 'normal', 'high', 'critical']);
-export const psaProviderEnum = pgEnum('psa_provider', ['connectwise', 'autotask', 'halo', 'syncro', 'kaseya', 'other']);
+export const psaProviderEnum = pgEnum('psa_provider', [
+  'connectwise',
+  'autotask',
+  'halo',
+  'syncro',
+  'kaseya',
+  'jira',
+  'servicenow',
+  'freshservice',
+  'zendesk',
+  'other'
+]);
 
 export const plugins = pgTable('plugins', {
   id: uuid('id').primaryKey().defaultRandom(),

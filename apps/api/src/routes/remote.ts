@@ -15,6 +15,7 @@ import { sendCommandToAgent } from './agentWs';
 import { createHmac } from 'crypto';
 import { saveChunk, assembleChunks, getFileStream, getFileSize, hasAssembledFile, getTotalBytesReceived, MAX_TRANSFER_SIZE_BYTES } from '../services/fileStorage';
 import { Readable } from 'stream';
+import { createDesktopConnectCode, createWsTicket } from '../services/remoteSessionAuth';
 
 export const remoteRoutes = new Hono();
 
@@ -737,6 +738,91 @@ remoteRoutes.get(
       },
       user: user ? { name: user.name, email: user.email } : null
     });
+  }
+);
+
+// POST /remote/sessions/:id/ws-ticket - Mint one-time WS ticket for terminal/desktop sessions
+remoteRoutes.post(
+  '/sessions/:id/ws-ticket',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+
+    const result = await getSessionWithOrgCheck(sessionId, auth);
+    if (!result) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const { session } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (session.type !== 'terminal' && session.type !== 'desktop') {
+      return c.json({ error: 'WebSocket ticket only supported for terminal or desktop sessions' }, 400);
+    }
+
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
+      return c.json({
+        error: 'Cannot mint WebSocket ticket for session in current state',
+        status: session.status
+      }, 400);
+    }
+
+    const ticket = createWsTicket({
+      sessionId: session.id,
+      sessionType: session.type,
+      userId: auth.user.id
+    });
+
+    return c.json(ticket);
+  }
+);
+
+// POST /remote/sessions/:id/desktop-connect-code - Mint one-time desktop connect code for deep links
+remoteRoutes.post(
+  '/sessions/:id/desktop-connect-code',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+
+    const result = await getSessionWithOrgCheck(sessionId, auth);
+    if (!result) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const { session } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (session.type !== 'desktop') {
+      return c.json({ error: 'Desktop connect code only supported for desktop sessions' }, 400);
+    }
+
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
+      return c.json({
+        error: 'Cannot mint desktop connect code for session in current state',
+        status: session.status
+      }, 400);
+    }
+
+    const code = createDesktopConnectCode({
+      sessionId: session.id,
+      userId: auth.user.id,
+      tokenPayload: {
+        sub: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token.roleId,
+        orgId: auth.token.orgId,
+        partnerId: auth.token.partnerId,
+        scope: auth.token.scope
+      }
+    });
+
+    return c.json(code);
   }
 );
 

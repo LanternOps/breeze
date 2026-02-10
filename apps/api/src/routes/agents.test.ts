@@ -46,8 +46,15 @@ vi.mock('../db/schema', () => ({
   deviceMetrics: {},
   deviceFilesystemSnapshots: {},
   deviceCommands: {},
+  automationPolicies: {
+    rules: 'rules',
+    orgId: 'orgId',
+    enabled: 'enabled'
+  },
   enrollmentKeys: {},
   deviceDisks: {},
+  deviceRegistryState: {},
+  deviceConfigState: {},
   deviceConnections: {},
   softwareInventory: {},
   patches: {},
@@ -234,6 +241,86 @@ describe('agent routes', () => {
       expect(body.commands[0].id).toBe('cmd-1');
     });
 
+    it('returns deduplicated policy probe config updates', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'device-123',
+                agentId: 'agent-123',
+                orgId: 'org-123'
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                rules: [
+                  { type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Policies\\Zeta', registryValueName: 'Enabled' },
+                  { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' }
+                ]
+              },
+              {
+                rules: [
+                  { type: 'registry_check', registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', registry_value_name: 'Flag' },
+                  { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' }
+                ]
+              }
+            ])
+          })
+        } as any);
+
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/agents/agent-123/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          metrics: {
+            cpuPercent: 10,
+            ramPercent: 20,
+            ramUsedMb: 1024,
+            diskPercent: 30,
+            diskUsedGb: 100
+          },
+          status: 'ok',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.configUpdate).toEqual({
+        policy_registry_state_probes: [
+          { registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', value_name: 'Flag' },
+          { registry_path: 'HKLM\\SOFTWARE\\Policies\\Zeta', value_name: 'Enabled' }
+        ],
+        policy_config_state_probes: [
+          { file_path: '/etc/ssh/sshd_config', config_key: 'PermitRootLogin' }
+        ]
+      });
+    });
+
     it('should return 404 when device is missing', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -306,6 +393,11 @@ describe('agent routes', () => {
               })
             })
           })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([])
+          })
         } as any);
 
       const insertValues = vi.fn().mockResolvedValue(undefined);
@@ -339,6 +431,10 @@ describe('agent routes', () => {
       const body = await res.json();
       expect(body.commands).toHaveLength(1);
       expect(body.commands[0].type).toBe('filesystem_analysis');
+      expect(body.configUpdate).toEqual({
+        policy_registry_state_probes: [],
+        policy_config_state_probes: []
+      });
       expect(insertValues).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'filesystem_analysis',

@@ -34,6 +34,8 @@ export type EventType =
   | 'patch.installed'
   | 'patch.failed'
   | 'patch.rollback'
+  // Security events
+  | 'security.score_changed'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
@@ -41,7 +43,10 @@ export type EventType =
   // User events
   | 'user.login'
   | 'user.logout'
-  | 'user.mfa.enabled';
+  | 'user.mfa.enabled'
+  // Device user-session events (BE-8)
+  | 'session.login'
+  | 'session.logout';
 
 export type EventPriority = 'low' | 'normal' | 'high' | 'critical';
 
@@ -460,6 +465,8 @@ export const EVENT_TYPES = {
   PATCH_INSTALLED: 'patch.installed' as const,
   PATCH_FAILED: 'patch.failed' as const,
   PATCH_ROLLBACK: 'patch.rollback' as const,
+  // Security
+  SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,
@@ -467,5 +474,8 @@ export const EVENT_TYPES = {
   // User
   USER_LOGIN: 'user.login' as const,
   USER_LOGOUT: 'user.logout' as const,
-  USER_MFA_ENABLED: 'user.mfa.enabled' as const
+  USER_MFA_ENABLED: 'user.mfa.enabled' as const,
+  // Device sessions
+  SESSION_LOGIN: 'session.login' as const,
+  SESSION_LOGOUT: 'session.logout' as const
 };

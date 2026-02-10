@@ -112,8 +112,14 @@ function getChannelDescription(channel: NotificationChannel): string {
       return 'PagerDuty integration';
     case 'webhook':
       return (config.url as string) || 'Custom webhook';
-    case 'sms':
-      return (config.phoneNumber as string) || 'SMS notification';
+    case 'sms': {
+      const phoneNumbers = Array.isArray(config.phoneNumbers)
+        ? (config.phoneNumbers as string[]).filter((value) => typeof value === 'string' && value.trim().length > 0)
+        : [];
+      return phoneNumbers.length > 0
+        ? `${phoneNumbers[0]}${phoneNumbers.length > 1 ? ` +${phoneNumbers.length - 1} more` : ''}`
+        : 'SMS notification';
+    }
     default:
       return 'Notification channel';
   }

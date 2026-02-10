@@ -1,16 +1,15 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import RemoteToolsPage from '../../components/remote/RemoteToolsPage';
+import { parseRemoteToolsParams } from '../../lib/remoteToolsParams';
 
-const searchParams = Astro.url.searchParams;
-const deviceId = searchParams.get('deviceId') ?? 'demo-device-001';
-const rawDeviceName = searchParams.get('deviceName') ?? 'Demo Windows Workstation';
-const deviceName = rawDeviceName.replace(/[<>"'&]/g, '');
-const osParam = searchParams.get('os') ?? 'windows';
-const normalizedOs = osParam === 'darwin' ? 'macos' : osParam;
-const deviceOs = normalizedOs === 'windows' || normalizedOs === 'macos' || normalizedOs === 'linux'
-  ? normalizedOs
-  : 'windows';
+const routeParams = parseRemoteToolsParams(Astro.url.searchParams);
+
+if (!routeParams) {
+  return Astro.redirect('/remote');
+}
+
+const { deviceId, deviceName, deviceOs } = routeParams;
 ---
 
 <Layout title="Remote Tools | Breeze RMM">

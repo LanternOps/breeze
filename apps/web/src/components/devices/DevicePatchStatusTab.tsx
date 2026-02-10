@@ -19,6 +19,8 @@ type PatchItem = {
   name?: string;
   title?: string;
   kb?: string;
+  externalId?: string;
+  description?: string;
   severity?: string;
   status?: string;
   category?: string;
@@ -26,6 +28,7 @@ type PatchItem = {
   releaseDate?: string;
   releasedAt?: string;
   installedAt?: string;
+  requiresReboot?: boolean;
 };
 
 type PatchPayload = {
@@ -69,6 +72,16 @@ const categoryBadges: Record<string, { label: string; className: string }> = {
   definitions: { label: 'Definitions', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
   driver: { label: 'Driver', className: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300' },
   feature: { label: 'Feature', className: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' }
+};
+
+const severityBadges: Record<string, { label: string; className: string }> = {
+  critical: { label: 'Critical', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
+  important: { label: 'Important', className: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' },
+  high: { label: 'High', className: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' },
+  moderate: { label: 'Moderate', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
+  medium: { label: 'Medium', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
+  low: { label: 'Low', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
+  unknown: { label: 'Unknown', className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300' }
 };
 
 type PatchDisplayCopy = {
@@ -263,8 +276,8 @@ function isNativePatchForOs(patch: PatchItem, osType: OSType) {
   return isApplePatch(patch);
 }
 
-function formatDate(value?: string, timezone?: string) {
-  if (!value) return 'Not reported';
+function formatDate(value?: string, timezone?: string, fallback = 'Not reported') {
+  if (!value) return fallback;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
@@ -273,9 +286,94 @@ function normalizePatchName(patch: PatchItem) {
   return patch.title || patch.name || patch.kb || 'Unnamed patch';
 }
 
-function getHomebrewUrl(patch: PatchItem): string | null {
+function getSeverityBadge(severity?: string) {
+  const normalized = (severity || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'unknown') return null;
+
+  if (severityBadges[normalized]) {
+    return severityBadges[normalized];
+  }
+
+  return {
+    label: normalized.charAt(0).toUpperCase() + normalized.slice(1),
+    className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300'
+  };
+}
+
+function getKbLabel(patch: PatchItem): string | null {
+  const explicitKb = (patch.kb || '').trim();
+  if (explicitKb) {
+    return explicitKb.toUpperCase().startsWith('KB') ? explicitKb.toUpperCase() : `KB${explicitKb}`;
+  }
+
+  const name = patch.title || patch.name || '';
+  const match = name.match(/kb\d{4,8}/i);
+  return match ? match[0].toUpperCase() : null;
+}
+
+function getReleaseLabel(patch: PatchItem, timezone?: string): string | null {
+  const value = patch.releaseDate || patch.releasedAt;
+  if (!value) return null;
+  const formatted = formatDate(value, timezone, '');
+  return formatted ? `Released ${formatted}` : null;
+}
+
+function getInstalledVersionFromDescription(description?: string): string | null {
+  if (!description) return null;
+  const match = description.match(/^installed:\s*(.+)$/i);
+  if (!match || !match[1]) return null;
+  return match[1].trim() || null;
+}
+
+function getAvailableVersionFromExternalId(externalId?: string): string | null {
+  if (!externalId) return null;
+  const parts = externalId.split(':');
+  if (parts.length < 3) return null;
+  const candidate = parts[parts.length - 1]?.trim();
+  if (!candidate || candidate === 'latest') return null;
+  if (!/[0-9]/.test(candidate)) return null;
+  return candidate;
+}
+
+function getHomebrewPendingDetails(patch: PatchItem, osType: OSType) {
+  if (osType !== 'macos') return null;
+
   const category = (patch.category || '').toLowerCase();
-  if (category !== 'homebrew' && category !== 'homebrew-cask') {
+  const source = (patch.source || '').toLowerCase();
+  const installedVersion = getInstalledVersionFromDescription(patch.description);
+  const availableVersion = getAvailableVersionFromExternalId(patch.externalId);
+  const brewLike = category === 'homebrew' ||
+    category === 'homebrew-cask' ||
+    source === 'third_party' ||
+    !!installedVersion;
+
+  if (!brewLike) return null;
+
+  const packageType = category === 'homebrew-cask'
+    ? 'Cask'
+    : category === 'homebrew'
+      ? 'Formula'
+      : 'Homebrew';
+
+  const versionLabel = installedVersion && availableVersion
+    ? `Installed ${installedVersion} -> ${availableVersion}`
+    : installedVersion
+      ? `Installed ${installedVersion}`
+      : availableVersion
+        ? `Available ${availableVersion}`
+        : null;
+
+  return { packageType, versionLabel };
+}
+
+function getHomebrewUrl(patch: PatchItem, osType: OSType): string | null {
+  const category = (patch.category || '').toLowerCase();
+  const source = (patch.source || '').toLowerCase();
+  const brewLikeCategory = category === 'homebrew' || category === 'homebrew-cask';
+  const brewLikeSource = osType === 'macos' && source === 'third_party';
+
+  if (!brewLikeCategory && !brewLikeSource) {
     return null;
   }
 
@@ -615,9 +713,36 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   ) : (
                     pendingNative.map((patch, index) => {
                       const badge = getCategoryBadge(patch, normalizedOsType);
+                      const severityBadge = getSeverityBadge(patch.severity);
+                      const kbLabel = getKbLabel(patch);
+                      const releaseLabel = getReleaseLabel(patch, effectiveTimezone);
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-apple'}-${index}`} className="text-sm">
-                          <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
+                          <td className="px-4 py-3">
+                            <div className="space-y-1">
+                              <p className="font-medium">{normalizePatchName(patch)}</p>
+                              {(severityBadge || kbLabel || releaseLabel || patch.requiresReboot) && (
+                                <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                                  {severityBadge && (
+                                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${severityBadge.className}`}>
+                                      {severityBadge.label}
+                                    </span>
+                                  )}
+                                  {kbLabel && (
+                                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                      {kbLabel}
+                                    </span>
+                                  )}
+                                  {releaseLabel && <span>{releaseLabel}</span>}
+                                  {patch.requiresReboot && (
+                                    <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+                                      Reboot required
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </td>
                           <td className="px-4 py-3">
                             {badge ? (
                               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
@@ -668,26 +793,63 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   ) : (
                     pendingOther.map((patch, index) => {
                       const badge = getCategoryBadge(patch, normalizedOsType);
-                      const brewUrl = normalizedOsType === 'macos' ? getHomebrewUrl(patch) : null;
+                      const brewUrl = normalizedOsType === 'macos' ? getHomebrewUrl(patch, normalizedOsType) : null;
+                      const brewDetails = getHomebrewPendingDetails(patch, normalizedOsType);
+                      const severityBadge = getSeverityBadge(patch.severity);
+                      const kbLabel = getKbLabel(patch);
+                      const releaseLabel = getReleaseLabel(patch, effectiveTimezone);
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-other'}-${index}`} className="text-sm">
-                          <td className="px-4 py-3 font-medium">
-                            {brewUrl ? (
-                              <a
-                                href={brewUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
-                              >
-                                {normalizePatchName(patch)}
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            ) : (
-                              normalizePatchName(patch)
-                            )}
+                          <td className="px-4 py-3">
+                            <div className="space-y-1">
+                              <div className="font-medium">
+                                {brewUrl ? (
+                                  <a
+                                    href={brewUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                                  >
+                                    {normalizePatchName(patch)}
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                ) : (
+                                  normalizePatchName(patch)
+                                )}
+                              </div>
+                              {(severityBadge || kbLabel || releaseLabel || patch.requiresReboot) && (
+                                <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                                  {severityBadge && (
+                                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${severityBadge.className}`}>
+                                      {severityBadge.label}
+                                    </span>
+                                  )}
+                                  {kbLabel && (
+                                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                      {kbLabel}
+                                    </span>
+                                  )}
+                                  {releaseLabel && <span>{releaseLabel}</span>}
+                                  {patch.requiresReboot && (
+                                    <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+                                      Reboot required
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {brewDetails?.versionLabel && (
+                                <div className="text-xs text-muted-foreground">
+                                  {brewDetails.versionLabel}
+                                </div>
+                              )}
+                            </div>
                           </td>
                           <td className="px-4 py-3">
-                            {badge ? (
+                            {brewDetails ? (
+                              <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                                {brewDetails.packageType}
+                              </span>
+                            ) : badge ? (
                               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
                                 {badge.label}
                               </span>
@@ -779,7 +941,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 </thead>
                 <tbody className="divide-y">
                   {installedThirdParty.map((patch, index) => {
-                    const brewUrl = normalizedOsType === 'macos' ? getHomebrewUrl(patch) : null;
+                    const brewUrl = normalizedOsType === 'macos' ? getHomebrewUrl(patch, normalizedOsType) : null;
                     return (
                       <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'thirdparty'}-${index}`} className="text-sm">
                         <td className="px-4 py-3 font-medium">

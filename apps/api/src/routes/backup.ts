@@ -620,6 +620,10 @@ const snapshotListSchema = z.object({
   configId: z.string().optional()
 });
 
+const usageHistoryQuerySchema = z.object({
+  days: z.coerce.number().int().min(3).max(90).optional()
+});
+
 const restoreSchema = z.object({
   snapshotId: z.string().min(1),
   deviceId: z.string().min(1).optional(),
@@ -1228,6 +1232,84 @@ backupRoutes.get('/restore/:id', (c) => {
     return c.json({ error: 'Restore job not found' }, 404);
   }
   return c.json(restoreJob);
+});
+
+backupRoutes.get('/usage-history', zValidator('query', usageHistoryQuerySchema), (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth);
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const { days = 14 } = c.req.valid('query');
+  const scopedSnapshots = backupSnapshots.filter((snapshot) => snapshotOrgById.get(snapshot.id) === orgId);
+  const scopedConfigs = backupConfigs.filter((config) => configOrgById.get(config.id) === orgId);
+
+  const configById = new Map(scopedConfigs.map((config) => [config.id, config]));
+  const providers = new Set<string>(scopedConfigs.map((config) => config.provider));
+  const today = new Date();
+  const startDate = new Date(today);
+  startDate.setUTCHours(0, 0, 0, 0);
+  startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
+
+  const dailyIncrements = new Map<string, Map<string, number>>();
+
+  for (const snapshot of scopedSnapshots) {
+    const createdAt = new Date(snapshot.createdAt);
+    if (Number.isNaN(createdAt.getTime()) || createdAt < startDate) {
+      continue;
+    }
+
+    const dayKey = createdAt.toISOString().slice(0, 10);
+    const provider = configById.get(snapshot.configId)?.provider ?? 'unknown';
+    providers.add(provider);
+
+    const dayMap = dailyIncrements.get(dayKey) ?? new Map<string, number>();
+    dayMap.set(provider, (dayMap.get(provider) ?? 0) + snapshot.sizeBytes);
+    dailyIncrements.set(dayKey, dayMap);
+  }
+
+  const providerList = Array.from(providers);
+  const runningByProvider = new Map(providerList.map((provider) => [provider, 0]));
+  const points: Array<{
+    timestamp: string;
+    totalBytes: number;
+    providers: Array<{ provider: string; bytes: number }>;
+  }> = [];
+
+  for (let offset = 0; offset < days; offset += 1) {
+    const dayDate = new Date(startDate);
+    dayDate.setUTCDate(startDate.getUTCDate() + offset);
+    const dayKey = dayDate.toISOString().slice(0, 10);
+    const incrementsForDay = dailyIncrements.get(dayKey);
+
+    for (const provider of providerList) {
+      const increment = incrementsForDay?.get(provider) ?? 0;
+      runningByProvider.set(provider, (runningByProvider.get(provider) ?? 0) + increment);
+    }
+
+    const providerSeries = providerList.map((provider) => ({
+      provider,
+      bytes: runningByProvider.get(provider) ?? 0
+    }));
+    const totalBytes = providerSeries.reduce((sum, item) => sum + item.bytes, 0);
+
+    points.push({
+      timestamp: dayDate.toISOString(),
+      totalBytes,
+      providers: providerSeries
+    });
+  }
+
+  return c.json({
+    data: {
+      days,
+      start: startDate.toISOString(),
+      end: today.toISOString(),
+      providers: providerList,
+      points
+    }
+  });
 });
 
 backupRoutes.get('/dashboard', (c) => {

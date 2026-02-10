@@ -13,3 +13,5 @@ export * from './plugins';
 export * from './commandQueue';
 export * from './email';
 export * from './auditService';
+export * from './tokenRevocation';
+export * from './clientIp';

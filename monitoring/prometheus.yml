@@ -39,7 +39,7 @@ scrape_configs:
     scheme: http
     authorization:
       type: Bearer
-      credentials: REDACTED_DEV_TOKEN
+      credentials_file: /run/secrets/metrics_scrape_token
     scrape_interval: 10s
     scrape_timeout: 5s
     relabel_configs:

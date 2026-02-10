@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { and, eq, sql, desc, inArray, lt, isNull, or } from 'drizzle-orm';
 import { db } from '../db';
 import { enrollmentKeys } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
+import { PERMISSIONS } from '../services/permissions';
+import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
 
 export const enrollmentKeyRoutes = new Hono();
 
@@ -75,12 +77,17 @@ const listEnrollmentKeysSchema = z.object({
 });
 
 const createEnrollmentKeySchema = z.object({
-  orgId: z.string().uuid(),
+  orgId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   maxUsage: z.number().int().min(1).max(100000).optional(),
   expiresAt: z.string().datetime().optional()
 });
+
+function sanitizeEnrollmentKey(enrollmentKey: typeof enrollmentKeys.$inferSelect) {
+  const { key, ...safeRecord } = enrollmentKey;
+  return safeRecord;
+}
 
 // ============================================
 // Routes
@@ -92,6 +99,7 @@ enrollmentKeyRoutes.use('*', authMiddleware);
 enrollmentKeyRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', listEnrollmentKeysSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -154,7 +162,7 @@ enrollmentKeyRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: keyList,
+      data: keyList.map((keyRecord) => sanitizeEnrollmentKey(keyRecord)),
       pagination: { page, limit, total }
     });
   }
@@ -164,34 +172,43 @@ enrollmentKeyRoutes.get(
 enrollmentKeyRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   zValidator('json', createEnrollmentKeySchema),
   async (c) => {
     const auth = c.get('auth');
     const data = c.req.valid('json');
+    let orgId = data.orgId;
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
-      if (data.orgId !== auth.orgId) {
+      if (data.orgId && data.orgId !== auth.orgId) {
         return c.json({ error: 'Can only create enrollment keys for your organization' }, 403);
       }
+      orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
-      const hasAccess = await ensureOrgAccess(data.orgId, auth);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for partner scope' }, 400);
+      }
+      const hasAccess = await ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
+    } else if (!orgId) {
+      return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const key = generateEnrollmentKey();
+    const rawKey = generateEnrollmentKey();
+    const keyHash = hashEnrollmentKey(rawKey);
 
     const [enrollmentKey] = await db
       .insert(enrollmentKeys)
       .values({
-        orgId: data.orgId,
+        orgId,
         siteId: data.siteId ?? null,
         name: data.name,
-        key,
+        key: keyHash,
         maxUsage: data.maxUsage ?? null,
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
         createdBy: auth.user.id
@@ -214,7 +231,10 @@ enrollmentKeyRoutes.post(
       }
     });
 
-    return c.json(enrollmentKey, 201);
+    return c.json({
+      ...sanitizeEnrollmentKey(enrollmentKey),
+      key: rawKey
+    }, 201);
   }
 );
 
@@ -222,6 +242,7 @@ enrollmentKeyRoutes.post(
 enrollmentKeyRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const keyId = c.req.param('id');
@@ -241,7 +262,7 @@ enrollmentKeyRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    return c.json(enrollmentKey);
+    return c.json(sanitizeEnrollmentKey(enrollmentKey));
   }
 );
 
@@ -249,6 +270,7 @@ enrollmentKeyRoutes.get(
 enrollmentKeyRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
     const keyId = c.req.param('id');

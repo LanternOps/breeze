@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Monitor, Loader2, AlertCircle, Folder } from 'lucide-react';
+import { ArrowLeft, Monitor, Loader2, AlertCircle } from 'lucide-react';
 import FileManager from './FileManager';
 import { getInitialFilePath, type DeviceOs } from './filePathUtils';
+import { fetchWithAuth } from '@/stores/auth';
 
 type Device = {
   id: string;
@@ -24,11 +25,7 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
   useEffect(() => {
     const fetchDevice = async () => {
       try {
-        const response = await fetch(`/api/devices/${deviceId}`, {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          }
-        });
+        const response = await fetchWithAuth(`/devices/${deviceId}`);
 
         if (!response.ok) {
           if (response.status === 404) {

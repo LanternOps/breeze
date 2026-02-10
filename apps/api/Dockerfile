@@ -15,7 +15,7 @@ WORKDIR /app
 # Copy workspace configuration
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/api/package.json ./apps/api/
-COPY packages/shared/package.json ./packages/shared/ 2>/dev/null || mkdir -p ./packages/shared
+COPY packages/shared/package.json ./packages/shared/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline
@@ -29,12 +29,12 @@ ENV NODE_ENV=${NODE_ENV}
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules 2>/dev/null || true
-COPY --from=deps /app/packages ./packages 2>/dev/null || true
+COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=deps /app/packages ./packages
 
 # Copy source code
 COPY apps/api ./apps/api
-COPY packages ./packages 2>/dev/null || true
+COPY packages ./packages
 COPY tsconfig.json ./
 
 # Build the API
@@ -56,13 +56,15 @@ ENV API_PORT=3001
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 hono
 
-# Copy built application
-COPY --from=builder --chown=hono:nodejs /app/apps/api/dist ./dist
-COPY --from=builder --chown=hono:nodejs /app/apps/api/package.json ./
-
-# Copy production node_modules (optional: for native modules like argon2)
-COPY --from=deps --chown=hono:nodejs /app/apps/api/node_modules ./node_modules 2>/dev/null || true
+# Copy API build output and dependencies while preserving pnpm workspace symlink layout.
+# /app/apps/api/node_modules links into /app/node_modules/.pnpm.
+COPY --from=builder --chown=hono:nodejs /app/apps/api/dist ./apps/api/dist
+COPY --from=builder --chown=hono:nodejs /app/apps/api/package.json ./apps/api/package.json
+COPY --from=deps --chown=hono:nodejs /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps --chown=hono:nodejs /app/node_modules ./node_modules
+
+# Run the API from its workspace path so module resolution uses apps/api/node_modules first.
+WORKDIR /app/apps/api
 
 # Switch to non-root user
 USER hono
@@ -75,4 +77,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
 
 # Start the application
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/index.cjs"]

@@ -489,267 +489,129 @@ const defaultFieldsByType: Record<BuilderReportType, string[]> = {
   activity: ['user', 'action', 'target', 'timestamp', 'result']
 };
 
-const sampleDataByType: Record<BuilderReportType, Record<string, string | number>[]> = {
-  devices: [
-    {
-      hostname: 'atlas-01',
-      os: 'Windows 11',
-      status: 'Healthy',
-      site: 'HQ',
-      owner: 'A. Fields',
-      serial: 'SN-1842',
-      last_seen: '2024-09-12 09:14',
-      cpu: 38,
-      memory: 62,
-      disk_usage: 71,
-      patch_level: '2024.08'
-    },
-    {
-      hostname: 'nova-22',
-      os: 'macOS 14',
-      status: 'Warning',
-      site: 'Austin',
-      owner: 'M. Rogers',
-      serial: 'SN-4410',
-      last_seen: '2024-09-12 08:51',
-      cpu: 67,
-      memory: 74,
-      disk_usage: 83,
-      patch_level: '2024.07'
-    },
-    {
-      hostname: 'summit-08',
-      os: 'Ubuntu 22.04',
-      status: 'Healthy',
-      site: 'Berlin',
-      owner: 'P. Nair',
-      serial: 'SN-3048',
-      last_seen: '2024-09-12 08:29',
-      cpu: 22,
-      memory: 49,
-      disk_usage: 58,
-      patch_level: '2024.08'
-    },
-    {
-      hostname: 'ember-19',
-      os: 'Windows 10',
-      status: 'At Risk',
-      site: 'HQ',
-      owner: 'K. Mendoza',
-      serial: 'SN-7781',
-      last_seen: '2024-09-11 22:05',
-      cpu: 81,
-      memory: 88,
-      disk_usage: 91,
-      patch_level: '2024.06'
-    }
-  ],
-  alerts: [
-    {
-      alert_id: 'AL-1024',
-      severity: 'High',
-      status: 'Open',
-      rule: 'CPU Spike',
-      source: 'Monitoring',
-      device: 'atlas-01',
-      triggered_at: '2024-09-12 08:21',
-      resolved_at: '-',
-      duration_minutes: 46
-    },
-    {
-      alert_id: 'AL-1032',
-      severity: 'Critical',
-      status: 'Acknowledged',
-      rule: 'Ransomware Signal',
-      source: 'Security',
-      device: 'ember-19',
-      triggered_at: '2024-09-12 07:54',
-      resolved_at: '-',
-      duration_minutes: 82
-    },
-    {
-      alert_id: 'AL-0988',
-      severity: 'Medium',
-      status: 'Resolved',
-      rule: 'Disk Near Full',
-      source: 'Monitoring',
-      device: 'nova-22',
-      triggered_at: '2024-09-11 23:15',
-      resolved_at: '2024-09-12 00:02',
-      duration_minutes: 47
-    },
-    {
-      alert_id: 'AL-1011',
-      severity: 'Low',
-      status: 'Resolved',
-      rule: 'Agent Restart',
-      source: 'Operations',
-      device: 'summit-08',
-      triggered_at: '2024-09-11 21:04',
-      resolved_at: '2024-09-11 21:08',
-      duration_minutes: 4
-    }
-  ],
-  patches: [
-    {
-      patch_id: 'KB-501',
-      title: 'Endpoint Defender Update',
-      vendor: 'Microsoft',
-      severity: 'Critical',
-      status: 'Pending',
-      release_date: '2024-09-05',
-      approved_at: '2024-09-10',
-      device_count: 412,
-      missing_count: 67
-    },
-    {
-      patch_id: 'PKG-220',
-      title: 'Chrome 127.0.1',
-      vendor: 'Google',
-      severity: 'High',
-      status: 'Deployed',
-      release_date: '2024-09-02',
-      approved_at: '2024-09-03',
-      device_count: 389,
-      missing_count: 12
-    },
-    {
-      patch_id: 'FW-77',
-      title: 'BIOS Update 1.8',
-      vendor: 'Dell',
-      severity: 'Medium',
-      status: 'Approved',
-      release_date: '2024-08-28',
-      approved_at: '2024-09-01',
-      device_count: 154,
-      missing_count: 29
-    },
-    {
-      patch_id: 'APT-18',
-      title: 'OpenSSL 3.2',
-      vendor: 'Linux',
-      severity: 'High',
-      status: 'Pending',
-      release_date: '2024-09-06',
-      approved_at: '2024-09-11',
-      device_count: 88,
-      missing_count: 44
-    }
-  ],
-  compliance: [
-    {
-      policy: 'CIS L1',
-      score: 92,
-      status: 'Passing',
-      last_audit: '2024-09-10',
-      exception_count: 4,
-      device_count: 312,
-      control_family: 'Authentication'
-    },
-    {
-      policy: 'ISO 27001',
-      score: 85,
-      status: 'At Risk',
-      last_audit: '2024-09-09',
-      exception_count: 12,
-      device_count: 145,
-      control_family: 'Asset Mgmt'
-    },
-    {
-      policy: 'HIPAA',
-      score: 78,
-      status: 'At Risk',
-      last_audit: '2024-09-08',
-      exception_count: 18,
-      device_count: 62,
-      control_family: 'Logging'
-    },
-    {
-      policy: 'Custom Secure',
-      score: 96,
-      status: 'Passing',
-      last_audit: '2024-09-11',
-      exception_count: 2,
-      device_count: 289,
-      control_family: 'Network'
-    }
-  ],
-  activity: [
-    {
-      user: 'ariana.fields',
-      action: 'Login',
-      target: 'Portal',
-      resource: 'SSO',
-      ip_address: '198.51.100.24',
-      location: 'Austin, TX',
-      timestamp: '2024-09-12 08:44',
-      result: 'Success',
-      duration_seconds: 12
-    },
-    {
-      user: 'miguel.rogers',
-      action: 'Patch Approve',
-      target: 'Patch KB-501',
-      resource: 'Patching',
-      ip_address: '203.0.113.19',
-      location: 'Denver, CO',
-      timestamp: '2024-09-12 08:12',
-      result: 'Success',
-      duration_seconds: 34
-    },
-    {
-      user: 'kai.mendoza',
-      action: 'Policy Change',
-      target: 'CIS L1',
-      resource: 'Compliance',
-      ip_address: '203.0.113.77',
-      location: 'Berlin, DE',
-      timestamp: '2024-09-11 19:58',
-      result: 'Success',
-      duration_seconds: 46
-    },
-    {
-      user: 'grace.liu',
-      action: 'Login',
-      target: 'Console',
-      resource: 'SSO',
-      ip_address: '198.51.100.88',
-      location: 'New York, NY',
-      timestamp: '2024-09-11 19:41',
-      result: 'Failed',
-      duration_seconds: 8
-    }
-  ]
+type PreviewRow = Record<string, unknown>;
+type PreviewSummary = Record<string, unknown> | null;
+
+const chartCategoryFieldByType: Record<BuilderReportType, string[]> = {
+  devices: ['status', 'osType', 'os'],
+  alerts: ['severity', 'status', 'rule'],
+  patches: ['vendor', 'publisher', 'title'],
+  compliance: ['status', 'control_family', 'osType'],
+  activity: ['action', 'resource', 'result']
 };
 
-const defaultChartSeriesByType: Record<BuilderReportType, { label: string; value: number }[]> = {
-  devices: [
-    { label: 'Healthy', value: 318 },
-    { label: 'Warning', value: 52 },
-    { label: 'At Risk', value: 19 }
-  ],
-  alerts: [
-    { label: 'Critical', value: 12 },
-    { label: 'High', value: 28 },
-    { label: 'Medium', value: 47 },
-    { label: 'Low', value: 63 }
-  ],
-  patches: [
-    { label: 'Pending', value: 140 },
-    { label: 'Approved', value: 92 },
-    { label: 'Deployed', value: 210 }
-  ],
-  compliance: [
-    { label: 'Passing', value: 284 },
-    { label: 'At Risk', value: 74 },
-    { label: 'Failing', value: 22 }
-  ],
-  activity: [
-    { label: 'Logins', value: 240 },
-    { label: 'Policy', value: 36 },
-    { label: 'Patching', value: 58 },
-    { label: 'Admin', value: 18 }
-  ]
+const parseReportTimestamp = (value: unknown): number | null => {
+  if (typeof value !== 'string' || !value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const toNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewRow => {
+  const normalized: PreviewRow = { ...row };
+
+  if (type === 'devices') {
+    const osType = typeof row.osType === 'string' ? row.osType : '';
+    const osVersion = typeof row.osVersion === 'string' ? row.osVersion : '';
+    normalized.os = [osType, osVersion].filter(Boolean).join(' ').trim();
+    normalized.serial = row.serial ?? row.serialNumber ?? null;
+    normalized.last_seen = row.last_seen ?? row.lastSeenAt ?? null;
+    normalized.memory = row.memory ?? row.ramTotalMb ?? null;
+    normalized.disk_usage = row.disk_usage ?? row.diskTotalGb ?? null;
+    normalized.patch_level = row.patch_level ?? row.agentVersion ?? null;
+  } else if (type === 'alerts') {
+    normalized.alert_id = row.alert_id ?? row.id ?? row.title ?? null;
+    normalized.rule = row.rule ?? row.ruleName ?? null;
+    normalized.device = row.device ?? row.deviceHostname ?? null;
+    normalized.triggered_at = row.triggered_at ?? row.triggeredAt ?? null;
+    normalized.resolved_at = row.resolved_at ?? row.resolvedAt ?? null;
+
+    const triggeredAt = parseReportTimestamp(normalized.triggered_at);
+    const resolvedAt = parseReportTimestamp(normalized.resolved_at);
+    if (triggeredAt !== null) {
+      const end = resolvedAt ?? Date.now();
+      normalized.duration_minutes = Math.max(0, Math.round((end - triggeredAt) / 60000));
+    }
+  } else if (type === 'patches') {
+    normalized.patch_id = row.patch_id ?? row.id ?? row.softwareName ?? null;
+    normalized.title = row.title ?? row.softwareName ?? null;
+    normalized.vendor = row.vendor ?? row.publisher ?? null;
+    normalized.release_date = row.release_date ?? row.installDate ?? null;
+    normalized.approved_at = row.approved_at ?? row.installDate ?? null;
+    normalized.device_count = row.device_count ?? 1;
+    normalized.missing_count = row.missing_count ?? 0;
+  } else if (type === 'compliance') {
+    const compliant =
+      typeof row.isCompliant === 'boolean'
+        ? row.isCompliant
+        : typeof row.status === 'string'
+          ? row.status.toLowerCase() === 'compliant'
+          : null;
+    const issues = Array.isArray(row.issues) ? row.issues : [];
+    normalized.policy = row.policy ?? row.hostname ?? null;
+    normalized.score = row.score ?? (compliant === null ? null : compliant ? 100 : 0);
+    normalized.status = row.status ?? (compliant === null ? null : compliant ? 'Compliant' : 'Non-compliant');
+    normalized.last_audit = row.last_audit ?? row.lastSeenAt ?? null;
+    normalized.exception_count = row.exception_count ?? issues.length;
+    normalized.device_count = row.device_count ?? 1;
+    normalized.control_family = row.control_family ?? row.osType ?? null;
+  } else if (type === 'activity') {
+    normalized.user = row.user ?? row.hostname ?? null;
+    normalized.action = row.action ?? 'Metrics';
+    normalized.target = row.target ?? row.hostname ?? null;
+    normalized.resource = row.resource ?? 'Performance';
+    normalized.timestamp = row.timestamp ?? null;
+    normalized.result = row.result ?? 'Collected';
+    normalized.duration_seconds = row.duration_seconds ?? row.avgCpu ?? null;
+  }
+
+  return normalized;
+};
+
+const evaluateSimpleCondition = (row: PreviewRow, condition: FilterCondition): boolean => {
+  const value = row[condition.field];
+  const expected = condition.value.trim();
+
+  if (!expected) return true;
+
+  if (condition.operator === 'gt' || condition.operator === 'lt') {
+    const left = toNumber(value);
+    const right = toNumber(expected);
+    if (left === null || right === null) return false;
+    return condition.operator === 'gt' ? left > right : left < right;
+  }
+
+  const left = String(value ?? '').toLowerCase();
+  const right = expected.toLowerCase();
+
+  if (condition.operator === 'contains') {
+    return left.includes(right);
+  }
+  if (condition.operator === 'is_not') {
+    return left !== right;
+  }
+  return left === right;
+};
+
+const rowMatchesSimpleFilters = (row: PreviewRow, conditions: FilterCondition[]): boolean => {
+  if (conditions.length === 0) return true;
+
+  let matched = evaluateSimpleCondition(row, conditions[0]!);
+  for (let index = 1; index < conditions.length; index += 1) {
+    const condition = conditions[index]!;
+    const current = evaluateSimpleCondition(row, condition);
+    matched = condition.logic === 'or' ? matched || current : matched && current;
+  }
+
+  return matched;
 };
 
 const weekDays = [
@@ -832,11 +694,16 @@ export default function ReportBuilder({
   const [saving, setSaving] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState<string>();
+  const [livePreviewRows, setLivePreviewRows] = useState<PreviewRow[]>([]);
+  const [livePreviewSummary, setLivePreviewSummary] = useState<PreviewSummary>(null);
+  const [livePreviewLoading, setLivePreviewLoading] = useState(false);
+  const [livePreviewError, setLivePreviewError] = useState<string>();
   const [filterMode, setFilterMode] = useState<'simple' | 'advanced'>('simple');
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup>({
     operator: 'AND',
     conditions: []
   });
+  const previewRequestIdRef = useRef(0);
   const { preview: deviceFilterPreview, loading: deviceFilterPreviewLoading } = useFilterPreview(deviceFilter, {
     enabled: filterMode === 'advanced' && deviceFilter.conditions.length > 0
   });
@@ -896,18 +763,174 @@ export default function ReportBuilder({
     return `${aggregation.type === 'sum' ? 'Sum' : 'Avg'} ${fieldLabel}`;
   }, [aggregation, groupBy, fieldLabelMap]);
 
+  useEffect(() => {
+    if (mode === 'adhoc') return;
+
+    let mounted = true;
+    const requestId = previewRequestIdRef.current + 1;
+    previewRequestIdRef.current = requestId;
+    setLivePreviewLoading(true);
+    setLivePreviewError(undefined);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const inheritedFilters =
+          defaultValues?.filters && typeof defaultValues.filters === 'object' && !Array.isArray(defaultValues.filters)
+            ? { ...(defaultValues.filters as Record<string, unknown>) }
+            : {};
+
+        const appendFilterValue = (key: string, value: string) => {
+          const currentValues = Array.isArray(inheritedFilters[key]) ? inheritedFilters[key] as unknown[] : [];
+          if (currentValues.includes(value)) return;
+          inheritedFilters[key] = [...currentValues, value];
+        };
+
+        if (builderType === 'devices') {
+          const platform = String(dataSource.platform ?? '');
+          if (platform === 'windows' || platform === 'macos' || platform === 'linux') {
+            inheritedFilters.osTypes = [platform];
+          }
+        }
+
+        if (builderType === 'alerts') {
+          const severity = String(dataSource.severity ?? '');
+          if (severity && severity !== 'all') {
+            appendFilterValue('severity', severity.toLowerCase());
+          }
+          const status = String(dataSource.status ?? '');
+          if (status && status !== 'all') {
+            appendFilterValue('status', status.toLowerCase());
+          }
+        }
+
+        filterConditions.forEach(condition => {
+          const expected = condition.value.trim().toLowerCase();
+          if (!expected || condition.operator !== 'is') return;
+
+          if (condition.field === 'severity' || condition.field === 'status') {
+            appendFilterValue(condition.field, expected);
+          }
+          if ((condition.field === 'os' || condition.field === 'osType') && ['windows', 'macos', 'linux'].includes(expected)) {
+            appendFilterValue('osTypes', expected);
+          }
+        });
+
+        const config: Record<string, unknown> = {};
+        if (defaultValues?.dateRange) {
+          config.dateRange = defaultValues.dateRange;
+        }
+        if (Object.keys(inheritedFilters).length > 0) {
+          config.filters = inheritedFilters;
+        }
+
+        const response = await fetchWithAuth('/reports/generate', {
+          method: 'POST',
+          body: JSON.stringify({
+            type: builderToLegacyType[builderType],
+            config,
+            format: exportFormats[0] ?? 'csv'
+          })
+        });
+
+        const payload = await response.json().catch(() => ({})) as {
+          error?: string;
+          data?: {
+            rows?: unknown[];
+            summary?: Record<string, unknown>;
+          };
+        };
+
+        if (!response.ok) {
+          throw new Error(payload.error || 'Failed to load live preview');
+        }
+
+        if (!mounted || previewRequestIdRef.current !== requestId) return;
+
+        const rows = Array.isArray(payload.data?.rows)
+          ? payload.data.rows.filter((item): item is PreviewRow => Boolean(item) && typeof item === 'object')
+          : [];
+        const summary =
+          payload.data?.summary && typeof payload.data.summary === 'object' && !Array.isArray(payload.data.summary)
+            ? payload.data.summary
+            : null;
+
+        setLivePreviewRows(rows);
+        setLivePreviewSummary(summary);
+      } catch (err) {
+        if (!mounted || previewRequestIdRef.current !== requestId) return;
+        setLivePreviewRows([]);
+        setLivePreviewSummary(null);
+        setLivePreviewError(err instanceof Error ? err.message : 'Failed to load live preview');
+      } finally {
+        if (!mounted || previewRequestIdRef.current !== requestId) return;
+        setLivePreviewLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      mounted = false;
+      window.clearTimeout(timer);
+    };
+  }, [builderType, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode]);
+
+  const normalizedPreviewRows = useMemo(
+    () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
+    [builderType, livePreviewRows]
+  );
+
+  const advancedHostnameFilter = useMemo(() => {
+    if (filterMode !== 'advanced' || deviceFilter.conditions.length === 0 || !deviceFilterPreview) {
+      return null;
+    }
+    return new Set(deviceFilterPreview.devices.map(device => device.hostname.toLowerCase()));
+  }, [deviceFilter.conditions.length, deviceFilterPreview, filterMode]);
+
+  const filteredRows = useMemo(() => {
+    if (normalizedPreviewRows.length === 0) return [];
+
+    const enforceAdvanced =
+      filterMode === 'advanced' && deviceFilter.conditions.length > 0 && !deviceFilterPreviewLoading;
+
+    return normalizedPreviewRows.filter(row => {
+      if (!rowMatchesSimpleFilters(row, filterConditions)) {
+        return false;
+      }
+
+      if (!enforceAdvanced) {
+        return true;
+      }
+
+      if (!advancedHostnameFilter || advancedHostnameFilter.size === 0) {
+        return false;
+      }
+
+      const candidates = [row.hostname, row.device, row.deviceHostname, row.displayName]
+        .filter((value): value is string => typeof value === 'string')
+        .map(value => value.toLowerCase());
+
+      return candidates.some(candidate => advancedHostnameFilter.has(candidate));
+    });
+  }, [
+    advancedHostnameFilter,
+    deviceFilter.conditions.length,
+    deviceFilterPreviewLoading,
+    filterConditions,
+    filterMode,
+    normalizedPreviewRows
+  ]);
+
   const groupedRows = useMemo(() => {
     if (!groupBy) return [];
     const grouped = new Map<string, { count: number; sum: number }>();
     const fieldKey = aggregation.field ?? '';
 
-    sampleDataByType[builderType].forEach(row => {
+    filteredRows.forEach(row => {
       const key = String(row[groupBy] ?? 'Unknown');
       const current = grouped.get(key) ?? { count: 0, sum: 0 };
       current.count += 1;
       if (aggregation.type !== 'count' && fieldKey) {
-        const value = Number(row[fieldKey] ?? 0);
-        if (!Number.isNaN(value)) {
+        const value = toNumber(row[fieldKey]);
+        if (value !== null) {
           current.sum += value;
         }
       }
@@ -927,20 +950,30 @@ export default function ReportBuilder({
         [groupedMetricKey]: metricValue
       };
     });
-  }, [aggregation, builderType, groupBy, groupedMetricKey]);
+  }, [aggregation, filteredRows, groupBy, groupedMetricKey]);
 
   const previewColumns = useMemo(() => {
     if (groupBy) {
       return [groupBy, groupedMetricKey].filter((value): value is string => Boolean(value));
     }
-    const safeSelected = selectedFields.filter(field => fieldLabelMap.has(field));
-    return safeSelected.length ? safeSelected : defaultFieldsByType[builderType];
-  }, [builderType, fieldLabelMap, groupBy, groupedMetricKey, selectedFields]);
+    const isAvailable = (field: string) =>
+      filteredRows.some(row => row[field] !== undefined && row[field] !== null);
+
+    const safeSelected = selectedFields.filter(isAvailable);
+    if (safeSelected.length) return safeSelected;
+
+    const safeDefaults = defaultFieldsByType[builderType].filter(isAvailable);
+    if (safeDefaults.length) return safeDefaults;
+
+    const firstRow = filteredRows[0];
+    if (!firstRow) return [];
+    return Object.keys(firstRow).slice(0, 6);
+  }, [builderType, filteredRows, groupBy, groupedMetricKey, selectedFields]);
 
   const previewRows = useMemo(() => {
-    const baseRows = groupBy ? groupedRows : sampleDataByType[builderType];
+    const baseRows = groupBy ? groupedRows : filteredRows;
     return baseRows.slice(0, 5);
-  }, [builderType, groupBy, groupedRows]);
+  }, [filteredRows, groupBy, groupedRows]);
 
   const chartSeries = useMemo(() => {
     if (groupBy) {
@@ -949,8 +982,40 @@ export default function ReportBuilder({
         value: Number(row[groupedMetricKey] ?? 0)
       }));
     }
-    return defaultChartSeriesByType[builderType];
-  }, [builderType, groupBy, groupedRows, groupedMetricKey]);
+
+    const summarySeries = Object.entries(livePreviewSummary ?? {})
+      .filter(([, value]) => typeof value === 'number' && Number.isFinite(value))
+      .map(([label, value]) => ({ label: formatLabel(label), value: Number(value) }));
+    if (summarySeries.length > 0) {
+      return summarySeries;
+    }
+
+    if (filteredRows.length === 0) {
+      return [];
+    }
+
+    const preferredKeys = chartCategoryFieldByType[builderType];
+    const categoryKey = preferredKeys.find(key =>
+      filteredRows.some(row => {
+        const value = row[key];
+        return typeof value === 'string' && value.trim().length > 0;
+      })
+    );
+
+    if (!categoryKey) return [];
+
+    const buckets = new Map<string, number>();
+    filteredRows.forEach(row => {
+      const rawLabel = String(row[categoryKey] ?? 'Unknown').trim();
+      const label = rawLabel || 'Unknown';
+      buckets.set(label, (buckets.get(label) ?? 0) + 1);
+    });
+
+    return Array.from(buckets.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([label, value]) => ({ label, value }));
+  }, [builderType, filteredRows, groupBy, groupedRows, groupedMetricKey, livePreviewSummary]);
 
   const maxSeriesValue = Math.max(1, ...chartSeries.map(series => series.value));
 
@@ -1996,15 +2061,38 @@ export default function ReportBuilder({
           </div>
 
           <div className="rounded-md border bg-muted/10 p-4 space-y-4">
-            {chartType === 'table' ? (
-              renderPreviewTable()
-            ) : (
+            {livePreviewLoading && (
+              <div className="flex items-center justify-center gap-2 rounded-md border border-dashed p-6 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading live preview...
+              </div>
+            )}
+
+            {!livePreviewLoading && livePreviewError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                {livePreviewError}
+              </div>
+            )}
+
+            {!livePreviewLoading && !livePreviewError && previewRows.length === 0 && (
+              <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                No preview data for the current configuration.
+              </div>
+            )}
+
+            {!livePreviewLoading && !livePreviewError && previewRows.length > 0 && (
               <>
-                {renderChart()}
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground">Sample rows</p>
-                  {renderPreviewTable(true)}
-                </div>
+                {chartType === 'table' ? (
+                  renderPreviewTable()
+                ) : (
+                  <>
+                    {renderChart()}
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">Preview rows</p>
+                      {renderPreviewTable(true)}
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>

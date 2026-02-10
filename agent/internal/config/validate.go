@@ -185,5 +185,36 @@ func (c *Config) ValidateTiered() ValidationResult {
 		}
 	}
 
+	// Policy state probe validation (invalid entries are dropped with warnings).
+	registryProbes := make([]PolicyRegistryStateProbe, 0, len(c.PolicyRegistryStateProbes))
+	for idx, probe := range c.PolicyRegistryStateProbes {
+		registryPath := strings.TrimSpace(probe.RegistryPath)
+		valueName := strings.TrimSpace(probe.ValueName)
+		if registryPath == "" || valueName == "" {
+			result.Warnings = append(result.Warnings, fmt.Errorf("policy_registry_state_probes[%d] must include registry_path and value_name; entry ignored", idx))
+			continue
+		}
+		registryProbes = append(registryProbes, PolicyRegistryStateProbe{
+			RegistryPath: registryPath,
+			ValueName:    valueName,
+		})
+	}
+	c.PolicyRegistryStateProbes = registryProbes
+
+	configProbes := make([]PolicyConfigStateProbe, 0, len(c.PolicyConfigStateProbes))
+	for idx, probe := range c.PolicyConfigStateProbes {
+		filePath := strings.TrimSpace(probe.FilePath)
+		configKey := strings.TrimSpace(probe.ConfigKey)
+		if filePath == "" || configKey == "" {
+			result.Warnings = append(result.Warnings, fmt.Errorf("policy_config_state_probes[%d] must include file_path and config_key; entry ignored", idx))
+			continue
+		}
+		configProbes = append(configProbes, PolicyConfigStateProbe{
+			FilePath:  filePath,
+			ConfigKey: configKey,
+		})
+	}
+	c.PolicyConfigStateProbes = configProbes
+
 	return result
 }

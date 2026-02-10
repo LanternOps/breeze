@@ -15,7 +15,23 @@ import {
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { setCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
-import { validateWebhookConfig } from '../services/notificationSenders/webhookSender';
+import { publishEvent } from '../services/eventBus';
+import {
+  getEmailRecipients,
+  sendEmailNotification,
+  sendPagerDutyNotification,
+  sendSmsNotification,
+  sendWebhookNotification,
+  testWebhook,
+  validateEmailConfig,
+  validatePagerDutyConfig,
+  validateSmsConfig,
+  validateWebhookConfig,
+  type AlertSeverity,
+  type PagerDutyConfig,
+  type SmsChannelConfig,
+  type WebhookConfig
+} from '../services/notificationSenders';
 
 export const alertRoutes = new Hono();
 
@@ -187,36 +203,29 @@ function validateNotificationChannelConfig(
     return ['Config must be an object'];
   }
 
+  if (type === 'email') {
+    return validateEmailConfig(config).errors;
+  }
+
   if (type === 'webhook') {
     return validateWebhookConfig(config).errors;
   }
 
-  if (type === 'email' && 'recipients' in config) {
-    const recipients = (config as { recipients?: unknown }).recipients;
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      return ['Email channel recipients must be a non-empty array'];
-    }
+  if (type === 'sms') {
+    return validateSmsConfig(config).errors;
   }
 
-  if ((type === 'slack' || type === 'teams') && 'webhookUrl' in config) {
+  if (type === 'slack' || type === 'teams') {
     const webhookUrl = (config as { webhookUrl?: unknown }).webhookUrl;
     if (typeof webhookUrl !== 'string' || webhookUrl.length === 0) {
       return [`${type} webhookUrl must be a non-empty string`];
     }
+
+    return validateWebhookConfig({ url: webhookUrl, method: 'POST' }).errors;
   }
 
-  if (type === 'pagerduty' && 'routingKey' in config) {
-    const routingKey = (config as { routingKey?: unknown }).routingKey;
-    if (typeof routingKey !== 'string' || routingKey.length === 0) {
-      return ['PagerDuty routingKey must be a non-empty string'];
-    }
-  }
-
-  if (type === 'sms' && 'phoneNumbers' in config) {
-    const phoneNumbers = (config as { phoneNumbers?: unknown }).phoneNumbers;
-    if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
-      return ['SMS channel phoneNumbers must be a non-empty array'];
-    }
+  if (type === 'pagerduty') {
+    return validatePagerDutyConfig(config).errors;
   }
 
   return [];
@@ -1286,6 +1295,23 @@ alertRoutes.post(
       .where(eq(alerts.id, alertId))
       .returning();
 
+    try {
+      await publishEvent(
+        'alert.acknowledged',
+        alert.orgId,
+        {
+          alertId: updated.id,
+          ruleId: alert.ruleId,
+          deviceId: alert.deviceId,
+          acknowledgedBy: auth.user.id
+        },
+        'alerts-route',
+        { userId: auth.user.id }
+      );
+    } catch (error) {
+      console.error('[AlertsRoute] Failed to publish alert.acknowledged event:', error);
+    }
+
     writeRouteAudit(c, {
       orgId: alert.orgId,
       action: 'alert.acknowledge',
@@ -1350,6 +1376,24 @@ alertRoutes.post(
       const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
         template?.cooldownMinutes ?? 15;
       await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+    }
+
+    try {
+      await publishEvent(
+        'alert.resolved',
+        alert.orgId,
+        {
+          alertId: updated.id,
+          ruleId: alert.ruleId,
+          deviceId: alert.deviceId,
+          resolvedBy: auth.user.id,
+          resolutionNote: data.note
+        },
+        'alerts-route',
+        { userId: auth.user.id }
+      );
+    } catch (error) {
+      console.error('[AlertsRoute] Failed to publish alert.resolved event:', error);
     }
 
     writeRouteAudit(c, {
@@ -1649,8 +1693,7 @@ alertRoutes.post(
       return c.json({ error: 'Notification channel not found' }, 404);
     }
 
-    // Simulate sending a test notification based on channel type
-    // In production, this would actually send the notification
+    // Send a real test notification through the selected channel type.
     const testMessage = {
       title: 'Test Alert from Breeze RMM',
       message: `This is a test notification sent to channel "${channel.name}" at ${new Date().toISOString()}`,
@@ -1658,62 +1701,150 @@ alertRoutes.post(
       source: 'manual_test'
     };
 
+    const dashboardUrl = process.env.DASHBOARD_URL
+      ? `${process.env.DASHBOARD_URL}/alerts/channels`
+      : undefined;
+
     let testResult: { success: boolean; message: string; details?: unknown };
 
     try {
       switch (channel.type) {
-        case 'email':
-          // Would send email via SMTP/email service
+        case 'email': {
+          const recipients = getEmailRecipients(channel.config as Record<string, unknown>);
+          if (recipients.length === 0) {
+            testResult = {
+              success: false,
+              message: 'No email recipients configured for this channel'
+            };
+            break;
+          }
+
+          const emailResult = await sendEmailNotification({
+            to: recipients,
+            alertName: testMessage.title,
+            severity: testMessage.severity as AlertSeverity,
+            summary: testMessage.message,
+            dashboardUrl,
+            orgName: 'Breeze'
+          });
+
           testResult = {
-            success: true,
-            message: 'Test email would be sent',
-            details: { recipients: (channel.config as { recipients?: string[] })?.recipients }
+            success: emailResult.success,
+            message: emailResult.success ? 'Test email sent successfully' : (emailResult.error || 'Failed to send test email'),
+            details: { recipients }
           };
           break;
+        }
+
+        case 'webhook': {
+          const webhookResult = await testWebhook(channel.config as WebhookConfig);
+          testResult = {
+            success: webhookResult.success,
+            message: webhookResult.success
+              ? 'Test webhook sent successfully'
+              : (webhookResult.error || 'Failed to send test webhook'),
+            details: {
+              url: (channel.config as { url?: string })?.url,
+              statusCode: webhookResult.statusCode
+            }
+          };
+          break;
+        }
 
         case 'slack':
-          // Would post to Slack webhook
-          testResult = {
-            success: true,
-            message: 'Test message would be posted to Slack',
-            details: { channel: (channel.config as { channel?: string })?.channel }
-          };
-          break;
+        case 'teams': {
+          const config = channel.config as Record<string, unknown>;
+          const webhookUrl = typeof config.webhookUrl === 'string' ? config.webhookUrl.trim() : '';
+          if (!webhookUrl) {
+            testResult = {
+              success: false,
+              message: `${channel.type} webhookUrl is not configured`
+            };
+            break;
+          }
 
-        case 'teams':
-          // Would post to Teams webhook
-          testResult = {
-            success: true,
-            message: 'Test message would be posted to Microsoft Teams',
-            details: { webhook: 'configured' }
-          };
-          break;
+          const chatResult = await sendWebhookNotification(
+            {
+              url: webhookUrl,
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              payloadTemplate: '{"text":"[{{severity}}] {{alertName}}: {{summary}}{{dashboardUrl}}"}'
+            },
+            {
+              alertId: `test-${channel.id}`,
+              alertName: testMessage.title,
+              severity: testMessage.severity,
+              summary: testMessage.message,
+              orgId: channel.orgId,
+              orgName: 'Breeze',
+              triggeredAt: new Date().toISOString(),
+              context: { dashboardUrl: dashboardUrl ? ` ${dashboardUrl}` : '' }
+            }
+          );
 
-        case 'webhook':
-          // Would POST to custom webhook
           testResult = {
-            success: true,
-            message: 'Test payload would be sent to webhook',
-            details: { url: (channel.config as { url?: string })?.url }
+            success: chatResult.success,
+            message: chatResult.success
+              ? `Test ${channel.type} message sent successfully`
+              : (chatResult.error || `Failed to send test ${channel.type} message`),
+            details: {
+              webhookUrl,
+              statusCode: chatResult.statusCode
+            }
           };
           break;
+        }
 
-        case 'pagerduty':
-          // Would create PagerDuty event
+        case 'pagerduty': {
+          const pagerDutyResult = await sendPagerDutyNotification(
+            channel.config as PagerDutyConfig,
+            {
+              alertId: `test-${channel.id}`,
+              alertName: testMessage.title,
+              severity: testMessage.severity as AlertSeverity,
+              summary: testMessage.message,
+              orgId: channel.orgId,
+              orgName: 'Breeze',
+              triggeredAt: new Date().toISOString(),
+              dashboardUrl
+            }
+          );
+
           testResult = {
-            success: true,
-            message: 'Test event would be sent to PagerDuty',
-            details: { serviceKey: 'configured' }
+            success: pagerDutyResult.success,
+            message: pagerDutyResult.success
+              ? 'Test PagerDuty event sent successfully'
+              : (pagerDutyResult.error || 'Failed to send test PagerDuty event'),
+            details: {
+              statusCode: pagerDutyResult.statusCode,
+              dedupKey: pagerDutyResult.dedupKey
+            }
           };
           break;
+        }
 
         case 'sms':
-          // Would send SMS
-          testResult = {
-            success: true,
-            message: 'Test SMS would be sent',
-            details: { phoneNumbers: (channel.config as { phoneNumbers?: string[] })?.phoneNumbers }
-          };
+          {
+            const smsResult = await sendSmsNotification(
+              channel.config as SmsChannelConfig,
+              {
+                alertName: testMessage.title,
+                severity: 'info',
+                summary: testMessage.message,
+                dashboardUrl
+              }
+            );
+
+            testResult = {
+              success: smsResult.success,
+              message: smsResult.success ? 'Test SMS sent successfully' : (smsResult.error || 'Failed to send test SMS'),
+              details: {
+                phoneNumbers: (channel.config as { phoneNumbers?: string[] })?.phoneNumbers,
+                sentCount: smsResult.sentCount,
+                failedCount: smsResult.failedCount
+              }
+            };
+          }
           break;
 
         default:

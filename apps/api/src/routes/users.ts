@@ -8,6 +8,7 @@ import { users, partnerUsers, organizationUsers, roles, organizations } from '..
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
+import { getEmailService } from '../services/email';
 
 export const userRoutes = new Hono();
 
@@ -161,6 +162,54 @@ function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeCo
     return scopeContext.orgId;
   }
   return auth.orgId ?? null;
+}
+
+function buildInviteUrl(email: string): string {
+  const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+  return `${appBaseUrl}/login?invite=${encodeURIComponent(email)}`;
+}
+
+async function resolveInviteOrgName(scopeContext: ScopeContext): Promise<string | undefined> {
+  if (scopeContext.scope !== 'organization') {
+    return undefined;
+  }
+
+  const [org] = await db
+    .select({ name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, scopeContext.orgId))
+    .limit(1);
+
+  return org?.name || undefined;
+}
+
+async function sendInviteEmail(
+  scopeContext: ScopeContext,
+  invitee: { email: string; name: string },
+  inviter: { name?: string; email?: string }
+): Promise<boolean> {
+  const emailService = getEmailService();
+  if (!emailService) {
+    console.warn('[UsersRoute] Email service not configured; invite email was not sent');
+    return false;
+  }
+
+  const orgName = await resolveInviteOrgName(scopeContext);
+  const inviterName = inviter.name || inviter.email;
+
+  try {
+    await emailService.sendInvite({
+      to: invitee.email,
+      name: invitee.name,
+      inviterName,
+      orgName,
+      inviteUrl: buildInviteUrl(invitee.email)
+    });
+    return true;
+  } catch (error) {
+    console.error(`[UsersRoute] Failed to send invite email to ${invitee.email}:`, error);
+    return false;
+  }
 }
 
 function writeUserAudit(
@@ -515,6 +564,11 @@ userRoutes.post(
       return c.json({ error: 'User already exists in this scope' }, 409);
     }
 
+    const inviteEmailSent = await sendInviteEmail(scopeContext, {
+      email: result.user.email,
+      name: result.user.name
+    }, auth.user);
+
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.invite',
       resourceId: result.user.id,
@@ -526,7 +580,8 @@ userRoutes.post(
         orgAccess: scopeContext.scope === 'partner' ? data.orgAccess ?? 'none' : undefined,
         orgIds: scopeContext.scope === 'partner' ? data.orgIds ?? [] : undefined,
         siteIds: scopeContext.scope === 'organization' ? data.siteIds ?? [] : undefined,
-        deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined
+        deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined,
+        inviteEmailSent
       }
     });
 
@@ -536,7 +591,8 @@ userRoutes.post(
         email: result.user.email,
         name: result.user.name,
         status: result.user.status,
-        roleId: data.roleId
+        roleId: data.roleId,
+        inviteEmailSent
       },
       201
     );
@@ -562,7 +618,10 @@ userRoutes.post(
       return c.json({ error: 'User is not in invited status' }, 400);
     }
 
-    // TODO: Send invitation email
+    const inviteEmailSent = await sendInviteEmail(scopeContext, {
+      email: record.email,
+      name: record.name
+    }, auth.user);
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.invite.resend',
@@ -570,11 +629,12 @@ userRoutes.post(
       resourceName: record.name,
       details: {
         invitedEmail: record.email,
-        scope: scopeContext.scope
+        scope: scopeContext.scope,
+        inviteEmailSent
       }
     });
 
-    return c.json({ success: true });
+    return c.json({ success: true, inviteEmailSent });
   }
 );
 

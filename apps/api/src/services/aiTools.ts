@@ -18,12 +18,14 @@ import {
   organizations,
   auditLogs,
   deviceCommands,
-  deviceFilesystemCleanupRuns
+  deviceFilesystemCleanupRuns,
+  deviceSessions
 } from '../db/schema';
 import { eq, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
+import { publishEvent } from './eventBus';
 import {
   buildCleanupPreview,
   getLatestFilesystemSnapshot,
@@ -31,6 +33,10 @@ import {
   saveFilesystemSnapshot,
   safeCleanupCategories,
 } from './filesystemAnalysis';
+import {
+  getLatestSecurityPostureForDevice,
+  listLatestSecurityPosture
+} from './securityPosture';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -299,6 +305,229 @@ registerTool({
 });
 
 // ============================================
+// get_active_users - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_active_users',
+    description: 'Query active user sessions for one device or across the fleet. Returns session state and a reboot safety signal.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'Optional device UUID. If omitted, returns active sessions across accessible devices.' },
+        limit: { type: 'number', description: 'Max sessions to return (default 100, max 200)' },
+        idleThresholdMinutes: { type: 'number', description: 'Threshold used for reboot-safety checks (default 15)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string | undefined;
+    const idleThresholdMinutes = Math.min(Math.max(1, Number(input.idleThresholdMinutes) || 15), 1440);
+    const limit = Math.min(Math.max(1, Number(input.limit) || 100), 200);
+
+    if (deviceId) {
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+    }
+
+    const conditions: SQL[] = [eq(deviceSessions.isActive, true)];
+    const orgCondition = auth.orgCondition(deviceSessions.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+    if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
+
+    const rows = await db
+      .select({
+        sessionId: deviceSessions.id,
+        deviceId: deviceSessions.deviceId,
+        hostname: devices.hostname,
+        deviceStatus: devices.status,
+        username: deviceSessions.username,
+        sessionType: deviceSessions.sessionType,
+        osSessionId: deviceSessions.osSessionId,
+        loginAt: deviceSessions.loginAt,
+        idleMinutes: deviceSessions.idleMinutes,
+        activityState: deviceSessions.activityState,
+        loginPerformanceSeconds: deviceSessions.loginPerformanceSeconds,
+        lastActivityAt: deviceSessions.lastActivityAt,
+      })
+      .from(deviceSessions)
+      .innerJoin(devices, eq(deviceSessions.deviceId, devices.id))
+      .where(and(...conditions))
+      .orderBy(desc(deviceSessions.loginAt))
+      .limit(limit);
+
+    const byDevice = new Map<string, {
+      deviceId: string;
+      hostname: string;
+      deviceStatus: string;
+      sessions: typeof rows;
+    }>();
+
+    for (const row of rows) {
+      const existing = byDevice.get(row.deviceId);
+      if (!existing) {
+        byDevice.set(row.deviceId, {
+          deviceId: row.deviceId,
+          hostname: row.hostname,
+          deviceStatus: row.deviceStatus,
+          sessions: [row],
+        });
+      } else {
+        existing.sessions.push(row);
+      }
+    }
+
+    const devicesWithSessions = Array.from(byDevice.values()).map((entry) => {
+      const blockingSessions = entry.sessions.filter((session) => {
+        const state = session.activityState ?? 'active';
+        if (state === 'locked' || state === 'away' || state === 'disconnected') {
+          return false;
+        }
+        const idle = session.idleMinutes ?? 0;
+        return idle < idleThresholdMinutes;
+      });
+
+      return {
+        deviceId: entry.deviceId,
+        hostname: entry.hostname,
+        deviceStatus: entry.deviceStatus,
+        activeSessionCount: entry.sessions.length,
+        blockingSessionCount: blockingSessions.length,
+        safeToReboot: blockingSessions.length === 0,
+        sessions: entry.sessions,
+      };
+    });
+
+    return JSON.stringify({
+      idleThresholdMinutes,
+      totalActiveSessions: rows.length,
+      totalDevicesWithSessions: devicesWithSessions.length,
+      devices: devicesWithSessions,
+    });
+  }
+});
+
+// ============================================
+// get_user_experience_metrics - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_user_experience_metrics',
+    description: 'Summarize login performance and session behavior trends for a device or user over time.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'Optional device UUID to scope metrics' },
+        username: { type: 'string', description: 'Optional username filter' },
+        daysBack: { type: 'number', description: 'How far back to analyze (default 30, max 365)' },
+        limit: { type: 'number', description: 'Max session rows to include in trend output (default 200, max 500)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string | undefined;
+    const username = input.username as string | undefined;
+    const daysBack = Math.min(Math.max(1, Number(input.daysBack) || 30), 365);
+    const limit = Math.min(Math.max(1, Number(input.limit) || 200), 500);
+
+    if (deviceId) {
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+    }
+
+    const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+    const conditions: SQL[] = [gte(deviceSessions.loginAt, since)];
+    const orgCondition = auth.orgCondition(deviceSessions.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+    if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
+    if (username) conditions.push(eq(deviceSessions.username, username));
+
+    const rows = await db
+      .select({
+        deviceId: deviceSessions.deviceId,
+        hostname: devices.hostname,
+        username: deviceSessions.username,
+        loginAt: deviceSessions.loginAt,
+        logoutAt: deviceSessions.logoutAt,
+        durationSeconds: deviceSessions.durationSeconds,
+        idleMinutes: deviceSessions.idleMinutes,
+        loginPerformanceSeconds: deviceSessions.loginPerformanceSeconds,
+        activityState: deviceSessions.activityState,
+        isActive: deviceSessions.isActive,
+      })
+      .from(deviceSessions)
+      .innerJoin(devices, eq(deviceSessions.deviceId, devices.id))
+      .where(and(...conditions))
+      .orderBy(desc(deviceSessions.loginAt))
+      .limit(limit);
+
+    if (rows.length === 0) {
+      return JSON.stringify({
+        daysBack,
+        totalSessions: 0,
+        message: 'No session data found for the selected filters.',
+      });
+    }
+
+    const numericValues = (values: Array<number | null>) =>
+      values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+    const avg = (values: number[]) => (values.length > 0 ? Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2)) : null);
+
+    const durationValues = numericValues(rows.map((row) => row.durationSeconds));
+    const loginPerfValues = numericValues(rows.map((row) => row.loginPerformanceSeconds));
+    const idleValues = numericValues(rows.map((row) => row.idleMinutes));
+
+    const perUserMap = new Map<string, { sessions: number; avgLoginPerf: number[]; avgDuration: number[] }>();
+    for (const row of rows) {
+      const current = perUserMap.get(row.username) ?? { sessions: 0, avgLoginPerf: [], avgDuration: [] };
+      current.sessions += 1;
+      if (typeof row.loginPerformanceSeconds === 'number' && row.loginPerformanceSeconds >= 0) {
+        current.avgLoginPerf.push(row.loginPerformanceSeconds);
+      }
+      if (typeof row.durationSeconds === 'number' && row.durationSeconds >= 0) {
+        current.avgDuration.push(row.durationSeconds);
+      }
+      perUserMap.set(row.username, current);
+    }
+
+    const perUser = Array.from(perUserMap.entries())
+      .map(([user, data]) => ({
+        username: user,
+        sessionCount: data.sessions,
+        avgLoginPerformanceSeconds: avg(data.avgLoginPerf),
+        avgSessionDurationSeconds: avg(data.avgDuration),
+      }))
+      .sort((a, b) => b.sessionCount - a.sessionCount);
+
+    return JSON.stringify({
+      daysBack,
+      totalSessions: rows.length,
+      activeSessions: rows.filter((row) => row.isActive).length,
+      averages: {
+        loginPerformanceSeconds: avg(loginPerfValues),
+        sessionDurationSeconds: avg(durationValues),
+        idleMinutes: avg(idleValues),
+      },
+      perUser,
+      trend: rows.slice(0, 100).map((row) => ({
+        deviceId: row.deviceId,
+        hostname: row.hostname,
+        username: row.username,
+        loginAt: row.loginAt,
+        loginPerformanceSeconds: row.loginPerformanceSeconds,
+        durationSeconds: row.durationSeconds,
+        idleMinutes: row.idleMinutes,
+        activityState: row.activityState,
+      })),
+    });
+  }
+});
+
+// ============================================
 // manage_alerts - Tier 1 (list/get), Tier 2 (acknowledge/resolve)
 // ============================================
 
@@ -390,6 +619,23 @@ registerTool({
         })
         .where(eq(alerts.id, input.alertId as string));
 
+      try {
+        await publishEvent(
+          'alert.acknowledged',
+          alert.orgId,
+          {
+            alertId: alert.id,
+            ruleId: alert.ruleId,
+            deviceId: alert.deviceId,
+            acknowledgedBy: auth.user.id
+          },
+          'ai-tools',
+          { userId: auth.user.id }
+        );
+      } catch (error) {
+        console.error('[AiTools] Failed to publish alert.acknowledged event:', error);
+      }
+
       return JSON.stringify({ success: true, message: `Alert "${alert.title}" acknowledged` });
     }
 
@@ -408,6 +654,24 @@ registerTool({
           resolutionNote: (input.resolutionNote as string) ?? 'Resolved via AI assistant'
         })
         .where(eq(alerts.id, input.alertId as string));
+
+      try {
+        await publishEvent(
+          'alert.resolved',
+          alert.orgId,
+          {
+            alertId: alert.id,
+            ruleId: alert.ruleId,
+            deviceId: alert.deviceId,
+            resolvedBy: auth.user.id,
+            resolutionNote: (input.resolutionNote as string) ?? 'Resolved via AI assistant'
+          },
+          'ai-tools',
+          { userId: auth.user.id }
+        );
+      } catch (error) {
+        console.error('[AiTools] Failed to publish alert.resolved event:', error);
+      }
 
       return JSON.stringify({ success: true, message: `Alert "${alert.title}" resolved` });
     }
@@ -598,6 +862,100 @@ registerTool({
     }, { userId: auth.user.id, timeoutMs: 60000 });
 
     return JSON.stringify(result);
+  }
+});
+
+// ============================================
+// get_security_posture - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_security_posture',
+    description: 'Get fleet-wide or device-level security posture scores with factor breakdowns and prioritized recommendations.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'Optional device UUID to fetch posture for a specific device' },
+        orgId: { type: 'string', description: 'Optional org UUID (must be accessible)' },
+        minScore: { type: 'number', description: 'Filter to scores greater than or equal to this value (0-100)' },
+        maxScore: { type: 'number', description: 'Filter to scores less than or equal to this value (0-100)' },
+        riskLevel: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Filter by risk level' },
+        includeRecommendations: { type: 'boolean', description: 'Include recommendation payloads (default true)' },
+        limit: { type: 'number', description: 'Maximum device results (default 100, max 500)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const includeRecommendations = input.includeRecommendations !== false;
+    const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
+
+    if (typeof input.deviceId === 'string' && input.deviceId) {
+      const access = await verifyDeviceAccess(input.deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      const posture = await getLatestSecurityPostureForDevice(input.deviceId);
+      if (!posture) {
+        return JSON.stringify({
+          error: 'No security posture data available for this device yet'
+        });
+      }
+
+      if (!includeRecommendations) {
+        return JSON.stringify({
+          device: {
+            ...posture,
+            recommendations: []
+          }
+        });
+      }
+      return JSON.stringify({ device: posture });
+    }
+
+    if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
+      return JSON.stringify({ error: 'Access denied to this organization' });
+    }
+
+    const orgIds = typeof input.orgId === 'string' && input.orgId
+      ? [input.orgId]
+      : auth.orgId
+        ? [auth.orgId]
+        : (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds : undefined);
+
+    if (!orgIds && auth.scope !== 'system') {
+      return JSON.stringify({ error: 'Organization context required' });
+    }
+
+    const postures = await listLatestSecurityPosture({
+      orgIds,
+      minScore: typeof input.minScore === 'number' ? input.minScore : undefined,
+      maxScore: typeof input.maxScore === 'number' ? input.maxScore : undefined,
+      riskLevel: input.riskLevel as 'low' | 'medium' | 'high' | 'critical' | undefined,
+      limit
+    });
+
+    const rows = includeRecommendations
+      ? postures
+      : postures.map((item) => ({ ...item, recommendations: [] }));
+
+    const total = rows.length;
+    const summary = {
+      totalDevices: total,
+      averageScore: total
+        ? Math.round(rows.reduce((sum, row) => sum + row.overallScore, 0) / total)
+        : 0,
+      lowRiskDevices: rows.filter((row) => row.riskLevel === 'low').length,
+      mediumRiskDevices: rows.filter((row) => row.riskLevel === 'medium').length,
+      highRiskDevices: rows.filter((row) => row.riskLevel === 'high').length,
+      criticalRiskDevices: rows.filter((row) => row.riskLevel === 'critical').length
+    };
+
+    return JSON.stringify({
+      summary,
+      worstDevices: rows.slice(0, Math.min(10, rows.length)),
+      devices: rows
+    });
   }
 });
 

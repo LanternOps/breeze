@@ -36,14 +36,19 @@ describe('DevicePatchStatusTab', () => {
               title: '2026-01 Cumulative Update for Windows 11 (KB5050001)',
               source: 'microsoft',
               category: 'security',
-              status: 'pending'
+              status: 'pending',
+              severity: 'important',
+              releaseDate: '2026-02-01',
+              requiresReboot: true
             },
             {
               id: 'p-2',
               title: 'Google Chrome',
               source: 'third_party',
               category: 'application',
-              status: 'pending'
+              status: 'pending',
+              severity: 'low',
+              releaseDate: '2026-01-30'
             }
           ],
           installed: [
@@ -73,6 +78,10 @@ describe('DevicePatchStatusTab', () => {
     await screen.findByText('Pending Windows Updates');
     expect(screen.queryByText('Installed Windows Updates')).not.toBeNull();
     expect(screen.queryByText('Pending Third-Party Updates')).not.toBeNull();
+    expect(screen.queryByText('Important')).not.toBeNull();
+    expect(screen.queryByText('KB5050001')).not.toBeNull();
+    expect(screen.queryByText('Reboot required')).not.toBeNull();
+    expect(screen.queryAllByText(/Released/i).length).toBeGreaterThan(0);
     expect(screen.queryByText('Pending Apple Updates')).toBeNull();
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${deviceId}/patches`);
   });
@@ -162,6 +171,8 @@ describe('DevicePatchStatusTab', () => {
               {
                 id: 'f0cfbd5f-6f8d-4682-9f52-bc37f8d6edbf',
                 title: 'Google Chrome',
+                externalId: 'third_party:Google Chrome:122.0.6261.57',
+                description: 'installed: 121.0.6167.184',
                 source: 'third_party',
                 category: 'application',
                 status: 'pending'
@@ -180,6 +191,9 @@ describe('DevicePatchStatusTab', () => {
       );
 
     render(<DevicePatchStatusTab deviceId={deviceId} osType="macos" />);
+
+    await screen.findByText('Installed 121.0.6167.184 -> 122.0.6261.57');
+    await screen.findByText('Homebrew');
 
     const installButton = await screen.findByRole('button', { name: /Install 3rd-party patches \(1\)/i });
     fireEvent.click(installButton);

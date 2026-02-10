@@ -91,9 +91,6 @@ jobs:
           - goos: darwin
             goarch: arm64
             suffix: ''
-          - goos: windows
-            goarch: amd64
-            suffix: '.exe'
 
     steps:
       - name: Checkout
@@ -134,10 +131,194 @@ jobs:
           path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 30
 
+  build-windows-msi:
+    name: Build + Sign Windows Artifacts
+    runs-on: windows-latest
+    needs: [build-agent]
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Download Go dependencies
+        working-directory: agent
+        shell: pwsh
+        run: go mod download
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install WiX v4 CLI
+        shell: pwsh
+        run: |
+          dotnet tool update --global wix | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            dotnet tool install --global wix | Out-Null
+          }
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Get version from tag
+        id: version
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:REF_NAME.Substring(1)
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build Windows resources and binary
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          New-Item -Path dist -ItemType Directory -Force | Out-Null
+          go install github.com/tc-hib/go-winres@v0.3.3
+          Push-Location agent\resources
+          & "$env:USERPROFILE\go\bin\go-winres.exe" make --in winres.json --out ..\cmd\breeze-agent\rsrc_windows_amd64.syso
+          Pop-Location
+          Push-Location agent
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "0"
+          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-agent-windows-amd64.exe .\cmd\breeze-agent
+          Pop-Location
+
+      - name: Validate signing configuration
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERT_PROFILE_PROD: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          AZURE_CERT_PROFILE_PRERELEASE: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+        run: |
+          $required = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT_NAME")
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              throw "Missing required signing secret: $name"
+            }
+          }
+
+          $isPrerelease = "${{ contains(github.ref_name, '-') }}" -eq "true"
+          if ($isPrerelease) {
+            if ([string]::IsNullOrWhiteSpace($env:AZURE_CERT_PROFILE_PRERELEASE)) {
+              throw "Missing required signing secret: AZURE_CERT_PROFILE_PRERELEASE"
+            }
+          } else {
+            if ([string]::IsNullOrWhiteSpace($env:AZURE_CERT_PROFILE_PROD)) {
+              throw "Missing required signing secret: AZURE_CERT_PROFILE_PROD"
+            }
+          }
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Sign Windows EXE (stable profile)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          files: ${{ github.workspace }}\dist\breeze-agent-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign Windows EXE (prerelease profile)
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+          files: ${{ github.workspace }}\dist\breeze-agent-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $version = "${{ steps.version.outputs.version }}"
+          $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
+          $msiPath = Join-Path $root "dist\breeze-agent.msi"
+          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -OutputPath $msiPath
+
+      - name: Sign MSI (stable profile)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          files: ${{ github.workspace }}\dist\breeze-agent.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign MSI (prerelease profile)
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+          files: ${{ github.workspace }}\dist\breeze-agent.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $targets = @(
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent-windows-amd64.exe"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent.msi")
+          )
+          foreach ($target in $targets) {
+            $sig = Get-AuthenticodeSignature -FilePath $target
+            if ($sig.Status -ne "Valid") {
+              throw "Signature validation failed for $target. Status: $($sig.Status)"
+            }
+          }
+
+      - name: Upload signed Windows EXE artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-agent-windows-amd64
+          path: dist/breeze-agent-windows-amd64.exe
+          retention-days: 30
+
+      - name: Upload Windows MSI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-agent-windows-msi
+          path: dist/breeze-agent.msi
+          retention-days: 30
+
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent]
+    needs: [build-api, build-web, build-agent, build-windows-msi]
     permissions:
       contents: write
     steps:

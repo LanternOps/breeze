@@ -2,7 +2,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { alertRoutes } from './alerts';
 
+const { sendSmsNotificationMock } = vi.hoisted(() => ({
+  sendSmsNotificationMock: vi.fn()
+}));
+const { publishEventMock } = vi.hoisted(() => ({
+  publishEventMock: vi.fn().mockResolvedValue('event-1')
+}));
+
 vi.mock('../services', () => ({}));
+
+vi.mock('../services/notificationSenders/smsSender', async () => {
+  const actual = await vi.importActual<typeof import('../services/notificationSenders/smsSender')>('../services/notificationSenders/smsSender');
+  return {
+    ...actual,
+    sendSmsNotification: sendSmsNotificationMock
+  };
+});
+
+vi.mock('../services/eventBus', () => ({
+  publishEvent: publishEventMock
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -65,6 +84,11 @@ describe('alert routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    sendSmsNotificationMock.mockResolvedValue({
+      success: true,
+      sentCount: 1,
+      failedCount: 0
+    });
     vi.mocked(authMiddleware).mockImplementation((c, next) => {
       c.set('auth', {
         scope: 'organization',
@@ -412,6 +436,58 @@ describe('alert routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('Invalid webhook channel configuration');
+    });
+  });
+
+  describe('notification channel sms behavior', () => {
+    it('rejects creating an sms channel with invalid phone numbers', async () => {
+      const res = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Invalid SMS',
+          type: 'sms',
+          config: { phoneNumbers: ['12345'] },
+          enabled: true
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid sms channel configuration');
+    });
+
+    it('uses sms sender when testing an sms channel', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'channel-sms-1',
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Primary SMS',
+              type: 'sms',
+              config: { phoneNumbers: ['+15551234567'] }
+            }])
+          })
+        })
+      } as any);
+
+      sendSmsNotificationMock.mockResolvedValueOnce({
+        success: true,
+        sentCount: 1,
+        failedCount: 0
+      });
+
+      const res = await app.request('/alerts/channels/channel-sms-1/test', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(sendSmsNotificationMock).toHaveBeenCalledTimes(1);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(true);
+      expect(body.testResult.message).toContain('Test SMS sent');
     });
   });
 });

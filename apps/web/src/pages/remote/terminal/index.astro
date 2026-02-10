@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import RemoteDeviceLauncherPage from '../../../components/remote/RemoteDeviceLauncherPage';
+---
+
+<DashboardLayout title="Start Terminal Session">
+  <RemoteDeviceLauncherPage mode="terminal" client:load />
+</DashboardLayout>

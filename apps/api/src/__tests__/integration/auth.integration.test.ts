@@ -54,7 +54,7 @@ describe('Auth Integration Tests', () => {
       const body = await res.json();
       expect(body.tokens).toBeDefined();
       expect(body.tokens.accessToken).toBeDefined();
-      expect(body.tokens.refreshToken).toBeDefined();
+      expect(body.tokens.refreshToken).toBeUndefined();
       expect(body.user).toBeDefined();
       expect(body.user.email).toBe('newuser@example.com');
 
@@ -240,32 +240,41 @@ describe('Auth Integration Tests', () => {
         })
       });
 
-      const { tokens } = await registerRes.json();
+      const cookieHeader = registerRes.headers.get('set-cookie') ?? '';
+      const refreshCookie = cookieHeader
+        .split(',')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith('breeze_refresh_token='));
+      expect(refreshCookie).toBeDefined();
 
       // Now refresh
       const refreshRes = await app.request('/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          refreshToken: tokens.refreshToken
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': '1',
+          Cookie: refreshCookie!.split(';')[0]
+        },
+        body: JSON.stringify({})
       });
 
       expect(refreshRes.status).toBe(200);
       const body = await refreshRes.json();
       expect(body.tokens).toBeDefined();
       expect(body.tokens.accessToken).toBeDefined();
-      expect(body.tokens.refreshToken).toBeDefined();
+      expect(body.tokens.refreshToken).toBeUndefined();
       // Note: tokens may be identical if generated within same second due to JWT iat
     });
 
     it('should reject invalid refresh token', async () => {
       const res = await app.request('/auth/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          refreshToken: 'invalid-refresh-token'
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': '1',
+          Cookie: 'breeze_refresh_token=invalid-refresh-token'
+        },
+        body: JSON.stringify({})
       });
 
       expect(res.status).toBe(401);

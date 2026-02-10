@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import AutomationForm, { type AutomationFormValues } from './AutomationForm';
+import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
+import type { DeploymentTargetConfig } from '@breeze/shared';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -12,6 +13,75 @@ type AutomationEditPageProps = {
   automationId?: string;
   isNew?: boolean;
 };
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function normalizeActionForForm(value: unknown): ActionFormValues {
+  const action = isPlainRecord(value) ? value : {};
+  const type = asString(action.type);
+
+  if (type === 'send_notification') {
+    return {
+      type,
+      notificationChannelId: asString(action.notificationChannelId) ?? asString(action.channelId)
+    };
+  }
+
+  if (type === 'create_alert') {
+    return {
+      type,
+      alertSeverity: (asString(action.alertSeverity) ?? asString(action.severity) ?? 'medium') as ActionFormValues['alertSeverity'],
+      alertMessage: asString(action.alertMessage) ?? asString(action.message) ?? ''
+    };
+  }
+
+  if (type === 'execute_command') {
+    return {
+      type,
+      command: asString(action.command) ?? ''
+    };
+  }
+
+  return {
+    type: 'run_script',
+    scriptId: asString(action.scriptId) ?? asString(action.script_id)
+  };
+}
+
+function buildActionPayload(action: ActionFormValues) {
+  if (action.type === 'run_script') {
+    return {
+      type: action.type,
+      scriptId: action.scriptId
+    };
+  }
+
+  if (action.type === 'send_notification') {
+    return {
+      type: action.type,
+      notificationChannelId: action.notificationChannelId
+    };
+  }
+
+  if (action.type === 'create_alert') {
+    return {
+      type: action.type,
+      alertSeverity: action.alertSeverity,
+      alertMessage: action.alertMessage
+    };
+  }
+
+  return {
+    type: action.type,
+    command: action.command
+  };
+}
 
 export default function AutomationEditPage({ automationId, isNew = false }: AutomationEditPageProps) {
   const [loading, setLoading] = useState(!isNew);
@@ -37,19 +107,52 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       const data = await response.json();
       const automation = data.automation ?? data;
 
-      // Transform automation to form values
+      const trigger = isPlainRecord(automation.trigger)
+        ? automation.trigger
+        : isPlainRecord(automation.triggerConfig)
+          ? automation.triggerConfig
+          : {};
+
+      const triggerType = (
+        asString(automation.triggerType)
+        ?? asString(trigger.type)
+        ?? 'manual'
+      ) as AutomationFormValues['triggerType'];
+
+      const notificationTargets = isPlainRecord(automation.notificationTargets)
+        ? automation.notificationTargets
+        : {};
+
+      const notificationChannelIds = Array.isArray(notificationTargets.channelIds)
+        ? notificationTargets.channelIds.filter((value: unknown): value is string => typeof value === 'string')
+        : [];
+
+      const notifyOnFailureChannelId = notificationChannelIds[0]
+        ?? asString(automation.notifyOnFailureChannelId);
+
+      const targetConfig = isPlainRecord(automation.conditions)
+        ? automation.conditions as DeploymentTargetConfig
+        : undefined;
+
+      const formActions = Array.isArray(automation.actions)
+        ? automation.actions.map(normalizeActionForForm)
+        : [{ type: 'run_script' as const }];
+
       setDefaultValues({
-        name: automation.name,
-        description: automation.description,
-        triggerType: automation.triggerType,
-        cronExpression: automation.triggerConfig?.cronExpression,
-        eventType: automation.triggerConfig?.eventType,
-        conditions: automation.conditions ?? [],
-        actions: automation.actions ?? [{ type: 'run_script' }],
-        onFailure: automation.onFailure ?? 'stop',
-        notifyOnFailureChannelId: automation.notifyOnFailureChannelId
+        name: asString(automation.name) ?? '',
+        description: asString(automation.description),
+        triggerType,
+        cronExpression: asString(trigger.cronExpression) ?? asString(trigger.cron),
+        eventType: asString(trigger.eventType),
+        webhookSecret: asString(trigger.secret) ?? asString(trigger.webhookSecret),
+        conditions: Array.isArray(automation.conditions) ? automation.conditions : [],
+        targetConfig,
+        actions: formActions,
+        onFailure: (asString(automation.onFailure) ?? 'stop') as AutomationFormValues['onFailure'],
+        notifyOnFailureChannelId
       });
-      setWebhookUrl(automation.triggerConfig?.webhookUrl);
+
+      setWebhookUrl(asString(trigger.webhookUrl));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -118,21 +221,44 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
     setError(undefined);
 
     try {
-      // Transform form values to API format
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+      const trigger =
+        values.triggerType === 'schedule'
+          ? {
+              type: 'schedule',
+              cronExpression: values.cronExpression,
+              timezone
+            }
+          : values.triggerType === 'event'
+            ? {
+                type: 'event',
+                eventType: values.eventType
+              }
+            : values.triggerType === 'webhook'
+              ? {
+                  type: 'webhook',
+                  secret: values.webhookSecret?.trim() || undefined
+                }
+              : {
+                  type: 'manual'
+                };
+
       const payload = {
         name: values.name,
         description: values.description,
-        triggerType: values.triggerType,
-        triggerConfig: {
-          cronExpression: values.triggerType === 'schedule' ? values.cronExpression : undefined,
-          eventType: values.triggerType === 'event' ? values.eventType : undefined
-        },
-        conditions: values.conditions,
-        actions: values.actions,
+        trigger,
+        conditions: values.targetConfig ?? values.conditions,
+        actions: values.actions.map(buildActionPayload),
         onFailure: values.onFailure,
-        notifyOnFailureChannelId: values.onFailure === 'notify' ? values.notifyOnFailureChannelId : undefined,
-        enabled: true
+        notificationTargets: values.onFailure === 'notify' && values.notifyOnFailureChannelId
+          ? { channelIds: [values.notifyOnFailureChannelId] }
+          : undefined
       };
+
+      if (isNew) {
+        Object.assign(payload, { enabled: true });
+      }
 
       const url = isNew ? '/automations' : `/automations/${automationId}`;
       const method = isNew ? 'POST' : 'PUT';
@@ -143,7 +269,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       });
 
       if (!response.ok) {
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         throw new Error(data.error || 'Failed to save automation');
       }
 

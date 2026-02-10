@@ -38,3 +38,35 @@ export async function createDesktopSession(
   if (!resp.ok) return null;
   return resp.json();
 }
+
+export async function exchangeDesktopConnectCode(
+  apiUrl: string,
+  sessionId: string,
+  code: string
+): Promise<{ accessToken: string; expiresInSeconds: number } | null> {
+  const resp = await fetch(`${apiUrl}/api/v1/desktop-ws/connect/exchange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, code }),
+  });
+
+  if (!resp.ok) return null;
+  return resp.json();
+}
+
+export async function createDesktopWsTicket(
+  apiUrl: string,
+  token: string,
+  sessionId: string
+): Promise<string | null> {
+  const resp = await apiFetch(
+    apiUrl,
+    `/api/v1/remote/sessions/${sessionId}/ws-ticket`,
+    token,
+    { method: 'POST' }
+  );
+
+  if (!resp.ok) return null;
+  const body = await resp.json() as { ticket?: string };
+  return typeof body.ticket === 'string' ? body.ticket : null;
+}

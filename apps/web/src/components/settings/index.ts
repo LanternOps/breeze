@@ -7,7 +7,6 @@ export { default as ApiKeysPage } from './ApiKeysPage';
 export { default as BrandingEditor } from './BrandingEditor';
 export { default as ChangePasswordForm } from './ChangePasswordForm';
 export { default as MFASettings } from './MFASettings';
-export { default as OrgBillingInfo } from './OrgBillingInfo';
 export { default as OrgBrandingEditor } from './OrgBrandingEditor';
 export { default as OrgDefaultsEditor } from './OrgDefaultsEditor';
 export { default as OrgNotificationSettings } from './OrgNotificationSettings';

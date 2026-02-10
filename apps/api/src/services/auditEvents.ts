@@ -1,4 +1,5 @@
 import { createAuditLogAsync } from './auditService';
+import { getTrustedClientIpOrUndefined } from './clientIp';
 
 const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -28,15 +29,6 @@ export interface AuditEventInput {
 
 function isUuid(value: string | null | undefined): value is string {
   return typeof value === 'string' && UUID_PATTERN.test(value);
-}
-
-function getClientIp(c: RequestLike): string | undefined {
-  const forwarded = c.req.header('x-forwarded-for') ?? c.req.header('X-Forwarded-For');
-  if (forwarded) {
-    return forwarded.split(',')[0]?.trim();
-  }
-
-  return c.req.header('x-real-ip') ?? c.req.header('X-Real-IP');
 }
 
 export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
@@ -73,7 +65,7 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
     resourceId,
     resourceName: event.resourceName ?? undefined,
     details: Object.keys(details).length > 0 ? details : undefined,
-    ipAddress: getClientIp(c),
+    ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: event.result ?? 'success',
     errorMessage: event.errorMessage

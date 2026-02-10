@@ -121,5 +121,34 @@ describe('policyEvaluationService internals', () => {
       expect(result.details[0]?.passed).toBe(true);
       expect(result.details[1]?.passed).toBe(true);
     });
+
+    it('fails closed when rules payload is not an array', () => {
+      const result = __evaluateRulesForDevice(
+        { type: 'required_software', softwareName: 'Google Chrome' },
+        {
+          device: { osType: 'windows', osVersion: '10.0.19045' },
+          software: [{ name: 'Google Chrome', version: '121.0.1' }],
+        }
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.details[0]?.message).toContain('expected an array');
+    });
+
+    it('fails closed when rules include invalid entries', () => {
+      const result = __evaluateRulesForDevice(
+        [
+          { type: 'required_software', softwareName: 'Google Chrome' },
+          { invalid: true }
+        ],
+        {
+          device: { osType: 'windows', osVersion: '10.0.19045' },
+          software: [{ name: 'Google Chrome', version: '121.0.1' }],
+        }
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.details.some((detail) => detail.message.includes('invalid rule'))).toBe(true);
+    });
   });
 });

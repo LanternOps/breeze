@@ -1,9 +1,34 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { automationRoutes } from './automations';
+import { automationRoutes, automationWebhookRoutes } from './automations';
 
-// Mock all services
-vi.mock('../services', () => ({}));
+vi.mock('../jobs/automationWorker', () => ({
+  enqueueAutomationRun: vi.fn(async () => ({ enqueued: true, jobId: 'job-1' }))
+}));
+
+vi.mock('../services/automationRuntime', async () => {
+  const actual = await vi.importActual<typeof import('../services/automationRuntime')>('../services/automationRuntime');
+
+  return {
+    ...actual,
+    createAutomationRunRecord: vi.fn(async () => ({
+      run: {
+        id: 'run-1',
+        automationId: 'auto-1',
+        triggeredBy: 'manual:user-123',
+        status: 'running',
+        devicesTargeted: 2,
+        devicesSucceeded: 0,
+        devicesFailed: 0,
+        startedAt: new Date(),
+        completedAt: null,
+        logs: [],
+        createdAt: new Date()
+      },
+      targetDeviceIds: ['device-1', 'device-2']
+    }))
+  };
+});
 
 vi.mock('../db', () => ({
   db: {
@@ -43,7 +68,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -55,7 +80,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -66,6 +91,7 @@ describe('automations routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     app = new Hono();
+    app.route('/automations/webhooks', automationWebhookRoutes);
     app.route('/automations', automationRoutes);
   });
 
@@ -111,6 +137,7 @@ describe('automations routes', () => {
               id: 'auto-1',
               name: 'Automation One',
               orgId: 'org-123',
+              trigger: { type: 'manual' },
               runCount: 3
             }])
           })
@@ -157,7 +184,7 @@ describe('automations routes', () => {
           id: 'auto-1',
           name: 'Reboot Devices',
           orgId: 'org-123',
-          trigger: { deviceIds: ['device-1'] },
+          trigger: { type: 'manual' },
           enabled: true
         }])
       })
@@ -170,9 +197,9 @@ describe('automations routes', () => {
         name: 'Reboot Devices',
         description: 'Reboot on schedule',
         enabled: true,
-        trigger: { deviceIds: ['device-1'] },
-        conditions: { osType: 'linux' },
-        actions: [{ type: 'reboot' }],
+        trigger: { type: 'manual' },
+        conditions: { type: 'all' },
+        actions: [{ type: 'run_script', scriptId: 'script-1' }],
         onFailure: 'stop',
         notificationTargets: { emails: ['alerts@example.com'] }
       })
@@ -181,7 +208,7 @@ describe('automations routes', () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.id).toBe('auto-1');
-    expect(body.trigger.deviceIds).toEqual(['device-1']);
+    expect(body.trigger.type).toBe('manual');
   });
 
   it('should update automation enabled state', async () => {
@@ -192,7 +219,8 @@ describe('automations routes', () => {
             id: 'auto-1',
             name: 'Automation One',
             orgId: 'org-123',
-            enabled: true
+            enabled: true,
+            trigger: { type: 'manual' }
           }])
         })
       })
@@ -202,7 +230,8 @@ describe('automations routes', () => {
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
             id: 'auto-1',
-            enabled: false
+            enabled: false,
+            trigger: { type: 'manual' }
           }])
         })
       })
@@ -263,25 +292,9 @@ describe('automations routes', () => {
             orgId: 'org-123',
             enabled: true,
             runCount: 0,
-            trigger: { deviceIds: ['device-1', 'device-2'] }
+            trigger: { type: 'manual' }
           }])
         })
-      })
-    } as any);
-    vi.mocked(db.insert).mockReturnValue({
-      values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{
-          id: 'run-1',
-          status: 'running',
-          devicesTargeted: 2,
-          startedAt: new Date().toISOString(),
-          logs: []
-        }])
-      })
-    } as any);
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
       })
     } as any);
 
@@ -304,7 +317,8 @@ describe('automations routes', () => {
             id: 'auto-1',
             name: 'Automation One',
             orgId: 'org-123',
-            enabled: false
+            enabled: false,
+            trigger: { type: 'manual' }
           }])
         })
       })
@@ -316,5 +330,63 @@ describe('automations routes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  it('should trigger automation via webhook when secret matches', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Webhook Automation',
+            orgId: 'org-123',
+            enabled: true,
+            trigger: { type: 'webhook', secret: 'secret-123' },
+            actions: [{ type: 'execute_command', command: 'echo ok' }]
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/webhooks/auto-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-automation-secret': 'secret-123'
+      },
+      body: JSON.stringify({ ping: true })
+    });
+
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.accepted).toBe(true);
+    expect(body.run.id).toBe('run-1');
+  });
+
+  it('should reject webhook trigger when secret is invalid', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Webhook Automation',
+            orgId: 'org-123',
+            enabled: true,
+            trigger: { type: 'webhook', secret: 'secret-123' }
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/webhooks/auto-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-automation-secret': 'wrong-secret'
+      },
+      body: JSON.stringify({ ping: true })
+    });
+
+    expect(res.status).toBe(401);
   });
 });

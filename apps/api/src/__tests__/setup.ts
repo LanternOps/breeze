@@ -6,14 +6,21 @@ process.env.JWT_SECRET = 'test-jwt-secret-must-be-at-least-32-characters-long';
 process.env.NODE_ENV = 'test';
 
 // Mock Redis client for tests that need it
-vi.mock('../services/redis', () => ({
-  getRedis: vi.fn(() => ({
+vi.mock('../services/redis', () => {
+  const redisClient = {
+    status: 'ready',
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
     setex: vi.fn().mockResolvedValue('OK'),
     del: vi.fn().mockResolvedValue(1),
     incr: vi.fn().mockResolvedValue(1),
     expire: vi.fn().mockResolvedValue(1),
+    xadd: vi.fn().mockResolvedValue('1-0'),
+    publish: vi.fn().mockResolvedValue(1),
+    xgroup: vi.fn().mockResolvedValue('OK'),
+    xreadgroup: vi.fn().mockResolvedValue(null),
+    xack: vi.fn().mockResolvedValue(1),
+    quit: vi.fn().mockResolvedValue('OK'),
     pipeline: vi.fn(() => ({
       zremrangebyscore: vi.fn().mockReturnThis(),
       zadd: vi.fn().mockReturnThis(),
@@ -21,8 +28,14 @@ vi.mock('../services/redis', () => ({
       expire: vi.fn().mockReturnThis(),
       exec: vi.fn().mockResolvedValue([])
     }))
-  }))
-}));
+  };
+
+  return {
+    getRedis: vi.fn(() => redisClient),
+    getRedisConnection: vi.fn(() => redisClient),
+    isRedisAvailable: vi.fn(() => true)
+  };
+});
 
 /**
  * Test setup for authenticated API tests.

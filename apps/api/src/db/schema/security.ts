@@ -42,6 +42,13 @@ export const threatStatusEnum = pgEnum('threat_status', [
   'failed'
 ]);
 
+export const securityRiskLevelEnum = pgEnum('security_risk_level', [
+  'low',
+  'medium',
+  'high',
+  'critical'
+]);
+
 export const securityStatus = pgTable('security_status', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
@@ -55,6 +62,9 @@ export const securityStatus = pgTable('security_status', {
   threatCount: integer('threat_count').notNull().default(0),
   firewallEnabled: boolean('firewall_enabled'),
   encryptionStatus: varchar('encryption_status', { length: 50 }),
+  encryptionDetails: jsonb('encryption_details'),
+  localAdminSummary: jsonb('local_admin_summary'),
+  passwordPolicySummary: jsonb('password_policy_summary'),
   gatekeeperEnabled: boolean('gatekeeper_enabled'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -106,4 +116,52 @@ export const securityPolicies = pgTable('security_policies', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdx: index('security_policies_org_id_idx').on(table.orgId)
+}));
+
+export const securityPostureSnapshots = pgTable('security_posture_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  capturedAt: timestamp('captured_at').defaultNow().notNull(),
+  overallScore: integer('overall_score').notNull(),
+  riskLevel: securityRiskLevelEnum('risk_level').notNull(),
+  patchComplianceScore: integer('patch_compliance_score').notNull(),
+  encryptionScore: integer('encryption_score').notNull(),
+  avHealthScore: integer('av_health_score').notNull(),
+  firewallScore: integer('firewall_score').notNull(),
+  openPortsScore: integer('open_ports_score').notNull(),
+  passwordPolicyScore: integer('password_policy_score').notNull(),
+  osCurrencyScore: integer('os_currency_score').notNull(),
+  adminExposureScore: integer('admin_exposure_score').notNull(),
+  factorDetails: jsonb('factor_details').notNull().default({}),
+  recommendations: jsonb('recommendations').notNull().default([])
+}, (table) => ({
+  orgCapturedIdx: index('security_posture_snapshots_org_captured_idx').on(table.orgId, table.capturedAt),
+  deviceCapturedIdx: index('security_posture_snapshots_device_captured_idx').on(table.deviceId, table.capturedAt),
+  orgScoreIdx: index('security_posture_snapshots_org_score_idx').on(table.orgId, table.overallScore)
+}));
+
+export const securityPostureOrgSnapshots = pgTable('security_posture_org_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  capturedAt: timestamp('captured_at').defaultNow().notNull(),
+  overallScore: integer('overall_score').notNull(),
+  devicesAudited: integer('devices_audited').notNull().default(0),
+  lowRiskDevices: integer('low_risk_devices').notNull().default(0),
+  mediumRiskDevices: integer('medium_risk_devices').notNull().default(0),
+  highRiskDevices: integer('high_risk_devices').notNull().default(0),
+  criticalRiskDevices: integer('critical_risk_devices').notNull().default(0),
+  patchComplianceScore: integer('patch_compliance_score').notNull(),
+  encryptionScore: integer('encryption_score').notNull(),
+  avHealthScore: integer('av_health_score').notNull(),
+  firewallScore: integer('firewall_score').notNull(),
+  openPortsScore: integer('open_ports_score').notNull(),
+  passwordPolicyScore: integer('password_policy_score').notNull(),
+  osCurrencyScore: integer('os_currency_score').notNull(),
+  adminExposureScore: integer('admin_exposure_score').notNull(),
+  topIssues: jsonb('top_issues').notNull().default([]),
+  summary: jsonb('summary').notNull().default({})
+}, (table) => ({
+  orgCapturedIdx: index('security_posture_org_snapshots_org_captured_idx').on(table.orgId, table.capturedAt),
+  orgScoreIdx: index('security_posture_org_snapshots_org_score_idx').on(table.orgId, table.overallScore)
 }));

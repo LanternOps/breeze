@@ -71,6 +71,18 @@ export const patchRollbackStatusEnum = pgEnum('patch_rollback_status', [
   'cancelled'
 ]);
 
+export const patchComplianceReportStatusEnum = pgEnum('patch_compliance_report_status', [
+  'pending',
+  'running',
+  'completed',
+  'failed'
+]);
+
+export const patchComplianceReportFormatEnum = pgEnum('patch_compliance_report_format', [
+  'csv',
+  'pdf'
+]);
+
 export const patches = pgTable('patches', {
   id: uuid('id').primaryKey().defaultRandom(),
   source: patchSourceEnum('source').notNull(),
@@ -216,4 +228,22 @@ export const patchComplianceSnapshots = pgTable('patch_compliance_snapshots', {
   failedInstalls24h: integer('failed_installs_24h').notNull().default(0),
   detailsByCategory: jsonb('details_by_category').notNull().default({}),
   createdAt: timestamp('created_at').defaultNow().notNull()
+});
+
+export const patchComplianceReports = pgTable('patch_compliance_reports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  requestedBy: uuid('requested_by').references(() => users.id),
+  status: patchComplianceReportStatusEnum('status').notNull().default('pending'),
+  format: patchComplianceReportFormatEnum('format').notNull().default('csv'),
+  source: patchSourceEnum('source'),
+  severity: patchSeverityEnum('severity'),
+  summary: jsonb('summary'),
+  rowCount: integer('row_count'),
+  outputPath: text('output_path'),
+  errorMessage: text('error_message'),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

@@ -9,6 +9,16 @@ import (
 	"github.com/spf13/viper"
 )
 
+type PolicyRegistryStateProbe struct {
+	RegistryPath string `mapstructure:"registry_path"`
+	ValueName    string `mapstructure:"value_name"`
+}
+
+type PolicyConfigStateProbe struct {
+	FilePath  string `mapstructure:"file_path"`
+	ConfigKey string `mapstructure:"config_key"`
+}
+
 type Config struct {
 	AgentID                  string   `mapstructure:"agent_id"`
 	ServerURL                string   `mapstructure:"server_url"`
@@ -57,6 +67,10 @@ type Config struct {
 	PatchMaintenanceDays       []string `mapstructure:"patch_maintenance_days"`  // ["monday",...] empty=all
 	PatchRebootMaxPerDay       int      `mapstructure:"patch_reboot_max_per_day"`
 	PatchAutoAcceptEula        bool     `mapstructure:"patch_auto_accept_eula"`
+
+	// Policy state telemetry probes for registry/config checks.
+	PolicyRegistryStateProbes []PolicyRegistryStateProbe `mapstructure:"policy_registry_state_probes"`
+	PolicyConfigStateProbes   []PolicyConfigStateProbe   `mapstructure:"policy_config_state_probes"`
 }
 
 func Default() *Config {
@@ -79,6 +93,8 @@ func Default() *Config {
 		PatchRequireACPower:        true,
 		PatchRebootMaxPerDay:       3,
 		PatchAutoAcceptEula:        false,
+		PolicyRegistryStateProbes:  []PolicyRegistryStateProbe{},
+		PolicyConfigStateProbes:    []PolicyConfigStateProbe{},
 	}
 }
 
@@ -135,6 +151,8 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
+	viper.Set("policy_registry_state_probes", cfg.PolicyRegistryStateProbes)
+	viper.Set("policy_config_state_probes", cfg.PolicyConfigStateProbes)
 
 	var cfgPath string
 	if cfgFile != "" {

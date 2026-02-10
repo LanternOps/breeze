@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +72,8 @@ type Heartbeat struct {
 	hardwareCol         *collectors.HardwareCollector
 	softwareCol         *collectors.SoftwareCollector
 	inventoryCol        *collectors.InventoryCollector
+	sessionCol          *collectors.SessionCollector
+	policyStateCol      *collectors.PolicyStateCollector
 	patchCol            *collectors.PatchCollector
 	patchMgr            *patching.PatchManager
 	connectionsCol      *collectors.ConnectionsCollector
@@ -89,6 +92,7 @@ type Heartbeat struct {
 	lastInventoryUpdate time.Time
 	lastEventLogUpdate  time.Time
 	lastSecurityUpdate  time.Time
+	lastSessionUpdate   time.Time
 
 	// User session helper (IPC)
 	sessionBroker *sessionbroker.Broker
@@ -134,6 +138,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		hardwareCol:     collectors.NewHardwareCollector(),
 		softwareCol:     collectors.NewSoftwareCollector(),
 		inventoryCol:    collectors.NewInventoryCollector(),
+		sessionCol:      collectors.NewSessionCollector(),
+		policyStateCol:  collectors.NewPolicyStateCollector(),
 		patchCol:        collectors.NewPatchCollector(),
 		patchMgr:        patching.NewDefaultManager(cfg),
 		connectionsCol:  collectors.NewConnectionsCollector(),
@@ -269,6 +275,9 @@ func (h *Heartbeat) Start() {
 	if h.sessionBroker != nil {
 		go h.sessionBroker.Listen(h.stopChan)
 	}
+	if h.sessionCol != nil {
+		h.sessionCol.Start(h.stopChan)
+	}
 
 	// Start backup scheduler if configured
 	if h.backupMgr != nil {
@@ -315,6 +324,10 @@ func (h *Heartbeat) Start() {
 			if shouldSendSecurity {
 				h.lastSecurityUpdate = time.Now()
 			}
+			shouldSendSessions := time.Since(h.lastSessionUpdate) > 5*time.Minute
+			if shouldSendSessions {
+				h.lastSessionUpdate = time.Now()
+			}
 			h.mu.Unlock()
 			if shouldSendInventory {
 				go h.sendInventory()
@@ -326,6 +339,9 @@ func (h *Heartbeat) Start() {
 			// Send security status every 5 minutes
 			if shouldSendSecurity {
 				go h.sendSecurityStatus()
+			}
+			if shouldSendSessions {
+				go h.sendSessionInventory()
 			}
 		case <-h.stopChan:
 			return
@@ -386,8 +402,11 @@ func (h *Heartbeat) sendInventory() {
 		h.sendSoftwareInventory,
 		h.sendDiskInventory,
 		h.sendNetworkInventory,
+		h.sendSessionInventory,
 		h.sendConnectionsInventory,
 		h.sendPatchInventory,
+		h.sendPolicyRegistryState,
+		h.sendPolicyConfigState,
 		h.sendSecurityStatus,
 	}
 	for _, fn := range fns {
@@ -503,6 +522,307 @@ func (h *Heartbeat) sendNetworkInventory() {
 	h.sendInventoryData("network", map[string]any{"adapters": adapters}, fmt.Sprintf("network (%d adapters)", len(adapters)))
 }
 
+func (h *Heartbeat) policyRegistryProbes() []collectors.RegistryProbe {
+	h.mu.Lock()
+	configured := slices.Clone(h.config.PolicyRegistryStateProbes)
+	h.mu.Unlock()
+
+	probes := make([]collectors.RegistryProbe, 0, len(configured))
+	for _, probe := range configured {
+		registryPath := strings.TrimSpace(probe.RegistryPath)
+		valueName := strings.TrimSpace(probe.ValueName)
+		if registryPath == "" || valueName == "" {
+			continue
+		}
+		probes = append(probes, collectors.RegistryProbe{
+			RegistryPath: registryPath,
+			ValueName:    valueName,
+		})
+	}
+	return probes
+}
+
+func (h *Heartbeat) policyConfigProbes() []collectors.ConfigProbe {
+	h.mu.Lock()
+	configured := slices.Clone(h.config.PolicyConfigStateProbes)
+	h.mu.Unlock()
+
+	probes := make([]collectors.ConfigProbe, 0, len(configured))
+	for _, probe := range configured {
+		filePath := strings.TrimSpace(probe.FilePath)
+		configKey := strings.TrimSpace(probe.ConfigKey)
+		if filePath == "" || configKey == "" {
+			continue
+		}
+		probes = append(probes, collectors.ConfigProbe{
+			FilePath:  filePath,
+			ConfigKey: configKey,
+		})
+	}
+	return probes
+}
+
+func normalizeProbePath(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeProbeKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func parsePolicyRegistryProbeList(raw any) ([]config.PolicyRegistryStateProbe, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+
+	probes := make([]config.PolicyRegistryStateProbe, 0, len(items))
+	seen := make(map[string]struct{})
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		registryPath := ""
+		if value, exists := record["registry_path"]; exists {
+			if typed, ok := value.(string); ok {
+				registryPath = strings.TrimSpace(typed)
+			}
+		}
+		if registryPath == "" {
+			if value, exists := record["registryPath"]; exists {
+				if typed, ok := value.(string); ok {
+					registryPath = strings.TrimSpace(typed)
+				}
+			}
+		}
+
+		valueName := ""
+		if value, exists := record["value_name"]; exists {
+			if typed, ok := value.(string); ok {
+				valueName = strings.TrimSpace(typed)
+			}
+		}
+		if valueName == "" {
+			if value, exists := record["valueName"]; exists {
+				if typed, ok := value.(string); ok {
+					valueName = strings.TrimSpace(typed)
+				}
+			}
+		}
+
+		if registryPath == "" || valueName == "" {
+			continue
+		}
+
+		dedupeKey := normalizeProbePath(registryPath) + "::" + normalizeProbeKey(valueName)
+		if _, exists := seen[dedupeKey]; exists {
+			continue
+		}
+		seen[dedupeKey] = struct{}{}
+		probes = append(probes, config.PolicyRegistryStateProbe{
+			RegistryPath: registryPath,
+			ValueName:    valueName,
+		})
+	}
+
+	return probes, true
+}
+
+func parsePolicyConfigProbeList(raw any) ([]config.PolicyConfigStateProbe, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+
+	probes := make([]config.PolicyConfigStateProbe, 0, len(items))
+	seen := make(map[string]struct{})
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		filePath := ""
+		if value, exists := record["file_path"]; exists {
+			if typed, ok := value.(string); ok {
+				filePath = strings.TrimSpace(typed)
+			}
+		}
+		if filePath == "" {
+			if value, exists := record["filePath"]; exists {
+				if typed, ok := value.(string); ok {
+					filePath = strings.TrimSpace(typed)
+				}
+			}
+		}
+
+		configKey := ""
+		if value, exists := record["config_key"]; exists {
+			if typed, ok := value.(string); ok {
+				configKey = strings.TrimSpace(typed)
+			}
+		}
+		if configKey == "" {
+			if value, exists := record["configKey"]; exists {
+				if typed, ok := value.(string); ok {
+					configKey = strings.TrimSpace(typed)
+				}
+			}
+		}
+
+		if filePath == "" || configKey == "" {
+			continue
+		}
+
+		dedupeKey := normalizeProbePath(filePath) + "::" + normalizeProbeKey(configKey)
+		if _, exists := seen[dedupeKey]; exists {
+			continue
+		}
+		seen[dedupeKey] = struct{}{}
+		probes = append(probes, config.PolicyConfigStateProbe{
+			FilePath:  filePath,
+			ConfigKey: configKey,
+		})
+	}
+
+	return probes, true
+}
+
+func equalPolicyRegistryProbes(left, right []config.PolicyRegistryStateProbe) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for idx := range left {
+		if !strings.EqualFold(strings.TrimSpace(left[idx].RegistryPath), strings.TrimSpace(right[idx].RegistryPath)) {
+			return false
+		}
+		if !strings.EqualFold(strings.TrimSpace(left[idx].ValueName), strings.TrimSpace(right[idx].ValueName)) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalPolicyConfigProbes(left, right []config.PolicyConfigStateProbe) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for idx := range left {
+		if !strings.EqualFold(strings.TrimSpace(left[idx].FilePath), strings.TrimSpace(right[idx].FilePath)) {
+			return false
+		}
+		if !strings.EqualFold(strings.TrimSpace(left[idx].ConfigKey), strings.TrimSpace(right[idx].ConfigKey)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
+	if len(update) == 0 {
+		return
+	}
+
+	registryRaw, hasRegistry := update["policy_registry_state_probes"]
+	if !hasRegistry {
+		registryRaw, hasRegistry = update["policyRegistryStateProbes"]
+	}
+
+	configRaw, hasConfig := update["policy_config_state_probes"]
+	if !hasConfig {
+		configRaw, hasConfig = update["policyConfigStateProbes"]
+	}
+
+	if !hasRegistry && !hasConfig {
+		return
+	}
+
+	var (
+		parsedRegistry []config.PolicyRegistryStateProbe
+		parsedConfig   []config.PolicyConfigStateProbe
+		ok             bool
+	)
+
+	if hasRegistry {
+		parsedRegistry, ok = parsePolicyRegistryProbeList(registryRaw)
+		if !ok {
+			log.Warn("ignoring invalid policy_registry_state_probes config update payload")
+			hasRegistry = false
+		}
+	}
+	if hasConfig {
+		parsedConfig, ok = parsePolicyConfigProbeList(configRaw)
+		if !ok {
+			log.Warn("ignoring invalid policy_config_state_probes config update payload")
+			hasConfig = false
+		}
+	}
+
+	if !hasRegistry && !hasConfig {
+		return
+	}
+
+	registryChanged := false
+	configChanged := false
+	registryCount := 0
+	configCount := 0
+
+	h.mu.Lock()
+	if hasRegistry && !equalPolicyRegistryProbes(h.config.PolicyRegistryStateProbes, parsedRegistry) {
+		h.config.PolicyRegistryStateProbes = parsedRegistry
+		registryChanged = true
+	}
+	if hasConfig && !equalPolicyConfigProbes(h.config.PolicyConfigStateProbes, parsedConfig) {
+		h.config.PolicyConfigStateProbes = parsedConfig
+		configChanged = true
+	}
+	registryCount = len(h.config.PolicyRegistryStateProbes)
+	configCount = len(h.config.PolicyConfigStateProbes)
+	h.mu.Unlock()
+
+	if registryChanged || configChanged {
+		log.Info(
+			"applied config update",
+			"policyRegistryStateProbes", registryCount,
+			"policyConfigStateProbes", configCount,
+		)
+	}
+}
+
+func (h *Heartbeat) sendPolicyRegistryState() {
+	entries, err := h.policyStateCol.CollectRegistryState(h.policyRegistryProbes())
+	if err != nil {
+		log.Warn("failed to collect policy registry state", "error", err)
+	}
+
+	h.sendInventoryData(
+		"registry-state",
+		map[string]any{
+			"entries": entries,
+			"replace": true,
+		},
+		fmt.Sprintf("registry state (%d entries)", len(entries)),
+	)
+}
+
+func (h *Heartbeat) sendPolicyConfigState() {
+	entries, err := h.policyStateCol.CollectConfigState(h.policyConfigProbes())
+	if err != nil {
+		log.Warn("failed to collect policy config state", "error", err)
+	}
+
+	h.sendInventoryData(
+		"config-state",
+		map[string]any{
+			"entries": entries,
+			"replace": true,
+		},
+		fmt.Sprintf("config state (%d entries)", len(entries)),
+	)
+}
+
 func (h *Heartbeat) sendPatchInventory() {
 	pendingItems, installedItems, err := h.collectPatchInventory()
 	if err != nil {
@@ -554,6 +874,15 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		category := p.Category
 		if category == "" {
 			category = h.mapPatchProviderCategory(p.Provider)
+		}
+		// Homebrew provider IDs encode casks as "homebrew:cask:<name>".
+		// Preserve that distinction so UI can show richer macOS package details.
+		if p.Provider == "homebrew" {
+			if strings.HasPrefix(p.ID, "homebrew:cask:") {
+				category = "homebrew-cask"
+			} else {
+				category = "homebrew"
+			}
 		}
 		items[i] = map[string]any{
 			"name":            p.Title,
@@ -745,6 +1074,26 @@ func (h *Heartbeat) sendSecurityStatus() {
 	h.sendInventoryData("security/status", status, "security status")
 }
 
+func (h *Heartbeat) sendSessionInventory() {
+	if h.sessionCol == nil {
+		return
+	}
+
+	sessions, err := h.sessionCol.Collect()
+	if err != nil {
+		log.Warn("failed to collect sessions", "error", err)
+		return
+	}
+	events := h.sessionCol.DrainEvents(256)
+
+	payload := map[string]any{
+		"sessions":    sessions,
+		"events":      events,
+		"collectedAt": time.Now().UTC(),
+	}
+	h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
+}
+
 func (h *Heartbeat) sendHeartbeat() {
 	metrics, err := h.metricsCol.Collect()
 	metricsAvailable := true
@@ -775,6 +1124,9 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()
 	payload.PendingReboot = pendingReboot
+	if h.sessionCol != nil {
+		payload.LastUser = h.sessionCol.LastUser()
+	}
 
 	// Include user helper session info in heartbeat
 	if h.sessionBroker != nil {
@@ -783,11 +1135,11 @@ func (h *Heartbeat) sendHeartbeat() {
 			helpers := make([]map[string]any, len(sessions))
 			for i, s := range sessions {
 				helpers[i] = map[string]any{
-					"uid":          s.UID,
-					"username":     s.Username,
-					"display":      s.DisplayEnv,
-					"connectedAt":  s.ConnectedAt,
-					"lastSeen":     s.LastSeen,
+					"uid":         s.UID,
+					"username":    s.Username,
+					"display":     s.DisplayEnv,
+					"connectedAt": s.ConnectedAt,
+					"lastSeen":    s.LastSeen,
 				}
 				if s.Capabilities != nil {
 					helpers[i]["capabilities"] = s.Capabilities
@@ -832,6 +1184,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		log.Error("failed to decode heartbeat response", "error", err)
 		return
+	}
+
+	if len(response.ConfigUpdate) > 0 {
+		h.applyConfigUpdate(response.ConfigUpdate)
 	}
 
 	// Process any commands via worker pool

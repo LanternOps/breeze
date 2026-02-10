@@ -140,8 +140,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         type: 'object',
         properties: {
           accessToken: { type: 'string' },
-          refreshToken: { type: 'string' },
-          expiresIn: { type: 'integer', example: 900 }
+          expiresInSeconds: { type: 'integer', example: 900 }
         }
       },
       MfaSetupResponse: {
@@ -487,7 +486,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           description: { type: 'string', nullable: true },
           enabled: { type: 'boolean' },
           targets: { type: 'object', description: 'Target configuration' },
-          rules: { type: 'object', description: 'Policy rules' },
+          rules: { type: 'array', items: { type: 'object' }, description: 'Policy rules' },
           enforcement: { type: 'string', enum: ['monitor', 'warn', 'enforce'] },
           checkIntervalMinutes: { type: 'integer' },
           remediationScriptId: { type: 'string', format: 'uuid', nullable: true },
@@ -850,22 +849,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       post: {
         tags: ['Auth'],
         summary: 'Refresh tokens',
-        description: 'Exchange a refresh token for new access and refresh tokens',
+        description: 'Issue a new access token using the refresh cookie',
         security: [],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  refreshToken: { type: 'string' }
-                },
-                required: ['refreshToken']
-              }
-            }
-          }
-        },
         responses: {
           '200': {
             description: 'Tokens refreshed',
@@ -2692,7 +2677,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   enabled: { type: 'boolean' },
                   targets: { type: 'object' },
                   targetType: { type: 'string', enum: ['all', 'sites', 'groups', 'tags', 'devices'] },
-                  targetIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+                  targetIds: { type: 'array', items: { type: 'string' } },
                   rules: { type: 'array', items: { type: 'object' } },
                   enforcement: { type: 'string', enum: ['monitor', 'warn', 'enforce'] },
                   enforcementLevel: { type: 'string', enum: ['monitor', 'warn', 'enforce'] },

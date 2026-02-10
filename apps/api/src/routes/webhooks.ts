@@ -7,8 +7,9 @@ import { db } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
-import { validateWebhookUrlSafety } from '../services/notificationSenders/webhookSender';
+import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
+import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 
 export const webhookRoutes = new Hono();
 
@@ -80,25 +81,29 @@ function headersToRecord(headers: unknown): Record<string, string> {
 
 function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): WorkerWebhookConfig {
   const retryPolicy = (webhook.retryPolicy ?? undefined) as WorkerWebhookConfig['retryPolicy'];
+  let secret: string | undefined;
+  if (webhook.secret) {
+    try {
+      secret = decryptSecret(webhook.secret) ?? undefined;
+    } catch (error) {
+      console.error(`[webhooks] Failed to decrypt secret for webhook ${webhook.id}:`, error);
+      secret = undefined;
+    }
+  }
 
   return {
     id: webhook.id,
     orgId: webhook.orgId,
     name: webhook.name,
     url: webhook.url,
-    secret: webhook.secret ?? undefined,
+    secret,
     events: webhook.events ?? [],
     headers: headersToRecord(webhook.headers),
     retryPolicy
   };
 }
 
-function sanitizeWebhook(
-  webhook: typeof webhooksTable.$inferSelect,
-  options: { includeSecret?: boolean } = {}
-) {
-  const { includeSecret = false } = options;
-
+function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
   return {
     id: webhook.id,
     orgId: webhook.orgId,
@@ -111,8 +116,7 @@ function sanitizeWebhook(
     createdAt: webhook.createdAt,
     updatedAt: webhook.updatedAt,
     lastDeliveryAt: webhook.lastDeliveryAt,
-    hasSecret: Boolean(webhook.secret),
-    ...(includeSecret && webhook.secret ? { secret: webhook.secret } : {})
+    hasSecret: Boolean(webhook.secret)
   };
 }
 
@@ -339,7 +343,7 @@ webhookRoutes.post(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const urlErrors = validateWebhookUrlSafety(data.url);
+    const urlErrors = await validateWebhookUrlSafetyWithDns(data.url);
     if (urlErrors.length > 0) {
       return c.json({ error: 'Invalid webhook URL', details: urlErrors }, 400);
     }
@@ -350,7 +354,7 @@ webhookRoutes.post(
         orgId,
         name: data.name,
         url: data.url,
-        secret: data.secret,
+        secret: encryptSecret(data.secret),
         events: data.events,
         headers: data.headers ?? [],
         status: 'active',
@@ -376,7 +380,7 @@ webhookRoutes.post(
       }
     });
 
-    return c.json(sanitizeWebhook(created, { includeSecret: true }), 201);
+    return c.json(sanitizeWebhook(created), 201);
   }
 );
 
@@ -422,7 +426,7 @@ webhookRoutes.patch(
     }
 
     if (data.url) {
-      const urlErrors = validateWebhookUrlSafety(data.url);
+      const urlErrors = await validateWebhookUrlSafetyWithDns(data.url);
       if (urlErrors.length > 0) {
         return c.json({ error: 'Invalid webhook URL', details: urlErrors }, 400);
       }
@@ -434,7 +438,7 @@ webhookRoutes.patch(
 
     if (data.name !== undefined) updatePayload.name = data.name;
     if (data.url !== undefined) updatePayload.url = data.url;
-    if (data.secret !== undefined) updatePayload.secret = data.secret;
+    if (data.secret !== undefined) updatePayload.secret = encryptSecret(data.secret);
     if (data.events !== undefined) updatePayload.events = data.events;
     if (data.headers !== undefined) updatePayload.headers = data.headers;
     if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
@@ -460,10 +464,7 @@ webhookRoutes.patch(
       }
     });
 
-    return c.json({
-      ...sanitizeWebhook(updated),
-      ...(data.secret ? { secret: updated.secret } : {})
-    });
+    return c.json(sanitizeWebhook(updated));
   }
 );
 

@@ -4,7 +4,6 @@ import {
   Bell,
   Building2,
   CheckCircle2,
-  CreditCard,
   Paintbrush,
   Shield
 } from 'lucide-react';
@@ -12,7 +11,6 @@ import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
-import OrgBillingInfo from './OrgBillingInfo';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -40,12 +38,6 @@ const tabs = [
     label: 'Security',
     description: 'Access policies and MFA',
     icon: Shield
-  },
-  {
-    id: 'billing',
-    label: 'Billing',
-    description: 'Plan, usage, and invoices',
-    icon: CreditCard
   }
 ] as const;
 
@@ -289,13 +281,6 @@ export default function OrgSettingsPage() {
             security={orgDetails?.settings?.security}
             onDirty={handleDirty}
             onSave={(data) => handleSave('security', data)}
-          />
-        );
-      case 'billing':
-        return (
-          <OrgBillingInfo
-            organizationName={displayOrg.name}
-            billingContact={orgDetails?.billingContact}
           />
         );
       case 'general':

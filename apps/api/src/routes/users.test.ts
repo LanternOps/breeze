@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { userRoutes } from './users';
 
+const { sendInviteMock } = vi.hoisted(() => ({
+  sendInviteMock: vi.fn().mockResolvedValue(undefined)
+}));
+
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     USERS_READ: { resource: 'users', action: 'read' },
@@ -60,6 +64,12 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requirePermission: vi.fn(() => (c, next) => next())
+}));
+
+vi.mock('../services/email', () => ({
+  getEmailService: vi.fn(() => ({
+    sendInvite: sendInviteMock
+  }))
 }));
 
 import { db } from '../db';

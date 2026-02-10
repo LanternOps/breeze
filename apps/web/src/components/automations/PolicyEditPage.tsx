@@ -83,7 +83,36 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
       const response = await fetchWithAuth('/tags');
       if (response.ok) {
         const data = await response.json();
-        setTags(data.data ?? data.tags ?? []);
+        const rawTags = data.data ?? data.tags ?? [];
+        const normalizedTags = Array.isArray(rawTags)
+          ? rawTags
+            .map((item): Tag | null => {
+              if (typeof item === 'string') {
+                return { id: item, name: item };
+              }
+
+              if (!item || typeof item !== 'object') {
+                return null;
+              }
+
+              const record = item as Record<string, unknown>;
+              const idCandidate = record.id ?? record.tag ?? record.name;
+              const nameCandidate = record.name ?? record.tag ?? record.id;
+              if (typeof idCandidate !== 'string' || typeof nameCandidate !== 'string') {
+                return null;
+              }
+
+              const id = idCandidate.trim();
+              const name = nameCandidate.trim();
+              if (id.length === 0 || name.length === 0) {
+                return null;
+              }
+
+              return { id, name };
+            })
+            .filter((item): item is Tag => item !== null)
+          : [];
+        setTags(normalizedTags);
       }
     } catch {
       // Silently fail

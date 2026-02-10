@@ -675,19 +675,13 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
   const app = new Hono();
 
   // WebSocket route for agent connections
-  // GET /api/v1/agent-ws/:id/ws?token=xxx
+  // GET /api/v1/agent-ws/:id/ws with Authorization: Bearer <agent-token>
   app.get(
     '/:id/ws',
-    upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined; header: (key: string) => string | undefined } }) => {
+    upgradeWebSocket((c: { req: { param: (key: string) => string; header: (key: string) => string | undefined } }) => {
       const agentId = c.req.param('id');
-      // Accept token from query param (?token=brz_...) or Authorization header (Bearer brz_...)
-      let token = c.req.query('token');
-      if (!token) {
-        const authHeader = c.req.header('Authorization');
-        if (authHeader?.startsWith('Bearer ')) {
-          token = authHeader.slice(7);
-        }
-      }
+      const authHeader = c.req.header('Authorization');
+      const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
       return createAgentWsHandlers(agentId, token);
     })
   );
