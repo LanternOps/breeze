@@ -693,6 +693,20 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         required: ['certLifetimeDays', 'expiredCertPolicy']
       },
 
+      // API Key schemas
+      ApiKey: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          prefix: { type: 'string', description: 'First 8 characters of the key for identification' },
+          scopes: { type: 'array', items: { type: 'string' } },
+          lastUsedAt: { type: 'string', format: 'date-time', nullable: true },
+          expiresAt: { type: 'string', format: 'date-time', nullable: true },
+          createdAt: { type: 'string', format: 'date-time' }
+        }
+      },
+
       // Audit schemas
       AuditLog: {
         type: 'object',
@@ -792,6 +806,22 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
             }
           }
         }
+      },
+      ServerError: {
+        description: 'Internal server error',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/Error' }
+          }
+        }
+      },
+      ServiceUnavailable: {
+        description: 'Service temporarily unavailable (e.g., Redis down)',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/Error' }
+          }
+        }
       }
     }
   },
@@ -805,6 +835,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/auth/register': {
       post: {
+        operationId: 'registerUser',
         tags: ['Auth'],
         summary: 'Register a new user',
         description: 'Create a new user account. Rate limited to 5 requests per hour per IP.',
@@ -833,9 +864,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/login': {
       post: {
+        operationId: 'login',
         tags: ['Auth'],
         summary: 'Login',
-        description: 'Authenticate with email and password. Returns JWT tokens or MFA challenge.',
+        description: 'Authenticate with email and password. Returns JWT tokens or MFA challenge. If MFA is enabled, returns a tempToken that must be used with /auth/mfa/verify.',
         security: [],
         requestBody: {
           required: true,
@@ -862,9 +894,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/logout': {
       post: {
+        operationId: 'logout',
         tags: ['Auth'],
         summary: 'Logout',
-        description: 'Invalidate the current session',
+        description: 'Invalidate the current session and revoke all tokens. Clears the refresh token cookie.',
         responses: {
           '200': {
             description: 'Logout successful',
@@ -879,9 +912,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/refresh': {
       post: {
+        operationId: 'refreshTokens',
         tags: ['Auth'],
         summary: 'Refresh tokens',
-        description: 'Issue a new access token using the refresh cookie',
+        description: 'Issue a new access token using the refresh cookie. Requires the x-breeze-csrf header for CSRF protection. The old refresh token is rotated.',
         security: [],
         responses: {
           '200': {
@@ -897,15 +931,17 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
-          '401': { $ref: '#/components/responses/Unauthorized' }
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { description: 'CSRF validation failed' }
         }
       }
     },
     '/auth/mfa/setup': {
       post: {
+        operationId: 'setupMfa',
         tags: ['Auth'],
         summary: 'Setup MFA',
-        description: 'Initialize MFA setup and get QR code for authenticator app',
+        description: 'Initialize TOTP MFA setup. Returns a secret, QR code, and recovery codes. Must be confirmed with /auth/mfa/verify or /auth/mfa/enable.',
         responses: {
           '200': {
             description: 'MFA setup initiated',
@@ -921,9 +957,11 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/mfa/verify': {
       post: {
+        operationId: 'verifyMfa',
         tags: ['Auth'],
         summary: 'Verify MFA code',
-        description: 'Verify MFA code during login or to complete MFA setup',
+        description: 'Verify MFA code during login (with tempToken) or to complete MFA setup (with Bearer token). Supports both TOTP and SMS methods.',
+        security: [],
         requestBody: {
           required: true,
           content: {
@@ -955,9 +993,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/mfa/disable': {
       post: {
+        operationId: 'disableMfa',
         tags: ['Auth'],
         summary: 'Disable MFA',
-        description: 'Disable MFA for the current user (requires current MFA code)',
+        description: 'Disable MFA for the current user. Requires a valid MFA code (TOTP or SMS). May be blocked by organization policy requiring MFA.',
         requestBody: {
           required: true,
           content: {
@@ -988,9 +1027,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/forgot-password': {
       post: {
+        operationId: 'forgotPassword',
         tags: ['Auth'],
         summary: 'Request password reset',
-        description: 'Send password reset email. Always returns success to prevent email enumeration.',
+        description: 'Send password reset email. Always returns success to prevent email enumeration. Rate limited per IP.',
         security: [],
         requestBody: {
           required: true,
@@ -1020,9 +1060,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/reset-password': {
       post: {
+        operationId: 'resetPassword',
         tags: ['Auth'],
         summary: 'Reset password',
-        description: 'Reset password using the token from email',
+        description: 'Reset password using the token from email. Invalidates all existing sessions and tokens.',
         security: [],
         requestBody: {
           required: true,
@@ -1054,9 +1095,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/auth/me': {
       get: {
+        operationId: 'getCurrentUser',
         tags: ['Auth'],
         summary: 'Get current user',
-        description: 'Get the currently authenticated user profile',
+        description: 'Get the currently authenticated user profile including MFA status and phone verification.',
         responses: {
           '200': {
             description: 'Current user profile',
@@ -1075,15 +1117,296 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/auth/register-partner': {
+      post: {
+        operationId: 'registerPartner',
+        tags: ['Auth'],
+        summary: 'Register a new partner (MSP)',
+        description: 'Self-service MSP/company signup. Creates a partner, admin role, user, and associates them. Rate limited to 3 per hour per IP.',
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  companyName: { type: 'string', minLength: 2, maxLength: 255 },
+                  email: { type: 'string', format: 'email' },
+                  password: { type: 'string', minLength: 8 },
+                  name: { type: 'string', minLength: 1, maxLength: 255 },
+                  acceptTerms: { type: 'boolean', description: 'Must be true' }
+                },
+                required: ['companyName', 'email', 'password', 'name', 'acceptTerms']
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Partner registration successful',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    user: { $ref: '#/components/schemas/User' },
+                    partner: { $ref: '#/components/schemas/Partner' },
+                    tokens: { $ref: '#/components/schemas/Tokens' },
+                    mfaRequired: { type: 'boolean' }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '429': { $ref: '#/components/responses/TooManyRequests' }
+        }
+      }
+    },
+    '/auth/change-password': {
+      post: {
+        operationId: 'changePassword',
+        tags: ['Auth'],
+        summary: 'Change password',
+        description: 'Change the current user password. Requires current password verification. Invalidates all existing sessions.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  currentPassword: { type: 'string', minLength: 1 },
+                  newPassword: { type: 'string', minLength: 8 }
+                },
+                required: ['currentPassword', 'newPassword']
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Password changed successfully',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Success' }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '401': { $ref: '#/components/responses/Unauthorized' }
+        }
+      }
+    },
+    '/auth/mfa/enable': {
+      post: {
+        operationId: 'enableMfa',
+        tags: ['Auth'],
+        summary: 'Enable MFA (confirm setup)',
+        description: 'Confirm TOTP MFA setup by providing the 6-digit code from the authenticator app. Requires a prior call to /auth/mfa/setup.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  code: { type: 'string', minLength: 6, maxLength: 6 }
+                },
+                required: ['code']
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'MFA enabled',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    recoveryCodes: { type: 'array', items: { type: 'string' } },
+                    message: { type: 'string' }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '401': { $ref: '#/components/responses/Unauthorized' }
+        }
+      }
+    },
+    '/auth/mfa/sms/enable': {
+      post: {
+        operationId: 'enableSmsMfa',
+        tags: ['Auth'],
+        summary: 'Enable SMS MFA',
+        description: 'Enable SMS-based MFA. Requires a verified phone number. May be blocked by organization policy.',
+        responses: {
+          '200': {
+            description: 'SMS MFA enabled',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    recoveryCodes: { type: 'array', items: { type: 'string' } },
+                    message: { type: 'string' }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '403': { $ref: '#/components/responses/Forbidden' }
+        }
+      }
+    },
+    '/auth/mfa/sms/send': {
+      post: {
+        operationId: 'sendSmsMfaCode',
+        tags: ['Auth'],
+        summary: 'Send SMS MFA code during login',
+        description: 'Send an SMS verification code during the MFA login flow. Requires a valid tempToken from the login response.',
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  tempToken: { type: 'string' }
+                },
+                required: ['tempToken']
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'SMS code sent',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Success' }
+              }
+            }
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '429': { $ref: '#/components/responses/TooManyRequests' }
+        }
+      }
+    },
+    '/auth/mfa/recovery-codes': {
+      post: {
+        operationId: 'regenerateRecoveryCodes',
+        tags: ['Auth'],
+        summary: 'Regenerate MFA recovery codes',
+        description: 'Generate new recovery codes for the authenticated user. MFA must be enabled. Previous codes are invalidated.',
+        responses: {
+          '200': {
+            description: 'Recovery codes generated',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    recoveryCodes: { type: 'array', items: { type: 'string' } },
+                    message: { type: 'string' }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' }
+        }
+      }
+    },
+    '/auth/phone/verify': {
+      post: {
+        operationId: 'sendPhoneVerification',
+        tags: ['Auth'],
+        summary: 'Send phone verification code',
+        description: 'Send a verification code to a phone number for SMS MFA setup. Requires authentication.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  phoneNumber: { type: 'string', description: 'E.164 format (e.g. +14155551234)' }
+                },
+                required: ['phoneNumber']
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Verification code sent',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Success' }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '429': { $ref: '#/components/responses/TooManyRequests' }
+        }
+      }
+    },
+    '/auth/phone/confirm': {
+      post: {
+        operationId: 'confirmPhoneVerification',
+        tags: ['Auth'],
+        summary: 'Confirm phone verification',
+        description: 'Confirm a phone number by providing the verification code sent via SMS.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  phoneNumber: { type: 'string', description: 'E.164 format' },
+                  code: { type: 'string', minLength: 6, maxLength: 6 }
+                },
+                required: ['phoneNumber', 'code']
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Phone number verified',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Success' }
+              }
+            }
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '429': { $ref: '#/components/responses/TooManyRequests' }
+        }
+      }
+    },
 
     // ============================================
     // USER ENDPOINTS
     // ============================================
     '/users': {
       get: {
+        operationId: 'listUsers',
         tags: ['Users'],
         summary: 'List users',
-        description: 'Get all users in the current scope (partner or organization)',
+        description: 'Get all users in the current scope (partner or organization). Partner scope requires full organization access.',
         responses: {
           '200': {
             description: 'List of users',
@@ -1104,6 +1427,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/users/me': {
       get: {
+        operationId: 'getUserProfile',
         tags: ['Users'],
         summary: 'Get current user',
         description: 'Get the currently authenticated user profile',
@@ -1120,9 +1444,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       patch: {
+        operationId: 'updateUserProfile',
         tags: ['Users'],
         summary: 'Update current user',
-        description: 'Update the current user profile',
+        description: 'Update the current user profile (name, avatar)',
         requestBody: {
           required: true,
           content: {
@@ -1153,6 +1478,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/users/{id}': {
       get: {
+        operationId: 'getUser',
         tags: ['Users'],
         summary: 'Get user',
         description: 'Get a specific user by ID',
@@ -1170,6 +1496,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       patch: {
+        operationId: 'updateUser',
         tags: ['Users'],
         summary: 'Update user',
         description: 'Update user name or status',
@@ -1202,6 +1529,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'removeUser',
         tags: ['Users'],
         summary: 'Remove user',
         description: 'Remove user from the current scope',
@@ -1221,9 +1549,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/users/invite': {
       post: {
+        operationId: 'inviteUser',
         tags: ['Users'],
         summary: 'Invite user',
-        description: 'Invite a new user to the partner or organization',
+        description: 'Invite a new user to the partner or organization. Sends an invitation email.',
         requestBody: {
           required: true,
           content: {
@@ -1255,6 +1584,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/users/resend-invite': {
       post: {
+        operationId: 'resendInvite',
         tags: ['Users'],
         summary: 'Resend invitation',
         description: 'Resend the invitation email to a pending user',
@@ -1288,9 +1618,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/users/roles': {
       get: {
+        operationId: 'listRoles',
         tags: ['Users'],
         summary: 'List roles',
-        description: 'Get available roles for the current scope',
+        description: 'Get available roles for the current scope (partner or organization)',
         responses: {
           '200': {
             description: 'List of roles',
@@ -1310,9 +1641,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/users/{id}/role': {
       post: {
+        operationId: 'assignRole',
         tags: ['Users'],
         summary: 'Assign role',
-        description: 'Assign a role to a user',
+        description: 'Assign a role to a user within the current scope',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
           required: true,
@@ -1348,6 +1680,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/orgs/partners': {
       get: {
+        operationId: 'listPartners',
         tags: ['Organizations'],
         summary: 'List partners',
         description: 'List all partners (system scope only)',
@@ -1373,6 +1706,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createPartner',
         tags: ['Organizations'],
         summary: 'Create partner',
         description: 'Create a new partner (system scope only)',
@@ -1411,6 +1745,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/orgs/partners/{id}': {
       get: {
+        operationId: 'getPartner',
         tags: ['Organizations'],
         summary: 'Get partner',
         description: 'Get partner details (system scope only)',
@@ -1428,6 +1763,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       patch: {
+        operationId: 'updatePartner',
         tags: ['Organizations'],
         summary: 'Update partner',
         description: 'Update partner details (system scope only)',
@@ -1445,6 +1781,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'deletePartner',
         tags: ['Organizations'],
         summary: 'Delete partner',
         description: 'Soft delete a partner (system scope only)',
@@ -1464,6 +1801,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/orgs/organizations': {
       get: {
+        operationId: 'listOrganizations',
         tags: ['Organizations'],
         summary: 'List organizations',
         description: 'List organizations under the current partner (system scope can optionally filter by partnerId)',
@@ -1490,6 +1828,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createOrganization',
         tags: ['Organizations'],
         summary: 'Create organization',
         description: 'Create a new organization under the current partner (system scope requires partnerId)',
@@ -1529,6 +1868,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/orgs/organizations/{id}': {
       get: {
+        operationId: 'getOrganization',
         tags: ['Organizations'],
         summary: 'Get organization',
         description: 'Get organization details',
@@ -1546,6 +1886,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       patch: {
+        operationId: 'updateOrganization',
         tags: ['Organizations'],
         summary: 'Update organization',
         description: 'Update organization details',
@@ -1563,6 +1904,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'deleteOrganization',
         tags: ['Organizations'],
         summary: 'Delete organization',
         description: 'Soft delete an organization',
@@ -1582,6 +1924,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/orgs/sites': {
       get: {
+        operationId: 'listSites',
         tags: ['Organizations'],
         summary: 'List sites',
         description: 'List sites for an organization',
@@ -1608,9 +1951,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createSite',
         tags: ['Organizations'],
         summary: 'Create site',
-        description: 'Create a new site',
+        description: 'Create a new site within an organization',
         requestBody: {
           required: true,
           content: {
@@ -1643,6 +1987,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/orgs/sites/{id}': {
       get: {
+        operationId: 'getSite',
         tags: ['Organizations'],
         summary: 'Get site',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -1659,6 +2004,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       patch: {
+        operationId: 'updateSite',
         tags: ['Organizations'],
         summary: 'Update site',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -1674,6 +2020,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'deleteSite',
         tags: ['Organizations'],
         summary: 'Delete site',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -1695,6 +2042,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/devices': {
       get: {
+        operationId: 'listDevices',
         tags: ['Devices'],
         summary: 'List devices',
         description: 'Get paginated list of devices with optional filters',
@@ -1727,6 +2075,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/devices/{id}': {
       get: {
+        operationId: 'getDevice',
         tags: ['Devices'],
         summary: 'Get device details',
         description: 'Get comprehensive device information including hardware, network, and recent metrics',
@@ -1756,6 +2105,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       patch: {
+        operationId: 'updateDevice',
         tags: ['Devices'],
         summary: 'Update device',
         description: 'Update device display name, site, or tags',
@@ -1787,6 +2137,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'decommissionDevice',
         tags: ['Devices'],
         summary: 'Decommission device',
         description: 'Mark device as decommissioned (soft delete)',
@@ -1805,6 +2156,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/devices/{id}/metrics': {
       get: {
+        operationId: 'getDeviceMetrics',
         tags: ['Devices'],
         summary: 'Get device metrics',
         description: 'Get historical metrics data for a device',
@@ -1836,6 +2188,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/devices/{id}/software': {
       get: {
+        operationId: 'getDeviceSoftware',
         tags: ['Devices'],
         summary: 'Get installed software',
         description: 'Get list of software installed on the device',
@@ -1865,6 +2218,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/devices/{id}/commands': {
       get: {
+        operationId: 'getDeviceCommands',
         tags: ['Devices'],
         summary: 'Get command history',
         description: 'Get history of commands sent to the device',
@@ -1891,9 +2245,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'queueDeviceCommand',
         tags: ['Devices'],
         summary: 'Queue command',
-        description: 'Queue a command for the device to execute',
+        description: 'Queue a command for the device to execute. The command is delivered via WebSocket if the agent is connected.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
           required: true,
@@ -1924,6 +2279,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/devices/groups': {
       get: {
+        operationId: 'listDeviceGroups',
         tags: ['Devices'],
         summary: 'List device groups',
         parameters: [
@@ -1949,6 +2305,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createDeviceGroup',
         tags: ['Devices'],
         summary: 'Create device group',
         requestBody: {
@@ -1988,6 +2345,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/scripts': {
       get: {
+        operationId: 'listScripts',
         tags: ['Scripts'],
         summary: 'List scripts',
         parameters: [
@@ -2018,6 +2376,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createScript',
         tags: ['Scripts'],
         summary: 'Create script',
         requestBody: {
@@ -2057,6 +2416,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/scripts/{id}': {
       get: {
+        operationId: 'getScript',
         tags: ['Scripts'],
         summary: 'Get script',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2073,9 +2433,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       put: {
+        operationId: 'updateScript',
         tags: ['Scripts'],
         summary: 'Update script',
-        description: 'Update script. Version is automatically incremented when content changes.',
+        description: 'Update script. Version is automatically incremented when content changes. Requires MFA.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         responses: {
           '200': {
@@ -2089,9 +2450,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'deleteScript',
         tags: ['Scripts'],
         summary: 'Delete script',
-        description: 'Delete script (fails if active executions exist)',
+        description: 'Delete script (fails if active executions exist). Cannot delete system scripts unless system scope. Requires MFA.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         responses: {
           '200': {
@@ -2115,9 +2477,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/scripts/{id}/execute': {
       post: {
+        operationId: 'executeScript',
         tags: ['Scripts'],
         summary: 'Execute script',
-        description: 'Execute script on one or more devices',
+        description: 'Execute script on one or more devices. Creates a batch if multiple devices. Commands are delivered via WebSocket for immediate execution. Requires MFA.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
           required: true,
@@ -2163,6 +2526,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/scripts/{id}/executions': {
       get: {
+        operationId: 'listScriptExecutions',
         tags: ['Scripts'],
         summary: 'List executions',
         description: 'List executions for a specific script',
@@ -2193,6 +2557,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/scripts/executions/{id}': {
       get: {
+        operationId: 'getScriptExecution',
         tags: ['Scripts'],
         summary: 'Get execution details',
         description: 'Get detailed execution information including stdout/stderr',
@@ -2211,6 +2576,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/scripts/executions/{id}/cancel': {
       post: {
+        operationId: 'cancelScriptExecution',
         tags: ['Scripts'],
         summary: 'Cancel execution',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2233,6 +2599,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/alerts': {
       get: {
+        operationId: 'listAlerts',
         tags: ['Alerts'],
         summary: 'List alerts',
         parameters: [
@@ -2265,6 +2632,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/summary': {
       get: {
+        operationId: 'getAlertSummary',
         tags: ['Alerts'],
         summary: 'Get alert summary',
         description: 'Get counts by severity and status',
@@ -2283,6 +2651,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/{id}': {
       get: {
+        operationId: 'getAlert',
         tags: ['Alerts'],
         summary: 'Get alert details',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2300,6 +2669,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/{id}/acknowledge': {
       post: {
+        operationId: 'acknowledgeAlert',
         tags: ['Alerts'],
         summary: 'Acknowledge alert',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2317,6 +2687,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/{id}/resolve': {
       post: {
+        operationId: 'resolveAlert',
         tags: ['Alerts'],
         summary: 'Resolve alert',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2346,6 +2717,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/{id}/suppress': {
       post: {
+        operationId: 'suppressAlert',
         tags: ['Alerts'],
         summary: 'Suppress alert',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2377,6 +2749,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/rules': {
       get: {
+        operationId: 'listAlertRules',
         tags: ['Alerts'],
         summary: 'List alert rules',
         parameters: [
@@ -2404,8 +2777,34 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createAlertRule',
         tags: ['Alerts'],
         summary: 'Create alert rule',
+        description: 'Create a new alert rule with trigger conditions and notification settings.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  orgId: { type: 'string', format: 'uuid' },
+                  name: { type: 'string', minLength: 1 },
+                  description: { type: 'string' },
+                  enabled: { type: 'boolean', default: true },
+                  severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
+                  targets: { type: 'object', description: 'Target devices, sites, or groups' },
+                  conditions: { type: 'object', description: 'Alert trigger conditions (metric thresholds, etc.)' },
+                  cooldownMinutes: { type: 'integer', default: 15 },
+                  escalationPolicyId: { type: 'string', format: 'uuid' },
+                  notificationChannels: { type: 'array', items: { type: 'string', format: 'uuid' } },
+                  autoResolve: { type: 'boolean', default: false }
+                },
+                required: ['orgId', 'name', 'severity', 'conditions']
+              }
+            }
+          }
+        },
         responses: {
           '201': {
             description: 'Rule created',
@@ -2420,6 +2819,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/channels': {
       get: {
+        operationId: 'listNotificationChannels',
         tags: ['Alerts'],
         summary: 'List notification channels',
         parameters: [
@@ -2446,8 +2846,28 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createNotificationChannel',
         tags: ['Alerts'],
         summary: 'Create notification channel',
+        description: 'Create a new notification channel (email, Slack, Teams, webhook, PagerDuty, or SMS).',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  orgId: { type: 'string', format: 'uuid' },
+                  name: { type: 'string', minLength: 1 },
+                  type: { type: 'string', enum: ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms'] },
+                  config: { type: 'object', description: 'Channel-specific configuration (e.g., webhookUrl, apiKey)' },
+                  enabled: { type: 'boolean', default: true }
+                },
+                required: ['orgId', 'name', 'type', 'config']
+              }
+            }
+          }
+        },
         responses: {
           '201': {
             description: 'Channel created',
@@ -2462,6 +2882,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/channels/{id}/test': {
       post: {
+        operationId: 'testNotificationChannel',
         tags: ['Alerts'],
         summary: 'Test notification channel',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2486,6 +2907,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/alerts/policies': {
       get: {
+        operationId: 'listEscalationPolicies',
         tags: ['Alerts'],
         summary: 'List escalation policies',
         responses: {
@@ -2506,6 +2928,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createEscalationPolicy',
         tags: ['Alerts'],
         summary: 'Create escalation policy',
         responses: {
@@ -2526,6 +2949,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/automations': {
       get: {
+        operationId: 'listAutomations',
         tags: ['Automations'],
         summary: 'List automations',
         parameters: [
@@ -2552,6 +2976,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createAutomation',
         tags: ['Automations'],
         summary: 'Create automation',
         responses: {
@@ -2568,6 +2993,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/automations/{id}': {
       get: {
+        operationId: 'getAutomation',
         tags: ['Automations'],
         summary: 'Get automation',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2583,6 +3009,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       put: {
+        operationId: 'updateAutomation',
         tags: ['Automations'],
         summary: 'Update automation',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2598,6 +3025,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'deleteAutomation',
         tags: ['Automations'],
         summary: 'Delete automation',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2615,6 +3043,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/automations/{id}/trigger': {
       post: {
+        operationId: 'triggerAutomation',
         tags: ['Automations'],
         summary: 'Trigger automation',
         description: 'Manually trigger an automation run',
@@ -2639,6 +3068,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/automations/{id}/runs': {
       get: {
+        operationId: 'listAutomationRuns',
         tags: ['Automations'],
         summary: 'List automation runs',
         parameters: [
@@ -2667,6 +3097,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies': {
       get: {
+        operationId: 'listPolicies',
         tags: ['Policies'],
         summary: 'List policies',
         parameters: [
@@ -2694,6 +3125,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createPolicy',
         tags: ['Policies'],
         summary: 'Create policy',
         requestBody: {
@@ -2735,6 +3167,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/compliance/stats': {
       get: {
+        operationId: 'getPolicyComplianceStats',
         tags: ['Policies'],
         summary: 'Get policy compliance stats',
         parameters: [{ $ref: '#/components/parameters/orgIdParam' }],
@@ -2766,6 +3199,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/compliance/summary': {
       get: {
+        operationId: 'getPolicyComplianceSummary',
         tags: ['Policies'],
         summary: 'Get policy compliance summary',
         parameters: [{ $ref: '#/components/parameters/orgIdParam' }],
@@ -2796,6 +3230,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/{id}': {
       get: {
+        operationId: 'getPolicy',
         tags: ['Policies'],
         summary: 'Get policy',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2811,6 +3246,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       put: {
+        operationId: 'updatePolicy',
         tags: ['Policies'],
         summary: 'Update policy',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2826,6 +3262,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       patch: {
+        operationId: 'patchPolicy',
         tags: ['Policies'],
         summary: 'Patch policy',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2841,6 +3278,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       delete: {
+        operationId: 'deletePolicy',
         tags: ['Policies'],
         summary: 'Delete policy',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2858,6 +3296,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/{id}/activate': {
       post: {
+        operationId: 'activatePolicy',
         tags: ['Policies'],
         summary: 'Activate policy',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2875,6 +3314,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/{id}/deactivate': {
       post: {
+        operationId: 'deactivatePolicy',
         tags: ['Policies'],
         summary: 'Deactivate policy',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -2892,6 +3332,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/{id}/evaluate': {
       post: {
+        operationId: 'evaluatePolicy',
         tags: ['Policies'],
         summary: 'Evaluate policy',
         description: 'Force immediate policy evaluation',
@@ -2920,6 +3361,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/{id}/compliance': {
       get: {
+        operationId: 'getPolicyCompliance',
         tags: ['Policies'],
         summary: 'Get policy compliance',
         parameters: [
@@ -2952,6 +3394,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/policies/{id}/remediate': {
       post: {
+        operationId: 'triggerPolicyRemediation',
         tags: ['Policies'],
         summary: 'Trigger policy remediation',
         description: 'Trigger remediation automation for a policy without running a full evaluation',
@@ -2982,6 +3425,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/reports': {
       get: {
+        operationId: 'listReports',
         tags: ['Reports'],
         summary: 'List reports',
         parameters: [
@@ -3009,6 +3453,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'createReport',
         tags: ['Reports'],
         summary: 'Create report',
         responses: {
@@ -3025,6 +3470,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/reports/generate': {
       post: {
+        operationId: 'generateAdHocReport',
         tags: ['Reports'],
         summary: 'Generate ad-hoc report',
         description: 'Generate a report immediately without saving the configuration',
@@ -3067,6 +3513,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/reports/{id}/generate': {
       post: {
+        operationId: 'generateSavedReport',
         tags: ['Reports'],
         summary: 'Generate saved report',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -3091,6 +3538,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/reports/runs': {
       get: {
+        operationId: 'listReportRuns',
         tags: ['Reports'],
         summary: 'List report runs',
         parameters: [
@@ -3119,6 +3567,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/reports/data/device-inventory': {
       get: {
+        operationId: 'getDeviceInventoryData',
         tags: ['Reports'],
         summary: 'Get device inventory data',
         parameters: [
@@ -3143,6 +3592,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/remote/sessions': {
       get: {
+        operationId: 'listRemoteSessions',
         tags: ['Remote'],
         summary: 'List remote sessions',
         parameters: [
@@ -3171,6 +3621,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'initiateRemoteSession',
         tags: ['Remote'],
         summary: 'Initiate remote session',
         requestBody: {
@@ -3203,6 +3654,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/remote/sessions/{id}': {
       get: {
+        operationId: 'getRemoteSession',
         tags: ['Remote'],
         summary: 'Get session details',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -3220,6 +3672,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/remote/sessions/{id}/offer': {
       post: {
+        operationId: 'submitWebRtcOffer',
         tags: ['Remote'],
         summary: 'Submit WebRTC offer',
         description: 'Submit WebRTC SDP offer from client',
@@ -3252,6 +3705,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/remote/sessions/{id}/answer': {
       post: {
+        operationId: 'submitWebRtcAnswer',
         tags: ['Remote'],
         summary: 'Submit WebRTC answer',
         description: 'Submit WebRTC SDP answer from agent',
@@ -3270,6 +3724,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/remote/sessions/{id}/ice': {
       post: {
+        operationId: 'addIceCandidate',
         tags: ['Remote'],
         summary: 'Add ICE candidate',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -3287,6 +3742,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/remote/sessions/{id}/end': {
       post: {
+        operationId: 'endRemoteSession',
         tags: ['Remote'],
         summary: 'End session',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -3304,6 +3760,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/remote/transfers': {
       get: {
+        operationId: 'listFileTransfers',
         tags: ['Remote'],
         summary: 'List file transfers',
         parameters: [
@@ -3331,6 +3788,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       },
       post: {
+        operationId: 'initiateFileTransfer',
         tags: ['Remote'],
         summary: 'Initiate file transfer',
         responses: {
@@ -3347,6 +3805,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/remote/transfers/{id}/cancel': {
       post: {
+        operationId: 'cancelFileTransfer',
         tags: ['Remote'],
         summary: 'Cancel file transfer',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
@@ -3368,6 +3827,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/agents/enroll': {
       post: {
+        operationId: 'enrollAgent',
         tags: ['Agents'],
         summary: 'Enroll agent',
         description: 'Register a new agent with an enrollment key',
@@ -3402,6 +3862,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/{id}/heartbeat': {
       post: {
+        operationId: 'agentHeartbeat',
         tags: ['Agents'],
         summary: 'Agent heartbeat',
         description: 'Send heartbeat with metrics and receive pending commands',
@@ -3431,6 +3892,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/{id}/commands/{commandId}/result': {
       post: {
+        operationId: 'submitCommandResult',
         tags: ['Agents'],
         summary: 'Submit command result',
         description: 'Report the result of a command execution',
@@ -3471,6 +3933,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/{id}/config': {
       get: {
+        operationId: 'getAgentConfig',
         tags: ['Agents'],
         summary: 'Get agent config',
         parameters: [
@@ -3497,6 +3960,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/{id}/hardware': {
       put: {
+        operationId: 'updateAgentHardware',
         tags: ['Agents'],
         summary: 'Update hardware info',
         parameters: [
@@ -3528,6 +3992,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/agents/renew-cert': {
       post: {
+        operationId: 'renewMtlsCert',
         tags: ['Agents'],
         summary: 'Renew mTLS client certificate',
         description: 'Request a new mTLS client certificate. This endpoint is excluded from mTLS WAF rules.',
@@ -3573,6 +4038,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/quarantined': {
       get: {
+        operationId: 'listQuarantinedDevices',
         tags: ['Agents'],
         summary: 'List quarantined devices',
         description: 'List quarantined devices in the authenticated user\'s org scope.',
@@ -3596,6 +4062,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/{id}/approve': {
       post: {
+        operationId: 'approveQuarantinedDevice',
         tags: ['Agents'],
         summary: 'Approve quarantined device',
         description: 'Approve a quarantined device. Issues a new mTLS certificate and sets status to online.',
@@ -3635,6 +4102,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/{id}/deny': {
       post: {
+        operationId: 'denyQuarantinedDevice',
         tags: ['Agents'],
         summary: 'Deny quarantined device',
         description: 'Deny a quarantined device. Sets status to decommissioned.',
@@ -3664,6 +4132,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/agents/org/{orgId}/settings/mtls': {
       patch: {
+        operationId: 'updateMtlsSettings',
         tags: ['Organizations'],
         summary: 'Update mTLS settings',
         description: 'Update mTLS certificate settings for an organization.',
@@ -3704,6 +4173,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     // ============================================
     '/audit/logs': {
       get: {
+        operationId: 'queryAuditLogs',
         tags: ['Audit'],
         summary: 'Query audit logs',
         parameters: [
@@ -3738,6 +4208,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/audit/logs/export': {
       get: {
+        operationId: 'exportAuditLogs',
         tags: ['Audit'],
         summary: 'Export audit logs',
         parameters: [
@@ -3762,6 +4233,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/audit/summary': {
       get: {
+        operationId: 'getAuditSummary',
         tags: ['Audit'],
         summary: 'Get activity summary',
         parameters: [
@@ -3791,6 +4263,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
     '/audit/logs/{id}': {
       get: {
+        operationId: 'getAuditLogEntry',
         tags: ['Audit'],
         summary: 'Get audit log entry',
         parameters: [{ $ref: '#/components/parameters/idParam' }],

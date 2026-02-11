@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Playwright output
+playwright-report/
+test-results/
+blob-report/
+
+# Auth state (generated at runtime)
+.auth/user.json
+
+# Reports from YAML runner
+reports/

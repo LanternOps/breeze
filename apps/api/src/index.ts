@@ -9,6 +9,7 @@ import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
 
+import { securityMiddleware } from './middleware/security';
 import { authRoutes } from './routes/auth';
 import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
@@ -82,6 +83,7 @@ import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { createCorsOriginResolver } from './services/corsOrigins';
+import { validateConfig } from './config/validate';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
@@ -134,7 +136,19 @@ const resolveCorsOrigin = createCorsOriginResolver({
 
 // Global middleware
 app.use('*', logger());
-app.use('*', secureHeaders());
+app.use(
+  '*',
+  secureHeaders({
+    // Override defaults to match Breeze security policy:
+    // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
+    strictTransportSecurity: 'max-age=31536000; includeSubDomains',
+    // - X-Frame-Options: DENY (default is SAMEORIGIN)
+    xFrameOptions: 'DENY',
+    // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
+    referrerPolicy: 'strict-origin-when-cross-origin',
+  })
+);
+app.use('*', securityMiddleware());
 app.use('*', prettyJSON());
 app.use(
   '*',
@@ -857,6 +871,11 @@ function installSignalHandlers(): void {
 
 async function bootstrap(): Promise<void> {
   console.log(`Breeze API starting on port ${port}...`);
+
+  // Validate configuration before anything else — fail fast on missing/insecure secrets.
+  // The validated config is stored as a singleton; retrieve later via getConfig().
+  const config = validateConfig();
+  console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
 
   await runStartupChecks();
 
