@@ -169,7 +169,13 @@ export const useAiStore = create<AiState>()(
   },
 
   sendMessage: async (content: string) => {
-    const { sessionId } = get();
+    const trimmedContent = content.trim();
+    if (!trimmedContent) return;
+
+    const { sessionId, isStreaming, isLoading } = get();
+
+    // Client-side guard: prevent duplicate submits while a turn is in-flight.
+    if (isStreaming || isLoading) return;
 
     // Create session if needed
     if (!sessionId) {
@@ -180,10 +186,11 @@ export const useAiStore = create<AiState>()(
     if (!currentSessionId) return;
 
     // Add user message
+    const userMsgId = crypto.randomUUID();
     const userMsg: AiMessage = {
-      id: crypto.randomUUID(),
+      id: userMsgId,
       role: 'user',
-      content,
+      content: trimmedContent,
       createdAt: new Date()
     };
 
@@ -198,11 +205,21 @@ export const useAiStore = create<AiState>()(
       const { pageContext } = get();
       const res = await fetchWithAuth(`/ai/sessions/${currentSessionId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content, pageContext: pageContext ?? undefined })
+        body: JSON.stringify({ content: trimmedContent, pageContext: pageContext ?? undefined })
       });
 
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({ error: 'Failed to send message' }));
+
+        // Conflict means the backend rejected this optimistic message.
+        if (res.status === 409) {
+          set((s) => ({
+            messages: s.messages.filter((m) => m.id !== userMsgId),
+            error: data.error || 'Another response is still in progress for this conversation.'
+          }));
+          return;
+        }
+
         throw new Error(data.error || 'Failed to send message');
       }
 

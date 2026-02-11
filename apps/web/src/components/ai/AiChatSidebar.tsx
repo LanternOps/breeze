@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2 } from 'lucide-react';
 import { useAiStore } from '@/stores/aiStore';
 import AiChatMessages from './AiChatMessages';
@@ -37,6 +37,7 @@ export default function AiChatSidebar() {
   } = useAiStore();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const restoredSessionIdRef = useRef<string | null>(null);
 
   // Keyboard shortcut: Cmd+Shift+A to toggle
   useEffect(() => {
@@ -52,8 +53,16 @@ export default function AiChatSidebar() {
 
   // Restore session history when sidebar opens with a persisted sessionId
   useEffect(() => {
-    if (isOpen && sessionId && messages.length === 0 && !isLoading) {
-      loadSession(sessionId);
+    if (!isOpen || !sessionId) {
+      restoredSessionIdRef.current = null;
+      return;
+    }
+
+    // Prevent fetch loops when a valid session has no messages yet.
+    // Load persisted session content at most once per open/session pair.
+    if (messages.length === 0 && !isLoading && restoredSessionIdRef.current !== sessionId) {
+      restoredSessionIdRef.current = sessionId;
+      void loadSession(sessionId);
     }
   }, [isOpen, sessionId, messages.length, isLoading, loadSession]);
 
