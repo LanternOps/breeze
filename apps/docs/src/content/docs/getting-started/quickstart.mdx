@@ -1,0 +1,120 @@
+---
+title: Quickstart
+description: Get Breeze RMM running in under 5 minutes.
+sidebar:
+  order: 3
+  label: Quickstart
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+This guide gets a **production-ready** Breeze instance running on a single server with automatic TLS.
+
+<Steps>
+
+1. **Clone the repository**
+
+   ```bash
+   git clone https://github.com/LanternOps/breeze.git
+   cd breeze
+   ```
+
+2. **Create your environment file**
+
+   ```bash
+   cp .env.example .env.prod
+   ```
+
+   Edit `.env.prod` and set the required production values:
+
+   ```bash
+   # Domain & TLS
+   BREEZE_DOMAIN=breeze.yourdomain.com
+   ACME_EMAIL=admin@yourdomain.com
+
+   # Generate secrets (run each command, paste output into .env.prod)
+   openssl rand -base64 64   # → JWT_SECRET
+   openssl rand -hex 32      # → AGENT_ENROLLMENT_SECRET
+   openssl rand -hex 32      # → APP_ENCRYPTION_KEY
+   openssl rand -hex 32      # → MFA_ENCRYPTION_KEY
+   openssl rand -hex 32      # → ENROLLMENT_KEY_PEPPER
+   openssl rand -hex 32      # → MFA_RECOVERY_CODE_PEPPER
+   openssl rand -hex 32      # → METRICS_SCRAPE_TOKEN
+   openssl rand -hex 32      # → SESSION_SECRET
+
+   # Database
+   POSTGRES_PASSWORD=<strong-password>
+
+   # Monitoring
+   GRAFANA_ADMIN_PASSWORD=<strong-password>
+
+   # API URL
+   PUBLIC_API_URL=https://breeze.yourdomain.com/api/v1
+   ```
+
+   <Aside type="danger">
+     Never commit `.env.prod` to version control. It contains secrets.
+   </Aside>
+
+3. **Install dependencies**
+
+   ```bash
+   pnpm install
+   ```
+
+4. **Deploy**
+
+   ```bash
+   ./scripts/prod/deploy.sh .env.prod
+   ```
+
+   This single command:
+   - Validates all required environment variables
+   - Starts PostgreSQL and Redis, waits for readiness
+   - Runs database migrations
+   - Builds and starts the API, web dashboard, and Caddy reverse proxy
+   - Provisions a TLS certificate from Let's Encrypt
+   - Starts the monitoring stack (Prometheus, Grafana, Loki)
+   - Runs health checks to verify the deployment
+
+5. **Verify**
+
+   Open `https://breeze.yourdomain.com` in your browser. You should see the Breeze login page.
+
+   Check the API health endpoint:
+
+   ```bash
+   curl https://breeze.yourdomain.com/health
+   # {"status":"ok"}
+   ```
+
+</Steps>
+
+## What's Running
+
+After deployment, these containers are active:
+
+| Container | Port | Purpose |
+|---|---|---|
+| `breeze-caddy` | 80, 443 | Reverse proxy + auto-TLS |
+| `breeze-api` | 3001 (internal) | Hono API server |
+| `breeze-web` | 4321 (internal) | Astro SSR dashboard |
+| `breeze-postgres` | 5432 (localhost) | PostgreSQL 16 database |
+| `breeze-redis` | 6379 (localhost) | Redis 7 (BullMQ + caching) |
+| `breeze-prometheus` | 9090 (localhost) | Metrics collection |
+| `breeze-grafana` | 3000 (localhost) | Dashboards |
+| `breeze-loki` | 3100 (localhost) | Log aggregation |
+
+## Next: Enroll Your First Agent
+
+Download and install the Breeze agent on a device:
+
+```bash
+# On the target device:
+curl -fsSL https://breeze.yourdomain.com/api/v1/agents/install.sh | \
+  BREEZE_SERVER=https://breeze.yourdomain.com \
+  BREEZE_ENROLLMENT_SECRET=<your-enrollment-secret> \
+  bash
+```
+
+See [Agent Installation](/agents/installation/) for detailed instructions per platform.

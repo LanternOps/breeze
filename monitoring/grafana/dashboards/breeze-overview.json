@@ -1172,7 +1172,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "breeze_devices_active",
+          "expr": "breeze_active_devices",
           "refId": "A"
         }
       ],
@@ -1229,7 +1229,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "breeze_organizations_total",
+          "expr": "breeze_active_organizations",
           "refId": "A"
         }
       ],
@@ -1294,7 +1294,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "breeze_alerts_active",
+          "expr": "breeze_alerts_total",
           "refId": "A"
         }
       ],

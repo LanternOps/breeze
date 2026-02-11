@@ -69,7 +69,7 @@ describe('metrics routes', () => {
     expect(res.headers.get('Content-Type')).toContain('text/plain');
     const body = await res.text();
     expect(body).toContain('# HELP http_requests_total Total number of HTTP requests');
-    expect(body).toContain('breeze_active_connections 0');
+    expect(body).toContain('http_requests_in_flight 0');
     expect(body).toContain('agent_heartbeat_total{status="success"} 0');
   });
 
@@ -175,9 +175,8 @@ describe('metrics routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
 
-    expect(body.business_metrics.devices_active).toBe(12);
-    expect(body.business_metrics.organizations_total).toBe(3);
-    expect(body.business_metrics.alerts_active).toBe(5);
+    expect(body.business_metrics.breeze_active_devices).toBe(12);
+    expect(body.business_metrics.breeze_active_organizations).toBe(3);
     expect(body.business_metrics.alert_queue_length).toBe(2);
     expect(body.business_metrics.scripts_executed_total).toBe(2);
     expect(body.agent_heartbeats).toEqual(

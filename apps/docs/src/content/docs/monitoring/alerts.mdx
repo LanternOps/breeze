@@ -1,0 +1,142 @@
+---
+title: Alerts & Rules
+description: Pre-configured alert rules and notification routing for Breeze RMM.
+sidebar:
+  order: 2
+  label: "Alerts & Rules"
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Pre-Configured Alert Rules
+
+Breeze ships with alert rules in `monitoring/rules/breeze-rules.yml`:
+
+### API Alerts
+
+| Alert | Severity | Condition |
+|---|---|---|
+| `HighErrorRate` | critical | Error rate > 5% for 5 minutes |
+| `SlowResponseTime` | warning | P95 latency > 2s for 10 minutes |
+| `APIServiceDown` | critical | API target down for 2 minutes |
+| `EndpointLatencyHigh` | warning | Any endpoint P95 > 5s for 5 minutes |
+| `High4xxRate` | warning | 4xx rate > 20% for 10 minutes |
+
+### Infrastructure Alerts
+
+| Alert | Severity | Condition |
+|---|---|---|
+| `RedisDown` | critical | Redis exporter down for 2 minutes |
+| `RedisMemoryHigh` | warning | Redis memory > 80% of max |
+| `PostgresDown` | critical | Postgres exporter down for 2 minutes |
+| `PostgresConnectionPoolSaturated` | warning | Connections > 80% of max |
+| `DiskSpaceLow` | warning | Disk usage > 85% |
+
+### Business Alerts
+
+| Alert | Severity | Condition |
+|---|---|---|
+| `NoAgentHeartbeats` | critical | Zero heartbeats received for 5 minutes |
+| `AlertProcessingBacklog` | warning | Alert queue depth > 100 for 10 minutes |
+
+## Alert Routing
+
+Alertmanager routes alerts by severity (`monitoring/alertmanager.yml`):
+
+```yaml
+route:
+  receiver: default
+  group_by: ['alertname', 'severity', 'job']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    - match:
+        severity: critical
+      receiver: critical
+      group_wait: 10s
+      repeat_interval: 1h
+
+    - match:
+        severity: warning
+      receiver: warning
+```
+
+### Inhibition Rules
+
+When a critical alert fires, related warning alerts are suppressed:
+
+```yaml
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ['alertname', 'job']
+```
+
+## Configuring Notification Channels
+
+Edit `monitoring/alertmanager.yml` to add notification targets:
+
+### Slack
+
+```yaml
+receivers:
+  - name: critical
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+        channel: '#breeze-alerts'
+        title: '{{ .GroupLabels.alertname }}'
+        text: '{{ .CommonAnnotations.description }}'
+```
+
+### PagerDuty
+
+```yaml
+receivers:
+  - name: critical
+    pagerduty_configs:
+      - service_key: 'YOUR_PAGERDUTY_SERVICE_KEY'
+```
+
+### Email
+
+```yaml
+receivers:
+  - name: warning
+    email_configs:
+      - to: 'ops@yourdomain.com'
+        from: 'alerts@yourdomain.com'
+        smarthost: 'smtp.yourdomain.com:587'
+        auth_username: 'alerts@yourdomain.com'
+        auth_password: 'password'
+```
+
+After editing, restart Alertmanager:
+
+```bash
+docker compose -f docker/docker-compose.prod.yml restart alertmanager
+```
+
+## Custom Alert Rules
+
+Add custom rules in `monitoring/rules/`:
+
+```yaml
+# monitoring/rules/custom-rules.yml
+groups:
+  - name: custom-alerts
+    rules:
+      - alert: HighAgentChurn
+        expr: rate(breeze_device_enrollments_total[1h]) > 10
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High agent enrollment rate"
+          description: "More than 10 new enrollments per hour for 30 minutes"
+```
+
+Prometheus automatically picks up new rule files on restart.

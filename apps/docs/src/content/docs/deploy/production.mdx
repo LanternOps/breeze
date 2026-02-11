@@ -1,0 +1,168 @@
+---
+title: Production Deployment
+description: Deploy Breeze RMM to production with Docker Compose and automatic TLS.
+sidebar:
+  order: 1
+  label: Production Deploy
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze ships with a single deploy script that brings up a fully hardened production stack on any Linux VPS.
+
+## What Gets Deployed
+
+The production Docker Compose stack (`docker/docker-compose.prod.yml`) includes:
+
+| Service | Image | Purpose |
+|---|---|---|
+| **Caddy** | `caddy:2.8-alpine` | Reverse proxy, auto-TLS, security headers |
+| **API** | Built from `apps/api/Dockerfile` | Hono API server (read-only rootfs) |
+| **Web** | Built from `apps/web/Dockerfile` | Astro SSR dashboard (read-only rootfs) |
+| **PostgreSQL** | `postgres:16-alpine` | Primary database |
+| **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
+| **Prometheus** | `prom/prometheus:v2.52.0` | Metrics collection |
+| **Grafana** | `grafana/grafana:10.4.5` | Dashboards & visualization |
+| **Alertmanager** | `prom/alertmanager:v0.27.0` | Alert routing |
+| **Loki** | `grafana/loki:2.9.8` | Log aggregation |
+| **Promtail** | `grafana/promtail:2.9.8` | Log shipping |
+| **Redis Exporter** | `oliver006/redis_exporter` | Redis metrics for Prometheus |
+| **Postgres Exporter** | `prometheuscommunity/postgres-exporter` | PostgreSQL metrics |
+
+### Security Hardening
+
+Every container is hardened:
+
+- `no-new-privileges: true` — prevents privilege escalation
+- `cap_drop: ALL` — drops all Linux capabilities
+- `read_only: true` — read-only root filesystem (API, Web)
+- `pids_limit` — limits process count per container
+- `cpus` / `mem_limit` — resource constraints
+- Postgres and Redis bind to `127.0.0.1` only
+
+## Deploy Steps
+
+<Steps>
+
+1. **Prepare the server**
+
+   Install Docker, Node.js, pnpm, and Git per [Prerequisites](/getting-started/prerequisites/).
+
+2. **Clone and configure**
+
+   ```bash
+   git clone https://github.com/LanternOps/breeze.git
+   cd breeze
+   cp .env.example .env.prod
+   ```
+
+3. **Generate all secrets**
+
+   ```bash
+   # Run this helper to generate all required secrets at once:
+   for key in JWT_SECRET APP_ENCRYPTION_KEY MFA_ENCRYPTION_KEY \
+     ENROLLMENT_KEY_PEPPER MFA_RECOVERY_CODE_PEPPER \
+     METRICS_SCRAPE_TOKEN SESSION_SECRET TURN_SECRET; do
+     echo "${key}=$(openssl rand -hex 32)"
+   done
+
+   echo "AGENT_ENROLLMENT_SECRET=$(openssl rand -hex 32)"
+   echo "POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')"
+   echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+=')"
+   ```
+
+   Paste the output into `.env.prod`. Then set:
+
+   ```bash
+   BREEZE_DOMAIN=breeze.yourdomain.com
+   ACME_EMAIL=admin@yourdomain.com
+   PUBLIC_API_URL=https://breeze.yourdomain.com/api/v1
+   CORS_ALLOWED_ORIGINS=https://breeze.yourdomain.com
+   DASHBOARD_URL=https://breeze.yourdomain.com
+   PUBLIC_APP_URL=https://breeze.yourdomain.com
+   ```
+
+4. **Install dependencies**
+
+   ```bash
+   pnpm install
+   ```
+
+5. **Run the deploy script**
+
+   ```bash
+   ./scripts/prod/deploy.sh .env.prod
+   ```
+
+   The script will:
+   1. Validate all required environment variables
+   2. Start PostgreSQL and Redis
+   3. Wait for database readiness (up to 60s)
+   4. Run `pnpm db:migrate`
+   5. Build and start all containers
+   6. Wait for the health endpoint to respond
+   7. Verify Prometheus and Grafana are healthy
+
+6. **Verify the deployment**
+
+   ```bash
+   # Check health
+   curl https://breeze.yourdomain.com/health
+
+   # Check running containers
+   docker compose -f docker/docker-compose.prod.yml ps
+
+   # View logs
+   docker compose -f docker/docker-compose.prod.yml logs -f api
+   ```
+
+</Steps>
+
+## Disabling Monitoring
+
+To deploy without the monitoring stack:
+
+```bash
+ENABLE_MONITORING=false ./scripts/prod/deploy.sh .env.prod
+```
+
+This starts only Caddy, API, Web, PostgreSQL, and Redis.
+
+## Resource Tuning
+
+Override default resource limits via environment variables:
+
+```bash
+# API (default: 1.5 CPU, 1536 MB RAM)
+API_CPUS=2.0
+API_MEM_LIMIT=2048m
+
+# Web (default: 1.0 CPU, 768 MB RAM)
+WEB_CPUS=1.5
+WEB_MEM_LIMIT=1024m
+
+# PostgreSQL (default: 1.0 CPU, 1024 MB RAM)
+POSTGRES_CPUS=2.0
+POSTGRES_MEM_LIMIT=2048m
+
+# Redis (default: 0.5 CPU, 512 MB RAM)
+REDIS_MAXMEMORY=1024mb
+REDIS_MEM_LIMIT=1024m
+```
+
+## Updating
+
+To deploy a new version:
+
+```bash
+cd breeze
+git pull origin main
+pnpm install
+./scripts/prod/deploy.sh .env.prod
+```
+
+The deploy script rebuilds containers with `--build` and runs pending migrations automatically.
+
+<Aside type="tip">
+  For zero-downtime upgrades, see [Upgrade Guide](/deploy/upgrades/).
+</Aside>

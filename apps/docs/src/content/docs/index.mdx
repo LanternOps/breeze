@@ -1,0 +1,36 @@
+---
+title: Breeze RMM Documentation
+description: Deploy and manage Breeze RMM — a fast, modern Remote Monitoring and Management platform.
+template: splash
+hero:
+  tagline: Fast, secure RMM for MSPs and IT teams. From zero to 10,000+ agents.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Quickstart
+      link: /getting-started/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/LanternOps/breeze
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Deploy in Minutes
+
+<CardGrid stagger>
+  <Card title="One-Command Deploy" icon="rocket">
+    `./scripts/prod/deploy.sh` brings up the full stack with auto-TLS, monitoring, and health checks.
+  </Card>
+  <Card title="Docker Compose" icon="seti:docker">
+    Production-hardened containers with read-only rootfs, resource limits, and non-root users.
+  </Card>
+  <Card title="Cross-Platform Agent" icon="laptop">
+    Single Go binary for Linux, macOS, and Windows. Install as a system service in one command.
+  </Card>
+  <Card title="Zero-Trust Ready" icon="shield">
+    Optional Cloudflare mTLS client certificates, SHA-256 token hashing, RBAC, and audit logging.
+  </Card>
+</CardGrid>

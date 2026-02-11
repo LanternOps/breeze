@@ -1,0 +1,95 @@
+---
+title: Prerequisites
+description: System requirements and tools needed to run Breeze RMM.
+sidebar:
+  order: 2
+  label: Prerequisites
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Server Requirements
+
+| Resource | Minimum | Recommended (500+ agents) |
+|---|---|---|
+| **CPU** | 2 vCPU | 4 vCPU |
+| **RAM** | 4 GB | 8 GB |
+| **Disk** | 40 GB SSD | 100 GB SSD |
+| **OS** | Ubuntu 22.04+ / Debian 12+ | Ubuntu 24.04 LTS |
+| **Network** | Public IP, ports 80/443 open | Static IP with DNS A record |
+
+## Required Software
+
+### Docker & Docker Compose
+
+Breeze runs entirely in Docker containers. Install Docker Engine with the Compose plugin:
+
+<Tabs>
+  <TabItem label="Ubuntu/Debian">
+    ```bash
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker $USER
+    # Log out and back in, then verify:
+    docker compose version
+    ```
+  </TabItem>
+  <TabItem label="macOS">
+    ```bash
+    # Install Docker Desktop from https://docker.com/products/docker-desktop
+    # Or via Homebrew:
+    brew install --cask docker
+    ```
+  </TabItem>
+</Tabs>
+
+### Node.js & pnpm
+
+Required for running database migrations during deployment:
+
+```bash
+# Install Node 20+
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Install pnpm
+npm install -g pnpm@9
+```
+
+### Git
+
+```bash
+sudo apt-get install -y git
+```
+
+## DNS Configuration
+
+Point your domain to your server's public IP:
+
+```
+A   breeze.yourdomain.com    → 203.0.113.10
+```
+
+Caddy will automatically provision a TLS certificate from Let's Encrypt once DNS resolves.
+
+## Optional: Go Toolchain
+
+Only needed if building the agent from source (pre-built binaries are available):
+
+```bash
+# Go 1.22+
+wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+```
+
+## Firewall Rules
+
+Ensure these ports are accessible:
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| **80** | TCP | HTTP → HTTPS redirect (Caddy) |
+| **443** | TCP | HTTPS (web UI, API, agent WebSocket) |
+| **3478** | TCP/UDP | TURN relay (optional, for WebRTC NAT traversal) |
+
+All other services (PostgreSQL, Redis, Prometheus, Grafana) bind to `127.0.0.1` and are **not** exposed publicly.

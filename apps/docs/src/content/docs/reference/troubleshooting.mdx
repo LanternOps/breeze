@@ -1,0 +1,153 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for Breeze RMM deployments.
+sidebar:
+  order: 3
+  label: Troubleshooting
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Deployment Issues
+
+### Deploy script fails with "Missing required env var"
+
+**Cause**: Required variables not set in `.env.prod`.
+
+**Fix**: Ensure all required variables are set:
+
+```bash
+# Required variables:
+BREEZE_DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, JWT_SECRET,
+AGENT_ENROLLMENT_SECRET, METRICS_SCRAPE_TOKEN, PUBLIC_API_URL,
+GRAFANA_ADMIN_PASSWORD
+```
+
+### TLS certificate not provisioning
+
+**Cause**: DNS not pointing to server, or ports 80/443 blocked.
+
+**Fix**:
+1. Verify DNS: `dig +short breeze.yourdomain.com`
+2. Check ports: `sudo ss -tlnp | grep -E ':(80|443)'`
+3. Check Caddy logs: `docker logs breeze-caddy`
+
+### Database migration fails
+
+**Cause**: PostgreSQL not ready or connection string incorrect.
+
+**Fix**:
+```bash
+# Check PostgreSQL is running
+docker compose -f docker/docker-compose.prod.yml exec postgres pg_isready
+
+# Check connection string
+docker compose -f docker/docker-compose.prod.yml exec api env | grep DATABASE_URL
+```
+
+## Agent Issues
+
+### Agent not appearing in dashboard
+
+**Causes**:
+1. Enrollment failed
+2. WebSocket connection blocked
+3. Agent can't resolve server hostname
+
+**Fix**:
+```bash
+# Check agent logs
+sudo journalctl -u breeze-agent -n 50
+
+# Test connectivity from agent
+curl -v https://breeze.yourdomain.com/health
+
+# Verify enrollment
+sudo cat /etc/breeze/config.json
+```
+
+### Agent shows "offline" despite running
+
+**Cause**: WebSocket connection dropping or heartbeat not reaching API.
+
+**Fix**:
+1. Check agent logs for reconnection messages
+2. Verify API WebSocket handling: `docker logs breeze-api | grep "ws"`
+3. Check if a firewall is terminating long-lived connections (increase WebSocket timeout)
+
+### Terminal not connecting
+
+**Common causes**:
+- Browser sends resize before server `onOpen` completes
+- WebSocket messages rejected by validation
+
+**Fix**: Check API logs for WebSocket errors. The terminal uses `term-` prefixed command IDs that bypass database lookup.
+
+## Performance Issues
+
+### High API response times
+
+**Check**:
+```bash
+# Prometheus metrics
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket[5m]))
+
+# Database slow queries
+docker compose -f docker/docker-compose.prod.yml exec postgres \
+  psql -U breeze -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
+```
+
+### Redis memory growing
+
+**Check**:
+```bash
+docker compose -f docker/docker-compose.prod.yml exec redis redis-cli info memory
+```
+
+**Fix**: Adjust `REDIS_MAXMEMORY` in `.env.prod`. Redis uses `allkeys-lru` eviction by default.
+
+### Disk space running low
+
+```bash
+# Check Docker volumes
+docker system df
+
+# Prune unused images
+docker image prune -a
+
+# Check backup retention
+ls -la /var/backups/breeze/
+```
+
+## Container Issues
+
+### Container won't start
+
+```bash
+# Check container logs
+docker compose -f docker/docker-compose.prod.yml logs <service-name>
+
+# Check resource limits
+docker stats --no-stream
+
+# Recreate container
+docker compose -f docker/docker-compose.prod.yml up -d --force-recreate <service-name>
+```
+
+### Health check failing
+
+```bash
+# Manual health check
+docker compose -f docker/docker-compose.prod.yml exec api \
+  wget --no-verbose --tries=1 --spider http://localhost:3001/health
+
+# Check readiness
+curl http://localhost:3001/health/ready
+```
+
+## Getting Help
+
+- Check the [GitHub Issues](https://github.com/LanternOps/breeze/issues)
+- Join the community Discord
+- Review API logs: `docker compose -f docker/docker-compose.prod.yml logs -f api`

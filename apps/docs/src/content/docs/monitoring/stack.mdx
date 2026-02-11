@@ -1,0 +1,125 @@
+---
+title: Observability Stack
+description: Prometheus, Grafana, Loki, and Alertmanager setup for Breeze RMM.
+sidebar:
+  order: 1
+  label: Observability Stack
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Breeze ships with a complete observability stack included in the production Docker Compose deployment.
+
+## Components
+
+| Component | Port | Purpose |
+|---|---|---|
+| **Prometheus** | 9090 (localhost) | Time-series metrics collection |
+| **Grafana** | 3000 (localhost) | Dashboards and visualization |
+| **Alertmanager** | 9093 (localhost) | Alert routing and notifications |
+| **Loki** | 3100 (localhost) | Log aggregation |
+| **Promtail** | 9080 (localhost) | Log shipping from Docker containers |
+| **Redis Exporter** | 9121 (internal) | Redis metrics for Prometheus |
+| **Postgres Exporter** | 9187 (internal) | PostgreSQL metrics for Prometheus |
+
+<Aside>
+  All monitoring ports bind to `127.0.0.1`. Access Grafana via SSH tunnel or VPN.
+</Aside>
+
+## Accessing Grafana
+
+```bash
+# Via SSH tunnel
+ssh -L 3000:127.0.0.1:3000 user@your-server
+
+# Then open http://localhost:3000
+# Username: admin
+# Password: (your GRAFANA_ADMIN_PASSWORD from .env.prod)
+```
+
+## Pre-Built Dashboards
+
+Breeze includes a Grafana dashboard (`monitoring/grafana/dashboards/breeze-overview.json`) with:
+
+- **Service Status** — Up/down status of all services
+- **Request Rate** — HTTP requests per second
+- **Response Times** — P50, P95, P99 latency
+- **Error Rate** — 4xx and 5xx responses
+- **HTTP Status Distribution** — Breakdown by status code
+- **Top Endpoints** — Most-used API endpoints
+- **Active Devices** — Connected agent count
+- **Organizations** — Active tenant count
+- **Redis Memory** — Memory usage and evictions
+- **PostgreSQL Connections** — Connection pool utilization
+
+## Data Sources
+
+Configured automatically via `monitoring/grafana/datasources.yml`:
+
+| Source | Type | URL |
+|---|---|---|
+| Prometheus | Time-series | `http://prometheus:9090` |
+| Loki | Logs | `http://loki:3100` |
+| PostgreSQL | SQL | `postgres:5432` |
+| Redis | Key-value | `redis://redis:6379` |
+
+## Prometheus Configuration
+
+Located at `monitoring/prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: breeze-api
+    scheme: http
+    metrics_path: /metrics/scrape
+    authorization:
+      credentials_file: /run/secrets/metrics_scrape_token
+    static_configs:
+      - targets: ['api:3001']
+
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+```
+
+The API metrics endpoint is protected by a bearer token stored in `monitoring/secrets/metrics_scrape_token`.
+
+## Key Metrics
+
+### HTTP Metrics (from the API)
+
+| Metric | Type | Description |
+|---|---|---|
+| `http_requests_total` | Counter | Total HTTP requests by method, path, status |
+| `http_request_duration_seconds` | Histogram | Request latency distribution |
+| `http_requests_in_flight` | Gauge | Currently processing requests |
+
+### Business Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `breeze_active_devices` | Gauge | Devices with recent heartbeat |
+| `breeze_active_organizations` | Gauge | Organizations with active devices |
+| `breeze_commands_total` | Counter | Commands executed by type |
+| `breeze_alerts_total` | Counter | Alerts fired by severity |
+
+### Infrastructure Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `redis_memory_used_bytes` | Gauge | Redis memory consumption |
+| `pg_stat_activity_count` | Gauge | PostgreSQL active connections |
+| `pg_database_size_bytes` | Gauge | Database size |
+
+## Log Aggregation
+
+Promtail scrapes Docker container logs and ships them to Loki. Query logs in Grafana:
+
+```logql
+{container="breeze-api"} |= "error"
+{container="breeze-api"} | json | level = "error"
+```

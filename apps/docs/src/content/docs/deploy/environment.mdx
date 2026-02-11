@@ -1,0 +1,190 @@
+---
+title: Environment Variables
+description: Complete reference for all Breeze RMM configuration variables.
+sidebar:
+  order: 2
+  label: Environment Variables
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+All configuration is done through environment variables, defined in your `.env.prod` file. This page documents every variable.
+
+<Aside type="danger">
+  Never commit `.env.prod` to version control. Use `.env.example` as a template.
+</Aside>
+
+## Database
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `POSTGRES_USER` | `breeze` | | PostgreSQL username |
+| `POSTGRES_PASSWORD` | — | Yes | PostgreSQL password |
+| `POSTGRES_DB` | `breeze` | | Database name |
+| `POSTGRES_PORT` | `5432` | | PostgreSQL port |
+| `DATABASE_URL` | — | Auto | Full connection string (constructed from above in Docker) |
+
+## Redis
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `REDIS_URL` | `redis://localhost:6379` | | Redis connection URL |
+| `REDIS_PORT` | `6379` | | Redis port |
+
+## Authentication & Security
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `JWT_SECRET` | — | Yes | JWT signing key (min 32 chars). Generate: `openssl rand -base64 64` |
+| `JWT_EXPIRES_IN` | `15m` | | Access token lifetime |
+| `REFRESH_TOKEN_EXPIRES_IN` | `7d` | | Refresh token lifetime |
+| `AGENT_ENROLLMENT_SECRET` | — | Yes | Shared secret for agent enrollment. Generate: `openssl rand -hex 32` |
+| `APP_ENCRYPTION_KEY` | — | Yes | AES encryption key for sensitive data at rest |
+| `MFA_ENCRYPTION_KEY` | — | Yes | Encryption key for MFA secrets |
+| `ENROLLMENT_KEY_PEPPER` | — | Yes | HMAC pepper for enrollment key hashing |
+| `MFA_RECOVERY_CODE_PEPPER` | — | Yes | HMAC pepper for recovery code hashing |
+| `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | | Default enrollment key expiry |
+| `SESSION_SECRET` | — | Yes | Express session signing secret |
+| `SESSION_MAX_AGE` | `86400000` | | Session max age in ms (24h) |
+
+## Server
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `NODE_ENV` | `production` | | Environment mode |
+| `API_PORT` | `3001` | | API server port |
+| `WEB_PORT` | `4321` | | Web dashboard port |
+| `PUBLIC_API_URL` | — | Yes | Full public API URL (e.g., `https://breeze.example.com/api/v1`) |
+| `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning |
+| `ACME_EMAIL` | — | Yes (prod) | Email for Let's Encrypt certificate notifications |
+| `CORS_ALLOWED_ORIGINS` | — | | Comma-separated allowed CORS origins |
+| `TRUST_PROXY_HEADERS` | `false` | | Set `true` when behind a reverse proxy |
+| `DASHBOARD_URL` | — | | URL for links in emails |
+| `PUBLIC_APP_URL` | — | | Public-facing app URL |
+
+## Email
+
+| Variable | Default | Description |
+|---|---|---|
+| `EMAIL_PROVIDER` | `auto` | Provider: `auto`, `resend`, `smtp`, or `mailgun` |
+| `RESEND_API_KEY` | — | Resend API key |
+| `EMAIL_FROM` | `noreply@breeze.local` | Sender address |
+| `SMTP_HOST` | — | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | — | SMTP username |
+| `SMTP_PASS` | — | SMTP password |
+| `SMTP_FROM` | `noreply@breeze.local` | SMTP-specific sender address |
+| `SMTP_SECURE` | `false` | Use TLS for SMTP |
+| `MAILGUN_API_KEY` | — | Mailgun API key |
+| `MAILGUN_DOMAIN` | — | Mailgun sending domain |
+| `MAILGUN_BASE_URL` | `https://api.mailgun.net` | Mailgun API base URL |
+| `MAILGUN_FROM` | `noreply@breeze.local` | Mailgun-specific sender address |
+
+## SMS (Twilio)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TWILIO_ACCOUNT_SID` | — | Twilio Account SID |
+| `TWILIO_AUTH_TOKEN` | — | Twilio Auth Token |
+| `TWILIO_VERIFY_SERVICE_SID` | — | Twilio Verify service SID (for SMS MFA) |
+| `TWILIO_MESSAGING_SERVICE_SID` | — | Twilio Messaging Service SID (for alert SMS) |
+| `TWILIO_PHONE_NUMBER` | — | Twilio phone number for outbound SMS |
+
+## Object Storage
+
+| Variable | Default | Description |
+|---|---|---|
+| `S3_ENDPOINT` | `http://localhost:9000` | S3-compatible endpoint (MinIO, R2, AWS) |
+| `S3_ACCESS_KEY` | `minioadmin` | Access key |
+| `S3_SECRET_KEY` | `minioadmin` | Secret key |
+| `S3_BUCKET` | `breeze` | Bucket name |
+| `S3_REGION` | `us-east-1` | Bucket region |
+| `MINIO_API_PORT` | `9000` | MinIO API port (Docker only) |
+| `MINIO_CONSOLE_PORT` | `9001` | MinIO web console port (Docker only) |
+
+## WebRTC / TURN
+
+| Variable | Default | Description |
+|---|---|---|
+| `TURN_HOST` | `localhost` | TURN server hostname |
+| `TURN_PORT` | `3478` | TURN listening port |
+| `TURN_SECRET` | — | TURN shared secret |
+| `TURN_REALM` | `breeze.local` | TURN realm |
+
+## Monitoring
+
+| Variable | Default | Description |
+|---|---|---|
+| `METRICS_SCRAPE_TOKEN` | — | Bearer token for `/metrics/scrape` |
+| `METRICS_INCLUDE_ORG_ID` | `false` | Include org IDs in Prometheus labels |
+| `METRICS_SCRAPE_IP_ALLOWLIST` | — | Restrict metrics scraping by IP |
+| `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `LOG_JSON` | `false` | Structured JSON logging |
+| `GRAFANA_ADMIN_USER` | `admin` | Grafana admin username |
+| `GRAFANA_ADMIN_PASSWORD` | — | Grafana admin password |
+
+## Sentry
+
+| Variable | Default | Description |
+|---|---|---|
+| `SENTRY_DSN` | — | Sentry DSN for error tracking |
+| `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag |
+| `SENTRY_RELEASE` | — | Sentry release tag (e.g. git SHA) |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Sentry performance trace sample rate (0.0-1.0) |
+
+## Rate Limiting
+
+| Variable | Default | Description |
+|---|---|---|
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Sliding window duration (ms) |
+| `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per window |
+
+## File Transfer & Remote Sessions
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRANSFER_STORAGE_PATH` | `./data/transfers` | File transfer storage directory |
+| `MAX_TRANSFER_SIZE_MB` | `100` | Max file transfer size |
+| `MAX_ACTIVE_TRANSFERS_PER_ORG` | `20` | Concurrent transfer limit per org |
+| `MAX_ACTIVE_TRANSFERS_PER_USER` | `10` | Concurrent transfer limit per user |
+| `MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG` | `10` | Concurrent remote sessions per org |
+| `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | `5` | Concurrent remote sessions per user |
+| `PATCH_REPORT_STORAGE_PATH` | `./data/patch-reports` | Patch compliance report storage |
+
+## Feature Flags
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLE_REGISTRATION` | `true` | Allow new user registration |
+| `ENABLE_2FA` | `true` | Enable two-factor authentication |
+| `ENABLE_API_DOCS` | `false` | Enable Swagger API documentation |
+| `ENABLE_API_DOCS_UI` | `false` | Enable interactive Swagger UI (requires `ENABLE_API_DOCS=true`) |
+| `USE_AGENT_SDK` | — | Use Claude Agent SDK for AI chat |
+| `PORTAL_STATE_BACKEND` | `memory` | Portal state backend: `memory` or `redis` (auto `redis` in production) |
+
+## MCP Server
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | SSE connection rate limit per API key |
+| `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Message rate limit per API key |
+| `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Max concurrent SSE sessions per API key |
+| `MCP_REQUIRE_EXECUTE_ADMIN` | `false` | Require `ai:execute_admin` scope for Tier 3 tools |
+| `MCP_EXECUTE_TOOL_ALLOWLIST` | — | Comma-separated allowed Tier 3 tools (empty = deny all) |
+
+## Cloudflare mTLS
+
+| Variable | Default | Description |
+|---|---|---|
+| `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token with Client Certificates permission |
+| `CLOUDFLARE_ZONE_ID` | — | Cloudflare zone ID for your domain |
+
+<Aside>
+  mTLS is fully optional. When these variables are unset, Breeze operates normally without mutual TLS.
+</Aside>
+
+## AI
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Anthropic API key for AI assistant (BYOK) |

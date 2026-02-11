@@ -1,0 +1,133 @@
+---
+title: Cloudflare mTLS
+description: Enable mutual TLS client certificates for zero-trust agent authentication.
+sidebar:
+  order: 2
+  label: Cloudflare mTLS
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Breeze optionally integrates with **Cloudflare API Shield** to issue mTLS client certificates to agents during enrollment. This provides zero-trust authentication where both the server and agent verify each other's identity.
+
+<Aside>
+  mTLS is fully optional. Without `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ZONE_ID` set, Breeze operates normally with bearer token authentication only.
+</Aside>
+
+## How It Works
+
+1. During enrollment, the API calls Cloudflare's Client Certificates API to issue a certificate
+2. The agent receives the certificate and private key, stores them alongside its config
+3. The agent uses the certificate for all HTTPS and WebSocket connections
+4. Cloudflare's WAF enforces that only requests with valid client certificates reach your origin
+5. Certificates auto-renew at 2/3 lifetime via the heartbeat cycle
+
+## Setup
+
+<Steps>
+
+1. **Create a Cloudflare API token**
+
+   Go to Cloudflare Dashboard → My Profile → API Tokens → Create Token:
+   - Permission: **Zone → SSL and Certificates → Edit**
+   - Zone Resources: your domain's zone
+
+2. **Get your Zone ID**
+
+   Cloudflare Dashboard → your domain → Overview → Zone ID (right sidebar).
+
+3. **Configure environment variables**
+
+   Add to `.env.prod`:
+   ```bash
+   CLOUDFLARE_API_TOKEN=your-cf-api-token
+   CLOUDFLARE_ZONE_ID=your-zone-id
+   ```
+
+4. **Run the database migration**
+
+   ```bash
+   pnpm db:migrate
+   ```
+
+   This adds mTLS columns to the `devices` table:
+   - `mtlsCertSerialNumber`
+   - `mtlsCertExpiresAt`
+   - `mtlsCertIssuedAt`
+   - `mtlsCertCfId`
+   - `quarantinedAt` / `quarantinedReason`
+
+5. **Restart the API**
+
+   ```bash
+   docker compose -f docker/docker-compose.prod.yml restart api
+   ```
+
+6. **Enroll new agents**
+
+   New enrollments will automatically receive mTLS certificates. The enrollment response includes an `mtls` object with the certificate and private key.
+
+7. **Configure Cloudflare WAF rules**
+
+   Once all agents have certificates, add a WAF rule to enforce mTLS:
+
+   ```
+   Rule name: Require mTLS for Agent API
+   Expression: (http.request.uri.path contains "/api/v1/agents/" and not cf.tls_client_auth.cert_verified)
+   Action: Block
+   ```
+
+   Exclude the enrollment and cert renewal endpoints:
+   ```
+   Exception: http.request.uri.path eq "/api/v1/agents/enroll"
+              or http.request.uri.path contains "/renew-cert"
+   ```
+
+</Steps>
+
+## Certificate Lifecycle
+
+| Event | Trigger | Action |
+|---|---|---|
+| **Issuance** | Agent enrollment | API calls CF API, returns cert in enrollment response |
+| **Renewal** | Heartbeat detects 2/3 lifetime reached | API signals `renewCert: true`, agent calls `/renew-cert` |
+| **Revocation** | Admin action or quarantine | API calls CF API to revoke, device marked quarantined |
+
+## Quarantine
+
+When a device is quarantined:
+
+- Its mTLS certificate is revoked via Cloudflare API
+- Device status changes to `quarantined`
+- The device cannot communicate with the API
+- Admin can approve or deny the device:
+
+```bash
+# List quarantined devices
+curl -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/agents/quarantined
+
+# Approve a quarantined device (issues new cert)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/agents/:id/approve
+
+# Deny (permanently revoke)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/agents/:id/deny
+```
+
+## Organization Settings
+
+Enable or configure mTLS per organization:
+
+```bash
+curl -X PATCH -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mtls": {"enabled": true, "quarantinePolicy": "auto"}}' \
+  https://breeze.yourdomain.com/api/v1/org/:orgId/settings/mtls
+```
+
+Quarantine policies:
+- `auto` — Automatically quarantine devices with expired or invalid certificates
+- `manual` — Only quarantine via admin action
+- `disabled` — mTLS tracking without enforcement

@@ -1,0 +1,129 @@
+---
+title: Architecture
+description: How Breeze RMM components fit together.
+sidebar:
+  order: 4
+  label: Architecture
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Multi-Tenant Hierarchy
+
+Breeze uses a strict tenant hierarchy that isolates data at every level:
+
+```
+Partner (MSP)
+  └── Organization (Customer)
+        └── Site (Location)
+              └── Device Group
+                    └── Device
+```
+
+Every database query is scoped to the user's tenant context. A partner admin sees all their organizations; an org admin only sees their own.
+
+## Component Overview
+
+### API Server (Hono)
+
+The API is a TypeScript application built with [Hono](https://hono.dev) running on Node.js 20. It handles:
+
+- REST endpoints for all CRUD operations
+- WebSocket connections from agents (telemetry, commands, terminal)
+- WebSocket connections from browsers (real-time updates, terminal relay)
+- JWT authentication with refresh tokens
+- RBAC permission checks on every request
+
+Key paths:
+- `apps/api/src/routes/` — Route handlers
+- `apps/api/src/middleware/` — Auth, rate limiting, tenant scoping
+- `apps/api/src/services/` — Business logic
+- `apps/api/src/db/schema/` — Drizzle ORM schema definitions
+
+### Web Dashboard (Astro + React)
+
+The frontend is an [Astro](https://astro.build) SSR application with React Islands for interactive components:
+
+- Device inventory and live status
+- Remote terminal (xterm.js)
+- Script execution and scheduling
+- Alert management
+- Discovery scanner results
+
+### Agent (Go)
+
+A single Go binary (~8 MB) that runs as a system service:
+
+- **Enrollment** — Registers with the API, receives a `brz_` bearer token
+- **Heartbeat** — Sends system telemetry (CPU, memory, disk, network) every 60s
+- **Commands** — Executes scripts, collects inventory, runs discovery scans
+- **Terminal** — Spawns a PTY and streams I/O over WebSocket
+- **File Transfer** — Bi-directional file transfer with the dashboard
+- **mTLS** — Optional Cloudflare client certificate for mutual authentication
+
+<Aside>
+  The Go agent source is in `agent/` (not `apps/agent/`). Both directories exist but serve different purposes.
+</Aside>
+
+### Database (PostgreSQL + Drizzle)
+
+PostgreSQL 16 with Drizzle ORM for type-safe schema management:
+
+- 30+ tables covering devices, users, organizations, alerts, scripts, audit logs
+- Migrations via `pnpm db:migrate`
+- Schema push for development via `pnpm db:push`
+- Seed script with default roles, permissions, and alert templates
+
+### Job Queue (BullMQ + Redis)
+
+Redis-backed job queue for async operations:
+
+- Script execution scheduling
+- Discovery scan dispatching
+- Alert processing pipeline
+- Agent command queuing
+
+### Reverse Proxy (Caddy)
+
+Caddy handles TLS termination, compression, and routing:
+
+- Auto-provisions certificates from Let's Encrypt
+- Routes `/api/*` to the API server
+- Routes everything else to the web dashboard
+- Adds security headers (HSTS, CSP, X-Frame-Options)
+
+## Data Flow: Agent ↔ API
+
+```
+Agent Enrollment:
+  Agent → POST /api/v1/agents/enroll (enrollment secret + system info)
+       ← 201 { agentToken: "brz_...", deviceId, orgId, siteId }
+
+Heartbeat:
+  Agent → WS /api/v1/agents/:id/ws (Bearer token auth)
+       → { type: "heartbeat", cpu, memory, disk, ... }
+       ← { type: "command", id, action, payload }
+
+Terminal:
+  Browser → WS /api/v1/terminal/:deviceId (JWT auth)
+         → { type: "input", data: "ls -la\n" }
+         ← { type: "output", data: "total 48\n..." }
+
+  API relays between browser and agent WebSocket connections.
+
+Command Execution:
+  Dashboard → POST /api/v1/devices/:id/commands { action: "run_script", scriptId }
+           → BullMQ job → WebSocket message to agent
+           → Agent executes → WebSocket result back
+           ← Command result stored in database
+```
+
+## Security Layers
+
+1. **Transport** — All traffic over HTTPS/WSS with auto-provisioned TLS
+2. **Authentication** — JWT for users, SHA-256 hashed bearer tokens for agents
+3. **Authorization** — RBAC with per-resource permissions
+4. **Tenant Isolation** — Every query scoped to org context
+5. **Rate Limiting** — Redis-backed sliding window (120 req/60s per agent)
+6. **Audit Logging** — All mutating operations logged with actor, action, resource
+7. **mTLS (optional)** — Cloudflare API Shield client certificates for agents

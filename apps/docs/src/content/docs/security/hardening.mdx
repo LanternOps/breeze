@@ -1,0 +1,115 @@
+---
+title: Security Hardening
+description: Production security checklist and hardening guide for Breeze RMM.
+sidebar:
+  order: 1
+  label: Hardening Guide
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## Production Security Checklist
+
+Before going live, verify every item:
+
+### Secrets & Encryption
+
+- [ ] All secrets generated with `openssl rand -hex 32` (not default values)
+- [ ] `.env.prod` file permissions set to `600` (owner-only)
+- [ ] `.env.prod` is in `.gitignore` and never committed
+- [ ] `JWT_SECRET` is at least 32 characters
+- [ ] Separate encryption keys for `APP_ENCRYPTION_KEY`, `MFA_ENCRYPTION_KEY`
+- [ ] `AGENT_ENROLLMENT_SECRET` rotated after initial enrollment batch
+
+### Network
+
+- [ ] Only ports 80/443 (and optionally 3478 for TURN) exposed publicly
+- [ ] PostgreSQL bound to `127.0.0.1` (not `0.0.0.0`)
+- [ ] Redis bound to `127.0.0.1` (not `0.0.0.0`)
+- [ ] Grafana/Prometheus accessible only via localhost or VPN
+- [ ] SSH key-only authentication (no password auth)
+- [ ] UFW or iptables configured
+
+### TLS
+
+- [ ] Caddy auto-TLS configured with valid domain and ACME email
+- [ ] HSTS header enabled with `includeSubDomains; preload`
+- [ ] No self-signed certificates in production
+
+### Container Security
+
+- [ ] `no-new-privileges: true` on all containers (default in prod compose)
+- [ ] `cap_drop: ALL` on all containers
+- [ ] API and Web containers run with `read_only: true` rootfs
+- [ ] Resource limits (`cpus`, `mem_limit`, `pids_limit`) set
+- [ ] Non-root container users (UID 1001)
+
+### Authentication
+
+- [ ] MFA (TOTP) enabled for all admin accounts
+- [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
+- [ ] Rate limiting active on login endpoints
+- [ ] Session timeout configured (`SESSION_MAX_AGE`)
+
+### Agent Security
+
+- [ ] Agent tokens stored as SHA-256 hashes (automatic for new enrollments)
+- [ ] Config file permissions: `0700` for `/etc/breeze/`, `0600` for `config.json`
+- [ ] Agent rate limiting enabled (120 req/60s per agent via Redis)
+- [ ] Enrollment keys set with expiry and usage limits
+- [ ] Consider enabling [Cloudflare mTLS](/security/mtls/) for zero-trust agent auth
+
+### Monitoring
+
+- [ ] Prometheus metrics endpoint protected with bearer token
+- [ ] Alert rules configured for error rates and infrastructure
+- [ ] Audit logging enabled (automatic for all mutating operations)
+- [ ] Log aggregation configured (Loki)
+
+## Firewall Configuration
+
+```bash
+# UFW example
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ssh
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+# Only if using TURN for WebRTC:
+# sudo ufw allow 3478/tcp
+# sudo ufw allow 3478/udp
+sudo ufw enable
+```
+
+## Audit Logging
+
+All mutating operations are automatically logged with:
+
+| Field | Description |
+|---|---|
+| `actorType` | `user`, `agent`, or `system` |
+| `actorId` | User ID or device ID |
+| `action` | Operation performed |
+| `resource` | Target resource type |
+| `resourceId` | Target resource ID |
+| `details` | JSON payload of changes |
+| `ipAddress` | Client IP address |
+| `timestamp` | ISO 8601 timestamp |
+
+Query audit logs via the API:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://breeze.yourdomain.com/api/v1/audit?resource=devices&action=delete"
+```
+
+## Rate Limiting
+
+Breeze implements Redis-backed sliding window rate limiting:
+
+| Endpoint | Limit | Window |
+|---|---|---|
+| Login | 5 attempts | 15 minutes |
+| API (per user) | 100 requests | 60 seconds |
+| Agent (per device) | 120 requests | 60 seconds |
+| Enrollment | 10 attempts | 60 seconds |

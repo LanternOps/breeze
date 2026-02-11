@@ -1,0 +1,126 @@
+---
+title: Database Schema
+description: Key database tables and their relationships in Breeze RMM.
+sidebar:
+  order: 2
+  label: Database Schema
+---
+
+## Schema Location
+
+All Drizzle ORM schema definitions are in `apps/api/src/db/schema/`.
+
+## Core Tables
+
+### Devices
+
+The central table for managed endpoints:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `orgId` | UUID | FK → organizations |
+| `siteId` | UUID | FK → sites |
+| `agentId` | varchar(64) | Unique agent identifier |
+| `agentTokenHash` | varchar(64) | SHA-256 hash of the agent bearer token (nullable for pre-migration devices) |
+| `hostname` | varchar(255) | Device hostname |
+| `displayName` | varchar(255) | Optional display name |
+| `osType` | enum | `windows`, `macos`, `linux` |
+| `osVersion` | varchar(100) | OS version string |
+| `osBuild` | varchar(100) | OS build identifier (optional) |
+| `architecture` | varchar(20) | CPU architecture (e.g. `amd64`, `arm64`) |
+| `agentVersion` | varchar(20) | Installed agent version |
+| `status` | enum | `online`, `offline`, `maintenance`, `decommissioned`, `quarantined` |
+| `lastSeenAt` | timestamp | Last telemetry received |
+| `enrolledAt` | timestamp | When the device was enrolled |
+| `enrolledBy` | UUID | FK → users (who initiated enrollment) |
+| `tags` | text[] | Array of string tags |
+| `mtlsCertSerialNumber` | varchar(128) | Cloudflare mTLS cert serial (optional) |
+| `mtlsCertExpiresAt` | timestamp | mTLS cert expiry (optional) |
+| `mtlsCertIssuedAt` | timestamp | mTLS cert issue date (optional) |
+| `mtlsCertCfId` | varchar(128) | Cloudflare cert ID (optional) |
+| `quarantinedAt` | timestamp | When device was quarantined (optional) |
+| `quarantinedReason` | varchar(255) | Reason for quarantine (optional) |
+| `createdAt` | timestamp | Row creation time |
+| `updatedAt` | timestamp | Last update time |
+
+#### Related Tables
+
+| Table | Description |
+|---|---|
+| `deviceHardware` | CPU model, cores, RAM, disk, GPU, serial number, manufacturer |
+| `deviceNetworkInterfaces` | Network interfaces with MAC, IP, type, primary flag, public IP |
+| `deviceDisks` | Mount points, filesystem type, capacity, health |
+| `deviceTelemetry` | Time-series CPU, RAM, disk, network, process count |
+| `deviceSoftware` | Installed applications with version, publisher, install location |
+| `deviceRegistryEntries` | Windows registry snapshots |
+| `deviceConfigEntries` | Configuration file key-value pairs |
+| `deviceNetworkConnections` | Active TCP/UDP connections with process info |
+| `deviceGroups` | Static and dynamic device groups with filter rules |
+| `deviceGroupMemberships` | Many-to-many device ↔ group mapping |
+| `deviceCommands` | Command queue (pending, completed, failed) |
+
+### Organizations
+
+```
+partners (MSP)
+  └── organizations (customer)
+        └── sites (location)
+              └── device_groups
+                    └── devices
+```
+
+### Users & RBAC
+
+| Table | Purpose |
+|---|---|
+| `users` | User accounts with email, password hash, MFA status |
+| `roles` | Role definitions (Partner Admin, Technician, Viewer, etc.) |
+| `permissions` | Resource + action pairs (e.g., `devices:read`) |
+| `rolePermissions` | Maps roles to permissions |
+| `partnerUsers` | Maps users to partners with roles |
+
+### Default Roles
+
+Seeded by `pnpm db:seed`:
+
+| Role | Scope | Permissions |
+|---|---|---|
+| Partner Admin | partner | `*:*` (full access) |
+| Partner Technician | partner | Read + execute on devices, scripts, alerts |
+| Partner Viewer | partner | Read-only |
+| Org Admin | organization | Full access within org |
+| Org User | organization | Read + limited write |
+
+## Schema Management
+
+```bash
+# Push schema changes (development)
+pnpm db:push
+
+# Run migrations (production)
+pnpm db:migrate
+
+# Seed default roles, permissions, templates
+pnpm db:seed
+
+# Open Drizzle Studio (visual schema browser)
+pnpm db:studio
+```
+
+## Inspecting the Database
+
+```bash
+# Connect to the database
+docker compose -f docker/docker-compose.prod.yml exec postgres \
+  psql -U breeze -d breeze
+
+# List tables
+\dt
+
+# Describe a table
+\d devices
+
+# Count devices
+SELECT count(*) FROM devices;
+```

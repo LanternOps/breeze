@@ -1,0 +1,116 @@
+---
+title: Building from Source
+description: Compile the Breeze agent from source for any platform.
+sidebar:
+  order: 3
+  label: Building from Source
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Prerequisites
+
+- Go 1.22 or later
+- Make
+- (Optional) `go-winres` for Windows resource embedding
+- (Optional) WiX Toolset + PowerShell for MSI packaging
+
+## Build Commands
+
+```bash
+cd agent
+
+# Build for current platform
+make build
+
+# Build for all platforms (Linux, macOS, Windows)
+make build-all
+
+# Build for specific platforms
+make build-linux    # linux/amd64 + linux/arm64
+make build-darwin   # darwin/amd64 + darwin/arm64
+make build-windows  # windows/amd64
+```
+
+Output binaries are placed in `agent/bin/`.
+
+## Cross-Platform Builds
+
+| Target | Command | Output |
+|---|---|---|
+| Linux amd64 | `make build-linux` | `bin/breeze-agent-linux-amd64` |
+| Linux arm64 | `make build-linux` | `bin/breeze-agent-linux-arm64` |
+| macOS Intel | `make build-darwin` | `bin/breeze-agent-darwin-amd64` |
+| macOS Apple Silicon | `make build-darwin` | `bin/breeze-agent-darwin-arm64` |
+| Windows amd64 | `make build-windows` | `bin/breeze-agent-windows-amd64.exe` |
+
+## Windows MSI Installer
+
+To build an MSI installer for enterprise deployment:
+
+```powershell
+# On Windows with WiX installed:
+make build-windows-msi VERSION=0.2.0
+```
+
+This produces `dist/breeze-agent.msi` for silent deployment via GPO or SCCM.
+
+## Version Embedding
+
+The build embeds the version number via linker flags:
+
+```makefile
+VERSION ?= 0.1.0
+LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+```
+
+Override at build time:
+
+```bash
+make build VERSION=1.0.0
+```
+
+<Aside>
+  The agent source code is in `agent/` at the repository root, **not** in `apps/agent/`. Both directories exist but serve different purposes.
+</Aside>
+
+## Project Structure
+
+```
+agent/
+├── cmd/breeze-agent/     # Entry point
+├── internal/
+│   ├── agent/            # Core agent loop
+│   ├── commands/         # Command execution
+│   ├── config/           # Configuration management
+│   ├── discovery/        # Network discovery scanner
+│   ├── heartbeat/        # Telemetry collection
+│   ├── ipc/              # Inter-process communication
+│   ├── mtls/             # mTLS certificate management
+│   ├── pty/              # Terminal PTY handling
+│   ├── sessionbroker/    # User session management
+│   ├── transfer/         # File transfer
+│   └── userhelper/       # User-mode helper process
+├── scripts/install/      # Service installation scripts
+├── service/              # systemd/launchd unit files
+└── Makefile
+```
+
+## Running in Development
+
+```bash
+cd agent
+make run
+```
+
+This runs the agent directly without installing it as a service. Useful for testing against a local Breeze server.
+
+## Testing
+
+```bash
+cd agent
+make test        # Run all tests
+make test-ipc    # Run IPC and session broker tests
+make lint        # Run golangci-lint
+make fmt         # Format code
+```

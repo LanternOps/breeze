@@ -1,0 +1,133 @@
+---
+title: TLS & Reverse Proxy
+description: Configure TLS certificates and reverse proxy for Breeze RMM.
+sidebar:
+  order: 3
+  label: "TLS & Reverse Proxy"
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+## Caddy (Default)
+
+Breeze ships with Caddy as the default reverse proxy. It automatically provisions TLS certificates from Let's Encrypt.
+
+### Production Caddyfile
+
+Located at `docker/Caddyfile.prod`:
+
+```caddy
+{
+  email {$ACME_EMAIL}
+}
+
+{$BREEZE_DOMAIN} {
+  encode zstd gzip
+
+  @api path /api/* /health /ready /metrics/*
+  handle @api {
+    reverse_proxy api:3001
+  }
+
+  handle {
+    reverse_proxy web:4321
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+}
+```
+
+### How It Works
+
+1. Set `BREEZE_DOMAIN` and `ACME_EMAIL` in your `.env.prod`
+2. Ensure port 80 and 443 are open and DNS points to your server
+3. Caddy requests a certificate from Let's Encrypt on first start
+4. Certificates auto-renew 30 days before expiry
+
+### WebSocket Proxying
+
+Caddy automatically handles WebSocket upgrade for:
+- Agent connections at `/api/v1/agents/:id/ws`
+- Terminal sessions at `/api/v1/terminal/:deviceId`
+- Real-time dashboard updates
+
+No additional configuration needed.
+
+## Nginx (Alternative)
+
+If you prefer nginx, here's an equivalent configuration:
+
+<Tabs>
+  <TabItem label="nginx + certbot">
+    ```nginx
+    server {
+        listen 80;
+        server_name breeze.yourdomain.com;
+        return 301 https://$host$request_uri;
+    }
+
+    server {
+        listen 443 ssl http2;
+        server_name breeze.yourdomain.com;
+
+        ssl_certificate /etc/letsencrypt/live/breeze.yourdomain.com/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/breeze.yourdomain.com/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+
+        # Security headers
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+        # API routes
+        location /api/ {
+            proxy_pass http://127.0.0.1:3001;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # WebSocket support
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_read_timeout 86400s;
+        }
+
+        location /health {
+            proxy_pass http://127.0.0.1:3001;
+        }
+
+        # Web dashboard
+        location / {
+            proxy_pass http://127.0.0.1:4321;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+<Aside type="caution">
+  When using nginx instead of Caddy, remove the `caddy` service from `docker-compose.prod.yml` and set `TRUST_PROXY_HEADERS=true` in your `.env.prod`.
+</Aside>
+
+## Security Headers
+
+Both configurations include these security headers:
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` | Force HTTPS for 1 year |
+| `X-Content-Type-Options` | `nosniff` | Prevent MIME sniffing |
+| `X-Frame-Options` | `DENY` | Prevent clickjacking |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Control referrer information |

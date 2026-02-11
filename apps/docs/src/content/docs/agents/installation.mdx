@@ -1,0 +1,138 @@
+---
+title: Agent Installation
+description: Install the Breeze agent on Linux, macOS, and Windows devices.
+sidebar:
+  order: 1
+  label: Installation
+---
+
+import { Tabs, TabItem, Steps, Aside } from '@astrojs/starlight/components';
+
+The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It runs as a system service and communicates with your Breeze server over HTTPS/WSS.
+
+## Supported Platforms
+
+| Platform | Architecture | Binary |
+|---|---|---|
+| Linux | amd64 | `breeze-agent-linux-amd64` |
+| Linux | arm64 | `breeze-agent-linux-arm64` |
+| macOS | amd64 (Intel) | `breeze-agent-darwin-amd64` |
+| macOS | arm64 (Apple Silicon) | `breeze-agent-darwin-arm64` |
+| Windows | amd64 | `breeze-agent-windows-amd64.exe` |
+
+## Quick Install
+
+<Tabs>
+  <TabItem label="Linux">
+    ```bash
+    # Download the agent
+    curl -fsSL -o breeze-agent \
+      https://breeze.yourdomain.com/api/v1/agents/download/linux/amd64
+    chmod +x breeze-agent
+
+    # Enroll and install as a service
+    sudo ./breeze-agent enroll \
+      --server https://breeze.yourdomain.com \
+      --enrollment-secret YOUR_ENROLLMENT_SECRET \
+      --site-id YOUR_SITE_ID
+
+    sudo ./breeze-agent install-service
+    ```
+  </TabItem>
+  <TabItem label="macOS">
+    ```bash
+    # Download the agent
+    curl -fsSL -o breeze-agent \
+      https://breeze.yourdomain.com/api/v1/agents/download/darwin/arm64
+    chmod +x breeze-agent
+
+    # Enroll and install as a LaunchDaemon
+    sudo ./breeze-agent enroll \
+      --server https://breeze.yourdomain.com \
+      --enrollment-secret YOUR_ENROLLMENT_SECRET \
+      --site-id YOUR_SITE_ID
+
+    sudo ./breeze-agent install-service
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    # Download the agent
+    Invoke-WebRequest -Uri "https://breeze.yourdomain.com/api/v1/agents/download/windows/amd64" `
+      -OutFile "breeze-agent.exe"
+
+    # Enroll (run as Administrator)
+    .\breeze-agent.exe enroll `
+      --server https://breeze.yourdomain.com `
+      --enrollment-secret YOUR_ENROLLMENT_SECRET `
+      --site-id YOUR_SITE_ID
+
+    # Install as a Windows Service
+    .\breeze-agent.exe install-service
+    ```
+
+    Alternatively, use the MSI installer for silent deployment:
+    ```powershell
+    msiexec /i breeze-agent.msi /qn `
+      SERVER=https://breeze.yourdomain.com `
+      ENROLLMENT_SECRET=YOUR_ENROLLMENT_SECRET `
+      SITE_ID=YOUR_SITE_ID
+    ```
+  </TabItem>
+</Tabs>
+
+## What Enrollment Does
+
+During enrollment, the agent:
+
+1. Sends system information (hostname, OS, architecture) to the API
+2. Validates the enrollment secret
+3. Receives a unique `brz_` bearer token
+4. Stores configuration in `/etc/breeze/config.json` (Linux/macOS) or `C:\ProgramData\Breeze\config.json` (Windows)
+5. Sets file permissions: `0700` for directory, `0600` for config file
+
+<Aside>
+  The enrollment secret (`AGENT_ENROLLMENT_SECRET`) is different from the agent's bearer token. The enrollment secret is a shared secret used once during registration. The bearer token is unique per device and used for all subsequent communication.
+</Aside>
+
+## Verifying Installation
+
+```bash
+# Check service status
+sudo systemctl status breeze-agent  # Linux
+sudo launchctl list | grep breeze   # macOS
+Get-Service breeze-agent             # Windows
+
+# Check agent version
+breeze-agent version
+
+# View agent logs
+sudo journalctl -u breeze-agent -f  # Linux
+sudo log show --predicate 'process == "breeze-agent"' --last 1h  # macOS
+```
+
+The device should appear in your Breeze dashboard within 60 seconds of enrollment.
+
+## Configuration File
+
+After enrollment, the agent stores its configuration at:
+
+| OS | Path |
+|---|---|
+| Linux | `/etc/breeze/config.json` |
+| macOS | `/etc/breeze/config.json` |
+| Windows | `C:\ProgramData\Breeze\config.json` |
+
+```json
+{
+  "server": "https://breeze.yourdomain.com",
+  "token": "brz_...",
+  "deviceId": "uuid-...",
+  "orgId": "uuid-...",
+  "siteId": "uuid-..."
+}
+```
+
+<Aside type="danger">
+  The config file contains the agent's bearer token. Its permissions are set to `0600` (owner-only read/write). Do not change this.
+</Aside>

@@ -65,27 +65,35 @@ const httpRequestDurationSeconds = new Histogram({
   registers: [register]
 });
 
-const activeConnectionsGauge = new Gauge({
-  name: 'breeze_active_connections',
-  help: 'Number of active connections',
+const httpRequestsInFlight = new Gauge({
+  name: 'http_requests_in_flight',
+  help: 'Number of HTTP requests currently being processed',
   registers: [register]
 });
 
 const devicesActiveGauge = new Gauge({
-  name: 'breeze_devices_active',
-  help: 'Number of active devices',
+  name: 'breeze_active_devices',
+  help: 'Devices with recent heartbeat',
   registers: [register]
 });
 
 const organizationsTotalGauge = new Gauge({
-  name: 'breeze_organizations_total',
-  help: 'Total number of organizations',
+  name: 'breeze_active_organizations',
+  help: 'Organizations with active devices',
   registers: [register]
 });
 
-const alertsActiveGauge = new Gauge({
-  name: 'breeze_alerts_active',
-  help: 'Number of active alerts',
+const commandsTotalCounter = new Counter({
+  name: 'breeze_commands_total',
+  help: 'Commands executed by type',
+  labelNames: ['type'] as const,
+  registers: [register]
+});
+
+const alertsTotalCounter = new Counter({
+  name: 'breeze_alerts_total',
+  help: 'Alerts fired by severity',
+  labelNames: ['severity'] as const,
   registers: [register]
 });
 
@@ -121,10 +129,11 @@ const nodejsVersionInfoGauge = new Gauge({
   registers: [register]
 });
 
-activeConnectionsGauge.set(0);
+httpRequestsInFlight.set(0);
 devicesActiveGauge.set(0);
 organizationsTotalGauge.set(0);
-alertsActiveGauge.set(0);
+commandsTotalCounter.labels('script').inc(0);
+alertsTotalCounter.labels('info').inc(0);
 alertQueueLengthGauge.set(0);
 agentHeartbeatTotal.labels('success').inc(0);
 agentHeartbeatTotal.labels('failed').inc(0);
@@ -141,10 +150,11 @@ const agentHeartbeatState = new Map<string, CounterValue>();
 
 let devicesActive = 0;
 let organizationsTotal = 0;
-let alertsActive = 0;
+let commandsTotal = 0;
+let alertsTotal = 0;
 let alertQueueLength = 0;
 let scriptsExecutedCount = 0;
-let activeConnections = 0;
+let inFlightRequests = 0;
 
 function normalizeRoute(route: string): string {
   return route
@@ -211,15 +221,20 @@ export function updateBusinessMetrics(metrics: {
     organizationsTotalGauge.set(organizationsTotal);
   }
 
-  if (metrics.alertsActive !== undefined) {
-    alertsActive = metrics.alertsActive;
-    alertsActiveGauge.set(alertsActive);
-  }
-
   if (metrics.alertQueueLength !== undefined) {
     alertQueueLength = metrics.alertQueueLength;
     alertQueueLengthGauge.set(alertQueueLength);
   }
+}
+
+export function recordCommand(type = 'script'): void {
+  commandsTotalCounter.labels(type).inc();
+  commandsTotal += 1;
+}
+
+export function recordAlert(severity = 'info'): void {
+  alertsTotalCounter.labels(severity).inc();
+  alertsTotal += 1;
 }
 
 export function recordScriptExecution(): void {
@@ -379,11 +394,12 @@ metricsRoutes.get('/scrape', async (c) => {
 metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => {
   return c.json({
     http_requests_total: Array.from(httpRequestState.values()),
-    active_connections: [{ labels: {}, value: activeConnections }],
+    http_requests_in_flight: [{ labels: {}, value: inFlightRequests }],
     business_metrics: {
-      devices_active: devicesActive,
-      organizations_total: organizationsTotal,
-      alerts_active: alertsActive,
+      breeze_active_devices: devicesActive,
+      breeze_active_organizations: organizationsTotal,
+      breeze_commands_total: commandsTotal,
+      breeze_alerts_total: alertsTotal,
       alert_queue_length: alertQueueLength,
       scripts_executed_total: scriptsExecutedCount
     },
@@ -405,8 +421,15 @@ metricsRoutes.get('/metrics', authMiddleware, requireScope('system'), async (c) 
 
 export async function metricsMiddleware(c: any, next: () => Promise<void>): Promise<void> {
   const start = performance.now();
+  httpRequestsInFlight.inc();
+  inFlightRequests += 1;
 
-  await next();
+  try {
+    await next();
+  } finally {
+    httpRequestsInFlight.dec();
+    inFlightRequests -= 1;
+  }
 
   const duration = (performance.now() - start) / 1000;
   const status = c.res.status;

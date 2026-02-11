@@ -22,7 +22,7 @@ groups:
           histogram_quantile(0.95,
             sum(rate(http_request_duration_seconds_bucket{job="breeze-api"}[5m])) by (le)
           ) > 2
-        for: 5m
+        for: 10m
         labels:
           severity: warning
         annotations:
@@ -32,25 +32,25 @@ groups:
 
       - alert: APIServiceDown
         expr: up{job="breeze-api"} == 0
-        for: 1m
+        for: 2m
         labels:
           severity: critical
         annotations:
           summary: "Breeze API service is down"
-          description: "The API service has been unreachable for more than 1 minute"
+          description: "The API service has been unreachable for more than 2 minutes"
           runbook_url: "https://docs.breeze.local/runbooks/api-down"
 
       - alert: EndpointLatencyHigh
         expr: |
-          histogram_quantile(0.99,
+          histogram_quantile(0.95,
             sum(rate(http_request_duration_seconds_bucket{job="breeze-api"}[5m])) by (le, route)
           ) > 5
-        for: 10m
+        for: 5m
         labels:
           severity: warning
         annotations:
           summary: "High latency on endpoint {{ $labels.route }}"
-          description: "99th percentile latency is {{ $value | humanizeDuration }}"
+          description: "95th percentile latency is {{ $value | humanizeDuration }}"
 
       - alert: High4xxRate
         expr: |
@@ -58,7 +58,7 @@ groups:
             sum(rate(http_requests_total{job="breeze-api", status=~"4.."}[5m]))
             /
             sum(rate(http_requests_total{job="breeze-api"}[5m]))
-          ) > 0.25
+          ) > 0.2
         for: 10m
         labels:
           severity: warning
@@ -71,15 +71,15 @@ groups:
     rules:
       - alert: RedisDown
         expr: up{job="redis"} == 0
-        for: 1m
+        for: 2m
         labels:
           severity: critical
         annotations:
           summary: "Redis is down"
-          description: "Redis has been unreachable for more than 1 minute"
+          description: "Redis has been unreachable for more than 2 minutes"
 
       - alert: RedisMemoryHigh
-        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
         for: 5m
         labels:
           severity: warning
@@ -89,12 +89,12 @@ groups:
 
       - alert: PostgresDown
         expr: up{job="postgres"} == 0
-        for: 1m
+        for: 2m
         labels:
           severity: critical
         annotations:
           summary: "PostgreSQL is down"
-          description: "PostgreSQL has been unreachable for more than 1 minute"
+          description: "PostgreSQL has been unreachable for more than 2 minutes"
 
       - alert: PostgresConnectionPoolSaturated
         expr: pg_stat_activity_count / pg_settings_max_connections > 0.8
@@ -108,7 +108,7 @@ groups:
       - alert: DiskSpaceLow
         expr: |
           (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
-           / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.1
+           / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.15
         for: 5m
         labels:
           severity: warning
@@ -122,17 +122,17 @@ groups:
       - alert: NoAgentHeartbeats
         expr: |
           sum(rate(agent_heartbeat_total{job="breeze-api"}[5m])) == 0
-        for: 10m
+        for: 5m
         labels:
-          severity: warning
+          severity: critical
         annotations:
           summary: "No agent heartbeats received"
-          description: "No agents have checked in for the last 10 minutes"
+          description: "No agents have checked in for the last 5 minutes"
 
       - alert: AlertProcessingBacklog
         expr: |
           breeze_alert_queue_length > 100
-        for: 5m
+        for: 10m
         labels:
           severity: warning
         annotations:
@@ -170,7 +170,7 @@ groups:
           )
 
       - record: breeze:devices:active_count
-        expr: sum(breeze_devices_active)
+        expr: sum(breeze_active_devices)
 
       - record: breeze:http_requests:rate5m_by_org
         expr: sum(rate(http_requests_total{job="breeze-api"}[5m])) by (org_id)

@@ -1,0 +1,98 @@
+---
+title: Health Endpoints
+description: Built-in health check and readiness endpoints for Breeze RMM.
+sidebar:
+  order: 3
+  label: Health Endpoints
+---
+
+## Available Endpoints
+
+The API exposes several health check endpoints:
+
+| Endpoint | Purpose | Auth Required |
+|---|---|---|
+| `GET /health` | Basic liveness check | No |
+| `GET /health/ready` | Full readiness (DB + Redis) | No |
+| `GET /health/live` | Kubernetes liveness probe | No |
+| `GET /metrics/scrape` | Prometheus metrics | Bearer token |
+
+## Response Formats
+
+### `/health`
+
+Returns `200 OK` if the API process is running:
+
+```json
+{
+  "status": "ok",
+  "version": "0.2.0",
+  "uptime": 86400
+}
+```
+
+### `/health/ready`
+
+Returns `200 OK` only when all dependencies are healthy:
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "database": "ok",
+    "redis": "ok"
+  }
+}
+```
+
+Returns `503 Service Unavailable` if any dependency is down:
+
+```json
+{
+  "status": "not_ready",
+  "checks": {
+    "database": "ok",
+    "redis": "error: connection refused"
+  }
+}
+```
+
+### `/metrics/scrape`
+
+Prometheus-formatted metrics. Requires the `METRICS_SCRAPE_TOKEN` bearer token:
+
+```bash
+curl -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" \
+  https://breeze.yourdomain.com/metrics/scrape
+```
+
+## Docker Health Checks
+
+Each container in the production stack has its own health check:
+
+| Container | Check | Interval |
+|---|---|---|
+| API | `wget http://localhost:3001/health` | 30s |
+| Web | `wget http://localhost:4321/` | 30s |
+| PostgreSQL | `pg_isready` | 10s |
+| Redis | `redis-cli ping` | 10s |
+| Prometheus | `wget http://localhost:9090/-/healthy` | 30s |
+| Grafana | `wget http://localhost:3000/api/health` | 30s |
+| Alertmanager | `wget http://localhost:9093/-/healthy` | 30s |
+| Loki | `wget http://localhost:3100/ready` | 30s |
+
+## Using with Load Balancers
+
+Configure your load balancer to probe:
+- **Liveness**: `GET /health` (is the process alive?)
+- **Readiness**: `GET /health/ready` (can it serve traffic?)
+
+Example for AWS ALB:
+
+```
+Health check path: /health/ready
+Healthy threshold: 2
+Unhealthy threshold: 3
+Timeout: 5 seconds
+Interval: 30 seconds
+```

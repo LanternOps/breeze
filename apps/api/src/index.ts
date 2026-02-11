@@ -162,21 +162,63 @@ app.use(
   })
 );
 
-// Health check
+const API_VERSION = '0.2.0';
+const startedAt = Date.now();
+
+// Health check — basic liveness with version and uptime
 app.get('/health', (c) => {
+  const uptimeSeconds = Math.floor((Date.now() - startedAt) / 1000);
   return c.json({
     status: 'ok',
-    timestamp: new Date().toISOString(),
-    version: '0.1.0',
-    readiness: {
-      db: readinessState.dbOk,
-      redis: readinessState.redisOk,
-      workers: readinessState.workersHealthy,
-      checkedAt: readinessState.checkedAt
-    }
+    version: API_VERSION,
+    uptime: uptimeSeconds
   });
 });
 
+// Kubernetes liveness probe — minimal 200 OK
+app.get('/health/live', (c) => {
+  return c.json({ status: 'ok' });
+});
+
+// Full readiness check — live DB + Redis connectivity
+app.get('/health/ready', async (c) => {
+  const checks: Record<string, string> = {};
+
+  // Check database connectivity
+  try {
+    await runWithSystemDbAccess(async () => {
+      await db.execute(sql`select 1`);
+    });
+    checks.database = 'ok';
+  } catch (error) {
+    checks.database = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+  }
+
+  // Check Redis connectivity
+  try {
+    const redis = getRedis();
+    if (!redis) {
+      checks.redis = 'error: not configured';
+    } else {
+      await redis.ping();
+      checks.redis = 'ok';
+    }
+  } catch (error) {
+    checks.redis = `error: ${error instanceof Error ? error.message : 'unknown'}`;
+  }
+
+  const allOk = Object.values(checks).every((v) => v === 'ok');
+
+  return c.json(
+    {
+      status: allOk ? 'ready' : 'not_ready',
+      checks
+    },
+    allOk ? 200 : 503
+  );
+});
+
+// Legacy /ready alias (backward compatibility)
 app.get('/ready', (c) => {
   const ready = isReady();
   return c.json(

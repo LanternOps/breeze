@@ -1,0 +1,899 @@
+---
+title: Commands & Config
+description: Agent command execution, configuration options, and service management.
+sidebar:
+  order: 4
+  label: "Commands & Config"
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Breeze agent supports **60+ commands** organized into 17 categories. Commands are sent from the API to agents over WebSocket, each with an `action` string and an optional JSON `payload`.
+
+## Command Flow
+
+```
+Dashboard → POST /devices/:id/commands
+         → BullMQ job created
+         → WebSocket message sent to agent
+         → Agent executes command
+         → Agent sends result via WebSocket
+         → Result stored in database
+         → Dashboard receives real-time update
+```
+
+Commands with a `term-` prefix bypass the database queue and are sent directly over WebSocket for real-time terminal sessions.
+
+### Command Result Format
+
+Every command returns a standard result envelope:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | `string` | `completed`, `failed`, or `timeout` |
+| `exitCode` | `int` | Exit code (0 for success) |
+| `stdout` | `string` | JSON-encoded result data or script output |
+| `stderr` | `string` | Error output (scripts only) |
+| `error` | `string` | Error message when `status` is `failed` |
+| `durationMs` | `int64` | Execution time in milliseconds |
+
+---
+
+## Process Management
+
+Enumerate, inspect, and terminate running processes. Cross-platform (Windows, macOS, Linux).
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `list_processes` | List running processes (paginated) | `page`, `limit`, `search`, `sortBy`, `sortDesc` |
+| `get_process` | Get details for a specific process | `pid` (required) |
+| `kill_process` | Terminate a process by PID | `pid` (required), `force` |
+
+### `list_processes`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `page` | int | `1` | Page number |
+| `limit` | int | `50` | Results per page (max 500) |
+| `search` | string | `""` | Filter by name, user, command line, or PID |
+| `sortBy` | string | `"cpu"` | Sort field: `cpu`, `memory`, `pid`, `name`, `user` |
+| `sortDesc` | bool | `true` | Sort descending |
+
+Returns `ProcessListResponse` with `processes[]`, `total`, `page`, `limit`, `totalPages`.
+
+### `get_process`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `pid` | int | Yes | Process ID to inspect |
+
+Returns a single `ProcessInfo` object with `pid`, `name`, `user`, `cpuPercent`, `memoryMb`, `status`, `commandLine`, `parentPid`, `threads`, `createTime`.
+
+### `kill_process`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `pid` | int | Required | Process ID to terminate |
+| `force` | bool | `false` | If `true`, sends SIGKILL instead of SIGTERM |
+
+---
+
+## Service Management
+
+List, inspect, start, stop, and restart system services. Platform-aware: uses systemd on Linux, launchd on macOS, and the Windows Service Control Manager.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `list_services` | List system services (paginated) | `page`, `limit`, `search`, `status` |
+| `get_service` | Get details for a specific service | `name` (required) |
+| `start_service` | Start a stopped service | `name` (required) |
+| `stop_service` | Stop a running service | `name` (required) |
+| `restart_service` | Restart a service | `name` (required) |
+
+### `list_services`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `page` | int | `1` | Page number |
+| `limit` | int | `50` | Results per page (max 500) |
+| `search` | string | `""` | Filter by service name |
+| `status` | string | `""` | Filter by status (e.g. `Running`, `Stopped`) |
+
+Returns `ServiceListResponse` with `services[]`, each containing `name`, `displayName`, `status`, `startupType`, `account`, `path`, `description`.
+
+### `get_service` / `start_service` / `stop_service` / `restart_service`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | Service name (e.g. `sshd`, `nginx`, `wuauserv`) |
+
+---
+
+## Event Logs (Windows)
+
+Query Windows Event Logs. Returns stub responses on non-Windows platforms.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `event_logs_list` | List available event logs | -- |
+| `event_logs_query` | Query events from a log | `logName`, `level`, `source`, `eventId`, `page`, `limit` |
+| `event_log_get` | Get a specific log entry | `logName`, `recordId` |
+
+### `event_logs_query`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `logName` | string | `"System"` | Log name (`System`, `Application`, `Security`, etc.) |
+| `level` | string | `""` | Filter: `Information`, `Warning`, `Error`, `Critical` |
+| `source` | string | `""` | Filter by event source |
+| `eventId` | int | `0` | Filter by event ID |
+| `page` | int | `1` | Page number |
+| `limit` | int | `50` | Results per page (max 500) |
+
+### `event_log_get`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `logName` | string | `"System"` | Log name |
+| `recordId` | int | `0` | Record ID of the entry |
+
+---
+
+## Scheduled Tasks (Windows)
+
+Manage Windows Task Scheduler tasks. Returns stub responses on non-Windows platforms.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `tasks_list` | List scheduled tasks (paginated) | `folder`, `search`, `page`, `limit` |
+| `task_get` | Get details for a specific task | `path` |
+| `task_run` | Trigger a task to run immediately | `path` |
+| `task_enable` | Enable a disabled task | `path` |
+| `task_disable` | Disable a task | `path` |
+| `task_history` | Get execution history for a task | `path`, `limit` |
+
+### `tasks_list`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `folder` | string | `"\"` | Task Scheduler folder to list |
+| `search` | string | `""` | Filter by task name |
+| `page` | int | `1` | Page number |
+| `limit` | int | `50` | Results per page (max 500) |
+
+### `task_get` / `task_run` / `task_enable` / `task_disable`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | Yes | Full task path (e.g. `\Microsoft\Windows\UpdateOrchestrator\Schedule Scan`) |
+
+### `task_history`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | Required | Full task path |
+| `limit` | int | `50` | Max entries to return (1-200) |
+
+---
+
+## Registry (Windows)
+
+Read and write Windows Registry keys and values. Returns error stubs on non-Windows platforms.
+
+<Aside type="caution">
+Registry operations can cause system instability if used incorrectly. All write operations (`registry_set`, `registry_delete`, `registry_key_create`, `registry_key_delete`) should be tested carefully before deployment at scale.
+</Aside>
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `registry_keys` | List subkeys at a registry path | `hive`, `path` |
+| `registry_values` | List values at a registry path | `hive`, `path` |
+| `registry_get` | Get a specific registry value | `hive`, `path`, `name` |
+| `registry_set` | Set a registry value | `hive`, `path`, `name`, `type`, `data` |
+| `registry_delete` | Delete a registry value | `hive`, `path`, `name` |
+| `registry_key_create` | Create a new registry key | `hive`, `path` |
+| `registry_key_delete` | Delete a registry key | `hive`, `path` |
+
+### Common Parameters
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `hive` | string | `"HKLM"` | Registry hive: `HKLM`, `HKCU`, `HKCR`, `HKU`, `HKCC` |
+| `path` | string | `""` | Registry key path (e.g. `SOFTWARE\Microsoft\Windows\CurrentVersion`) |
+
+### `registry_get`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `hive` | string | `"HKLM"` | Registry hive |
+| `path` | string | `""` | Key path |
+| `name` | string | `""` | Value name |
+
+### `registry_set`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `hive` | string | `"HKLM"` | Registry hive |
+| `path` | string | `""` | Key path |
+| `name` | string | `""` | Value name |
+| `type` | string | `"REG_SZ"` | Value type: `REG_SZ`, `REG_DWORD`, `REG_BINARY`, `REG_EXPAND_SZ`, `REG_MULTI_SZ`, `REG_QWORD` |
+| `data` | string | `""` | Value data |
+
+### `registry_delete`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `hive` | string | `"HKLM"` | Registry hive |
+| `path` | string | `""` | Key path |
+| `name` | string | `""` | Value name to delete |
+
+---
+
+## System
+
+Power management and session locking. Cross-platform.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `reboot` | Schedule a system reboot | `delay` |
+| `shutdown` | Schedule a system shutdown | `delay` |
+| `lock` | Lock the current user session | -- |
+
+<Aside type="danger">
+The `reboot` and `shutdown` commands will immediately affect the target device. There is no confirmation prompt on the agent side. Use the `delay` parameter to give users time to save work.
+</Aside>
+
+### `reboot` / `shutdown`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `delay` | int | `0` | Delay in minutes before executing (0-1440, i.e. max 24 hours) |
+
+Platform behavior:
+- **Windows**: Runs `shutdown /r /t <seconds>` (reboot) or `shutdown /s /t <seconds>` (shutdown)
+- **Linux/macOS**: Runs `shutdown -r +<minutes>` (reboot) or `shutdown -h +<minutes>` (shutdown)
+
+### `lock`
+
+No payload parameters. Locks the active session:
+- **Windows**: `rundll32.exe user32.dll,LockWorkStation`
+- **macOS**: `CGSession -suspend`
+- **Linux**: `loginctl lock-session` (falls back to `dm-tool lock`)
+
+---
+
+## File Operations
+
+Browse, read, write, and manage files on the agent filesystem. All paths are cleaned and normalized. Mutating operations are blocked on critical system paths (`/`, `/boot`, `/proc`, `/sys`, `/dev`, `/bin`, `/sbin`, `/usr`).
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `file_list` | List directory contents | `path` |
+| `file_read` | Read file contents | `path`, `encoding` |
+| `file_write` | Write content to a file | `path`, `content`, `encoding` |
+| `file_delete` | Delete a file or directory | `path`, `recursive` |
+| `file_mkdir` | Create a directory | `path` |
+| `file_rename` | Rename or move a file | `oldPath`, `newPath` |
+| `filesystem_analysis` | Deep filesystem analysis | `path`, `scanMode`, `maxDepth`, `topFiles`, `topDirs`, `timeoutSeconds` |
+
+### `file_list`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | User home dir | Directory to list |
+
+Returns `FileListResponse` with `entries[]`, each containing `name`, `path`, `type` (`file`/`directory`), `size`, `modified`, `permissions`.
+
+### `file_read`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | Required | File path to read |
+| `encoding` | string | `"text"` | `"text"` for UTF-8, `"base64"` for binary |
+
+<Aside>
+Maximum file read size is 1 MB. Larger files will be rejected. Use `file_transfer` for large file downloads.
+</Aside>
+
+### `file_write`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | Required | File path to write |
+| `content` | string | `""` | File content |
+| `encoding` | string | `"text"` | `"text"` or `"base64"` |
+
+Parent directories are created automatically. Files are written with `0644` permissions.
+
+### `file_delete`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | Required | File or directory path |
+| `recursive` | bool | `false` | If `true`, removes directories and all contents. Recursive deletes are blocked on top-level paths (e.g. `/home`, `/var`). |
+
+### `file_mkdir`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | Yes | Directory path to create (with parents) |
+
+### `file_rename`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `oldPath` | string | Yes | Source path |
+| `newPath` | string | Yes | Destination path |
+
+### `filesystem_analysis`
+
+Deep filesystem scan that identifies large files, large directories, duplicate candidates, temp/cache accumulation, old downloads, unrotated logs, trash usage, and safe cleanup candidates.
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | Required | Root directory to analyze |
+| `scanMode` | string | `"baseline"` | `"baseline"` (deep) or `"incremental"` (targeted) |
+| `maxDepth` | int | 32 (baseline) / 12 (incremental) | Max directory depth (1-64) |
+| `topFiles` | int | `50` | Number of largest files to return (1-500) |
+| `topDirs` | int | `30` | Number of largest directories to return (1-200) |
+| `maxEntries` | int | `10,000,000` | Max filesystem entries to scan (1,000-25,000,000) |
+| `timeoutSeconds` | int | `20` | Scan timeout (5-900 seconds) |
+| `followSymlinks` | bool | `false` | Follow symbolic links |
+| `workers` | int | auto | Parallel scan workers (1-32; auto-scaled to CPU count) |
+| `targetDirectories` | string[] | -- | Specific directories for incremental scans |
+| `checkpoint` | object | -- | Resume a previously interrupted scan |
+
+The response includes `topLargestFiles`, `topLargestDirectories`, `tempAccumulation`, `oldDownloads`, `unrotatedLogs`, `trashUsage`, `duplicateCandidates`, `cleanupCandidates`, and a `summary` with scan statistics. If the scan is interrupted (timeout or max entries), `partial: true` is set along with a `checkpoint` that can be passed to resume.
+
+---
+
+## Terminal
+
+Open interactive remote terminal (PTY) sessions. Terminal commands use the `term-` prefix for command IDs and bypass the database queue for low-latency communication.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `terminal_start` | Open a new terminal session | `sessionId`, `cols`, `rows`, `shell` |
+| `terminal_data` | Send input data to a session | `sessionId`, `data` |
+| `terminal_resize` | Resize a terminal session | `sessionId`, `cols`, `rows` |
+| `terminal_stop` | Close and destroy a session | `sessionId` |
+
+### `terminal_start`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `sessionId` | string | Required | Unique session identifier |
+| `cols` | int | `80` | Terminal column count |
+| `rows` | int | `24` | Terminal row count |
+| `shell` | string | `""` | Shell to launch (empty = system default) |
+
+### `terminal_data`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | Yes | Session to write to |
+| `data` | string | Yes | Input data (keystrokes, paste content) |
+
+### `terminal_resize`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `sessionId` | string | Required | Session to resize |
+| `cols` | int | `80` | New column count |
+| `rows` | int | `24` | New row count |
+
+### `terminal_stop`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | Yes | Session to close |
+
+---
+
+## Remote Desktop
+
+Two remote desktop modes are available: WebRTC-based (legacy) and WebSocket-based streaming.
+
+### WebRTC (Legacy)
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `start_desktop` | Start a WebRTC desktop session | `sessionId`, `offer`, `iceServers` |
+| `stop_desktop` | Stop a WebRTC desktop session | `sessionId` |
+
+#### `start_desktop`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | Yes | Unique session identifier |
+| `offer` | string | Yes | WebRTC SDP offer |
+| `iceServers` | array | No | Array of `{ urls, username, credential }` ICE server configs |
+
+Returns `{ sessionId, answer }` where `answer` is the WebRTC SDP answer.
+
+### WebSocket Streaming
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `desktop_stream_start` | Start a desktop frame stream | `sessionId`, `quality`, `scaleFactor`, `maxFps` |
+| `desktop_stream_stop` | Stop a desktop frame stream | `sessionId` |
+| `desktop_input` | Send mouse/keyboard input | `sessionId`, `event` |
+| `desktop_config` | Update streaming configuration | `sessionId`, `quality`, `scaleFactor`, `maxFps` |
+
+#### `desktop_stream_start`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `sessionId` | string | Required | Unique session identifier |
+| `quality` | int | Default config | JPEG quality 1-100 |
+| `scaleFactor` | float | Default config | Image scale factor 0.0-1.0 |
+| `maxFps` | int | Default config | Maximum frames per second 1-30 |
+
+Returns `{ sessionId, screenWidth, screenHeight }`.
+
+#### `desktop_input`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | Yes | Session to send input to |
+| `event` | object | Yes | Input event object (see below) |
+
+The `event` object fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Required. Event type: `mousemove`, `mousedown`, `mouseup`, `click`, `dblclick`, `keydown`, `keyup`, `scroll` |
+| `x` | int | Mouse X coordinate |
+| `y` | int | Mouse Y coordinate |
+| `button` | string | Mouse button: `left`, `right`, `middle` |
+| `key` | string | Key name for keyboard events |
+| `delta` | int | Scroll delta |
+| `modifiers` | string[] | Modifier keys: `ctrl`, `alt`, `shift`, `meta` |
+
+#### `desktop_config`
+
+| Param | Type | Range | Description |
+|---|---|---|---|
+| `sessionId` | string | Required | Session to update |
+| `quality` | int | 1-100 | JPEG quality |
+| `scaleFactor` | float | 0.0-1.0 | Image scale factor |
+| `maxFps` | int | 1-30 | Maximum frames per second |
+
+At least one of `quality`, `scaleFactor`, or `maxFps` must be provided.
+
+---
+
+## Script Execution
+
+Execute scripts on managed devices. Supports Bash, PowerShell, Python, and other interpreters. Both `script` and `run_script` invoke the same handler.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `script` / `run_script` | Execute a script | `content`, `language`, `timeoutSeconds`, `runAs`, `parameters` |
+| `script_cancel` | Cancel a running script | `executionId` |
+| `script_list_running` | List currently running scripts | -- |
+
+### `script` / `run_script`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `content` | string | Required | Script source code |
+| `language` | string | `"bash"` | Script type: `bash`, `powershell`, `python`, `cmd`, etc. |
+| `scriptId` | string | `""` | Reference ID for tracking |
+| `timeoutSeconds` | int | `300` | Execution timeout (5 minutes default) |
+| `runAs` | string | `""` | User context: `""` (system), `"user"` (interactive user), or a specific username |
+| `parameters` | object | `{}` | Key-value map of script parameters |
+
+<Aside>
+When `runAs` is set to a username (or `"user"`), the agent forwards the script to the user-mode helper via IPC for execution in that user's session. If no helper is connected, the script falls back to local (system) execution.
+</Aside>
+
+### `script_cancel`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `executionId` | string | Yes | Execution ID to cancel |
+
+### `script_list_running`
+
+No payload parameters. Returns `{ running: [...], count: N }`.
+
+---
+
+## Patching
+
+Scan for, download, and install OS patches. Includes pre-flight checks for disk space, AC power, and maintenance windows.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `patch_scan` | Scan for available patches | `source` |
+| `install_patches` | Install pending patches | `patchIds` |
+| `download_patches` | Download patches without installing | `patchIds` |
+| `rollback_patches` | Roll back installed patches | `patchIds` |
+
+### `patch_scan`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `source` | string | `""` | Audit source identifier (for logging) |
+
+Returns `{ pendingCount, installedCount, warning }`. Also sends full patch inventory to the API as telemetry.
+
+### `install_patches`
+
+Runs pre-flight checks (disk space, AC power, maintenance window, service health) before installation. Fails if any check does not pass.
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `patchIds` | string[] | Yes | Array of patch IDs to install |
+
+### `download_patches`
+
+Downloads patches to local cache without installing. Runs a subset of pre-flight checks (disk space and service health, skips AC power and maintenance window).
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `patchIds` | string[] | Yes | Array of patch IDs to download |
+
+Returns `{ downloadedCount, failedCount, results[] }` with per-patch status. Sends progress events via WebSocket during download.
+
+### `rollback_patches`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `patchIds` | string[] | Yes | Array of patch IDs to roll back |
+
+---
+
+## Reboot Management
+
+Schedule, cancel, and check the status of managed reboots (separate from the immediate `reboot` system command).
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `schedule_reboot` | Schedule a deferred reboot | `delayMinutes`, `reason`, `source`, `deadline` |
+| `cancel_reboot` | Cancel a scheduled reboot | -- |
+| `get_reboot_status` | Get current reboot schedule state | -- |
+
+### `schedule_reboot`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `delayMinutes` | int | `60` | Minutes until reboot (1-10080, i.e. up to 7 days) |
+| `reason` | string | `"Scheduled by administrator"` | Reboot reason for logging and user notification |
+| `source` | string | `"manual"` | Initiator: `"manual"`, `"patch"`, `"policy"`, etc. |
+| `deadline` | string | -- | Optional RFC 3339 timestamp to override calculated deadline |
+
+### `cancel_reboot`
+
+No payload parameters. Returns `{ cancelled: true }`.
+
+### `get_reboot_status`
+
+No payload parameters. Returns the full `RebootState` object with schedule details.
+
+---
+
+## Security
+
+Collect security status, run malware/threat scans, and manage quarantined threats.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `security_collect_status` | Collect security posture (AV, firewall, etc.) | -- |
+| `security_scan` | Run a security/malware scan | `scanType`, `paths`, `scanRecordId`, `triggerDefender` |
+| `security_threat_quarantine` | Quarantine a detected threat | `path`, `name`, `threatType`, `severity`, `quarantineDir` |
+| `security_threat_remove` | Permanently remove a threat | `path`, `name`, `threatType`, `severity` |
+| `security_threat_restore` | Restore a quarantined file | `quarantinedPath`, `originalPath` |
+
+### `security_collect_status`
+
+No payload parameters. Returns the device security status including antivirus, firewall, and encryption state.
+
+### `security_scan`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `scanType` | string | `"quick"` | Scan type: `"quick"`, `"full"`, or `"custom"` |
+| `paths` | string[] | -- | Paths to scan (required when `scanType` is `"custom"`) |
+| `scanRecordId` | string | `""` | ID for tracking the scan in the dashboard |
+| `triggerDefender` | bool | `false` | (Windows only) Also trigger Windows Defender scan |
+
+Returns `{ scanRecordId, scanType, durationMs, threatsFound, threats[], status }`.
+
+### `security_threat_quarantine`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | Required | Path of the threat file |
+| `name` | string | `""` | Threat name |
+| `threatType` | string | `"malware"` | Threat classification |
+| `severity` | string | `"medium"` | Threat severity |
+| `quarantineDir` | string | Platform default | Custom quarantine directory |
+
+### `security_threat_remove`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | Required | Path of the threat file to permanently delete |
+| `name` | string | `""` | Threat name |
+| `threatType` | string | `"malware"` | Threat classification |
+| `severity` | string | `"medium"` | Threat severity |
+
+### `security_threat_restore`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `quarantinedPath` | string | Yes | Path of the quarantined file |
+| `originalPath` | string | Yes | Original file path to restore to |
+
+---
+
+## Network
+
+Network discovery, SNMP polling, and connectivity checks for monitoring.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `network_discovery` | Discover hosts on a network | `subnets`, `methods`, `portRanges`, `concurrency` |
+| `snmp_poll` | Poll an SNMP device for metrics | `target`, `version`, `community`, `oids` |
+| `network_ping` | Ping a host (ICMP with TCP fallback) | `target`, `count`, `timeout` |
+| `network_tcp_check` | TCP port connectivity check | `target`, `port`, `expectBanner`, `timeout` |
+| `network_http_check` | HTTP/HTTPS endpoint check | `url`, `method`, `expectedStatus`, `expectedBody`, `verifySsl` |
+| `network_dns_check` | DNS record lookup check | `hostname`, `recordType`, `expectedValue`, `nameserver` |
+
+### `network_discovery`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `subnets` | string[] | -- | CIDR subnets to scan (e.g. `["192.168.1.0/24"]`) |
+| `excludeIps` | string[] | -- | IP addresses to skip |
+| `methods` | string[] | -- | Scan methods: `ping`, `arp`, `port` |
+| `portRanges` | string[] | -- | Port ranges for port scanning (e.g. `["22", "80", "443"]`) |
+| `snmpCommunities` | string[] | -- | SNMP community strings to try |
+| `timeout` | int | `2` | Per-host timeout in seconds |
+| `concurrency` | int | `128` | Max concurrent scan workers |
+| `deepScan` | bool | `false` | Enable deep scanning (more ports, slower) |
+| `identifyOS` | bool | `false` | Attempt OS fingerprinting |
+| `resolveHostnames` | bool | `false` | Perform reverse DNS lookups |
+| `jobId` | string | `""` | Job ID for tracking |
+
+<Aside>
+ARP scanning and ICMP ping require root/administrator privileges. Port scanning works without elevated privileges. The agent falls back to available methods automatically.
+</Aside>
+
+### `snmp_poll`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `target` | string | Required | Target IP or hostname |
+| `port` | int | `161` | SNMP port |
+| `version` | string | `"v2c"` | SNMP version: `"v1"`, `"v2c"`, `"v3"` |
+| `community` | string | `"public"` | Community string (v1/v2c) |
+| `username` | string | `""` | SNMPv3 username |
+| `authProtocol` | string | `""` | SNMPv3 auth protocol |
+| `authPassword` | string | `""` | SNMPv3 auth passphrase |
+| `privProtocol` | string | `""` | SNMPv3 privacy protocol |
+| `privPassword` | string | `""` | SNMPv3 privacy passphrase |
+| `oids` | string[] | -- | OIDs to poll |
+| `timeout` | int | `2` | Request timeout in seconds |
+| `retries` | int | `1` | Number of retries |
+| `deviceId` | string | `""` | Device ID for tracking |
+
+### `network_ping`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `target` | string | Required | IP address or hostname |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `timeout` | int | `5` | Timeout in seconds |
+| `count` | int | `4` | Number of ping attempts |
+
+Falls back to TCP connect (ports 443, then 80) if ICMP fails (common when running without root).
+
+### `network_tcp_check`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `target` | string | Required | IP address or hostname |
+| `port` | int | `443` | TCP port to check |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `timeout` | int | `5` | Connection timeout in seconds |
+| `expectBanner` | string | `""` | Expected string in the service banner |
+
+Returns `{ status, responseMs }` and optionally `{ banner }` if `expectBanner` is set. Status is `"degraded"` if the banner does not match.
+
+### `network_http_check`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | Required | Full URL to check (e.g. `https://example.com/health`) |
+| `method` | string | `"GET"` | HTTP method |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `expectedStatus` | int | `200` | Expected HTTP status code |
+| `expectedBody` | string | `""` | Expected string in response body |
+| `verifySsl` | bool | `true` | Verify TLS certificate |
+| `followRedirects` | bool | `true` | Follow HTTP redirects |
+| `timeout` | int | `10` | Request timeout in seconds |
+
+Returns `{ status, statusCode, responseMs }` plus `{ sslExpiry, sslDaysRemaining }` for HTTPS endpoints.
+
+### `network_dns_check`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `hostname` | string | Required | Hostname to look up |
+| `recordType` | string | `"A"` | Record type: `A`, `AAAA`, `MX`, `CNAME`, `TXT`, `NS` |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `expectedValue` | string | `""` | Expected value in results |
+| `nameserver` | string | `""` | Custom DNS server (e.g. `8.8.8.8`) |
+| `timeout` | int | `5` | Lookup timeout in seconds |
+
+---
+
+## Backup Management
+
+Run, list, and stop backups using the configured backup provider.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `backup_run` | Start a backup job | -- |
+| `backup_list` | List backup snapshots | -- |
+| `backup_stop` | Stop a running backup | -- |
+
+### `backup_run`
+
+No payload parameters. Requires backup to be configured on the agent. Returns `{ jobId, status, snapshotId, filesBackedUp, bytesBackedUp }`.
+
+### `backup_list`
+
+No payload parameters. Returns `{ snapshots[], count }`.
+
+### `backup_stop`
+
+No payload parameters. Stops the currently running backup job.
+
+---
+
+## Software Inventory
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `collect_software` | Collect installed software inventory | -- |
+
+No payload parameters. Runs the software collector and returns the full list of installed applications with name, version, publisher, install date, and size.
+
+---
+
+## File Transfer
+
+Transfer files to/from managed devices.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `file_transfer` | Initiate a file transfer | `direction`, `path`, `transferId` |
+| `cancel_transfer` | Cancel an in-progress transfer | `transferId` |
+
+### `file_transfer`
+
+Payload is passed directly to the file transfer manager. Key fields include the transfer direction and file path.
+
+### `cancel_transfer`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `transferId` | string | Yes | Transfer ID to cancel |
+
+---
+
+## User Helper Commands
+
+These commands require the user-mode helper process to be running in a user's session.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `notify_user` | Send a desktop notification | `title`, `body`, `icon`, `urgency`, `username`, `actions` |
+| `tray_update` | Update the system tray icon/menu | `status`, `tooltip`, `menuItems` |
+
+### `notify_user`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `title` | string | `"Breeze Agent"` | Notification title |
+| `body` | string | Required | Notification body text |
+| `icon` | string | `""` | Icon path or identifier |
+| `urgency` | string | `"normal"` | Urgency level: `"low"`, `"normal"`, `"critical"` |
+| `username` | string | `""` | Target username (empty = first available session) |
+| `actions` | string[] | -- | Action button labels |
+
+### `tray_update`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `status` | string | `"ok"` | Tray icon status indicator |
+| `tooltip` | string | `"Breeze Agent"` | Tooltip text |
+| `menuItems` | array | -- | Array of `{ id, label, enabled }` menu items |
+
+---
+
+## Breeze Agent Service Management
+
+### Linux (systemd)
+
+```bash
+sudo systemctl start breeze-agent
+sudo systemctl stop breeze-agent
+sudo systemctl restart breeze-agent
+sudo systemctl status breeze-agent
+
+# View logs
+sudo journalctl -u breeze-agent -f
+```
+
+### macOS (launchd)
+
+```bash
+sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist
+sudo launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist
+
+# View logs
+sudo log show --predicate 'process == "breeze-agent"' --last 1h
+```
+
+### Windows (Services)
+
+```powershell
+Start-Service breeze-agent
+Stop-Service breeze-agent
+Restart-Service breeze-agent
+Get-Service breeze-agent
+
+# View logs
+Get-EventLog -LogName Application -Source breeze-agent -Newest 50
+```
+
+---
+
+## Heartbeat Telemetry
+
+The agent sends a heartbeat every 60 seconds containing:
+
+| Field | Description |
+|---|---|
+| `cpu` | CPU usage percentage |
+| `memory` | Memory usage (used/total) |
+| `disk` | Disk usage per mount point |
+| `network` | Network interface stats |
+| `uptime` | System uptime |
+| `os` | OS name and version |
+| `hostname` | Current hostname |
+| `agentVersion` | Running agent version |
+
+---
+
+## User-Mode Helper
+
+The agent includes a user-mode helper process for operations that require user-session context:
+
+- Desktop notifications (`notify_user`)
+- User-specific inventory (installed apps, browser extensions)
+- Session-aware remote desktop
+- Script execution as a specific user (`runAs`)
+- System tray icon updates (`tray_update`)
+
+Install the user helper:
+
+<Tabs>
+  <TabItem label="Linux">
+```bash
+sudo make install-user-helper
+systemctl --user enable breeze-agent-user
+```
+  </TabItem>
+  <TabItem label="macOS">
+```bash
+sudo make install-user-helper
+# LaunchAgent auto-starts at login
+```
+  </TabItem>
+</Tabs>

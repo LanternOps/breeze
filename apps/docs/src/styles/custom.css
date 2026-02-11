@@ -1,0 +1,51 @@
+/* Breeze RMM Docs — matching breezermm.com branding */
+
+/* Accent: teal #0ED4C5 mapped to Starlight's color scale */
+:root {
+  --sl-color-accent-low: #062e2b;
+  --sl-color-accent: #0ED4C5;
+  --sl-color-accent-high: #7eeee5;
+
+  --sl-font: 'Satoshi', system-ui, -apple-system, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Dark theme overrides to match breezermm.com */
+:root[data-theme='dark'] {
+  --sl-color-bg: #0A0A0B;
+  --sl-color-bg-nav: #0f0f11;
+  --sl-color-bg-sidebar: #0c0c0e;
+  --sl-color-hairline-light: rgba(255, 255, 255, 0.05);
+  --sl-color-hairline: rgba(255, 255, 255, 0.08);
+  --sl-color-text: #F0EDE8;
+  --sl-color-text-accent: #0ED4C5;
+}
+
+/* Light theme keeps defaults with teal accent */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #d5faf7;
+  --sl-color-accent: #0aa89c;
+  --sl-color-accent-high: #064e48;
+}
+
+/* Code blocks */
+:root[data-theme='dark'] .expressive-code {
+  --ec-codeBg: #111113;
+  --ec-codeBrdCol: rgba(14, 212, 197, 0.12);
+}
+
+/* Sidebar active item */
+nav[aria-label='Main'] a[aria-current='page'] {
+  border-color: var(--sl-color-accent);
+}
+
+/* Hero badge / callouts with teal glow */
+.sl-badge {
+  --sl-badge-default-bg: rgba(14, 212, 197, 0.12);
+  --sl-badge-default-text: #0ED4C5;
+}
+
+/* Smooth link transitions */
+a {
+  transition: color 0.15s ease;
+}

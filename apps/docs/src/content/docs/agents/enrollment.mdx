@@ -1,0 +1,85 @@
+---
+title: Enrollment
+description: How agent enrollment and authentication works in Breeze RMM.
+sidebar:
+  order: 2
+  label: Enrollment
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Enrollment Flow
+
+```
+Agent                                 API Server
+  │                                      │
+  │─── POST /api/v1/agents/enroll ──────►│
+  │    { hostname, os, arch,             │
+  │      enrollmentSecret, siteId }      │
+  │                                      │
+  │    Validate enrollment secret        │
+  │    Create device record              │
+  │    Generate brz_ token               │
+  │    Hash token (SHA-256) → store      │
+  │    Issue mTLS cert (if configured)   │
+  │                                      │
+  │◄── 201 { agentToken, deviceId,  ─────│
+  │         orgId, siteId, mtls? }       │
+  │                                      │
+  │    Store config to disk              │
+  │    Connect WebSocket                 │
+  │                                      │
+  │─── WS /agents/:id/ws ──────────────►│
+  │    Authorization: Bearer brz_...     │
+  │                                      │
+  │◄── { type: "connected" } ────────────│
+  │                                      │
+  │─── { type: "heartbeat", ... } ──────►│
+  │                                      │
+```
+
+## Token Security
+
+Agent tokens follow the `brz_` prefix convention:
+
+- **Generation**: Cryptographically random, 32-byte hex string with `brz_` prefix
+- **Storage (server)**: Only the SHA-256 hash is stored in the `agentTokenHash` column
+- **Storage (agent)**: The raw token is stored in the config file with `0600` permissions
+- **Validation**: API hashes incoming tokens and compares against stored hash
+- **Same pattern as API keys** (`apiKeyAuth.ts`)
+
+<Aside>
+  The `agentTokenHash` column is nullable to support migration of pre-existing devices. New enrollments always populate the hash.
+</Aside>
+
+## Enrollment Keys
+
+Enrollment keys are created in the dashboard and can be scoped to:
+
+- **Organization** — devices enroll into a specific org
+- **Site** — devices enroll into a specific site within an org
+- **Expiry** — keys expire after a configurable TTL (default: 60 minutes)
+- **Usage limit** — keys can be limited to a number of uses
+
+## Bulk Enrollment
+
+For deploying agents at scale:
+
+```bash
+# Environment variable method (for scripts/GPO/MDM)
+export BREEZE_SERVER=https://breeze.yourdomain.com
+export BREEZE_ENROLLMENT_SECRET=your-secret
+export BREEZE_SITE_ID=site-uuid
+
+breeze-agent enroll
+```
+
+The agent reads from environment variables when flags aren't provided.
+
+## Re-enrollment
+
+If an agent's token is compromised or the device needs to be reassigned:
+
+1. **Revoke the device** in the dashboard (invalidates the token hash)
+2. **Delete the config** on the device: `sudo rm /etc/breeze/config.json`
+3. **Re-enroll**: `sudo breeze-agent enroll --server ... --enrollment-secret ...`

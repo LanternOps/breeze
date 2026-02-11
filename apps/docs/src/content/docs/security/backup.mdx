@@ -1,0 +1,124 @@
+---
+title: Backup & Restore
+description: Backup and restore procedures for Breeze RMM deployments.
+sidebar:
+  order: 3
+  label: "Backup & Restore"
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+## What Gets Backed Up
+
+| Component | Script Flag | Tool | Description |
+|---|---|---|---|
+| Database | `--db` | `pg_dump` / `pg_restore` | All PostgreSQL data |
+| Object storage | `--storage` | `aws s3 sync` or `mc mirror` | Scripts, binaries, reports in MinIO/S3 |
+| Configuration | `--config` | `tar` + `openssl` | `.env`, certs, Docker configs — encrypted at rest |
+
+## Prerequisites
+
+```bash
+# PostgreSQL client tools
+sudo apt-get install postgresql-client-16
+
+# MinIO Client (for --storage)
+curl -O https://dl.min.io/client/mc/release/linux-amd64/mc
+chmod +x mc && sudo mv mc /usr/local/bin/
+
+# openssl (typically pre-installed)
+openssl version
+```
+
+## Environment Variables
+
+Set before running backup scripts:
+
+```bash
+# Required for --db
+export DATABASE_URL="postgresql://breeze:password@localhost:5432/breeze"
+
+# Required for --config
+export BACKUP_ENCRYPTION_KEY="a-strong-passphrase-at-least-32-chars"
+
+# Required for --storage
+export S3_ENDPOINT="http://localhost:9000"
+export S3_BUCKET="breeze"
+export S3_ACCESS_KEY="minioadmin"
+export S3_SECRET_KEY="minioadmin"
+
+# Optional
+export BACKUP_DIR="/var/backups/breeze"       # default: /var/backups/breeze
+export BACKUP_RETENTION_DAYS="30"             # default: 30
+```
+
+<Aside type="danger">
+  Store `BACKUP_ENCRYPTION_KEY` separately from your backups. Without it, config backups cannot be decrypted.
+</Aside>
+
+## Manual Backup
+
+```bash
+# Full backup (all components)
+./scripts/backup.sh --all
+
+# Database only
+./scripts/backup.sh --db
+
+# Object storage only
+./scripts/backup.sh --storage
+
+# Configuration only (encrypted)
+./scripts/backup.sh --config
+```
+
+Backups are stored in `$BACKUP_DIR` with timestamps:
+
+```
+/var/backups/breeze/
+├── 2026-02-11T12:00:00Z/
+│   ├── breeze-db.dump
+│   ├── breeze-storage.tar.gz
+│   └── breeze-config.tar.gz.enc
+```
+
+## Automated Backups
+
+Add a cron job for daily backups:
+
+```bash
+# Edit crontab
+crontab -e
+
+# Daily full backup at 2 AM
+0 2 * * * /path/to/breeze/scripts/backup.sh --all >> /var/log/breeze-backup.log 2>&1
+```
+
+## Restore
+
+```bash
+# Restore database
+./scripts/restore.sh --db /var/backups/breeze/2026-02-11T12:00:00Z/breeze-db.dump
+
+# Restore storage
+./scripts/restore.sh --storage /var/backups/breeze/2026-02-11T12:00:00Z/breeze-storage.tar.gz
+
+# Restore configuration (prompts for encryption key)
+./scripts/restore.sh --config /var/backups/breeze/2026-02-11T12:00:00Z/breeze-config.tar.gz.enc
+```
+
+## Retention
+
+Backups older than `BACKUP_RETENTION_DAYS` (default: 30) are automatically pruned during each backup run.
+
+## Offsite Backups
+
+For disaster recovery, sync backups to a remote location:
+
+```bash
+# Sync to S3/R2
+aws s3 sync /var/backups/breeze s3://breeze-backups/ --delete
+
+# Sync to remote server
+rsync -avz /var/backups/breeze/ backup-server:/backups/breeze/
+```

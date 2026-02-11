@@ -1,0 +1,99 @@
+---
+title: Upgrade Guide
+description: How to upgrade Breeze RMM to a new version.
+sidebar:
+  order: 4
+  label: Upgrade Guide
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## Standard Upgrade
+
+<Steps>
+
+1. **Backup your data**
+
+   ```bash
+   ./scripts/backup.sh --all
+   ```
+
+   See [Backup & Restore](/security/backup/) for details.
+
+2. **Pull the latest code**
+
+   ```bash
+   cd breeze
+   git pull origin main
+   ```
+
+3. **Update dependencies**
+
+   ```bash
+   pnpm install
+   ```
+
+4. **Re-deploy**
+
+   ```bash
+   ./scripts/prod/deploy.sh .env.prod
+   ```
+
+   The deploy script handles:
+   - Running any pending database migrations
+   - Rebuilding Docker images with the latest code
+   - Rolling restart of services
+   - Health check verification
+
+</Steps>
+
+## Checking the Current Version
+
+```bash
+# API version
+curl -s https://breeze.yourdomain.com/health | jq .version
+
+# Agent version
+breeze-agent version
+```
+
+## Database Migrations
+
+Migrations run automatically during deployment. To run them manually:
+
+```bash
+export DATABASE_URL="postgresql://breeze:password@localhost:5432/breeze"
+pnpm db:migrate
+```
+
+<Aside type="caution">
+  Always backup your database before running migrations in production.
+</Aside>
+
+## Rolling Back
+
+If an upgrade causes issues:
+
+```bash
+# Revert to the previous version
+git checkout <previous-tag>
+pnpm install
+./scripts/prod/deploy.sh .env.prod
+```
+
+<Aside type="danger">
+  Database migrations are forward-only. If a migration has already run, reverting code may cause schema mismatches. Restore from backup if needed.
+</Aside>
+
+## Agent Upgrades
+
+Agents can be upgraded remotely from the dashboard or via command:
+
+```bash
+# From the API (sends upgrade command to agent via WebSocket)
+curl -X POST https://breeze.yourdomain.com/api/v1/devices/:id/commands \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"action": "upgrade_agent", "payload": {"version": "0.2.0"}}'
+```
+
+The agent downloads the new binary, verifies its signature, and performs a self-upgrade with automatic rollback on failure.

@@ -1,0 +1,813 @@
+---
+title: API Overview
+description: REST API reference for Breeze RMM.
+sidebar:
+  order: 1
+  label: API Overview
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Base URL
+
+```
+https://breeze.yourdomain.com/api/v1
+```
+
+## Authentication
+
+All API requests (except enrollment, health, SSO, and portal) require a JWT bearer token:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/devices
+```
+
+API keys can also be used via the `X-API-Key` header:
+
+```bash
+curl -H "X-API-Key: brz_..." \
+  https://breeze.yourdomain.com/api/v1/devices
+```
+
+### Login
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@example.com", "password": "..."}'
+
+# Response:
+# { "accessToken": "eyJ...", "refreshToken": "..." }
+```
+
+### Refresh Token
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "..."}'
+```
+
+---
+
+## Devices
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/devices` | List devices (paginated, filterable) |
+| `GET` | `/devices/:id` | Get device details |
+| `POST` | `/devices/:id/commands` | Send command to device |
+| `DELETE` | `/devices/:id` | Decommission device |
+
+## Partners & Organizations
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/orgs/` | List orgs in scope |
+| `GET` | `/orgs/partners` | List all partners (system scope) |
+| `POST` | `/orgs/partners` | Create partner |
+| `GET` | `/orgs/partners/:id` | Get partner details |
+| `PATCH` | `/orgs/partners/:id` | Update partner |
+| `DELETE` | `/orgs/partners/:id` | Delete partner |
+| `GET` | `/orgs/partners/me` | Get current partner |
+| `PATCH` | `/orgs/partners/me` | Update partner settings |
+| `GET` | `/orgs/organizations` | List organizations |
+| `POST` | `/orgs/organizations` | Create organization |
+| `GET` | `/orgs/organizations/:id` | Get organization |
+| `PATCH` | `/orgs/organizations/:id` | Update organization |
+| `DELETE` | `/orgs/organizations/:id` | Delete organization |
+
+## Sites
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/orgs/sites` | List sites |
+| `POST` | `/orgs/sites` | Create site |
+| `GET` | `/orgs/sites/:id` | Get site details |
+| `PATCH` | `/orgs/sites/:id` | Update site |
+| `DELETE` | `/orgs/sites/:id` | Delete site |
+
+## Device Groups
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/groups` | List groups |
+| `GET` | `/groups/:id` | Get group details |
+| `POST` | `/groups` | Create group (static or dynamic) |
+| `PATCH` | `/groups/:id` | Update group |
+| `DELETE` | `/groups/:id` | Delete group |
+| `GET` | `/groups/:id/devices` | List devices in group |
+| `POST` | `/groups/:id/devices` | Add devices to group |
+| `DELETE` | `/groups/:id/devices/:deviceId` | Remove device from group |
+| `POST` | `/groups/:id/preview` | Preview dynamic group membership |
+| `POST` | `/groups/:id/devices/:deviceId/pin` | Pin device to dynamic group |
+| `DELETE` | `/groups/:id/devices/:deviceId/pin` | Unpin device |
+| `GET` | `/groups/:id/membership-log` | Group membership change log |
+
+## Tags
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/tags` | List all tags |
+| `GET` | `/tags/devices` | List device tags |
+
+## Users
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/users/me` | Get current user profile |
+| `PATCH` | `/users/me` | Update current user profile |
+| `GET` | `/users` | List users |
+| `GET` | `/users/roles` | List users with roles |
+| `GET` | `/users/:id` | Get user |
+| `POST` | `/users/invite` | Invite user |
+| `POST` | `/users/resend-invite` | Resend invitation |
+| `PATCH` | `/users/:id` | Update user |
+| `DELETE` | `/users/:id` | Delete user |
+| `POST` | `/users/:id/role` | Assign user role |
+
+## Roles & Permissions
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/roles` | List roles |
+| `POST` | `/roles` | Create role |
+| `GET` | `/roles/:id` | Get role |
+| `PATCH` | `/roles/:id` | Update role |
+| `DELETE` | `/roles/:id` | Delete role |
+| `POST` | `/roles/:id/clone` | Clone role |
+| `GET` | `/roles/:id/users` | List users with role |
+| `GET` | `/roles/:id/effective-permissions` | Get effective permissions |
+| `GET` | `/roles/permissions/available` | List available permissions |
+
+## Access Reviews
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/access-reviews` | List access reviews |
+| `POST` | `/access-reviews` | Create access review |
+| `GET` | `/access-reviews/:id` | Get review details |
+| `PATCH` | `/access-reviews/:id/items/:itemId` | Update review item |
+| `POST` | `/access-reviews/:id/complete` | Complete review |
+
+## API Keys
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api-keys` | List API keys |
+| `POST` | `/api-keys` | Create API key |
+| `GET` | `/api-keys/:id` | Get API key |
+| `PATCH` | `/api-keys/:id` | Update API key |
+| `DELETE` | `/api-keys/:id` | Revoke API key |
+| `POST` | `/api-keys/:id/rotate` | Rotate API key |
+
+## Alerts
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/alerts` | List alerts |
+| `GET` | `/alerts/summary` | Alert summary counts |
+| `GET` | `/alerts/:id` | Get alert details |
+| `POST` | `/alerts/:id/acknowledge` | Acknowledge alert |
+| `POST` | `/alerts/:id/resolve` | Resolve alert |
+| `POST` | `/alerts/:id/suppress` | Suppress alert |
+
+### Alert Rules
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/alerts/rules` | List alert rules |
+| `GET` | `/alerts/rules/:id` | Get alert rule |
+| `POST` | `/alerts/rules` | Create alert rule |
+| `PATCH` | `/alerts/rules/:id` | Update alert rule |
+| `DELETE` | `/alerts/rules/:id` | Delete alert rule |
+| `POST` | `/alerts/rules/:id/test` | Test alert rule |
+
+### Notification Channels
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/alerts/channels` | List notification channels |
+| `POST` | `/alerts/channels` | Create channel (email, Slack, Teams, webhook, PagerDuty, SMS) |
+| `PATCH` | `/alerts/channels/:id` | Update channel |
+| `DELETE` | `/alerts/channels/:id` | Delete channel |
+| `POST` | `/alerts/channels/:id/test` | Test channel |
+
+### Alert Policies
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/alerts/policies` | List alert policies |
+| `POST` | `/alerts/policies` | Create policy |
+| `PATCH` | `/alerts/policies/:id` | Update policy |
+| `DELETE` | `/alerts/policies/:id` | Delete policy |
+
+## Alert Templates & Correlation
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/alert-templates/templates` | List templates |
+| `GET` | `/alert-templates/templates/built-in` | List built-in templates |
+| `POST` | `/alert-templates/templates` | Create template |
+| `PATCH` | `/alert-templates/templates/:id` | Update template |
+| `DELETE` | `/alert-templates/templates/:id` | Delete template |
+| `GET` | `/alert-templates/correlations` | List correlation rules |
+| `GET` | `/alert-templates/correlations/groups` | Get correlation groups |
+| `POST` | `/alert-templates/correlations/analyze` | Analyze correlations |
+
+## Scripts
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/scripts` | List scripts |
+| `GET` | `/scripts/system-library` | List system library scripts |
+| `POST` | `/scripts/import/:id` | Import script from library |
+| `GET` | `/scripts/:id` | Get script |
+| `POST` | `/scripts` | Create script |
+| `PUT` | `/scripts/:id` | Update script |
+| `DELETE` | `/scripts/:id` | Delete script |
+| `POST` | `/scripts/:id/execute` | Execute on device(s) |
+| `GET` | `/scripts/:id/executions` | List executions |
+| `GET` | `/scripts/executions/:id` | Get execution details |
+| `POST` | `/scripts/executions/:id/cancel` | Cancel execution |
+
+## Script Library
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/script-library/categories` | List categories |
+| `POST` | `/script-library/categories` | Create category |
+| `GET` | `/script-library/categories/:id` | Get category |
+| `PATCH` | `/script-library/categories/:id` | Update category |
+| `DELETE` | `/script-library/categories/:id` | Delete category |
+| `GET` | `/script-library/tags` | List script tags |
+| `POST` | `/script-library/tags` | Create tag |
+| `DELETE` | `/script-library/tags/:id` | Delete tag |
+| `GET` | `/script-library/scripts/:id/versions` | List script versions |
+| `POST` | `/script-library/scripts/:id/versions` | Create new version |
+| `POST` | `/script-library/scripts/:id/rollback/:versionId` | Rollback to version |
+| `GET` | `/script-library/templates` | List templates |
+| `POST` | `/script-library/from-template/:templateId` | Create script from template |
+| `GET` | `/script-library/scripts/:id/usage-stats` | Script usage statistics |
+
+## Automations
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/automations` | List automations |
+| `GET` | `/automations/runs/:runId` | Get automation run |
+| `GET` | `/automations/:id` | Get automation |
+| `POST` | `/automations` | Create automation |
+| `PATCH` | `/automations/:id` | Update automation |
+| `DELETE` | `/automations/:id` | Delete automation |
+| `POST` | `/automations/:id/trigger` | Trigger automation |
+| `POST` | `/automations/:id/run` | Run automation immediately |
+| `GET` | `/automations/:id/runs` | List runs for automation |
+
+## Patching
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/patches` | List patches |
+| `POST` | `/patches/scan` | Trigger patch scan |
+| `GET` | `/patches/sources` | List patch sources |
+| `GET` | `/patches/approvals` | List pending approvals |
+| `POST` | `/patches/bulk-approve` | Bulk approve patches |
+| `GET` | `/patches/jobs` | List patch jobs |
+| `GET` | `/patches/compliance` | Compliance overview |
+| `GET` | `/patches/compliance/report` | List compliance reports |
+| `GET` | `/patches/compliance/report/:id` | Get compliance report |
+| `GET` | `/patches/compliance/report/:id/download` | Download report |
+| `POST` | `/patches/:id/rollback` | Rollback a patch |
+| `POST` | `/patches/:id/approve` | Approve patch |
+| `POST` | `/patches/:id/decline` | Decline patch |
+| `POST` | `/patches/:id/defer` | Defer patch |
+| `GET` | `/patches/:id` | Get patch details |
+
+### Patch Policies
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/patch-policies` | List patch policies |
+| `POST` | `/patch-policies` | Create policy |
+| `GET` | `/patch-policies/:id` | Get policy |
+| `PATCH` | `/patch-policies/:id` | Update policy |
+| `DELETE` | `/patch-policies/:id` | Delete policy |
+
+## Security
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/security/status` | Org security status overview |
+| `GET` | `/security/status/:deviceId` | Device security status |
+| `GET` | `/security/threats` | List threats across org |
+| `GET` | `/security/threats/:deviceId` | List threats for device |
+| `POST` | `/security/threats/:id/quarantine` | Quarantine threat |
+| `POST` | `/security/threats/:id/remove` | Remove threat |
+| `POST` | `/security/threats/:id/restore` | Restore quarantined file |
+| `POST` | `/security/scan/:deviceId` | Trigger security scan |
+| `GET` | `/security/scans/:deviceId` | List scan history |
+| `GET` | `/security/policies` | List security policies |
+| `POST` | `/security/policies` | Create security policy |
+| `PUT` | `/security/policies/:id` | Update security policy |
+| `GET` | `/security/dashboard` | Security dashboard data |
+| `GET` | `/security/score-breakdown` | Security score breakdown |
+| `GET` | `/security/posture` | Org security posture |
+| `GET` | `/security/posture/:deviceId` | Device security posture |
+| `GET` | `/security/trends` | Security trends over time |
+| `GET` | `/security/firewall` | Firewall status across org |
+| `GET` | `/security/encryption` | Encryption status across org |
+| `GET` | `/security/password-policy` | Password policy compliance |
+| `GET` | `/security/admin-audit` | Admin action audit |
+| `GET` | `/security/recommendations` | Security recommendations |
+| `POST` | `/security/recommendations/:id/complete` | Mark recommendation complete |
+| `POST` | `/security/recommendations/:id/dismiss` | Dismiss recommendation |
+
+## Software Inventory
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/software/catalog` | List software catalog |
+| `POST` | `/software/catalog` | Add to catalog |
+| `GET` | `/software/catalog/search` | Search catalog |
+| `GET` | `/software/catalog/:id/versions` | List versions |
+| `POST` | `/software/catalog/:id/versions` | Add version |
+| `GET` | `/software/catalog/:id` | Get software details |
+| `PATCH` | `/software/catalog/:id` | Update software |
+| `DELETE` | `/software/catalog/:id` | Remove from catalog |
+| `GET` | `/software/deployments` | List deployments |
+| `POST` | `/software/deployments` | Create deployment |
+| `GET` | `/software/deployments/:id` | Get deployment |
+| `POST` | `/software/deployments/:id/cancel` | Cancel deployment |
+| `GET` | `/software/deployments/:id/results` | Get results |
+| `GET` | `/software/inventory` | Full software inventory |
+| `GET` | `/software/inventory/:deviceId` | Device software |
+| `POST` | `/software/inventory/:deviceId/:softwareId/uninstall` | Uninstall software |
+
+## Monitors
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/monitors` | List monitors |
+| `POST` | `/monitors` | Create monitor |
+| `GET` | `/monitors/dashboard` | Monitor dashboard |
+| `GET` | `/monitors/:id` | Get monitor |
+| `PATCH` | `/monitors/:id` | Update monitor |
+| `DELETE` | `/monitors/:id` | Delete monitor |
+| `POST` | `/monitors/:id/check` | Run check now |
+| `POST` | `/monitors/:id/test` | Test monitor config |
+| `GET` | `/monitors/:id/results` | Check result history |
+| `GET` | `/monitors/alerts` | List monitor alerts |
+| `GET` | `/monitors/:monitorId/alerts` | Monitor-specific alerts |
+| `PATCH` | `/monitors/alerts/:id` | Update monitor alert |
+| `DELETE` | `/monitors/alerts/:id` | Delete monitor alert |
+
+## Network Discovery
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/discovery/profiles` | List scan profiles |
+| `POST` | `/discovery/profiles` | Create profile |
+| `GET` | `/discovery/profiles/:id` | Get profile |
+| `PATCH` | `/discovery/profiles/:id` | Update profile |
+| `DELETE` | `/discovery/profiles/:id` | Delete profile |
+| `POST` | `/discovery/scan` | Start discovery scan |
+| `GET` | `/discovery/jobs` | List scan jobs |
+| `GET` | `/discovery/jobs/:id` | Get job status |
+| `POST` | `/discovery/jobs/:id/cancel` | Cancel scan |
+| `GET` | `/discovery/assets` | List discovered assets |
+| `POST` | `/discovery/assets/:id/link` | Link asset to device |
+| `POST` | `/discovery/assets/:id/ignore` | Ignore asset |
+| `DELETE` | `/discovery/assets/:id` | Delete asset |
+| `POST` | `/discovery/assets/:id/enable-monitoring` | Enable monitoring |
+| `POST` | `/discovery/assets/:id/disable-monitoring` | Disable monitoring |
+| `GET` | `/discovery/assets/:id/monitoring` | Get monitoring config |
+| `PATCH` | `/discovery/assets/:id/monitoring` | Update monitoring config |
+| `GET` | `/discovery/topology` | Network topology map |
+
+## SNMP
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/snmp/devices` | List SNMP devices |
+| `POST` | `/snmp/devices` | Add SNMP device |
+| `GET` | `/snmp/devices/:id` | Get device |
+| `PATCH` | `/snmp/devices/:id` | Update device |
+| `DELETE` | `/snmp/devices/:id` | Delete device |
+| `POST` | `/snmp/devices/:id/poll` | Poll device now |
+| `POST` | `/snmp/devices/:id/test` | Test SNMP connectivity |
+| `GET` | `/snmp/templates` | List SNMP templates |
+| `POST` | `/snmp/templates` | Create template |
+| `GET` | `/snmp/templates/:id` | Get template |
+| `PATCH` | `/snmp/templates/:id` | Update template |
+| `DELETE` | `/snmp/templates/:id` | Delete template |
+| `GET` | `/snmp/oids/browse` | Browse OID tree |
+| `POST` | `/snmp/oids/validate` | Validate OIDs |
+| `GET` | `/snmp/metrics/:deviceId` | Get device metrics |
+| `GET` | `/snmp/metrics/:deviceId/history` | Metrics history |
+| `GET` | `/snmp/metrics/:deviceId/:oid` | Get specific OID metric |
+| `GET` | `/snmp/thresholds/:deviceId` | List thresholds |
+| `POST` | `/snmp/thresholds` | Create threshold |
+| `PATCH` | `/snmp/thresholds/:id` | Update threshold |
+| `DELETE` | `/snmp/thresholds/:id` | Delete threshold |
+| `GET` | `/snmp/dashboard` | SNMP dashboard |
+
+## Remote Access
+
+| Method | Path | Description |
+|---|---|---|
+| `DELETE` | `/remote/sessions/stale` | Clean stale sessions |
+| `GET` | `/remote/sessions` | List active sessions |
+| `POST` | `/remote/sessions` | Create remote session |
+| `GET` | `/remote/sessions/history` | Session history |
+| `GET` | `/remote/sessions/:id` | Get session |
+| `POST` | `/remote/sessions/:id/ws-ticket` | Get WebSocket ticket |
+| `POST` | `/remote/sessions/:id/desktop-connect-code` | Get desktop connect code |
+| `GET` | `/remote/ice-servers` | Get ICE/TURN server config |
+| `POST` | `/remote/sessions/:id/offer` | WebRTC SDP offer |
+| `POST` | `/remote/sessions/:id/answer` | WebRTC SDP answer |
+| `POST` | `/remote/sessions/:id/ice` | ICE candidate exchange |
+| `POST` | `/remote/sessions/:id/end` | End session |
+
+### File Transfers
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/remote/transfers` | List transfers |
+| `POST` | `/remote/transfers` | Initiate transfer |
+| `GET` | `/remote/transfers/:id` | Get transfer status |
+| `POST` | `/remote/transfers/:id/cancel` | Cancel transfer |
+| `POST` | `/remote/transfers/:id/chunks` | Upload chunk |
+| `GET` | `/remote/transfers/:id/download` | Download file |
+| `GET` | `/remote/transfers/:id/progress` | Transfer progress |
+
+## System Tools
+
+Device-scoped management commands exposed as REST endpoints.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/system-tools/devices/:deviceId/processes` | List processes |
+| `GET` | `/system-tools/devices/:deviceId/processes/:pid` | Get process details |
+| `POST` | `/system-tools/devices/:deviceId/processes/:pid/kill` | Kill process |
+| `GET` | `/system-tools/devices/:deviceId/services` | List services |
+| `GET` | `/system-tools/devices/:deviceId/services/:name` | Get service |
+| `POST` | `/system-tools/devices/:deviceId/services/:name/start` | Start service |
+| `POST` | `/system-tools/devices/:deviceId/services/:name/stop` | Stop service |
+| `POST` | `/system-tools/devices/:deviceId/services/:name/restart` | Restart service |
+| `GET` | `/system-tools/devices/:deviceId/registry/keys` | List registry keys |
+| `GET` | `/system-tools/devices/:deviceId/registry/values` | List registry values |
+| `GET` | `/system-tools/devices/:deviceId/registry/value` | Get registry value |
+| `PUT` | `/system-tools/devices/:deviceId/registry/value` | Set registry value |
+| `DELETE` | `/system-tools/devices/:deviceId/registry/value` | Delete registry value |
+| `POST` | `/system-tools/devices/:deviceId/registry/key` | Create registry key |
+| `DELETE` | `/system-tools/devices/:deviceId/registry/key` | Delete registry key |
+| `GET` | `/system-tools/devices/:deviceId/eventlogs` | List event logs |
+| `GET` | `/system-tools/devices/:deviceId/eventlogs/:name` | Get event log |
+| `GET` | `/system-tools/devices/:deviceId/eventlogs/:name/events` | Query events |
+| `GET` | `/system-tools/devices/:deviceId/eventlogs/:name/events/:recordId` | Get event |
+| `GET` | `/system-tools/devices/:deviceId/tasks` | List scheduled tasks |
+| `GET` | `/system-tools/devices/:deviceId/tasks/:path` | Get task |
+| `GET` | `/system-tools/devices/:deviceId/tasks/:path/history` | Task history |
+| `POST` | `/system-tools/devices/:deviceId/tasks/:path/run` | Run task |
+| `POST` | `/system-tools/devices/:deviceId/tasks/:path/enable` | Enable task |
+| `POST` | `/system-tools/devices/:deviceId/tasks/:path/disable` | Disable task |
+| `GET` | `/system-tools/devices/:deviceId/files` | List/read files |
+| `GET` | `/system-tools/devices/:deviceId/files/download` | Download file |
+| `POST` | `/system-tools/devices/:deviceId/files/upload` | Upload file |
+
+## Maintenance Windows
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/maintenance/windows` | List maintenance windows |
+| `POST` | `/maintenance/windows` | Create window |
+| `GET` | `/maintenance/windows/:id` | Get window |
+| `PATCH` | `/maintenance/windows/:id` | Update window |
+| `DELETE` | `/maintenance/windows/:id` | Delete window |
+| `POST` | `/maintenance/windows/:id/cancel` | Cancel window |
+| `GET` | `/maintenance/windows/:id/occurrences` | List occurrences |
+| `GET` | `/maintenance/occurrences` | List all occurrences |
+| `GET` | `/maintenance/occurrences/:id` | Get occurrence |
+| `POST` | `/maintenance/occurrences/:id/start` | Start manually |
+| `POST` | `/maintenance/occurrences/:id/end` | End manually |
+| `GET` | `/maintenance/active` | List currently active windows |
+
+## Policy Management
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/policies` | List policies |
+| `GET` | `/policies/compliance/stats` | Compliance statistics |
+| `GET` | `/policies/compliance/summary` | Compliance summary |
+| `GET` | `/policies/:id` | Get policy |
+| `POST` | `/policies` | Create policy |
+| `PUT` | `/policies/:id` | Replace policy |
+| `PATCH` | `/policies/:id` | Update policy |
+| `DELETE` | `/policies/:id` | Delete policy |
+| `POST` | `/policies/:id/activate` | Activate policy |
+| `POST` | `/policies/:id/deactivate` | Deactivate policy |
+| `POST` | `/policies/:id/evaluate` | Evaluate policy |
+| `GET` | `/policies/:id/compliance` | Policy compliance details |
+| `POST` | `/policies/:id/remediate` | Remediate non-compliant devices |
+
+## Deployments
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/deployments` | List deployments |
+| `POST` | `/deployments` | Create deployment |
+| `GET` | `/deployments/:id` | Get deployment |
+| `PATCH` | `/deployments/:id` | Update deployment |
+| `DELETE` | `/deployments/:id` | Delete deployment |
+| `POST` | `/deployments/:id/initialize` | Initialize deployment |
+| `POST` | `/deployments/:id/start` | Start deployment |
+| `POST` | `/deployments/:id/pause` | Pause deployment |
+| `POST` | `/deployments/:id/resume` | Resume deployment |
+| `POST` | `/deployments/:id/cancel` | Cancel deployment |
+| `GET` | `/deployments/:id/devices` | List deployment devices |
+| `POST` | `/deployments/:id/devices/:deviceId/retry` | Retry failed device |
+
+## Reports
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/reports` | List report definitions |
+| `GET` | `/reports/:id` | Get report definition |
+| `POST` | `/reports` | Create report definition |
+| `PUT` | `/reports/:id` | Update report |
+| `DELETE` | `/reports/:id` | Delete report |
+| `POST` | `/reports/:id/generate` | Generate report |
+| `POST` | `/reports/generate` | Generate ad-hoc report |
+| `GET` | `/reports/runs` | List report runs |
+| `GET` | `/reports/runs/:id` | Get report run |
+| `GET` | `/reports/data/device-inventory` | Device inventory data |
+| `GET` | `/reports/data/software-inventory` | Software inventory data |
+| `GET` | `/reports/data/alerts-summary` | Alerts summary data |
+| `GET` | `/reports/data/compliance` | Compliance data |
+| `GET` | `/reports/data/metrics` | Metrics data |
+
+## Analytics
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/analytics/query` | Run analytics query |
+| `GET` | `/analytics/dashboards` | List dashboards |
+| `POST` | `/analytics/dashboards` | Create dashboard |
+| `GET` | `/analytics/dashboards/:id` | Get dashboard |
+| `PATCH` | `/analytics/dashboards/:id` | Update dashboard |
+| `DELETE` | `/analytics/dashboards/:id` | Delete dashboard |
+| `POST` | `/analytics/dashboards/:id/widgets` | Add widget |
+| `PATCH` | `/analytics/widgets/:id` | Update widget |
+| `DELETE` | `/analytics/widgets/:id` | Delete widget |
+| `GET` | `/analytics/capacity` | Capacity planning data |
+| `GET` | `/analytics/sla` | SLA compliance overview |
+| `POST` | `/analytics/sla` | Create SLA |
+| `GET` | `/analytics/sla/:id/compliance` | SLA compliance details |
+| `GET` | `/analytics/executive-summary` | Executive summary |
+| `GET` | `/analytics/os-distribution` | OS distribution |
+
+## Audit Logs
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/audit` | List audit events |
+| `GET` | `/audit/logs` | List audit logs (paginated) |
+| `GET` | `/audit/logs/:id` | Get log entry |
+| `GET` | `/audit/search` | Search audit logs |
+| `GET` | `/audit/export` | Export as CSV/JSON |
+| `POST` | `/audit/export` | Export with filters |
+| `GET` | `/audit/reports/user-activity` | User activity report |
+| `GET` | `/audit/reports/security-events` | Security events report |
+| `GET` | `/audit/reports/compliance` | Compliance report |
+| `GET` | `/audit/stats` | Audit statistics |
+
+## Notifications
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/notifications` | List notifications |
+| `GET` | `/notifications/unread-count` | Unread count |
+| `PATCH` | `/notifications/:id` | Mark as read |
+| `DELETE` | `/notifications/:id` | Delete notification |
+| `DELETE` | `/notifications` | Clear all notifications |
+
+## Webhooks
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/webhooks` | List webhooks |
+| `POST` | `/webhooks` | Create webhook |
+| `GET` | `/webhooks/:id` | Get webhook |
+| `PATCH` | `/webhooks/:id` | Update webhook |
+| `DELETE` | `/webhooks/:id` | Delete webhook |
+| `GET` | `/webhooks/:id/deliveries` | Delivery log |
+| `POST` | `/webhooks/:id/test` | Test webhook |
+| `POST` | `/webhooks/:id/retry/:deliveryId` | Retry delivery |
+
+## Plugins
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/plugins/catalog` | List available plugins |
+| `GET` | `/plugins/catalog/:slug` | Get plugin details |
+| `GET` | `/plugins/installations` | List installations |
+| `POST` | `/plugins/installations` | Install plugin |
+| `GET` | `/plugins/installations/:id` | Get installation |
+| `PATCH` | `/plugins/installations/:id` | Update config |
+| `DELETE` | `/plugins/installations/:id` | Uninstall |
+| `POST` | `/plugins/installations/:id/enable` | Enable |
+| `POST` | `/plugins/installations/:id/disable` | Disable |
+| `GET` | `/plugins/installations/:id/logs` | Plugin logs |
+
+## Custom Fields
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/custom-fields` | List custom fields |
+| `GET` | `/custom-fields/:id` | Get field |
+| `POST` | `/custom-fields` | Create field |
+| `PATCH` | `/custom-fields/:id` | Update field |
+| `DELETE` | `/custom-fields/:id` | Delete field |
+
+## Saved Filters
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/filters/preview` | Preview filter results |
+| `GET` | `/filters` | List saved filters |
+| `POST` | `/filters` | Create filter |
+| `GET` | `/filters/:id` | Get filter |
+| `PATCH` | `/filters/:id` | Update filter |
+| `DELETE` | `/filters/:id` | Delete filter |
+| `POST` | `/filters/:id/preview` | Preview saved filter |
+
+## PSA Integrations
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/psa/connections` | List PSA connections |
+| `POST` | `/psa/connections` | Create connection |
+| `GET` | `/psa/connections/:id` | Get connection |
+| `PATCH` | `/psa/connections/:id` | Update connection |
+| `DELETE` | `/psa/connections/:id` | Delete connection |
+| `POST` | `/psa/connections/:id/test` | Test connection |
+| `POST` | `/psa/connections/:id/sync` | Trigger sync |
+| `GET` | `/psa/connections/:id/status` | Sync status |
+| `GET` | `/psa/tickets` | List tickets |
+| `GET` | `/psa/connections/:id/tickets` | Tickets for connection |
+
+## SSO
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/sso/presets` | JWT | List SSO presets |
+| `GET` | `/sso/providers` | JWT | List SSO providers |
+| `GET` | `/sso/providers/:id` | JWT | Get provider |
+| `POST` | `/sso/providers` | JWT | Create provider |
+| `PATCH` | `/sso/providers/:id` | JWT | Update provider |
+| `DELETE` | `/sso/providers/:id` | JWT | Delete provider |
+| `GET` | `/sso/login/:orgId` | None | Initiate SSO login |
+| `GET` | `/sso/callback` | None | SSO callback |
+| `POST` | `/sso/exchange` | None | Token exchange |
+| `GET` | `/sso/check/:orgId` | None | Check SSO availability |
+
+## Enrollment Keys
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/enrollment-keys` | List enrollment keys |
+| `POST` | `/enrollment-keys` | Create enrollment key |
+| `DELETE` | `/enrollment-keys/:id` | Delete enrollment key |
+| `POST` | `/enrollment-keys/:id/rotate` | Rotate key |
+| `GET` | `/enrollment-keys/:id` | Get key details |
+
+## Agent Management
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/agents/enroll` | Enrollment secret | Enroll new device |
+| `GET` | `/agents/download/:os/:arch` | None | Download agent binary |
+| `GET` | `/agents/install.sh` | None | One-line install script |
+
+### Agent Versions
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/agent-versions/latest` | Get latest agent version |
+| `GET` | `/agent-versions/:version/download` | Download specific version |
+| `GET` | `/agent-versions` | List all versions |
+
+## AI Assistant
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/ai/sessions` | Create chat session |
+| `GET` | `/ai/sessions` | List sessions |
+| `GET` | `/ai/sessions/search` | Search sessions |
+| `GET` | `/ai/sessions/:id` | Get session |
+| `DELETE` | `/ai/sessions/:id` | Delete session |
+| `POST` | `/ai/sessions/:id/messages` | Send message (streaming) |
+| `POST` | `/ai/sessions/:id/interrupt` | Interrupt response |
+| `POST` | `/ai/sessions/:id/approve/:executionId` | Approve tool execution |
+| `GET` | `/ai/usage` | AI usage stats |
+| `GET` | `/ai/budget` | AI budget info |
+| `GET` | `/ai/admin/sessions` | Admin: list all sessions |
+| `GET` | `/ai/admin/security-events` | Admin: security events |
+
+## MCP Server
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/mcp/sse` | API key | SSE transport for MCP |
+| `POST` | `/mcp/message` | API key | Send MCP message |
+
+## Mobile API
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/mobile/notifications/register` | Register push token |
+| `POST` | `/mobile/notifications/unregister` | Unregister push token |
+| `GET` | `/mobile/devices` | List devices (mobile-optimized) |
+| `GET` | `/mobile/devices/:id/settings` | Device settings |
+| `GET` | `/mobile/devices/:id` | Device details |
+| `GET` | `/mobile/alerts/inbox` | Alert inbox |
+| `POST` | `/mobile/alerts/:id/acknowledge` | Acknowledge alert |
+| `POST` | `/mobile/alerts/:id/resolve` | Resolve alert |
+| `POST` | `/mobile/devices/:id/actions` | Send device action |
+| `GET` | `/mobile/summary` | Dashboard summary |
+
+## Client Portal
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/portal/branding/:domain` | None | Get portal branding |
+| `GET` | `/portal/branding` | None | Default branding |
+| `POST` | `/portal/auth/login` | None | Portal login |
+| `POST` | `/portal/auth/forgot-password` | None | Forgot password |
+| `POST` | `/portal/auth/reset-password` | None | Reset password |
+| `POST` | `/portal/auth/logout` | Portal session | Logout |
+| `GET` | `/portal/devices` | Portal session | List devices |
+| `GET` | `/portal/tickets` | Portal session | List tickets |
+| `POST` | `/portal/tickets` | Portal session | Create ticket |
+| `GET` | `/portal/tickets/:id` | Portal session | Get ticket |
+| `POST` | `/portal/tickets/:id/comments` | Portal session | Add comment |
+| `GET` | `/portal/assets` | Portal session | List assets |
+| `POST` | `/portal/assets/:id/checkout` | Portal session | Check out asset |
+| `POST` | `/portal/assets/:id/checkin` | Portal session | Check in asset |
+| `GET` | `/portal/profile` | Portal session | Get profile |
+| `PATCH` | `/portal/profile` | Portal session | Update profile |
+| `POST` | `/portal/profile/password` | Portal session | Change password |
+
+## Partner Dashboard
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/partner/dashboard` | Partner dashboard data |
+
+## Search
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/search` | Global search across devices, users, orgs, scripts, alerts |
+
+---
+
+## Pagination
+
+List endpoints support cursor-based pagination:
+
+```bash
+curl "https://breeze.yourdomain.com/api/v1/devices?limit=50&cursor=eyJ..."
+```
+
+Response:
+
+```json
+{
+  "data": [...],
+  "pagination": {
+    "hasMore": true,
+    "cursor": "eyJ..."
+  }
+}
+```
+
+## Error Format
+
+All errors follow a consistent format:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid email address",
+    "details": [...]
+  }
+}
+```
+
+<Aside>
+  Enable the interactive Swagger UI by setting `ENABLE_API_DOCS=true` and `ENABLE_API_DOCS_UI=true` in your environment.
+</Aside>
