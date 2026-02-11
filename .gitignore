@@ -13,6 +13,7 @@ dist/
 .env.*.local
 .env.dev
 .env.test
+.env.prod
 
 # IDE
 .idea/
@@ -68,3 +69,10 @@ CLAUDE.md
 *.png
 !docs/assets/breeze-logo.png
 .worktrees/
+
+# Monitoring secrets (keep .gitkeep only)
+monitoring/secrets/*
+!monitoring/secrets/.gitkeep
+
+# Backups
+backups/

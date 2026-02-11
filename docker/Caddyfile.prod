@@ -1,0 +1,23 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$BREEZE_DOMAIN} {
+  encode zstd gzip
+
+  @api path /api/* /health /ready /metrics/*
+  handle @api {
+    reverse_proxy api:3001
+  }
+
+  handle {
+    reverse_proxy web:4321
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+}

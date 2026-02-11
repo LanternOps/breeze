@@ -1,68 +1,348 @@
-version: '3.8'
+x-security-defaults: &security_defaults
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
 
 services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: breeze-caddy
+    restart: unless-stopped
+    init: true
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      BREEZE_DOMAIN: ${BREEZE_DOMAIN:?BREEZE_DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    volumes:
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'caddy', 'version']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    cpus: '${CADDY_CPUS:-0.5}'
+    mem_limit: ${CADDY_MEM_LIMIT:-256m}
+    pids_limit: 128
+    cap_add:
+      - NET_BIND_SERVICE
+    <<: *security_defaults
+
   api:
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
     container_name: breeze-api
     restart: unless-stopped
+    init: true
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://breeze:${DB_PASSWORD}@postgres:5432/breeze
-      REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET}
       API_PORT: 3001
-    ports:
-      - "3001:3001"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-breeze}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?AGENT_ENROLLMENT_SECRET is required}
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:?METRICS_SCRAPE_TOKEN is required}
+      CORS_ALLOWED_ORIGINS: https://${BREEZE_DOMAIN}
+      PUBLIC_APP_URL: https://${BREEZE_DOMAIN}
+      DASHBOARD_URL: https://${BREEZE_DOMAIN}
+      TRANSFER_STORAGE_PATH: /data/transfers
+      PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_JSON: ${LOG_JSON:-true}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-v0.2.0}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+    volumes:
+      - api_data:/data
+      - ../monitoring/secrets/metrics_scrape_token:/run/secrets/metrics_scrape_token:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:3001/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cpus: '${API_CPUS:-1.5}'
+    mem_limit: ${API_MEM_LIMIT:-1536m}
+    pids_limit: 512
+    <<: *security_defaults
 
   web:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile
+      args:
+        NODE_ENV: production
+        PUBLIC_API_URL: ${PUBLIC_API_URL:?PUBLIC_API_URL is required}
     container_name: breeze-web
     restart: unless-stopped
+    init: true
     environment:
       NODE_ENV: production
-      API_URL: http://api:3001
-    ports:
-      - "4321:4321"
+      HOST: 0.0.0.0
+      PORT: 4321
+      PUBLIC_API_URL: ${PUBLIC_API_URL:?PUBLIC_API_URL is required}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:4321/']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cpus: '${WEB_CPUS:-1.0}'
+    mem_limit: ${WEB_MEM_LIMIT:-768m}
+    pids_limit: 256
+    <<: *security_defaults
 
   postgres:
     image: postgres:16-alpine
     container_name: breeze-postgres
     restart: unless-stopped
+    init: true
     environment:
-      POSTGRES_USER: breeze
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: breeze
+      POSTGRES_USER: ${POSTGRES_USER:-breeze}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-breeze}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U breeze"]
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-breeze} -d ${POSTGRES_DB:-breeze}']
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
+    cpus: '${POSTGRES_CPUS:-1.0}'
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1024m}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
 
   redis:
     image: redis:7-alpine
     container_name: breeze-redis
     restart: unless-stopped
+    init: true
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-512mb} --maxmemory-policy allkeys-lru
+    ports:
+      - '127.0.0.1:${REDIS_PORT:-6379}:6379'
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
+    cpus: '${REDIS_CPUS:-0.5}'
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: breeze-prometheus
+    restart: unless-stopped
+    init: true
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - '127.0.0.1:${PROMETHEUS_PORT:-9090}:9090'
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/rules:/etc/prometheus/rules:ro
+      - ../monitoring/secrets/metrics_scrape_token:/run/secrets/metrics_scrape_token:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      api:
+        condition: service_healthy
+      alertmanager:
+        condition: service_started
+      redis-exporter:
+        condition: service_started
+      postgres-exporter:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:9090/-/healthy']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    cpus: '${PROMETHEUS_CPUS:-1.0}'
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-768m}
+    pids_limit: 256
+    <<: *security_defaults
+
+  grafana:
+    image: grafana/grafana:10.4.5
+    container_name: breeze-grafana
+    restart: unless-stopped
+    init: true
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_INSTALL_PLUGINS: redis-datasource
+    ports:
+      - '127.0.0.1:${GRAFANA_PORT:-3000}:3000'
+    volumes:
+      - ../monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ../monitoring/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards/breeze:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:3000/api/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    cpus: '${GRAFANA_CPUS:-0.75}'
+    mem_limit: ${GRAFANA_MEM_LIMIT:-512m}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: breeze-alertmanager
+    restart: unless-stopped
+    init: true
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    ports:
+      - '127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093'
+    volumes:
+      - ../monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:9093/-/healthy']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    cpus: '${ALERTMANAGER_CPUS:-0.5}'
+    mem_limit: ${ALERTMANAGER_MEM_LIMIT:-256m}
+    pids_limit: 128
+    <<: *security_defaults
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.61.0
+    container_name: breeze-redis-exporter
+    restart: unless-stopped
+    init: true
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    cpus: '${REDIS_EXPORTER_CPUS:-0.25}'
+    mem_limit: ${REDIS_EXPORTER_MEM_LIMIT:-128m}
+    pids_limit: 128
+    <<: *security_defaults
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: breeze-postgres-exporter
+    restart: unless-stopped
+    init: true
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-breeze}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cpus: '${POSTGRES_EXPORTER_CPUS:-0.25}'
+    mem_limit: ${POSTGRES_EXPORTER_MEM_LIMIT:-128m}
+    pids_limit: 128
+    <<: *security_defaults
+
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: breeze-loki
+    restart: unless-stopped
+    init: true
+    command: -config.file=/etc/loki/config.yml
+    ports:
+      - '127.0.0.1:${LOKI_PORT:-3100}:3100'
+    volumes:
+      - ../monitoring/loki-config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:3100/ready']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    cpus: '${LOKI_CPUS:-0.5}'
+    mem_limit: ${LOKI_MEM_LIMIT:-512m}
+    pids_limit: 256
+    <<: *security_defaults
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: breeze-promtail
+    restart: unless-stopped
+    init: true
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ../monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_positions:/var/lib/promtail
+    depends_on:
+      loki:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${PROMTAIL_PORT:-9080}:9080'
+    cpus: '${PROMTAIL_CPUS:-0.25}'
+    mem_limit: ${PROMTAIL_MEM_LIMIT:-256m}
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
+  caddy_data:
+  caddy_config:
+  api_data:
   postgres_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+  loki_data:
+  promtail_positions:
