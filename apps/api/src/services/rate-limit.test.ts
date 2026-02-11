@@ -25,7 +25,7 @@ describe('rate-limit service', () => {
 
     mockRedis = {
       multi: vi.fn(() => mockMulti)
-    };
+    } as unknown as Partial<Redis>;
   });
 
   describe('rateLimiter', () => {
@@ -97,12 +97,12 @@ describe('rate-limit service', () => {
       expect(result.resetAt.getTime()).toBe(expectedResetAt);
     });
 
-    it('should throw error when transaction is aborted', async () => {
+    it('should deny when transaction is aborted (fail closed)', async () => {
       mockMulti.exec.mockResolvedValue(null);
 
-      await expect(
-        rateLimiter(mockRedis as Redis, 'test-key', 5, 60)
-      ).rejects.toThrow('Rate limiter transaction aborted');
+      const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60);
+      expect(result.allowed).toBe(false);
+      expect(result.remaining).toBe(0);
     });
 
     it('should handle empty zrange result', async () => {

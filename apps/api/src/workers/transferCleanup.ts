@@ -38,8 +38,8 @@ async function runCleanup() {
       try {
         deleteTransfer(transfer.id);
         cleaned++;
-      } catch {
-        // Ignore individual cleanup errors
+      } catch (err) {
+        console.error('[transfer-cleanup] Failed to delete transfer', transfer.id, err);
       }
     }
 

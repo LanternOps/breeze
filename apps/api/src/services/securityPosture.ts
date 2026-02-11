@@ -51,7 +51,7 @@ export interface SecurityPostureItem {
   deviceId: string;
   deviceName: string;
   osType: 'windows' | 'macos' | 'linux';
-  deviceStatus: 'online' | 'offline' | 'maintenance' | 'decommissioned';
+  deviceStatus: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
   capturedAt: string;
   overallScore: number;
   riskLevel: SecurityRiskLevel;
@@ -92,7 +92,7 @@ type DeviceInput = {
   deviceId: string;
   deviceName: string;
   osType: 'windows' | 'macos' | 'linux';
-  deviceStatus: 'online' | 'offline' | 'maintenance' | 'decommissioned';
+  deviceStatus: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
   osVersion: string;
   security: {
     realTimeProtection: boolean | null;
@@ -826,7 +826,7 @@ function hydratePostureRows(rows: LatestPostureRow[], deviceRows: Array<{
   orgId: string;
   hostname: string;
   osType: 'windows' | 'macos' | 'linux';
-  status: 'online' | 'offline' | 'maintenance' | 'decommissioned';
+  status: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
 }>): SecurityPostureItem[] {
   const deviceMap = new Map(deviceRows.map((row) => [row.id, row]));
   return rows

@@ -8,7 +8,8 @@ describe('jwt service', () => {
     roleId: 'role-123',
     orgId: 'org-123',
     partnerId: 'partner-123',
-    scope: 'organization' as const
+    scope: 'organization' as const,
+    mfa: false
   };
 
   describe('createAccessToken', () => {

@@ -35,7 +35,58 @@ import { writeAuditEvent, type RequestLike } from './auditEvents';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
+const SDK_QUERY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes max for entire SDK query
 const MCP_PREFIX = 'mcp__breeze__';
+
+/**
+ * Async queue that decouples event producers (SDK processing loop, postToolUse
+ * callback, canUseTool callback) from the SSE consumer (generator yield).
+ *
+ * Fixes the race condition where tool_result events were stuck in a plain array
+ * that only drained when the SDK iterator yielded the next message — which may
+ * never happen if the Anthropic API call after tool execution hangs.
+ */
+class AsyncEventQueue<T> {
+  private buffer: T[] = [];
+  private waiting: ((result: IteratorResult<T>) => void) | null = null;
+  private closed = false;
+
+  push(item: T): void {
+    if (this.closed) return;
+    if (this.waiting) {
+      const resolve = this.waiting;
+      this.waiting = null;
+      resolve({ value: item, done: false });
+    } else {
+      this.buffer.push(item);
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.waiting) {
+      const resolve = this.waiting;
+      this.waiting = null;
+      resolve({ value: undefined as unknown as T, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: (): Promise<IteratorResult<T>> => {
+        if (this.buffer.length > 0) {
+          return Promise.resolve({ value: this.buffer.shift()!, done: false });
+        }
+        if (this.closed) {
+          return Promise.resolve({ value: undefined as unknown as T, done: true });
+        }
+        return new Promise((resolve) => {
+          this.waiting = resolve;
+        });
+      }
+    };
+  }
+}
 
 /**
  * Send a message to the AI via the Claude Agent SDK and stream the response.
@@ -160,8 +211,12 @@ export async function* sendMessageSdk(
   // Populated when canUseTool allows a tool (guaranteed 1:1 with postToolUse calls).
   const toolUseIdQueue: string[] = [];
 
-  // Pending events queue (for events generated inside canUseTool/hooks)
-  const pendingEvents: AiStreamEvent[] = [];
+  // Shared async event queue — replaces the old pendingEvents array.
+  // Both the SDK processing loop and the postToolUse/canUseTool callbacks push
+  // events here; the generator yields from it. This ensures tool_result and
+  // approval_required events reach the frontend immediately, even if the SDK
+  // iterator is blocked waiting for the next Anthropic API response.
+  const eventQueue = new AsyncEventQueue<AiStreamEvent>();
 
   // ===== postToolUse callback =====
   // Fires after every MCP tool handler returns (success or error).
@@ -224,8 +279,10 @@ export async function* sendMessageSdk(
       }
     }
 
-    // 3. Emit tool_result SSE event
-    pendingEvents.push({
+    // 3. Emit tool_result SSE event — pushed directly to the async queue so
+    //    the frontend receives it immediately, without waiting for the SDK
+    //    iterator to yield the next message.
+    eventQueue.push({
       type: 'tool_result',
       toolUseId: toolUseId ?? '',
       output: parsedOutput,
@@ -262,8 +319,9 @@ export async function* sendMessageSdk(
     const remaining = await getRemainingBudgetUsd(orgId);
     if (remaining !== null) maxBudgetUsd = remaining;
   } catch (err) {
-    console.error('[AI-SDK] Failed to get remaining budget, using safety fallback:', err);
-    maxBudgetUsd = 0.50; // Safety fallback: allow minimal spend rather than unlimited
+    console.error('[AI-SDK] Failed to get remaining budget, denying request:', err);
+    yield { type: 'error', message: 'Unable to verify spending budget. Please try again later.' };
+    return;
   }
 
   // Remaining turns
@@ -330,8 +388,8 @@ export async function* sendMessageSdk(
         return { behavior: 'deny', message: 'Failed to create approval record' };
       }
 
-      // Emit approval_required event
-      pendingEvents.push({
+      // Emit approval_required event — goes directly to queue for immediate delivery
+      eventQueue.push({
         type: 'approval_required',
         executionId: approvalExec.id,
         toolName: bareName,
@@ -376,7 +434,7 @@ export async function* sendMessageSdk(
         includePartialMessages: true,
         permissionMode: 'default',
         resume: session.sdkSessionId ?? undefined,
-        persistSession: false, // We handle persistence ourselves
+        persistSession: true, // SDK persists session history so resume works across requests
         settingSources: [], // Don't load filesystem settings
         thinking: { type: 'disabled' }, // Keep cost down for RMM chat
       }
@@ -387,183 +445,203 @@ export async function* sendMessageSdk(
     return;
   }
 
-  // ===== Stream translation loop =====
-  let currentMessageId = crypto.randomUUID();
-  let messageStarted = false;
-  let sdkSessionId: string | undefined;
+  // ===== Background SDK processing =====
+  // Runs the SDK iterator in a separate async task, pushing translated SSE
+  // events to the shared eventQueue. This decouples event delivery from the
+  // SDK iterator — tool_result events from postToolUse reach the frontend
+  // immediately instead of waiting for the next SDK message.
+  const processSdkMessages = async () => {
+    let currentMessageId = crypto.randomUUID();
+    let messageStarted = false;
+    let sdkSessionId: string | undefined;
 
-  try {
-    for await (const message of sdkQuery) {
-      // Drain pending events first (approval_required, etc.)
-      while (pendingEvents.length > 0) {
-        yield pendingEvents.shift()!;
-      }
-
-      // Handle each SDK message type
-      switch (message.type) {
-        case 'system': {
-          // Capture session_id from init
-          if ('session_id' in message) {
-            sdkSessionId = message.session_id;
-          }
-          break;
-        }
-
-        case 'stream_event': {
-          const event = message.event;
-
-          if (event.type === 'message_start') {
-            currentMessageId = crypto.randomUUID();
-            messageStarted = true;
-            yield { type: 'message_start', messageId: currentMessageId };
-          } else if (event.type === 'content_block_delta') {
-            if ('delta' in event && event.delta.type === 'text_delta') {
-              yield { type: 'content_delta', delta: event.delta.text };
+    try {
+      for await (const message of sdkQuery) {
+        switch (message.type) {
+          case 'system': {
+            if ('session_id' in message) {
+              sdkSessionId = message.session_id;
+              // Store SDK session ID eagerly so resume works even if the
+              // query errors or times out before the result message.
+              db.update(aiSessions)
+                .set({ sdkSessionId: message.session_id })
+                .where(eq(aiSessions.id, sessionId))
+                .catch((err) => console.error('[AI-SDK] Failed to store SDK session ID early:', err));
             }
-          } else if (event.type === 'content_block_start') {
-            if ('content_block' in event && event.content_block.type === 'tool_use') {
-              const block = event.content_block;
-              yield {
-                type: 'tool_use_start',
-                toolName: block.name.startsWith(MCP_PREFIX)
+            break;
+          }
+
+          case 'stream_event': {
+            const event = message.event;
+
+            if (event.type === 'message_start') {
+              currentMessageId = crypto.randomUUID();
+              messageStarted = true;
+              eventQueue.push({ type: 'message_start', messageId: currentMessageId });
+            } else if (event.type === 'content_block_delta') {
+              if ('delta' in event && event.delta.type === 'text_delta') {
+                eventQueue.push({ type: 'content_delta', delta: event.delta.text });
+              }
+            } else if (event.type === 'content_block_start') {
+              if ('content_block' in event && event.content_block.type === 'tool_use') {
+                const block = event.content_block;
+                eventQueue.push({
+                  type: 'tool_use_start',
+                  toolName: block.name.startsWith(MCP_PREFIX)
+                    ? block.name.slice(MCP_PREFIX.length)
+                    : block.name,
+                  toolUseId: block.id,
+                  input: {} // Empty in stream event; full input provided to canUseTool and MCP handler by SDK
+                });
+              }
+            } else if (event.type === 'message_delta') {
+              if (messageStarted) {
+                eventQueue.push({
+                  type: 'message_end',
+                  inputTokens: 0, // message_delta only provides output_tokens
+                  outputTokens: event.usage?.output_tokens ?? 0
+                });
+                messageStarted = false;
+              }
+            }
+            break;
+          }
+
+          case 'assistant': {
+            // Full assistant message — save to DB
+            const assistantContent = message.message.content
+              .filter((b) => b.type === 'text')
+              .map((b) => ('text' in b ? (b as { text: string }).text : ''))
+              .join('');
+
+            try {
+              await db.insert(aiMessages).values({
+                sessionId,
+                role: 'assistant',
+                content: assistantContent || null,
+                contentBlocks: message.message.content as unknown as Record<string, unknown>[],
+                inputTokens: message.message.usage?.input_tokens ?? 0,
+                outputTokens: message.message.usage?.output_tokens ?? 0
+              });
+            } catch (err) {
+              console.error('[AI-SDK] Failed to save assistant message:', err);
+            }
+
+            // Also save tool_use entries for any MCP tool calls
+            for (const block of message.message.content) {
+              if (block.type === 'tool_use') {
+                const bareName = block.name.startsWith(MCP_PREFIX)
                   ? block.name.slice(MCP_PREFIX.length)
-                  : block.name,
-                toolUseId: block.id,
-                input: {} // Empty in stream event; full input provided to canUseTool and MCP handler by SDK
-              };
-            }
-          } else if (event.type === 'message_delta') {
-            if (messageStarted) {
-              yield {
-                type: 'message_end',
-                inputTokens: 0, // message_delta only provides output_tokens
-                outputTokens: event.usage?.output_tokens ?? 0
-              };
-              messageStarted = false;
-            }
-          }
-          break;
-        }
+                  : block.name;
 
-        case 'assistant': {
-          // Full assistant message — save to DB
-          const assistantContent = message.message.content
-            .filter((b) => b.type === 'text')
-            .map((b) => ('text' in b ? (b as { text: string }).text : ''))
-            .join('');
-
-          try {
-            await db.insert(aiMessages).values({
-              sessionId,
-              role: 'assistant',
-              content: assistantContent || null,
-              contentBlocks: message.message.content as unknown as Record<string, unknown>[],
-              inputTokens: message.message.usage?.input_tokens ?? 0,
-              outputTokens: message.message.usage?.output_tokens ?? 0
-            });
-          } catch (err) {
-            console.error('[AI-SDK] Failed to save assistant message:', err);
+                try {
+                  await db.insert(aiMessages).values({
+                    sessionId,
+                    role: 'tool_use',
+                    toolName: bareName,
+                    toolInput: block.input as Record<string, unknown>,
+                    toolUseId: block.id
+                  });
+                } catch (err) {
+                  console.error('[AI-SDK] Failed to save tool_use message:', err);
+                }
+              }
+            }
+            break;
           }
 
-          // Also save tool_use and emit tool_result for any MCP tool calls
-          for (const block of message.message.content) {
-            if (block.type === 'tool_use') {
-              const bareName = block.name.startsWith(MCP_PREFIX)
-                ? block.name.slice(MCP_PREFIX.length)
-                : block.name;
+          case 'result': {
+            const resultMsg = message as SDKResultMessage;
 
+            if (resultMsg.subtype === 'success') {
+              // Record usage via SDK-provided cost data
               try {
-                await db.insert(aiMessages).values({
-                  sessionId,
-                  role: 'tool_use',
-                  toolName: bareName,
-                  toolInput: block.input as Record<string, unknown>,
-                  toolUseId: block.id
+                await recordUsageFromSdkResult(sessionId, orgId, {
+                  total_cost_usd: resultMsg.total_cost_usd,
+                  usage: {
+                    input_tokens: resultMsg.usage.input_tokens,
+                    output_tokens: resultMsg.usage.output_tokens
+                  },
+                  num_turns: resultMsg.num_turns
                 });
               } catch (err) {
-                console.error('[AI-SDK] Failed to save tool_use message:', err);
+                console.error('[AI-SDK] Failed to record SDK usage:', err);
               }
-            }
-          }
-          break;
-        }
 
-        case 'result': {
-          const resultMsg = message as SDKResultMessage;
-
-          if (resultMsg.subtype === 'success') {
-            // Record usage via SDK-provided cost data
-            try {
-              await recordUsageFromSdkResult(sessionId, orgId, {
-                total_cost_usd: resultMsg.total_cost_usd,
-                usage: {
-                  input_tokens: resultMsg.usage.input_tokens,
-                  output_tokens: resultMsg.usage.output_tokens
-                },
-                num_turns: resultMsg.num_turns
-              });
-            } catch (err) {
-              console.error('[AI-SDK] Failed to record SDK usage:', err);
-            }
-
-            // Store SDK session ID for resume
-            if (sdkSessionId) {
-              try {
-                await db.update(aiSessions)
-                  .set({ sdkSessionId })
-                  .where(eq(aiSessions.id, sessionId));
-              } catch (err) {
-                console.error('[AI-SDK] Failed to store SDK session ID:', err);
-              }
-            }
-          } else {
-            // Error result
-            const errors = 'errors' in resultMsg ? resultMsg.errors : [];
-            const errorMsg = errors.length > 0
-              ? errors[0]
-              : `AI query ended: ${resultMsg.subtype}`;
-
-            if (resultMsg.subtype === 'error_max_budget_usd') {
-              yield { type: 'error', message: 'AI budget limit reached for this query.' };
-            } else if (resultMsg.subtype === 'error_max_turns') {
-              yield { type: 'error', message: 'Maximum conversation turns reached.' };
+              // SDK session ID already stored eagerly in 'system' handler
             } else {
-              yield { type: 'error', message: sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) };
-            }
+              // Error result
+              const errors = 'errors' in resultMsg ? resultMsg.errors : [];
+              const errorMsg = errors.length > 0
+                ? errors[0]
+                : `AI query ended: ${resultMsg.subtype}`;
 
-            // Still record usage for error results
-            try {
-              await recordUsageFromSdkResult(sessionId, orgId, {
-                total_cost_usd: resultMsg.total_cost_usd,
-                usage: {
-                  input_tokens: resultMsg.usage.input_tokens,
-                  output_tokens: resultMsg.usage.output_tokens
-                },
-                num_turns: resultMsg.num_turns
-              });
-            } catch (err) {
-              console.error('[AI-SDK] Failed to record SDK usage on error:', err);
+              if (resultMsg.subtype === 'error_max_budget_usd') {
+                eventQueue.push({ type: 'error', message: 'AI budget limit reached for this query.' });
+              } else if (resultMsg.subtype === 'error_max_turns') {
+                eventQueue.push({ type: 'error', message: 'Maximum conversation turns reached.' });
+              } else {
+                eventQueue.push({ type: 'error', message: sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) });
+              }
+
+              // Still record usage for error results
+              try {
+                await recordUsageFromSdkResult(sessionId, orgId, {
+                  total_cost_usd: resultMsg.total_cost_usd,
+                  usage: {
+                    input_tokens: resultMsg.usage.input_tokens,
+                    output_tokens: resultMsg.usage.output_tokens
+                  },
+                  num_turns: resultMsg.num_turns
+                });
+              } catch (err) {
+                console.error('[AI-SDK] Failed to record SDK usage on error:', err);
+              }
             }
+            break;
           }
-          break;
+
+          // Ignore other message types (user, user_replay, compact_boundary, etc.)
+          default:
+            break;
         }
-
-        // Ignore other message types (user, user_replay, compact_boundary, etc.)
-        default:
-          break;
       }
+    } catch (err) {
+      console.error('[AI-SDK] Query error:', err);
+      eventQueue.push({ type: 'error', message: sanitizeErrorForClient(err) });
     }
-  } catch (err) {
-    console.error('[AI-SDK] Query error:', err);
-    yield { type: 'error', message: sanitizeErrorForClient(err) };
-  }
 
-  // Drain any remaining pending events
-  while (pendingEvents.length > 0) {
-    yield pendingEvents.shift()!;
-  }
+    // Signal completion
+    eventQueue.push({ type: 'done' });
+    eventQueue.close();
+  };
 
-  yield { type: 'done' };
+  // Start SDK processing in background
+  const sdkPromise = processSdkMessages();
+
+  // Timeout guard — if the SDK hangs (e.g. Anthropic API unresponsive after
+  // tool execution), close the queue so the SSE stream ends gracefully.
+  const timeoutId = setTimeout(() => {
+    console.error('[AI-SDK] Query timed out after', SDK_QUERY_TIMEOUT_MS, 'ms, session:', sessionId);
+    eventQueue.push({ type: 'error', message: 'AI request timed out. Please try again.' });
+    eventQueue.push({ type: 'done' });
+    eventQueue.close();
+  }, SDK_QUERY_TIMEOUT_MS);
+
+  // Prevent unhandled rejection if SDK task fails after we stop reading
+  sdkPromise.catch((err) => {
+    console.error('[AI-SDK] Background SDK task error:', err);
+  });
+
+  // ===== Yield events to SSE stream =====
+  try {
+    for await (const event of eventQueue) {
+      yield event;
+      if (event.type === 'done') break;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function safeParseJson(str: string): Record<string, unknown> {

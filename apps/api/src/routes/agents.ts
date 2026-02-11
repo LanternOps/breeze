@@ -615,6 +615,7 @@ function parseResultJson(stdout: string | undefined): Record<string, unknown> | 
     const parsed = JSON.parse(stdout);
     return isObject(parsed) ? parsed : undefined;
   } catch {
+    console.warn('[agents] Failed to parse command result JSON:', stdout?.slice(0, 500));
     return undefined;
   }
 }
@@ -999,7 +1000,7 @@ async function issueMtlsCertForDevice(deviceId: string, orgId: string): Promise<
     const mtlsSettings = await getOrgMtlsSettings(orgId);
     cert = await cfService.issueCertificate(mtlsSettings.certLifetimeDays);
   } catch (err) {
-    console.warn('[agents] mTLS cert issuance failed, falling back to bearer-only auth:', err);
+    console.error('[agents] mTLS cert issuance failed, falling back to bearer-only auth:', err);
     return null;
   }
 

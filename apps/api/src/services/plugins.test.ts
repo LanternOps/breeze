@@ -1,6 +1,10 @@
-const subscribeMock = vi.fn();
-const unsubscribeMock = vi.fn();
-const randomUuidMock = vi.fn(() => 'uuid-1');
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const { subscribeMock, unsubscribeMock, randomUuidMock } = vi.hoisted(() => ({
+  subscribeMock: vi.fn(),
+  unsubscribeMock: vi.fn(),
+  randomUuidMock: vi.fn(() => 'uuid-1')
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -64,8 +68,6 @@ vi.mock('./eventBus', () => ({
 vi.mock('crypto', () => ({
   randomUUID: randomUuidMock
 }));
-
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   PluginLoader,
   PluginSandbox,
@@ -79,6 +81,7 @@ import {
   executePlugin,
   dispatchPluginEvent
 } from './plugins';
+import type { PluginInstallStatus } from './plugins';
 import * as plugins from './plugins';
 import { db } from '../db';
 
@@ -803,7 +806,7 @@ describe('plugins service', () => {
         orgId: 'org-1',
         catalogId: 'catalog-1',
         version: '1.0.0',
-        status: 'installed',
+        status: 'installed' as PluginInstallStatus,
         enabled: true,
         config: {},
         permissions: [],
@@ -821,7 +824,7 @@ describe('plugins service', () => {
       const result = await executePlugin(plugin, 'device.online', { payload: true });
       await dispatchPluginEvent('device.online', { payload: true }, 'org-1');
 
-      expect(result).toEqual({ success: true });
+      expect(result).toMatchObject({ success: true });
       expect(sandbox.execute).toHaveBeenCalledWith(plugin, 'device.online', { payload: true });
       expect(bridge.dispatchEvent).toHaveBeenCalledWith('device.online', { payload: true }, 'org-1');
     });

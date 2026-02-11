@@ -74,7 +74,8 @@ function isPrivateIpv4(hostname: string): boolean {
   const octets = parseIpv4Octets(hostname);
   if (!octets) return false;
 
-  const [a, b] = octets;
+  const a = octets[0]!;
+  const b = octets[1]!;
   if (a === 10) return true;
   if (a === 127) return true;
   if (a === 169 && b === 254) return true;

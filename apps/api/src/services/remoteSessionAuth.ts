@@ -80,7 +80,8 @@ async function redisConsumeJson<T>(key: string): Promise<T | null> {
 
   try {
     return JSON.parse(raw) as T;
-  } catch {
+  } catch (err) {
+    console.error('[session-auth] Failed to parse Redis JSON for key:', key, err);
     return null;
   }
 }

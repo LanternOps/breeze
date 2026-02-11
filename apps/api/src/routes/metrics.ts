@@ -304,16 +304,9 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
         }
       }
     });
-  } catch {
-    return c.json({
-      data: {
-        uptime: 0,
-        remoteSessions: 0,
-        sessions: 0,
-        devices: { total: 0, online: 0, offline: 0 },
-        business_metrics: { devices_total: 0, devices_active: 0 }
-      }
-    });
+  } catch (err) {
+    console.error('[metrics] Failed to load dashboard metrics:', err);
+    return c.json({ error: 'Failed to load metrics' }, 500);
   }
 });
 
@@ -356,8 +349,9 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
     }
 
     return c.json([]);
-  } catch {
-    return c.json([]);
+  } catch (err) {
+    console.error('[metrics] Failed to load trend metrics:', err);
+    return c.json({ error: 'Failed to load metrics' }, 500);
   }
 });
 
