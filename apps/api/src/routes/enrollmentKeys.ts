@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, eq, sql, desc, inArray, lt, isNull, or } from 'drizzle-orm';
 import { db } from '../db';
 import { enrollmentKeys } from '../db/schema';
-import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { PERMISSIONS } from '../services/permissions';
@@ -15,6 +15,15 @@ export const enrollmentKeyRoutes = new Hono();
 // ============================================
 // Helper Functions
 // ============================================
+
+function envInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
+const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
 
 function generateEnrollmentKey(): string {
   return randomBytes(32).toString('hex'); // 64-char hex string
@@ -173,6 +182,7 @@ enrollmentKeyRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', createEnrollmentKeySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -201,6 +211,10 @@ enrollmentKeyRoutes.post(
 
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
+    const expiresAt = data.expiresAt
+      ? new Date(data.expiresAt)
+      : new Date(Date.now() + DEFAULT_ENROLLMENT_KEY_TTL_MINUTES * 60 * 1000);
+    const maxUsage = data.maxUsage ?? 1;
 
     const [enrollmentKey] = await db
       .insert(enrollmentKeys)
@@ -209,8 +223,8 @@ enrollmentKeyRoutes.post(
         siteId: data.siteId ?? null,
         name: data.name,
         key: keyHash,
-        maxUsage: data.maxUsage ?? null,
-        expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+        maxUsage,
+        expiresAt,
         createdBy: auth.user.id
       })
       .returning();
@@ -271,6 +285,7 @@ enrollmentKeyRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const keyId = c.req.param('id');

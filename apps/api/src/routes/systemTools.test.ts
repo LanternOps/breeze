@@ -53,14 +53,40 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c, next) => {
     c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com' },
+      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+      token: {
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-123',
+        orgId: 'org-123',
+        partnerId: null,
+        scope: 'organization',
+        type: 'access',
+        mfa: true,
+      },
       scope: 'organization',
       partnerId: null,
       orgId: 'org-123'
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next())
+  requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next()),
+  requireMfa: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next()),
+}));
+
+vi.mock('../services/permissions', () => ({
+  getUserPermissions: vi.fn(async () => ({
+    permissions: [{ resource: '*', action: '*' }],
+    partnerId: null,
+    orgId: 'org-123',
+    roleId: 'role-123',
+    scope: 'organization',
+  })),
+  hasPermission: vi.fn(() => true),
+  PERMISSIONS: {
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+  }
 }));
 
 import { db } from '../db';

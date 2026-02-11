@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -33,6 +34,7 @@ type Config struct {
 	ServerURL string
 	AgentID   string
 	AuthToken *secmem.SecureString
+	TLSConfig *tls.Config
 }
 
 // Command represents a command received via WebSocket
@@ -127,7 +129,10 @@ func (c *Client) connect() error {
 		return fmt.Errorf("auth token is nil or zeroed — cannot connect")
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:  c.config.TLSConfig,
+	}
 	headers := http.Header{
 		"Authorization": {"Bearer " + c.config.AuthToken.Reveal()},
 	}

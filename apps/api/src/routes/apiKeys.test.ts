@@ -39,6 +39,7 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       partnerId: null,
       orgId: 'org-123',
+      token: { mfa: true },
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -49,7 +50,10 @@ vi.mock('../middleware/auth', () => ({
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
-  })
+  }),
+  // AuthZ/MFA gates are tested elsewhere; keep these route tests focused on handler behavior.
+  requirePermission: vi.fn(() => async (_c, next) => next()),
+  requireMfa: vi.fn(() => async (_c, next) => next())
 }));
 
 import { db } from '../db';

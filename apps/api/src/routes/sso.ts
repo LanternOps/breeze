@@ -889,7 +889,10 @@ ssoRoutes.get('/callback', async (c) => {
       roleId: orgUser.roleId,
       orgId: provider.orgId,
       partnerId: null,
-      scope: 'organization' as const
+      scope: 'organization' as const,
+      // SSO does not currently propagate an MFA signal into the Breeze JWT.
+      // Treat as non-MFA unless explicitly modeled from IdP claims.
+      mfa: false
     };
 
     const { accessToken, refreshToken, expiresInSeconds } = await createTokenPair(tokenPayload);

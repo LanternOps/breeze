@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -26,6 +27,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -37,6 +39,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
+	"github.com/breeze-rmm/agent/pkg/api"
 )
 
 var log = logging.L("heartbeat")
@@ -55,6 +58,7 @@ type HeartbeatResponse struct {
 	Commands     []Command      `json:"commands"`
 	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
 	UpgradeTo    string         `json:"upgradeTo,omitempty"`
+	RenewCert    bool           `json:"renewCert,omitempty"`
 }
 
 type Command struct {
@@ -111,13 +115,16 @@ type Heartbeat struct {
 	// executed twice when delivered via both WebSocket and heartbeat.
 	seenCommands   map[string]time.Time
 	seenCommandsMu sync.Mutex
+
+	// Guard against concurrent cert renewals from successive heartbeats
+	certRenewing atomic.Bool
 }
 
 func New(cfg *config.Config) *Heartbeat {
-	return NewWithVersion(cfg, "0.1.0", nil)
+	return NewWithVersion(cfg, "0.1.0", nil, nil)
 }
 
-func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString) *Heartbeat {
+func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {
 	ftToken := token
 	if ftToken == nil && cfg.AuthToken != "" {
 		ftToken = secmem.NewSecureString(cfg.AuthToken)
@@ -129,10 +136,16 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		AgentID:   cfg.AgentID,
 	}
 
+	// Build HTTP client with optional mTLS transport
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	if tlsCfg != nil {
+		httpClient.Transport = &http.Transport{TLSClientConfig: tlsCfg}
+	}
+
 	h := &Heartbeat{
 		config:          cfg,
 		secureToken:     ftToken,
-		client:          &http.Client{Timeout: 30 * time.Second},
+		client:          httpClient,
 		stopChan:        make(chan struct{}),
 		metricsCol:      collectors.NewMetricsCollector(),
 		hardwareCol:     collectors.NewHardwareCollector(),
@@ -1206,6 +1219,77 @@ func (h *Heartbeat) sendHeartbeat() {
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
 		go h.handleUpgrade(response.UpgradeTo)
 	}
+
+	// Handle mTLS cert renewal if signaled by server
+	if response.RenewCert {
+		go h.handleCertRenewal()
+	}
+}
+
+// handleCertRenewal is called in a goroutine when the server signals renewCert: true.
+// It uses a bearer-only client (no mTLS required) to call /renew-cert.
+// Guarded by certRenewing to prevent concurrent renewals from successive heartbeats.
+func (h *Heartbeat) handleCertRenewal() {
+	if !h.certRenewing.CompareAndSwap(false, true) {
+		log.Info("mTLS cert renewal already in progress, skipping")
+		return
+	}
+	defer h.certRenewing.Store(false)
+
+	log.Info("mTLS cert renewal requested by server")
+
+	token := h.secureToken.Reveal()
+	renewClient := api.NewClient(h.config.ServerURL, token, h.config.AgentID)
+
+	renewResp, err := renewClient.RenewCert()
+	if err != nil {
+		log.Error("mTLS cert renewal failed", "error", err)
+		return
+	}
+
+	if renewResp.Quarantined {
+		log.Warn("device quarantined during cert renewal")
+		return
+	}
+
+	if renewResp.Error != "" {
+		log.Error("mTLS cert renewal rejected", "error", renewResp.Error)
+		return
+	}
+
+	if renewResp.Mtls == nil {
+		log.Warn("mTLS cert renewal response missing cert data")
+		return
+	}
+
+	// Validate the cert/key pair before saving
+	if _, verifyErr := mtls.LoadClientCert(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey); verifyErr != nil {
+		log.Error("renewed cert/key pair is invalid, not saving", "error", verifyErr)
+		return
+	}
+
+	// Update config in memory (hold mutex to prevent races with heartbeat reads)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.config.MtlsCertPEM = renewResp.Mtls.Certificate
+	h.config.MtlsKeyPEM = renewResp.Mtls.PrivateKey
+	h.config.MtlsCertExpires = renewResp.Mtls.ExpiresAt
+
+	// Save to disk (temporarily restore auth token for save)
+	h.config.AuthToken = token
+	err = config.Save(h.config)
+	h.config.AuthToken = ""
+
+	if err != nil {
+		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err)
+		// Clear expires so next heartbeat re-triggers renewal
+		h.config.MtlsCertExpires = ""
+		return
+	}
+
+	log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
+	// New cert will be used on next WebSocket reconnect
 }
 
 func (h *Heartbeat) processCommand(cmd Command) {

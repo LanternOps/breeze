@@ -99,6 +99,10 @@ type OrgDetails = {
       maxSessions?: number;
       ipAllowlist?: string;
     };
+    mtls?: {
+      certLifetimeDays?: number;
+      expiredCertPolicy?: 'auto_reissue' | 'quarantine';
+    };
   };
   billingContact?: {
     name?: string;
@@ -279,6 +283,7 @@ export default function OrgSettingsPage() {
         return (
           <OrgSecuritySettings
             security={orgDetails?.settings?.security}
+            mtls={orgDetails?.settings?.mtls}
             onDirty={handleDirty}
             onSave={(data) => handleSave('security', data)}
           />

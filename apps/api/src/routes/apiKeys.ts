@@ -4,9 +4,10 @@ import { z } from 'zod';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { apiKeys } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { createHash, randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
+import { PERMISSIONS } from '../services/permissions';
 
 export const apiKeyRoutes = new Hono();
 
@@ -112,6 +113,7 @@ apiKeyRoutes.use('*', authMiddleware);
 apiKeyRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', listApiKeysSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -198,6 +200,8 @@ apiKeyRoutes.get(
 apiKeyRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', createApiKeySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -279,6 +283,7 @@ apiKeyRoutes.post(
 apiKeyRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const keyId = c.req.param('id');
@@ -322,6 +327,8 @@ apiKeyRoutes.get(
 apiKeyRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateApiKeySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -403,6 +410,8 @@ apiKeyRoutes.patch(
 apiKeyRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const keyId = c.req.param('id');
@@ -470,6 +479,8 @@ apiKeyRoutes.delete(
 apiKeyRoutes.post(
   '/:id/rotate',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const keyId = c.req.param('id');

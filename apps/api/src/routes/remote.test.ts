@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
 import { remoteRoutes } from './remote';
 
 const mockAuthState = vi.hoisted(() => ({
@@ -10,6 +11,16 @@ const mockAuthState = vi.hoisted(() => ({
 }));
 
 vi.mock('../services', () => ({}));
+
+vi.mock('../services/fileStorage', () => ({
+  saveChunk: vi.fn(async () => undefined),
+  assembleChunks: vi.fn(async () => undefined),
+  getFileStream: vi.fn(() => null),
+  getFileSize: vi.fn(() => 0),
+  hasAssembledFile: vi.fn(() => true),
+  getTotalBytesReceived: vi.fn(() => 0),
+  MAX_TRANSFER_SIZE_BYTES: 10 * 1024 * 1024
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -48,6 +59,16 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c, next) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+      token: {
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-123',
+        orgId: mockAuthState.orgId,
+        partnerId: mockAuthState.partnerId,
+        scope: mockAuthState.scope,
+        type: 'access',
+        mfa: true,
+      },
       scope: mockAuthState.scope,
       orgId: mockAuthState.orgId,
       partnerId: mockAuthState.partnerId,
@@ -59,7 +80,9 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../db';
@@ -100,6 +123,14 @@ describe('remote routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               limit: vi.fn().mockResolvedValue([device])
+            })
+          })
+        } as any)
+        // Used as a subquery in expireStaleSessions(orgId)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              getSQL: () => sql`select 1`
             })
           })
         } as any)
@@ -154,6 +185,14 @@ describe('remote routes', () => {
             })
           })
         } as any)
+        // Used as a subquery in expireStaleSessions(orgId)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              getSQL: () => sql`select 1`
+            })
+          })
+        } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             innerJoin: vi.fn().mockReturnValue({
@@ -182,6 +221,7 @@ describe('remote routes', () => {
       const sessionResult = {
         session: {
           id: 'session-1',
+          userId: 'user-123',
           status: 'pending',
           type: 'desktop',
           iceCandidates: []
@@ -231,11 +271,99 @@ describe('remote routes', () => {
     });
   });
 
+  describe('POST /remote/transfers/:id/chunks', () => {
+    it('should deny chunk upload when user does not own the transfer', async () => {
+      const transferResult = {
+        transfer: {
+          id: 'transfer-1',
+          deviceId: 'device-1',
+          userId: 'other-user',
+          direction: 'download',
+          status: 'pending',
+          sizeBytes: BigInt(3),
+          progressPercent: 0
+        },
+        device: {
+          id: 'device-1',
+          orgId: 'org-123'
+        }
+      };
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([transferResult])
+            })
+          })
+        })
+      } as any);
+
+      const form = new FormData();
+      form.set('chunkIndex', '0');
+      form.set('data', new File([new Uint8Array([1, 2, 3])], 'chunk.bin'));
+
+      const res = await app.request('/remote/transfers/transfer-1/chunks', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: form
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Access denied');
+    });
+
+    it('should accept chunk upload for transfer owner', async () => {
+      const transferResult = {
+        transfer: {
+          id: 'transfer-1',
+          deviceId: 'device-1',
+          userId: 'user-123',
+          direction: 'download',
+          status: 'pending',
+          sizeBytes: BigInt(3),
+          progressPercent: 0
+        },
+        device: {
+          id: 'device-1',
+          orgId: 'org-123'
+        }
+      };
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([transferResult])
+            })
+          })
+        })
+      } as any);
+
+      const form = new FormData();
+      form.set('chunkIndex', '0');
+      form.set('data', new File([new Uint8Array([1, 2, 3])], 'chunk.bin'));
+
+      const res = await app.request('/remote/transfers/transfer-1/chunks', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: form
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('completed');
+      expect(body.progressPercent).toBe(100);
+    });
+  });
+
   describe('POST /remote/sessions/:id/answer', () => {
     it('should accept a WebRTC answer and activate the session', async () => {
       const sessionResult = {
         session: {
           id: 'session-1',
+          userId: 'user-123',
           status: 'connecting',
           type: 'desktop',
           iceCandidates: []
@@ -293,6 +421,7 @@ describe('remote routes', () => {
       const sessionResult = {
         session: {
           id: 'session-1',
+          userId: 'user-123',
           status: 'active',
           type: 'desktop',
           iceCandidates: [

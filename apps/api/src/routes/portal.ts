@@ -701,9 +701,13 @@ portalRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
         .expire(PORTAL_REDIS_KEYS.userSessions(user.id), SESSION_TTL_SECONDS * 2)
         .exec();
       if (results) {
-        for (const [err] of results) {
-          if (err) {
-            console.error('[portal] Redis session pipeline error:', err.message);
+        const pipelineErrors = results.filter(([err]) => err);
+        if (pipelineErrors.length > 0) {
+          for (const [err] of pipelineErrors) {
+            console.error('[portal] Redis session pipeline error:', err!.message);
+          }
+          if (process.env.NODE_ENV === 'production') {
+            return c.json({ error: 'Service temporarily unavailable' }, 503);
           }
         }
       }
@@ -902,17 +906,21 @@ portalRoutes.post('/auth/logout', portalAuthMiddleware, async (c) => {
 
   const auth = c.get('portalAuth');
 
+  // Always clean up in-memory session regardless of Redis availability
+  portalSessions.delete(auth.token);
+  c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
     if (!redis) {
-      return c.json({ error: 'Service temporarily unavailable' }, 503);
+      // Session cleared from in-memory and cookie; log that Redis cleanup was skipped
+      console.warn('[portal] Redis unavailable during logout, in-memory session cleared for user:', auth.user.id);
+      return c.json({ success: true });
     }
     await redis.del(PORTAL_REDIS_KEYS.session(auth.token));
     await redis.srem(PORTAL_REDIS_KEYS.userSessions(auth.user.id), auth.token);
   }
 
-  portalSessions.delete(auth.token);
-  c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
   return c.json({ success: true });
 });
 

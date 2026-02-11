@@ -66,7 +66,7 @@ func TestProcessCommandSecurityThreatRemoveSubmitsCompletedResult(t *testing.T) 
 		AgentID:   "agent-1",
 		ServerURL: ts.URL,
 		AuthToken: "token",
-	}, "test", nil)
+	}, "test", nil, nil)
 
 	h.processCommand(Command{
 		ID:   "cmd-1",
@@ -128,7 +128,7 @@ func TestProcessCommandSecurityThreatRestoreSubmitsFailedResult(t *testing.T) {
 		AgentID:   "agent-1",
 		ServerURL: ts.URL,
 		AuthToken: "token",
-	}, "test", nil)
+	}, "test", nil, nil)
 
 	h.processCommand(Command{
 		ID:      "cmd-2",

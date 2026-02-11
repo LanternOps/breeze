@@ -548,7 +548,8 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
     roleId: context.roleId,
     orgId: context.orgId,
     partnerId: context.partnerId,
-    scope: context.scope
+    scope: context.scope,
+    mfa: false
   });
 
   await db
@@ -698,7 +699,8 @@ authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), 
         roleId: adminRole.id,
         orgId: null,
         partnerId: newPartner.id,
-        scope: 'partner'
+        scope: 'partner',
+        mfa: false
       });
 
       // Update last login
@@ -832,7 +834,8 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     roleId,
     orgId,
     partnerId,
-    scope
+    scope,
+    mfa: false
   });
 
   // Update last login
@@ -947,7 +950,8 @@ authRoutes.post('/refresh', async (c) => {
     roleId: context.roleId,
     orgId: context.orgId,
     partnerId: context.partnerId,
-    scope: context.scope
+    scope: context.scope,
+    mfa: payload.mfa
   });
 
   try {
@@ -1099,7 +1103,8 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
       roleId: mfaRoleId,
       orgId: mfaOrgId,
       partnerId: mfaPartnerId,
-      scope: mfaScope
+      scope: mfaScope,
+      mfa: true
     });
 
     // Update last login

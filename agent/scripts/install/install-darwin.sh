@@ -84,7 +84,7 @@ chown root:breeze "$CONFIG_DIR" 2>/dev/null || true
 echo "Breeze Agent installed."
 echo ""
 echo "Next steps:"
-echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server"
+echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
 echo "  2. Start:   sudo launchctl load $PLIST_DST"
 echo "  3. Status:  sudo launchctl list | grep breeze"
 echo "  4. Logs:    tail -f $LOG_DIR/agent.log"

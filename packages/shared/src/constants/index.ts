@@ -2,7 +2,7 @@
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 
 // Device Status
-export const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissioned'] as const;
+export const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined'] as const;
 
 // Alert Severities
 export const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;

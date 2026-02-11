@@ -50,6 +50,13 @@ declare module 'hono' {
 
 // Optional auth - doesn't throw if not authenticated, just sets auth to null
 export async function optionalAuthMiddleware(c: Context, next: Next) {
+  // If another middleware already authenticated this request, don't re-verify.
+  const existing = c.get('auth') as AuthContext | undefined;
+  if (existing) {
+    await next();
+    return;
+  }
+
   const authHeader = c.req.header('Authorization');
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -218,6 +225,13 @@ async function computeAccessibleOrgIds(
 }
 
 export async function authMiddleware(c: Context, next: Next) {
+  // Avoid double-verification when authMiddleware is applied both globally and per-route.
+  const existing = c.get('auth') as AuthContext | undefined;
+  if (existing) {
+    await next();
+    return;
+  }
+
   const authHeader = c.req.header('Authorization');
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -374,6 +388,27 @@ export function requirePermission(resource: string, action: string) {
 
     // Store permissions in context for further checks
     c.set('permissions', userPerms);
+
+    await next();
+  };
+}
+
+/**
+ * Require that the caller completed MFA for this session.
+ * This is enforced via the JWT `mfa` claim which is set when tokens are minted
+ * after MFA verification.
+ */
+export function requireMfa() {
+  return async (c: Context, next: Next) => {
+    const auth = c.get('auth');
+
+    if (!auth) {
+      throw new HTTPException(401, { message: 'Not authenticated' });
+    }
+
+    if (!auth.token.mfa) {
+      throw new HTTPException(403, { message: 'MFA required' });
+    }
 
     await next();
   };

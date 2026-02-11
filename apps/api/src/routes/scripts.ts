@@ -10,7 +10,8 @@ import {
   devices,
   deviceCommands
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 import { sendCommandToAgent } from './agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -121,6 +122,7 @@ scriptRoutes.use('*', authMiddleware);
 scriptRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   zValidator('query', listScriptsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -245,6 +247,7 @@ scriptRoutes.get(
 scriptRoutes.get(
   '/system-library',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   async (c) => {
     const systemScripts = await db
       .select({
@@ -267,6 +270,8 @@ scriptRoutes.get(
 scriptRoutes.post(
   '/import/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
   zValidator('json', z.object({ orgId: z.string().uuid().optional() })),
   async (c) => {
     const auth = c.get('auth');
@@ -362,6 +367,7 @@ scriptRoutes.post(
 scriptRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const scriptId = c.req.param('id');
@@ -379,6 +385,8 @@ scriptRoutes.get(
 scriptRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
   zValidator('json', createScriptSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -446,6 +454,8 @@ scriptRoutes.post(
 scriptRoutes.put(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateScriptSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -510,6 +520,8 @@ scriptRoutes.put(
 scriptRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_DELETE.resource, PERMISSIONS.SCRIPTS_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const scriptId = c.req.param('id');
@@ -567,6 +579,8 @@ scriptRoutes.delete(
 scriptRoutes.post(
   '/:id/execute',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  requireMfa(),
   zValidator('json', executeScriptSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -740,6 +754,7 @@ scriptRoutes.post(
 scriptRoutes.get(
   '/:id/executions',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   zValidator('query', listExecutionsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -808,6 +823,7 @@ scriptRoutes.get(
 scriptRoutes.get(
   '/executions/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const executionId = c.req.param('id');
@@ -861,6 +877,8 @@ scriptRoutes.get(
 scriptRoutes.post(
   '/executions/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const executionId = c.req.param('id');

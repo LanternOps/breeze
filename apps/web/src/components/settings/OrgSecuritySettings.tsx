@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { Lock, Save, ShieldCheck, ShieldOff, Timer } from 'lucide-react';
+import { Lock, Save, ShieldCheck, ShieldOff, Timer, Fingerprint } from 'lucide-react';
+import { useOrgStore } from '../../stores/orgStore';
+import { fetchWithAuth } from '../../stores/auth';
 
 type SecurityData = {
   minLength?: number;
@@ -12,8 +14,14 @@ type SecurityData = {
   ipAllowlist?: string;
 };
 
+type MtlsSettings = {
+  certLifetimeDays?: number;
+  expiredCertPolicy?: 'auto_reissue' | 'quarantine';
+};
+
 type OrgSecuritySettingsProps = {
   security?: SecurityData;
+  mtls?: MtlsSettings;
   onDirty?: () => void;
   onSave?: (data: SecurityData) => void;
 };
@@ -29,7 +37,7 @@ const defaultSecurity: SecurityData = {
   ipAllowlist: ''
 };
 
-export default function OrgSecuritySettings({ security, onDirty, onSave }: OrgSecuritySettingsProps) {
+export default function OrgSecuritySettings({ security, mtls, onDirty, onSave }: OrgSecuritySettingsProps) {
   const initialData = { ...defaultSecurity, ...security };
   const [minLength, setMinLength] = useState(initialData.minLength || 12);
   const [complexity, setComplexity] = useState(initialData.complexity || 'standard');
@@ -39,6 +47,15 @@ export default function OrgSecuritySettings({ security, onDirty, onSave }: OrgSe
   const [sessionTimeout, setSessionTimeout] = useState(initialData.sessionTimeout || 60);
   const [maxSessions, setMaxSessions] = useState(initialData.maxSessions || 3);
   const [ipAllowlist, setIpAllowlist] = useState(initialData.ipAllowlist || '');
+
+  // mTLS state
+  const [certLifetimeDays, setCertLifetimeDays] = useState(mtls?.certLifetimeDays ?? 90);
+  const [expiredCertPolicy, setExpiredCertPolicy] = useState<'auto_reissue' | 'quarantine'>(mtls?.expiredCertPolicy ?? 'auto_reissue');
+  const [mtlsSaving, setMtlsSaving] = useState(false);
+  const [mtlsError, setMtlsError] = useState<string>();
+  const [mtlsSuccess, setMtlsSuccess] = useState(false);
+
+  const { currentOrgId } = useOrgStore();
 
   const markDirty = () => {
     onDirty?.();
@@ -56,6 +73,36 @@ export default function OrgSecuritySettings({ security, onDirty, onSave }: OrgSe
       ipAllowlist
     };
     onSave?.(data);
+  };
+
+  const handleMtlsSave = async () => {
+    if (!currentOrgId) return;
+
+    setMtlsSaving(true);
+    setMtlsError(undefined);
+    setMtlsSuccess(false);
+
+    try {
+      const response = await fetchWithAuth(`/agents/org/${currentOrgId}/settings/mtls`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          certLifetimeDays,
+          expiredCertPolicy,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || 'Failed to save mTLS settings');
+      }
+
+      setMtlsSuccess(true);
+      setTimeout(() => setMtlsSuccess(false), 3000);
+    } catch (err) {
+      setMtlsError(err instanceof Error ? err.message : 'Failed to save mTLS settings');
+    } finally {
+      setMtlsSaving(false);
+    }
   };
 
   return (
@@ -238,6 +285,94 @@ export default function OrgSecuritySettings({ security, onDirty, onSave }: OrgSe
           />
           <p className="text-xs text-muted-foreground">
             Leave blank to allow all IPs. Use CIDR notation to allow ranges.
+          </p>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t" />
+
+      {/* mTLS Certificate Policy */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h3 className="text-base font-semibold">mTLS Certificate Policy</h3>
+          <p className="text-sm text-muted-foreground">
+            Configure mutual TLS certificate lifecycle for agent connections.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleMtlsSave}
+          disabled={mtlsSaving}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+        >
+          <Save className="h-4 w-4" />
+          {mtlsSaving ? 'Saving...' : 'Save mTLS settings'}
+        </button>
+      </div>
+
+      {mtlsError ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {mtlsError}
+        </div>
+      ) : null}
+
+      {mtlsSuccess ? (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+          mTLS settings saved successfully.
+        </div>
+      ) : null}
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Fingerprint className="h-4 w-4" />
+            Certificate lifetime
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Lifetime (days)</label>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={certLifetimeDays}
+              onChange={event => {
+                const val = Number(event.target.value);
+                setCertLifetimeDays(Math.max(1, Math.min(365, val || 90)));
+                markDirty();
+              }}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            How long each agent mTLS certificate remains valid before renewal is required.
+            Shorter lifetimes improve security but increase renewal frequency. Default is 90 days.
+          </p>
+        </div>
+
+        <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <ShieldCheck className="h-4 w-4" />
+            Expired certificate policy
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">When a certificate expires</label>
+            <select
+              value={expiredCertPolicy}
+              onChange={event => {
+                setExpiredCertPolicy(event.target.value as 'auto_reissue' | 'quarantine');
+                markDirty();
+              }}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="auto_reissue">Auto Re-issue</option>
+              <option value="quarantine">Quarantine</option>
+            </select>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {expiredCertPolicy === 'auto_reissue'
+              ? 'The agent automatically receives a new certificate when the current one expires. This ensures uninterrupted connectivity.'
+              : 'The device is quarantined when its certificate expires. An administrator must manually approve the device before it can reconnect.'}
           </p>
         </div>
       </div>

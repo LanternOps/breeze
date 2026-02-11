@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, gte, like, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import {
   devices,
   deviceHardware,
@@ -13,7 +13,7 @@ import {
   sites,
   enrollmentKeys
 } from '../../db/schema';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
@@ -24,10 +24,19 @@ export const coreRoutes = new Hono();
 
 coreRoutes.use('*', authMiddleware);
 
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 // POST /devices/onboarding-token - Generate a short-lived enrollment key
 coreRoutes.post(
   '/onboarding-token',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const requestedOrgId = c.req.query('orgId');
@@ -62,14 +71,15 @@ coreRoutes.post(
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const ttlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
 
     await db.insert(enrollmentKeys).values({
       orgId,
       siteId: site.id,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
       key: keyHash,
-      maxUsage: 10,
+      maxUsage: 1,
       expiresAt,
       createdBy: auth.user.id,
     });
@@ -412,6 +422,53 @@ coreRoutes.patch(
     });
 
     return c.json(updated);
+  }
+);
+
+// POST /devices/:id/agent-token/rotate - Rotate the agent bearer token for a device (returns new token once)
+coreRoutes.post(
+  '/:id/agent-token/rotate',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    if (device.status === 'decommissioned') {
+      return c.json({ error: 'Device is decommissioned' }, 400);
+    }
+
+    const newToken = `brz_${randomBytes(32).toString('hex')}`;
+    const tokenHash = createHash('sha256').update(newToken).digest('hex');
+
+    const [updated] = await db
+      .update(devices)
+      .set({
+        agentTokenHash: tokenHash,
+        updatedAt: new Date()
+      })
+      .where(eq(devices.id, deviceId))
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.agent_token.rotate',
+      resourceType: 'device',
+      resourceId: updated?.id ?? deviceId,
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+    });
+
+    return c.json({
+      deviceId,
+      agentId: updated?.agentId ?? device.agentId,
+      authToken: newToken
+    });
   }
 );
 

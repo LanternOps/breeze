@@ -42,6 +42,13 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function envFlag(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
 const mcpExecuteToolAllowlist = parseCsvSet(process.env.MCP_EXECUTE_TOOL_ALLOWLIST);
 
 function isExecuteToolAllowedInProd(toolName: string): boolean {
@@ -84,6 +91,7 @@ function buildMcpAuditAction(method: string): string {
 
 // Active SSE sessions: sessionId → session data (queue, owner, TTL)
 const MAX_SSE_SESSIONS = 100;
+const MAX_SSE_SESSIONS_PER_KEY = envInt('MCP_MAX_SSE_SESSIONS_PER_KEY', 5);
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 const sseSessionQueues = new Map<string, { queue: Array<JsonRpcResponse>; apiKeyId: string; createdAt: number }>();
@@ -120,6 +128,12 @@ mcpServerRoutes.get(
     // Enforce max sessions limit
     if (sseSessionQueues.size >= MAX_SSE_SESSIONS) {
       return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Too many active MCP sessions' } }, 503);
+    }
+
+    // Enforce per-API-key session cap to reduce blast radius of a single leaked key.
+    const perKeyCount = Array.from(sseSessionQueues.values()).filter((s) => s.apiKeyId === apiKey.id).length;
+    if (perKeyCount >= MAX_SSE_SESSIONS_PER_KEY) {
+      return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Too many active MCP sessions for this API key' } }, 429);
     }
 
     const sessionId = crypto.randomUUID();
@@ -318,6 +332,8 @@ async function handleJsonRpc(
 function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse {
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
+  const requireExecuteAdmin = process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
+  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   // Filter tools based on API key scopes
@@ -330,7 +346,7 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
     // Tier 2 (low-risk mutations) = ai:write
     if (tier === 2) return hasWrite;
     // Tier 3+ (destructive) = ai:execute
-    return hasExecute;
+    return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
   });
 
   return jsonRpcResult(id, {
@@ -366,10 +382,15 @@ async function handleToolsCall(
   }
 
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
+  const requireExecuteAdmin = process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
+  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   if (tier >= 3 && !hasExecute) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`);
+  }
+  if (tier >= 3 && requireExecuteAdmin && !hasExecuteAdmin) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute_admin scope in production`);
   }
   if (tier === 2 && !hasWrite) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);

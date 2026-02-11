@@ -67,7 +67,7 @@ async function validateDesktopAccess(
     return { valid: false, error: 'Missing connection ticket' };
   }
 
-  const ticketRecord = consumeWsTicket(ticket);
+  const ticketRecord = await consumeWsTicket(ticket);
   if (!ticketRecord) {
     return { valid: false, error: 'Invalid or expired connection ticket' };
   }
@@ -406,7 +406,7 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
     zValidator('json', desktopConnectExchangeSchema),
     async (c) => {
       const { sessionId, code } = c.req.valid('json');
-      const codeRecord = consumeDesktopConnectCode(code);
+      const codeRecord = await consumeDesktopConnectCode(code);
 
       if (!codeRecord || codeRecord.sessionId !== sessionId) {
         return c.json({ error: 'Invalid or expired connect code' }, 401);

@@ -10,7 +10,8 @@ import {
   users,
   auditLogs
 } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 import { sendCommandToAgent } from './agentWs';
 import { createHmac } from 'crypto';
 import { saveChunk, assembleChunks, getFileStream, getFileSize, hasAssembledFile, getTotalBytesReceived, MAX_TRANSFER_SIZE_BYTES } from '../services/fileStorage';
@@ -69,6 +70,18 @@ function getPagination(query: { page?: string; limit?: string }) {
   const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
   return { page, limit, offset: (page - 1) * limit };
 }
+
+function envInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
+const MAX_ACTIVE_TRANSFERS_PER_ORG = envInt('MAX_ACTIVE_TRANSFERS_PER_ORG', 20);
+const MAX_ACTIVE_TRANSFERS_PER_USER = envInt('MAX_ACTIVE_TRANSFERS_PER_USER', 10);
+const MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG = envInt('MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG', 10);
+const MAX_ACTIVE_REMOTE_SESSIONS_PER_USER = envInt('MAX_ACTIVE_REMOTE_SESSIONS_PER_USER', 5);
 
 function hasSessionOrTransferOwnership(
   auth: { scope: string; user: { id: string } },
@@ -173,8 +186,31 @@ async function expireStaleSessions(orgId: string) {
     );
 }
 
+async function expireStaleSessionsForUser(userId: string) {
+  const now = new Date();
+  const pendingCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+  const connectingCutoff = new Date(now.getTime() - 2 * 60 * 1000);
+
+  await db
+    .update(remoteSessions)
+    .set({ status: 'disconnected', endedAt: now })
+    .where(
+      and(
+        eq(remoteSessions.userId, userId),
+        or(
+          and(eq(remoteSessions.status, 'pending'), lte(remoteSessions.createdAt, pendingCutoff)),
+          and(eq(remoteSessions.status, 'connecting'), lte(remoteSessions.createdAt, connectingCutoff))
+        )
+      )
+    );
+}
+
 // Rate limiting helper - check concurrent sessions per org
-async function checkSessionRateLimit(orgId: string, maxConcurrent: number = 10): Promise<{ allowed: boolean; currentCount: number }> {
+async function checkSessionRateLimit(orgId: string, maxConcurrent: number = MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG): Promise<{ allowed: boolean; currentCount: number }> {
+  if (maxConcurrent <= 0) {
+    return { allowed: true, currentCount: 0 };
+  }
+
   // Clean up stale sessions first so they don't count against the limit
   await expireStaleSessions(orgId);
 
@@ -185,6 +221,30 @@ async function checkSessionRateLimit(orgId: string, maxConcurrent: number = 10):
     .where(
       and(
         eq(devices.orgId, orgId),
+        inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
+      )
+    );
+
+  const currentCount = Number(countResult[0]?.count ?? 0);
+  return {
+    allowed: currentCount < maxConcurrent,
+    currentCount
+  };
+}
+
+async function checkUserSessionRateLimit(userId: string, maxConcurrent: number = MAX_ACTIVE_REMOTE_SESSIONS_PER_USER): Promise<{ allowed: boolean; currentCount: number }> {
+  if (maxConcurrent <= 0) {
+    return { allowed: true, currentCount: 0 };
+  }
+
+  await expireStaleSessionsForUser(userId);
+
+  const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(remoteSessions)
+    .where(
+      and(
+        eq(remoteSessions.userId, userId),
         inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
       )
     );
@@ -290,6 +350,7 @@ const listTransfersSchema = z.object({
 // ============================================
 
 remoteRoutes.use('*', authMiddleware);
+remoteRoutes.use('*', requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action), requireMfa());
 
 // ============================================
 // REMOTE SESSIONS ENDPOINTS
@@ -379,8 +440,20 @@ remoteRoutes.post(
       return c.json({
         error: 'Maximum concurrent sessions reached for this organization',
         currentCount: rateLimit.currentCount,
-        maxAllowed: 10
+        maxAllowed: MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG
       }, 429);
+    }
+
+    // Guardrail: cap concurrent sessions per user to reduce blast radius of a compromised account.
+    if (auth.scope !== 'system') {
+      const userLimit = await checkUserSessionRateLimit(auth.user.id);
+      if (!userLimit.allowed) {
+        return c.json({
+          error: 'Maximum concurrent sessions reached for this user',
+          currentCount: userLimit.currentCount,
+          maxAllowed: MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
+        }, 429);
+      }
     }
 
     // Create session
@@ -770,13 +843,17 @@ remoteRoutes.post(
       }, 400);
     }
 
-    const ticket = createWsTicket({
-      sessionId: session.id,
-      sessionType: session.type,
-      userId: auth.user.id
-    });
-
-    return c.json(ticket);
+    try {
+      const ticket = await createWsTicket({
+        sessionId: session.id,
+        sessionType: session.type,
+        userId: auth.user.id
+      });
+      return c.json(ticket);
+    } catch (error) {
+      console.error('[remote] Failed to create WS ticket:', error);
+      return c.json({ error: 'Unable to create WebSocket ticket. Please try again later.' }, 503);
+    }
   }
 );
 
@@ -809,20 +886,26 @@ remoteRoutes.post(
       }, 400);
     }
 
-    const code = createDesktopConnectCode({
-      sessionId: session.id,
-      userId: auth.user.id,
-      tokenPayload: {
-        sub: auth.user.id,
-        email: auth.user.email,
-        roleId: auth.token.roleId,
-        orgId: auth.token.orgId,
-        partnerId: auth.token.partnerId,
-        scope: auth.token.scope
-      }
-    });
+    try {
+      const code = await createDesktopConnectCode({
+        sessionId: session.id,
+        userId: auth.user.id,
+        tokenPayload: {
+          sub: auth.user.id,
+          email: auth.user.email,
+          roleId: auth.token.roleId,
+          orgId: auth.token.orgId,
+          partnerId: auth.token.partnerId,
+          scope: auth.token.scope,
+          mfa: auth.token.mfa
+        }
+      });
 
-    return c.json(code);
+      return c.json(code);
+    } catch (error) {
+      console.error('[remote] Failed to create desktop connect code:', error);
+      return c.json({ error: 'Unable to create desktop connect code. Please try again later.' }, 503);
+    }
   }
 );
 
@@ -1116,6 +1199,49 @@ remoteRoutes.post(
     // Check device is online
     if (device.status !== 'online') {
       return c.json({ error: 'Device is not online', deviceStatus: device.status }, 400);
+    }
+
+    // Guardrail: cap concurrent transfers per org (and per user) to prevent disk/CPU exhaustion.
+    const activeTransferStatuses = ['pending', 'transferring'] as const;
+    if (MAX_ACTIVE_TRANSFERS_PER_ORG > 0) {
+      const orgTransferCount = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(fileTransfers)
+        .innerJoin(devices, eq(fileTransfers.deviceId, devices.id))
+        .where(and(
+          eq(devices.orgId, device.orgId),
+          inArray(fileTransfers.status, [...activeTransferStatuses])
+        ));
+
+      const currentCount = Number(orgTransferCount[0]?.count ?? 0);
+      if (currentCount >= MAX_ACTIVE_TRANSFERS_PER_ORG) {
+        return c.json({
+          error: 'Maximum concurrent transfers reached for this organization',
+          currentCount,
+          maxAllowed: MAX_ACTIVE_TRANSFERS_PER_ORG
+        }, 429);
+      }
+    }
+
+    if (MAX_ACTIVE_TRANSFERS_PER_USER > 0 && auth.scope !== 'system') {
+      const userTransferCount = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(fileTransfers)
+        .innerJoin(devices, eq(fileTransfers.deviceId, devices.id))
+        .where(and(
+          eq(devices.orgId, device.orgId),
+          eq(fileTransfers.userId, auth.user.id),
+          inArray(fileTransfers.status, [...activeTransferStatuses])
+        ));
+
+      const currentCount = Number(userTransferCount[0]?.count ?? 0);
+      if (currentCount >= MAX_ACTIVE_TRANSFERS_PER_USER) {
+        return c.json({
+          error: 'Maximum concurrent transfers reached for this user',
+          currentCount,
+          maxAllowed: MAX_ACTIVE_TRANSFERS_PER_USER
+        }, 429);
+      }
     }
 
     // Verify session if provided
@@ -1422,7 +1548,10 @@ remoteRoutes.post(
       return c.json({ error: 'Transfer not found' }, 404);
     }
 
-    const { transfer } = result;
+    const { transfer, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, transfer.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     if (!['pending', 'transferring'].includes(transfer.status)) {
       return c.json({ error: 'Cannot upload chunks in current state', status: transfer.status }, 400);

@@ -48,13 +48,24 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       partnerId: null,
       orgId: 'org-123',
-      token: { sub: 'user-123' },
+      token: {
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-123',
+        orgId: 'org-123',
+        partnerId: null,
+        scope: 'organization',
+        type: 'access',
+        mfa: true,
+      },
       accessibleOrgIds: ['org-123'],
       canAccessOrg: (orgId: string) => orgId === 'org-123'
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c, next) => next()),
+  requirePermission: vi.fn(() => async (_c, next) => next()),
+  requireMfa: vi.fn(() => async (_c, next) => next()),
 }));
 
 import { db } from '../db';

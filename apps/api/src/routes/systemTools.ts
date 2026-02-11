@@ -3,11 +3,13 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { basename } from 'node:path';
 import { and, eq } from 'drizzle-orm';
+import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
 import { devices } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, type AuthContext } from '../middleware/auth';
 import { executeCommand, CommandTypes } from '../services/commandQueue';
 import { createAuditLog } from '../services/auditService';
+import { getUserPermissions, hasPermission, PERMISSIONS } from '../services/permissions';
 
 export const systemToolsRoutes = new Hono();
 
@@ -113,6 +115,44 @@ interface FileEntryInfo {
   modified?: string;
   permissions?: string;
 }
+
+// ============================================
+// GLOBAL AUTHZ
+// ============================================
+
+// System tools are high-impact operations. Enforce explicit RBAC:
+// - GET/HEAD: devices.read
+// - non-GET: devices.execute
+systemToolsRoutes.use(
+  '*',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  requireMfa(),
+  async (c, next) => {
+    const auth = c.get('auth');
+
+    const method = c.req.method.toUpperCase();
+    const required = (method === 'GET' || method === 'HEAD')
+      ? PERMISSIONS.DEVICES_READ
+      : PERMISSIONS.DEVICES_EXECUTE;
+
+    const userPerms = await getUserPermissions(auth.user.id, {
+      partnerId: auth.partnerId || undefined,
+      orgId: auth.orgId || undefined
+    });
+
+    if (!userPerms) {
+      throw new HTTPException(403, { message: 'No permissions found' });
+    }
+
+    if (!hasPermission(userPerms, required.resource, required.action)) {
+      throw new HTTPException(403, { message: 'Permission denied' });
+    }
+
+    c.set('permissions', userPerms);
+    await next();
+  }
+);
 
 // ============================================
 // HELPER FUNCTIONS

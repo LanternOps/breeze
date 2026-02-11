@@ -2,7 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 
@@ -48,18 +48,23 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
 
   const tokenHash = createHash('sha256').update(token).digest('hex');
 
-  const [device] = await db
-    .select({
-      id: devices.id,
-      agentId: devices.agentId,
-      orgId: devices.orgId,
-      siteId: devices.siteId,
-      agentTokenHash: devices.agentTokenHash,
-      status: devices.status,
-    })
-    .from(devices)
-    .where(eq(devices.agentId, agentId))
-    .limit(1);
+  // Authentication must work even when tenant RLS is deny-by-default.
+  // Use system DB context for lookup, then scope all downstream queries to the device org.
+  const device = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        id: devices.id,
+        agentId: devices.agentId,
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+        agentTokenHash: devices.agentTokenHash,
+        status: devices.status,
+      })
+      .from(devices)
+      .where(eq(devices.agentId, agentId))
+      .limit(1);
+    return row ?? null;
+  });
 
   if (!device || !device.agentTokenHash) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
@@ -71,6 +76,10 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
 
   if (device.status === 'decommissioned') {
     throw new HTTPException(403, { message: 'Device has been decommissioned' });
+  }
+
+  if (device.status === 'quarantined') {
+    throw new HTTPException(403, { message: 'Device is quarantined pending admin approval' });
   }
 
   // Rate limiting per agent
@@ -90,5 +99,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     siteId: device.siteId,
   });
 
-  await next();
+  await withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId: device.orgId,
+      accessibleOrgIds: [device.orgId]
+    },
+    async () => {
+      await next();
+    }
+  );
 }

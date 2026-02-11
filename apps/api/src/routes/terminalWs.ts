@@ -52,7 +52,7 @@ async function validateTerminalAccess(
     return { valid: false, error: 'Missing connection ticket' };
   }
 
-  const ticketRecord = consumeWsTicket(ticket);
+  const ticketRecord = await consumeWsTicket(ticket);
   if (!ticketRecord) {
     return { valid: false, error: 'Invalid or expired connection ticket' };
   }

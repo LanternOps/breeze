@@ -71,6 +71,11 @@ type Config struct {
 	// Policy state telemetry probes for registry/config checks.
 	PolicyRegistryStateProbes []PolicyRegistryStateProbe `mapstructure:"policy_registry_state_probes"`
 	PolicyConfigStateProbes   []PolicyConfigStateProbe   `mapstructure:"policy_config_state_probes"`
+
+	// mTLS client certificate (Cloudflare API Shield)
+	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
+	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
+	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
 }
 
 func Default() *Config {
@@ -153,6 +158,9 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
 	viper.Set("policy_registry_state_probes", cfg.PolicyRegistryStateProbes)
 	viper.Set("policy_config_state_probes", cfg.PolicyConfigStateProbes)
+	viper.Set("mtls_cert_pem", cfg.MtlsCertPEM)
+	viper.Set("mtls_key_pem", cfg.MtlsKeyPEM)
+	viper.Set("mtls_cert_expires", cfg.MtlsCertExpires)
 
 	var cfgPath string
 	if cfgFile != "" {

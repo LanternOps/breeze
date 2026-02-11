@@ -128,7 +128,7 @@ export interface OrganizationUser {
 // ============================================
 
 export type OSType = 'windows' | 'macos' | 'linux';
-export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned';
+export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
 export type DeviceGroupType = 'static' | 'dynamic';
 export type GroupMembershipSource = 'manual' | 'dynamic_rule' | 'policy';
 
@@ -208,6 +208,22 @@ export interface DeviceGroup {
   parentId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// ============================================
+// mTLS Types
+// ============================================
+
+export interface OrgMtlsSettings {
+  certLifetimeDays: number;
+  expiredCertPolicy: 'auto_reissue' | 'quarantine';
+}
+
+export interface MtlsCertData {
+  certificate: string;
+  privateKey: string;
+  expiresAt: string;
+  serialNumber: string;
 }
 
 // ============================================

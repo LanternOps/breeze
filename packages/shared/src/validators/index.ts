@@ -221,6 +221,15 @@ export const alertQuerySchema = paginationSchema.extend({
 });
 
 // ============================================
+// mTLS Settings Validators
+// ============================================
+
+export const orgMtlsSettingsSchema = z.object({
+  certLifetimeDays: z.number().int().min(1).max(365).default(90),
+  expiredCertPolicy: z.enum(['auto_reissue', 'quarantine']).default('auto_reissue')
+});
+
+// ============================================
 // Agent Validators
 // ============================================
 

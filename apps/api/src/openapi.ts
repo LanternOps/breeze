@@ -579,6 +579,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         type: 'object',
         properties: {
           enrollmentKey: { type: 'string' },
+          enrollmentSecret: { type: 'string' },
           hostname: { type: 'string' },
           osType: { type: 'string', enum: ['windows', 'macos', 'linux'] },
           osVersion: { type: 'string' },
@@ -659,6 +660,37 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           configUpdate: { type: 'object', nullable: true },
           upgradeTo: { type: 'string', nullable: true }
         }
+      },
+
+      // mTLS schemas
+      MtlsCertificate: {
+        type: 'object',
+        properties: {
+          certificate: { type: 'string', description: 'PEM-encoded client certificate' },
+          privateKey: { type: 'string', description: 'PEM-encoded private key' },
+          expiresAt: { type: 'string', format: 'date-time', description: 'Certificate expiration timestamp' },
+          serialNumber: { type: 'string', description: 'Certificate serial number' }
+        },
+        required: ['certificate', 'privateKey', 'expiresAt', 'serialNumber']
+      },
+      QuarantinedDevice: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          agentId: { type: 'string' },
+          hostname: { type: 'string' },
+          osType: { type: 'string', enum: ['windows', 'macos', 'linux'] },
+          quarantinedAt: { type: 'string', format: 'date-time' },
+          quarantinedReason: { type: 'string' }
+        }
+      },
+      MtlsSettings: {
+        type: 'object',
+        properties: {
+          certLifetimeDays: { type: 'integer', minimum: 1, maximum: 365, description: 'Certificate lifetime in days' },
+          expiredCertPolicy: { type: 'string', enum: ['auto_reissue', 'quarantine'], description: 'Policy when a certificate expires' }
+        },
+        required: ['certLifetimeDays', 'expiredCertPolicy']
       },
 
       // Audit schemas
@@ -3487,6 +3519,182 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           }
+        }
+      }
+    },
+
+    // ============================================
+    // MTLS ENDPOINTS
+    // ============================================
+    '/agents/renew-cert': {
+      post: {
+        tags: ['Agents'],
+        summary: 'Renew mTLS client certificate',
+        description: 'Request a new mTLS client certificate. This endpoint is excluded from mTLS WAF rules.',
+        responses: {
+          '200': {
+            description: 'New certificate issued',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    mtls: { $ref: '#/components/schemas/MtlsCertificate' }
+                  }
+                }
+              }
+            }
+          },
+          '401': {
+            description: 'Invalid credentials',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
+              }
+            }
+          },
+          '403': {
+            description: 'Device is quarantined or decommissioned',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    error: { type: 'string' },
+                    quarantined: { type: 'boolean' }
+                  },
+                  required: ['error', 'quarantined']
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/agents/quarantined': {
+      get: {
+        tags: ['Agents'],
+        summary: 'List quarantined devices',
+        description: 'List quarantined devices in the authenticated user\'s org scope.',
+        responses: {
+          '200': {
+            description: 'Quarantined devices',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    devices: { type: 'array', items: { $ref: '#/components/schemas/QuarantinedDevice' } }
+                  }
+                }
+              }
+            }
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' }
+        }
+      }
+    },
+    '/agents/{id}/approve': {
+      post: {
+        tags: ['Agents'],
+        summary: 'Approve quarantined device',
+        description: 'Approve a quarantined device. Issues a new mTLS certificate and sets status to online.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: 'Device UUID' }
+        ],
+        responses: {
+          '200': {
+            description: 'Device approved',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    mtls: {
+                      nullable: true,
+                      allOf: [{ $ref: '#/components/schemas/MtlsCertificate' }],
+                      description: 'New mTLS certificate if mTLS is enabled, null otherwise'
+                    }
+                  }
+                }
+              }
+            }
+          },
+          '400': {
+            description: 'Device is not quarantined',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
+              }
+            }
+          },
+          '404': { $ref: '#/components/responses/NotFound' }
+        }
+      }
+    },
+    '/agents/{id}/deny': {
+      post: {
+        tags: ['Agents'],
+        summary: 'Deny quarantined device',
+        description: 'Deny a quarantined device. Sets status to decommissioned.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: 'Device UUID' }
+        ],
+        responses: {
+          '200': {
+            description: 'Device denied',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Success' }
+              }
+            }
+          },
+          '400': {
+            description: 'Device is not quarantined',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
+              }
+            }
+          },
+          '404': { $ref: '#/components/responses/NotFound' }
+        }
+      }
+    },
+    '/agents/org/{orgId}/settings/mtls': {
+      patch: {
+        tags: ['Organizations'],
+        summary: 'Update mTLS settings',
+        description: 'Update mTLS certificate settings for an organization.',
+        parameters: [
+          { name: 'orgId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, description: 'Organization UUID' }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/MtlsSettings' }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Settings updated',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    settings: { $ref: '#/components/schemas/MtlsSettings' }
+                  }
+                }
+              }
+            }
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '404': { $ref: '#/components/responses/NotFound' }
         }
       }
     },

@@ -96,7 +96,7 @@ systemctl daemon-reload
 echo "Breeze Agent installed."
 echo ""
 echo "Next steps:"
-echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server"
+echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
 echo "  2. Enable:  sudo systemctl enable breeze-agent"
 echo "  3. Start:   sudo systemctl start breeze-agent"
 echo "  4. Status:  sudo systemctl status breeze-agent"

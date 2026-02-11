@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/heartbeat"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -23,9 +25,10 @@ import (
 )
 
 var (
-	version   = "0.1.0"
-	cfgFile   string
-	serverURL string
+	version          = "0.1.0"
+	cfgFile          string
+	serverURL        string
+	enrollmentSecret string
 )
 
 var log = logging.L("main")
@@ -84,6 +87,7 @@ via a local IPC socket and has no direct network access.`,
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
+	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(enrollCmd)
@@ -153,8 +157,54 @@ func runAgent() {
 		"agentId", cfg.AgentID,
 	)
 
+	// Load mTLS client certificate if configured
+	var tlsCfg *tls.Config
+	if cfg.MtlsCertPEM != "" {
+		if mtls.IsExpired(cfg.MtlsCertExpires) {
+			log.Warn("mTLS certificate expired, attempting renewal")
+			// Use bearer-only client for renewal (no mTLS required)
+			renewClient := api.NewClient(cfg.ServerURL, secureToken.Reveal(), cfg.AgentID)
+			renewResp, err := renewClient.RenewCert()
+			if err != nil {
+				log.Error("mTLS cert renewal request failed, continuing without mTLS", "error", err)
+				cfg.MtlsCertPEM = "" // Clear so we don't load the expired cert
+			} else if renewResp.Quarantined {
+				log.Error("device quarantined by server, continuing without mTLS")
+				cfg.MtlsCertPEM = "" // Clear so we don't load the expired cert
+			} else if renewResp.Mtls != nil {
+				// Validate the cert/key pair before saving
+				if _, verifyErr := mtls.LoadClientCert(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey); verifyErr != nil {
+					log.Error("renewed cert/key pair is invalid, continuing without mTLS", "error", verifyErr)
+					cfg.MtlsCertPEM = ""
+				} else {
+					cfg.MtlsCertPEM = renewResp.Mtls.Certificate
+					cfg.MtlsKeyPEM = renewResp.Mtls.PrivateKey
+					cfg.MtlsCertExpires = renewResp.Mtls.ExpiresAt
+					cfg.AuthToken = secureToken.Reveal()
+					if saveErr := config.SaveTo(cfg, cfgFile); saveErr != nil {
+						log.Error("failed to save renewed mTLS cert to config", "error", saveErr)
+					}
+					cfg.AuthToken = ""
+					log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
+				}
+			} else {
+				log.Warn("renewal response contained no cert data, continuing without mTLS")
+				cfg.MtlsCertPEM = ""
+			}
+		}
+
+		var err error
+		tlsCfg, err = mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM)
+		if err != nil {
+			log.Error("failed to load mTLS certificate, continuing without mTLS", "error", err)
+			tlsCfg = nil
+		} else if tlsCfg != nil {
+			log.Info("mTLS client certificate loaded")
+		}
+	}
+
 	// Start heartbeat - this implements the main agent run loop
-	hb := heartbeat.NewWithVersion(cfg, version, secureToken)
+	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 
 	// Log agent start audit event (nil-safe: Log() is a no-op on nil receiver)
 	hb.AuditLog().Log(audit.EventAgentStart, "", map[string]any{
@@ -169,6 +219,7 @@ func runAgent() {
 		ServerURL: cfg.ServerURL,
 		AgentID:   cfg.AgentID,
 		AuthToken: secureToken,
+		TLSConfig: tlsCfg,
 	}
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
 	hb.SetWebSocketClient(wsClient)
@@ -238,13 +289,19 @@ func enrollDevice(enrollmentKey string) {
 
 	client := api.NewClient(cfg.ServerURL, "", "")
 
+	secret := enrollmentSecret
+	if secret == "" {
+		secret = os.Getenv("BREEZE_AGENT_ENROLLMENT_SECRET")
+	}
+
 	enrollReq := &api.EnrollRequest{
-		EnrollmentKey: enrollmentKey,
-		Hostname:      systemInfo.Hostname,
-		OSType:        systemInfo.OSType,
-		OSVersion:     systemInfo.OSVersion,
-		Architecture:  systemInfo.Architecture,
-		AgentVersion:  version,
+		EnrollmentKey:    enrollmentKey,
+		EnrollmentSecret: secret,
+		Hostname:         systemInfo.Hostname,
+		OSType:           systemInfo.OSType,
+		OSVersion:        systemInfo.OSVersion,
+		Architecture:     systemInfo.Architecture,
+		AgentVersion:     version,
 		HardwareInfo: &api.HardwareInfo{
 			CPUModel:     hardwareInfo.CPUModel,
 			CPUCores:     hardwareInfo.CPUCores,
@@ -275,11 +332,19 @@ func enrollDevice(enrollmentKey string) {
 	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
 		cfg.HeartbeatIntervalSeconds = enrollResp.Config.HeartbeatIntervalSeconds
 	}
-	if enrollResp.Config.MetricsIntervalSeconds > 0 {
-		cfg.MetricsIntervalSeconds = enrollResp.Config.MetricsIntervalSeconds
+	if enrollResp.Config.MetricsCollectionIntervalSeconds > 0 {
+		cfg.MetricsIntervalSeconds = enrollResp.Config.MetricsCollectionIntervalSeconds
 	}
 	if len(enrollResp.Config.EnabledCollectors) > 0 {
 		cfg.EnabledCollectors = enrollResp.Config.EnabledCollectors
+	}
+
+	// Save mTLS certificate if issued
+	if enrollResp.Mtls != nil {
+		cfg.MtlsCertPEM = enrollResp.Mtls.Certificate
+		cfg.MtlsKeyPEM = enrollResp.Mtls.PrivateKey
+		cfg.MtlsCertExpires = enrollResp.Mtls.ExpiresAt
+		fmt.Printf("mTLS certificate issued (expires: %s)\n", enrollResp.Mtls.ExpiresAt)
 	}
 
 	if err := config.SaveTo(cfg, cfgFile); err != nil {

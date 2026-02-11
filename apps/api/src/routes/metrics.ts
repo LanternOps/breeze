@@ -7,13 +7,46 @@
 import { Hono } from 'hono';
 import { avg, and, eq, gte, sql } from 'drizzle-orm';
 import { Counter, Gauge, Histogram, Registry } from 'prom-client';
+import { createHash, timingSafeEqual } from 'crypto';
 
 import { db } from '../db';
 import { deviceMetrics, devices, remoteSessions } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 export const metricsRoutes = new Hono();
-const METRICS_SCRAPE_TOKEN = process.env.METRICS_SCRAPE_TOKEN?.trim();
+const rawMetricsScrapeToken = process.env.METRICS_SCRAPE_TOKEN?.trim();
+// Production hardening: refuse to run with obvious placeholder tokens.
+const METRICS_SCRAPE_TOKEN =
+  (process.env.NODE_ENV ?? 'development') === 'production' && (!rawMetricsScrapeToken || rawMetricsScrapeToken === 'REDACTED_DEV_TOKEN')
+    ? undefined
+    : rawMetricsScrapeToken;
+
+function envFlag(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function parseCsvSet(raw: string | undefined): Set<string> {
+  if (!raw) return new Set();
+  return new Set(raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0));
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
+// Default: hide org IDs in Prometheus labels in production (they can leak tenant identifiers).
+const METRICS_INCLUDE_ORG_ID = envFlag(
+  'METRICS_INCLUDE_ORG_ID',
+  (process.env.NODE_ENV ?? 'development') !== 'production'
+);
+
+const METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
 
 const register = new Registry();
 
@@ -149,7 +182,7 @@ export function recordHttpRequest(
     method,
     route: normalizedRoute,
     status: String(status),
-    org_id: orgId ?? 'unknown'
+    org_id: METRICS_INCLUDE_ORG_ID ? (orgId ?? 'unknown') : 'redacted'
   };
 
   httpRequestsTotal.labels(labels.method, labels.route, labels.status, labels.org_id).inc();
@@ -333,8 +366,16 @@ metricsRoutes.get('/scrape', async (c) => {
     return c.json({ error: 'Metrics scrape token is not configured' }, 503);
   }
 
+  if (METRICS_SCRAPE_IP_ALLOWLIST.size > 0) {
+    const ip = getTrustedClientIpOrUndefined(c);
+    if (!ip || !METRICS_SCRAPE_IP_ALLOWLIST.has(ip)) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+  }
+
   const authHeader = c.req.header('Authorization');
-  if (authHeader !== `Bearer ${METRICS_SCRAPE_TOKEN}`) {
+  const expectedHeader = `Bearer ${METRICS_SCRAPE_TOKEN}`;
+  if (!safeEqual(authHeader ?? '', expectedHeader)) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 

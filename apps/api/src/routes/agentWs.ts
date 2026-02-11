@@ -3,7 +3,7 @@ import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { db } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults, remoteSessions } from '../db/schema';
 import { handleTerminalOutput } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
@@ -60,27 +60,57 @@ export interface AgentCommand {
   payload: Record<string, unknown>;
 }
 
+type AgentDbContext = {
+  deviceId: string;
+  orgId: string;
+};
+
 /**
  * Validate agent token by hashing it and comparing against the stored hash.
  */
-async function validateAgentToken(agentId: string, token: string): Promise<boolean> {
+async function validateAgentToken(agentId: string, token: string): Promise<AgentDbContext | null> {
   if (!token || !token.startsWith('brz_')) {
-    return false;
+    return null;
   }
 
   const tokenHash = createHash('sha256').update(token).digest('hex');
 
-  const [device] = await db
-    .select({ id: devices.id, agentTokenHash: devices.agentTokenHash })
-    .from(devices)
-    .where(eq(devices.agentId, agentId))
-    .limit(1);
+  // Authentication must work even when tenant RLS is deny-by-default.
+  // Use system DB context for lookup, then scope all downstream queries to this org.
+  const device = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        id: devices.id,
+        orgId: devices.orgId,
+        agentTokenHash: devices.agentTokenHash,
+        status: devices.status
+      })
+      .from(devices)
+      .where(eq(devices.agentId, agentId))
+      .limit(1);
+    return row ?? null;
+  });
 
   if (!device || !device.agentTokenHash) {
-    return false;
+    return null;
   }
 
-  return device.agentTokenHash === tokenHash;
+  if (device.status === 'decommissioned') {
+    return null;
+  }
+
+  if (device.status === 'quarantined') {
+    return null;
+  }
+
+  if (device.agentTokenHash !== tokenHash) {
+    return null;
+  }
+
+  return {
+    deviceId: device.id,
+    orgId: device.orgId
+  };
 }
 
 /**
@@ -483,16 +513,31 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
  */
 export function createAgentWsHandlers(agentId: string, token: string | undefined) {
   // Pre-validate token
-  let isValid = false;
+  let agentDb: AgentDbContext | null = null;
   const validationPromise = token
-    ? validateAgentToken(agentId, token).then(result => { isValid = result; })
+    ? validateAgentToken(agentId, token).then(result => { agentDb = result; })
     : Promise.resolve();
+
+  const runWithAgentDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (!agentDb) {
+      throw new Error('Agent DB context not initialized');
+    }
+
+    return withDbAccessContext(
+      {
+        scope: 'organization',
+        orgId: agentDb.orgId,
+        accessibleOrgIds: [agentDb.orgId]
+      },
+      fn
+    );
+  };
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
       await validationPromise;
 
-      if (!isValid) {
+      if (!agentDb) {
         console.warn(`WebSocket connection rejected for agent ${agentId}: invalid token`);
         ws.send(JSON.stringify({
           type: 'error',
@@ -507,11 +552,13 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
       activeConnections.set(agentId, ws);
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
 
-      // Update device status
-      await updateDeviceStatus(agentId, 'online');
+      // Update device status and load pending commands under tenant DB context.
+      const pendingCommands = await runWithAgentDbAccess(async () => {
+        await updateDeviceStatus(agentId, 'online');
+        return getPendingCommands(agentId);
+      });
 
       // Send welcome message with any pending commands
-      const pendingCommands = await getPendingCommands(agentId);
       ws.send(JSON.stringify({
         type: 'connected',
         agentId,
@@ -522,6 +569,13 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
 
     onMessage: async (event: MessageEvent, ws: WSContext) => {
       try {
+        // Ensure token validation finished even if the agent sends data immediately after open.
+        await validationPromise;
+        if (!agentDb) {
+          ws.close(4001, 'Authentication failed');
+          return;
+        }
+
         // Binary fast-path for desktop frames: [0x02][36-byte sessionId][JPEG data]
         if (event.data instanceof ArrayBuffer || Buffer.isBuffer(event.data)) {
           const buf = Buffer.isBuffer(event.data) ? event.data : Buffer.from(event.data);
@@ -561,14 +615,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
             const answer = typeof desktopResult.answer === 'string' ? desktopResult.answer : null;
             if (sessionId && answer && answer.length < 65536) {
               try {
-                // Verify this agent owns the session's device
-                const [device] = await db
-                  .select({ id: devices.id })
-                  .from(devices)
-                  .where(eq(devices.agentId, agentId))
-                  .limit(1);
-
-                if (device) {
+                await runWithAgentDbAccess(async () => {
                   const result = await db
                     .update(remoteSessions)
                     .set({
@@ -579,7 +626,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
                     .where(
                       and(
                         eq(remoteSessions.id, sessionId),
-                        eq(remoteSessions.deviceId, device.id),
+                        eq(remoteSessions.deviceId, agentDb.deviceId),
                         eq(remoteSessions.status, 'connecting')
                       )
                     )
@@ -590,7 +637,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
                   } else {
                     console.warn(`[AgentWs] Session ${sessionId} not found or not owned by agent ${agentId}`);
                   }
-                }
+                });
               } catch (err) {
                 console.error(`[AgentWs] Failed to store WebRTC answer:`, err);
               }
@@ -619,7 +666,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
 
         switch (parsed.data.type) {
           case 'command_result':
-            await processCommandResult(agentId, parsed.data);
+            await runWithAgentDbAccess(async () => processCommandResult(agentId, parsed.data));
             ws.send(JSON.stringify({
               type: 'ack',
               commandId: parsed.data.commandId
@@ -628,10 +675,10 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
 
           case 'heartbeat':
             // Update last seen timestamp
-            await updateDeviceStatus(agentId, 'online');
+            await runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'online'));
 
             // Check for pending commands and send them
-            const pendingCommands = await getPendingCommands(agentId);
+            const pendingCommands = await runWithAgentDbAccess(async () => getPendingCommands(agentId));
             ws.send(JSON.stringify({
               type: 'heartbeat_ack',
               timestamp: Date.now(),
@@ -656,13 +703,19 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
       console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
 
       // Update device status to offline
-      await updateDeviceStatus(agentId, 'offline');
+      if (agentDb) {
+        await runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline'));
+      }
     },
 
     onError: (event: unknown, _ws: WSContext) => {
       console.error(`WebSocket error for agent ${agentId}:`, event);
       activeConnections.delete(agentId);
-      updateDeviceStatus(agentId, 'offline');
+      if (agentDb) {
+        void runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'offline')).catch((err) => {
+          console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
+        });
+      }
     }
   };
 }

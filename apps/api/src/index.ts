@@ -101,7 +101,10 @@ function envFlag(name: string, defaultValue: boolean): boolean {
 }
 
 const REQUIRE_DB_ON_STARTUP = envFlag('REQUIRE_DB_ON_STARTUP', true);
-const REQUIRE_REDIS_ON_STARTUP = envFlag('REQUIRE_REDIS_ON_STARTUP', false);
+const REQUIRE_REDIS_ON_STARTUP = envFlag(
+  'REQUIRE_REDIS_ON_STARTUP',
+  (process.env.NODE_ENV ?? 'development') === 'production'
+);
 
 const app = new Hono();
 

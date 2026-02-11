@@ -20,6 +20,9 @@ export interface TokenPayload {
   partnerId: string | null;
   scope: 'system' | 'partner' | 'organization';
   type: 'access' | 'refresh';
+  // Indicates whether this token was issued after completing MFA.
+  // For legacy tokens that predate this claim, verification defaults this to false.
+  mfa: boolean;
   iat?: number;
   jti?: string;
 }
@@ -65,6 +68,7 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       partnerId: payload.partnerId as string | null,
       scope: payload.scope as 'system' | 'partner' | 'organization',
       type: payload.type as 'access' | 'refresh',
+      mfa: payload.mfa === true,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };

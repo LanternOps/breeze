@@ -7,12 +7,16 @@
  *
  * Preserves:
  * - All 17 custom MCP tools (via createBreezeMcpServer)
- * - 4-tier guardrail system (via canUseTool callback)
+ * - 4-tier guardrail system (via canUseTool callback, requires permissionMode 'default')
  * - Input sanitization (before query)
  * - SSE event contract to frontend (translation layer)
  * - DB persistence (mirrored messages to aiMessages)
  * - Cost tracking (daily/monthly aggregates)
  * - Tier 3 approval flow (DB polling in canUseTool)
+ *
+ * NOTE: permissionMode must be 'default' (not 'bypassPermissions') so the CLI
+ * subprocess sends can_use_tool control requests for MCP tools, ensuring the
+ * canUseTool callback is invoked for guardrails, RBAC, and approval checks.
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -370,8 +374,7 @@ export async function* sendMessageSdk(
         mcpServers: { breeze: breezeServer },
         canUseTool,
         includePartialMessages: true,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
+        permissionMode: 'default',
         resume: session.sdkSessionId ?? undefined,
         persistSession: false, // We handle persistence ourselves
         settingSources: [], // Don't load filesystem settings

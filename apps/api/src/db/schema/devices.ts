@@ -4,7 +4,7 @@ import { users } from './users';
 import type { InterfaceBandwidth } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
-export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned']);
+export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined']);
 export const deviceGroupTypeEnum = pgEnum('device_group_type', ['static', 'dynamic']);
 export const membershipSourceEnum = pgEnum('membership_source', ['manual', 'dynamic_rule', 'policy']);
 
@@ -14,6 +14,12 @@ export const devices = pgTable('devices', {
   siteId: uuid('site_id').notNull().references(() => sites.id),
   agentId: varchar('agent_id', { length: 64 }).notNull().unique(),
   agentTokenHash: varchar('agent_token_hash', { length: 64 }),
+  mtlsCertSerialNumber: varchar('mtls_cert_serial_number', { length: 128 }),
+  mtlsCertExpiresAt: timestamp('mtls_cert_expires_at'),
+  mtlsCertIssuedAt: timestamp('mtls_cert_issued_at'),
+  mtlsCertCfId: varchar('mtls_cert_cf_id', { length: 128 }),
+  quarantinedAt: timestamp('quarantined_at'),
+  quarantinedReason: varchar('quarantined_reason', { length: 255 }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),
