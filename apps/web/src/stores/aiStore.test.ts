@@ -31,7 +31,8 @@ describe('ai store', () => {
       sessions: [],
       showHistory: false,
       searchResults: [],
-      isSearching: false
+      isSearching: false,
+      isInterrupting: false
     });
   });
 
@@ -89,5 +90,36 @@ describe('ai store', () => {
     expect(useAiStore.getState().showHistory).toBe(false);
     expect(useAiStore.getState().messages).toHaveLength(1);
     expect(useAiStore.getState().messages[0]?.createdAt).toBeInstanceOf(Date);
+  });
+
+  it('sendMessage ignores requests while streaming', async () => {
+    useAiStore.setState({ sessionId: 'session-1', isStreaming: true });
+
+    await useAiStore.getState().sendMessage('Hello');
+
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    expect(useAiStore.getState().messages).toHaveLength(0);
+  });
+
+  it('sendMessage rolls back optimistic message on 409 conflict', async () => {
+    useAiStore.setState({ sessionId: 'session-1' });
+
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse(
+        { error: 'A message is already being processed for this session' },
+        false,
+        409
+      )
+    );
+
+    await useAiStore.getState().sendMessage('Hello');
+
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/session-1/messages', {
+      method: 'POST',
+      body: JSON.stringify({ content: 'Hello', pageContext: undefined })
+    });
+    expect(useAiStore.getState().messages).toHaveLength(0);
+    expect(useAiStore.getState().isStreaming).toBe(false);
+    expect(useAiStore.getState().error).toContain('already being processed');
   });
 });

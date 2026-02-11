@@ -201,11 +201,14 @@ export class StreamingSessionManager {
 
   /**
    * Check state and transition to 'processing'.
-   * Only allows transition from 'idle' or 'ready' states.
+   * Allows transition from 'initializing', 'ready', or 'idle' states.
+   * Rejects only true concurrent work and teardown/closed sessions.
    * Returns true if successful, false if session is not in a valid state.
    */
   tryTransitionToProcessing(session: ActiveSession): boolean {
-    if (session.state !== 'idle' && session.state !== 'ready') return false;
+    if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
+      return false;
+    }
     session.state = 'processing';
     return true;
   }
