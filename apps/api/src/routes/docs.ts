@@ -6,8 +6,14 @@
 
 import { Hono } from 'hono';
 import { openApiSpec } from '../openapi';
+import { envFlag } from '../utils/envFlag';
 
 export const docsRoutes = new Hono();
+
+const ENABLE_DOCS_UI = envFlag(
+  'ENABLE_API_DOCS_UI',
+  (process.env.NODE_ENV ?? 'development') !== 'production'
+);
 
 /**
  * Swagger UI HTML template
@@ -132,6 +138,14 @@ const swaggerUIHtml = `<!DOCTYPE html>
  * Serves Swagger UI HTML for interactive API documentation
  */
 docsRoutes.get('/', (c) => {
+  if (!ENABLE_DOCS_UI) {
+    return c.json({
+      error: 'Interactive API docs are disabled',
+      openApiJson: '/api/v1/docs/openapi.json',
+      openApiYaml: '/api/v1/docs/openapi.yaml'
+    }, 404);
+  }
+
   return c.html(swaggerUIHtml);
 });
 

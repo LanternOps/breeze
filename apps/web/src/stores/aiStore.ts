@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { AiPageContext, AiStreamEvent } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 
@@ -42,6 +43,7 @@ interface AiState {
   showHistory: boolean;
   searchResults: SearchResult[];
   isSearching: boolean;
+  isInterrupting: boolean;
 
   // Actions
   toggle: () => void;
@@ -56,6 +58,7 @@ interface AiState {
   closeSession: () => Promise<void>;
   clearError: () => void;
   toggleHistory: () => void;
+  interruptResponse: () => Promise<void>;
   searchConversations: (query: string) => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
 }
@@ -73,7 +76,9 @@ function mapMessagesFromApi(rawMessages: Record<string, unknown>[]): AiMessage[]
   }));
 }
 
-export const useAiStore = create<AiState>()((set, get) => ({
+export const useAiStore = create<AiState>()(
+  persist(
+    (set, get) => ({
   isOpen: false,
   sessionId: null,
   messages: [],
@@ -86,6 +91,7 @@ export const useAiStore = create<AiState>()((set, get) => ({
   showHistory: false,
   searchResults: [],
   isSearching: false,
+  isInterrupting: false,
 
   toggle: () => set((s) => ({ isOpen: !s.isOpen })),
   open: () => set({ isOpen: true }),
@@ -120,14 +126,28 @@ export const useAiStore = create<AiState>()((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
-      if (!res.ok) throw new Error('Failed to load session');
+      if (!res.ok) {
+        if (res.status === 404) {
+          // Session gone — clear persisted ID so next message creates a fresh session
+          set({ sessionId: null, messages: [], isLoading: false });
+        } else {
+          set({ error: 'Failed to load session', isLoading: false });
+        }
+        return;
+      }
       const data = await res.json();
+      if (data.session?.status !== 'active') {
+        set({ sessionId: null, messages: [], isLoading: false });
+        return;
+      }
 
       const messages = mapMessagesFromApi(data.messages || []);
 
       set({ sessionId, messages, isLoading: false });
     } catch (err) {
       set({
+        sessionId: null,
+        messages: [],
         error: err instanceof Error ? err.message : 'Failed to load session',
         isLoading: false
       });
@@ -137,7 +157,10 @@ export const useAiStore = create<AiState>()((set, get) => ({
   loadSessions: async () => {
     try {
       const res = await fetchWithAuth('/ai/sessions?status=active');
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.error('[AI] Failed to load sessions: HTTP', res.status);
+        return;
+      }
       const data = await res.json();
       set({ sessions: data.data || [] });
     } catch (err) {
@@ -267,6 +290,25 @@ export const useAiStore = create<AiState>()((set, get) => ({
 
   toggleHistory: () => set((s) => ({ showHistory: !s.showHistory, searchResults: [] })),
 
+  interruptResponse: async () => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+
+    set({ isInterrupting: true });
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/interrupt`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.interrupted === false) {
+        set({ error: data.reason || 'Could not interrupt the response' });
+      }
+    } catch (err) {
+      console.error('[AI] Interrupt failed:', err);
+      set({ error: 'Failed to interrupt the response' });
+    } finally {
+      set({ isInterrupting: false });
+    }
+  },
+
   searchConversations: async (query: string) => {
     if (query.length < 2) {
       set({ searchResults: [], isSearching: false });
@@ -284,7 +326,7 @@ export const useAiStore = create<AiState>()((set, get) => ({
       }
     } catch (err) {
       console.error('[AI] Search failed:', err);
-      set({ isSearching: false });
+      set({ isSearching: false, error: 'Search failed' });
     }
   },
 
@@ -305,7 +347,15 @@ export const useAiStore = create<AiState>()((set, get) => ({
       });
     }
   }
-}));
+    }),
+    {
+      name: 'breeze-ai-chat',
+      partialize: (state) => ({
+        sessionId: state.sessionId,
+      }),
+    }
+  )
+);
 
 function processStreamEvent(
   event: AiStreamEvent,

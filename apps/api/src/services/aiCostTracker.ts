@@ -11,7 +11,7 @@ import { eq, and, sql, desc } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 
-// Cost per million tokens (in cents) - Claude Sonnet 4.5 pricing
+// Cost per million tokens (in cents)
 const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
   'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 },
   'claude-haiku-4-5-20251001': { inputPerMillion: 100, outputPerMillion: 500 }
@@ -201,6 +201,10 @@ export async function recordUsageFromSdkResult(
     num_turns: number;
   }
 ): Promise<void> {
+  if (!orgId) {
+    console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
+    return;
+  }
   const costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
   const { input_tokens: inputTokens, output_tokens: outputTokens } = result.usage;
   const now = new Date();

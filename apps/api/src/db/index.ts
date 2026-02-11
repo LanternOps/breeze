@@ -68,6 +68,16 @@ export async function withSystemDbAccessContext<T>(fn: () => Promise<T>): Promis
   return withDbAccessContext(SYSTEM_DB_ACCESS_CONTEXT, fn);
 }
 
+/**
+ * Runs a function outside any active AsyncLocalStorage DB context,
+ * ensuring `db` resolves to `baseDb` (the connection pool) rather
+ * than a request-scoped transaction. Use this for long-lived background
+ * tasks that outlive the originating HTTP request.
+ */
+export function runOutsideDbContext<T>(fn: () => T): T {
+  return dbContextStorage.exit(fn);
+}
+
 export const db = new Proxy(baseDb, {
   get(_target, prop) {
     const activeDb = getCurrentDb() as Record<PropertyKey, unknown>;

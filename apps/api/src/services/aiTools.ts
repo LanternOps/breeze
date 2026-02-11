@@ -222,7 +222,7 @@ registerTool({
       networkInterfaces: network,
       disks,
       recentMetrics
-    });
+    }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
   }
 });
 
