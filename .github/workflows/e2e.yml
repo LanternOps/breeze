@@ -1,0 +1,141 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: breeze
+          POSTGRES_PASSWORD: breeze_test
+          POSTGRES_DB: breeze_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://breeze:breeze_test@localhost:5432/breeze_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: e2e-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+      APP_ENCRYPTION_KEY: e2e-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+      MFA_ENCRYPTION_KEY: e2e-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+      NODE_ENV: test
+      E2E_BASE_URL: http://localhost:4321
+      E2E_API_URL: http://localhost:3001
+      E2E_ADMIN_EMAIL: admin@breeze.test
+      E2E_ADMIN_PASSWORD: TestPassword123!
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install E2E test dependencies
+        working-directory: e2e-tests
+        run: |
+          npm install
+          npx playwright install --with-deps chromium firefox
+
+      - name: Build API
+        run: pnpm --filter @breeze/api build
+
+      - name: Build Web
+        run: pnpm --filter @breeze/web build
+
+      - name: Push database schema
+        run: pnpm db:push
+
+      - name: Seed test data
+        run: pnpm db:seed
+
+      - name: Start API server
+        run: pnpm --filter @breeze/api start &
+        env:
+          PORT: 3001
+
+      - name: Start Web server
+        run: pnpm --filter @breeze/web preview &
+        env:
+          PORT: 4321
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for API..."
+          timeout 30 bash -c 'until curl -sf http://localhost:3001/health 2>/dev/null; do sleep 1; done'
+          echo "Waiting for Web..."
+          timeout 30 bash -c 'until curl -sf http://localhost:4321 2>/dev/null; do sleep 1; done'
+
+      - name: Run Playwright tests
+        working-directory: e2e-tests
+        run: npx playwright test
+        env:
+          CI: true
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: e2e-tests/playwright-report/
+          retention-days: 14
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: e2e-tests/test-results/
+          retention-days: 7

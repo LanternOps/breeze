@@ -160,6 +160,36 @@ export default function EnrollmentKeyManager() {
     }
   };
 
+  const handleRotateKey = async (key: EnrollmentKey) => {
+    const proceed = window.confirm(
+      `Rotate "${key.name}" now? Existing enrollments will continue to work, but new enrollments must use the new key.`
+    );
+    if (!proceed) return;
+
+    setSubmitting(true);
+    try {
+      const response = await fetchWithAuth(`/enrollment-keys/${key.id}/rotate`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to rotate enrollment key');
+      }
+
+      const rotated = await response.json().catch(() => ({} as Record<string, unknown>));
+      if (typeof rotated.key === 'string' && rotated.key.length > 0) {
+        setNewlyCreatedKey(rotated.key);
+      }
+      await fetchKeys(currentPage);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const isExpired = (key: EnrollmentKey) =>
     key.expiresAt && new Date(key.expiresAt) < new Date();
 
@@ -325,6 +355,14 @@ export default function EnrollmentKeyManager() {
                         {new Date(key.createdAt).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleRotateKey(key)}
+                          disabled={submitting}
+                          className="mr-1 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-50"
+                        >
+                          Rotate
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleOpenDelete(key)}

@@ -93,6 +93,11 @@ const createEnrollmentKeySchema = z.object({
   expiresAt: z.string().datetime().optional()
 });
 
+const rotateEnrollmentKeySchema = z.object({
+  maxUsage: z.number().int().min(1).max(100000).nullable().optional(),
+  expiresAt: z.string().datetime().optional()
+});
+
 function sanitizeEnrollmentKey(enrollmentKey: typeof enrollmentKeys.$inferSelect) {
   const { key, ...safeRecord } = enrollmentKey;
   return safeRecord;
@@ -277,6 +282,74 @@ enrollmentKeyRoutes.get(
     }
 
     return c.json(sanitizeEnrollmentKey(enrollmentKey));
+  }
+);
+
+// POST /enrollment-keys/:id/rotate - Rotate enrollment key material in-place
+enrollmentKeyRoutes.post(
+  '/:id/rotate',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('json', rotateEnrollmentKeySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const keyId = c.req.param('id');
+    const data = c.req.valid('json');
+
+    const [existingKey] = await db
+      .select()
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.id, keyId))
+      .limit(1);
+
+    if (!existingKey) {
+      return c.json({ error: 'Enrollment key not found' }, 404);
+    }
+
+    const hasAccess = await ensureOrgAccess(existingKey.orgId, auth);
+    if (!hasAccess) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    const rawKey = generateEnrollmentKey();
+    const keyHash = hashEnrollmentKey(rawKey);
+    const expiresAt = data.expiresAt ? new Date(data.expiresAt) : existingKey.expiresAt;
+    const maxUsage = data.maxUsage !== undefined ? data.maxUsage : existingKey.maxUsage;
+
+    const [rotatedKey] = await db
+      .update(enrollmentKeys)
+      .set({
+        key: keyHash,
+        usageCount: 0,
+        expiresAt,
+        maxUsage
+      })
+      .where(eq(enrollmentKeys.id, keyId))
+      .returning();
+
+    if (!rotatedKey) {
+      return c.json({ error: 'Failed to rotate enrollment key' }, 500);
+    }
+
+    writeEnrollmentKeyAudit(c, auth, {
+      orgId: rotatedKey.orgId,
+      action: 'enrollment_key.rotate',
+      keyId: rotatedKey.id,
+      keyName: rotatedKey.name,
+      details: {
+        previousUsageCount: existingKey.usageCount,
+        previousMaxUsage: existingKey.maxUsage,
+        nextMaxUsage: rotatedKey.maxUsage,
+        previousExpiresAt: existingKey.expiresAt,
+        nextExpiresAt: rotatedKey.expiresAt
+      }
+    });
+
+    return c.json({
+      ...sanitizeEnrollmentKey(rotatedKey),
+      key: rawKey
+    });
   }
 );
 

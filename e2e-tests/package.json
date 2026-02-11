@@ -1,26 +1,29 @@
 {
   "name": "@breeze/e2e-tests",
   "version": "1.0.0",
-  "description": "End-to-end tests for Breeze RMM using Claude Code coordination",
+  "description": "End-to-end tests for Breeze RMM — Playwright browser tests and YAML-based remote agent tests",
   "type": "module",
   "scripts": {
-    "test": "tsx run.ts --mode live",
-    "test:simulate": "tsx run.ts --mode simulate",
-    "test:live": "tsx run.ts --mode live",
-    "test:dry": "tsx run.ts --dry-run",
-    "test:critical": "tsx run.ts --mode live --tags critical",
-    "test:critical:simulate": "tsx run.ts --mode simulate --tags critical",
-    "test:windows": "tsx run.ts --mode live --nodes windows",
-    "test:windows:simulate": "tsx run.ts --mode simulate --nodes windows",
-    "test:linux": "tsx run.ts --mode live --nodes linux",
-    "test:linux:simulate": "tsx run.ts --mode simulate --nodes linux",
-    "test:macos": "tsx run.ts --mode live --nodes macos",
-    "test:macos:simulate": "tsx run.ts --mode simulate --nodes macos"
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "test:headed": "npx playwright test --headed",
+    "test:yaml": "tsx run.ts --mode live",
+    "test:yaml:simulate": "tsx run.ts --mode simulate",
+    "test:yaml:dry": "tsx run.ts --dry-run",
+    "test:yaml:critical": "tsx run.ts --mode live --tags critical",
+    "test:yaml:critical:simulate": "tsx run.ts --mode simulate --tags critical",
+    "test:yaml:windows": "tsx run.ts --mode live --nodes windows",
+    "test:yaml:windows:simulate": "tsx run.ts --mode simulate --nodes windows",
+    "test:yaml:linux": "tsx run.ts --mode live --nodes linux",
+    "test:yaml:linux:simulate": "tsx run.ts --mode simulate --nodes linux",
+    "test:yaml:macos": "tsx run.ts --mode live --nodes macos",
+    "test:yaml:macos:simulate": "tsx run.ts --mode simulate --nodes macos"
   },
   "dependencies": {
     "yaml": "^2.6.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/node": "^22.0.0",
     "playwright": "^1.49.1",
     "tsx": "^4.19.0",

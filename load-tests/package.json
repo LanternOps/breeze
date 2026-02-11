@@ -1,0 +1,13 @@
+{
+  "name": "breeze-load-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "k6 load test scenarios for Breeze RMM. See README.md for setup and usage.",
+  "scripts": {
+    "test:smoke": "k6 run --vus 1 --duration 30s scenarios/auth.js",
+    "test:load": "k6 run scenarios/heartbeat.js",
+    "test:stress": "k6 run scenarios/heartbeat.js -e STRESS=true"
+  },
+  "keywords": ["k6", "load-testing", "breeze-rmm"],
+  "license": "UNLICENSED"
+}

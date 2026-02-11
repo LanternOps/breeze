@@ -25,6 +25,7 @@ import {
   securityScans,
   deviceFilesystemSnapshots,
   deviceSessions,
+  agentVersions,
   organizations
 } from '../db/schema';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
@@ -218,6 +219,58 @@ function parseEnvBoundedNumber(raw: string | undefined, fallback: number, min: n
   const rounded = Math.round(parsed);
   if (rounded < min || rounded > max) return fallback;
   return rounded;
+}
+
+function normalizeAgentArchitecture(architecture: string | null | undefined): 'amd64' | 'arm64' | null {
+  if (!architecture) return null;
+  const normalized = architecture.trim().toLowerCase();
+  if (normalized === 'amd64' || normalized === 'x86_64' || normalized === 'x64') {
+    return 'amd64';
+  }
+  if (normalized === 'arm64' || normalized === 'aarch64') {
+    return 'arm64';
+  }
+  return null;
+}
+
+function parseComparableVersion(raw: string): { core: number[]; prerelease: string | null } | null {
+  const trimmed = raw.trim().replace(/^v/i, '');
+  if (!trimmed) return null;
+
+  const [corePart, prereleasePart] = trimmed.split('-', 2);
+  const coreTokens = corePart.split('.');
+  if (coreTokens.length === 0) return null;
+
+  const core: number[] = [];
+  for (const token of coreTokens) {
+    if (!/^\d+$/.test(token)) return null;
+    core.push(Number.parseInt(token, 10));
+  }
+
+  return {
+    core,
+    prerelease: prereleasePart ?? null,
+  };
+}
+
+function compareAgentVersions(leftRaw: string, rightRaw: string): number {
+  const left = parseComparableVersion(leftRaw);
+  const right = parseComparableVersion(rightRaw);
+  if (!left || !right) return 0;
+
+  const maxLen = Math.max(left.core.length, right.core.length);
+  for (let i = 0; i < maxLen; i += 1) {
+    const leftPart = left.core[i] ?? 0;
+    const rightPart = right.core[i] ?? 0;
+    if (leftPart !== rightPart) {
+      return leftPart > rightPart ? 1 : -1;
+    }
+  }
+
+  if (left.prerelease === right.prerelease) return 0;
+  if (!left.prerelease) return 1;
+  if (!right.prerelease) return -1;
+  return left.prerelease.localeCompare(right.prerelease);
 }
 
 function getFilesystemThresholdScanPath(osType: unknown): string {
@@ -1279,6 +1332,30 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
     console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
   }
 
+  let upgradeTo: string | null = null;
+  const normalizedArch = normalizeAgentArchitecture(device.architecture);
+  if (normalizedArch) {
+    try {
+      const [latestVersion] = await db
+        .select({ version: agentVersions.version })
+        .from(agentVersions)
+        .where(
+          and(
+            eq(agentVersions.platform, device.osType),
+            eq(agentVersions.architecture, normalizedArch),
+            eq(agentVersions.isLatest, true)
+          )
+        )
+        .limit(1);
+
+      if (latestVersion && compareAgentVersions(latestVersion.version, data.agentVersion) > 0) {
+        upgradeTo = latestVersion.version;
+      }
+    } catch (err) {
+      console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
+    }
+  }
+
   // Check if mTLS cert needs renewal (past 2/3 of lifetime)
   let renewCert = false;
   if (device.mtlsCertExpiresAt && device.mtlsCertIssuedAt) {
@@ -1298,7 +1375,7 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
       payload: cmd.payload
     })),
     configUpdate,
-    upgradeTo: null,
+    upgradeTo,
     renewCert: renewCert || undefined
   });
 });
