@@ -13,6 +13,20 @@ export type RequestLike = {
   };
 };
 
+/** Build a RequestLike shim from a pre-captured IP + user-agent snapshot. */
+export function requestLikeFromSnapshot(snapshot: { ip?: string; userAgent?: string }): RequestLike {
+  return {
+    req: {
+      header: (name: string) => {
+        const lower = name.toLowerCase();
+        if (lower === 'x-forwarded-for') return snapshot.ip;
+        if (lower === 'user-agent') return snapshot.userAgent;
+        return undefined;
+      },
+    },
+  };
+}
+
 export interface AuditEventInput {
   orgId: string | null | undefined;
   action: string;

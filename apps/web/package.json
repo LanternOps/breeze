@@ -30,7 +30,9 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.71.0",
+    "react-markdown": "^10.1.0",
     "recharts": "^2.15.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^2.6.0",
     "zod": "^3.24.1",
     "zustand": "^5.0.2"
@@ -38,6 +40,7 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.6",
     "@tailwindcss/forms": "^0.5.10",
+    "@tailwindcss/typography": "^0.5.19",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.1",
     "@types/d3": "^7.4.3",

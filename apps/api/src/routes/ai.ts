@@ -2,6 +2,7 @@
  * AI Chat Routes
  *
  * REST + SSE endpoints for the AI chat sidebar.
+ * Uses streaming input mode via StreamingSessionManager for persistent sessions.
  */
 
 import { Hono } from 'hono';
@@ -15,15 +16,15 @@ import {
   listSessions,
   closeSession,
   getSessionMessages,
-  sendMessage,
   handleApproval,
   searchSessions
 } from '../services/aiAgent';
-import { sendMessageSdk } from '../services/aiAgentSdk';
+import { runPreFlightChecks } from '../services/aiAgentSdk';
+import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { writeRouteAudit } from '../services/auditEvents';
 import { db } from '../db';
-import { auditLogs } from '../db/schema';
+import { aiMessages, auditLogs } from '../db/schema';
 import { eq, and, desc, gte, sql as drizzleSql } from 'drizzle-orm';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
@@ -140,6 +141,8 @@ aiRoutes.delete(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    streamingSessionManager.remove(sessionId);
+
     writeRouteAudit(c, {
       orgId: closed.orgId,
       action: 'ai.session.close',
@@ -152,7 +155,7 @@ aiRoutes.delete(
 );
 
 // ============================================
-// Message Sending (SSE Stream)
+// Message Sending (SSE Stream via Streaming Sessions)
 // ============================================
 
 // POST /sessions/:id/messages - Send a message and stream the response
@@ -165,31 +168,77 @@ aiRoutes.post(
     const sessionId = c.req.param('id');
     const body = c.req.valid('json');
 
-    // Fetch session to get the authoritative orgId (auth.orgId is null for partner/system users)
-    const session = await getSession(sessionId, auth);
-    if (!session) {
-      return c.json({ error: 'Session not found' }, 404);
+    // Pre-flight checks (rate limits, budget, session status, input sanitization)
+    const preflight = await runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c);
+    if (!preflight.ok) {
+      const err = preflight.error;
+      if (err === 'Session not found') return c.json({ error: err }, 404);
+      if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
+      if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
+      if (err.includes('expired')) return c.json({ error: err }, 410);
+      return c.json({ error: err }, 400);
+    }
+
+    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
+
+    // Get or create streaming session
+    const activeSession = await streamingSessionManager.getOrCreate(
+      sessionId,
+      {
+        orgId: dbSession.orgId,
+        sdkSessionId: dbSession.sdkSessionId,
+        model: dbSession.model,
+        maxTurns: dbSession.maxTurns,
+        turnCount: dbSession.turnCount,
+        systemPrompt: dbSession.systemPrompt,
+      },
+      auth,
+      c,
+      systemPrompt,
+      maxBudgetUsd,
+    );
+
+    // Concurrent message guard — atomic check-and-set
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      return c.json({ error: 'A message is already being processed for this session' }, 409);
     }
 
     writeRouteAudit(c, {
-      orgId: session.orgId,
+      orgId: dbSession.orgId,
       action: 'ai.message.send',
       resourceType: 'ai_session',
       resourceId: sessionId,
       details: { contentLength: body.content.length }
     });
 
-    return streamSSE(c, async (stream) => {
-      try {
-        const generator = process.env.USE_AGENT_SDK === '1'
-          ? sendMessageSdk(sessionId, body.content, auth, body.pageContext, c)
-          : sendMessage(sessionId, body.content, auth, body.pageContext, c);
+    try {
+      await db.insert(aiMessages).values({
+        sessionId,
+        role: 'user',
+        content: sanitizedContent,
+      });
+    } catch (err) {
+      console.error('[AI] Failed to save user message to DB:', err);
+      activeSession.state = 'idle';
+      return c.json({ error: 'Failed to save message' }, 500);
+    }
 
-        for await (const event of generator) {
+    // Push message to the streaming input and start turn timeout
+    activeSession.inputController.pushMessage(sanitizedContent);
+    streamingSessionManager.startTurnTimeout(activeSession);
+
+    const subscriptionId = crypto.randomUUID();
+
+    return streamSSE(c, async (stream) => {
+      const events = activeSession.eventBus.subscribe(subscriptionId);
+
+      try {
+        for await (const event of events) {
           await stream.writeSSE({
             event: event.type,
-            data: JSON.stringify(event)
+            data: JSON.stringify(event),
           });
+          if (event.type === 'done') break;
         }
       } catch (err) {
         console.error('[AI] Stream error:', err);
@@ -197,11 +246,54 @@ aiRoutes.post(
           event: 'error',
           data: JSON.stringify({
             type: 'error',
-            message: err instanceof Error ? err.message : 'Stream failed'
-          })
+            message: err instanceof Error ? err.message : 'Stream failed',
+          }),
         });
+      } finally {
+        activeSession.eventBus.unsubscribe(subscriptionId);
       }
     });
+  }
+);
+
+// ============================================
+// Interrupt
+// ============================================
+
+// POST /sessions/:id/interrupt - Interrupt the current AI response
+aiRoutes.post(
+  '/sessions/:id/interrupt',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    let result: { interrupted: boolean; reason?: string };
+    try {
+      result = await streamingSessionManager.interrupt(sessionId);
+    } catch (err) {
+      console.error('[AI] Interrupt failed:', err);
+      return c.json({ error: 'Failed to interrupt session' }, 500);
+    }
+
+    writeRouteAudit(c, {
+      orgId: session.orgId,
+      action: 'ai.message.interrupt',
+      resourceType: 'ai_session',
+      resourceId: sessionId,
+      details: { interrupted: result.interrupted, reason: result.reason },
+    });
+
+    if (!result.interrupted) {
+      return c.json({ success: false, interrupted: false, reason: result.reason }, 409);
+    }
+
+    return c.json({ success: true, interrupted: true });
   }
 );
 

@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Bot, User } from 'lucide-react';
 import AiToolCallCard from './AiToolCallCard';
 import AiApprovalDialog from './AiApprovalDialog';
@@ -92,8 +94,23 @@ export default function AiChatMessages({ messages, pendingApproval, onApprove, o
                 <Bot className="h-3.5 w-3.5 text-white" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="prose prose-sm prose-invert max-w-none text-sm text-gray-200">
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                <div className="prose prose-sm prose-invert max-w-none text-sm text-gray-200 prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      a: ({ href, children }) => (
+                        <a
+                          href={href && /^https?:\/\//.test(href) ? href : '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {children}
+                        </a>
+                      ),
+                    }}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
                   {msg.isStreaming && (
                     <span className="inline-block h-4 w-1 animate-pulse bg-gray-400" />
                   )}

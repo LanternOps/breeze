@@ -53,6 +53,15 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 export const authRoutes = new Hono();
 
+import { envFlag } from '../utils/envFlag';
+
+const ENABLE_REGISTRATION = envFlag('ENABLE_REGISTRATION', true);
+const ENABLE_2FA = envFlag('ENABLE_2FA', true);
+
+if (!ENABLE_2FA && process.env.NODE_ENV !== 'test') {
+  console.warn('[auth] WARNING: MFA is disabled (ENABLE_2FA=false). All MFA endpoints return 404.');
+}
+
 // ============================================
 // Schemas
 // ============================================
@@ -281,6 +290,16 @@ function genericAuthError() {
   return { error: 'Invalid email or password' };
 }
 
+function registrationDisabledResponse(c: Context): Response {
+  // Return 404 to avoid exposing enrollment posture publicly.
+  return c.json({ error: 'Not Found' }, 404);
+}
+
+function mfaDisabledResponse(c: Context): Response {
+  // Return 404 to avoid exposing enrollment posture publicly.
+  return c.json({ error: 'Not Found' }, 404);
+}
+
 type UserTokenContext = {
   roleId: string | null;
   partnerId: string | null;
@@ -493,6 +512,10 @@ function auditLogin(
 
 // Register user (compatibility for legacy signup path)
 authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
+  if (!ENABLE_REGISTRATION) {
+    return registrationDisabledResponse(c);
+  }
+
   const { email, password, name } = c.req.valid('json');
   const ip = getClientIP(c);
   const normalizedEmail = email.toLowerCase();
@@ -573,6 +596,10 @@ authRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
 
 // Register Partner (self-service MSP/company signup)
 authRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), async (c) => {
+  if (!ENABLE_REGISTRATION) {
+    return registrationDisabledResponse(c);
+  }
+
   const { companyName, email, password, name, acceptTerms } = c.req.valid('json');
   const ip = getClientIP(c);
 
@@ -801,7 +828,7 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   }
 
   // Check if MFA is required
-  if (user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms')) {
+  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms')) {
     // Create a temporary token for MFA verification
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
@@ -857,7 +884,7 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       id: user.id,
       email: user.email,
       name: user.name,
-      mfaEnabled: user.mfaEnabled,
+      mfaEnabled: ENABLE_2FA ? user.mfaEnabled : false,
       avatarUrl: user.avatarUrl
     },
     tokens: toPublicTokens(tokens),
@@ -951,7 +978,7 @@ authRoutes.post('/refresh', async (c) => {
     orgId: context.orgId,
     partnerId: context.partnerId,
     scope: context.scope,
-    mfa: payload.mfa
+    mfa: ENABLE_2FA ? payload.mfa : false
   });
 
   try {
@@ -965,6 +992,10 @@ authRoutes.post('/refresh', async (c) => {
 
 // MFA setup (requires auth)
 authRoutes.post('/mfa/setup', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const auth = c.get('auth');
 
   // Check if MFA is already enabled
@@ -1005,7 +1036,11 @@ authRoutes.post('/mfa/setup', authMiddleware, async (c) => {
 
 // MFA verify (for login or setup confirmation)
 authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
-  const { code, tempToken, method: requestMethod } = c.req.valid('json');
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
+  const { code, tempToken } = c.req.valid('json');
   const redis = getRedis();
 
   if (!redis) {
@@ -1211,6 +1246,10 @@ authRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) =>
 
 // MFA disable (requires auth + current MFA code)
 authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySchema), async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const auth = c.get('auth');
   const { code } = c.req.valid('json');
 
@@ -1326,6 +1365,10 @@ authRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySche
 
 // Phone verification - send code (authenticated)
 authRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerifySchema), async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const auth = c.get('auth');
   const { phoneNumber } = c.req.valid('json');
 
@@ -1386,6 +1429,10 @@ authRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerifyS
 
 // Phone verification - confirm code (authenticated)
 authRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfirmSchema), async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const auth = c.get('auth');
   const { phoneNumber, code } = c.req.valid('json');
 
@@ -1458,6 +1505,10 @@ authRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfir
 
 // SMS MFA enable (authenticated, requires verified phone)
 authRoutes.post('/mfa/sms/enable', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const auth = c.get('auth');
 
   const [user] = await db
@@ -1528,6 +1579,10 @@ authRoutes.post('/mfa/sms/enable', authMiddleware, async (c) => {
 
 // SMS MFA send code during login (unauthenticated, requires tempToken)
 authRoutes.post('/mfa/sms/send', zValidator('json', smsSendSchema), async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const { tempToken } = c.req.valid('json');
 
   const redis = getRedis();
@@ -1772,6 +1827,10 @@ authRoutes.post('/change-password', authMiddleware, zValidator('json', changePas
 
 // MFA enable compatibility endpoint for frontend settings flow
 authRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema), async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const auth = c.get('auth');
   const { code } = c.req.valid('json');
   const redis = getRedis();
@@ -1849,6 +1908,10 @@ authRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchem
 
 // Generate new MFA recovery codes for the authenticated user
 authRoutes.post('/mfa/recovery-codes', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
   const auth = c.get('auth');
 
   const [user] = await db
@@ -1913,11 +1976,13 @@ authRoutes.get('/me', authMiddleware, async (c) => {
   }
 
   const { phoneNumber: rawPhone, ...userWithoutPhone } = user;
+  const effectiveMfaEnabled = ENABLE_2FA ? user.mfaEnabled : false;
   return c.json({
     user: {
       ...userWithoutPhone,
-      mfaMethod: user.mfaMethod || (user.mfaEnabled ? 'totp' : null),
-      phoneLast4: rawPhone?.slice(-4) || null
+      mfaEnabled: effectiveMfaEnabled,
+      mfaMethod: effectiveMfaEnabled ? (user.mfaMethod || 'totp') : null,
+      phoneLast4: ENABLE_2FA ? (rawPhone?.slice(-4) || null) : null
     }
   });
 });

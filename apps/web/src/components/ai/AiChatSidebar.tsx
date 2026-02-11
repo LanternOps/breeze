@@ -29,8 +29,11 @@ export default function AiChatSidebar() {
     clearError,
     toggleHistory,
     loadSessions,
+    loadSession,
     searchConversations,
-    switchSession
+    switchSession,
+    interruptResponse,
+    isInterrupting
   } = useAiStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -46,6 +49,13 @@ export default function AiChatSidebar() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [toggle]);
+
+  // Restore session history when sidebar opens with a persisted sessionId
+  useEffect(() => {
+    if (isOpen && sessionId && messages.length === 0 && !isLoading) {
+      loadSession(sessionId);
+    }
+  }, [isOpen, sessionId, messages.length, isLoading, loadSession]);
 
   // Load sessions when history panel opens
   useEffect(() => {
@@ -222,8 +232,10 @@ export default function AiChatSidebar() {
             {/* Input */}
             <AiChatInput
               onSend={sendMessage}
+              onInterrupt={interruptResponse}
               disabled={isLoading}
               isStreaming={isStreaming}
+              isInterrupting={isInterrupting}
             />
           </>
         )}
