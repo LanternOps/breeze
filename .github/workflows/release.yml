@@ -377,9 +377,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Docker image builds - placeholder for when you have container registry set up
   build-docker-api:
-    name: Build API Docker Image
+    name: Build & Push API Docker Image
     runs-on: ubuntu-latest
     needs: [build-api]
     permissions:
@@ -414,6 +413,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
             type=sha
 
       - name: Build and push API image
@@ -427,7 +427,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-docker-web:
-    name: Build Web Docker Image
+    name: Build & Push Web Docker Image
     runs-on: ubuntu-latest
     needs: [build-web]
     permissions:
@@ -462,6 +462,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
             type=sha
 
       - name: Build and push Web image
