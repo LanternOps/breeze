@@ -95,23 +95,33 @@ cd breeze
 
 # Copy and configure environment
 cp .env.example .env
-# Edit .env with your database credentials and settings
-# REQUIRED: Generate real secrets for these values
-# JWT_SECRET: openssl rand -base64 64
-# AGENT_ENROLLMENT_SECRET: openssl rand -hex 32
-# APP_ENCRYPTION_KEY: openssl rand -hex 32
+
+# REQUIRED: Set your domain (use "localhost" for local testing)
+# BREEZE_DOMAIN=breeze.yourdomain.com
+# ACME_EMAIL=admin@yourdomain.com
+
+# REQUIRED: Generate real secrets
+# JWT_SECRET:               openssl rand -base64 64
+# AGENT_ENROLLMENT_SECRET:  openssl rand -hex 32
+# APP_ENCRYPTION_KEY:       openssl rand -hex 32
+# MFA_ENCRYPTION_KEY:       openssl rand -hex 32
 
 # Start everything
 docker compose up -d
 
-# Push the database schema
-pnpm db:push
-
-# Seed default roles and permissions
-pnpm db:seed
+# Push the database schema and seed default data
+# (requires Node.js + pnpm on the host — install with: npm i -g pnpm)
+DATABASE_URL="postgresql://breeze:YOUR_POSTGRES_PASSWORD@localhost:5432/breeze" \
+  pnpm install && pnpm --filter @breeze/api db:push && pnpm --filter @breeze/api db:seed
 ```
 
-Breeze will be running at `http://localhost:4321`.
+> **Note:** The `db:push` command above requires Postgres to be reachable from
+> the host. Add a temporary port mapping to docker-compose.yml under the
+> `postgres` service: `ports: ["5432:5432"]`, then remove it after seeding.
+
+Breeze will be running at `https://localhost` (self-signed cert for localhost).
+
+Default admin login: `admin@breeze.local` / `BreezeAdmin123!` — **change this immediately**.
 
 ### Install the Agent
 

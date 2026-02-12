@@ -1,15 +1,13 @@
 # Breeze RMM - Production Deployment
 # Pull pre-built images from GHCR. No build step required.
-# This is the ONLY file you need (plus a .env).
 #
-# Quick start:
-#   curl -fsSL https://raw.githubusercontent.com/LanternOps/breeze/main/docker-compose.yml -o docker-compose.yml
-#   curl -fsSL https://raw.githubusercontent.com/LanternOps/breeze/main/.env.example -o .env
-#   # Edit .env with your secrets and domain
+# Quick start (see README for full instructions):
+#   git clone https://github.com/LanternOps/breeze.git && cd breeze
+#   cp .env.example .env  # Edit with your secrets and domain
 #   docker compose up -d
+#   # Then push schema + seed (requires pnpm on host, see README)
 #
 # Optional monitoring stack:
-#   curl -fsSL https://raw.githubusercontent.com/LanternOps/breeze/main/docker-compose.monitoring.yml -o docker-compose.monitoring.yml
 #   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 
 x-healthcheck-defaults: &healthcheck
