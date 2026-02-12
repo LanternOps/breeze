@@ -82,7 +82,16 @@ describe('SNMPDeviceList actions', () => {
   });
 
   it('wires add and edit actions to SNMP API routes', async () => {
-    let devices = [
+    let devices: Array<{
+      id: string;
+      name: string;
+      ipAddress: string;
+      snmpVersion: string;
+      templateName: string | null;
+      status: string;
+      lastPolledAt: string | null;
+      pollingInterval: number;
+    }> = [
       {
         id: 'device-1',
         name: 'Core-A',

@@ -8,8 +8,11 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([]))
+        where: vi.fn(() => Object.assign(Promise.resolve([]), {
+          limit: vi.fn(() => Promise.resolve([])),
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve([]))
+          }))
         }))
       }))
     })),
@@ -28,7 +31,11 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     }))
-  }
+  },
+  withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
+  runOutsideDbContext: vi.fn((fn: any) => fn()),
+  SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
 }));
 
 vi.mock('../db/schema', () => ({
@@ -37,12 +44,18 @@ vi.mock('../db/schema', () => ({
   sites: {}
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+  writeRouteAudit: vi.fn()
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
       partnerId: 'partner-123',
       orgId: null,
+      accessibleOrgIds: ['org-1', 'org-2'],
       user: { id: 'user-123', email: 'test@example.com' },
       canAccessOrg: () => true
     });
@@ -77,6 +90,7 @@ describe('organization routes', () => {
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
+        accessibleOrgIds: ['org-1', 'org-2'],
         user: { id: 'user-123', email: 'test@example.com' },
         canAccessOrg: () => true
       });
@@ -568,14 +582,15 @@ describe('organization routes', () => {
       expect(res.status).toBe(403);
     });
 
-    it('should forbid organization routes without partner context', async () => {
+    it('should return empty data for partner without accessible orgs', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'partner',
           partnerId: null,
           orgId: null,
+          accessibleOrgIds: [],
           user: { id: 'user-123', email: 'test@example.com' },
-          canAccessOrg: () => true
+          canAccessOrg: () => false
         });
         return next();
       });
@@ -585,7 +600,10 @@ describe('organization routes', () => {
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
     });
 
     it.skip('should forbid site access to other organizations', async () => {

@@ -1,14 +1,6 @@
-//go:build darwin && cgo
+//go:build darwin && !cgo
 
 package terminal
-
-/*
-#include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-*/
-import "C"
 
 import (
 	"fmt"
@@ -18,37 +10,30 @@ import (
 	"unsafe"
 )
 
-// start starts the PTY session (macOS implementation using cgo)
+// start starts the PTY session (macOS pure-Go implementation without cgo).
+// Uses /dev/ptmx directly which works on macOS without cgo.
 func (s *Session) start() error {
-	// Open PTY master via posix_openpt
-	masterFd, err := C.posix_openpt(C.O_RDWR)
-	if masterFd < 0 || err != nil {
-		return fmt.Errorf("posix_openpt failed: %w", err)
+	// Open the PTY master
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("failed to open /dev/ptmx: %w", err)
 	}
 
-	// Grant and unlock
-	if rc := C.grantpt(masterFd); rc != 0 {
-		C.close(masterFd)
-		return fmt.Errorf("grantpt failed")
+	// grantpt and unlockpt via ioctls
+	if err := grantptFd(master.Fd()); err != nil {
+		master.Close()
+		return fmt.Errorf("grantpt failed: %w", err)
 	}
-	if rc := C.unlockpt(masterFd); rc != 0 {
-		C.close(masterFd)
-		return fmt.Errorf("unlockpt failed")
+	if err := unlockptFd(master.Fd()); err != nil {
+		master.Close()
+		return fmt.Errorf("unlockpt failed: %w", err)
 	}
 
-	// Get slave name
-	cName := C.ptsname(masterFd)
-	if cName == nil {
-		C.close(masterFd)
-		return fmt.Errorf("ptsname returned nil")
-	}
-	slaveName := C.GoString(cName)
-
-	// Wrap the C fd in a Go *os.File
-	master := os.NewFile(uintptr(masterFd), "/dev/ptmx")
-	if master == nil {
-		C.close(masterFd)
-		return fmt.Errorf("failed to wrap master fd")
+	// Get slave PTY name
+	slaveName, err := ptsnameFd(master.Fd())
+	if err != nil {
+		master.Close()
+		return fmt.Errorf("ptsname failed: %w", err)
 	}
 
 	// Open the slave PTY
@@ -142,5 +127,38 @@ func setWinsize(fd uintptr, cols, rows uint16) error {
 	if errno != 0 {
 		return errno
 	}
+	return nil
+}
+
+// ptsnameFd returns the name of the slave PTY.
+// On macOS, TIOCPTYGNAME is used instead of Linux's TIOCGPTN.
+func ptsnameFd(fd uintptr) (string, error) {
+	// TIOCPTYGNAME on macOS returns the slave device path directly
+	// It's defined as _IOC(IOC_OUT, 't', 41, 128) = 0x40807441
+	const TIOCPTYGNAME = 0x40807441
+	buf := make([]byte, 128)
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, TIOCPTYGNAME, uintptr(unsafe.Pointer(&buf[0])))
+	if errno != 0 {
+		return "", errno
+	}
+	// Find null terminator
+	for i, b := range buf {
+		if b == 0 {
+			return string(buf[:i]), nil
+		}
+	}
+	return string(buf), nil
+}
+
+// grantptFd is a no-op on macOS when using /dev/ptmx
+// (the kernel handles granting automatically).
+func grantptFd(fd uintptr) error {
+	return nil
+}
+
+// unlockptFd unlocks the slave PTY on macOS.
+func unlockptFd(fd uintptr) error {
+	// On macOS, TIOCSPTLCK is not available; the PTY is unlocked by default
+	// when opened via /dev/ptmx. No action needed.
 	return nil
 }

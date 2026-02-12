@@ -4,6 +4,37 @@ import { deviceRoutes } from './devices';
 
 vi.mock('../services', () => ({}));
 
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+  writeRouteAudit: vi.fn()
+}));
+
+vi.mock('../services/enrollmentKeySecurity', () => ({
+  hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
+  generateEnrollmentKey: vi.fn(() => 'ek_test123')
+}));
+
+vi.mock('../services/permissions', () => ({
+  PERMISSIONS: new Proxy({} as Record<string, { resource: string; action: string }>, {
+    get(_target, prop: string) {
+      // Auto-generate permission objects like DEVICES_WRITE -> { resource: 'devices', action: 'write' }
+      const parts = prop.toLowerCase().split('_');
+      return { resource: parts[0], action: parts.slice(1).join('_') };
+    }
+  })
+}));
+
+vi.mock('drizzle-orm', () => ({
+  eq: vi.fn((...args: unknown[]) => ({ eq: args })),
+  and: vi.fn((...args: unknown[]) => ({ and: args })),
+  gte: vi.fn((...args: unknown[]) => ({ gte: args })),
+  like: vi.fn((...args: unknown[]) => ({ like: args })),
+  sql: vi.fn(() => ({ as: vi.fn(() => 'latestTimestamp') })),
+  desc: vi.fn((col: unknown) => ({ desc: col })),
+  inArray: vi.fn((...args: unknown[]) => ({ inArray: args })),
+  count: vi.fn()
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -32,17 +63,17 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  devices: {},
-  deviceHardware: {},
-  deviceNetwork: {},
-  deviceMetrics: {},
-  deviceSoftware: {},
-  deviceGroups: {},
-  deviceGroupMemberships: {},
-  deviceCommands: {},
-  sites: {},
-  organizations: {},
-  enrollmentKeys: {}
+  devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },
+  deviceHardware: { deviceId: 'deviceId' },
+  deviceNetwork: { deviceId: 'deviceId' },
+  deviceMetrics: { deviceId: 'deviceId', timestamp: 'timestamp' },
+  deviceSoftware: { deviceId: 'deviceId' },
+  deviceGroups: { id: 'id', name: 'name' },
+  deviceGroupMemberships: { deviceId: 'deviceId', groupId: 'groupId' },
+  deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', status: 'status', createdAt: 'createdAt' },
+  sites: { id: 'id', orgId: 'orgId' },
+  organizations: { id: 'id' },
+  enrollmentKeys: { id: 'id', key: 'key', orgId: 'orgId' }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -59,7 +90,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next())
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -68,7 +100,51 @@ describe('device routes', () => {
   let app: Hono;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    // resetAllMocks clears mockReturnValueOnce queues, preventing test pollution
+    vi.resetAllMocks();
+    // Restore factory default chains
+    vi.mocked(db.select).mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => Object.assign(Promise.resolve([]), {
+          limit: vi.fn(() => Promise.resolve([])),
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => ({
+              offset: vi.fn(() => Promise.resolve([]))
+            }))
+          })),
+          groupBy: vi.fn(() => ({
+            as: vi.fn(() => ({ deviceId: 'deviceId', latestTimestamp: 'latestTimestamp' }))
+          }))
+        })),
+        leftJoin: vi.fn(() => ({
+          where: vi.fn(() => Object.assign(Promise.resolve([]), {
+            orderBy: vi.fn(() => ({
+              limit: vi.fn(() => ({
+                offset: vi.fn(() => Promise.resolve([]))
+              }))
+            }))
+          }))
+        })),
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    }) as any);
+    vi.mocked(db.insert).mockImplementation(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([]))
+      }))
+    }) as any);
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    }) as any);
+    vi.mocked(db.delete).mockImplementation(() => ({
+      where: vi.fn(() => Promise.resolve())
+    }) as any);
     app = new Hono();
     app.route('/devices', deviceRoutes);
   });
@@ -189,11 +265,13 @@ describe('device routes', () => {
       ];
 
       vi.mocked(db.select)
+        // 1st: count query
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ count: 2 }])
           })
         } as any)
+        // 2nd: device list query
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
@@ -205,6 +283,22 @@ describe('device routes', () => {
                 })
               })
             })
+          })
+        } as any)
+        // 3rd: subquery for latest metric timestamps (not awaited, builds subquery ref)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockReturnValue({
+                as: vi.fn().mockReturnValue({ deviceId: 'deviceId', latestTimestamp: 'latestTimestamp' })
+              })
+            })
+          })
+        } as any)
+        // 4th: metrics query with innerJoin (awaited)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockResolvedValue([])
           })
         } as any);
 

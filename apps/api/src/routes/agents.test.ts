@@ -16,27 +16,45 @@ vi.mock('../services/filesystemAnalysis', () => ({
   upsertFilesystemScanState: vi.fn(() => Promise.resolve({ deviceId: 'device-123' })),
 }));
 
+const defaultSelectChain = () => ({
+  from: vi.fn(() => ({
+    where: vi.fn(() => Object.assign(Promise.resolve([]), {
+      limit: vi.fn(() => Promise.resolve([])),
+      orderBy: vi.fn(() => ({
+        limit: vi.fn(() => Promise.resolve([]))
+      }))
+    }))
+  }))
+});
+
+const defaultInsertChain = () => ({
+  values: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+    returning: vi.fn(() => Promise.resolve([]))
+  }))
+});
+
+const defaultUpdateChain = () => ({
+  set: vi.fn(() => ({
+    where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+      returning: vi.fn(() => Promise.resolve([]))
+    }))
+  }))
+});
+
 vi.mock('../db', () => ({
   db: {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([]))
-        }))
-      }))
-    })),
-    insert: vi.fn(() => ({
-      values: vi.fn(() => ({
-        returning: vi.fn(() => Promise.resolve([]))
-      }))
-    })),
-    update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve())
-      }))
+    select: vi.fn(() => defaultSelectChain()),
+    insert: vi.fn(() => defaultInsertChain()),
+    update: vi.fn(() => defaultUpdateChain()),
+    delete: vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve())
     })),
     transaction: vi.fn()
-  }
+  },
+  withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
+  runOutsideDbContext: vi.fn((fn: any) => fn()),
+  SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
 }));
 
 vi.mock('../db/schema', () => ({
@@ -62,12 +80,37 @@ vi.mock('../db/schema', () => ({
   deviceEventLogs: {},
   securityStatus: {},
   securityThreats: {},
-  securityScans: {}
+  securityScans: {},
+  deviceSessions: {},
+  agentVersions: {},
+  organizations: {}
+}));
+
+vi.mock('../services/enrollmentKeySecurity', () => ({
+  hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
+  generateEnrollmentKey: vi.fn(() => 'ek_test123')
+}));
+
+vi.mock('../services/cloudflareMtls', () => ({
+  CloudflareMtlsService: {
+    fromEnv: vi.fn(() => null)
+  }
+}));
+
+vi.mock('../services/eventBus', () => ({
+  publishEvent: vi.fn(),
+  getEventBus: vi.fn(() => ({ subscribe: vi.fn(), publish: vi.fn() })),
+  EventType: {}
+}));
+
+vi.mock('../services/commandQueue', () => ({
+  queueCommandForExecution: vi.fn()
 }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 vi.mock('../middleware/agentAuth', () => ({
@@ -90,44 +133,64 @@ describe('agent routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset db mock implementations to factory defaults (clearAllMocks doesn't reset mockReturnValue)
+    vi.mocked(db.select).mockImplementation(() => defaultSelectChain() as any);
+    vi.mocked(db.insert).mockImplementation(() => defaultInsertChain() as any);
+    vi.mocked(db.update).mockImplementation(() => defaultUpdateChain() as any);
+    vi.mocked(db.transaction).mockReset();
     app = new Hono();
     app.route('/agents', agentRoutes);
   });
 
   describe('POST /agents/enroll', () => {
     it('should enroll an agent with a valid enrollment key', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: 'key-123',
-                key: 'enroll-key',
-                orgId: 'org-123',
-                siteId: 'site-123'
-              }])
-            })
+      // Enrollment now does: db.update(enrollmentKeys).set(...).where(...).returning()
+      // to atomically validate and increment key usage
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'key-123',
+              key: 'hashed-enroll-key',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              usageCount: 1
+            }])
           })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
-            })
-          })
-        } as any);
+        })
+      } as any);
+
+      // Then checks for existing device: db.select().from(devices).where(...).limit(1)
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), {
+            limit: vi.fn().mockResolvedValue([])
+          }))
+        })
+      } as any);
 
       const tx = {
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([{
-              id: 'device-123'
+              id: 'device-123',
+              orgId: 'org-123',
+              siteId: 'site-123',
+              agentId: 'agent-new',
+              hostname: 'agent-host',
+              osType: 'linux',
+              osVersion: '1.0',
+              architecture: 'x86_64',
+              agentVersion: '2.0',
+              status: 'online'
             }])
           })
         }),
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue(undefined)
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([])
+            })
           })
         })
       };
@@ -157,10 +220,11 @@ describe('agent routes', () => {
     });
 
     it('should reject invalid enrollment keys', async () => {
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
+      // db.update().set().where().returning() returns empty = invalid key
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+            returning: vi.fn().mockResolvedValue([])
           })
         })
       } as any);

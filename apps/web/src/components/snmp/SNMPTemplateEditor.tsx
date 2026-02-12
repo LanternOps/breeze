@@ -94,7 +94,7 @@ function parseOidLookup(payload: unknown): OidLookupResult[] {
         type: String(row.type ?? 'Gauge'),
         description: String(row.description ?? ''),
         source: String(row.source ?? '')
-      } satisfies OidLookupResult;
+      } as OidLookupResult;
     })
     .filter((item): item is OidLookupResult => item !== null);
 }
@@ -119,7 +119,7 @@ function parseOidValidation(payload: unknown): OidValidationResult[] {
         valid: Boolean(row.valid),
         errors: Array.isArray(row.errors) ? row.errors.map(error => String(error)) : [],
         warnings: Array.isArray(row.warnings) ? row.warnings.map(warning => String(warning)) : []
-      } satisfies OidValidationResult;
+      } as OidValidationResult;
     })
     .filter((item): item is OidValidationResult => item !== null);
 }
