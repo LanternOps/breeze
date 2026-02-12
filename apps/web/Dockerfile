@@ -15,7 +15,7 @@ WORKDIR /app
 # Copy workspace configuration
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/web/package.json ./apps/web/
-COPY packages/shared/package.json ./packages/shared/ 2>/dev/null || mkdir -p ./packages/shared
+COPY packages/shared/package.json ./packages/shared/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline
@@ -31,12 +31,12 @@ ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules 2>/dev/null || true
-COPY --from=deps /app/packages ./packages 2>/dev/null || true
+COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
+COPY --from=deps /app/packages ./packages
 
 # Copy source code
 COPY apps/web ./apps/web
-COPY packages ./packages 2>/dev/null || true
+COPY packages ./packages
 COPY tsconfig.json ./
 
 # Build the Astro application
@@ -64,7 +64,7 @@ COPY --from=builder --chown=astro:nodejs /app/apps/web/dist ./dist
 COPY --from=builder --chown=astro:nodejs /app/apps/web/package.json ./
 
 # Copy node_modules for SSR runtime
-COPY --from=deps --chown=astro:nodejs /app/apps/web/node_modules ./node_modules 2>/dev/null || true
+COPY --from=deps --chown=astro:nodejs /app/apps/web/node_modules ./node_modules
 COPY --from=deps --chown=astro:nodejs /app/node_modules ./node_modules
 
 # Switch to non-root user
