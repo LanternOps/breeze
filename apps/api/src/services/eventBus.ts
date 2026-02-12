@@ -172,7 +172,7 @@ class EventBus {
 
     // Invoke local in-process handlers immediately
     // This handles the case where startConsuming() hasn't been called
-    await this.invokeLocalHandlers(event);
+    await this.invokeLocalHandlers(event as BreezeEvent);
 
     return eventId;
   }

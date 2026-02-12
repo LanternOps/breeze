@@ -36,9 +36,9 @@ describe('eventBus service', () => {
 
     expect(mockRedis.xadd).toHaveBeenCalledTimes(1);
     const xaddMock = mockRedis.xadd as ReturnType<typeof vi.fn>;
-    const xaddArgs = xaddMock.mock.calls[0];
+    const xaddArgs = xaddMock.mock.calls[0]!;
     const eventJson = xaddArgs[xaddArgs.length - 1] as string;
-    const event = JSON.parse(eventJson) as { id: string; metadata: { correlationId: string } };
+    const event = JSON.parse(eventJson) as Record<string, unknown> & { metadata: Record<string, unknown> };
 
     expect(event.id).toBe(eventId);
     expect(event.metadata.correlationId).toBe(eventId);
