@@ -88,38 +88,26 @@ Skip infrastructure entirely. [Sign up at LanternOps](https://lanternops.io) and
 
 ### Option 2: Self-Hosted (Docker)
 
-```bash
-# Clone the repo
-git clone https://github.com/lanternops/breeze.git
-cd breeze
+Requires [Docker](https://docs.docker.com/get-docker/) and Docker Compose.
 
-# Copy and configure environment
+```bash
+mkdir breeze && cd breeze
+curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/.env.example
 cp .env.example .env
 
-# REQUIRED: Set your domain (use "localhost" for local testing)
-# BREEZE_DOMAIN=breeze.yourdomain.com
-# ACME_EMAIL=admin@yourdomain.com
+# Edit .env — at minimum set these:
+#   BREEZE_DOMAIN        your domain (or "localhost" for local testing)
+#   ACME_EMAIL           email for Let's Encrypt certs
+#   JWT_SECRET           openssl rand -base64 64
+#   AGENT_ENROLLMENT_SECRET  openssl rand -hex 32
+#   APP_ENCRYPTION_KEY   openssl rand -hex 32
+#   MFA_ENCRYPTION_KEY   openssl rand -hex 32
 
-# REQUIRED: Generate real secrets
-# JWT_SECRET:               openssl rand -base64 64
-# AGENT_ENROLLMENT_SECRET:  openssl rand -hex 32
-# APP_ENCRYPTION_KEY:       openssl rand -hex 32
-# MFA_ENCRYPTION_KEY:       openssl rand -hex 32
-
-# Start everything
 docker compose up -d
-
-# Push the database schema and seed default data
-# (requires Node.js + pnpm on the host — install with: npm i -g pnpm)
-DATABASE_URL="postgresql://breeze:YOUR_POSTGRES_PASSWORD@localhost:5432/breeze" \
-  pnpm install && pnpm --filter @breeze/api db:push && pnpm --filter @breeze/api db:seed
 ```
 
-> **Note:** The `db:push` command above requires Postgres to be reachable from
-> the host. Add a temporary port mapping to docker-compose.yml under the
-> `postgres` service: `ports: ["5432:5432"]`, then remove it after seeding.
-
-Breeze will be running at `https://localhost` (self-signed cert for localhost).
+Breeze will be running at `https://your-domain` (or `https://localhost` with a self-signed cert for local testing).
 
 Default admin login: `admin@breeze.local` / `BreezeAdmin123!` — **change this immediately**.
 
