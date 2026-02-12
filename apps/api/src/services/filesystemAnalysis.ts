@@ -37,7 +37,7 @@ function asBoolean(value: unknown, defaultValue = false): boolean {
   return typeof value === 'boolean' ? value : defaultValue;
 }
 
-function asNumber(value: Numberish, defaultValue = 0): number {
+function asNumber(value: unknown, defaultValue = 0): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
     const parsed = Number(value);
