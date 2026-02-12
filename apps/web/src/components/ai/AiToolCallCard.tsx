@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Wrench, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 
 interface AiToolCallCardProps {
@@ -9,8 +9,20 @@ interface AiToolCallCardProps {
   isExecuting?: boolean;
 }
 
+const MAX_PREVIEW_CHARS = 20_000;
+
+function stringifyForPreview(value: unknown): string {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  if (!raw) return '';
+  if (raw.length <= MAX_PREVIEW_CHARS) return raw;
+  const omitted = raw.length - MAX_PREVIEW_CHARS;
+  return `${raw.slice(0, MAX_PREVIEW_CHARS)}\n...[truncated ${omitted} chars]`;
+}
+
 export default function AiToolCallCard({ toolName, input, output, isError, isExecuting }: AiToolCallCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const inputPreview = useMemo(() => stringifyForPreview(input), [input]);
+  const outputPreview = useMemo(() => stringifyForPreview(output), [output]);
 
   const StatusIcon = isExecuting
     ? () => <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
@@ -44,7 +56,7 @@ export default function AiToolCallCard({ toolName, input, output, isError, isExe
             <div className="mb-2">
               <span className="font-medium text-gray-400">Input:</span>
               <pre className="mt-1 max-h-32 overflow-auto rounded bg-gray-900 p-2 text-gray-300">
-                {JSON.stringify(input, null, 2)}
+                {inputPreview}
               </pre>
             </div>
           )}
@@ -54,7 +66,7 @@ export default function AiToolCallCard({ toolName, input, output, isError, isExe
                 {isError ? 'Error:' : 'Output:'}
               </span>
               <pre className="mt-1 max-h-40 overflow-auto rounded bg-gray-900 p-2 text-gray-300">
-                {typeof output === 'string' ? output : JSON.stringify(output, null, 2)}
+                {outputPreview}
               </pre>
             </div>
           )}

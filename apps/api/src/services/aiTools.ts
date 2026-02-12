@@ -1029,7 +1029,8 @@ registerTool({
         topDirs: { type: 'number', description: 'Largest directory rows to keep (1-200)' },
         maxEntries: { type: 'number', description: 'Hard traversal cap (1k-25M)' },
         workers: { type: 'number', description: 'Parallel directory workers (1-32)' },
-        timeoutSeconds: { type: 'number', description: 'Scan timeout in seconds (5-900)' }
+        timeoutSeconds: { type: 'number', description: 'Scan timeout in seconds (5-900)' },
+        maxCandidates: { type: 'number', description: 'Max cleanup candidates to return in chat (1-200, default 50)' }
       },
       required: ['deviceId']
     }
@@ -1037,6 +1038,7 @@ registerTool({
   handler: async (input, auth) => {
     const deviceId = input.deviceId as string;
     const refresh = Boolean(input.refresh);
+    const maxCandidates = Math.min(Math.max(1, Number(input.maxCandidates) || 50), 200);
 
     const access = await verifyDeviceAccess(deviceId, auth, refresh);
     if ('error' in access) return JSON.stringify({ error: access.error });
@@ -1097,7 +1099,10 @@ registerTool({
         estimatedBytes: cleanupPreview.estimatedBytes,
         candidateCount: cleanupPreview.candidateCount,
         categories: cleanupPreview.categories,
-        topCandidates: cleanupPreview.candidates.slice(0, 50),
+        topCandidates: cleanupPreview.candidates.slice(0, maxCandidates),
+        returnedCandidateCount: Math.min(cleanupPreview.candidates.length, maxCandidates),
+        truncatedCandidateCount: Math.max(0, cleanupPreview.candidates.length - maxCandidates),
+        maxCandidates,
       }
     });
   }
@@ -1118,7 +1123,8 @@ registerTool({
         deviceId: { type: 'string', description: 'The device UUID' },
         action: { type: 'string', enum: ['preview', 'execute'], description: 'preview (read-only) or execute (delete selected paths)' },
         categories: { type: 'array', items: { type: 'string' }, description: 'Optional cleanup categories filter for preview' },
-        paths: { type: 'array', items: { type: 'string' }, description: 'Selected paths to delete (required for execute)' }
+        paths: { type: 'array', items: { type: 'string' }, description: 'Selected paths to delete (required for execute)' },
+        maxCandidates: { type: 'number', description: 'Max preview candidates returned in chat (1-200, default 100)' }
       },
       required: ['deviceId', 'action']
     }
@@ -1141,6 +1147,8 @@ registerTool({
     const preview = buildCleanupPreview(snapshot, requestedCategories);
 
     if (action === 'preview') {
+      const maxCandidates = Math.min(Math.max(1, Number(input.maxCandidates) || 100), 200);
+      const returnedCandidates = preview.candidates.slice(0, maxCandidates);
       const [cleanupRun] = await db
         .insert(deviceFilesystemCleanupRuns)
         .values({
@@ -1160,8 +1168,11 @@ registerTool({
         snapshotId: snapshot.id,
         estimatedBytes: preview.estimatedBytes,
         candidateCount: preview.candidateCount,
+        returnedCandidateCount: returnedCandidates.length,
+        truncatedCandidateCount: Math.max(0, preview.candidates.length - returnedCandidates.length),
+        maxCandidates,
         categories: preview.categories,
-        candidates: preview.candidates
+        candidates: returnedCandidates
       });
     }
 
