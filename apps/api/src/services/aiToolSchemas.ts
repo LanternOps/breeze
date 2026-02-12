@@ -193,6 +193,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     maxEntries: z.number().int().min(1_000).max(25_000_000).optional(),
     workers: z.number().int().min(1).max(32).optional(),
     timeoutSeconds: z.number().int().min(5).max(900).optional(),
+    maxCandidates: z.number().int().min(1).max(200).optional(),
   }),
 
   disk_cleanup: z.object({
@@ -200,6 +201,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum(['preview', 'execute']),
     categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
     paths: z.array(cleanupPath).min(1).max(200).optional(),
+    maxCandidates: z.number().int().min(1).max(200).optional(),
   }).refine(
     (data) => data.action === 'preview' || (data.action === 'execute' && Array.isArray(data.paths) && data.paths.length > 0),
     { message: 'paths are required for execute action' }
