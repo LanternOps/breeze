@@ -68,6 +68,7 @@ services:
 
   api:
     image: ghcr.io/lanternops/breeze/api:${BREEZE_VERSION:-latest}
+    platform: linux/amd64
     container_name: breeze-api
     restart: unless-stopped
     environment:
@@ -115,6 +116,7 @@ services:
 
   web:
     image: ghcr.io/lanternops/breeze/web:${BREEZE_VERSION:-latest}
+    platform: linux/amd64
     container_name: breeze-web
     restart: unless-stopped
     environment:
@@ -156,7 +158,7 @@ services:
     image: redis:7-alpine
     container_name: breeze-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
     healthcheck:

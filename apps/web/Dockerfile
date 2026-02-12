@@ -25,7 +25,7 @@ FROM base AS builder
 WORKDIR /app
 
 ARG NODE_ENV=production
-ARG PUBLIC_API_URL=http://localhost:3001
+ARG PUBLIC_API_URL=
 ENV NODE_ENV=${NODE_ENV}
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 
@@ -59,13 +59,15 @@ ENV PORT=4321
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 astro
 
-# Copy built application (Astro SSR output)
-COPY --from=builder --chown=astro:nodejs /app/apps/web/dist ./dist
-COPY --from=builder --chown=astro:nodejs /app/apps/web/package.json ./
-
-# Copy node_modules for SSR runtime
-COPY --from=deps --chown=astro:nodejs /app/apps/web/node_modules ./node_modules
+# Copy built application and dependencies while preserving pnpm workspace symlink layout.
+# /app/apps/web/node_modules links into /app/node_modules/.pnpm.
+COPY --from=builder --chown=astro:nodejs /app/apps/web/dist ./apps/web/dist
+COPY --from=builder --chown=astro:nodejs /app/apps/web/package.json ./apps/web/package.json
+COPY --from=deps --chown=astro:nodejs /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps --chown=astro:nodejs /app/node_modules ./node_modules
+
+# Run the web app from its workspace path so module resolution uses apps/web/node_modules first.
+WORKDIR /app/apps/web
 
 # Switch to non-root user
 USER astro
@@ -78,4 +80,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:4321/ || exit 1
 
 # Start the Astro SSR server
-CMD ["node", "./dist/server/entry.mjs"]
+CMD ["node", "dist/server/entry.mjs"]

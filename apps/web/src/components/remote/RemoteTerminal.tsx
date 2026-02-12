@@ -198,7 +198,7 @@ export default function RemoteTerminal({
 
       // Establish WebSocket connection for terminal data
       // Connect directly to API server for WebSocket (Astro SSR doesn't proxy WebSocket)
-      const apiHost = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+      const apiHost = import.meta.env.PUBLIC_API_URL || window.location.origin;
       const wsProtocol = apiHost.startsWith('https') ? 'wss:' : 'ws:';
       const apiHostname = apiHost.replace(/^https?:\/\//, '');
       const wsUrl = `${wsProtocol}//${apiHostname}/api/v1/remote/sessions/${currentSessionId}/ws?ticket=${encodeURIComponent(ticket)}`;

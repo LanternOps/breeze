@@ -74,5 +74,8 @@ CLAUDE.md
 monitoring/secrets/*
 !monitoring/secrets/.gitkeep
 
+# Docker local overrides
+docker-compose.override.yml
+
 # Backups
 backups/
