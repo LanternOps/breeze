@@ -24,7 +24,7 @@ import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { writeRouteAudit } from '../services/auditEvents';
 import { db } from '../db';
-import { aiMessages, auditLogs } from '../db/schema';
+import { aiSessions, aiMessages, auditLogs } from '../db/schema';
 import { eq, and, desc, gte, sql as drizzleSql } from 'drizzle-orm';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
@@ -36,6 +36,21 @@ import {
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional()
 });
+
+/**
+ * Derive a short title from the user's first message.
+ * Truncates at a word boundary to ≤80 chars and adds ellipsis if needed.
+ */
+function generateSessionTitle(content: string): string {
+  // Strip excess whitespace
+  const cleaned = content.replace(/\s+/g, ' ').trim();
+  if (cleaned.length <= 80) return cleaned;
+
+  // Truncate at word boundary
+  const truncated = cleaned.slice(0, 80);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return (lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated) + '…';
+}
 
 export const aiRoutes = new Hono();
 
@@ -154,6 +169,29 @@ aiRoutes.delete(
   }
 );
 
+// PATCH /sessions/:id - Update session title
+aiRoutes.patch(
+  '/sessions/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', z.object({ title: z.string().min(1).max(255) })),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+    const { title } = c.req.valid('json');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    await db.update(aiSessions)
+      .set({ title, updatedAt: new Date() })
+      .where(eq(aiSessions.id, sessionId));
+
+    return c.json({ success: true, title });
+  }
+);
+
 // ============================================
 // Message Sending (SSE Stream via Streaming Sessions)
 // ============================================
@@ -221,6 +259,19 @@ aiRoutes.post(
       console.error('[AI] Failed to save user message to DB:', err);
       activeSession.state = 'idle';
       return c.json({ error: 'Failed to save message' }, 500);
+    }
+
+    // Auto-generate title from first user message
+    if (!dbSession.title) {
+      const title = generateSessionTitle(sanitizedContent);
+      try {
+        await db.update(aiSessions)
+          .set({ title })
+          .where(eq(aiSessions.id, sessionId));
+        activeSession.eventBus.publish({ type: 'title_updated', title });
+      } catch (err) {
+        console.error('[AI] Failed to auto-set session title:', err);
+      }
     }
 
     // Push message to the streaming input and start turn timeout
