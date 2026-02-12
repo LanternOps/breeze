@@ -53,7 +53,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       }
 
       // Build deep link URL
-      const apiUrl = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+      const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
       const deepLink = `breeze://connect?session=${encodeURIComponent(session.id)}&code=${encodeURIComponent(codeData.code)}&api=${encodeURIComponent(apiUrl)}`;
 
       setStatus('launching');

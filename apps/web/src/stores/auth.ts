@@ -91,8 +91,9 @@ export const useAuthStore = create<AuthState>()(
 );
 
 // API helper functions
-// In development, point directly to API server. In production, use relative path (proxied).
-const API_HOST = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
+// In development, set PUBLIC_API_URL=http://localhost:3001. In production behind a
+// reverse proxy (Caddy), leave it empty so requests use relative paths (/api/v1/...).
+const API_HOST = import.meta.env.PUBLIC_API_URL || '';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 

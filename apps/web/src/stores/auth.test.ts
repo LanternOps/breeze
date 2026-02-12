@@ -44,7 +44,7 @@ describe('auth store fetchWithAuth', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://localhost:3001/api/v1/devices');
+    expect(url).toBe('/api/v1/devices');
 
     const headers = options.headers as Headers;
     expect(headers.get('Authorization')).toBe(`Bearer ${baseTokens.accessToken}`);
@@ -64,8 +64,8 @@ describe('auth store fetchWithAuth', () => {
 
     const [firstUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
     const [secondUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
-    expect(firstUrl).toBe('http://localhost:3001/api/v1/devices');
-    expect(secondUrl).toBe('http://localhost:3001/api/v1/api-keys');
+    expect(firstUrl).toBe('/api/v1/devices');
+    expect(secondUrl).toBe('/api/v1/api-keys');
   });
 
   it('refreshes and retries when access token is expired', async () => {
@@ -92,7 +92,7 @@ describe('auth store fetchWithAuth', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
 
     const refreshCall = fetchMock.mock.calls[1] as [string, RequestInit];
-    expect(refreshCall[0]).toBe('http://localhost:3001/api/v1/auth/refresh');
+    expect(refreshCall[0]).toBe('/api/v1/auth/refresh');
     expect(refreshCall[1].method).toBe('POST');
     expect(refreshCall[1].body).toBe(JSON.stringify({}));
     expect(new Headers(refreshCall[1].headers).get('x-breeze-csrf')).toBe('1');
@@ -133,12 +133,12 @@ describe('auth store fetchWithAuth', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'http://localhost:3001/api/v1/auth/refresh',
+      '/api/v1/auth/refresh',
       expect.objectContaining({ method: 'POST' })
     );
 
     const secondCall = fetchMock.mock.calls[1] as [string, RequestInit];
-    expect(secondCall[0]).toBe('http://localhost:3001/api/v1/devices');
+    expect(secondCall[0]).toBe('/api/v1/devices');
     expect(new Headers(secondCall[1].headers).get('Authorization')).toBe(`Bearer ${refreshedTokens.accessToken}`);
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
   });
