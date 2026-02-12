@@ -84,6 +84,7 @@ import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
+import { autoMigrate } from './db/autoMigrate';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
@@ -920,6 +921,11 @@ async function bootstrap(): Promise<void> {
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
 
   await runStartupChecks();
+
+  // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to disable)
+  if (process.env.AUTO_MIGRATE !== 'false') {
+    await autoMigrate();
+  }
 
   server = serve({
     fetch: app.fetch,
