@@ -19,7 +19,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
-import { checkGuardrails } from '../services/aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db } from '../db';
 import { devices, alerts, scripts, automations } from '../db/schema';
 import { eq, and, desc, type SQL } from 'drizzle-orm';
@@ -410,7 +410,29 @@ async function handleToolsCall(
     });
   }
 
-  // MCP server auto-executes even Tier 3 tools — the API key holder
+  // RBAC permission check
+  try {
+    const permError = await checkToolPermission(toolName, toolInput, auth);
+    if (permError) {
+      return jsonRpcError(id, -32603, permError);
+    }
+  } catch (err) {
+    console.error('[MCP] Permission check failed for tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to verify permissions');
+  }
+
+  // Per-tool rate limit
+  try {
+    const rateLimitErr = await checkToolRateLimit(toolName, auth.user.id);
+    if (rateLimitErr) {
+      return jsonRpcError(id, -32000, rateLimitErr);
+    }
+  } catch (err) {
+    console.error('[MCP] Tool rate limit check failed for:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to verify rate limits');
+  }
+
+  // MCP server auto-executes Tier 3 tools without approval — the API key holder
   // is trusted at the scope level. Approval flow is for interactive UI only.
 
   try {

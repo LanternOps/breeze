@@ -4,16 +4,11 @@
  * Provides:
  * - runPreFlightChecks(): validates rate limits, budget, session status, and
  *   sanitizes input before handing off to the streaming session manager
- * - createSessionCanUseTool(): session-scoped canUseTool callback factory
+ * - createSessionPreToolUse(): session-scoped pre-execution guardrails callback
  * - createSessionPostToolUse(): session-scoped postToolUse callback factory
  * - safeParseJson(): utility for parsing tool output
- *
- * NOTE: The canUseTool callback created here depends on permissionMode being
- * 'default' in the query() call (see streamingSessionManager.ts). This ensures
- * the CLI subprocess sends can_use_tool requests for guardrails, RBAC, and approval.
  */
 
-import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -23,8 +18,8 @@ import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGu
 import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
-import { TOOL_TIERS, type PostToolUseCallback } from './aiAgentSdkTools';
-import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
+import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -168,52 +163,49 @@ export async function runPreFlightChecks(
 }
 
 // ============================================
-// Session-scoped canUseTool factory
+// Session-scoped preToolUse factory
 // ============================================
 
 /**
- * Creates a canUseTool callback that reads auth/requestContext from the active
- * session (updated per-request) and publishes approval events to the session's
- * event bus.
+ * Creates a PreToolUseCallback that enforces guardrails, RBAC, rate limits,
+ * and the approval gate before MCP tool execution. This runs inside
+ * makeHandler() in aiAgentSdkTools.ts — unlike canUseTool, it IS invoked
+ * for in-process MCP server tools.
  */
-export function createSessionCanUseTool(session: ActiveSession): CanUseTool {
-  return async (toolName, input, options) => {
-    const bareName = toolName.startsWith(MCP_PREFIX)
-      ? toolName.slice(MCP_PREFIX.length)
-      : toolName;
-
-    // Only allow our Breeze tools
-    if (!TOOL_TIERS[bareName]) {
-      return { behavior: 'deny', message: `Unknown tool: ${bareName}` };
+export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
+  return async (toolName, input) => {
+    // Reject unknown tools (defense-in-depth — SDK whitelist should already filter)
+    if (!TOOL_TIERS[toolName]) {
+      return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
     // Guardrails (tier check + action-based escalation)
-    const guardrailCheck = checkGuardrails(bareName, input);
+    const guardrailCheck = checkGuardrails(toolName, input);
 
     if (!guardrailCheck.allowed) {
-      return { behavior: 'deny', message: guardrailCheck.reason ?? 'Tool blocked by guardrails' };
+      return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
     }
 
     // RBAC permission check
     try {
-      const permError = await checkToolPermission(bareName, input, session.auth);
+      const permError = await checkToolPermission(toolName, input, session.auth);
       if (permError) {
-        return { behavior: 'deny', message: permError };
+        return { allowed: false, error: permError };
       }
     } catch (err) {
-      console.error('[AI-SDK] Permission check failed for tool:', bareName, err);
-      return { behavior: 'deny', message: 'Unable to verify permissions. Please try again.' };
+      console.error('[AI-SDK] Permission check failed for tool:', toolName, err);
+      return { allowed: false, error: 'Unable to verify permissions. Please try again.' };
     }
 
     // Per-tool rate limit
     try {
-      const rateLimitErr = await checkToolRateLimit(bareName, session.auth.user.id);
+      const rateLimitErr = await checkToolRateLimit(toolName, session.auth.user.id);
       if (rateLimitErr) {
-        return { behavior: 'deny', message: rateLimitErr };
+        return { allowed: false, error: rateLimitErr };
       }
     } catch (err) {
-      console.error('[AI-SDK] Tool rate limit check failed for:', bareName, err);
-      return { behavior: 'deny', message: 'Unable to verify rate limits. Please try again.' };
+      console.error('[AI-SDK] Tool rate limit check failed for:', toolName, err);
+      return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
     }
 
     // Tier 3: Requires user approval
@@ -224,37 +216,42 @@ export function createSessionCanUseTool(session: ActiveSession): CanUseTool {
           .insert(aiToolExecutions)
           .values({
             sessionId: session.breezeSessionId,
-            toolName: bareName,
+            toolName,
             toolInput: input,
             status: 'pending',
           })
           .returning();
         approvalExec = row;
       } catch (err) {
-        console.error('[AI-SDK] Failed to create approval record:', bareName, err);
-        return { behavior: 'deny', message: 'Failed to create approval record' };
+        console.error('[AI-SDK] Failed to create approval record:', toolName, err);
+        return { allowed: false, error: 'Failed to create approval record' };
       }
 
       if (!approvalExec) {
-        return { behavior: 'deny', message: 'Failed to create approval record' };
+        return { allowed: false, error: 'Failed to create approval record' };
       }
 
-      // Emit approval_required event via session event bus
+      // Emit approval_required event via session event bus → UI shows Approve/Reject
       session.eventBus.publish({
         type: 'approval_required',
         executionId: approvalExec.id,
-        toolName: bareName,
+        toolName,
         input,
-        description: guardrailCheck.description ?? `Execute ${bareName}`,
+        description: guardrailCheck.description ?? `Execute ${toolName}`,
       });
 
-      // Wait for approval (blocks the SDK loop; respects abort signal)
-      const approved = await waitForApproval(approvalExec.id, 300_000, options.signal);
+      // Block until user clicks Approve/Reject or 5-min timeout
+      const approved = await waitForApproval(
+        approvalExec.id,
+        300_000,
+        session.abortController.signal,
+      );
 
       if (!approved) {
-        return { behavior: 'deny', message: 'Tool execution was rejected or timed out' };
+        return { allowed: false, error: 'Tool execution was rejected or timed out' };
       }
 
+      // Mark as executing
       try {
         await db
           .update(aiToolExecutions)
@@ -265,12 +262,7 @@ export function createSessionCanUseTool(session: ActiveSession): CanUseTool {
       }
     }
 
-    // toolUseId tracking is handled in streamingSessionManager.ts via
-    // content_block_start events. The SDK does not invoke canUseTool with a
-    // toolUseId for MCP tools routed through the in-process server, so the
-    // toolUseIdQueue is populated from stream events instead.
-
-    return { behavior: 'allow' };
+    return { allowed: true };
   };
 }
 

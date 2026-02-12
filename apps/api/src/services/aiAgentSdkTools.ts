@@ -11,11 +11,21 @@ import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { executeTool } from './aiTools';
 import type { AiToolTier } from '@breeze/shared/types/ai';
+import { compactToolResultForChat } from './aiToolOutput';
+
+/**
+ * Callback invoked before tool execution to enforce guardrails, RBAC,
+ * rate limits, and approval gates. Blocks execution until resolved.
+ */
+export type PreToolUseCallback = (
+  toolName: string,
+  input: Record<string, unknown>,
+) => Promise<{ allowed: true } | { allowed: false; error: string }>;
 
 /**
  * Callback invoked after each tool execution (success or failure).
  * Used by aiAgentSdk.ts to persist tool_result messages, execution records,
- * audit logs, and SSE events — matching the old agenticLoop behavior.
+ * audit logs, and SSE events.
  */
 export type PostToolUseCallback = (
   toolName: string,
@@ -26,7 +36,7 @@ export type PostToolUseCallback = (
 ) => Promise<void>;
 
 // ============================================
-// Tool Tier Map (for canUseTool callback)
+// Tool Tier Map (used by guardrails checks)
 // ============================================
 
 export const TOOL_TIERS = {
@@ -70,9 +80,35 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-function makeHandler(toolName: string, getAuth: () => AuthContext, onPostToolUse?: PostToolUseCallback) {
+function makeHandler(
+  toolName: string,
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
+
+    // Pre-execution check (guardrails, RBAC, rate limits, approval)
+    if (onPreToolUse) {
+      let check: { allowed: true } | { allowed: false; error: string };
+      try {
+        check = await onPreToolUse(toolName, args);
+      } catch (err) {
+        console.error(`[AI-SDK] PreToolUse threw for ${toolName}:`, err);
+        check = { allowed: false, error: 'Internal guardrails error. Tool execution blocked.' };
+      }
+      if (!check.allowed) {
+        if (onPostToolUse) {
+          try { await onPostToolUse(toolName, args, JSON.stringify({ error: check.error }), true, 0); }
+          catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: check.error }) }],
+          isError: true,
+        };
+      }
+    }
     try {
       const auth = getAuth();
       const result = await withTimeout(
@@ -80,12 +116,13 @@ function makeHandler(toolName: string, getAuth: () => AuthContext, onPostToolUse
         TOOL_EXECUTION_TIMEOUT_MS,
         toolName,
       );
+      const compactResult = compactToolResultForChat(toolName, result);
       const durationMs = Date.now() - startTime;
       if (onPostToolUse) {
-        try { await onPostToolUse(toolName, args, result, false, durationMs); }
+        try { await onPostToolUse(toolName, args, compactResult, false, durationMs); }
         catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
       }
-      return { content: [{ type: 'text' as const, text: result }] };
+      return { content: [{ type: 'text' as const, text: compactResult }] };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
@@ -112,7 +149,11 @@ function makeHandler(toolName: string, getAuth: () => AuthContext, onPostToolUse
  * see the latest org-scoped access even when the session is reused.
  * Optional postToolUse callback fires after every tool execution for persistence/audit.
  */
-export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?: PostToolUseCallback) {
+export function createBreezeMcpServer(
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
   const uuid = z.string().uuid();
 
   const tools = [
@@ -127,14 +168,14 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         tags: z.array(z.string().max(100)).max(20).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('query_devices', getAuth, onPostToolUse)
+      makeHandler('query_devices', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'get_device_details',
       'Get comprehensive details about a specific device including hardware, network, disk, and metrics.',
       { deviceId: uuid },
-      makeHandler('get_device_details', getAuth, onPostToolUse)
+      makeHandler('get_device_details', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -146,7 +187,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         hoursBack: z.number().int().min(1).max(168).optional(),
         aggregation: z.enum(['raw', 'hourly', 'daily']).optional(),
       },
-      makeHandler('analyze_metrics', getAuth, onPostToolUse)
+      makeHandler('analyze_metrics', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -157,7 +198,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         limit: z.number().int().min(1).max(200).optional(),
         idleThresholdMinutes: z.number().int().min(1).max(1440).optional(),
       },
-      makeHandler('get_active_users', getAuth, onPostToolUse)
+      makeHandler('get_active_users', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -169,7 +210,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         daysBack: z.number().int().min(1).max(365).optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },
-      makeHandler('get_user_experience_metrics', getAuth, onPostToolUse)
+      makeHandler('get_user_experience_metrics', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -184,7 +225,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         limit: z.number().int().min(1).max(100).optional(),
         resolutionNote: z.string().max(1000).optional(),
       },
-      makeHandler('manage_alerts', getAuth, onPostToolUse)
+      makeHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -200,7 +241,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         ]),
         payload: z.record(z.unknown()).optional(),
       },
-      makeHandler('execute_command', getAuth, onPostToolUse)
+      makeHandler('execute_command', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -211,7 +252,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         deviceIds: z.array(uuid).min(1).max(10),
         parameters: z.record(z.unknown()).optional(),
       },
-      makeHandler('run_script', getAuth, onPostToolUse)
+      makeHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -222,7 +263,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         action: z.enum(['list', 'start', 'stop', 'restart']),
         serviceName: z.string().max(255).optional(),
       },
-      makeHandler('manage_services', getAuth, onPostToolUse)
+      makeHandler('manage_services', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -233,7 +274,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         action: z.enum(['scan', 'status', 'quarantine', 'remove', 'restore']),
         threatId: z.string().max(255).optional(),
       },
-      makeHandler('security_scan', getAuth, onPostToolUse)
+      makeHandler('security_scan', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -248,7 +289,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         includeRecommendations: z.boolean().optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },
-      makeHandler('get_security_posture', getAuth, onPostToolUse)
+      makeHandler('get_security_posture', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -261,7 +302,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         content: z.string().max(1_000_000).optional(),
         newPath: z.string().max(4096).optional(),
       },
-      makeHandler('file_operations', getAuth, onPostToolUse)
+      makeHandler('file_operations', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -277,8 +318,9 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         maxEntries: z.number().int().min(1_000).max(25_000_000).optional(),
         workers: z.number().int().min(1).max(32).optional(),
         timeoutSeconds: z.number().int().min(5).max(900).optional(),
+        maxCandidates: z.number().int().min(1).max(200).optional(),
       },
-      makeHandler('analyze_disk_usage', getAuth, onPostToolUse)
+      makeHandler('analyze_disk_usage', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -289,8 +331,9 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         action: z.enum(['preview', 'execute']),
         categories: z.array(z.string()).max(10).optional(),
         paths: z.array(z.string().max(4096)).min(1).max(200).optional(),
+        maxCandidates: z.number().int().min(1).max(200).optional(),
       },
-      makeHandler('disk_cleanup', getAuth, onPostToolUse)
+      makeHandler('disk_cleanup', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -304,7 +347,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         hoursBack: z.number().int().min(1).max(168).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('query_audit_log', getAuth, onPostToolUse)
+      makeHandler('query_audit_log', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -318,7 +361,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         actions: z.array(z.record(z.unknown())).min(1).max(20),
         enabled: z.boolean().optional(),
       },
-      makeHandler('create_automation', getAuth, onPostToolUse)
+      makeHandler('create_automation', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -329,7 +372,7 @@ export function createBreezeMcpServer(getAuth: () => AuthContext, onPostToolUse?
         subnet: z.string().max(50).optional(),
         scanType: z.enum(['ping', 'arp', 'full']).optional(),
       },
-      makeHandler('network_discovery', getAuth, onPostToolUse)
+      makeHandler('network_discovery', getAuth, onPreToolUse, onPostToolUse)
     ),
   ];
 
