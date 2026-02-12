@@ -23,7 +23,7 @@ import { AsyncEventQueue } from '../utils/asyncQueue';
 import { recordUsageFromSdkResult } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
-import { createSessionCanUseTool, createSessionPostToolUse } from './aiAgentSdk';
+import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
@@ -179,7 +179,7 @@ export interface ActiveSession {
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
   mcpServer: McpSdkServerConfigWithInstance;
-  /** FIFO queue of toolUseIds from canUseTool for postToolUse correlation */
+  /** FIFO queue of toolUseIds from content_block_start for postToolUse correlation */
   toolUseIdQueue: string[];
   /** Promise that resolves when background processor finishes */
   readonly processorPromise: Promise<void>;
@@ -278,11 +278,11 @@ export class StreamingSessionManager {
     };
 
     // Create session-scoped callbacks (close over session object)
-    const canUseTool = createSessionCanUseTool(session);
+    const preToolUse = createSessionPreToolUse(session);
     const postToolUse = createSessionPostToolUse(session);
 
-    // Create MCP server with postToolUse callback
-    const mcpServer = createBreezeMcpServer(() => session.auth, postToolUse);
+    // Create MCP server with pre/post tool-use callbacks
+    const mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse);
     session.mcpServer = mcpServer;
 
     const maxTurns = Math.max(1, dbSession.maxTurns - dbSession.turnCount);
@@ -303,9 +303,7 @@ export class StreamingSessionManager {
           tools: [],
           allowedTools: BREEZE_MCP_TOOL_NAMES,
           mcpServers: { breeze: mcpServer },
-          canUseTool,
           includePartialMessages: true,
-          permissionMode: 'default',
           abortController,
           resume: dbSession.sdkSessionId ?? undefined,
           persistSession: true,
@@ -467,9 +465,8 @@ export class StreamingSessionManager {
                 const block = event.content_block;
 
                 // Track toolUseId for postToolUse correlation.
-                // canUseTool is not invoked for in-process MCP tools, so we
-                // populate the queue here (content_block_start fires before
-                // the tool executes and postToolUse shifts the queue).
+                // content_block_start fires before the tool executes;
+                // postToolUse shifts the queue after execution.
                 session.toolUseIdQueue.push(block.id);
 
                 session.eventBus.publish({
