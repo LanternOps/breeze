@@ -3,6 +3,7 @@ module github.com/breeze-rmm/agent
 go 1.24.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/go-ole/go-ole v1.2.6
 	github.com/google/gopacket v1.1.19
 	github.com/gorilla/websocket v1.5.3
@@ -11,12 +12,11 @@ require (
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	golang.org/x/net v0.49.0
-	golang.org/x/sys v0.40.0
+	golang.org/x/net v0.50.0
+	golang.org/x/sys v0.41.0
 )
 
 require (
-	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
@@ -54,7 +54,7 @@ require (
 	github.com/wlynxg/anet v0.0.3 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
