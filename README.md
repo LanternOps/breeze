@@ -25,6 +25,10 @@
   <a href="https://breezermm.com/discord"><img src="https://img.shields.io/badge/discord-join-7289da" alt="Discord" /></a>
 </p>
 
+<p align="center">
+  <img src="docs/breeze-ai-demo.gif" alt="Breeze AI Demo — Check a device's health" width="800" />
+</p>
+
 ---
 
 ## What is Breeze?
