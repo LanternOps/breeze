@@ -25,7 +25,7 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
+        where: vi.fn(() => Object.assign(Promise.resolve([]), {
           limit: vi.fn(() => Promise.resolve([]))
         }))
       }))
@@ -45,7 +45,11 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     }))
-  }
+  },
+  withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
+  runOutsideDbContext: vi.fn((fn: any) => fn()),
+  SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
 }));
 
 vi.mock('../db/schema', () => ({
@@ -62,9 +66,9 @@ import { db } from '../db';
 function mockUserLookup(user: ReturnType<typeof createTestUser> | null) {
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), {
         limit: vi.fn().mockResolvedValue(user ? [user] : [])
-      })
+      }))
     })
   } as any);
 }

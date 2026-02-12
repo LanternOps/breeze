@@ -1039,6 +1039,9 @@ portalRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
       createdAt: tickets.createdAt,
       updatedAt: tickets.updatedAt
     });
+  if (!ticket) {
+    return c.json({ error: 'Failed to create ticket' }, 500);
+  }
 
   writePortalAudit(c, {
     orgId: auth.user.orgId,
@@ -1148,6 +1151,9 @@ portalRoutes.post(
         content: ticketComments.content,
         createdAt: ticketComments.createdAt
       });
+    if (!comment) {
+      return c.json({ error: 'Failed to create ticket comment' }, 500);
+    }
 
     writePortalAudit(c, {
       orgId: auth.user.orgId,
@@ -1285,6 +1291,9 @@ portalRoutes.post(
         checkoutNotes: assetCheckouts.checkoutNotes,
         condition: assetCheckouts.condition
       });
+    if (!checkout) {
+      return c.json({ error: 'Failed to checkout asset' }, 500);
+    }
 
     writePortalAudit(c, {
       orgId: auth.user.orgId,
@@ -1350,6 +1359,9 @@ portalRoutes.post(
         checkinNotes: assetCheckouts.checkinNotes,
         condition: assetCheckouts.condition
       });
+    if (!checkout) {
+      return c.json({ error: 'Failed to check in asset' }, 500);
+    }
 
     writePortalAudit(c, {
       orgId: auth.user.orgId,

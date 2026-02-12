@@ -67,6 +67,9 @@ describe('Auth Integration Tests', () => {
         .limit(1);
 
       expect(dbUser).toBeDefined();
+      if (!dbUser) {
+        throw new Error('Expected created user to exist');
+      }
       expect(dbUser.name).toBe('New User');
       expect(dbUser.status).toBe('active');
     });
@@ -194,6 +197,10 @@ describe('Auth Integration Tests', () => {
         .where(eq(users.id, user.id))
         .limit(1);
 
+      expect(updatedUser).toBeDefined();
+      if (!updatedUser) {
+        throw new Error('Expected user row to exist');
+      }
       expect(updatedUser.lastLoginAt).not.toBeNull();
     });
   });
@@ -246,6 +253,11 @@ describe('Auth Integration Tests', () => {
         .map((part) => part.trim())
         .find((part) => part.startsWith('breeze_refresh_token='));
       expect(refreshCookie).toBeDefined();
+      const refreshCookieValue = refreshCookie?.split(';')[0];
+      expect(refreshCookieValue).toBeDefined();
+      if (!refreshCookieValue) {
+        throw new Error('Expected refresh cookie value');
+      }
 
       // Now refresh
       const refreshRes = await app.request('/auth/refresh', {
@@ -253,7 +265,7 @@ describe('Auth Integration Tests', () => {
         headers: {
           'Content-Type': 'application/json',
           'x-breeze-csrf': '1',
-          Cookie: refreshCookie!.split(';')[0]
+          Cookie: refreshCookieValue
         },
         body: JSON.stringify({})
       });

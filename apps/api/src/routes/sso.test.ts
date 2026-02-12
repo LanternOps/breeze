@@ -102,7 +102,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
       orgId: 'org-123',
@@ -113,7 +113,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn((...scopes: string[]) => async (c, next) => {
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth || !scopes.includes(auth.scope)) {
       return c.json({ error: 'Forbidden' }, 403);
@@ -136,7 +136,7 @@ describe('sso routes', () => {
     accessibleOrgIds: string[] | null;
     canAccessOrg: (orgId: string) => boolean;
   }> = {}) => {
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: overrides.scope ?? 'organization',
         orgId: 'orgId' in overrides ? overrides.orgId : 'org-123',

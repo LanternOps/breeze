@@ -675,6 +675,9 @@ alertRoutes.post(
       cooldownMinutes: data.cooldownMinutes,
       autoResolve: data.autoResolve
     });
+    if (!template) {
+      return c.json({ error: 'Failed to resolve alert template' }, 500);
+    }
 
     if (!created && template.orgId && template.orgId !== orgId) {
       return c.json({ error: 'Access to this alert template denied' }, 403);
@@ -730,6 +733,9 @@ alertRoutes.post(
         isActive
       })
       .returning();
+    if (!rule) {
+      return c.json({ error: 'Failed to create alert rule' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId,
@@ -781,12 +787,16 @@ alertRoutes.put(
         cooldownMinutes: data.cooldownMinutes,
         autoResolve: data.autoResolve
       });
+      if (!resolved.template) {
+        return c.json({ error: 'Failed to resolve alert template' }, 500);
+      }
+      const resolvedTemplate = resolved.template;
 
-      if (!resolved.created && resolved.template.orgId && resolved.template.orgId !== rule.orgId) {
+      if (!resolved.created && resolvedTemplate.orgId && resolvedTemplate.orgId !== rule.orgId) {
         return c.json({ error: 'Access to this alert template denied' }, 403);
       }
 
-      updates.templateId = resolved.template.id;
+      updates.templateId = resolvedTemplate.id;
       templateOwned = resolved.created;
     }
 
@@ -898,6 +908,9 @@ alertRoutes.put(
       .set(updates)
       .where(eq(alertRules.id, ruleId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update alert rule' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -1294,6 +1307,9 @@ alertRoutes.post(
       })
       .where(eq(alerts.id, alertId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to acknowledge alert' }, 500);
+    }
 
     try {
       await publishEvent(
@@ -1357,6 +1373,9 @@ alertRoutes.post(
       })
       .where(eq(alerts.id, alertId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to resolve alert' }, 500);
+    }
 
     // Set cooldown to prevent immediate re-trigger by the evaluation worker
     const [rule] = await db
@@ -1445,6 +1464,9 @@ alertRoutes.post(
       })
       .where(eq(alerts.id, alertId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to suppress alert' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -1577,6 +1599,9 @@ alertRoutes.post(
         enabled: data.enabled
       })
       .returning();
+    if (!channel) {
+      return c.json({ error: 'Failed to create notification channel' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId,
@@ -1635,6 +1660,9 @@ alertRoutes.put(
       .set(updates)
       .where(eq(notificationChannels.id, channelId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update notification channel' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: channel.orgId,
@@ -1992,6 +2020,9 @@ alertRoutes.post(
         steps: data.steps
       })
       .returning();
+    if (!policy) {
+      return c.json({ error: 'Failed to create escalation policy' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: policy.orgId,
@@ -2038,6 +2069,9 @@ alertRoutes.put(
       .set(updates)
       .where(eq(escalationPolicies.id, policyId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update escalation policy' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: policy.orgId,

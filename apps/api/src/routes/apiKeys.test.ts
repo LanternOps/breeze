@@ -34,7 +34,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
@@ -44,7 +44,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn((...scopes: string[]) => async (c, next) => {
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth || !scopes.includes(auth.scope)) {
       return c.json({ error: 'Forbidden' }, 403);
@@ -52,8 +52,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   // AuthZ/MFA gates are tested elsewhere; keep these route tests focused on handler behavior.
-  requirePermission: vi.fn(() => async (_c, next) => next()),
-  requireMfa: vi.fn(() => async (_c, next) => next())
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -64,7 +64,7 @@ describe('api keys routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
         partnerId: null,

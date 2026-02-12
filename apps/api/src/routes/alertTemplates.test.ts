@@ -36,7 +36,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
@@ -45,7 +45,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => (c, next) => next())
+  requireScope: vi.fn(() => (c: any, next: any) => next())
 }));
 
 import { authMiddleware } from '../middleware/auth';
@@ -74,7 +74,7 @@ describe('alert template routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
         orgId: '11111111-1111-1111-1111-111111111111',

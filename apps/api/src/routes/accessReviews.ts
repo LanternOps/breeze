@@ -37,12 +37,13 @@ accessReviewRoutes.use('*', async (c, next) => {
     await next();
     return;
   }
+  const accessibleOrgIds = auth.accessibleOrgIds;
 
   const partnerOrgRows = await db
     .select({ id: organizations.id })
     .from(organizations)
     .where(eq(organizations.partnerId, auth.partnerId));
-  const hasFullPartnerAccess = partnerOrgRows.every((org) => auth.accessibleOrgIds.includes(org.id));
+  const hasFullPartnerAccess = partnerOrgRows.every((org) => accessibleOrgIds.includes(org.id));
 
   if (!hasFullPartnerAccess) {
     throw new HTTPException(403, { message: 'Full partner organization access required' });

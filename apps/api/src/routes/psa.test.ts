@@ -26,7 +26,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
@@ -35,14 +35,14 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn((...scopes: string[]) => async (c, next) => {
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth || !scopes.includes(auth.scope)) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
   }),
-  requirePermission: vi.fn(() => async (_c, next) => next())
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -53,7 +53,7 @@ describe.skip('psa routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
         partnerId: null,
@@ -197,7 +197,7 @@ describe.skip('psa routes', () => {
   });
 
   it('should deny partner access when organization is not linked', async () => {
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'system',
         partnerId: null,
@@ -213,7 +213,7 @@ describe.skip('psa routes', () => {
     });
     const created = await createRes.json();
 
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',

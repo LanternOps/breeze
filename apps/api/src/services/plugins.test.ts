@@ -82,7 +82,6 @@ import {
   dispatchPluginEvent
 } from './plugins';
 import type { PluginInstallStatus } from './plugins';
-import * as plugins from './plugins';
 import { db } from '../db';
 
 const createSelectLimitMock = (result: unknown[]) => ({
@@ -96,14 +95,12 @@ const globalWithFetch = globalThis as typeof globalThis & { fetch: any };
 
 describe('plugins service', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // resetAllMocks clears both call history AND mockReturnValue/mockReturnValueOnce queues,
+    // preventing test pollution from stale mock return values
+    vi.resetAllMocks();
     subscribeMock.mockReturnValue(unsubscribeMock);
     randomUuidMock.mockReturnValue('uuid-1');
     globalWithFetch.fetch = vi.fn();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
   });
 
   describe('singletons', () => {
@@ -206,9 +203,10 @@ describe('plugins service', () => {
       const loader = new PluginLoader();
       vi.spyOn(loader, 'loadManifest').mockResolvedValue(manifest);
 
-      const registerHook = vi.fn();
-      vi.spyOn(plugins, 'getPluginEventBridge')
-        .mockReturnValue({ registerHook } as any);
+      // Get the real singleton bridge and spy on its registerHook method
+      // (vi.spyOn on the namespace export doesn't intercept internal calls)
+      const bridge = getPluginEventBridge();
+      const registerHook = vi.spyOn(bridge, 'registerHook').mockImplementation(() => {});
 
       vi.mocked(db.select)
         .mockReturnValueOnce(createSelectLimitMock([]) as any)
@@ -279,11 +277,11 @@ describe('plugins service', () => {
       const loader = new PluginLoader();
       vi.spyOn(loader, 'loadManifest').mockResolvedValue(manifest);
 
-      const registerHook = vi.fn(() => {
+      // Spy on the real singleton bridge's registerHook to throw
+      const bridge = getPluginEventBridge();
+      vi.spyOn(bridge, 'registerHook').mockImplementation(() => {
         throw new Error('hook failure');
       });
-      vi.spyOn(plugins, 'getPluginEventBridge')
-        .mockReturnValue({ registerHook } as any);
 
       vi.mocked(db.select)
         .mockReturnValueOnce(createSelectLimitMock([]) as any)
@@ -329,9 +327,9 @@ describe('plugins service', () => {
       const loader = new PluginLoader();
       vi.spyOn(loader, 'loadManifest').mockResolvedValue(manifest);
 
-      const unregisterHook = vi.fn();
-      vi.spyOn(plugins, 'getPluginEventBridge')
-        .mockReturnValue({ unregisterHook } as any);
+      // Spy on the real singleton bridge's unregisterHook
+      const bridge = getPluginEventBridge();
+      const unregisterHook = vi.spyOn(bridge, 'unregisterHook').mockImplementation(() => {});
 
       const installation = {
         id: 'inst-3',
@@ -715,10 +713,11 @@ describe('plugins service', () => {
         catalogId: 'catalog-1'
       });
 
-      vi.spyOn(plugins, 'getPluginSandbox')
-        .mockReturnValue({ execute: sandboxExecute } as any);
-      vi.spyOn(plugins, 'getPluginLoader')
-        .mockReturnValue({ getInstallation: loaderGetInstallation } as any);
+      // Spy on the real singletons that dispatchEvent calls internally
+      const sandbox = getPluginSandbox();
+      vi.spyOn(sandbox, 'execute').mockImplementation(sandboxExecute);
+      const loader = getPluginLoader();
+      vi.spyOn(loader, 'getInstallation').mockImplementation(loaderGetInstallation);
 
       await bridge.dispatchEvent('device.online', { payload: true }, 'org-1');
 
@@ -750,10 +749,11 @@ describe('plugins service', () => {
         catalogId: 'catalog-1'
       });
 
-      vi.spyOn(plugins, 'getPluginSandbox')
-        .mockReturnValue({ execute: sandboxExecute } as any);
-      vi.spyOn(plugins, 'getPluginLoader')
-        .mockReturnValue({ getInstallation: loaderGetInstallation } as any);
+      // Spy on the real singletons that dispatchEvent calls internally
+      const sandbox = getPluginSandbox();
+      vi.spyOn(sandbox, 'execute').mockImplementation(sandboxExecute);
+      const loader = getPluginLoader();
+      vi.spyOn(loader, 'getInstallation').mockImplementation(loaderGetInstallation);
 
       await bridge.dispatchEvent('device.online', { payload: true }, 'org-1');
 
@@ -765,10 +765,12 @@ describe('plugins service', () => {
       bridge.registerHook('plugin-1', 'device.online');
 
       const unregisterSpy = vi.spyOn(bridge, 'unregisterPlugin');
-      vi.spyOn(plugins, 'getPluginSandbox')
-        .mockReturnValue({ execute: vi.fn() } as any);
-      vi.spyOn(plugins, 'getPluginLoader')
-        .mockReturnValue({ getInstallation: vi.fn().mockResolvedValue(null) } as any);
+
+      // Spy on the real singletons that dispatchEvent calls internally
+      const sandbox = getPluginSandbox();
+      vi.spyOn(sandbox, 'execute').mockResolvedValue({ success: true, executionTimeMs: 0 });
+      const loader = getPluginLoader();
+      vi.spyOn(loader, 'getInstallation').mockResolvedValue(null);
 
       await bridge.dispatchEvent('device.online', { payload: true });
 
@@ -778,28 +780,25 @@ describe('plugins service', () => {
 
   describe('convenience functions', () => {
     it('delegates installPlugin and uninstallPlugin', async () => {
-      const loader = {
-        installPlugin: vi.fn().mockResolvedValue({ id: 'inst-1' }),
-        uninstallPlugin: vi.fn().mockResolvedValue(undefined)
-      };
-      vi.spyOn(plugins, 'getPluginLoader')
-        .mockReturnValue(loader as any);
+      // Spy on the real singleton loader's methods
+      const loader = getPluginLoader();
+      const installSpy = vi.spyOn(loader, 'installPlugin').mockResolvedValue({ id: 'inst-1' } as any);
+      const uninstallSpy = vi.spyOn(loader, 'uninstallPlugin').mockResolvedValue(undefined);
 
       const result = await installPlugin('org-1', 'catalog-1', { key: 'value' }, 'user-1');
       await uninstallPlugin('org-1', 'inst-1');
 
       expect(result).toEqual({ id: 'inst-1' });
-      expect(loader.installPlugin).toHaveBeenCalledWith('org-1', 'catalog-1', { key: 'value' }, 'user-1');
-      expect(loader.uninstallPlugin).toHaveBeenCalledWith('org-1', 'inst-1');
+      expect(installSpy).toHaveBeenCalledWith('org-1', 'catalog-1', { key: 'value' }, 'user-1');
+      expect(uninstallSpy).toHaveBeenCalledWith('org-1', 'inst-1');
     });
 
     it('delegates executePlugin and dispatchPluginEvent', async () => {
-      const sandbox = { execute: vi.fn().mockResolvedValue({ success: true }) };
-      const bridge = { dispatchEvent: vi.fn().mockResolvedValue(undefined) };
-      vi.spyOn(plugins, 'getPluginSandbox')
-        .mockReturnValue(sandbox as any);
-      vi.spyOn(plugins, 'getPluginEventBridge')
-        .mockReturnValue(bridge as any);
+      // Spy on the real singleton instances
+      const sandbox = getPluginSandbox();
+      const executeSpy = vi.spyOn(sandbox, 'execute').mockResolvedValue({ success: true, executionTimeMs: 0 });
+      const bridge = getPluginEventBridge();
+      const dispatchSpy = vi.spyOn(bridge, 'dispatchEvent').mockResolvedValue(undefined);
 
       const plugin = {
         id: 'plugin-1',
@@ -825,8 +824,8 @@ describe('plugins service', () => {
       await dispatchPluginEvent('device.online', { payload: true }, 'org-1');
 
       expect(result).toMatchObject({ success: true });
-      expect(sandbox.execute).toHaveBeenCalledWith(plugin, 'device.online', { payload: true });
-      expect(bridge.dispatchEvent).toHaveBeenCalledWith('device.online', { payload: true }, 'org-1');
+      expect(executeSpy).toHaveBeenCalledWith(plugin, 'device.online', { payload: true });
+      expect(dispatchSpy).toHaveBeenCalledWith('device.online', { payload: true }, 'org-1');
     });
   });
 });

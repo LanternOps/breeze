@@ -8,8 +8,11 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([]))
+        where: vi.fn(() => Object.assign(Promise.resolve([]), {
+          limit: vi.fn(() => Promise.resolve([])),
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve([]))
+          }))
         }))
       }))
     })),
@@ -28,7 +31,11 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     }))
-  }
+  },
+  withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
+  runOutsideDbContext: vi.fn((fn: any) => fn()),
+  SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
 }));
 
 vi.mock('../db/schema', () => ({
@@ -37,24 +44,31 @@ vi.mock('../db/schema', () => ({
   sites: {}
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+  writeRouteAudit: vi.fn()
+}));
+
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
       partnerId: 'partner-123',
       orgId: null,
-      user: { id: 'user-123', email: 'test@example.com' }
+      accessibleOrgIds: ['org-1', 'org-2'],
+      user: { id: 'user-123', email: 'test@example.com' },
+      canAccessOrg: () => true
     });
     return next();
   }),
-  requireScope: vi.fn((...scopes: string[]) => async (c, next) => {
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth || !scopes.includes(auth.scope)) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
   }),
-  requirePartner: vi.fn((c, next) => {
+  requirePartner: vi.fn((c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) {
       return c.json({ error: 'Partner access required' }, 403);
@@ -71,12 +85,14 @@ describe('organization routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
-        user: { id: 'user-123', email: 'test@example.com' }
+        accessibleOrgIds: ['org-1', 'org-2'],
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: () => true
       });
       return next();
     });
@@ -86,12 +102,13 @@ describe('organization routes', () => {
 
   describe('partner tenants', () => {
     it('should list partners for system scope', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -131,12 +148,13 @@ describe('organization routes', () => {
     });
 
     it('should create a partner tenant', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -164,12 +182,13 @@ describe('organization routes', () => {
     });
 
     it('should update a partner tenant', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -196,12 +215,13 @@ describe('organization routes', () => {
     });
 
     it('should delete a partner tenant', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -350,12 +370,13 @@ describe('organization routes', () => {
     it.skip('should list sites for an accessible organization', async () => {
       // Skipped: Complex mock chain - better for e2e testing
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -393,12 +414,13 @@ describe('organization routes', () => {
     it.skip('should create a site for an accessible organization', async () => {
       // Skipped: Requires org validation mock
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -425,12 +447,13 @@ describe('organization routes', () => {
     it.skip('should fetch a site by id', async () => {
       // Skipped: Complex mock chain
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -458,12 +481,13 @@ describe('organization routes', () => {
     it.skip('should update a site', async () => {
       // Skipped: Complex mock chain
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -501,12 +525,13 @@ describe('organization routes', () => {
 
     it('should delete a site', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -538,12 +563,13 @@ describe('organization routes', () => {
 
   describe('access control', () => {
     it('should forbid partner routes for non-system scope', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'partner',
           partnerId: 'partner-123',
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -556,13 +582,15 @@ describe('organization routes', () => {
       expect(res.status).toBe(403);
     });
 
-    it('should forbid organization routes without partner context', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    it('should return empty data for partner without accessible orgs', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'partner',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          accessibleOrgIds: [],
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => false
         });
         return next();
       });
@@ -572,19 +600,23 @@ describe('organization routes', () => {
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
     });
 
     it.skip('should forbid site access to other organizations', async () => {
       // Skipped: Requires org validation mock
       const orgId = '11111111-1111-1111-1111-111111111111';
       const otherOrgId = '22222222-2222-2222-2222-222222222222';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });

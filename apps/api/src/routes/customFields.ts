@@ -133,7 +133,7 @@ function canEditField(
 
 async function getCustomFieldWithAccess(
   fieldId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   const [field] = await db
     .select()

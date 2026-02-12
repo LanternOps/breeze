@@ -275,7 +275,8 @@ export async function setupTestEnvironment(
     roleId: role.id,
     orgId: scope === 'organization' ? organization.id : null,
     partnerId: scope !== 'system' ? partner.id : null,
-    scope
+    scope,
+    mfa: false
   };
   const token = await createAccessToken(tokenPayload);
 

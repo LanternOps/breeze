@@ -12,7 +12,7 @@ const psaSettings = new Map<string, Record<string, unknown>>();
 function resolveOrgId(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
   requestedOrgId?: string
-): { orgId: string } | { error: string; status: number } {
+): { orgId: string } | { error: string; status: 400 | 403 } {
   if (auth.scope === 'organization') {
     if (!auth.orgId) {
       return { error: 'Organization context required', status: 403 };
@@ -36,8 +36,9 @@ function resolveOrgId(
     }
 
     const orgIds = auth.accessibleOrgIds ?? [];
-    if (orgIds.length === 1) {
-      return { orgId: orgIds[0] };
+    const onlyOrgId = orgIds[0];
+    if (orgIds.length === 1 && onlyOrgId) {
+      return { orgId: onlyOrgId };
     }
 
     return { error: 'orgId is required for partner scope', status: 400 };
@@ -52,8 +53,9 @@ function resolveOrgId(
   }
 
   const orgIds = auth.accessibleOrgIds ?? [];
-  if (orgIds.length === 1) {
-    return { orgId: orgIds[0] };
+  const onlyOrgId = orgIds[0];
+  if (orgIds.length === 1 && onlyOrgId) {
+    return { orgId: onlyOrgId };
   }
 
   return { error: 'orgId is required for system scope', status: 400 };

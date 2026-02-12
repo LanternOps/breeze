@@ -60,7 +60,7 @@ export async function withDbAccessContext<T>(
     await tx.execute(sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`);
     await tx.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
 
-    return dbContextStorage.run(tx as typeof baseDb, fn);
+    return dbContextStorage.run(tx as unknown as typeof baseDb, fn);
   });
 }
 
@@ -80,7 +80,7 @@ export function runOutsideDbContext<T>(fn: () => T): T {
 
 export const db = new Proxy(baseDb, {
   get(_target, prop) {
-    const activeDb = getCurrentDb() as Record<PropertyKey, unknown>;
+    const activeDb = getCurrentDb() as unknown as Record<PropertyKey, unknown>;
     const value = activeDb[prop];
     if (typeof value === 'function') {
       return (value as (...args: unknown[]) => unknown).bind(activeDb);

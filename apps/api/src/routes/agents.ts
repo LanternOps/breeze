@@ -239,7 +239,9 @@ function parseComparableVersion(raw: string): { core: number[]; prerelease: stri
   const trimmed = raw.trim().replace(/^v/i, '');
   if (!trimmed) return null;
 
-  const [corePart, prereleasePart] = trimmed.split('-', 2);
+  const [rawCorePart, prereleasePart] = trimmed.split('-', 2);
+  const corePart = rawCorePart ?? '';
+  if (!corePart) return null;
   const coreTokens = corePart.split('.');
   if (coreTokens.length === 0) return null;
 
@@ -876,7 +878,8 @@ async function handleFilesystemAnalysisCommandResult(
     ])
   ).slice(0, 24);
 
-  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0 && !Boolean(snapshotPayload.partial);
+  const snapshotIsPartial = 'partial' in snapshotPayload ? Boolean(snapshotPayload.partial) : false;
+  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0 && !snapshotIsPartial;
   await upsertFilesystemScanState(command.deviceId, {
     lastRunMode: scanMode,
     lastBaselineCompletedAt: baselineCompleted
@@ -1084,8 +1087,9 @@ agentRoutes.get('/download/:os/:arch', async (c) => {
   // Convert Node.js ReadableStream to a web ReadableStream for Hono
   const webStream = new ReadableStream({
     start(controller) {
-      stream.on('data', (chunk: Buffer) => {
-        controller.enqueue(new Uint8Array(chunk));
+      stream.on('data', (chunk: string | Buffer) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        controller.enqueue(new Uint8Array(bytes));
       });
       stream.on('end', () => {
         controller.close();

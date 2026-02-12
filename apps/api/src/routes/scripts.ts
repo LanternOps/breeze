@@ -304,7 +304,10 @@ scriptRoutes.post(
         }
         orgId = body.orgId;
       } else if (auth.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
-        orgId = auth.accessibleOrgIds[0];
+        const onlyOrgId = auth.accessibleOrgIds[0];
+        if (onlyOrgId) {
+          orgId = onlyOrgId;
+        }
       } else {
         return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
       }

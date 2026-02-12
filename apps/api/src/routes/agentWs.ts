@@ -575,6 +575,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
           ws.close(4001, 'Authentication failed');
           return;
         }
+        const authenticatedAgent = agentDb;
 
         // Binary fast-path for desktop frames: [0x02][36-byte sessionId][JPEG data]
         if (event.data instanceof ArrayBuffer || Buffer.isBuffer(event.data)) {
@@ -626,7 +627,7 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
                     .where(
                       and(
                         eq(remoteSessions.id, sessionId),
-                        eq(remoteSessions.deviceId, agentDb.deviceId),
+                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
                         eq(remoteSessions.status, 'connecting')
                       )
                     )
@@ -666,7 +667,9 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
 
         switch (parsed.data.type) {
           case 'command_result':
-            await runWithAgentDbAccess(async () => processCommandResult(agentId, parsed.data));
+            await runWithAgentDbAccess(async () =>
+              processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>)
+            );
             ws.send(JSON.stringify({
               type: 'ack',
               commandId: parsed.data.commandId

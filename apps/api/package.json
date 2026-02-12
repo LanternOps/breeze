@@ -15,7 +15,7 @@
     "test:docker:up": "docker compose -f ../../docker-compose.test.yml up -d --wait",
     "test:docker:down": "docker compose -f ../../docker-compose.test.yml down -v",
     "test:docker": "pnpm test:docker:up && pnpm test:integration; pnpm test:docker:down",
-    "lint": "eslint src",
+    "lint": "eslint --ext .ts src",
     "clean": "rm -rf dist",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
@@ -26,11 +26,11 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.38",
-    "@sentry/node": "^8.0.0",
     "@anthropic-ai/sdk": "^0.73.0",
     "@hono/node-server": "^1.19.9",
     "@hono/node-ws": "^1.3.0",
     "@hono/zod-validator": "^0.7.6",
+    "@sentry/node": "^8.0.0",
     "@types/qrcode": "^1.5.6",
     "argon2": "^0.44.0",
     "bullmq": "^5.30.1",
@@ -48,10 +48,12 @@
     "qrcode": "^1.5.4",
     "resend": "^3.5.0",
     "twilio": "^5.12.1",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@breeze/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/nodemailer": "^7.0.9",
     "@types/pg": "^8.11.10",
     "@vitest/coverage-v8": "^4.0.17",
     "dotenv": "^16.4.5",

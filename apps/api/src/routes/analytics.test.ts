@@ -41,7 +41,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
@@ -53,7 +53,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -66,7 +66,7 @@ describe('analytics routes', () => {
     vi.resetModules();
 
     const authModule = await import('../middleware/auth');
-    vi.mocked(authModule.authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authModule.authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
         orgId: '11111111-1111-1111-1111-111111111111',

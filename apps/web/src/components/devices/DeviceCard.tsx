@@ -74,13 +74,13 @@ function toPercent(value: unknown): number | null {
 function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
   const rawPayload = asRecord(payload);
   const directData = rawPayload ? rawPayload.data : null;
-  const metricsArray =
+  const metricsArray: unknown[] =
     Array.isArray(directData)
       ? directData
       : Array.isArray(rawPayload?.metrics)
-        ? rawPayload.metrics
+        ? rawPayload.metrics as unknown[]
         : Array.isArray(asRecord(directData)?.metrics)
-          ? asRecord(directData)?.metrics
+          ? asRecord(directData)!.metrics as unknown[]
           : [];
 
   const parsed: MetricHistoryPoint[] = [];

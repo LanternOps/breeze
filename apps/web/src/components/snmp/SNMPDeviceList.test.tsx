@@ -63,26 +63,35 @@ describe('SNMPDeviceList actions', () => {
     await screen.findByText('Core-A');
 
     fireEvent.click(screen.getByRole('button', { name: 'Poll' }));
-    await waitFor(() => {
-      const pollCalls = fetchWithAuthMock.mock.calls.filter(([url, init]) =>
-        String(url) === '/snmp/devices/device-1/poll' && init?.method === 'POST'
-      );
-      expect(pollCalls).toHaveLength(1);
-    });
+    await screen.findByText('Poll queued.');
+
+    const pollCalls = fetchWithAuthMock.mock.calls.filter(([url, init]) =>
+      String(url) === '/snmp/devices/device-1/poll' && init?.method === 'POST'
+    );
+    expect(pollCalls).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => {
-      const deleteCalls = fetchWithAuthMock.mock.calls.filter(([url, init]) =>
-        String(url) === '/snmp/devices/device-1' && init?.method === 'DELETE'
-      );
-      expect(deleteCalls).toHaveLength(1);
-    });
+    await screen.findByText('Device deleted.');
+
+    const deleteCalls = fetchWithAuthMock.mock.calls.filter(([url, init]) =>
+      String(url) === '/snmp/devices/device-1' && init?.method === 'DELETE'
+    );
+    expect(deleteCalls).toHaveLength(1);
 
     await screen.findByText('No SNMP devices found.');
   });
 
   it('wires add and edit actions to SNMP API routes', async () => {
-    let devices = [
+    let devices: Array<{
+      id: string;
+      name: string;
+      ipAddress: string;
+      snmpVersion: string;
+      templateName: string | null;
+      status: string;
+      lastPolledAt: string | null;
+      pollingInterval: number;
+    }> = [
       {
         id: 'device-1',
         name: 'Core-A',
