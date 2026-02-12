@@ -445,6 +445,14 @@ function processStreamEvent(
       }));
       return currentAssistantId;
 
+    case 'title_updated':
+      set((s) => ({
+        sessions: s.sessions.map((sess) =>
+          sess.id === s.sessionId ? { ...sess, title: event.title } : sess
+        )
+      }));
+      return currentAssistantId;
+
     case 'message_end': {
       if (currentAssistantId) {
         set((s) => ({

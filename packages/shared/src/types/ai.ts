@@ -85,6 +85,7 @@ export type AiStreamEvent =
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; output: unknown; isError: boolean }
   | { type: 'approval_required'; executionId: string; toolName: string; input: Record<string, unknown>; description: string }
+  | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'error'; message: string }
   | { type: 'done' };
