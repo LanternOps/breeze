@@ -35,7 +35,8 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: '00000000-0000-0000-0000-000000000000',
-      partnerId: null
+      partnerId: null,
+      canAccessOrg: (orgId: string) => orgId === '00000000-0000-0000-0000-000000000000'
     });
     return next();
   }),

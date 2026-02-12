@@ -43,7 +43,8 @@ vi.mock('../middleware/auth', () => ({
       scope: 'partner',
       partnerId: 'partner-123',
       orgId: null,
-      user: { id: 'user-123', email: 'test@example.com' }
+      user: { id: 'user-123', email: 'test@example.com' },
+      canAccessOrg: () => true
     });
     return next();
   }),
@@ -76,7 +77,8 @@ describe('organization routes', () => {
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
-        user: { id: 'user-123', email: 'test@example.com' }
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: () => true
       });
       return next();
     });
@@ -91,7 +93,8 @@ describe('organization routes', () => {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -136,7 +139,8 @@ describe('organization routes', () => {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -169,7 +173,8 @@ describe('organization routes', () => {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -201,7 +206,8 @@ describe('organization routes', () => {
           scope: 'system',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -355,7 +361,8 @@ describe('organization routes', () => {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -398,7 +405,8 @@ describe('organization routes', () => {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -430,7 +438,8 @@ describe('organization routes', () => {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -463,7 +472,8 @@ describe('organization routes', () => {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -506,7 +516,8 @@ describe('organization routes', () => {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });
@@ -543,7 +554,8 @@ describe('organization routes', () => {
           scope: 'partner',
           partnerId: 'partner-123',
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -562,7 +574,8 @@ describe('organization routes', () => {
           scope: 'partner',
           partnerId: null,
           orgId: null,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: () => true
         });
         return next();
       });
@@ -584,7 +597,8 @@ describe('organization routes', () => {
           scope: 'organization',
           partnerId: null,
           orgId,
-          user: { id: 'user-123', email: 'test@example.com' }
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
         });
         return next();
       });

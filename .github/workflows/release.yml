@@ -85,16 +85,23 @@ jobs:
           - goos: linux
             goarch: amd64
             suffix: ''
+            cgo: '1'
           - goos: darwin
             goarch: amd64
             suffix: ''
+            cgo: '0'
           - goos: darwin
             goarch: arm64
             suffix: ''
+            cgo: '0'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Install libpcap (Linux)
+        if: matrix.goos == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev libx11-dev libxext-dev
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -117,7 +124,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+          CGO_ENABLED: ${{ matrix.cgo }}
           BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: |
           go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
