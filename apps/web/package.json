@@ -9,7 +9,7 @@
     "preview": "astro preview",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint src",
+    "lint": "eslint --ext .ts,.tsx src",
     "clean": "rm -rf dist .astro"
   },
   "dependencies": {

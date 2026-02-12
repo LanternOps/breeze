@@ -369,7 +369,7 @@ patchRoutes.post(
     );
 
     const queuedCommandIds = queueResults
-      .filter((r): r is { ok: true; commandId: string } => r.ok)
+      .filter((r): r is { ok: true; commandId: string; commandStatus: string } => r.ok)
       .map((r) => r.commandId);
     const dispatchedCommandIds = queueResults
       .filter((r): r is { ok: true; commandId: string; commandStatus: string } => r.ok && r.commandStatus === 'sent')

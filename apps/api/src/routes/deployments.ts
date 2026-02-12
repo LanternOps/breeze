@@ -171,7 +171,7 @@ async function getOrgIdsForAuth(
 
 async function getDeploymentWithAccess(
   deploymentId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   const [deployment] = await db
     .select()

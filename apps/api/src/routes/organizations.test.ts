@@ -38,7 +38,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
       partnerId: 'partner-123',
@@ -47,14 +47,14 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn((...scopes: string[]) => async (c, next) => {
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth || !scopes.includes(auth.scope)) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
   }),
-  requirePartner: vi.fn((c, next) => {
+  requirePartner: vi.fn((c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) {
       return c.json({ error: 'Partner access required' }, 403);
@@ -71,7 +71,7 @@ describe('organization routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
@@ -86,7 +86,7 @@ describe('organization routes', () => {
 
   describe('partner tenants', () => {
     it('should list partners for system scope', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
@@ -131,7 +131,7 @@ describe('organization routes', () => {
     });
 
     it('should create a partner tenant', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
@@ -164,7 +164,7 @@ describe('organization routes', () => {
     });
 
     it('should update a partner tenant', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
@@ -196,7 +196,7 @@ describe('organization routes', () => {
     });
 
     it('should delete a partner tenant', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
@@ -350,7 +350,7 @@ describe('organization routes', () => {
     it.skip('should list sites for an accessible organization', async () => {
       // Skipped: Complex mock chain - better for e2e testing
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
@@ -393,7 +393,7 @@ describe('organization routes', () => {
     it.skip('should create a site for an accessible organization', async () => {
       // Skipped: Requires org validation mock
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
@@ -425,7 +425,7 @@ describe('organization routes', () => {
     it.skip('should fetch a site by id', async () => {
       // Skipped: Complex mock chain
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
@@ -458,7 +458,7 @@ describe('organization routes', () => {
     it.skip('should update a site', async () => {
       // Skipped: Complex mock chain
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
@@ -501,7 +501,7 @@ describe('organization routes', () => {
 
     it('should delete a site', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,
@@ -538,7 +538,7 @@ describe('organization routes', () => {
 
   describe('access control', () => {
     it('should forbid partner routes for non-system scope', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'partner',
           partnerId: 'partner-123',
@@ -557,7 +557,7 @@ describe('organization routes', () => {
     });
 
     it('should forbid organization routes without partner context', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'partner',
           partnerId: null,
@@ -579,7 +579,7 @@ describe('organization routes', () => {
       // Skipped: Requires org validation mock
       const orgId = '11111111-1111-1111-1111-111111111111';
       const otherOrgId = '22222222-2222-2222-2222-222222222222';
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'organization',
           partnerId: null,

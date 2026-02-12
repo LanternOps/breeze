@@ -41,7 +41,7 @@ vi.mock('../db/schema/orgs', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -51,7 +51,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -128,7 +128,12 @@ describe('maintenance routes', () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.id).toBe('win-1');
-    const occurrencesPayload = occurrencesValues.mock.calls[0][0];
+    const firstCall = occurrencesValues.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    if (!firstCall) {
+      throw new Error('Expected occurrence insert call');
+    }
+    const occurrencesPayload = firstCall[0];
     expect(occurrencesPayload).toHaveLength(1);
     expect(occurrencesPayload[0].windowId).toBe('win-1');
   });

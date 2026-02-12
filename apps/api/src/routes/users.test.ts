@@ -54,7 +54,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
       partnerId: 'partner-123',
@@ -63,7 +63,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requirePermission: vi.fn(() => (c, next) => next())
+  requirePermission: vi.fn(() => (c: any, next: any) => next())
 }));
 
 vi.mock('../services/email', () => ({
@@ -80,7 +80,7 @@ describe('user routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
@@ -130,7 +130,7 @@ describe('user routes', () => {
     });
 
     it('should reject missing partner/org context', async () => {
-      vi.mocked(authMiddleware).mockImplementation((c, next) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,

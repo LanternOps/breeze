@@ -71,7 +71,7 @@ vi.mock('../services/policyEvaluationService', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'system',
       partnerId: null,
@@ -82,7 +82,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn((...scopes: string[]) => async (c, next) => {
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth || !scopes.includes(auth.scope)) {
       return c.json({ error: 'Forbidden' }, 403);
@@ -120,7 +120,7 @@ describe('policy routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'system',
         partnerId: null,

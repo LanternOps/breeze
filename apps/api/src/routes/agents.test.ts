@@ -66,12 +66,12 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => next()),
+  authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 vi.mock('../middleware/agentAuth', () => ({
-  agentAuthMiddleware: vi.fn((c, next) => {
+  agentAuthMiddleware: vi.fn((c: any, next: any) => {
     c.set('agent', {
       deviceId: 'device-123',
       agentId: 'agent-123',

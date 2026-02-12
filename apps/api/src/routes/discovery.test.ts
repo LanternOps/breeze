@@ -30,7 +30,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -39,7 +39,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 describe('discovery routes', () => {

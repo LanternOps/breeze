@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { auditRoutes } from './audit';
+import { auditLogRoutes } from './auditLogs';
 
 vi.mock('../services', () => ({
   auditService: {
@@ -22,7 +22,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com' }
     });
@@ -36,7 +36,7 @@ describe('audit routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     app = new Hono();
-    app.route('/audit', auditRoutes);
+    app.route('/audit', auditLogRoutes);
   });
 
   describe('GET /audit/logs', () => {

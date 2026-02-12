@@ -48,7 +48,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
@@ -59,7 +59,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
@@ -117,7 +117,7 @@ describe('webhook routes', () => {
     vi.clearAllMocks();
     validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
 
-    vi.mocked(authMiddleware).mockImplementation((c, next) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
         partnerId: null,

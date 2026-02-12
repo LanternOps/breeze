@@ -420,6 +420,9 @@ maintenanceRoutes.patch(
       .set(updateData)
       .where(eq(maintenanceWindows.id, windowId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update maintenance window' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: window.orgId,
@@ -507,6 +510,9 @@ maintenanceRoutes.post(
       .set({ status: 'cancelled', updatedAt: new Date() })
       .where(eq(maintenanceWindows.id, windowId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to cancel maintenance window' }, 500);
+    }
 
     // Cancel all future occurrences
     await db
@@ -680,6 +686,9 @@ maintenanceRoutes.patch(
       .set(updateData)
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update maintenance occurrence' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: occurrence.window.orgId,
@@ -730,6 +739,9 @@ maintenanceRoutes.post(
       })
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to start maintenance occurrence' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: occurrence.window.orgId,
@@ -781,6 +793,9 @@ maintenanceRoutes.post(
       })
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to end maintenance occurrence' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: occurrence.window.orgId,

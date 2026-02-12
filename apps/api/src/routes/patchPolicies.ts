@@ -35,7 +35,10 @@ async function ensureOrgAccess(
   return true;
 }
 
-async function getPatchPolicyWithOrgCheck(policyId: string, auth: { scope: string; partnerId: string | null; orgId: string | null }) {
+async function getPatchPolicyWithOrgCheck(
+  policyId: string,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
   const [policy] = await db
     .select()
     .from(patchPolicies)

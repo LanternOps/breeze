@@ -123,7 +123,7 @@ async function getOrgIdsForAuth(
 
 async function getGroupWithAccess(
   groupId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   const [group] = await db
     .select()

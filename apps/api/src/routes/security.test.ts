@@ -38,7 +38,7 @@ vi.mock('../services/securityPosture', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
@@ -50,7 +50,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => (c, next) => next())
+  requireScope: vi.fn(() => (c: any, next: any) => next())
 }));
 
 import { db } from '../db';
