@@ -80,7 +80,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com' }
     });
@@ -450,6 +450,7 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        mfa: false,
         iat: 123456,
         jti: 'refresh-jti-1'
       });
@@ -524,7 +525,8 @@ describe('auth routes', () => {
         orgId: null,
         partnerId: null,
         scope: 'system',
-        type: 'access' // Wrong type
+        type: 'access', // Wrong type
+        mfa: false
       });
 
       const res = await app.request('/auth/refresh', {
@@ -549,6 +551,7 @@ describe('auth routes', () => {
         partnerId: 'partner-old',
         scope: 'partner',
         type: 'refresh',
+        mfa: false,
         iat: 123456,
         jti: 'refresh-jti-2'
       });
@@ -575,6 +578,7 @@ describe('auth routes', () => {
         partnerId: 'stale-partner',
         scope: 'partner',
         type: 'refresh',
+        mfa: false,
         iat: 123456,
         jti: 'refresh-jti-3'
       });
@@ -971,6 +975,7 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        mfa: false,
         iat: 123456,
         jti: 'refresh-jti-sec'
       });
@@ -1023,6 +1028,7 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        mfa: false,
         iat: 123456,
         jti: 'refresh-jti-no-sec'
       });

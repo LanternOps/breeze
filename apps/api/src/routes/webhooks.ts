@@ -65,7 +65,7 @@ function normalizeHeaders(headers: unknown): WebhookHeaders {
 
   if (typeof headers === 'object') {
     return Object.entries(headers as Record<string, unknown>)
-      .filter(([key, value]) => key.length > 0 && typeof value === 'string')
+      .filter((entry): entry is [string, string] => entry[0].length > 0 && typeof entry[1] === 'string')
       .map(([key, value]) => ({ key, value }));
   }
 

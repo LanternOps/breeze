@@ -316,6 +316,9 @@ snmpRoutes.post(
       isActive: true,
       lastStatus: 'offline'
     }).returning();
+    if (!device) {
+      return c.json({ error: 'Failed to create SNMP device.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -359,6 +362,8 @@ snmpRoutes.get(
       .orderBy(desc(snmpMetrics.timestamp))
       .limit(20);
 
+    const latestMetric = recentMetrics[0];
+
     return c.json({
       data: {
         ...device,
@@ -374,9 +379,9 @@ snmpRoutes.get(
           oids: template.oids,
           isBuiltIn: template.isBuiltIn
         } : null,
-        recentMetrics: recentMetrics.length > 0 ? {
+        recentMetrics: latestMetric ? {
           deviceId,
-          capturedAt: recentMetrics[0].timestamp.toISOString(),
+          capturedAt: latestMetric.timestamp.toISOString(),
           metrics: recentMetrics.map((m) => ({
             oid: m.oid,
             name: m.name,
@@ -417,6 +422,9 @@ snmpRoutes.patch(
       .set(payload)
       .where(eq(snmpDevices.id, deviceId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update SNMP device.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -639,6 +647,9 @@ snmpRoutes.post(
       oids: payload.oids,
       isBuiltIn: false
     }).returning();
+    if (!template) {
+      return c.json({ error: 'Failed to create SNMP template.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: c.get('auth').orgId,
@@ -714,6 +725,9 @@ snmpRoutes.patch(
       .set(updates)
       .where(eq(snmpTemplates.id, templateId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update SNMP template.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: c.get('auth').orgId,
@@ -754,6 +768,9 @@ snmpRoutes.delete(
 
     const [removed] = await db.delete(snmpTemplates)
       .where(eq(snmpTemplates.id, templateId)).returning();
+    if (!removed) {
+      return c.json({ error: 'Failed to delete SNMP template.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: c.get('auth').orgId,
@@ -1093,6 +1110,9 @@ snmpRoutes.post(
       message: payload.message ?? null,
       isActive: payload.isActive ?? true
     }).returning();
+    if (!threshold) {
+      return c.json({ error: 'Failed to create SNMP threshold.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: orgResult.orgId,
@@ -1136,6 +1156,9 @@ snmpRoutes.patch(
       .set(payload)
       .where(eq(snmpAlertThresholds.id, thresholdId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update SNMP threshold.' }, 500);
+    }
 
     const [thresholdContext] = await db
       .select({ orgId: snmpDevices.orgId })

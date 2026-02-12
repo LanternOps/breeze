@@ -112,7 +112,7 @@ vi.mock('../jobs/patchComplianceReportWorker', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     const canAccessOrg = (orgId: string) => {
       if (mockAuthState.accessibleOrgIds === null) {
         return true;

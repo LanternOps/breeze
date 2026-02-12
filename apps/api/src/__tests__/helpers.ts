@@ -56,6 +56,7 @@ export interface TestTokenOptions {
   orgId?: string | null;
   partnerId?: string | null;
   scope?: 'system' | 'partner' | 'organization';
+  mfa?: boolean;
 }
 
 export async function createTestToken(options: TestTokenOptions = {}): Promise<string> {
@@ -65,7 +66,8 @@ export async function createTestToken(options: TestTokenOptions = {}): Promise<s
     roleId: options.roleId ?? 'test-role-id',
     orgId: options.orgId ?? 'test-org-id',
     partnerId: options.partnerId ?? 'test-partner-id',
-    scope: options.scope ?? 'organization'
+    scope: options.scope ?? 'organization',
+    mfa: options.mfa ?? false
   };
   return createAccessToken(payload);
 }

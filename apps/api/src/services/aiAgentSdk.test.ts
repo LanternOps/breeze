@@ -68,7 +68,16 @@ vi.mock('./aiAgentSdkTools', () => ({
 // Test helpers
 // ============================================
 
-function makeAuth(overrides?: Partial<ReturnType<typeof makeAuth>>) {
+type TestAuth = {
+  user: { id: string; email: string; name: string };
+  orgId: string;
+  scope: string;
+  accessibleOrgIds: string[];
+  canAccessOrg: (orgId: string) => boolean;
+  orgCondition: () => null;
+};
+
+function makeAuth(overrides?: Partial<TestAuth>) {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
     orgId: 'org-1',

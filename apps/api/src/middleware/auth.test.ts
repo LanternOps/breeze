@@ -48,7 +48,8 @@ const basePayload = {
   orgId: 'org-123',
   partnerId: 'partner-123',
   scope: 'organization' as const,
-  type: 'access' as const
+  type: 'access' as const,
+  mfa: false
 };
 
 const activeUser = {
@@ -282,7 +283,7 @@ describe('requireScope', () => {
 
   it('rejects when scope is insufficient', async () => {
     const app = new Hono();
-    app.use(async (c, next) => {
+    app.use(async (c: any, next: any) => {
       c.set('auth', { ...baseAuth, scope: 'partner' });
       await next();
     });
@@ -296,7 +297,7 @@ describe('requireScope', () => {
 
   it('allows when scope matches', async () => {
     const app = new Hono();
-    app.use(async (c, next) => {
+    app.use(async (c: any, next: any) => {
       c.set('auth', baseAuth);
       await next();
     });

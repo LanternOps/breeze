@@ -300,7 +300,7 @@ describe('requireApiKeyScope middleware', () => {
 
   it('allows access when no scopes are required', async () => {
     const c = createContext();
-    c.set('apiKey', { scopes: [] });
+    c.set('apiKey', { scopes: [] } as any);
     const next = vi.fn();
 
     await requireApiKeyScope()(c, next);
@@ -309,7 +309,7 @@ describe('requireApiKeyScope middleware', () => {
 
   it('rejects when apiKey has no scopes', async () => {
     const c = createContext();
-    c.set('apiKey', { scopes: [] });
+    c.set('apiKey', { scopes: [] } as any);
     const next = vi.fn();
 
     await expect(requireApiKeyScope('read')(c, next)).rejects.toMatchObject({
@@ -320,7 +320,7 @@ describe('requireApiKeyScope middleware', () => {
 
   it('allows access when wildcard scope is present', async () => {
     const c = createContext();
-    c.set('apiKey', { scopes: ['*'] });
+    c.set('apiKey', { scopes: ['*'] } as any);
     const next = vi.fn();
 
     await requireApiKeyScope('admin')(c, next);
@@ -329,7 +329,7 @@ describe('requireApiKeyScope middleware', () => {
 
   it('allows access when any required scope is present', async () => {
     const c = createContext();
-    c.set('apiKey', { scopes: ['read'] });
+    c.set('apiKey', { scopes: ['read'] } as any);
     const next = vi.fn();
 
     await requireApiKeyScope('write', 'read')(c, next);
@@ -338,7 +338,7 @@ describe('requireApiKeyScope middleware', () => {
 
   it('rejects when required scopes are missing', async () => {
     const c = createContext();
-    c.set('apiKey', { scopes: ['read'] });
+    c.set('apiKey', { scopes: ['read'] } as any);
     const next = vi.fn();
 
     await expect(requireApiKeyScope('write')(c, next)).rejects.toMatchObject({

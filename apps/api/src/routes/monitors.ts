@@ -258,6 +258,9 @@ monitorRoutes.post(
       lastStatus: 'unknown',
       consecutiveFailures: 0
     }).returning();
+    if (!monitor) {
+      return c.json({ error: 'Failed to create monitor.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: monitor.orgId,
@@ -387,6 +390,9 @@ monitorRoutes.patch(
       .set({ ...payload, updatedAt: new Date() })
       .where(eq(networkMonitors.id, monitorId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update monitor.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -587,6 +593,9 @@ monitorRoutes.post(
       message: payload.message ?? null,
       isActive: payload.isActive ?? true
     }).returning();
+    if (!rule) {
+      return c.json({ error: 'Failed to create alert rule.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: orgResult.orgId,
@@ -648,6 +657,9 @@ monitorRoutes.patch(
       .set(payload)
       .where(eq(networkMonitorAlertRules.id, ruleId))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update alert rule.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: orgResult.orgId,
@@ -682,6 +694,9 @@ monitorRoutes.delete(
 
     const [removed] = await db.delete(networkMonitorAlertRules)
       .where(eq(networkMonitorAlertRules.id, ruleId)).returning();
+    if (!removed) {
+      return c.json({ error: 'Failed to delete alert rule.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: orgResult.orgId,

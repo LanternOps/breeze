@@ -149,7 +149,7 @@ systemToolsRoutes.use(
       throw new HTTPException(403, { message: 'Permission denied' });
     }
 
-    c.set('permissions', userPerms);
+    (c as any).set('permissions', userPerms);
     await next();
   }
 );

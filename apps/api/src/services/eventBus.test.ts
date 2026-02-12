@@ -2,13 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Redis } from 'ioredis';
 
 vi.mock('./redis', () => ({
-  getRedis: vi.fn()
+  getRedis: vi.fn(),
+  getRedisConnection: vi.fn()
 }));
 
 describe('eventBus service', () => {
   let mockRedis: Partial<Redis>;
   let eventBusModule: typeof import('./eventBus');
   let getRedis: (typeof import('./redis'))['getRedis'];
+  let getRedisConnection: (typeof import('./redis'))['getRedisConnection'];
 
   beforeEach(async () => {
     vi.resetModules();
@@ -20,8 +22,9 @@ describe('eventBus service', () => {
     };
 
     eventBusModule = await import('./eventBus');
-    ({ getRedis } = await import('./redis'));
+    ({ getRedis, getRedisConnection } = await import('./redis'));
     vi.mocked(getRedis).mockReturnValue(mockRedis as Redis);
+    vi.mocked(getRedisConnection).mockReturnValue(mockRedis as Redis);
   });
 
   it('should publish events to stream and pubsub channels', async () => {

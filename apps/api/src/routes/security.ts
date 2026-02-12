@@ -46,7 +46,7 @@ type StatusRow = {
   orgId: string;
   deviceName: string;
   os: 'windows' | 'macos' | 'linux';
-  deviceState: 'online' | 'offline' | 'maintenance' | 'decommissioned';
+  deviceState: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined';
   provider: ProviderKey;
   providerVersion: string | null;
   definitionsVersion: string | null;
@@ -470,7 +470,7 @@ async function listThreatRows(auth: AuthContext, deviceId?: string, orgId?: stri
 function getPolicyOrgId(auth: AuthContext): string | null {
   if (auth.orgId) return auth.orgId;
   if (auth.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
-    return auth.accessibleOrgIds[0];
+    return auth.accessibleOrgIds[0] ?? null;
   }
   return null;
 }
@@ -608,7 +608,7 @@ const priorityRank: Record<'critical' | 'high' | 'medium' | 'low', number> = {
 function resolveScopedOrgIds(
   auth: AuthContext,
   orgId?: string
-): { orgIds?: string[]; error?: { status: number; message: string } } {
+): { orgIds?: string[]; error?: { status: 400 | 403; message: string } } {
   if (orgId) {
     if (!auth.canAccessOrg(orgId)) {
       return { error: { status: 403, message: 'Access denied to this organization' } };
@@ -713,9 +713,12 @@ function parsePasswordPolicySummary(raw: unknown): ParsedPasswordPolicy {
         const rule = toStringValue(item.rule) ?? key;
         const current = toStringValue(item.current) ?? undefined;
         const required = toStringValue(item.required) ?? undefined;
-        return { rule, key, pass, current, required };
+        const check: PolicyCheckResponse = { rule, key, pass };
+        if (current !== undefined) check.current = current;
+        if (required !== undefined) check.required = required;
+        return check;
       })
-      .filter((entry): entry is PolicyCheckResponse => entry !== null);
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
     if (checks.length > 0) {
       return {
@@ -928,7 +931,7 @@ function impactFromAffected(affectedDevices: number, totalDevices: number): 'hig
 async function buildBe9Recommendations(
   auth: AuthContext,
   orgId?: string
-): Promise<{ recommendations: Be9Recommendation[]; error?: { status: number; message: string } }> {
+): Promise<{ recommendations: Be9Recommendation[]; error?: { status: 400 | 403; message: string } }> {
   const scope = resolveScopedOrgIds(auth, orgId);
   if (scope.error) {
     return { recommendations: [], error: scope.error };
@@ -1631,6 +1634,9 @@ securityRoutes.post(
         }
       })
       .returning();
+    if (!policy) {
+      return c.json({ error: 'Failed to create policy' }, 500);
+    }
 
     return c.json({ data: {
       id: policy.id,
@@ -1686,6 +1692,9 @@ securityRoutes.put(
       })
       .where(eq(securityPolicies.id, id))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to update policy' }, 500);
+    }
 
     return c.json({ data: {
       id: updated.id,
@@ -1817,7 +1826,7 @@ securityRoutes.get(
                 issue: parsed.issueTypes[0]
               };
             })
-            .filter((row): row is { id: string; name: string; issue: string } => row !== null)
+            .filter((row): row is { id: string; name: string; issue: 'default_account' | 'weak_password' | 'stale_account' } => row !== null)
             .slice(0, 10)
         },
         recommendations: (recommendationsResult.error ? [] : recommendationsResult.recommendations).map((rec) => ({
@@ -2243,10 +2252,11 @@ securityRoutes.get(
     });
 
     if (query.issue) {
-      if (query.issue === 'no_issues') {
+      const issue = query.issue;
+      if (issue === 'no_issues') {
         rows = rows.filter((row) => !row.hasIssues);
       } else {
-        rows = rows.filter((row) => row.issueTypes.includes(query.issue as string));
+        rows = rows.filter((row) => row.issueTypes.includes(issue));
       }
     }
 

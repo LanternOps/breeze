@@ -73,7 +73,7 @@ async function getOrgIdsForAuth(
 
 async function getFilterWithAccess(
   filterId: string,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   const [filter] = await db
     .select()

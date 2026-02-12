@@ -153,16 +153,19 @@ agentVersionRoutes.post(
         isLatest: data.isLatest ?? false
       })
       .returning();
+    if (!newVersion) {
+      return c.json({ error: 'Failed to create agent version' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: auth.orgId,
       action: 'agent_version.create',
       resourceType: 'agent_version',
-      resourceId: newVersion?.id,
-      resourceName: newVersion?.version,
+      resourceId: newVersion.id,
+      resourceName: newVersion.version,
       details: {
-        platform: newVersion?.platform,
-        architecture: newVersion?.architecture
+        platform: newVersion.platform,
+        architecture: newVersion.architecture
       }
     });
 

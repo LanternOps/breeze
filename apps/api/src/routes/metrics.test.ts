@@ -13,7 +13,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c, next) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     if (!c.req.header('Authorization')) {
       return c.json({ error: 'Missing authorization header' }, 401);
     }
@@ -24,7 +24,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c, next) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { authMiddleware } from '../middleware/auth';

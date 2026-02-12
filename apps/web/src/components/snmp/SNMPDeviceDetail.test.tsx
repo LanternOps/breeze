@@ -218,7 +218,8 @@ describe('SNMPDeviceDetail traffic chart', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit device' }));
 
     await screen.findByText('Edit SNMP device');
-    fireEvent.change(screen.getByLabelText('Device name'), { target: { value: 'Edge-Switch-99' } });
+    const nameInput = await screen.findByLabelText('Device name');
+    fireEvent.change(nameInput, { target: { value: 'Edge-Switch-99' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => {
