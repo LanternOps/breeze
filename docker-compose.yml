@@ -1,70 +1,96 @@
-version: '3.8'
+# Breeze RMM - Production Deployment
+# Pull pre-built images from GHCR. No build step required.
+# This is the ONLY file you need (plus a .env).
+#
+# Quick start:
+#   curl -fsSL https://raw.githubusercontent.com/LanternOps/breeze/main/docker-compose.yml -o docker-compose.yml
+#   curl -fsSL https://raw.githubusercontent.com/LanternOps/breeze/main/.env.example -o .env
+#   # Edit .env with your secrets and domain
+#   docker compose up -d
+#
+# Optional monitoring stack:
+#   curl -fsSL https://raw.githubusercontent.com/LanternOps/breeze/main/docker-compose.monitoring.yml -o docker-compose.monitoring.yml
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+
+x-healthcheck-defaults: &healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
 
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:16-alpine
-    container_name: breeze-postgres
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: breeze-caddy
     restart: unless-stopped
+    command: |
+      sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
+      {
+        email $${ACME_EMAIL}
+      }
+      $${BREEZE_DOMAIN} {
+        encode zstd gzip
+        @api path /api/* /health /ready /metrics/*
+        handle @api {
+          reverse_proxy api:3001
+        }
+        handle {
+          reverse_proxy web:4321
+        }
+        header {
+          Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+          X-Content-Type-Options "nosniff"
+          X-Frame-Options "DENY"
+          Referrer-Policy "strict-origin-when-cross-origin"
+        }
+      }
+      CADDYEOF
+      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+    ports:
+      - '80:80'
+      - '443:443'
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-breeze}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-breeze}
-      POSTGRES_DB: ${POSTGRES_DB:-breeze}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      BREEZE_DOMAIN: ${BREEZE_DOMAIN:?Set BREEZE_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./docker/init-db:/docker-entrypoint-initdb.d:ro
-    networks:
-      - breeze-network
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-breeze} -d ${POSTGRES_DB:-breeze}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # Redis for BullMQ job queue
-  redis:
-    image: redis:7-alpine
-    container_name: breeze-redis
-    restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
+      <<: *healthcheck
+      test: ['CMD', 'caddy', 'version']
+      start_period: 20s
     networks:
-      - breeze-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
+      - breeze
 
-  # Hono API Service
   api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-      args:
-        - NODE_ENV=production
+    image: ghcr.io/lanternops/breeze/api:${BREEZE_VERSION:-latest}
     container_name: breeze-api
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:-breeze}@postgres:5432/${POSTGRES_DB:-breeze}
+      API_PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-breeze}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
       REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN:-7d}
-      API_PORT: 3001
-      AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?AGENT_ENROLLMENT_SECRET is required}
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
-      S3_BUCKET: ${S3_BUCKET:-breeze}
+      AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
+      CORS_ALLOWED_ORIGINS: https://${BREEZE_DOMAIN}
+      PUBLIC_APP_URL: https://${BREEZE_DOMAIN}
+      DASHBOARD_URL: https://${BREEZE_DOMAIN}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
+      TRANSFER_STORAGE_PATH: /data/transfers
+      PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_JSON: ${LOG_JSON:-true}
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-noreply@breeze.local}
@@ -72,42 +98,23 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-noreply@breeze.local}
-      SMTP_SECURE: ${SMTP_SECURE:-false}
-      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
-      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
-      MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-https://api.mailgun.net}
-      MAILGUN_FROM: ${MAILGUN_FROM:-noreply@breeze.local}
-      TURN_HOST: ${TURN_HOST:-}
-      TURN_PORT: ${TURN_PORT:-3478}
-      TURN_SECRET: ${TURN_SECRET:-}
-      TURN_REALM: ${TURN_REALM:-breeze.local}
-      # Shared with monitoring/prometheus.yml bearer credentials for /metrics/scrape.
-      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-REDACTED_DEV_TOKEN}
-    ports:
-      - "${API_PORT:-3001}:3001"
-    networks:
-      - breeze-network
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - api_data:/data
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      <<: *healthcheck
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:3001/health']
       start_period: 40s
+    networks:
+      - breeze
 
-  # Astro Web Frontend
   web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-      args:
-        - NODE_ENV=production
-        - PUBLIC_API_URL=${PUBLIC_API_URL:-http://localhost:3001}
+    image: ghcr.io/lanternops/breeze/web:${BREEZE_VERSION:-latest}
     container_name: breeze-web
     restart: unless-stopped
     environment:
@@ -115,244 +122,60 @@ services:
       HOST: 0.0.0.0
       PORT: 4321
       PUBLIC_API_URL: ${PUBLIC_API_URL:-http://api:3001}
-    ports:
-      - "${WEB_PORT:-4321}:4321"
-    networks:
-      - breeze-network
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4321/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      <<: *healthcheck
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:4321/']
       start_period: 30s
-
-  # Optional: MinIO for S3-compatible object storage
-  minio:
-    image: minio/minio:latest
-    container_name: breeze-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
-    ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes:
-      - minio_data:/data
     networks:
-      - breeze-network
+      - breeze
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: breeze-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-breeze}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-breeze}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-      start_period: 10s
-    profiles:
-      - storage
-
-  # coturn TURN relay for WebRTC behind NAT/firewalls
-  # Enable with: docker compose --profile turn up -d
-  coturn:
-    image: coturn/coturn:latest
-    container_name: breeze-coturn
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./docker/turnserver.conf:/etc/turnserver.conf:ro
-    environment:
-      TURN_SECRET: ${TURN_SECRET:-breeze-turn-secret-change-me}
-    command: >
-      turnserver
-      --no-tls
-      --no-dtls
-      --listening-port=${TURN_PORT:-3478}
-      --realm=${TURN_REALM:-breeze.local}
-      --use-auth-secret
-      --static-auth-secret=${TURN_SECRET:-breeze-turn-secret-change-me}
-      --log-file=stdout
-      --no-cli
-      --fingerprint
-    profiles:
-      - turn
-
-  # ============================================
-  # Monitoring Stack (Optional)
-  # Enable with: docker compose --profile monitoring up -d
-  # ============================================
-
-  # Prometheus - Metrics collection and alerting
-  prometheus:
-    image: prom/prometheus:v2.48.0
-    container_name: breeze-prometheus
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=15d'
-      - '--web.enable-lifecycle'
-      - '--web.enable-admin-api'
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/rules:/etc/prometheus/rules:ro
-      - prometheus_data:/prometheus
+      <<: *healthcheck
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-breeze} -d ${POSTGRES_DB:-breeze}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
-      - breeze-network
+      - breeze
+
+  redis:
+    image: redis:7-alpine
+    container_name: breeze-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    profiles:
-      - monitoring
-
-  # Grafana - Metrics visualization and dashboards
-  grafana:
-    image: grafana/grafana:10.2.0
-    container_name: breeze-grafana
-    restart: unless-stopped
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-      GF_USERS_ALLOW_SIGN_UP: 'false'
-      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
-      GF_INSTALL_PLUGINS: redis-datasource
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-    volumes:
-      - ./monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
-      - ./monitoring/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards/breeze:ro
-      - grafana_data:/var/lib/grafana
+      <<: *healthcheck
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     networks:
-      - breeze-network
-    depends_on:
-      - prometheus
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    profiles:
-      - monitoring
-
-  # Alertmanager - Alert routing and notifications
-  alertmanager:
-    image: prom/alertmanager:v0.26.0
-    container_name: breeze-alertmanager
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--storage.path=/alertmanager'
-    ports:
-      - "${ALERTMANAGER_PORT:-9093}:9093"
-    volumes:
-      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager_data:/alertmanager
-    networks:
-      - breeze-network
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    profiles:
-      - monitoring
-
-  # Redis Exporter - Redis metrics for Prometheus
-  redis-exporter:
-    image: oliver006/redis_exporter:v1.55.0
-    container_name: breeze-redis-exporter
-    restart: unless-stopped
-    environment:
-      REDIS_ADDR: redis://redis:6379
-    ports:
-      - "${REDIS_EXPORTER_PORT:-9121}:9121"
-    networks:
-      - breeze-network
-    depends_on:
-      redis:
-        condition: service_healthy
-    profiles:
-      - monitoring
-
-  # PostgreSQL Exporter - PostgreSQL metrics for Prometheus
-  postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
-    container_name: breeze-postgres-exporter
-    restart: unless-stopped
-    environment:
-      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:-breeze}@postgres:5432/${POSTGRES_DB:-breeze}?sslmode=disable
-    ports:
-      - "${POSTGRES_EXPORTER_PORT:-9187}:9187"
-    networks:
-      - breeze-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-    profiles:
-      - monitoring
-
-  # Node Exporter - Host system metrics (optional, for bare-metal deployments)
-  # Uncomment if running on Linux host and want system metrics
-  # node-exporter:
-  #   image: prom/node-exporter:v1.7.0
-  #   container_name: breeze-node-exporter
-  #   restart: unless-stopped
-  #   command:
-  #     - '--path.rootfs=/host'
-  #     - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
-  #   ports:
-  #     - "${NODE_EXPORTER_PORT:-9100}:9100"
-  #   volumes:
-  #     - /:/host:ro,rslave
-  #   networks:
-  #     - breeze-network
-  #   profiles:
-  #     - monitoring
-
-  # Loki - Log aggregation (optional)
-  # Uncomment to enable centralized logging
-  # loki:
-  #   image: grafana/loki:2.9.0
-  #   container_name: breeze-loki
-  #   restart: unless-stopped
-  #   ports:
-  #     - "${LOKI_PORT:-3100}:3100"
-  #   volumes:
-  #     - loki_data:/loki
-  #   command: -config.file=/etc/loki/local-config.yaml
-  #   networks:
-  #     - breeze-network
-  #   profiles:
-  #     - monitoring
+      - breeze
 
 networks:
-  breeze-network:
-    driver: bridge
-    name: breeze-network
+  breeze:
+    name: breeze
 
 volumes:
+  caddy_data:
+  caddy_config:
+  api_data:
   postgres_data:
-    name: breeze-postgres-data
   redis_data:
-    name: breeze-redis-data
-  minio_data:
-    name: breeze-minio-data
-  # Monitoring volumes
-  prometheus_data:
-    name: breeze-prometheus-data
-  grafana_data:
-    name: breeze-grafana-data
-  alertmanager_data:
-    name: breeze-alertmanager-data
-  # loki_data:
-  #   name: breeze-loki-data
