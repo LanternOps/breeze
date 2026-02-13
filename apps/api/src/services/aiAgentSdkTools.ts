@@ -55,8 +55,16 @@ export const TOOL_TIERS = {
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
   query_audit_log: 1,
-  create_automation: 3,
   network_discovery: 3,
+  // Fleet orchestration tools
+  manage_policies: 1,        // Action-level escalation in guardrails
+  manage_deployments: 1,     // Action-level escalation in guardrails
+  manage_patches: 1,         // Action-level escalation in guardrails
+  manage_groups: 1,          // Action-level escalation in guardrails
+  manage_maintenance_windows: 1, // Action-level escalation in guardrails
+  manage_automations: 1,     // Action-level escalation in guardrails
+  manage_alert_rules: 1,     // Action-level escalation in guardrails
+  generate_report: 1,        // Action-level escalation in guardrails
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -351,20 +359,6 @@ export function createBreezeMcpServer(
     ),
 
     tool(
-      'create_automation',
-      'Create a new automation rule. Requires user approval.',
-      {
-        name: z.string().min(1).max(200),
-        description: z.string().max(2000).optional(),
-        trigger: z.record(z.unknown()),
-        conditions: z.record(z.unknown()).optional(),
-        actions: z.array(z.record(z.unknown())).min(1).max(20),
-        enabled: z.boolean().optional(),
-      },
-      makeHandler('create_automation', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
       'network_discovery',
       'Initiate a network discovery scan from a device.',
       {
@@ -373,6 +367,158 @@ export function createBreezeMcpServer(
         scanType: z.enum(['ping', 'arp', 'full']).optional(),
       },
       makeHandler('network_discovery', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Fleet orchestration tools
+
+    tool(
+      'manage_policies',
+      'Manage compliance policies: list, get, check compliance, evaluate, create, update, activate/deactivate, delete, remediate.',
+      {
+        action: z.enum(['list', 'get', 'compliance_status', 'compliance_summary', 'evaluate', 'create', 'update', 'activate', 'deactivate', 'delete', 'remediate']),
+        policyId: uuid.optional(),
+        enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
+        enabled: z.boolean().optional(),
+        name: z.string().max(255).optional(),
+        description: z.string().max(2000).optional(),
+        rules: z.record(z.unknown()).optional(),
+        targets: z.record(z.unknown()).optional(),
+        checkIntervalMinutes: z.number().int().min(1).max(1440).optional(),
+        remediationScriptId: uuid.optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_deployments',
+      'Manage staged deployments: list, get details, device status, create, start, pause, resume, cancel.',
+      {
+        action: z.enum(['list', 'get', 'device_status', 'create', 'start', 'pause', 'resume', 'cancel']),
+        deploymentId: uuid.optional(),
+        status: z.enum(['draft', 'pending', 'running', 'paused', 'completed', 'failed', 'cancelled']).optional(),
+        name: z.string().max(200).optional(),
+        type: z.string().max(50).optional(),
+        payload: z.record(z.unknown()).optional(),
+        targetType: z.string().max(20).optional(),
+        targetConfig: z.record(z.unknown()).optional(),
+        rolloutConfig: z.record(z.unknown()).optional(),
+        schedule: z.record(z.unknown()).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_deployments', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_patches',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback.',
+      {
+        action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback']),
+        patchId: uuid.optional(),
+        patchIds: z.array(uuid).max(50).optional(),
+        deviceIds: z.array(uuid).max(50).optional(),
+        source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
+        severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
+        status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
+        deferUntil: z.string().optional(),
+        notes: z.string().max(1000).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_groups',
+      'Manage device groups: list, get with members, preview filters, membership log, create, update, delete, add/remove devices.',
+      {
+        action: z.enum(['list', 'get', 'preview', 'membership_log', 'create', 'update', 'delete', 'add_devices', 'remove_devices']),
+        groupId: uuid.optional(),
+        name: z.string().max(255).optional(),
+        type: z.enum(['static', 'dynamic']).optional(),
+        siteId: uuid.optional(),
+        filterConditions: z.record(z.unknown()).optional(),
+        deviceIds: z.array(uuid).max(100).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeHandler('manage_groups', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_maintenance_windows',
+      'Manage maintenance windows: list, get with occurrences, check active now, create, update, delete.',
+      {
+        action: z.enum(['list', 'get', 'active_now', 'create', 'update', 'delete']),
+        windowId: uuid.optional(),
+        name: z.string().max(255).optional(),
+        description: z.string().max(2000).optional(),
+        startTime: z.string().optional(),
+        endTime: z.string().optional(),
+        timezone: z.string().max(50).optional(),
+        recurrence: z.enum(['once', 'daily', 'weekly', 'monthly', 'custom']).optional(),
+        recurrenceRule: z.record(z.unknown()).optional(),
+        targetType: z.string().max(50).optional(),
+        siteIds: z.array(uuid).optional(),
+        groupIds: z.array(uuid).optional(),
+        deviceIds: z.array(uuid).optional(),
+        suppressAlerts: z.boolean().optional(),
+        suppressPatching: z.boolean().optional(),
+        suppressAutomations: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_maintenance_windows', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_automations',
+      'Manage automations: list, get, run history, create, update, delete, enable/disable, manually run.',
+      {
+        action: z.enum(['list', 'get', 'history', 'create', 'update', 'delete', 'enable', 'disable', 'run']),
+        automationId: uuid.optional(),
+        name: z.string().max(200).optional(),
+        description: z.string().max(2000).optional(),
+        trigger: z.record(z.unknown()).optional(),
+        conditions: z.record(z.unknown()).optional(),
+        actions: z.array(z.record(z.unknown())).min(1).max(20).optional(),
+        onFailure: z.enum(['stop', 'continue', 'notify']).optional(),
+        enabled: z.boolean().optional(),
+        triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_automations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_alert_rules',
+      'Manage alert rules: list/get/create/update/delete rules, test rules, list channels, alert summary.',
+      {
+        action: z.enum(['list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
+        ruleId: uuid.optional(),
+        name: z.string().max(200).optional(),
+        templateId: uuid.optional(),
+        targetType: z.string().max(50).optional(),
+        targetId: uuid.optional(),
+        overrideSettings: z.record(z.unknown()).optional(),
+        isActive: z.boolean().optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_alert_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'generate_report',
+      'Manage reports: list, generate on-demand, get data, create/update/delete definitions, view history.',
+      {
+        action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history']),
+        reportId: uuid.optional(),
+        reportType: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
+        name: z.string().max(255).optional(),
+        config: z.record(z.unknown()).optional(),
+        schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
+        format: z.enum(['csv', 'pdf', 'excel']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('generate_report', getAuth, onPreToolUse, onPostToolUse)
     ),
   ];
 

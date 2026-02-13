@@ -1,0 +1,25 @@
+name: Docs CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'apps/docs/**'
+      - '**/*.md'
+      - '**/*.mdx'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'apps/docs/**'
+      - '**/*.md'
+      - '**/*.mdx'
+
+jobs:
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    steps:
+      - name: Docs-only change — no build required
+        run: echo "Docs-only change, skipping full CI pipeline"
