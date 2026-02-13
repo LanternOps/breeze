@@ -38,7 +38,7 @@ const TIER2_ACTIONS: Record<string, string[]> = {
   manage_maintenance_windows: ['create', 'update'],
   manage_automations: ['enable', 'disable'],
   manage_alert_rules: ['create_rule', 'update_rule'],
-  generate_report: ['create', 'update', 'delete'],
+  generate_report: ['create', 'update', 'delete', 'generate'],
 };
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
@@ -164,7 +164,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   generate_report: {
     list: { resource: 'reports', action: 'read' },
-    generate: { resource: 'reports', action: 'read' },
+    generate: { resource: 'reports', action: 'write' },
     data: { resource: 'reports', action: 'read' },
     create: { resource: 'reports', action: 'write' },
     update: { resource: 'reports', action: 'write' },
@@ -179,12 +179,11 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   run_script: { limit: 5, windowSeconds: 300 },
   security_scan: { limit: 3, windowSeconds: 600 },
   network_discovery: { limit: 2, windowSeconds: 600 },
-  create_automation: { limit: 5, windowSeconds: 600 },
   file_operations: { limit: 20, windowSeconds: 300 },
   manage_services: { limit: 10, windowSeconds: 300 },
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
-  // Fleet tools — stricter rate limits
+  // Fleet tools — per-tool rate limits
   manage_policies: { limit: 20, windowSeconds: 300 },
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
@@ -288,8 +287,11 @@ export async function checkToolPermission(
     required = permDef as { resource: string; action: string };
   } else if (action && (permDef as Record<string, { resource: string; action: string }>)[action]) {
     required = (permDef as Record<string, { resource: string; action: string }>)[action]!;
+  } else if (action) {
+    // Unknown action for a mapped tool — deny (fail-closed)
+    return `Unknown action "${action}" for tool "${toolName}"`;
   } else {
-    return null; // Unknown action variant — allow
+    return null; // No action provided — allow (base tool permission applies)
   }
 
   const userPerms = await getUserPermissions(auth.user.id, {

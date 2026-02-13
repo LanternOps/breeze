@@ -136,6 +136,23 @@ describe('manage_patches schema', () => {
   it('accepts scan with deviceIds', () => {
     expect(parse('manage_patches', { action: 'scan', deviceIds: [TEST_UUID] }).success).toBe(true);
   });
+
+  it('requires deviceIds for rollback', () => {
+    expect(parse('manage_patches', { action: 'rollback', patchId: TEST_UUID }).success).toBe(false);
+  });
+
+  it('accepts rollback with patchId and deviceIds', () => {
+    expect(parse('manage_patches', {
+      action: 'rollback',
+      patchId: TEST_UUID,
+      deviceIds: [TEST_UUID2],
+    }).success).toBe(true);
+  });
+
+  it('validates deferUntil as ISO datetime', () => {
+    expect(parse('manage_patches', { action: 'defer', patchId: TEST_UUID, deferUntil: 'not-a-date' }).success).toBe(false);
+    expect(parse('manage_patches', { action: 'defer', patchId: TEST_UUID, deferUntil: '2026-03-01T00:00:00Z' }).success).toBe(true);
+  });
 });
 
 // ─── manage_groups ──────────────────────────────────────────────────────
@@ -213,6 +230,16 @@ describe('manage_maintenance_windows schema', () => {
       targetType: 'site',
       suppressAlerts: true,
     }).success).toBe(true);
+  });
+
+  it('rejects invalid datetime for startTime/endTime', () => {
+    expect(parse('manage_maintenance_windows', {
+      action: 'create',
+      name: 'Bad dates',
+      startTime: 'next tuesday',
+      endTime: '2026-03-01T06:00:00Z',
+      targetType: 'site',
+    }).success).toBe(false);
   });
 });
 

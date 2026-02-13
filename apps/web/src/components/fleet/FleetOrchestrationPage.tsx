@@ -66,7 +66,35 @@ const quickActions = [
 
 // ─── Data Fetching ──────────────────────────────────────────────────────
 
-async function fetchFleetStats(): Promise<FleetStats> {
+async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: string[] }> {
+  const endpoints = [
+    { name: 'policies', path: '/policies' },
+    { name: 'deployments', path: '/deployments' },
+    { name: 'patches', path: '/patches/compliance' },
+    { name: 'alerts', path: '/alerts/summary' },
+    { name: 'automations', path: '/automations' },
+    { name: 'maintenance', path: '/maintenance' },
+    { name: 'groups', path: '/groups' },
+    { name: 'reports', path: '/reports' },
+  ] as const;
+
+  const failedEndpoints: string[] = [];
+  const results = await Promise.all(
+    endpoints.map(async (ep) => {
+      try {
+        const res = await fetchWithAuth(ep.path);
+        if (!res.ok) {
+          failedEndpoints.push(ep.name);
+          return null;
+        }
+        return res;
+      } catch {
+        failedEndpoints.push(ep.name);
+        return null;
+      }
+    }),
+  );
+
   const [
     policiesRes,
     deploymentsRes,
@@ -76,16 +104,7 @@ async function fetchFleetStats(): Promise<FleetStats> {
     maintenanceRes,
     groupsRes,
     reportsRes,
-  ] = await Promise.all([
-    fetchWithAuth('/policies').catch(() => null),
-    fetchWithAuth('/deployments').catch(() => null),
-    fetchWithAuth('/patches/compliance').catch(() => null),
-    fetchWithAuth('/alerts/summary').catch(() => null),
-    fetchWithAuth('/automations').catch(() => null),
-    fetchWithAuth('/maintenance').catch(() => null),
-    fetchWithAuth('/groups').catch(() => null),
-    fetchWithAuth('/reports').catch(() => null),
-  ]);
+  ] = results;
 
   const policies = await safeJson(policiesRes);
   const deployments = await safeJson(deploymentsRes);
@@ -109,7 +128,7 @@ async function fetchFleetStats(): Promise<FleetStats> {
 
   const complianceSummary: Record<string, unknown> = (patches?.summary ?? patches ?? {}) as Record<string, unknown>;
 
-  return {
+  return { failedEndpoints, stats: {
     policies: {
       total: Array.isArray(policyList) ? policyList.length : 0,
       enforcing: enforcingPolicies,
@@ -146,11 +165,11 @@ async function fetchFleetStats(): Promise<FleetStats> {
       : 0,
     groupCount: Array.isArray(groupList) ? groupList.length : 0,
     reportCount: Array.isArray(reportList) ? reportList.length : 0,
-  };
+  } };
 }
 
 async function safeJson(res: Response | null): Promise<Record<string, unknown> | null> {
-  if (!res || !res.ok) return null;
+  if (!res) return null;
   try {
     return await res.json();
   } catch {
@@ -175,13 +194,18 @@ export default function FleetOrchestrationPage() {
   const [stats, setStats] = useState<FleetStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   const loadStats = async () => {
     try {
       setIsLoading(true);
       setError(null);
-      const data = await fetchFleetStats();
+      setWarnings([]);
+      const { stats: data, failedEndpoints } = await fetchFleetStats();
       setStats(data);
+      if (failedEndpoints.length > 0) {
+        setWarnings(failedEndpoints);
+      }
 
       useAiStore.getState().setPageContext({
         type: 'custom',
@@ -271,6 +295,18 @@ export default function FleetOrchestrationPage() {
           Refresh
         </button>
       </div>
+
+      {/* Partial failure warning */}
+      {warnings.length > 0 && (
+        <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-4">
+          <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            <span className="text-sm">
+              Some data may be incomplete. Failed to load: {warnings.join(', ')}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

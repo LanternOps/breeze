@@ -51,6 +51,8 @@ import type { AiTool } from './aiTools';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
+type FleetHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+
 // ============================================
 // Helpers
 // ============================================
@@ -61,6 +63,19 @@ function getOrgId(auth: AuthContext): string | null {
 
 function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any): SQL | undefined {
   return auth.orgCondition(orgIdCol) ?? undefined;
+}
+
+/** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
+function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
+  return async (input, auth) => {
+    try {
+      return await fn(input, auth);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      console.error(`[fleet:${toolName}]`, input.action, message, err);
+      return JSON.stringify({ error: `Operation failed: ${message}` });
+    }
+  };
 }
 
 // ============================================
@@ -99,7 +114,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('manage_policies', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -271,8 +286,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(automationPolicies).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
 
-        await db.delete(automationPolicyCompliance).where(eq(automationPolicyCompliance.policyId, existing.id));
-        await db.delete(automationPolicies).where(eq(automationPolicies.id, existing.id));
+        await db.transaction(async (tx) => {
+          await tx.delete(automationPolicyCompliance).where(eq(automationPolicyCompliance.policyId, existing.id));
+          await tx.delete(automationPolicies).where(eq(automationPolicies.id, existing.id));
+        });
         return JSON.stringify({ success: true, message: `Policy "${existing.name}" deleted` });
       }
 
@@ -302,7 +319,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 
   // ============================================
@@ -332,7 +349,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('manage_deployments', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -487,7 +504,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 
   // ============================================
@@ -516,7 +533,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('manage_patches', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -617,27 +634,51 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
         let approved = 0;
+        const failed: string[] = [];
         for (const patchId of (input.patchIds as string[]).slice(0, 50)) {
-          await db.insert(patchApprovals).values({
-            orgId,
-            patchId,
-            status: 'approved',
-            approvedBy: auth.user.id,
-            approvedAt: new Date(),
-            notes: (input.notes as string) ?? null,
-          }).onConflictDoUpdate({
-            target: [patchApprovals.orgId, patchApprovals.patchId],
-            set: { status: 'approved', approvedBy: auth.user.id, approvedAt: new Date(), updatedAt: new Date() },
-          });
-          approved++;
+          try {
+            await db.insert(patchApprovals).values({
+              orgId,
+              patchId,
+              status: 'approved',
+              approvedBy: auth.user.id,
+              approvedAt: new Date(),
+              notes: (input.notes as string) ?? null,
+            }).onConflictDoUpdate({
+              target: [patchApprovals.orgId, patchApprovals.patchId],
+              set: { status: 'approved', approvedBy: auth.user.id, approvedAt: new Date(), updatedAt: new Date() },
+            });
+            approved++;
+          } catch (err) {
+            console.error(`[fleet:manage_patches] bulk_approve failed for ${patchId}:`, err);
+            failed.push(patchId);
+          }
         }
 
-        return JSON.stringify({ success: true, message: `${approved} patch(es) approved` });
+        return JSON.stringify({
+          success: failed.length === 0,
+          message: `${approved} patch(es) approved${failed.length > 0 ? `, ${failed.length} failed` : ''}`,
+          approved,
+          failed: failed.length > 0 ? failed : undefined,
+        });
       }
 
       if (action === 'install') {
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        // Validate devices belong to this org
+        const ownedDevices = await db.select({ id: devices.id })
+          .from(devices)
+          .where(and(
+            eq(devices.orgId, orgId),
+            inArray(devices.id, input.deviceIds as string[]),
+          ));
+        const ownedIds = new Set(ownedDevices.map((d) => d.id));
+        const unauthorizedIds = (input.deviceIds as string[]).filter((id) => !ownedIds.has(id));
+        if (unauthorizedIds.length > 0) {
+          return JSON.stringify({ error: `Access denied: ${unauthorizedIds.length} device(s) not in your organization` });
+        }
 
         const [job] = await db.insert(patchJobs).values({
           orgId,
@@ -656,9 +697,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'rollback') {
         if (!input.patchId) return JSON.stringify({ error: 'patchId is required' });
+        if (!Array.isArray(input.deviceIds) || input.deviceIds.length === 0) return JSON.stringify({ error: 'deviceIds is required for rollback' });
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        // Validate device belongs to this org
+        const [device] = await db.select({ id: devices.id })
+          .from(devices)
+          .where(and(eq(devices.orgId, orgId), eq(devices.id, (input.deviceIds as string[])[0]!)))
+          .limit(1);
+        if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
         const [rollback] = await db.insert(patchRollbacks).values({
-          deviceId: (input.deviceIds as string[])?.[0] ?? '00000000-0000-0000-0000-000000000000',
+          deviceId: device.id,
           patchId: input.patchId as string,
           reason: (input.notes as string) ?? 'Initiated via AI assistant',
           status: 'pending',
@@ -669,7 +719,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 
   // ============================================
@@ -696,7 +746,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('manage_groups', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -757,8 +807,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             { orgId, limit: Number(input.limit) || 25 },
           );
           return JSON.stringify({ preview: result });
-        } catch {
-          return JSON.stringify({ error: 'Filter engine not available. Provide filter conditions to preview matching devices.' });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          console.error('[fleet:manage_groups] preview filter error:', msg, err);
+          // Distinguish module-not-found from runtime errors
+          if (msg.includes('Cannot find module') || msg.includes('MODULE_NOT_FOUND')) {
+            return JSON.stringify({ error: 'Filter engine not available' });
+          }
+          return JSON.stringify({ error: `Filter preview failed: ${msg}` });
         }
       }
 
@@ -826,9 +882,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
 
-        await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, existing.id));
-        await db.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, existing.id));
-        await db.delete(deviceGroups).where(eq(deviceGroups.id, existing.id));
+        await db.transaction(async (tx) => {
+          await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, existing.id));
+          await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, existing.id));
+          await tx.delete(deviceGroups).where(eq(deviceGroups.id, existing.id));
+        });
         return JSON.stringify({ success: true, message: `Group "${existing.name}" deleted` });
       }
 
@@ -842,19 +900,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
 
-        let added = 0;
-        for (const deviceId of (input.deviceIds as string[]).slice(0, 100)) {
-          try {
-            await db.insert(deviceGroupMemberships).values({
-              groupId: group.id,
-              deviceId,
-              addedBy: 'manual',
-            }).onConflictDoNothing();
-            added++;
-          } catch { /* skip conflicts */ }
-        }
+        const deviceIdList = (input.deviceIds as string[]).slice(0, 100);
+        const results = await db.insert(deviceGroupMemberships)
+          .values(deviceIdList.map((deviceId) => ({
+            groupId: group.id,
+            deviceId,
+            addedBy: 'manual' as const,
+          })))
+          .onConflictDoNothing()
+          .returning({ deviceId: deviceGroupMemberships.deviceId });
 
-        return JSON.stringify({ success: true, message: `${added} device(s) added to group "${group.name}"` });
+        return JSON.stringify({ success: true, added: results.length, message: `${results.length} device(s) added to group "${group.name}"` });
       }
 
       if (action === 'remove_devices') {
@@ -877,7 +933,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 
   // ============================================
@@ -913,7 +969,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('manage_maintenance_windows', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -1061,13 +1117,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
 
-        await db.delete(maintenanceOccurrences).where(eq(maintenanceOccurrences.windowId, existing.id));
-        await db.delete(maintenanceWindows).where(eq(maintenanceWindows.id, existing.id));
+        await db.transaction(async (tx) => {
+          await tx.delete(maintenanceOccurrences).where(eq(maintenanceOccurrences.windowId, existing.id));
+          await tx.delete(maintenanceWindows).where(eq(maintenanceWindows.id, existing.id));
+        });
         return JSON.stringify({ success: true, message: `Maintenance window "${existing.name}" deleted` });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 
   // ============================================
@@ -1097,7 +1155,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('manage_automations', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -1207,8 +1265,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
 
-        await db.delete(automationRuns).where(eq(automationRuns.automationId, existing.id));
-        await db.delete(automations).where(eq(automations.id, existing.id));
+        await db.transaction(async (tx) => {
+          await tx.delete(automationRuns).where(eq(automationRuns.automationId, existing.id));
+          await tx.delete(automations).where(eq(automations.id, existing.id));
+        });
         return JSON.stringify({ success: true, message: `Automation "${existing.name}" deleted` });
       }
 
@@ -1252,7 +1312,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 
   // ============================================
@@ -1281,7 +1341,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('manage_alert_rules', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -1444,7 +1504,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 
   // ============================================
@@ -1471,7 +1531,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => {
+    handler: safeHandler('generate_report', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -1510,23 +1570,24 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           if (!reportDef) return JSON.stringify({ error: 'Report not found or access denied' });
         }
 
-        // Create a run record
+        // Only create a run record if we have a saved report definition
         const reportId = reportDef?.id ?? null;
-        const [run] = await db.insert(reportRuns).values({
-          reportId: reportId ?? '00000000-0000-0000-0000-000000000000',
-          status: 'pending',
-        }).returning();
+        let runId: string | null = null;
 
-        // Update last generated timestamp if report exists
         if (reportId) {
+          const [run] = await db.insert(reportRuns).values({
+            reportId,
+            status: 'pending',
+          }).returning();
+          runId = run?.id ?? null;
           await db.update(reports).set({ lastGeneratedAt: new Date() }).where(eq(reports.id, reportId));
         }
 
         return JSON.stringify({
           success: true,
-          runId: run?.id,
+          runId,
           reportType: reportDef?.type ?? input.reportType,
-          message: `Report generation initiated`,
+          message: reportId ? 'Report generation initiated' : 'Ad-hoc report generation initiated',
         });
       }
 
@@ -1636,8 +1697,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(reports).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Report not found or access denied' });
 
-        await db.delete(reportRuns).where(eq(reportRuns.reportId, existing.id));
-        await db.delete(reports).where(eq(reports.id, existing.id));
+        await db.transaction(async (tx) => {
+          await tx.delete(reportRuns).where(eq(reportRuns.reportId, existing.id));
+          await tx.delete(reports).where(eq(reports.id, existing.id));
+        });
         return JSON.stringify({ success: true, message: `Report "${existing.name}" deleted` });
       }
 
@@ -1661,6 +1724,6 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
-    },
+    }),
   });
 }

@@ -67,7 +67,6 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_alert_rules', 'list_channels'],
       ['manage_alert_rules', 'alert_summary'],
       ['generate_report', 'list'],
-      ['generate_report', 'generate'],
       ['generate_report', 'data'],
       ['generate_report', 'history'],
     ];
@@ -104,6 +103,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['generate_report', 'create'],
       ['generate_report', 'update'],
       ['generate_report', 'delete'],
+      ['generate_report', 'generate'],
     ];
 
     it.each(t2Cases)('%s:%s → Tier 2, no approval', (tool, action) => {

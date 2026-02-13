@@ -66,7 +66,7 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
     severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
     status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
-    deferUntil: z.string().optional(),
+    deferUntil: z.string().datetime({ offset: true }).optional(),
     notes: z.string().max(1000).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }).refine(
@@ -84,6 +84,9 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ).refine(
     (d) => d.action !== 'scan' || (Array.isArray(d.deviceIds) && d.deviceIds.length > 0),
     { message: 'deviceIds is required for scan' },
+  ).refine(
+    (d) => d.action !== 'rollback' || (Array.isArray(d.deviceIds) && d.deviceIds.length > 0),
+    { message: 'deviceIds is required for rollback' },
   ),
 
   manage_groups: z.object({
@@ -117,8 +120,8 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     windowId: uuid.optional(),
     name: z.string().min(1).max(255).optional(),
     description: z.string().max(2000).optional(),
-    startTime: z.string().optional(),
-    endTime: z.string().optional(),
+    startTime: z.string().datetime({ offset: true }).optional(),
+    endTime: z.string().datetime({ offset: true }).optional(),
     timezone: z.string().max(50).optional(),
     recurrence: z.enum(['once', 'daily', 'weekly', 'monthly', 'custom']).optional(),
     recurrenceRule: z.record(z.unknown()).optional(),
