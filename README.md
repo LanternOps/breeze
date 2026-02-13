@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="#security">Security</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
   <a href="#ai-brain">AI Brain</a> •
@@ -46,6 +47,29 @@ Breeze is free, open source (AGPL-3.0), and designed to be self-hosted or [cloud
 - **Actually open source.** AGPL-3.0. Read every line. Fork it. Contribute. No bait-and-switch.
 - **Multi-tenant from day one.** Built for MSPs managing multiple clients, not retrofitted from a single-tenant architecture.
 - **Modern stack.** Not a legacy codebase with 15 years of technical debt. Clean, fast, extensible.
+
+---
+
+## Security
+
+Breeze has privileged access to every device it manages. We take that seriously.
+
+| Layer | What We Do |
+|---|---|
+| **Authentication** | Argon2id passwords, JWT with 15-min expiry, TOTP MFA, SHA-256 hashed tokens |
+| **Authorization** | RBAC with scope-based multi-tenancy, database-level tenant isolation via PostgreSQL session variables |
+| **Encryption** | AES-256-GCM at rest, TLS 1.2+ in transit, HSTS preload, no plaintext secrets stored anywhere |
+| **Agent hardening** | Bearer token auth (SHA-256 hashed), 0600 config file permissions, optional Cloudflare mTLS |
+| **Rate limiting** | Redis sliding window on all auth endpoints and agent APIs — fail-closed if Redis is unavailable |
+| **Input validation** | Zod schemas on every external input — API requests, WebSocket messages, query parameters |
+| **AI safety** | Risk-classified action engine — dangerous operations require human approval, critical operations blocked entirely |
+| **Supply chain** | 5 automated scanners in CI: CodeQL SAST, Gitleaks, npm audit, govulncheck, Trivy CVE scanning |
+| **Audit trail** | Structured audit logging with actor tracking, org-scoped retention policies, S3 archival |
+| **Operational** | Secret rotation runbooks, disaster recovery procedures (RTO < 1 hour, RPO < 15 minutes) |
+
+For the full security whitepaper, including SOC 2 alignment mapping, see **[Security Practices](docs/SECURITY_PRACTICES.md)**.
+
+To report a vulnerability: **[security@lanternops.io](mailto:security@lanternops.io)** — see [SECURITY.md](SECURITY.md) for our disclosure policy.
 
 ---
 
@@ -356,7 +380,7 @@ Absolutely. The multi-tenant hierarchy works for internal IT too — just use Or
 Breeze uses the Claude Agent SDK (Anthropic). BYOK mode requires an Anthropic API key. We chose Claude for its tool-use capabilities and reasoning quality. We're open to community contributions for other model support.
 
 **Is my data safe?**
-Self-hosted: your data never leaves your infrastructure. Cloud-hosted: data is isolated per partner with strict tenant separation. See our security practices in the [Admin Guide](docs/ADMIN_GUIDE.md).
+Self-hosted: your data never leaves your infrastructure. Cloud-hosted: data is isolated per partner with strict tenant separation. See our [Security Practices](docs/SECURITY_PRACTICES.md) for the full security whitepaper, including SOC 2 alignment mapping, encryption standards, and audit controls.
 
 ---
 
