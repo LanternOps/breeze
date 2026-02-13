@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, ExternalLink, Download } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
 
 interface Props {
   deviceId: string;
@@ -138,21 +139,54 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
               <p className="font-medium text-amber-800 dark:text-amber-300">
                 Breeze Viewer not installed
               </p>
-              <div className="mt-2.5 flex items-center gap-3">
-                <a
-                  href="#"
-                  className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </a>
-                <button
-                  onClick={() => setStatus('idle')}
-                  className="text-xs text-muted-foreground transition hover:text-foreground"
-                >
-                  Dismiss
-                </button>
-              </div>
+              {(() => {
+                const downloadInfo = getViewerDownloadInfo();
+                if (downloadInfo) {
+                  return (
+                    <div className="mt-2.5 flex items-center gap-3">
+                      <a
+                        href={downloadInfo.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Download for {downloadInfo.label}
+                      </a>
+                      <button
+                        onClick={() => setStatus('idle')}
+                        className="text-xs text-muted-foreground transition hover:text-foreground"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mt-2.5 space-y-2">
+                    <div className="flex flex-col gap-1.5">
+                      {getAllViewerDownloads().map((dl) => (
+                        <a
+                          key={dl.os}
+                          href={dl.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          {dl.label}
+                        </a>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => setStatus('idle')}
+                      className="text-xs text-muted-foreground transition hover:text-foreground"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
