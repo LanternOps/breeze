@@ -151,7 +151,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                         className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
                       >
                         <Download className="h-3.5 w-3.5" />
-                        Download for {downloadInfo.os}
+                        Download for {downloadInfo.label}
                       </a>
                       <button
                         onClick={() => setStatus('idle')}
@@ -174,7 +174,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                           className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
                         >
                           <Download className="h-3.5 w-3.5" />
-                          {dl.os}
+                          {dl.label}
                         </a>
                       ))}
                     </div>
