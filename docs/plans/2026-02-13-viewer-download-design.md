@@ -31,8 +31,7 @@ Uses GitHub's deterministic release asset URL pattern:
 https://github.com/{owner}/{repo}/releases/latest/download/{filename}
 ```
 
-- Base repo configurable via `PUBLIC_VIEWER_REPO` env var, with hardcoded default
-- Fallback URL (unknown OS): `https://github.com/{owner}/{repo}/releases/latest`
+- Base repo hardcoded default (`toddhebebrand/breeze`)
 - No API calls or version resolution — GitHub `/releases/latest/download/` redirects automatically
 
 ### 3. Modal UX Changes
@@ -41,7 +40,7 @@ In `ConnectDesktopButton.tsx` fallback modal:
 
 - Download button `href` wired to detected platform URL
 - Button text shows detected OS: "Download for macOS" / "Download for Windows" / "Download for Linux"
-- Unknown OS: button says "View Downloads" and links to GitHub releases page
+- Unknown OS: shows download buttons for all three platforms (macOS, Windows, Linux) stacked vertically
 - No other modal changes — existing warning text, icon, dismiss button, styling preserved
 
 ## Scope
