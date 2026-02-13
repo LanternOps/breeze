@@ -23,7 +23,8 @@ import {
   Plug,
   Network,
   HardDrive,
-  BarChart3
+  BarChart3,
+  BrainCircuit
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -51,7 +52,8 @@ const integrationsNav = [
 ];
 
 const monitoringNav = [
-  { name: 'Security', href: '/security', icon: ShieldCheck }
+  { name: 'Security', href: '/security', icon: ShieldCheck },
+  { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit }
 ];
 
 const operationsNav = [
