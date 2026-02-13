@@ -380,23 +380,24 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `POST` | `/discovery/assets/:id/link` | Link asset to device |
 | `POST` | `/discovery/assets/:id/ignore` | Ignore asset |
 | `DELETE` | `/discovery/assets/:id` | Delete asset |
-| `POST` | `/discovery/assets/:id/enable-monitoring` | Enable monitoring |
-| `POST` | `/discovery/assets/:id/disable-monitoring` | Disable monitoring |
-| `GET` | `/discovery/assets/:id/monitoring` | Get monitoring config |
-| `PATCH` | `/discovery/assets/:id/monitoring` | Update monitoring config |
 | `GET` | `/discovery/topology` | Network topology map |
+
+## Monitoring
+
+Monitoring is asset-centric configuration and status. Discovery feeds into Monitoring.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/monitoring/assets` | List discovered assets with monitoring status |
+| `GET` | `/monitoring/assets/:id` | Get monitoring status and recent metrics |
+| `PUT` | `/monitoring/assets/:id/snmp` | Create or update SNMP monitoring config |
+| `PATCH` | `/monitoring/assets/:id/snmp` | Patch SNMP monitoring config |
+| `DELETE` | `/monitoring/assets/:id` | Disable monitoring for the asset |
 
 ## SNMP
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/snmp/devices` | List SNMP devices |
-| `POST` | `/snmp/devices` | Add SNMP device |
-| `GET` | `/snmp/devices/:id` | Get device |
-| `PATCH` | `/snmp/devices/:id` | Update device |
-| `DELETE` | `/snmp/devices/:id` | Delete device |
-| `POST` | `/snmp/devices/:id/poll` | Poll device now |
-| `POST` | `/snmp/devices/:id/test` | Test SNMP connectivity |
 | `GET` | `/snmp/templates` | List SNMP templates |
 | `POST` | `/snmp/templates` | Create template |
 | `GET` | `/snmp/templates/:id` | Get template |
@@ -404,13 +405,6 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `DELETE` | `/snmp/templates/:id` | Delete template |
 | `GET` | `/snmp/oids/browse` | Browse OID tree |
 | `POST` | `/snmp/oids/validate` | Validate OIDs |
-| `GET` | `/snmp/metrics/:deviceId` | Get device metrics |
-| `GET` | `/snmp/metrics/:deviceId/history` | Metrics history |
-| `GET` | `/snmp/metrics/:deviceId/:oid` | Get specific OID metric |
-| `GET` | `/snmp/thresholds/:deviceId` | List thresholds |
-| `POST` | `/snmp/thresholds` | Create threshold |
-| `PATCH` | `/snmp/thresholds/:id` | Update threshold |
-| `DELETE` | `/snmp/thresholds/:id` | Delete threshold |
 | `GET` | `/snmp/dashboard` | SNMP dashboard |
 
 ## Remote Access
