@@ -23,7 +23,8 @@ import {
   Plug,
   Network,
   HardDrive,
-  BarChart3
+  BarChart3,
+  Activity
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -51,6 +52,7 @@ const integrationsNav = [
 ];
 
 const monitoringNav = [
+  { name: 'Monitoring', href: '/monitoring', icon: Activity },
   { name: 'Security', href: '/security', icon: ShieldCheck }
 ];
 

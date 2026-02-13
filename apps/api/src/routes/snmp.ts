@@ -4,10 +4,7 @@ import { z } from 'zod';
 import { and, eq, like, desc, sql, gte, lte, or } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds, devices } from '../db/schema';
-import { enqueueSnmpPoll, buildSnmpPollCommand } from '../jobs/snmpWorker';
-import { isRedisAvailable } from '../services/redis';
-import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
+import { snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { buildTopInterfaces } from '../services/snmpDashboardTopInterfaces';
 
@@ -53,35 +50,13 @@ function resolveOrgId(
 
 // --- Zod Schemas ---
 
-const listDevicesSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  status: z.enum(['online', 'offline', 'warning', 'maintenance']).optional(),
-  templateId: z.string().uuid().optional(),
-  search: z.string().optional()
-});
-
-const createDeviceSchema = z.object({
-  orgId: z.string().uuid().optional(),
-  name: z.string().min(1),
-  ipAddress: z.string().min(1),
-  snmpVersion: z.enum(['v1', 'v2c', 'v3']),
-  port: z.number().int().positive().optional(),
-  community: z.string().optional(),
-  username: z.string().optional(),
-  authProtocol: z.string().optional(),
-  authPassword: z.string().optional(),
-  privProtocol: z.string().optional(),
-  privPassword: z.string().optional(),
-  templateId: z.string().uuid().optional(),
-  pollingInterval: z.number().int().positive().optional(),
-  tags: z.array(z.string()).optional()
-});
-
-const updateDeviceSchema = createDeviceSchema.partial().omit({ orgId: true });
-
 const listTemplatesSchema = z.object({
   source: z.enum(['builtin', 'custom']).optional(),
   search: z.string().optional()
+});
+
+const dashboardQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
 });
 
 const oidSchema = z.object({
@@ -103,12 +78,6 @@ const createTemplateSchema = z.object({
 
 const updateTemplateSchema = createTemplateSchema.partial();
 
-const metricsHistorySchema = z.object({
-  start: z.string().optional(),
-  end: z.string().optional(),
-  interval: z.enum(['5m', '15m', '1h', '6h', '1d']).optional()
-});
-
 const browseOidsSchema = z.object({
   query: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional()
@@ -125,18 +94,6 @@ const validateOidsSchema = z.object({
     })
   ).min(1)
 });
-
-const createThresholdSchema = z.object({
-  deviceId: z.string().uuid(),
-  oid: z.string().min(1),
-  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq']),
-  threshold: z.string().min(1),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
-  message: z.string().optional(),
-  isActive: z.boolean().optional()
-});
-
-const updateThresholdSchema = createThresholdSchema.partial().omit({ deviceId: true });
 
 type OidCatalogEntry = {
   oid: string;
@@ -211,383 +168,18 @@ snmpRoutes.use('*', authMiddleware);
 
 // ==================== DEVICE ROUTES ====================
 
-snmpRoutes.get(
-  '/devices',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('query', listDevicesSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+const snmpDevicesDeprecationResponse = {
+  error: 'SNMP device endpoints have been deprecated.',
+  message: 'Manage SNMP monitoring via /monitoring/assets and /monitoring/assets/:id/snmp.'
+} as const;
 
-    const conditions: ReturnType<typeof eq>[] = [];
-    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-    if (query.status) conditions.push(eq(snmpDevices.lastStatus, query.status));
-    if (query.templateId) conditions.push(eq(snmpDevices.templateId, query.templateId));
-    if (query.search) {
-      const escaped = escapeLikePattern(query.search);
-      conditions.push(
-        or(
-          like(snmpDevices.name, `%${escaped}%`),
-          like(snmpDevices.ipAddress, `%${escaped}%`)
-        )!
-      );
-    }
-
-    const where = conditions.length ? and(...conditions) : undefined;
-
-    const results = await db
-      .select({
-        id: snmpDevices.id,
-        orgId: snmpDevices.orgId,
-        name: snmpDevices.name,
-        ipAddress: snmpDevices.ipAddress,
-        snmpVersion: snmpDevices.snmpVersion,
-        port: snmpDevices.port,
-        templateId: snmpDevices.templateId,
-        isActive: snmpDevices.isActive,
-        lastPolled: snmpDevices.lastPolled,
-        lastStatus: snmpDevices.lastStatus,
-        pollingInterval: snmpDevices.pollingInterval,
-        createdAt: snmpDevices.createdAt,
-        templateName: snmpTemplates.name
-      })
-      .from(snmpDevices)
-      .leftJoin(snmpTemplates, eq(snmpDevices.templateId, snmpTemplates.id))
-      .where(where)
-      .orderBy(desc(snmpDevices.createdAt));
-
-    const total = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(snmpDevices)
-      .where(where);
-
-    return c.json({
-      data: results.map((d) => ({
-        id: d.id,
-        name: d.name,
-        ipAddress: d.ipAddress,
-        status: d.lastStatus ?? 'offline',
-        templateId: d.templateId,
-        templateName: d.templateName,
-        snmpVersion: d.snmpVersion,
-        port: d.port,
-        isActive: d.isActive,
-        pollingInterval: d.pollingInterval,
-        lastPolledAt: d.lastPolled?.toISOString() ?? null,
-        createdAt: d.createdAt.toISOString()
-      })),
-      total: Number(total[0]?.count ?? 0)
-    });
-  }
-);
-
-snmpRoutes.post(
-  '/devices',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('json', createDeviceSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth, payload.orgId, true);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    if (payload.templateId) {
-      const [tmpl] = await db.select({ id: snmpTemplates.id }).from(snmpTemplates)
-        .where(eq(snmpTemplates.id, payload.templateId)).limit(1);
-      if (!tmpl) return c.json({ error: 'Template not found.' }, 400);
-    }
-
-    const [device] = await db.insert(snmpDevices).values({
-      orgId: orgResult.orgId!,
-      name: payload.name,
-      ipAddress: payload.ipAddress,
-      snmpVersion: payload.snmpVersion,
-      port: payload.port ?? 161,
-      community: payload.community,
-      username: payload.username,
-      authProtocol: payload.authProtocol,
-      authPassword: payload.authPassword,
-      privProtocol: payload.privProtocol,
-      privPassword: payload.privPassword,
-      templateId: payload.templateId ?? null,
-      pollingInterval: payload.pollingInterval ?? 300,
-      isActive: true,
-      lastStatus: 'offline'
-    }).returning();
-    if (!device) {
-      return c.json({ error: 'Failed to create SNMP device.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: device.orgId,
-      action: 'snmp.device.create',
-      resourceType: 'snmp_device',
-      resourceId: device.id,
-      resourceName: device.name,
-      details: {
-        ipAddress: device.ipAddress,
-        snmpVersion: device.snmpVersion,
-        templateId: device.templateId,
-      },
-    });
-
-    return c.json({ data: device }, 201);
-  }
-);
-
-snmpRoutes.get(
-  '/devices/:id',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select().from(snmpDevices)
-      .where(and(...conditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    const template = device.templateId
-      ? (await db.select().from(snmpTemplates).where(eq(snmpTemplates.id, device.templateId)).limit(1))[0] ?? null
-      : null;
-
-    const recentMetrics = await db.select().from(snmpMetrics)
-      .where(eq(snmpMetrics.deviceId, deviceId))
-      .orderBy(desc(snmpMetrics.timestamp))
-      .limit(20);
-
-    const latestMetric = recentMetrics[0];
-
-    return c.json({
-      data: {
-        ...device,
-        lastPolledAt: device.lastPolled?.toISOString() ?? null,
-        status: device.lastStatus ?? 'offline',
-        createdAt: device.createdAt.toISOString(),
-        template: template ? {
-          id: template.id,
-          name: template.name,
-          description: template.description,
-          vendor: template.vendor,
-          deviceType: template.deviceType,
-          oids: template.oids,
-          isBuiltIn: template.isBuiltIn
-        } : null,
-        recentMetrics: latestMetric ? {
-          deviceId,
-          capturedAt: latestMetric.timestamp.toISOString(),
-          metrics: recentMetrics.map((m) => ({
-            oid: m.oid,
-            name: m.name,
-            value: m.value,
-            recordedAt: m.timestamp.toISOString()
-          }))
-        } : null
-      }
-    });
-  }
-);
-
-snmpRoutes.patch(
-  '/devices/:id',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('json', updateDeviceSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('id');
-    const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [existing] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
-      .where(and(...conditions)).limit(1);
-    if (!existing) return c.json({ error: 'Device not found.' }, 404);
-
-    if (payload.templateId) {
-      const [tmpl] = await db.select({ id: snmpTemplates.id }).from(snmpTemplates)
-        .where(eq(snmpTemplates.id, payload.templateId)).limit(1);
-      if (!tmpl) return c.json({ error: 'Template not found.' }, 400);
-    }
-
-    const [updated] = await db.update(snmpDevices)
-      .set(payload)
-      .where(eq(snmpDevices.id, deviceId))
-      .returning();
-    if (!updated) {
-      return c.json({ error: 'Failed to update SNMP device.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: updated.orgId,
-      action: 'snmp.device.update',
-      resourceType: 'snmp_device',
-      resourceId: updated.id,
-      resourceName: updated.name,
-      details: {
-        updatedFields: Object.keys(payload),
-      },
-    });
-
-    return c.json({ data: updated });
-  }
-);
-
-snmpRoutes.delete(
-  '/devices/:id',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [existing] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
-      .where(and(...conditions)).limit(1);
-    if (!existing) return c.json({ error: 'Device not found.' }, 404);
-
-    // Delete related data first
-    await db.delete(snmpMetrics).where(eq(snmpMetrics.deviceId, deviceId));
-    await db.delete(snmpAlertThresholds).where(eq(snmpAlertThresholds.deviceId, deviceId));
-    const [removed] = await db.delete(snmpDevices).where(eq(snmpDevices.id, deviceId)).returning();
-
-    if (removed) {
-      writeRouteAudit(c, {
-        orgId: removed.orgId,
-        action: 'snmp.device.delete',
-        resourceType: 'snmp_device',
-        resourceId: removed.id,
-        resourceName: removed.name,
-      });
-    }
-
-    return c.json({ data: removed });
-  }
-);
-
-snmpRoutes.post(
-  '/devices/:id/poll',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select({ id: snmpDevices.id, orgId: snmpDevices.orgId }).from(snmpDevices)
-      .where(and(...conditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    if (!isRedisAvailable()) {
-      return c.json({ error: 'Polling service unavailable. Redis is required for job queuing.' }, 503);
-    }
-
-    await enqueueSnmpPoll(deviceId, device.orgId);
-
-    writeRouteAudit(c, {
-      orgId: device.orgId,
-      action: 'snmp.device.poll.queue',
-      resourceType: 'snmp_device',
-      resourceId: deviceId,
-    });
-
-    return c.json({
-      data: {
-        deviceId,
-        status: 'queued',
-        message: 'Poll request queued'
-      }
-    });
-  }
-);
-
-snmpRoutes.post(
-  '/devices/:id/test',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) conditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select().from(snmpDevices)
-      .where(and(...conditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    // Load template OIDs for the test (use sysDescr as a basic check)
-    let testOids = ['1.3.6.1.2.1.1.1.0']; // sysDescr
-    if (device.templateId) {
-      const [tmpl] = await db.select({ oids: snmpTemplates.oids }).from(snmpTemplates)
-        .where(eq(snmpTemplates.id, device.templateId)).limit(1);
-      if (tmpl && Array.isArray(tmpl.oids)) {
-        const templateOids = (tmpl.oids as Array<{ oid: string }>).map((o) => o.oid).slice(0, 3);
-        if (templateOids.length > 0) testOids = templateOids;
-      }
-    }
-
-    // Find an online agent for this org
-    const [onlineAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(and(eq(devices.orgId, device.orgId), eq(devices.status, 'online')))
-      .limit(1);
-
-    const agentId = onlineAgent?.agentId ?? null;
-    if (!agentId || !isAgentConnected(agentId)) {
-      return c.json({
-        data: {
-          deviceId,
-          status: 'failed',
-          error: 'No online agent available',
-          snmpVersion: device.snmpVersion,
-          testedAt: new Date().toISOString()
-        }
-      });
-    }
-
-    const command = buildSnmpPollCommand(deviceId, device, testOids, 'snmp-test');
-    const sent = sendCommandToAgent(agentId, command);
-
-    writeRouteAudit(c, {
-      orgId: device.orgId,
-      action: 'snmp.device.test',
-      resourceType: 'snmp_device',
-      resourceId: device.id,
-      resourceName: device.name,
-      details: {
-        queued: sent,
-      },
-      result: sent ? 'success' : 'failure',
-    });
-
-    return c.json({
-      data: {
-        deviceId,
-        status: sent ? 'queued' : 'failed',
-        error: sent ? undefined : 'Failed to send test command to agent',
-        snmpVersion: device.snmpVersion,
-        testedAt: new Date().toISOString()
-      }
-    });
-  }
-);
+snmpRoutes.get('/devices', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.post('/devices', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.get('/devices/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.patch('/devices/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.delete('/devices/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.post('/devices/:id/poll', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
+snmpRoutes.post('/devices/:id/test', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
 
 // ==================== TEMPLATE ROUTES ====================
 
@@ -911,330 +503,37 @@ snmpRoutes.post(
 
 // ==================== METRIC ROUTES ====================
 
-snmpRoutes.get(
-  '/metrics/:deviceId',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('deviceId');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+const snmpMetricsDeprecationResponse = {
+  error: 'SNMP metric endpoints have been deprecated.',
+  message: 'Use /monitoring/assets/:id for recent metrics.'
+} as const;
 
-    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
-      .where(and(...deviceConditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    // Get the most recent metrics (one per OID)
-    const metrics = await db.select().from(snmpMetrics)
-      .where(eq(snmpMetrics.deviceId, deviceId))
-      .orderBy(desc(snmpMetrics.timestamp))
-      .limit(50);
-
-    // Deduplicate by OID to show latest value per OID
-    const seen = new Set<string>();
-    const latest = metrics.filter((m) => {
-      if (seen.has(m.oid)) return false;
-      seen.add(m.oid);
-      return true;
-    });
-
-    return c.json({
-      data: {
-        deviceId,
-        capturedAt: latest[0]?.timestamp.toISOString() ?? new Date().toISOString(),
-        metrics: latest.map((m) => ({
-          oid: m.oid,
-          name: m.name,
-          value: m.value,
-          recordedAt: m.timestamp.toISOString()
-        }))
-      }
-    });
-  }
-);
-
-snmpRoutes.get(
-  '/metrics/:deviceId/history',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('query', metricsHistorySchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('deviceId');
-    const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
-      .where(and(...deviceConditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    const end = query.end ? new Date(query.end) : new Date();
-    const start = query.start ? new Date(query.start) : new Date(end.getTime() - 24 * 60 * 60 * 1000);
-    const interval = query.interval ?? '1h';
-
-    const metrics = await db.select().from(snmpMetrics)
-      .where(and(
-        eq(snmpMetrics.deviceId, deviceId),
-        gte(snmpMetrics.timestamp, start),
-        lte(snmpMetrics.timestamp, end)
-      ))
-      .orderBy(snmpMetrics.timestamp);
-
-    // Group by OID into series
-    const seriesMap = new Map<string, { oid: string; name: string; points: Array<{ timestamp: string; value: string | null }> }>();
-    for (const m of metrics) {
-      if (!seriesMap.has(m.oid)) {
-        seriesMap.set(m.oid, { oid: m.oid, name: m.name, points: [] });
-      }
-      seriesMap.get(m.oid)!.points.push({
-        timestamp: m.timestamp.toISOString(),
-        value: m.value
-      });
-    }
-
-    return c.json({
-      data: {
-        deviceId,
-        start: start.toISOString(),
-        end: end.toISOString(),
-        interval,
-        series: Array.from(seriesMap.values())
-      }
-    });
-  }
-);
-
-snmpRoutes.get(
-  '/metrics/:deviceId/:oid',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('query', metricsHistorySchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('deviceId');
-    const oid = c.req.param('oid');
-    const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
-      .where(and(...deviceConditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    const end = query.end ? new Date(query.end) : new Date();
-    const start = query.start ? new Date(query.start) : new Date(end.getTime() - 24 * 60 * 60 * 1000);
-    const interval = query.interval ?? '1h';
-
-    const metrics = await db.select().from(snmpMetrics)
-      .where(and(
-        eq(snmpMetrics.deviceId, deviceId),
-        or(eq(snmpMetrics.oid, oid), eq(snmpMetrics.name, oid)),
-        gte(snmpMetrics.timestamp, start),
-        lte(snmpMetrics.timestamp, end)
-      ))
-      .orderBy(snmpMetrics.timestamp);
-
-    return c.json({
-      data: {
-        deviceId,
-        oid: metrics[0]?.oid ?? oid,
-        name: metrics[0]?.name ?? oid,
-        interval,
-        start: start.toISOString(),
-        end: end.toISOString(),
-        series: metrics.map((m) => ({
-          timestamp: m.timestamp.toISOString(),
-          value: m.value
-        }))
-      }
-    });
-  }
-);
+snmpRoutes.get('/metrics/:deviceId', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpMetricsDeprecationResponse, 410));
+snmpRoutes.get('/metrics/:deviceId/history', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpMetricsDeprecationResponse, 410));
+snmpRoutes.get('/metrics/:deviceId/:oid', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpMetricsDeprecationResponse, 410));
 
 // ==================== THRESHOLD ROUTES ====================
 
-snmpRoutes.get(
-  '/thresholds/:deviceId',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const deviceId = c.req.param('deviceId');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+const snmpThresholdDeprecationResponse = {
+  error: 'SNMP threshold endpoints have been deprecated.',
+  message: 'Thresholds will be reintroduced under Monitoring. For now, manage SNMP monitoring via /monitoring/assets/:id/snmp.'
+} as const;
 
-    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, deviceId)];
-    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
-      .where(and(...deviceConditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    const results = await db.select().from(snmpAlertThresholds)
-      .where(eq(snmpAlertThresholds.deviceId, deviceId));
-
-    return c.json({ data: results });
-  }
-);
-
-snmpRoutes.post(
-  '/thresholds',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('json', createThresholdSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const deviceConditions: ReturnType<typeof eq>[] = [eq(snmpDevices.id, payload.deviceId)];
-    if (orgResult.orgId) deviceConditions.push(eq(snmpDevices.orgId, orgResult.orgId));
-
-    const [device] = await db.select({ id: snmpDevices.id }).from(snmpDevices)
-      .where(and(...deviceConditions)).limit(1);
-    if (!device) return c.json({ error: 'Device not found.' }, 404);
-
-    const [threshold] = await db.insert(snmpAlertThresholds).values({
-      deviceId: payload.deviceId,
-      oid: payload.oid,
-      operator: payload.operator,
-      threshold: payload.threshold,
-      severity: payload.severity,
-      message: payload.message ?? null,
-      isActive: payload.isActive ?? true
-    }).returning();
-    if (!threshold) {
-      return c.json({ error: 'Failed to create SNMP threshold.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: orgResult.orgId,
-      action: 'snmp.threshold.create',
-      resourceType: 'snmp_threshold',
-      resourceId: threshold.id,
-      details: {
-        deviceId: threshold.deviceId,
-        oid: threshold.oid,
-        severity: threshold.severity,
-      },
-    });
-
-    return c.json({ data: threshold }, 201);
-  }
-);
-
-snmpRoutes.patch(
-  '/thresholds/:id',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('json', updateThresholdSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const thresholdId = c.req.param('id');
-    const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    // Verify threshold exists and its device belongs to the caller's org
-    const query = orgResult.orgId
-      ? db.select().from(snmpAlertThresholds)
-          .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
-          .where(and(eq(snmpAlertThresholds.id, thresholdId), eq(snmpDevices.orgId, orgResult.orgId)))
-      : db.select().from(snmpAlertThresholds)
-          .where(eq(snmpAlertThresholds.id, thresholdId));
-
-    const [existing] = await query.limit(1);
-    if (!existing) return c.json({ error: 'Threshold not found.' }, 404);
-
-    const [updated] = await db.update(snmpAlertThresholds)
-      .set(payload)
-      .where(eq(snmpAlertThresholds.id, thresholdId))
-      .returning();
-    if (!updated) {
-      return c.json({ error: 'Failed to update SNMP threshold.' }, 500);
-    }
-
-    const [thresholdContext] = await db
-      .select({ orgId: snmpDevices.orgId })
-      .from(snmpAlertThresholds)
-      .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
-      .where(eq(snmpAlertThresholds.id, thresholdId))
-      .limit(1);
-
-    writeRouteAudit(c, {
-      orgId: thresholdContext?.orgId ?? orgResult.orgId,
-      action: 'snmp.threshold.update',
-      resourceType: 'snmp_threshold',
-      resourceId: updated.id,
-      details: {
-        updatedFields: Object.keys(payload),
-      },
-    });
-
-    return c.json({ data: updated });
-  }
-);
-
-snmpRoutes.delete(
-  '/thresholds/:id',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const thresholdId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    // Verify threshold exists and its device belongs to the caller's org
-    const query = orgResult.orgId
-      ? db.select({ id: snmpAlertThresholds.id, deviceId: snmpAlertThresholds.deviceId }).from(snmpAlertThresholds)
-          .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
-          .where(and(eq(snmpAlertThresholds.id, thresholdId), eq(snmpDevices.orgId, orgResult.orgId)))
-      : db.select({ id: snmpAlertThresholds.id, deviceId: snmpAlertThresholds.deviceId }).from(snmpAlertThresholds)
-          .where(eq(snmpAlertThresholds.id, thresholdId));
-
-    const [existing] = await query.limit(1);
-    if (!existing) return c.json({ error: 'Threshold not found.' }, 404);
-
-    const [removed] = await db.delete(snmpAlertThresholds)
-      .where(eq(snmpAlertThresholds.id, thresholdId)).returning();
-
-    if (removed) {
-      const [thresholdContext] = await db
-        .select({ orgId: snmpDevices.orgId })
-        .from(snmpDevices)
-        .where(eq(snmpDevices.id, removed.deviceId))
-        .limit(1);
-
-      writeRouteAudit(c, {
-        orgId: thresholdContext?.orgId ?? orgResult.orgId,
-        action: 'snmp.threshold.delete',
-        resourceType: 'snmp_threshold',
-        resourceId: removed.id,
-        details: {
-          deviceId: removed.deviceId,
-          oid: removed.oid,
-        },
-      });
-    }
-
-    return c.json({ data: removed });
-  }
-);
+snmpRoutes.get('/thresholds/:deviceId', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
+snmpRoutes.post('/thresholds', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
+snmpRoutes.patch('/thresholds/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
+snmpRoutes.delete('/thresholds/:id', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));
 
 // ==================== DASHBOARD ROUTE ====================
 
 snmpRoutes.get(
   '/dashboard',
   requireScope('organization', 'partner', 'system'),
+  zValidator('query', dashboardQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveOrgId(auth);
+    const query = c.req.valid('query');
+    const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const orgFilter = orgResult.orgId ? eq(snmpDevices.orgId, orgResult.orgId) : undefined;

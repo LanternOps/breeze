@@ -40,6 +40,58 @@ function resolveOrgId(
   return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
 }
 
+type AuthContext = {
+  scope: string;
+  orgId: string | null;
+  accessibleOrgIds: string[] | null;
+  canAccessOrg: (orgId: string) => boolean;
+};
+
+async function requireMonitorAccess(auth: AuthContext, monitorId: string) {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
+    const [monitor] = await db
+      .select()
+      .from(networkMonitors)
+      .where(and(eq(networkMonitors.id, monitorId), eq(networkMonitors.orgId, auth.orgId)))
+      .limit(1);
+    if (!monitor) return { error: 'Monitor not found.', status: 404 } as const;
+    return { monitor } as const;
+  }
+
+  const [monitor] = await db
+    .select()
+    .from(networkMonitors)
+    .where(eq(networkMonitors.id, monitorId))
+    .limit(1);
+  if (!monitor) return { error: 'Monitor not found.', status: 404 } as const;
+  if (!auth.canAccessOrg(monitor.orgId)) return { error: 'Access denied', status: 403 } as const;
+  return { monitor } as const;
+}
+
+async function requireAlertRuleAccess(auth: AuthContext, ruleId: string) {
+  const [row] = await db
+    .select({
+      rule: networkMonitorAlertRules,
+      monitorOrgId: networkMonitors.orgId
+    })
+    .from(networkMonitorAlertRules)
+    .innerJoin(networkMonitors, eq(networkMonitorAlertRules.monitorId, networkMonitors.id))
+    .where(eq(networkMonitorAlertRules.id, ruleId))
+    .limit(1);
+
+  if (!row) return { error: 'Alert rule not found.', status: 404 } as const;
+
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
+    if (row.monitorOrgId !== auth.orgId) return { error: 'Alert rule not found.', status: 404 } as const;
+  } else {
+    if (!auth.canAccessOrg(row.monitorOrgId)) return { error: 'Access denied', status: 403 } as const;
+  }
+
+  return row as const;
+}
+
 // --- Zod Schemas ---
 
 const monitorTypes = ['icmp_ping', 'tcp_port', 'http_check', 'dns_check'] as const;
@@ -332,17 +384,11 @@ monitorRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const monitorId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, monitorId)];
-    if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [monitor] = await db.select().from(networkMonitors)
-      .where(and(...conditions)).limit(1);
-    if (!monitor) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
+    const monitor = monitorResult.monitor;
 
     const recentResults = await db.select().from(networkMonitorResults)
       .where(eq(networkMonitorResults.monitorId, monitorId))
@@ -373,18 +419,11 @@ monitorRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateMonitorSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const monitorId = c.req.param('id');
     const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, monitorId)];
-    if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [existing] = await db.select({ id: networkMonitors.id }).from(networkMonitors)
-      .where(and(...conditions)).limit(1);
-    if (!existing) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const [updated] = await db.update(networkMonitors)
       .set({ ...payload, updatedAt: new Date() })
@@ -411,17 +450,10 @@ monitorRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const monitorId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, monitorId)];
-    if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [existing] = await db.select({ id: networkMonitors.id }).from(networkMonitors)
-      .where(and(...conditions)).limit(1);
-    if (!existing) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const [removed] = await db.delete(networkMonitors)
       .where(eq(networkMonitors.id, monitorId)).returning();
@@ -446,17 +478,11 @@ monitorRoutes.post(
   '/:id/check',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const monitorId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, monitorId)];
-    if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [monitor] = await db.select({ id: networkMonitors.id, orgId: networkMonitors.orgId })
-      .from(networkMonitors).where(and(...conditions)).limit(1);
-    if (!monitor) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
+    const monitor = monitorResult.monitor;
 
     if (!isRedisAvailable()) {
       return c.json({ error: 'Check service unavailable. Redis is required for job queuing.' }, 503);
@@ -479,17 +505,11 @@ monitorRoutes.post(
   '/:id/test',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const monitorId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const conditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, monitorId)];
-    if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [monitor] = await db.select().from(networkMonitors)
-      .where(and(...conditions)).limit(1);
-    if (!monitor) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
+    const monitor = monitorResult.monitor;
 
     const [onlineAgent] = await db
       .select({ agentId: devices.agentId })
@@ -535,18 +555,11 @@ monitorRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', resultsQuerySchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const monitorId = c.req.param('id');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const monitorConditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, monitorId)];
-    if (orgResult.orgId) monitorConditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [monitor] = await db.select({ id: networkMonitors.id }).from(networkMonitors)
-      .where(and(...monitorConditions)).limit(1);
-    if (!monitor) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const resultConditions: ReturnType<typeof eq>[] = [eq(networkMonitorResults.monitorId, monitorId)];
     if (query.start) resultConditions.push(gte(networkMonitorResults.timestamp, new Date(query.start)));
@@ -573,17 +586,11 @@ monitorRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', createAlertRuleSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const monitorConditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, payload.monitorId)];
-    if (orgResult.orgId) monitorConditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [monitor] = await db.select({ id: networkMonitors.id }).from(networkMonitors)
-      .where(and(...monitorConditions)).limit(1);
-    if (!monitor) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, payload.monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
+    const monitor = monitorResult.monitor;
 
     const [rule] = await db.insert(networkMonitorAlertRules).values({
       monitorId: payload.monitorId,
@@ -598,7 +605,7 @@ monitorRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: orgResult.orgId,
+      orgId: monitor.orgId,
       action: 'monitor.alert_rule.create',
       resourceType: 'network_monitor_alert_rule',
       resourceId: rule.id,
@@ -613,17 +620,10 @@ monitorRoutes.get(
   '/:monitorId/alerts',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const monitorId = c.req.param('monitorId');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const monitorConditions: ReturnType<typeof eq>[] = [eq(networkMonitors.id, monitorId)];
-    if (orgResult.orgId) monitorConditions.push(eq(networkMonitors.orgId, orgResult.orgId));
-
-    const [monitor] = await db.select({ id: networkMonitors.id }).from(networkMonitors)
-      .where(and(...monitorConditions)).limit(1);
-    if (!monitor) return c.json({ error: 'Monitor not found.' }, 404);
+    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const rules = await db.select().from(networkMonitorAlertRules)
       .where(eq(networkMonitorAlertRules.monitorId, monitorId));
@@ -637,21 +637,11 @@ monitorRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   zValidator('json', updateAlertRuleSchema),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const ruleId = c.req.param('id');
     const payload = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const query = orgResult.orgId
-      ? db.select().from(networkMonitorAlertRules)
-          .innerJoin(networkMonitors, eq(networkMonitorAlertRules.monitorId, networkMonitors.id))
-          .where(and(eq(networkMonitorAlertRules.id, ruleId), eq(networkMonitors.orgId, orgResult.orgId)))
-      : db.select().from(networkMonitorAlertRules)
-          .where(eq(networkMonitorAlertRules.id, ruleId));
-
-    const [existing] = await query.limit(1);
-    if (!existing) return c.json({ error: 'Alert rule not found.' }, 404);
+    const accessResult = await requireAlertRuleAccess(auth, ruleId);
+    if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
 
     const [updated] = await db.update(networkMonitorAlertRules)
       .set(payload)
@@ -662,7 +652,7 @@ monitorRoutes.patch(
     }
 
     writeRouteAudit(c, {
-      orgId: orgResult.orgId,
+      orgId: accessResult.monitorOrgId,
       action: 'monitor.alert_rule.update',
       resourceType: 'network_monitor_alert_rule',
       resourceId: updated.id,
@@ -677,20 +667,10 @@ monitorRoutes.delete(
   '/alerts/:id',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const ruleId = c.req.param('id');
-    const orgResult = resolveOrgId(auth);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
-    const query = orgResult.orgId
-      ? db.select({ id: networkMonitorAlertRules.id }).from(networkMonitorAlertRules)
-          .innerJoin(networkMonitors, eq(networkMonitorAlertRules.monitorId, networkMonitors.id))
-          .where(and(eq(networkMonitorAlertRules.id, ruleId), eq(networkMonitors.orgId, orgResult.orgId)))
-      : db.select({ id: networkMonitorAlertRules.id }).from(networkMonitorAlertRules)
-          .where(eq(networkMonitorAlertRules.id, ruleId));
-
-    const [existing] = await query.limit(1);
-    if (!existing) return c.json({ error: 'Alert rule not found.' }, 404);
+    const accessResult = await requireAlertRuleAccess(auth, ruleId);
+    if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
 
     const [removed] = await db.delete(networkMonitorAlertRules)
       .where(eq(networkMonitorAlertRules.id, ruleId)).returning();
@@ -699,7 +679,7 @@ monitorRoutes.delete(
     }
 
     writeRouteAudit(c, {
-      orgId: orgResult.orgId,
+      orgId: accessResult.monitorOrgId,
       action: 'monitor.alert_rule.delete',
       resourceType: 'network_monitor_alert_rule',
       resourceId: removed.id
