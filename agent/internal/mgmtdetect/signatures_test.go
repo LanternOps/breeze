@@ -50,7 +50,7 @@ func TestSignatureChecksHaveFirstActiveCheck(t *testing.T) {
 	for _, sig := range AllSignatures() {
 		first := sig.Checks[0]
 		if !activeTypes[first.Type] {
-			t.Logf("WARNING: signature %s leads with %s instead of active-state check", sig.Name, first.Type)
+			t.Errorf("signature %s leads with %s instead of active-state check", sig.Name, first.Type)
 		}
 	}
 }

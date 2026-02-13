@@ -3,18 +3,18 @@ package mgmtdetect
 import "strings"
 
 // deriveJoinType computes the join type from identity flags.
-func deriveJoinType(id IdentityStatus) string {
+func deriveJoinType(id IdentityStatus) JoinType {
 	switch {
 	case id.AzureAdJoined && id.DomainJoined:
-		return "hybrid_azure_ad"
+		return JoinTypeHybridAzureAD
 	case id.AzureAdJoined:
-		return "azure_ad"
+		return JoinTypeAzureAD
 	case id.DomainJoined:
-		return "on_prem_ad"
+		return JoinTypeOnPremAD
 	case id.WorkplaceJoined:
-		return "workplace"
+		return JoinTypeWorkplace
 	default:
-		return "none"
+		return JoinTypeNone
 	}
 }
 

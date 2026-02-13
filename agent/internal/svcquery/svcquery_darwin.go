@@ -38,7 +38,7 @@ func GetStatus(name string) (ServiceInfo, error) {
 			continue
 		}
 		label := fields[2]
-		if label == name || strings.Contains(label, name) {
+		if label == name || strings.HasSuffix(label, "."+name) {
 			pid := fields[0]
 			info := ServiceInfo{
 				Name:   label,

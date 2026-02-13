@@ -15,7 +15,8 @@ func collectIdentityStatus() IdentityStatus {
 	cmd := exec.CommandContext(ctx, "dsregcmd", "/status")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return IdentityStatus{JoinType: "none", Source: "dsregcmd_error"}
+		log.Warn("dsregcmd failed", "error", err)
+		return IdentityStatus{JoinType: JoinTypeNone, Source: "dsregcmd_error"}
 	}
 	return parseDsregcmdOutput(string(output))
 }

@@ -14,6 +14,7 @@ func collectPolicyDetections() []Detection {
 
 	output, err := exec.CommandContext(ctx, "profiles", "list").CombinedOutput()
 	if err != nil {
+		log.Warn("profiles list command failed", "error", err)
 		return nil
 	}
 	return parseMacProfilesOutput(string(output))

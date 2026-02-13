@@ -1,6 +1,7 @@
 package mgmtdetect
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 	"time"
@@ -16,7 +17,7 @@ func CollectPosture() ManagementPosture {
 
 	posture := ManagementPosture{
 		CollectedAt: start.UTC(),
-		Categories:  make(map[string][]Detection),
+		Categories:  make(map[Category][]Detection),
 	}
 
 	// Take process snapshot once
@@ -50,6 +51,14 @@ func CollectPosture() ManagementPosture {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				mu.Lock()
+				posture.Errors = append(posture.Errors, fmt.Sprintf("identity detection panic: %v", r))
+				mu.Unlock()
+				log.Error("panic in identity detection", "error", r)
+			}
+		}()
 		id := collectIdentityStatus()
 		mu.Lock()
 		posture.Identity = id
@@ -59,6 +68,14 @@ func CollectPosture() ManagementPosture {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				mu.Lock()
+				posture.Errors = append(posture.Errors, fmt.Sprintf("policy detection panic: %v", r))
+				mu.Unlock()
+				log.Error("panic in policy detection", "error", r)
+			}
+		}()
 		policyDetections := collectPolicyDetections()
 		if len(policyDetections) > 0 {
 			mu.Lock()
@@ -107,6 +124,7 @@ func evaluateSignature(d *checkDispatcher, sig Signature) (Detection, bool) {
 	return Detection{}, false
 }
 
+// TODO: extractVersion is a stub - version extraction from command output is not yet implemented.
 func extractVersion(d *checkDispatcher, vc Check) string {
 	return ""
 }

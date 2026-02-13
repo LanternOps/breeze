@@ -320,6 +320,9 @@ func (h *Heartbeat) Start() {
 
 	// Send initial inventory in background
 	go h.sendInventory()
+	h.mu.Lock()
+	h.lastPostureUpdate = time.Now()
+	h.mu.Unlock()
 
 	for {
 		select {
@@ -430,7 +433,6 @@ func (h *Heartbeat) sendInventory() {
 		h.sendPolicyRegistryState,
 		h.sendPolicyConfigState,
 		h.sendSecurityStatus,
-		h.sendManagementPosture,
 	}
 	for _, fn := range fns {
 		h.inventoryWg.Add(1)

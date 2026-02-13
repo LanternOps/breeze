@@ -3,5 +3,5 @@
 package mgmtdetect
 
 func collectIdentityStatus() IdentityStatus {
-	return IdentityStatus{JoinType: "none", Source: "unsupported"}
+	return IdentityStatus{JoinType: JoinTypeNone, Source: "unsupported"}
 }

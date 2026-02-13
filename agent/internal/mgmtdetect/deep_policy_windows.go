@@ -13,8 +13,11 @@ func collectPolicyDetections() []Detection {
 		`SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\History`,
 		registry.READ)
 	if err == nil {
-		subkeys, _ := key.ReadSubKeyNames(-1)
+		subkeys, readErr := key.ReadSubKeyNames(-1)
 		key.Close()
+		if readErr != nil {
+			log.Warn("failed to read Group Policy subkeys", "error", readErr)
+		}
 		if len(subkeys) > 0 {
 			detections = append(detections, Detection{
 				Name:   "Group Policy",

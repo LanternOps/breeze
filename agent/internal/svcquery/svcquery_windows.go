@@ -87,7 +87,7 @@ func ListServices() ([]ServiceInfo, error) {
 	return services, nil
 }
 
-func mapWindowsState(state svc.State) string {
+func mapWindowsState(state svc.State) ServiceStatus {
 	switch state {
 	case svc.Running:
 		return StatusRunning

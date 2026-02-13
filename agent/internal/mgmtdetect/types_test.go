@@ -6,14 +6,14 @@ import (
 
 func TestDetectionStatusActive(t *testing.T) {
 	d := Detection{Name: "Test", Status: StatusActive}
-	if d.Status != "active" {
+	if d.Status != StatusActive {
 		t.Errorf("expected active, got %s", d.Status)
 	}
 }
 
 func TestDetectionStatusInstalled(t *testing.T) {
 	d := Detection{Name: "Test", Status: StatusInstalled}
-	if d.Status != "installed" {
+	if d.Status != StatusInstalled {
 		t.Errorf("expected installed, got %s", d.Status)
 	}
 }
@@ -21,7 +21,7 @@ func TestDetectionStatusInstalled(t *testing.T) {
 func TestCheckTypeConstants(t *testing.T) {
 	checks := []CheckType{
 		CheckFileExists, CheckServiceRunning, CheckProcessRunning,
-		CheckRegistryValue, CheckConfigValue, CheckCommand, CheckLaunchDaemon,
+		CheckRegistryValue, CheckCommand, CheckLaunchDaemon,
 	}
 	seen := make(map[CheckType]bool)
 	for _, c := range checks {
@@ -49,7 +49,7 @@ func TestSignatureMatchesOS(t *testing.T) {
 }
 
 func TestCategoryConstants(t *testing.T) {
-	cats := []string{
+	cats := []Category{
 		CategoryMDM, CategoryRMM, CategoryRemoteAccess,
 		CategoryEndpointSecurity, CategoryPolicyEngine, CategoryBackup,
 		CategoryIdentityMFA, CategorySIEM, CategoryDNSFiltering,

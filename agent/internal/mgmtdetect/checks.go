@@ -2,6 +2,7 @@ package mgmtdetect
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
@@ -42,6 +43,7 @@ func (d *checkDispatcher) evaluate(c Check) bool {
 	case CheckCommand:
 		return d.checkCommand(c.Value, c.Parse)
 	default:
+		log.Warn("unknown check type", "type", c.Type)
 		return false
 	}
 }
@@ -49,6 +51,7 @@ func (d *checkDispatcher) evaluate(c Check) bool {
 func (d *checkDispatcher) checkServiceRunning(name string) bool {
 	running, err := svcquery.IsRunning(name)
 	if err != nil {
+		log.Debug("service check failed", "service", name, "error", err)
 		return false
 	}
 	return running
@@ -64,6 +67,11 @@ func (d *checkDispatcher) checkCommand(command, parse string) bool {
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Warn("command timed out", "command", parts[0])
+		} else if !errors.Is(err, exec.ErrNotFound) {
+			log.Debug("command failed", "command", parts[0], "error", err)
+		}
 		return false
 	}
 	if parse == "" {

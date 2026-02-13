@@ -5,16 +5,16 @@ import (
 )
 
 func TestServiceStatusConstants(t *testing.T) {
-	if StatusRunning != "running" {
+	if StatusRunning != ServiceStatus("running") {
 		t.Errorf("expected running, got %s", StatusRunning)
 	}
-	if StatusStopped != "stopped" {
+	if StatusStopped != ServiceStatus("stopped") {
 		t.Errorf("expected stopped, got %s", StatusStopped)
 	}
-	if StatusDisabled != "disabled" {
+	if StatusDisabled != ServiceStatus("disabled") {
 		t.Errorf("expected disabled, got %s", StatusDisabled)
 	}
-	if StatusUnknown != "unknown" {
+	if StatusUnknown != ServiceStatus("unknown") {
 		t.Errorf("expected unknown, got %s", StatusUnknown)
 	}
 }

@@ -371,19 +371,11 @@ coreRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    // Fetch management posture from device
-    const [deviceData] = await db
-      .select({
-        managementPosture: devices.managementPosture,
-      })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
-
     return c.json({
       deviceId,
       hostname: device.hostname,
-      posture: deviceData?.managementPosture ?? null,
+      posture: device.managementPosture ?? null,
+      collected: device.managementPosture != null,
     });
   }
 );

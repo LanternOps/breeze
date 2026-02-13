@@ -18,12 +18,18 @@ func newProcessSnapshot() (*processSnapshot, error) {
 	}
 
 	names := make(map[string]bool, len(procs))
+	skipped := 0
 	for _, p := range procs {
 		name, err := p.Name()
 		if err != nil || name == "" {
+			skipped++
 			continue
 		}
 		names[strings.ToLower(name)] = true
+	}
+
+	if skipped > 0 {
+		log.Debug("process snapshot skipped processes", "skipped", skipped, "total", len(procs))
 	}
 
 	return &processSnapshot{names: names}, nil
