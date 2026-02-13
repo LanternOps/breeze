@@ -102,7 +102,7 @@ export default function AssetDetailModal({
 
     try {
       const [monitoringRes, networkMonitorsRes] = await Promise.all([
-        fetchWithAuth(`/discovery/assets/${assetId}/monitoring`),
+        fetchWithAuth(`/monitoring/assets/${assetId}`),
         fetchWithAuth(`/monitors?assetId=${encodeURIComponent(assetId)}`)
       ]);
 
@@ -143,7 +143,7 @@ export default function AssetDetailModal({
     setDisabling(true);
     setDisableError(undefined);
     try {
-      const res = await fetchWithAuth(`/discovery/assets/${asset.id}/disable-monitoring`, {
+      const res = await fetchWithAuth(`/monitoring/assets/${asset.id}`, {
         method: 'DELETE'
       });
       if (!res.ok) {
@@ -415,6 +415,12 @@ export default function AssetDetailModal({
                     >
                       {hasConfiguredMonitoring ? 'Add / Update Monitoring' : 'Enable Monitoring'}
                     </button>
+                    <a
+                      href={`/monitoring?assetId=${encodeURIComponent(asset.id)}`}
+                      className="inline-flex items-center h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted"
+                    >
+                      Open Monitoring
+                    </a>
                     {hasActiveMonitoring && (
                       <button
                         type="button"
