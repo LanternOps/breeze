@@ -53,7 +53,8 @@ const integrationsNav = [
 ];
 
 const monitoringNav = [
-  { name: 'Security', href: '/security', icon: ShieldCheck }
+  { name: 'Security', href: '/security', icon: ShieldCheck },
+  { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit }
 ];
 
 const operationsNav = [
