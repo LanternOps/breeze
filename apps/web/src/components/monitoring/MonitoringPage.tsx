@@ -34,7 +34,7 @@ export default function MonitoringPage() {
   const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
   const [initialAssetId, setInitialAssetId] = useState<string | null>(null);
 
-  // Listen for back/forward navigation and query changes.
+  // Sync active tab when the user navigates back/forward.
   useEffect(() => {
     const onPopState = () => setActiveTab(getTabFromURL());
     window.addEventListener('popstate', onPopState);
@@ -47,6 +47,11 @@ export default function MonitoringPage() {
     const assetId = params.get('assetId');
     setInitialAssetId(assetId);
   }, []);
+
+  // Clear initialAssetId after first use so tab switches don't re-apply it.
+  useEffect(() => {
+    if (initialAssetId) setInitialAssetId(null);
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tabLabels: Record<MonitoringTab, string> = {
     assets: 'Assets',

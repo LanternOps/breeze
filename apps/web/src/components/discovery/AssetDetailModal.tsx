@@ -417,7 +417,7 @@ export default function AssetDetailModal({
                     </button>
                     <a
                       href={`/monitoring?assetId=${encodeURIComponent(asset.id)}`}
-                      className="h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted"
+                      className="inline-flex items-center h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted"
                     >
                       Open Monitoring
                     </a>

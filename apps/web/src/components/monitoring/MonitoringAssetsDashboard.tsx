@@ -161,16 +161,22 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   useEffect(() => {
     fetchWithAuth('/snmp/templates')
       .then(async (res) => {
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn(`[MonitoringAssetsDashboard] Failed to load SNMP templates: HTTP ${res.status}`);
+          return;
+        }
         const data = await res.json();
         setTemplates(data.data ?? data.templates ?? data ?? []);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('[MonitoringAssetsDashboard] Error loading SNMP templates:', err);
+      });
   }, []);
 
   useEffect(() => {
     if (!initialAssetId) return;
-    // If deep-linked to an asset, make sure it is visible and open it.
+    // If deep-linked to an asset, switch to "show all" mode (so unconfigured
+    // assets are included) and open its editing panel.
     setShowAll(true);
     setEditingAssetId(initialAssetId);
   }, [initialAssetId]);
@@ -683,7 +689,7 @@ function EditMonitoringModal({
                 </button>
                 <a
                   href={`/monitoring?tab=checks&assetId=${encodeURIComponent(asset.id)}`}
-                  className="h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className="inline-flex items-center h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                 >
                   Open checks
                 </a>
