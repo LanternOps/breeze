@@ -51,7 +51,7 @@ export default function MonitoringPage() {
   // Clear initialAssetId after first use so tab switches don't re-apply it.
   useEffect(() => {
     if (initialAssetId) setInitialAssetId(null);
-  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   const tabLabels: Record<MonitoringTab, string> = {
     assets: 'Assets',

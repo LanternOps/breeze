@@ -89,7 +89,7 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string) {
     if (!auth.canAccessOrg(row.monitorOrgId)) return { error: 'Access denied', status: 403 } as const;
   }
 
-  return row as const;
+  return row;
 }
 
 // --- Zod Schemas ---
