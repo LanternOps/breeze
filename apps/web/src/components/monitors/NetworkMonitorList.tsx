@@ -17,6 +17,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import CreateMonitorForm from './CreateMonitorForm';
 import MonitorDetailModal from './MonitorDetailModal';
 
@@ -82,7 +83,12 @@ function formatInterval(seconds: number) {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
-export default function NetworkMonitorList() {
+type NetworkMonitorListProps = {
+  assetId?: string | null;
+};
+
+export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps) {
+  const { currentOrgId } = useOrgStore();
   const [monitors, setMonitors] = useState<NetworkMonitor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -91,12 +97,19 @@ export default function NetworkMonitorList() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('');
+  const [filterAssetId, setFilterAssetId] = useState<string | null>(assetId ?? null);
+
+  useEffect(() => {
+    setFilterAssetId(assetId ?? null);
+  }, [assetId]);
 
   const fetchMonitors = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
       const params = new URLSearchParams();
+      if (filterAssetId) params.set('assetId', filterAssetId);
+      else if (currentOrgId) params.set('orgId', currentOrgId);
       if (filterType) params.set('monitorType', filterType);
       if (filterStatus) params.set('status', filterStatus);
       const qs = params.toString();
@@ -109,7 +122,7 @@ export default function NetworkMonitorList() {
     } finally {
       setLoading(false);
     }
-  }, [filterType, filterStatus]);
+  }, [filterAssetId, currentOrgId, filterType, filterStatus]);
 
   useEffect(() => {
     fetchMonitors();
@@ -161,6 +174,19 @@ export default function NetworkMonitorList() {
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {filterAssetId && (
+        <div className="flex items-center justify-between rounded-md border bg-muted/20 px-4 py-2 text-sm">
+          <span className="text-muted-foreground">Filtering monitors to the selected asset.</span>
+          <button
+            type="button"
+            onClick={() => setFilterAssetId(null)}
+            className="text-primary underline-offset-2 hover:underline"
+          >
+            Clear
+          </button>
         </div>
       )}
 
@@ -322,6 +348,8 @@ export default function NetworkMonitorList() {
 
       {showCreateForm && (
         <CreateMonitorForm
+          orgId={currentOrgId ?? undefined}
+          assetId={filterAssetId ?? undefined}
           onCreated={() => {
             setShowCreateForm(false);
             fetchMonitors();

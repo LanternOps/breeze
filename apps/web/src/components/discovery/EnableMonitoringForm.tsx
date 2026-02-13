@@ -88,8 +88,8 @@ export default function EnableMonitoringForm({
         payload.templateId = templateId;
       }
 
-      const response = await fetchWithAuth(`/discovery/assets/${assetId}/enable-monitoring`, {
-        method: 'POST',
+      const response = await fetchWithAuth(`/monitoring/assets/${assetId}/snmp`, {
+        method: 'PUT',
         body: JSON.stringify(payload)
       });
 

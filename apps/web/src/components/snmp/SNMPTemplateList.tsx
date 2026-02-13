@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, Pencil, PlusCircle, Trash2, Layers } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 type TemplateRow = {
   id: string;
@@ -70,6 +71,7 @@ export default function SNMPTemplateList({
   onCreateTemplate,
   refreshToken = 0
 }: Props = {}) {
+  const { currentOrgId } = useOrgStore();
   const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -80,9 +82,13 @@ export default function SNMPTemplateList({
       setLoading(true);
       setError(undefined);
 
+      const dashboardUrl = currentOrgId
+        ? `/snmp/dashboard?orgId=${encodeURIComponent(currentOrgId)}`
+        : '/snmp/dashboard';
+
       const [templatesResponse, dashboardResponse] = await Promise.all([
         fetchWithAuth('/snmp/templates'),
-        fetchWithAuth('/snmp/dashboard')
+        fetchWithAuth(dashboardUrl)
       ]);
 
       if (templatesResponse.status === 401 || dashboardResponse.status === 401) {
@@ -117,7 +123,7 @@ export default function SNMPTemplateList({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentOrgId]);
 
   useEffect(() => {
     void fetchTemplates();

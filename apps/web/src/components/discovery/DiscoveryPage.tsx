@@ -5,13 +5,10 @@ import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySc
 import DiscoveryJobList from './DiscoveryJobList';
 import DiscoveredAssetList from './DiscoveredAssetList';
 import NetworkTopologyMap from './NetworkTopologyMap';
-import DiscoveryMonitoringDashboard from './DiscoveryMonitoringDashboard';
-import SNMPTemplateList from '../snmp/SNMPTemplateList';
-import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
-const DISCOVERY_TABS = ['profiles', 'jobs', 'assets', 'topology', 'monitoring', 'templates'] as const;
+const DISCOVERY_TABS = ['profiles', 'jobs', 'assets', 'topology'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
 
 type ApiDiscoverySchedule = {
@@ -219,16 +216,12 @@ export default function DiscoveryPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ApiDiscoveryProfile | null>(null);
   const [jobsProfileFilter, setJobsProfileFilter] = useState<string | null>(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
-  const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
 
   const tabLabels: Record<DiscoveryTab, string> = {
     profiles: 'Profiles',
     jobs: 'Jobs',
     assets: 'Assets',
-    topology: 'Topology',
-    monitoring: 'Monitoring',
-    templates: 'Templates'
+    topology: 'Topology'
   };
   const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
@@ -453,10 +446,6 @@ export default function DiscoveryPage() {
     navigateToTab('assets');
   }, [navigateToTab]);
 
-  const handleNavigateToMonitoring = useCallback(() => {
-    navigateToTab('monitoring');
-  }, [navigateToTab]);
-
   // Clear filters when manually clicking a tab
   const handleTabClick = useCallback((tab: DiscoveryTab) => {
     if (tab === 'jobs') setJobsProfileFilter(null);
@@ -535,27 +524,6 @@ export default function DiscoveryPage() {
       {activeTab === 'assets' && <DiscoveredAssetList />}
 
       {activeTab === 'topology' && <NetworkTopologyMap onNodeClick={handleNavigateToAssets} />}
-
-      {activeTab === 'monitoring' && <DiscoveryMonitoringDashboard onViewAssets={handleNavigateToAssets} />}
-
-      {activeTab === 'templates' && (
-        <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
-          <SNMPTemplateList
-            selectedTemplateId={selectedTemplateId}
-            refreshToken={templateRefreshToken}
-            onSelectTemplate={setSelectedTemplateId}
-            onCreateTemplate={() => setSelectedTemplateId('')}
-          />
-          <SNMPTemplateEditor
-            selectedTemplateId={selectedTemplateId}
-            refreshToken={templateRefreshToken}
-            onTemplateSaved={(templateId) => {
-              setSelectedTemplateId(templateId);
-              setTemplateRefreshToken((value) => value + 1);
-            }}
-          />
-        </div>
-      )}
     </div>
   );
 }

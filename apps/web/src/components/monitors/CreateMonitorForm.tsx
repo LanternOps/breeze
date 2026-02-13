@@ -3,6 +3,7 @@ import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
 type CreateMonitorFormProps = {
+  orgId?: string;
   assetId?: string;
   defaultTarget?: string;
   onCreated: () => void;
@@ -16,7 +17,7 @@ const monitorTypes = [
   { value: 'dns_check', label: 'DNS Check', description: 'Verify DNS records resolve correctly' }
 ] as const;
 
-export default function CreateMonitorForm({ assetId, defaultTarget, onCreated, onCancel }: CreateMonitorFormProps) {
+export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCreated, onCancel }: CreateMonitorFormProps) {
   const [monitorType, setMonitorType] = useState<string>('icmp_ping');
   const [name, setName] = useState('');
   const [target, setTarget] = useState(defaultTarget ?? '');
@@ -98,6 +99,7 @@ export default function CreateMonitorForm({ assetId, defaultTarget, onCreated, o
         timeout
       };
 
+      if (orgId) payload.orgId = orgId;
       if (assetId) payload.assetId = assetId;
 
       const response = await fetchWithAuth('/monitors', {
