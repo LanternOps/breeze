@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 
 // Reusable validators
 const uuid = z.string().uuid();
@@ -216,15 +217,6 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
-  create_automation: z.object({
-    name: z.string().min(1).max(200),
-    description: z.string().max(2000).optional(),
-    trigger: z.record(z.unknown()),
-    conditions: z.record(z.unknown()).optional(),
-    actions: z.array(z.record(z.unknown())).min(1).max(20),
-    enabled: z.boolean().optional(),
-  }),
-
   network_discovery: z.object({
     deviceId: uuid,
     subnet: z.string().max(50).regex(
@@ -233,6 +225,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     ).optional(),
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
+
+  // Fleet orchestration tools
+  ...fleetToolInputSchemas,
 };
 
 /**

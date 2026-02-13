@@ -29,7 +29,16 @@ const BLOCKED_TOOLS = new Set<string>([
 //   manage_services: list is a read downgraded from the tool's base Tier 3
 const TIER2_ACTIONS: Record<string, string[]> = {
   manage_alerts: ['acknowledge', 'resolve'],
-  manage_services: ['list']
+  manage_services: ['list'],
+  // Fleet tools — Tier 2 actions (auto-execute + audit)
+  manage_policies: ['evaluate', 'activate', 'deactivate'],
+  manage_deployments: ['pause', 'resume'],
+  manage_patches: ['approve', 'decline', 'defer', 'bulk_approve'],
+  manage_groups: ['add_devices', 'remove_devices'],
+  manage_maintenance_windows: ['create', 'update'],
+  manage_automations: ['enable', 'disable'],
+  manage_alert_rules: ['create_rule', 'update_rule'],
+  generate_report: ['create', 'update', 'delete', 'generate'],
 };
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
@@ -37,7 +46,15 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   file_operations: ['write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
   security_scan: ['quarantine', 'remove', 'restore'],
-  disk_cleanup: ['execute']
+  disk_cleanup: ['execute'],
+  // Fleet tools — Tier 3 actions (require user approval)
+  manage_policies: ['create', 'update', 'delete', 'remediate'],
+  manage_deployments: ['create', 'start', 'cancel'],
+  manage_patches: ['scan', 'install', 'rollback'],
+  manage_groups: ['create', 'update', 'delete'],
+  manage_maintenance_windows: ['delete'],
+  manage_automations: ['create', 'update', 'delete', 'run'],
+  manage_alert_rules: ['delete_rule'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -69,8 +86,91 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     rename: { resource: 'devices', action: 'execute' },
   },
   query_audit_log: { resource: 'audit', action: 'read' },
-  create_automation: { resource: 'automations', action: 'write' },
   network_discovery: { resource: 'devices', action: 'execute' },
+  // Fleet tools — RBAC mappings
+  manage_policies: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    compliance_status: { resource: 'policies', action: 'read' },
+    compliance_summary: { resource: 'policies', action: 'read' },
+    evaluate: { resource: 'policies', action: 'execute' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    activate: { resource: 'policies', action: 'write' },
+    deactivate: { resource: 'policies', action: 'write' },
+    delete: { resource: 'policies', action: 'write' },
+    remediate: { resource: 'policies', action: 'execute' },
+  },
+  manage_deployments: {
+    list: { resource: 'deployments', action: 'read' },
+    get: { resource: 'deployments', action: 'read' },
+    device_status: { resource: 'deployments', action: 'read' },
+    create: { resource: 'deployments', action: 'write' },
+    start: { resource: 'deployments', action: 'write' },
+    pause: { resource: 'deployments', action: 'write' },
+    resume: { resource: 'deployments', action: 'write' },
+    cancel: { resource: 'deployments', action: 'write' },
+  },
+  manage_patches: {
+    list: { resource: 'patches', action: 'read' },
+    compliance: { resource: 'patches', action: 'read' },
+    scan: { resource: 'patches', action: 'execute' },
+    approve: { resource: 'patches', action: 'approve' },
+    decline: { resource: 'patches', action: 'approve' },
+    defer: { resource: 'patches', action: 'approve' },
+    bulk_approve: { resource: 'patches', action: 'approve' },
+    install: { resource: 'patches', action: 'execute' },
+    rollback: { resource: 'patches', action: 'execute' },
+  },
+  manage_groups: {
+    list: { resource: 'groups', action: 'read' },
+    get: { resource: 'groups', action: 'read' },
+    preview: { resource: 'groups', action: 'read' },
+    membership_log: { resource: 'groups', action: 'read' },
+    create: { resource: 'groups', action: 'write' },
+    update: { resource: 'groups', action: 'write' },
+    delete: { resource: 'groups', action: 'write' },
+    add_devices: { resource: 'groups', action: 'write' },
+    remove_devices: { resource: 'groups', action: 'write' },
+  },
+  manage_maintenance_windows: {
+    list: { resource: 'maintenance', action: 'read' },
+    get: { resource: 'maintenance', action: 'read' },
+    active_now: { resource: 'maintenance', action: 'read' },
+    create: { resource: 'maintenance', action: 'write' },
+    update: { resource: 'maintenance', action: 'write' },
+    delete: { resource: 'maintenance', action: 'write' },
+  },
+  manage_automations: {
+    list: { resource: 'automations', action: 'read' },
+    get: { resource: 'automations', action: 'read' },
+    history: { resource: 'automations', action: 'read' },
+    create: { resource: 'automations', action: 'write' },
+    update: { resource: 'automations', action: 'write' },
+    delete: { resource: 'automations', action: 'write' },
+    enable: { resource: 'automations', action: 'write' },
+    disable: { resource: 'automations', action: 'write' },
+    run: { resource: 'automations', action: 'execute' },
+  },
+  manage_alert_rules: {
+    list_rules: { resource: 'alerts', action: 'read' },
+    get_rule: { resource: 'alerts', action: 'read' },
+    create_rule: { resource: 'alerts', action: 'write' },
+    update_rule: { resource: 'alerts', action: 'write' },
+    delete_rule: { resource: 'alerts', action: 'write' },
+    test_rule: { resource: 'alerts', action: 'read' },
+    list_channels: { resource: 'alerts', action: 'read' },
+    alert_summary: { resource: 'alerts', action: 'read' },
+  },
+  generate_report: {
+    list: { resource: 'reports', action: 'read' },
+    generate: { resource: 'reports', action: 'write' },
+    data: { resource: 'reports', action: 'read' },
+    create: { resource: 'reports', action: 'write' },
+    update: { resource: 'reports', action: 'write' },
+    delete: { resource: 'reports', action: 'write' },
+    history: { resource: 'reports', action: 'read' },
+  },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -79,11 +179,19 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   run_script: { limit: 5, windowSeconds: 300 },
   security_scan: { limit: 3, windowSeconds: 600 },
   network_discovery: { limit: 2, windowSeconds: 600 },
-  create_automation: { limit: 5, windowSeconds: 600 },
   file_operations: { limit: 20, windowSeconds: 300 },
   manage_services: { limit: 10, windowSeconds: 300 },
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
+  // Fleet tools — per-tool rate limits
+  manage_policies: { limit: 20, windowSeconds: 300 },
+  manage_deployments: { limit: 10, windowSeconds: 600 },
+  manage_patches: { limit: 15, windowSeconds: 300 },
+  manage_groups: { limit: 20, windowSeconds: 300 },
+  manage_maintenance_windows: { limit: 15, windowSeconds: 300 },
+  manage_automations: { limit: 10, windowSeconds: 600 },
+  manage_alert_rules: { limit: 15, windowSeconds: 300 },
+  generate_report: { limit: 10, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {
@@ -179,8 +287,11 @@ export async function checkToolPermission(
     required = permDef as { resource: string; action: string };
   } else if (action && (permDef as Record<string, { resource: string; action: string }>)[action]) {
     required = (permDef as Record<string, { resource: string; action: string }>)[action]!;
+  } else if (action) {
+    // Unknown action for a mapped tool — deny (fail-closed)
+    return `Unknown action "${action}" for tool "${toolName}"`;
   } else {
-    return null; // Unknown action variant — allow
+    return null; // No action provided — allow (base tool permission applies)
   }
 
   const userPerms = await getUserPermissions(auth.user.id, {
@@ -256,13 +367,54 @@ function buildApprovalDescription(
       parts.push(`File ${action}: ${input.path}`);
       break;
 
-    case 'create_automation':
-      parts.push(`Create automation "${input.name}"`);
-      break;
-
     case 'network_discovery':
       parts.push(`Network discovery scan`);
       if (input.subnet) parts.push(`on ${input.subnet}`);
+      break;
+
+    // Fleet tools
+    case 'manage_policies':
+      if (action === 'create') parts.push(`Create compliance policy "${input.name}"${input.enforcement ? ` (${input.enforcement} mode)` : ''}`);
+      else if (action === 'delete') parts.push(`Delete compliance policy ${(input.policyId as string)?.slice(0, 8)}...`);
+      else if (action === 'remediate') parts.push(`Trigger remediation on non-compliant devices for policy ${(input.policyId as string)?.slice(0, 8)}...`);
+      else parts.push(`Policy ${action}: ${(input.policyId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_deployments':
+      if (action === 'create') parts.push(`Create deployment "${input.name}" (${input.targetType} target)`);
+      else if (action === 'start') parts.push(`Start deployment ${(input.deploymentId as string)?.slice(0, 8)}...`);
+      else if (action === 'cancel') parts.push(`Cancel deployment ${(input.deploymentId as string)?.slice(0, 8)}...`);
+      else parts.push(`Deployment ${action}: ${(input.deploymentId as string)?.slice(0, 8) ?? ''}...`);
+      break;
+
+    case 'manage_patches':
+      if (action === 'install') parts.push(`Install ${Array.isArray(input.patchIds) ? input.patchIds.length : 0} patch(es) on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
+      else if (action === 'scan') parts.push(`Trigger patch scan on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
+      else if (action === 'rollback') parts.push(`Rollback patch ${(input.patchId as string)?.slice(0, 8)}...`);
+      else parts.push(`Patch ${action}: ${(input.patchId as string)?.slice(0, 8) ?? ''}...`);
+      break;
+
+    case 'manage_groups':
+      if (action === 'create') parts.push(`Create ${input.type ?? 'static'} device group "${input.name}"`);
+      else if (action === 'delete') parts.push(`Delete device group ${(input.groupId as string)?.slice(0, 8)}...`);
+      else parts.push(`Group ${action}: ${(input.groupId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_maintenance_windows':
+      if (action === 'delete') parts.push(`Delete maintenance window ${(input.windowId as string)?.slice(0, 8)}...`);
+      else parts.push(`Maintenance window ${action}: ${(input.windowId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_automations':
+      if (action === 'create') parts.push(`Create automation "${input.name}"`);
+      else if (action === 'delete') parts.push(`Delete automation ${(input.automationId as string)?.slice(0, 8)}...`);
+      else if (action === 'run') parts.push(`Manually trigger automation ${(input.automationId as string)?.slice(0, 8)}...`);
+      else parts.push(`Automation ${action}: ${(input.automationId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_alert_rules':
+      if (action === 'delete_rule') parts.push(`Delete alert rule ${(input.ruleId as string)?.slice(0, 8)}...`);
+      else parts.push(`Alert rule ${action}: ${(input.ruleId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
 
     default:

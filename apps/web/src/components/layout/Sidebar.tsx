@@ -23,7 +23,8 @@ import {
   Plug,
   Network,
   HardDrive,
-  BarChart3
+  BarChart3,
+  BrainCircuit
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -42,6 +43,7 @@ const navigation = [
   { name: 'Alerts', href: '/alerts', icon: Bell },
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
   { name: 'Remote Access', href: '/remote', icon: Terminal }
 ];
 
