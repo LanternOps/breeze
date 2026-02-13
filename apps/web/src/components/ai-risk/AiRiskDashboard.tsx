@@ -36,7 +36,7 @@ export interface ToolExecution {
   completedAt: string | null;
 }
 
-interface SecurityEvent {
+export interface SecurityEvent {
   id: string;
   timestamp: string;
   actorType: string;
@@ -80,20 +80,23 @@ export default function AiRiskDashboard() {
       setError(null);
       const since = getSinceDate(timeRange);
 
-      const [execRes, secRes] = await Promise.all([
+      const [execResult, secResult] = await Promise.allSettled([
         fetchWithAuth(`/ai/admin/tool-executions?since=${since}&limit=200`),
         fetchWithAuth(`/ai/admin/security-events?since=${since}&limit=100`),
       ]);
 
-      if (execRes.ok) {
-        setExecData(await execRes.json());
+      if (execResult.status === 'fulfilled' && execResult.value.ok) {
+        setExecData(await execResult.value.json());
       } else {
         throw new Error('Failed to load tool executions');
       }
 
-      if (secRes.ok) {
-        const secJson = await secRes.json();
+      if (secResult.status === 'fulfilled' && secResult.value.ok) {
+        const secJson = await secResult.value.json();
         setSecurityEvents(secJson.data ?? []);
+      } else {
+        setSecurityEvents([]);
+        setError('Security events could not be loaded. Denial data may be incomplete.');
       }
 
       setLastUpdated(new Date());

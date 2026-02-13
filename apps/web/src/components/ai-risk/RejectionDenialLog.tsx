@@ -1,20 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Search, XCircle, AlertTriangle } from 'lucide-react';
-import { formatRelativeTime } from '../../lib/utils';
-import type { ToolExecution } from './AiRiskDashboard';
-
-interface SecurityEvent {
-  id: string;
-  timestamp: string;
-  actorType: string;
-  actorEmail: string | null;
-  action: string;
-  resourceType: string | null;
-  resourceId: string | null;
-  result: string | null;
-  errorMessage: string | null;
-  details: unknown;
-}
+import { formatRelativeTime, formatToolName } from '../../lib/utils';
+import type { ToolExecution, SecurityEvent } from './AiRiskDashboard';
 
 interface Props {
   executions: ToolExecution[];
@@ -207,8 +194,4 @@ export function RejectionDenialLog({ executions, securityEvents, loading }: Prop
       )}
     </div>
   );
-}
-
-function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }

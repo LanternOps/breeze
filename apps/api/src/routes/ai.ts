@@ -562,6 +562,13 @@ aiRoutes.get(
       : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const until = untilParam ? new Date(untilParam) : new Date();
 
+    if (isNaN(since.getTime())) {
+      return c.json({ error: `Invalid 'since' date: ${sinceParam}` }, 400);
+    }
+    if (isNaN(until.getTime())) {
+      return c.json({ error: `Invalid 'until' date: ${untilParam}` }, 400);
+    }
+
     // Base conditions: org-scoped via session join + date range
     const baseConditions = [
       eq(aiSessions.orgId, orgId),
@@ -574,12 +581,6 @@ aiRoutes.get(
     if (toolNameFilter) {
       baseConditions.push(eq(aiToolExecutions.toolName, toolNameFilter));
     }
-
-    const baseQuery = db
-      .select()
-      .from(aiToolExecutions)
-      .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
-      .where(and(...baseConditions));
 
     // 1. Status counts
     const statusCounts = await db

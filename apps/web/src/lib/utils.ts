@@ -40,6 +40,10 @@ export function friendlyFetchError(err: unknown): string {
   return msg;
 }
 
+export function formatToolName(name: string): string {
+  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export function formatRelativeTime(date: Date): string {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();

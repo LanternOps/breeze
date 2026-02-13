@@ -1,4 +1,5 @@
 import { Clock, ShieldAlert } from 'lucide-react';
+import { formatToolName } from '../../lib/utils';
 import { RATE_LIMIT_CONFIGS } from './tierConfig';
 
 export function RateLimitStatus() {
@@ -55,8 +56,4 @@ export function RateLimitStatus() {
       </div>
     </div>
   );
-}
-
-function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }

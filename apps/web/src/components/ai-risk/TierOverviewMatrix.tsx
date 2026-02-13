@@ -1,3 +1,4 @@
+import { formatToolName } from '../../lib/utils';
 import { TIER_DEFINITIONS } from './tierConfig';
 
 export function TierOverviewMatrix() {
@@ -55,6 +56,3 @@ export function TierOverviewMatrix() {
   );
 }
 
-function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}

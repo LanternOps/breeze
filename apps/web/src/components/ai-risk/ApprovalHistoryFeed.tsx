@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CheckCircle, XCircle, Clock, ChevronDown, ChevronRight } from 'lucide-react';
-import { formatRelativeTime } from '../../lib/utils';
+import { formatRelativeTime, formatToolName } from '../../lib/utils';
 import type { ToolExecution } from './AiRiskDashboard';
 
 interface Props {
@@ -157,10 +157,6 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
       )}
     </div>
   );
-}
-
-function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function formatDuration(ms: number): string {

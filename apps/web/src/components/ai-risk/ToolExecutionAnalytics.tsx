@@ -11,6 +11,7 @@ import {
   Cell,
   Legend,
 } from 'recharts';
+import { formatToolName } from '../../lib/utils';
 import type { ToolExecData } from './AiRiskDashboard';
 
 interface Props {
@@ -199,8 +200,4 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
       )}
     </div>
   );
-}
-
-function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
