@@ -27,6 +27,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -97,6 +98,7 @@ type Heartbeat struct {
 	lastEventLogUpdate  time.Time
 	lastSecurityUpdate  time.Time
 	lastSessionUpdate   time.Time
+	lastPostureUpdate   time.Time
 
 	// User session helper (IPC)
 	sessionBroker *sessionbroker.Broker
@@ -341,6 +343,10 @@ func (h *Heartbeat) Start() {
 			if shouldSendSessions {
 				h.lastSessionUpdate = time.Now()
 			}
+			shouldSendPosture := time.Since(h.lastPostureUpdate) > 15*time.Minute
+			if shouldSendPosture {
+				h.lastPostureUpdate = time.Now()
+			}
 			h.mu.Unlock()
 			if shouldSendInventory {
 				go h.sendInventory()
@@ -355,6 +361,9 @@ func (h *Heartbeat) Start() {
 			}
 			if shouldSendSessions {
 				go h.sendSessionInventory()
+			}
+			if shouldSendPosture {
+				go h.sendManagementPosture()
 			}
 		case <-h.stopChan:
 			return
@@ -421,6 +430,7 @@ func (h *Heartbeat) sendInventory() {
 		h.sendPolicyRegistryState,
 		h.sendPolicyConfigState,
 		h.sendSecurityStatus,
+		h.sendManagementPosture,
 	}
 	for _, fn := range fns {
 		h.inventoryWg.Add(1)
@@ -1085,6 +1095,15 @@ func (h *Heartbeat) sendSecurityStatus() {
 	}
 
 	h.sendInventoryData("security/status", status, "security status")
+}
+
+func (h *Heartbeat) sendManagementPosture() {
+	posture := mgmtdetect.CollectPosture()
+	total := 0
+	for _, dets := range posture.Categories {
+		total += len(dets)
+	}
+	h.sendInventoryData("management/posture", posture, fmt.Sprintf("management posture (%d detections)", total))
 }
 
 func (h *Heartbeat) sendSessionInventory() {
