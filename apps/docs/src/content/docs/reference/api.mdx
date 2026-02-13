@@ -384,7 +384,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 
 ## Monitoring
 
-Monitoring is asset-centric configuration and status. Discovery feeds into Monitoring.
+Unified monitoring configuration and status for discovered assets. Assets discovered via Network Discovery can have SNMP polling and network checks configured through these endpoints.
 
 | Method | Path | Description |
 |---|---|---|
@@ -395,6 +395,10 @@ Monitoring is asset-centric configuration and status. Discovery feeds into Monit
 | `DELETE` | `/monitoring/assets/:id` | Disable monitoring for the asset |
 
 ## SNMP
+
+:::caution
+SNMP device, metric, and threshold endpoints (`/snmp/devices/*`, `/snmp/metrics/*`, `/snmp/thresholds/*`) have been deprecated and return HTTP 410. Use the Monitoring endpoints above for asset-centric SNMP configuration and recent metrics.
+:::
 
 | Method | Path | Description |
 |---|---|---|

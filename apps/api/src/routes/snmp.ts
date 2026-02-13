@@ -170,7 +170,7 @@ snmpRoutes.use('*', authMiddleware);
 
 const snmpDevicesDeprecationResponse = {
   error: 'SNMP device endpoints have been deprecated.',
-  message: 'Manage SNMP monitoring via /monitoring/assets and /monitoring/assets/:id/snmp.'
+  message: 'Manage SNMP monitoring via /monitoring/assets and /monitoring/assets/:id/snmp. On-demand poll and test operations are not yet available in the new API.'
 } as const;
 
 snmpRoutes.get('/devices', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpDevicesDeprecationResponse, 410));
@@ -505,7 +505,7 @@ snmpRoutes.post(
 
 const snmpMetricsDeprecationResponse = {
   error: 'SNMP metric endpoints have been deprecated.',
-  message: 'Use /monitoring/assets/:id for recent metrics.'
+  message: 'The /monitoring/assets/:id endpoint returns the 20 most recent metrics. Full metric history and per-OID queries are not yet available in the new API.'
 } as const;
 
 snmpRoutes.get('/metrics/:deviceId', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpMetricsDeprecationResponse, 410));
@@ -516,7 +516,7 @@ snmpRoutes.get('/metrics/:deviceId/:oid', requireScope('organization', 'partner'
 
 const snmpThresholdDeprecationResponse = {
   error: 'SNMP threshold endpoints have been deprecated.',
-  message: 'Thresholds will be reintroduced under Monitoring. For now, manage SNMP monitoring via /monitoring/assets/:id/snmp.'
+  message: 'Thresholds have been deprecated. Manage SNMP polling via /monitoring/assets/:id/snmp. Use alert rules on network monitors via /monitors/alerts as an alternative.'
 } as const;
 
 snmpRoutes.get('/thresholds/:deviceId', requireScope('organization', 'partner', 'system'), (c) => c.json(snmpThresholdDeprecationResponse, 410));

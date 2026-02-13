@@ -256,6 +256,7 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/mobile',
   '/discovery',
   '/monitors',
+  '/monitoring',
   '/sso',
   '/reports',
   '/filters',

@@ -40,7 +40,9 @@ function resolveOrgId(
 
   if (auth.scope === 'system' && !requestedOrgId) return { error: 'orgId is required for system scope', status: 400 } as const;
   if (requireForNonOrg && !requestedOrgId) return { error: 'orgId is required', status: 400 } as const;
-  return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
+  const resolvedOrgId = requestedOrgId ?? auth.orgId;
+  if (!resolvedOrgId) return { error: 'Could not determine organization context', status: 400 } as const;
+  return { orgId: resolvedOrgId } as const;
 }
 
 async function resolveOrgIdForAsset(auth: AuthContext, assetId: string, requestedOrgId?: string) {
@@ -85,7 +87,8 @@ monitoringRoutes.get(
     // For system scope: still requires an explicit orgId.
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const orgId = orgResult.orgId!;
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
 
     // Pull monitoring config for discovered assets in this org.
     const snmpRows = await db
@@ -238,11 +241,13 @@ monitoringRoutes.get(
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
 
     const [asset] = await db
       .select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
       .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgResult.orgId!)))
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
@@ -347,10 +352,12 @@ monitoringRoutes.put(
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
 
     const [asset] = await db.select()
       .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgResult.orgId!)))
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
@@ -373,14 +380,22 @@ monitoringRoutes.put(
       pollingInterval: body.pollingInterval ?? 300,
       port: body.port ?? 161,
       templateId: body.templateId ?? null,
-      community: body.community ?? null,
-      username: body.username ?? null,
-      authProtocol: body.authProtocol ?? null,
-      authPassword: body.authPassword ?? null,
-      privProtocol: body.privProtocol ?? null,
-      privPassword: body.privPassword ?? null,
       isActive: true
     };
+    // Only overwrite credential fields when explicitly provided to avoid
+    // wiping stored secrets on partial updates.
+    if (body.community !== undefined) setValues.community = body.community ?? null;
+    else if (!existing) setValues.community = null;
+    if (body.username !== undefined) setValues.username = body.username ?? null;
+    else if (!existing) setValues.username = null;
+    if (body.authProtocol !== undefined) setValues.authProtocol = body.authProtocol ?? null;
+    else if (!existing) setValues.authProtocol = null;
+    if (body.authPassword !== undefined) setValues.authPassword = body.authPassword ?? null;
+    else if (!existing) setValues.authPassword = null;
+    if (body.privProtocol !== undefined) setValues.privProtocol = body.privProtocol ?? null;
+    else if (!existing) setValues.privProtocol = null;
+    if (body.privPassword !== undefined) setValues.privPassword = body.privPassword ?? null;
+    else if (!existing) setValues.privPassword = null;
 
     const upserted = await (async () => {
       if (existing) {
@@ -402,14 +417,15 @@ monitoringRoutes.put(
 
     if (!upserted) return c.json({ error: 'Failed to save SNMP monitoring configuration' }, 500);
 
-    // Best effort: if multiple rows exist, make sure only one remains active.
+    // Deactivate any other SNMP device rows for this asset. Failure is
+    // non-fatal since the primary row was already upserted successfully.
     if (existingRows.length > 1) {
       try {
         await db.update(snmpDevices)
           .set({ isActive: false })
           .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), sql`${snmpDevices.id} <> ${upserted.id}`));
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error(`[monitoring] Failed to deactivate duplicate SNMP devices for asset=${assetId}, org=${asset.orgId}, kept=${upserted.id}:`, err);
       }
     }
 
@@ -465,10 +481,12 @@ monitoringRoutes.patch(
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
 
     const [asset] = await db.select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
       .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgResult.orgId!)))
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
@@ -526,10 +544,12 @@ monitoringRoutes.delete(
 
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
 
     const [asset] = await db.select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
       .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgResult.orgId!)))
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
