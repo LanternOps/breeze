@@ -1766,6 +1766,65 @@ agentRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestS
   return c.json({ success: true });
 });
 
+// Submit management posture
+const managementPostureIngestSchema = z.object({
+  collectedAt: z.string(),
+  scanDurationMs: z.number(),
+  categories: z.record(z.string(), z.array(z.object({
+    name: z.string(),
+    version: z.string().optional(),
+    status: z.enum(['active', 'installed', 'unknown']),
+    serviceName: z.string().optional(),
+    details: z.any().optional(),
+  }))),
+  identity: z.object({
+    joinType: z.string(),
+    azureAdJoined: z.boolean(),
+    domainJoined: z.boolean(),
+    workplaceJoined: z.boolean(),
+    domainName: z.string().optional(),
+    tenantId: z.string().optional(),
+    mdmUrl: z.string().optional(),
+    source: z.string(),
+  }),
+  errors: z.array(z.string()).optional(),
+});
+
+agentRoutes.put('/:id/management/posture', zValidator('json', managementPostureIngestSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const payload = c.req.valid('json');
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+
+  const [device] = await db
+    .select({ id: devices.id, orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  await db
+    .update(devices)
+    .set({
+      managementPosture: payload,
+      updatedAt: new Date(),
+    })
+    .where(eq(devices.id, device.id));
+
+  writeAuditEvent(c, {
+    orgId: agent?.orgId ?? device.orgId,
+    actorType: 'agent',
+    actorId: agent?.agentId ?? agentId,
+    action: 'agent.management_posture.submit',
+    resourceType: 'device',
+    resourceId: device.id,
+  });
+
+  return c.json({ success: true });
+});
+
 // Submit command result
 agentRoutes.post(
   '/:id/commands/:commandId/result',
