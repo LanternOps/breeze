@@ -185,7 +185,12 @@ export default function DevicesPage() {
         let errorMessage = 'Failed to generate installation token';
         try {
           const errorData = await response.json();
-          errorMessage = errorData.message || errorData.error || errorMessage;
+          const rawMessage = errorData.message || errorData.error || '';
+          if (response.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
+            errorMessage = 'MFA_REQUIRED';
+          } else {
+            errorMessage = rawMessage || errorMessage;
+          }
         } catch {
           if (response.status === 404) {
             errorMessage = 'Token generation service not available. Please contact support.';
@@ -550,6 +555,17 @@ export default function DevicesPage() {
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span className="text-sm text-muted-foreground">Generating token...</span>
                   </div>
+                ) : tokenError === 'MFA_REQUIRED' ? (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
+                    Multi-factor authentication is required to generate installation tokens.{' '}
+                    <a
+                      href="/settings/profile"
+                      className="font-medium underline hover:no-underline"
+                    >
+                      Set up MFA in your profile settings
+                    </a>{' '}
+                    and sign in again, then retry.
+                  </div>
                 ) : tokenError ? (
                   <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
                     {tokenError}
@@ -568,41 +584,54 @@ export default function DevicesPage() {
                 )}
               </div>
 
-              <div>
-                <h3 className="text-sm font-semibold mb-3">Windows (PowerShell - Run as Administrator)</h3>
-                <div className="rounded-lg border bg-muted/30 p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <code className="text-xs font-mono text-muted-foreground break-all">
-                      {`Invoke-WebRequest -Uri "https://get.breezeRMM.io/install.ps1" -OutFile install.ps1; .\\install.ps1 -Token "${onboardingToken || '<TOKEN>'}"`}
-                    </code>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyCommand(`Invoke-WebRequest -Uri "https://get.breezeRMM.io/install.ps1" -OutFile install.ps1; .\\install.ps1 -Token "${onboardingToken || '<TOKEN>'}"`)}
-                      className="flex-shrink-0 p-1 hover:bg-muted rounded"
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+              {(() => {
+                const apiUrl = (import.meta.env.PUBLIC_API_URL || window.location.origin).replace(/\/$/, '');
+                const ghBase = 'https://github.com/toddhebebrand/breeze/releases/latest/download';
+                const token = onboardingToken || '<TOKEN>';
 
-              <div>
-                <h3 className="text-sm font-semibold mb-3">macOS / Linux (Terminal)</h3>
-                <div className="rounded-lg border bg-muted/30 p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <code className="text-xs font-mono text-muted-foreground break-all">
-                      {`curl -fsSL https://get.breezeRMM.io/install.sh | sudo bash -s -- --token "${onboardingToken || '<TOKEN>'}"`}
-                    </code>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyCommand(`curl -fsSL https://get.breezeRMM.io/install.sh | sudo bash -s -- --token "${onboardingToken || '<TOKEN>'}"`)}
-                      className="flex-shrink-0 p-1 hover:bg-muted rounded"
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"`;
+                const unixCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo ./breeze-agent enroll "${token}" --server "${apiUrl}"`;
+
+                return (
+                  <>
+                    <div>
+                      <h3 className="text-sm font-semibold mb-3">Windows (PowerShell - Run as Administrator)</h3>
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <code className="text-xs font-mono text-muted-foreground break-all">
+                            {winCmd}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCommand(winCmd)}
+                            className="flex-shrink-0 p-1 hover:bg-muted rounded"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-sm font-semibold mb-3">macOS / Linux (Terminal)</h3>
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <code className="text-xs font-mono text-muted-foreground break-all">
+                            {unixCmd}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCommand(unixCmd)}
+                            className="flex-shrink-0 p-1 hover:bg-muted rounded"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="rounded-md border border-blue-500/40 bg-blue-500/10 p-4 text-sm">
                 <p className="font-medium text-blue-700">Note</p>
