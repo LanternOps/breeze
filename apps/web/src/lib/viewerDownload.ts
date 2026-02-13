@@ -1,4 +1,4 @@
-interface ViewerDownloadInfo {
+export interface ViewerDownloadInfo {
   os: string;
   url: string;
   filename: string;
@@ -46,6 +46,6 @@ export function getViewerDownloadInfo(): ViewerDownloadInfo | null {
   return PLATFORMS.find(p => p.os === os) ?? null;
 }
 
-export function getAllViewerDownloads(): ViewerDownloadInfo[] {
+export function getAllViewerDownloads(): readonly ViewerDownloadInfo[] {
   return PLATFORMS;
 }

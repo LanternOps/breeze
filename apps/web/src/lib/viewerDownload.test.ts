@@ -72,4 +72,8 @@ describe('getAllViewerDownloads', () => {
       expect(entry.url).toContain('releases/latest/download/');
     }
   });
+
+  it('has a valid fallback URL', () => {
+    expect(VIEWER_DOWNLOADS_FALLBACK_URL).toMatch(/github\.com\/.*\/releases\/latest$/);
+  });
 });
