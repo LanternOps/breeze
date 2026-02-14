@@ -1433,6 +1433,9 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
     // Generate unique identifiers
     const agentId = generateAgentId();
     const apiKey = generateApiKey();
+    // Agent bearer tokens are high-entropy random values; we store only a SHA-256 hash and never persist
+    // the plaintext token.
+    // lgtm[js/insufficient-password-hash]
     const tokenHash = createHash('sha256').update(apiKey).digest('hex');
 
     // Check for existing device with same hostname + org + site (re-enrollment)

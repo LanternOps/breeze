@@ -27,6 +27,9 @@ declare module 'hono' {
 }
 
 function hashApiKey(key: string): string {
+  // API keys are high-entropy random tokens (not user-chosen passwords). We store only a SHA-256 hash
+  // for one-way lookup and never persist the plaintext key.
+  // lgtm[js/insufficient-password-hash]
   return createHash('sha256').update(key).digest('hex');
 }
 
