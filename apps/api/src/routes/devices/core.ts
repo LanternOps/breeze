@@ -168,6 +168,8 @@ coreRoutes.get(
         enrolledAt: devices.enrolledAt,
         tags: devices.tags,
         customFields: devices.customFields,
+        lastUser: devices.lastUser,
+        uptimeSeconds: devices.uptimeSeconds,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -250,6 +252,8 @@ coreRoutes.get(
         enrolledAt: d.enrolledAt,
         tags: d.tags,
         customFields: d.customFields,
+        lastUser: d.lastUser,
+        uptimeSeconds: d.uptimeSeconds,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,

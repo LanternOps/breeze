@@ -127,8 +127,8 @@ const heartbeatSchema = z.object({
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   pendingReboot: z.boolean().optional(),
-  lastUser: z.string().optional(),
-  uptime: z.number().int().optional()
+  lastUser: z.string().max(255).optional(),
+  uptime: z.number().int().min(0).optional()
 });
 
 const commandResultSchema = z.object({

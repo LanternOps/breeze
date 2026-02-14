@@ -17,6 +17,7 @@ import {
   Shield,
   User
 } from 'lucide-react';
+import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import DeviceActions from './DeviceActions';
 import DeviceInfoTab from './DeviceInfoTab';
@@ -87,16 +88,6 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
   return date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
-}
-
-function formatUptime(seconds?: number): string {
-  if (seconds === undefined || seconds === null || seconds < 0) return '—';
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
 }
 
 export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
