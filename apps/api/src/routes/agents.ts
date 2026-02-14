@@ -1609,6 +1609,8 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
       lastSeenAt: new Date(),
       status: 'online',
       agentVersion: data.agentVersion,
+      lastUser: data.lastUser ?? null,
+      uptimeSeconds: data.uptime ?? null,
       updatedAt: new Date()
     })
     .where(eq(devices.id, device.id));

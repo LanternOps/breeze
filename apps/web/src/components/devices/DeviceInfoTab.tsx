@@ -28,6 +28,8 @@ type DeviceInfo = {
   status?: string | null;
   lastSeenAt?: string | null;
   enrolledAt?: string | null;
+  lastUser?: string | null;
+  uptimeSeconds?: number | null;
   tags?: string[];
   customFields?: Record<string, unknown>;
   hardware?: {
@@ -67,6 +69,16 @@ function formatDate(dateString: string | null | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function formatUptime(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || seconds < 0) return '—';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -336,6 +348,8 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           </div>
           <InfoRow label="Last Seen" value={formatDate(info?.lastSeenAt)} />
           <InfoRow label="Enrolled" value={formatDate(info?.enrolledAt)} />
+          <InfoRow label="Uptime" value={formatUptime(info?.uptimeSeconds)} />
+          <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
         </Section>
 
         {tags.length > 0 && (
