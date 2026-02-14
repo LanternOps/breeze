@@ -1989,8 +1989,15 @@ systemToolsRoutes.get(
       const fileData = Buffer.from(encodedContent, 'base64');
       const filename = basename(typeof payload.path === 'string' ? payload.path : path) || 'download.bin';
 
+      const safeFilename = filename
+        // Disallow header injection via CRLF.
+        .replace(/[\r\n]/g, '')
+        // Escape quoted-string backslashes and quotes.
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"');
+
       c.header('Content-Type', 'application/octet-stream');
-      c.header('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '\\"')}"`);
+      c.header('Content-Disposition', `attachment; filename="${safeFilename}"`);
       c.header('Content-Length', String(fileData.length));
       return c.body(fileData);
     } catch (error) {
