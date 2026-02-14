@@ -3,6 +3,7 @@ package desktop
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -203,6 +204,24 @@ func (v *VideoEncoder) Close() error {
 		return nil
 	}
 	return backend.Close()
+}
+
+// Flush drops all buffered frames from the encoder pipeline and forces the
+// next output to be an IDR keyframe. Used on mouse clicks so the viewer
+// immediately shows the result of the click instead of displaying stale
+// animation frames queued before the click.
+func (v *VideoEncoder) Flush() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return
+	}
+	type flusher interface{ Flush() error }
+	if f, ok := v.backend.(flusher); ok {
+		if err := f.Flush(); err != nil {
+			slog.Warn("Encoder flush failed", "error", err)
+		}
+	}
 }
 
 // ForceKeyframe requests the encoder output an IDR/keyframe as soon as possible.

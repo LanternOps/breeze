@@ -32,6 +32,7 @@ export interface WebRTCSession {
 export async function createWebRTCSession(
   params: AuthenticatedConnectionParams,
   videoEl: HTMLVideoElement,
+  displayIndex?: number,
 ): Promise<WebRTCSession> {
   // Fetch ICE servers (includes TURN credentials if configured)
   let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -57,9 +58,10 @@ export async function createWebRTCSession(
   pc.addTransceiver('video', { direction: 'recvonly' });
 
   // DataChannels for input events and control messages.
-  // Input uses unordered + unreliable delivery to avoid head-of-line blocking
-  // under packet loss — mouse/keyboard events use latest-wins semantics.
-  const inputChannel = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
+  // Input uses ordered + unreliable delivery: ordered ensures mouse_down →
+  // mouse_move → mouse_up arrive in sequence (required for drag operations),
+  // maxRetransmits: 0 keeps latency low by skipping retransmission of lost packets.
+  const inputChannel = pc.createDataChannel('input', { ordered: true, maxRetransmits: 0 });
   const controlChannel = pc.createDataChannel('control', { ordered: true });
 
   let closed = false;
@@ -104,7 +106,7 @@ export async function createWebRTCSession(
       params.accessToken,
       {
         method: 'POST',
-        body: JSON.stringify({ offer: localDesc.sdp }),
+        body: JSON.stringify({ offer: localDesc.sdp, ...(displayIndex != null ? { displayIndex } : {}) }),
       },
     );
 

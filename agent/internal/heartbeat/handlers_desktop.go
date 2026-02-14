@@ -79,7 +79,13 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers)
+	// Parse optional display index (multi-monitor selection)
+	displayIndex := 0
+	if di, ok := cmd.Payload["displayIndex"].(float64); ok && di >= 0 {
+		displayIndex = int(di)
+	}
+
+	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}

@@ -3,6 +3,7 @@ package desktop
 import (
 	"errors"
 	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -66,6 +67,26 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 		targetBitrate: cfg.MaxBitrate,
 		targetQuality: QualityAuto,
 	}, nil
+}
+
+// SetMaxBitrate updates the ceiling the adaptive controller will ramp up to.
+// Called when the viewer adjusts the bitrate slider.
+func (a *AdaptiveBitrate) SetMaxBitrate(max int) {
+	if a == nil || max <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.maxBitrate = max
+	// If current target exceeds the new ceiling, clamp immediately.
+	if a.targetBitrate > max {
+		a.targetBitrate = max
+		if a.encoder != nil {
+			if err := a.encoder.SetBitrate(max); err != nil {
+				slog.Warn("Failed to clamp bitrate", "targetBitrate", max, "error", err)
+			}
+		}
+	}
 }
 
 func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {

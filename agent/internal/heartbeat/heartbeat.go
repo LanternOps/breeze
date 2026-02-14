@@ -171,6 +171,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 	h.accepting.Store(true)
 
+	// Trigger wallpaper crash recovery (restores wallpaper if agent crashed mid-session)
+	_ = desktop.GetWallpaperManager()
+
 	// Initialize audit logger if enabled
 	if cfg.AuditEnabled {
 		auditLogger, err := audit.NewLogger(cfg)

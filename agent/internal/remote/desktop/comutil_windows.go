@@ -23,6 +23,9 @@ type comGUID struct {
 // obj is a pointer to a COM interface (pointer to pointer to vtable).
 // Uses a stack-allocated array for up to 4 args to avoid heap allocations in the hot path.
 func comCall(obj uintptr, vtableIdx int, args ...uintptr) (uintptr, error) {
+	if obj == 0 {
+		return 0, fmt.Errorf("COM vtable[%d] called on nil object", vtableIdx)
+	}
 	vtablePtr := *(*uintptr)(unsafe.Pointer(obj))
 	fnPtr := *(*uintptr)(unsafe.Pointer(vtablePtr + uintptr(vtableIdx)*unsafe.Sizeof(uintptr(0))))
 

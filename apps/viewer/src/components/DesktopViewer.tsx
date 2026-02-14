@@ -45,6 +45,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [pasteProgress, setPasteProgress] = useState<{ current: number; total: number } | null>(null);
   const [remapCmdCtrl, setRemapCmdCtrl] = useState(true);
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
+  const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
+  const [activeMonitor, setActiveMonitor] = useState(0);
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const cursorOverlayRef = useRef<HTMLDivElement>(null);
 
   const setTransportState = useCallback((t: Transport | null) => {
@@ -85,6 +89,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      } catch {
 	        // Some environments may not support these fields.
 	      }
+
+	      // Handle audio tracks from the agent (WASAPI loopback)
+	      const origOnTrack = session.pc.ontrack;
+	      session.pc.ontrack = (event) => {
+	        // Call the original handler from webrtc.ts (wires video)
+	        if (origOnTrack) (origOnTrack as (ev: RTCTrackEvent) => void)(event);
+	        if (event.track.kind === 'audio') {
+	          setHasAudioTrack(true);
+	          // Create a dedicated Audio element for the remote audio track.
+          // The video element's MediaStream (set up in webrtc.ts) only carries
+          // the video track, so audio needs its own playback element.
+	          const audioEl = new Audio();
+	          audioEl.srcObject = new MediaStream([event.track]);
+	          audioEl.muted = true; // start muted (user toggles)
+	          audioEl.play().catch(() => {});
+	          // Store ref for mute toggle
+	          (session as any)._audioEl = audioEl;
+	        }
+	      };
 
 	      // Monitor connection state
 	      session.pc.onconnectionstatechange = () => {
@@ -442,6 +465,60 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     return () => { active = false; };
   }, [transport]);
 
+  // Request a keyframe when the viewer window/tab regains focus so the
+  // picture is immediately sharp (avoids stale/artifact-y decoded frames).
+  useEffect(() => {
+    if (transport !== 'webrtc') return;
+    const onFocus = () => {
+      const ch = webrtcRef.current?.controlChannel;
+      if (ch && ch.readyState === 'open') {
+        ch.send(JSON.stringify({ type: 'request_keyframe' }));
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') onFocus();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [transport]);
+
+  // Request monitor list and listen for control channel responses (WebRTC only)
+  useEffect(() => {
+    if (transport !== 'webrtc') return;
+    const ch = webrtcRef.current?.controlChannel;
+    if (!ch) return;
+
+    const onOpen = () => {
+      ch.send(JSON.stringify({ type: 'list_monitors' }));
+    };
+    const onMessage = (e: MessageEvent) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'monitors' && Array.isArray(msg.monitors)) {
+          setMonitors(msg.monitors);
+        } else if (msg.type === 'monitor_switched') {
+          setActiveMonitor(msg.index ?? 0);
+        }
+      } catch (err) {
+        console.warn('Failed to parse control message:', err);
+      }
+    };
+
+    if (ch.readyState === 'open') {
+      onOpen();
+    }
+    ch.addEventListener('open', onOpen);
+    ch.addEventListener('message', onMessage);
+    return () => {
+      ch.removeEventListener('open', onOpen);
+      ch.removeEventListener('message', onMessage);
+    };
+  }, [transport]);
+
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
   const processJpegFrames = useCallback(async () => {
@@ -610,12 +687,29 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // preventDefault on mousedown suppresses the browser's default focus behavior,
     // so explicitly re-focus the video/canvas to ensure keyboard events are captured.
     (e.currentTarget as HTMLElement).focus();
+    // Flush any pending RAF mouse_move so it doesn't arrive after mouse_down.
+    if (webrtcMouseMoveRafRef.current !== null) {
+      cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+      webrtcMouseMoveRafRef.current = null;
+      webrtcMouseMovePendingRef.current = null;
+    }
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
     const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
     sendInputFn({ type: 'mouse_down', x, y, button });
   }, [scaleCoordsFn, sendInputFn]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    // Flush any pending RAF mouse_move so the final drag position arrives
+    // before mouse_up — ensures the selection endpoint is correct.
+    if (webrtcMouseMoveRafRef.current !== null) {
+      cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+      webrtcMouseMoveRafRef.current = null;
+    }
+    const pending = webrtcMouseMovePendingRef.current;
+    if (pending) {
+      webrtcMouseMovePendingRef.current = null;
+      sendInputFn({ type: 'mouse_move', x: pending.x, y: pending.y });
+    }
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
     const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
     sendInputFn({ type: 'mouse_up', x, y, button });
@@ -735,6 +829,32 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, []);
 
+  const handleSwitchMonitor = useCallback((index: number) => {
+    const ch = webrtcRef.current?.controlChannel;
+    if (ch && ch.readyState === 'open') {
+      ch.send(JSON.stringify({ type: 'switch_monitor', value: index }));
+    }
+  }, []);
+
+  const handleToggleAudio = useCallback(() => {
+    const newEnabled = !audioEnabled;
+    setAudioEnabled(newEnabled);
+    // Mute/unmute the audio element
+    const audioEl = (webrtcRef.current as any)?._audioEl as HTMLAudioElement | undefined;
+    if (audioEl) {
+      audioEl.muted = !newEnabled;
+      if (newEnabled) audioEl.play().catch((err) => {
+        console.warn('Failed to play remote audio:', err.message);
+        setAudioEnabled(false); // reset UI to reflect actual state
+      });
+    }
+    // Tell the agent to start/stop sending audio frames
+    const ch = webrtcRef.current?.controlChannel;
+    if (ch && ch.readyState === 'open') {
+      ch.send(JSON.stringify({ type: 'toggle_audio', value: newEnabled ? 1 : 0 }));
+    }
+  }, [audioEnabled]);
+
   const handleSendKeys = useCallback((key: string, modifiers: string[]) => {
     sendInputFn({ type: 'key_press', key, modifiers });
   }, [sendInputFn]);
@@ -750,6 +870,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     wsCleanupRef.current?.();
     wsCleanupRef.current = null;
+    // Clean up audio element to release MediaStream resources
+    const audioEl = (webrtcRef.current as any)?._audioEl as HTMLAudioElement | undefined;
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.srcObject = null;
+    }
     webrtcRef.current?.close();
     webrtcRef.current = null;
     onDisconnect();
@@ -780,9 +906,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         bitrate={bitrate}
         pasteProgress={pasteProgress}
         remapCmdCtrl={remapCmdCtrl}
+        monitors={monitors}
+        activeMonitor={activeMonitor}
+        audioEnabled={audioEnabled}
+        hasAudioTrack={hasAudioTrack}
         onRemapCmdCtrlChange={setRemapCmdCtrl}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}
+        onSwitchMonitor={handleSwitchMonitor}
+        onToggleAudio={handleToggleAudio}
         onSendKeys={handleSendKeys}
         onPasteAsKeystrokes={handlePasteAsKeystrokes}
         onCancelPaste={handleCancelPaste}
@@ -842,14 +974,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           </div>
         )}
         {status === 'disconnected' && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
-            <div className="text-center">
-              <p className="text-gray-300 mb-4">Connection closed</p>
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm">
+            <div className="text-center bg-gray-900/70 rounded-xl px-8 py-6 shadow-2xl border border-gray-700/50">
+              <p className="text-gray-200 font-medium mb-1">Session Ended</p>
+              <p className="text-gray-400 text-sm mb-4">The remote desktop connection was closed</p>
               <button
                 onClick={onDisconnect}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-white"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-white text-sm"
               >
-                Close
+                Close Viewer
               </button>
             </div>
           </div>

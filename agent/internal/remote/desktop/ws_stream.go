@@ -65,6 +65,9 @@ func newWsStreamSession(id string, capturer ScreenCapturer, inputHandler InputHa
 
 // Start begins the capture loop and metrics logger in goroutines
 func (s *WsStreamSession) Start() {
+	if err := GetWallpaperManager().Suppress(); err != nil {
+		slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err)
+	}
 	go s.captureLoop()
 	go s.metricsLogger()
 }
@@ -265,6 +268,10 @@ func (s *WsStreamSession) Stop() {
 	close(s.done)
 	if s.capturer != nil {
 		s.capturer.Close()
+	}
+
+	if err := GetWallpaperManager().Restore(); err != nil {
+		slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err)
 	}
 
 	// Log final metrics

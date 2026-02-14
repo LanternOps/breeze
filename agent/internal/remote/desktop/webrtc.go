@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/rtcp"
@@ -35,6 +36,10 @@ type Session struct {
 	clipboardSync   *clipboard.ClipboardSync
 	fileDropHandler *filedrop.FileDropHandler
 	cursorDC        *webrtc.DataChannel
+	controlDC       *webrtc.DataChannel
+	audioTrack      *webrtc.TrackLocalStaticSample
+	audioCapturer   AudioCapturer
+	audioEnabled    atomic.Bool
 	done            chan struct{}
 	mu              sync.RWMutex
 	isActive        bool
@@ -49,6 +54,23 @@ type Session struct {
 	cursor   *cursorOverlay
 	metrics  *StreamMetrics
 	adaptive *AdaptiveBitrate
+
+	// clickFlush is set by handleInputMessage on mouse_down. The capture loop
+	// checks and clears it before encoding, flushing the MFT pipeline so that
+	// stale animation frames are dropped and the click result appears immediately.
+	clickFlush atomic.Bool
+
+	// inputActive is set by handleInputMessage on ANY input event (mouse_move,
+	// key_down, etc.). The capture loop checks and clears it to exit idle mode
+	// immediately when the user is interacting, even without screen changes.
+	inputActive atomic.Bool
+
+	// capturerSwapped is set by switch_monitor. The capture loop checks and
+	// clears it to re-read s.capturer and reinitialize GPU pipeline state.
+	capturerSwapped atomic.Bool
+	// oldCapturer holds the previous capturer after a monitor switch so the
+	// capture loop can close it safely after confirming the swap.
+	oldCapturer ScreenCapturer
 
 	frameIdx uint64
 }
@@ -113,7 +135,7 @@ func parseICEServers(raw []ICEServerConfig) []webrtc.ICEServer {
 
 // StartSession creates and starts a new remote desktop session.
 // iceServers is optional; if nil, falls back to Google STUN.
-func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig) (answer string, err error) {
+func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex ...int) (answer string, err error) {
 	// Desktop Duplication and GPU pipelines get unstable with multiple concurrent
 	// sessions in one process. Enforce single active desktop session per agent.
 	var toStop []*Session
@@ -230,8 +252,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	}()
 
-	// Create screen capturer
-	capturer, err := NewScreenCapturer(DefaultConfig())
+	// Create screen capturer (optionally targeting a specific display)
+	capConfig := DefaultConfig()
+	if len(displayIndex) > 0 && displayIndex[0] > 0 {
+		capConfig.DisplayIndex = displayIndex[0]
+	}
+	capturer, err := NewScreenCapturer(capConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}
@@ -350,6 +376,27 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		session.cursorDC = cursorDC
 	}
 
+	// Create PCMU audio track for system audio forwarding (loopback capture).
+	// The viewer can mute/unmute; the track is always present in the SDP.
+	audioTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypePCMU,
+			ClockRate: 8000,
+			Channels:  1,
+		},
+		"audio",
+		"desktop-audio",
+	)
+	if err != nil {
+		slog.Warn("Failed to create audio track", "session", sessionID, "error", err)
+	} else {
+		if _, addErr := peerConn.AddTrack(audioTrack); addErr != nil {
+			slog.Warn("Failed to add audio track", "session", sessionID, "error", addErr)
+		} else {
+			session.audioTrack = audioTrack
+		}
+	}
+
 	// Handle incoming data channels (input + control from viewer)
 	peerConn.OnDataChannel(func(dc *webrtc.DataChannel) {
 		switch dc.Label() {
@@ -361,6 +408,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 				session.handleInputMessage(msg.Data)
 			})
 		case "control":
+			session.mu.Lock()
+			session.controlDC = dc
+			session.mu.Unlock()
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				session.handleControlMessage(msg.Data)
 			})
@@ -478,6 +528,10 @@ func (s *Session) startStreaming() {
 			return
 		}
 
+		if err := GetWallpaperManager().Suppress(); err != nil {
+			slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err)
+		}
+
 		// Best-effort: request an IDR immediately for fast viewer startup.
 		if s.encoder != nil {
 			_ = s.encoder.ForceKeyframe()
@@ -508,6 +562,32 @@ func (s *Session) startStreaming() {
 			}
 		}
 
+		// Initialize audio capture (WASAPI loopback on Windows).
+		// Audio is muted by default — the viewer sends toggle_audio to unmute.
+		if s.audioTrack != nil {
+			ac := NewAudioCapturer()
+			if ac != nil {
+				s.audioCapturer = ac
+				audioTrack := s.audioTrack
+				err := ac.Start(func(frame []byte) {
+					if !s.audioEnabled.Load() {
+						return // muted — skip sending to save bandwidth
+					}
+					_ = audioTrack.WriteSample(media.Sample{
+						Data:     frame,
+						Duration: 20 * time.Millisecond,
+					})
+				})
+				if err != nil {
+					slog.Warn("Failed to start audio capture", "session", s.id, "error", err)
+					ac.Stop() // release partially-initialized COM resources
+					s.audioCapturer = nil
+				} else {
+					slog.Info("Audio capture started (WASAPI loopback)", "session", s.id)
+				}
+			}
+		}
+
 		w, h, _ := s.capturer.GetScreenBounds()
 		slog.Info("Desktop WebRTC session started",
 			"session", s.id,
@@ -519,6 +599,9 @@ func (s *Session) startStreaming() {
 
 func (s *Session) doCleanup() {
 	s.cleanupOnce.Do(func() {
+		if s.audioCapturer != nil {
+			s.audioCapturer.Stop()
+		}
 		if s.clipboardSync != nil {
 			s.clipboardSync.Stop()
 		}
@@ -531,11 +614,18 @@ func (s *Session) doCleanup() {
 		if s.encoder != nil {
 			s.encoder.Close()
 		}
+		if s.oldCapturer != nil {
+			s.oldCapturer.Close()
+		}
 		if s.capturer != nil {
 			s.capturer.Close()
 		}
 		if s.peerConn != nil {
 			s.peerConn.Close()
+		}
+
+		if err := GetWallpaperManager().Restore(); err != nil {
+			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err)
 		}
 	})
 }
@@ -561,12 +651,60 @@ func (s *Session) captureLoopDXGI() {
 	tp, hasTP := s.capturer.(TextureProvider)
 	gpuDisabled := false
 
+	// Dynamic FPS scaling: track consecutive "no new frame" iterations.
+	// After idleThreshold consecutive skips (~3s of static screen), enter idle
+	// mode with longer sleep to save CPU/GPU. Reset on first new frame or input.
+	const idleThreshold = 180   // ~3s at 60fps
+	const idleSleep = 16 * time.Millisecond // one frame at 60fps — responsive wake-up
+	consecutiveSkips := 0
+	wasIdle := false
+
 	for {
 		loopStart := time.Now()
 		select {
 		case <-s.done:
 			return
 		default:
+		}
+
+		// If a mouse click occurred, flush the encoder pipeline to drop stale
+		// buffered frames and force an IDR so the click result appears instantly.
+		if s.clickFlush.CompareAndSwap(true, false) {
+			s.encoder.Flush()
+			consecutiveSkips = 0 // exit idle on click
+		}
+
+		// Any input event (mouse_move, key_down, scroll, etc.) exits idle mode
+		// so the capture loop polls at full speed while the user is interacting.
+		if s.inputActive.CompareAndSwap(true, false) {
+			if consecutiveSkips >= idleThreshold {
+				wasIdle = false
+			}
+			consecutiveSkips = 0
+		}
+
+		// Monitor switch: re-read capturer and reinitialize GPU pipeline state.
+		if s.capturerSwapped.CompareAndSwap(true, false) {
+			// Close the old capturer now that we're safely outside captureAndSendFrameGPU.
+			s.mu.RLock()
+			oldCap := s.oldCapturer
+			newCap := s.capturer
+			s.mu.RUnlock()
+			if oldCap != nil {
+				oldCap.Close()
+				s.mu.Lock()
+				s.oldCapturer = nil
+				s.mu.Unlock()
+			}
+			tp, hasTP = newCap.(TextureProvider)
+			gpuDisabled = false
+			hwChecked = false
+			consecutiveSkips = 0
+			wasIdle = false
+			// Pass new D3D11 device to encoder
+			if hasTP && s.encoder != nil {
+				s.encoder.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
+			}
 		}
 
 		// If the capturer falls back to a non-blocking mode (e.g. DXGI→GDI),
@@ -599,21 +737,40 @@ func (s *Session) captureLoopDXGI() {
 		}
 
 		// Prefer the GPU path when it works; fall back to CPU on any GPU error.
+		frameSent := false
 		if hasTP && !gpuDisabled && s.encoder.SupportsGPUInput() {
-			handled, disable := s.captureAndSendFrameGPU(tp, frameDuration)
+			handled, disable, sent := s.captureAndSendFrameGPU(tp, frameDuration)
 			if disable {
 				gpuDisabled = true
 			}
 			if handled {
-				if elapsed := time.Since(loopStart); elapsed < frameDuration {
-					time.Sleep(frameDuration - elapsed)
+				frameSent = sent
+				sleepDur := frameDuration
+				if !frameSent {
+					consecutiveSkips++
+					if consecutiveSkips >= idleThreshold {
+						sleepDur = idleSleep // idle mode: poll less often
+					}
+				} else {
+					// Scene change keyframe: if screen was static for a while and
+					// we just got a new frame, force IDR for fast decoder recovery.
+					if wasIdle || consecutiveSkips >= 30 {
+						_ = s.encoder.ForceKeyframe()
+					}
+					consecutiveSkips = 0
+				}
+				wasIdle = consecutiveSkips >= idleThreshold
+				if elapsed := time.Since(loopStart); elapsed < sleepDur {
+					time.Sleep(sleepDur - elapsed)
 				}
 				continue
 			}
 		}
 		s.captureAndSendFrame(frameDuration)
-		if elapsed := time.Since(loopStart); elapsed < frameDuration {
-			time.Sleep(frameDuration - elapsed)
+		// CPU path: approximate skip tracking via metrics
+		sleepDur := frameDuration
+		if elapsed := time.Since(loopStart); elapsed < sleepDur {
+			time.Sleep(sleepDur - elapsed)
 		}
 	}
 }
@@ -779,12 +936,13 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 // captureAndSendFrameGPU captures a GPU texture and encodes via the zero-copy pipeline.
 // Returns handled=true if the GPU path handled this iteration (captured, encoded, or skipped),
-// and disableGPU=true if the caller should stop trying the GPU path for this session.
-func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.Duration) (handled bool, disableGPU bool) {
+// disableGPU=true if the caller should stop trying the GPU path for this session,
+// and sent=true if a frame was actually encoded and sent to the viewer.
+func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.Duration) (handled bool, disableGPU bool, sent bool) {
 	s.mu.RLock()
 	if !s.isActive {
 		s.mu.RUnlock()
-		return true, false
+		return true, false, false
 	}
 	s.mu.RUnlock()
 
@@ -792,11 +950,11 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	texture, err := tp.CaptureTexture()
 	if err != nil {
 		slog.Warn("GPU capture error", "session", s.id, "error", err)
-		return false, true
+		return false, true, false
 	}
 	if texture == 0 {
 		s.metrics.RecordSkip()
-		return true, false
+		return true, false, false
 	}
 	defer tp.ReleaseTexture()
 	s.metrics.RecordCapture(time.Since(t0))
@@ -807,10 +965,10 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 
 	if err != nil {
 		slog.Warn("GPU encode error", "session", s.id, "error", err)
-		return true, true
+		return true, true, false
 	}
 	if h264Data == nil {
-		return true, false
+		return true, false, false
 	}
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
@@ -822,11 +980,11 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	if err := s.videoTrack.WriteSample(sample); err != nil {
 		slog.Warn("Failed to write H264 sample", "session", s.id, "error", err)
 		s.metrics.RecordDrop()
-		return true, false
+		return true, false, false
 	}
 
 	s.metrics.RecordSend(len(h264Data))
-	return true, false
+	return true, false, true
 }
 
 // metricsLogger periodically logs streaming metrics
@@ -864,6 +1022,18 @@ func (s *Session) handleInputMessage(data []byte) {
 		return
 	}
 
+	// Signal the capture loop that the user is active so it exits idle mode
+	// and polls at full speed. This covers mouse_move, key_down, scroll, etc.
+	s.inputActive.Store(true)
+
+	// On mouse down/up, signal the capture loop to flush the encoder pipeline.
+	// Down: drops stale frames so the click result appears immediately.
+	// Up: after dragging a window, drops buffered animation frames so the
+	// final resting position renders instantly instead of replaying the drag.
+	if event.Type == "mouse_down" || event.Type == "mouse_up" {
+		s.clickFlush.Store(true)
+	}
+
 	if err := s.inputHandler.HandleEvent(event); err != nil {
 		slog.Warn("Failed to handle input event", "session", s.id, "error", err)
 	}
@@ -876,15 +1046,22 @@ func (s *Session) handleControlMessage(data []byte) {
 		Value int    `json:"value"`
 	}
 	if err := json.Unmarshal(data, &msg); err != nil {
+		slog.Warn("Failed to parse control message", "session", s.id, "error", err)
 		return
 	}
 
-	const maxBitrate = 20_000_000 // 20 Mbps cap
+	const maxBitrateCap = 20_000_000 // 20 Mbps hard cap
 	switch msg.Type {
 	case "set_bitrate":
-		if msg.Value > 0 && msg.Value <= maxBitrate {
-			if err := s.encoder.SetBitrate(msg.Value); err != nil {
-				slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err)
+		if msg.Value > 0 && msg.Value <= maxBitrateCap {
+			// Update the adaptive controller's ceiling so it ramps up to
+			// the user-chosen max rather than bypassing adaptive entirely.
+			if s.adaptive != nil {
+				s.adaptive.SetMaxBitrate(msg.Value)
+			} else {
+				if err := s.encoder.SetBitrate(msg.Value); err != nil {
+					slog.Warn("Failed to set bitrate", "session", s.id, "bitrate", msg.Value, "error", err)
+				}
 			}
 		}
 	case "set_fps":
@@ -895,6 +1072,73 @@ func (s *Session) handleControlMessage(data []byte) {
 			if err := s.encoder.SetFPS(msg.Value); err != nil {
 				slog.Warn("Failed to set fps", "session", s.id, "fps", msg.Value, "error", err)
 			}
+		}
+	case "request_keyframe":
+		// Viewer window regained focus — force IDR so picture is immediately sharp.
+		if s.encoder != nil {
+			_ = s.encoder.ForceKeyframe()
+		}
+	case "list_monitors":
+		monitors, err := ListMonitors()
+		if err != nil {
+			slog.Warn("Failed to list monitors", "session", s.id, "error", err)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"type":     "monitors",
+			"monitors": monitors,
+		})
+		s.mu.RLock()
+		dc := s.controlDC
+		s.mu.RUnlock()
+		if dc != nil {
+			dc.SendText(string(resp))
+		}
+	case "toggle_audio":
+		enabled := msg.Value != 0
+		s.audioEnabled.Store(enabled)
+		slog.Info("Audio toggled", "session", s.id, "enabled", enabled)
+	case "switch_monitor":
+		if msg.Value < 0 {
+			return
+		}
+		slog.Info("Switching monitor", "session", s.id, "display", msg.Value)
+		cfg := DefaultConfig()
+		cfg.DisplayIndex = msg.Value
+		newCap, capErr := NewScreenCapturer(cfg)
+		if capErr != nil {
+			slog.Warn("Failed to create capturer for monitor", "display", msg.Value, "error", capErr)
+			return
+		}
+		// Swap capturer and signal the capture loop to reinitialize.
+		// The old capturer is NOT closed here — the capture loop closes it
+		// after detecting the swap, avoiding a race where Close() is called
+		// while captureAndSendFrameGPU is mid-frame on the old capturer.
+		s.mu.Lock()
+		s.oldCapturer = s.capturer
+		s.capturer = newCap
+		s.mu.Unlock()
+		s.capturerSwapped.Store(true)
+		// Reinit encoder dimensions for the new monitor
+		w, h, boundsErr := newCap.GetScreenBounds()
+		if boundsErr != nil {
+			slog.Warn("Failed to get bounds for new monitor", "display", msg.Value, "error", boundsErr)
+		} else if s.encoder != nil {
+			_ = s.encoder.SetDimensions(w, h)
+			_ = s.encoder.ForceKeyframe()
+		}
+		// Notify viewer of new resolution
+		resp, _ := json.Marshal(map[string]any{
+			"type":   "monitor_switched",
+			"index":  msg.Value,
+			"width":  w,
+			"height": h,
+		})
+		s.mu.RLock()
+		dc := s.controlDC
+		s.mu.RUnlock()
+		if dc != nil {
+			dc.SendText(string(resp))
 		}
 	}
 }

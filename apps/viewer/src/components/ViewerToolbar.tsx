@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX } from 'lucide-react';
+
+interface MonitorInfo {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  isPrimary: boolean;
+}
 
 interface Props {
   status: 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -14,9 +22,15 @@ interface Props {
   bitrate: number;
   pasteProgress: { current: number; total: number } | null;
   remapCmdCtrl: boolean;
+  monitors: MonitorInfo[];
+  activeMonitor: number;
+  audioEnabled: boolean;
+  hasAudioTrack: boolean;
   onRemapCmdCtrlChange: (v: boolean) => void;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
   onBitrateChange: (bitrate: number) => void;
+  onSwitchMonitor: (index: number) => void;
+  onToggleAudio: () => void;
   onSendKeys: (key: string, modifiers: string[]) => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
@@ -62,9 +76,15 @@ export default function ViewerToolbar({
   bitrate,
   pasteProgress,
   remapCmdCtrl,
+  monitors,
+  activeMonitor,
+  audioEnabled,
+  hasAudioTrack,
   onRemapCmdCtrlChange,
   onConfigChange,
   onBitrateChange,
+  onSwitchMonitor,
+  onToggleAudio,
   onSendKeys,
   onPasteAsKeystrokes,
   onCancelPaste,
@@ -81,6 +101,8 @@ export default function ViewerToolbar({
   const ChevronDownIcon = ChevronDown as unknown as ComponentType<{ className?: string }>;
   const XIcon = X as unknown as ComponentType<{ className?: string }>;
   const SwapIcon = ArrowLeftRight as unknown as ComponentType<{ className?: string }>;
+  const VolumeOnIcon = Volume2 as unknown as ComponentType<{ className?: string }>;
+  const VolumeOffIcon = VolumeX as unknown as ComponentType<{ className?: string }>;
 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
@@ -176,11 +198,11 @@ export default function ViewerToolbar({
       {/* WebRTC mode: Bitrate control */}
       {transport === 'webrtc' && (
         <div className="flex items-center gap-1.5">
-          <label className="text-gray-400 text-xs">Bitrate</label>
+          <label className="text-gray-400 text-xs">Max Bitrate</label>
           <input
             type="range"
             min="500"
-            max="8000"
+            max="15000"
             step="250"
             value={bitrate}
             onChange={(e) => onBitrateChange(parseInt(e.target.value))}
@@ -238,6 +260,27 @@ export default function ViewerToolbar({
         </>
       )}
 
+      {/* Monitor picker (only shown with 2+ monitors on WebRTC) */}
+      {monitors.length > 1 && transport === 'webrtc' && (
+        <>
+          <div className="w-px h-5 bg-gray-600" />
+          <div className="flex items-center gap-1.5">
+            <MonitorIcon className="w-3.5 h-3.5 text-gray-400" />
+            <select
+              value={activeMonitor}
+              onChange={(e) => onSwitchMonitor(parseInt(e.target.value))}
+              className="bg-gray-700 text-gray-300 text-xs rounded px-1 py-0.5 border border-gray-600"
+            >
+              {monitors.map((m) => (
+                <option key={m.index} value={m.index}>
+                  {m.name || `Display ${m.index + 1}`}{m.isPrimary ? ' (Primary)' : ''}{m.width ? ` ${m.width}x${m.height}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        </>
+      )}
+
       <div className="flex-1" />
 
       {/* Paste progress indicator */}
@@ -252,6 +295,22 @@ export default function ViewerToolbar({
             <XIcon className="w-3 h-3" />
           </button>
         </div>
+      )}
+
+      {/* Audio toggle (only shown when agent has audio track) */}
+      {hasAudioTrack && (
+        <button
+          onClick={onToggleAudio}
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
+            audioEnabled
+              ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
+          }`}
+          title={audioEnabled ? 'Mute remote audio' : 'Unmute remote audio'}
+        >
+          {audioEnabled ? <VolumeOnIcon className="w-3.5 h-3.5" /> : <VolumeOffIcon className="w-3.5 h-3.5" />}
+          <span>Audio</span>
+        </button>
       )}
 
       {/* Paste as Keystrokes */}

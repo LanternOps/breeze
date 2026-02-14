@@ -1001,6 +1001,33 @@ func (m *mftEncoder) ForceKeyframe() error {
 	return m.forceKeyframeLocked()
 }
 
+// Flush drops all buffered frames from the MFT encoder pipeline and forces the
+// next output to be an IDR keyframe. Used on mouse clicks so the viewer
+// immediately shows the result of the click instead of displaying stale
+// animation frames queued before the click.
+func (m *mftEncoder) Flush() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.inited || m.transform == 0 {
+		return nil
+	}
+
+	// 1. Flush all buffered input/output from the MFT pipeline.
+	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
+
+	// 2. Restart the streaming session so the MFT accepts new input.
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+
+	// 3. Force the next output to be an IDR keyframe so the viewer can
+	//    decode immediately without waiting for a reference frame.
+	m.forceKeyframePending = true
+	_ = m.forceKeyframeLocked()
+
+	return nil
+}
+
 func (m *mftEncoder) forceKeyframeLocked() error {
 	if m.codecAPI == 0 {
 		m.forceKeyframePending = false
