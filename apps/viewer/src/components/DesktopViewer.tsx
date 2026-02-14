@@ -43,6 +43,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pasteProgress, setPasteProgress] = useState<{ current: number; total: number } | null>(null);
+  const [remapCmdCtrl, setRemapCmdCtrl] = useState(true);
+  const [cursorStreamActive, setCursorStreamActive] = useState(false);
+  const cursorOverlayRef = useRef<HTMLDivElement>(null);
 
   const setTransportState = useCallback((t: Transport | null) => {
     transportRef.current = t;
@@ -100,6 +103,57 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	          setConnectedAt(null);
 	        }
 	      };
+
+      // Listen for agent-created data channels (cursor, clipboard, filedrop)
+      session.pc.ondatachannel = (event) => {
+        if (event.channel.label === 'cursor') {
+          event.channel.onopen = () => setCursorStreamActive(true);
+          event.channel.onclose = () => setCursorStreamActive(false);
+          event.channel.onmessage = (msg) => {
+            const overlay = cursorOverlayRef.current;
+            const videoEl = videoRef.current;
+            if (!overlay || !videoEl) return;
+
+            try {
+              const { x, y, v } = JSON.parse(msg.data);
+              if (!v) {
+                overlay.style.display = 'none';
+                return;
+              }
+
+              const videoW = videoEl.videoWidth;
+              const videoH = videoEl.videoHeight;
+              if (!videoW || !videoH) return;
+
+              const rect = videoEl.getBoundingClientRect();
+              const containerRect = overlay.parentElement?.getBoundingClientRect();
+              if (!containerRect) return;
+
+              // Same letterboxing math as scaleVideoCoords (remote→local)
+              const videoAspect = videoW / videoH;
+              const rectAspect = rect.width / rect.height;
+              let displayW: number, displayH: number, offsetX: number, offsetY: number;
+              if (rectAspect > videoAspect) {
+                displayH = rect.height;
+                displayW = rect.height * videoAspect;
+                offsetX = (rect.width - displayW) / 2;
+                offsetY = 0;
+              } else {
+                displayW = rect.width;
+                displayH = rect.width / videoAspect;
+                offsetX = 0;
+                offsetY = (rect.height - displayH) / 2;
+              }
+
+              const localX = (x / videoW) * displayW + offsetX + (rect.left - containerRect.left);
+              const localY = (y / videoH) * displayH + offsetY + (rect.top - containerRect.top);
+
+              overlay.style.display = 'block';
+              overlay.style.transform = `translate(${localX}px, ${localY}px)`;
+            } catch { /* ignore malformed cursor messages */ }
+          };
+        }
+      };
 
       setTransportState('webrtc');
       setHostname('Remote Desktop');
@@ -255,6 +309,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     webrtcFallbackAttemptedRef.current = false;
     authRef.current = null;
     wheelAccRef.current = DEFAULT_WHEEL_ACCUMULATOR;
+    setCursorStreamActive(false);
 
     // Ensure any previous transport is fully torn down before reconnect.
     releaseAllKeys();
@@ -619,7 +674,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const key = mapKey(ne);
     if (!key) return;
 
-    const modifiers = getModifiers(ne);
+    let modifiers = getModifiers(ne);
+    // Swap ctrl↔meta so Mac Cmd+C → Ctrl+C on Windows and vice versa
+    if (remapCmdCtrl && modifiers.length > 0) {
+      modifiers = modifiers.map(m =>
+        m === 'ctrl' ? 'meta' : m === 'meta' ? 'ctrl' : m
+      );
+    }
+
     // If any modifier is held, fall back to the agent's key_press (which applies modifiers).
     // Otherwise, use key_down/key_up for proper "held key" semantics.
     if (modifiers.length > 0) {
@@ -631,7 +693,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.add(key);
     sendInputFn({ type: 'key_down', key });
-  }, [sendInputFn, handlePasteAsKeystrokes]);
+  }, [sendInputFn, handlePasteAsKeystrokes, remapCmdCtrl]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -717,6 +779,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         maxFps={maxFps}
         bitrate={bitrate}
         pasteProgress={pasteProgress}
+        remapCmdCtrl={remapCmdCtrl}
+        onRemapCmdCtrlChange={setRemapCmdCtrl}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}
         onSendKeys={handleSendKeys}
@@ -724,7 +788,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onCancelPaste={handleCancelPaste}
         onDisconnect={handleDisconnect}
       />
-      <div className="flex-1 overflow-hidden flex items-center justify-center bg-black">
+      <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
         {/* WebRTC: <video> element (hardware H264 decode) */}
         <video
           ref={videoRef}
@@ -732,9 +796,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           autoPlay
           playsInline
           muted
-          className={`max-w-full max-h-full object-contain outline-none cursor-default ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          className={`max-w-full max-h-full object-contain outline-none ${cursorStreamActive ? 'cursor-none' : 'cursor-default'} ${transport !== 'webrtc' ? 'hidden' : ''}`}
           {...interactionProps}
         />
+
+        {/* Remote cursor overlay — streamed at 120Hz independent of video frame rate */}
+        <div
+          ref={cursorOverlayRef}
+          className="absolute top-0 left-0 pointer-events-none z-50"
+          style={{ display: 'none', willChange: 'transform' }}
+        >
+          <svg width="12" height="16" viewBox="0 0 16 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M0 0V19L5.5 14L9 22L12 20.5L8.5 13H15L0 0Z" fill="white" stroke="black" strokeWidth="1.5"/>
+          </svg>
+        </div>
 
         {/* WebSocket: <canvas> element (JPEG software decode) */}
         <canvas

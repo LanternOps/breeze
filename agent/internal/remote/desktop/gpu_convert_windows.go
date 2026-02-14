@@ -178,8 +178,32 @@ func newGPUConverter(device, context uintptr, bgraTexture uintptr, width, height
 	}
 	g.outputView = outputView
 
+	// 8. Set BT.709 full-range color space on both input and output.
+	// Without explicit color space, the video processor may default to BT.601
+	// which causes washed-out colors for HD content.
+	// D3D11_VIDEO_PROCESSOR_COLOR_SPACE bitfield:
+	//   bit 0: Usage=0 (playback)
+	//   bit 1: RGB_Range=0 (full 0-255)
+	//   bit 2: YCbCr_Matrix=1 (BT.709)
+	//   bit 3: YCbCr_xvYCC=0
+	//   bits 4-5: Nominal_Range=1 (0-255)
+	bt709FullRange := uint32(0x14) // (1<<2) | (1<<4)
+	syscall.SyscallN(
+		comVtblFn(g.videoContext, vtblVidCtxVideoProcessorSetOutputColorSpace),
+		g.videoContext,
+		g.processor,
+		uintptr(unsafe.Pointer(&bt709FullRange)),
+	)
+	syscall.SyscallN(
+		comVtblFn(g.videoContext, vtblVidCtxVideoProcessorSetStreamColorSpace),
+		g.videoContext,
+		g.processor,
+		0, // stream index
+		uintptr(unsafe.Pointer(&bt709FullRange)),
+	)
+
 	g.inited = true
-	slog.Info("GPU color converter initialized", "width", width, "height", height)
+	slog.Info("GPU color converter initialized", "width", width, "height", height, "colorSpace", "BT.709")
 	return g, nil
 }
 

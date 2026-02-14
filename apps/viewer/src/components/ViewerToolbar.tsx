@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight } from 'lucide-react';
 
 interface Props {
   status: 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -13,6 +13,8 @@ interface Props {
   maxFps: number;
   bitrate: number;
   pasteProgress: { current: number; total: number } | null;
+  remapCmdCtrl: boolean;
+  onRemapCmdCtrlChange: (v: boolean) => void;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
   onBitrateChange: (bitrate: number) => void;
   onSendKeys: (key: string, modifiers: string[]) => void;
@@ -59,6 +61,8 @@ export default function ViewerToolbar({
   maxFps,
   bitrate,
   pasteProgress,
+  remapCmdCtrl,
+  onRemapCmdCtrlChange,
   onConfigChange,
   onBitrateChange,
   onSendKeys,
@@ -76,6 +80,7 @@ export default function ViewerToolbar({
   const PasteIcon = ClipboardPaste as unknown as ComponentType<{ className?: string }>;
   const ChevronDownIcon = ChevronDown as unknown as ComponentType<{ className?: string }>;
   const XIcon = X as unknown as ComponentType<{ className?: string }>;
+  const SwapIcon = ArrowLeftRight as unknown as ComponentType<{ className?: string }>;
 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
@@ -258,6 +263,20 @@ export default function ViewerToolbar({
       >
         <PasteIcon className="w-3.5 h-3.5" />
         <span>Paste Text</span>
+      </button>
+
+      {/* Cmd↔Ctrl remap toggle */}
+      <button
+        onClick={() => onRemapCmdCtrlChange(!remapCmdCtrl)}
+        className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
+          remapCmdCtrl
+            ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
+            : 'text-gray-400 hover:text-white hover:bg-gray-700'
+        }`}
+        title={remapCmdCtrl ? 'Cmd↔Ctrl remap ON (click to disable)' : 'Cmd↔Ctrl remap OFF (click to enable)'}
+      >
+        <SwapIcon className="w-3.5 h-3.5" />
+        <span>Cmd↔Ctrl</span>
       </button>
 
       {/* Send Keys dropdown */}

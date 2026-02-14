@@ -86,6 +86,13 @@ type TextureProvider interface {
 	GetD3D11Context() uintptr
 }
 
+// CursorProvider is implemented by capturers that can report the system cursor
+// position for real-time cursor streaming to the viewer. This enables the viewer
+// to render the cursor as a local overlay independent of the video frame rate.
+type CursorProvider interface {
+	CursorPosition() (x, y int32, visible bool)
+}
+
 // ErrNotSupported is returned when screen capture is not supported on the platform
 var ErrNotSupported = fmt.Errorf("screen capture not supported on this platform")
 

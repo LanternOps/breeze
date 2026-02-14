@@ -196,6 +196,27 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	)
 	if qiErr == nil && codecAPI != 0 {
 		m.codecAPI = codecAPI
+
+		// Set GOP size (keyframe interval) = 5 seconds at configured FPS.
+		// Longer GOPs save bandwidth for mostly-static screen sharing content.
+		// WebRTC PLI/FIR handles on-demand keyframe recovery.
+		cfgFPS := m.cfg.FPS
+		if cfgFPS <= 0 {
+			cfgFPS = 30
+		}
+		gopSize := uint32(cfgFPS * 5)
+		if gopSize < 60 {
+			gopSize = 60
+		}
+		gv := comVariant{vt: vtUI4, val: uint64(gopSize)}
+		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+			uintptr(unsafe.Pointer(&codecAPIAVEncMPVGOPSize)),
+			uintptr(unsafe.Pointer(&gv)),
+		); err != nil {
+			slog.Debug("ICodecAPI SetValue(GOPSize) failed (non-fatal)", "gopSize", gopSize, "error", err)
+		} else {
+			slog.Debug("GOP size set via ICodecAPI", "gopSize", gopSize)
+		}
 	} else {
 		slog.Debug("ICodecAPI not available on this MFT (dynamic bitrate disabled)", "error", qiErr)
 	}
@@ -441,13 +462,15 @@ func (m *mftEncoder) setOutputType(transform uintptr, width, height int) error {
 		return err
 	}
 
-	// H264 profile = Baseline (no B-frames, minimizes encoding latency)
+	// H264 profile = Main (CABAC entropy coding = 10-15% better compression than
+	// Baseline's CAVLC, critical for text clarity in screen sharing).
+	// No B-frames needed — Main profile without B-frames still enables CABAC.
 	if _, err := comCall(mediaType, vtblSetUINT32,
 		uintptr(unsafe.Pointer(&mfMTMpeg2Profile)),
-		uintptr(eAVEncH264VProfileBaseline),
+		uintptr(eAVEncH264VProfileMain),
 	); err != nil {
 		// Non-fatal: encoder will use default profile
-		slog.Debug("Failed to set Baseline profile", "error", err)
+		slog.Debug("Failed to set Main profile", "error", err)
 	}
 
 	// Pixel aspect ratio = 1:1

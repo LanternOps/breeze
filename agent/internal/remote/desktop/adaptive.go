@@ -105,7 +105,7 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		newBitrate = clampInt(newBitrate, a.minBitrate, a.maxBitrate)
 		newQuality = stepQuality(newQuality, -1, a.minQuality, a.maxQuality)
 	} else if upgrade {
-		newBitrate = int(float64(newBitrate) * 1.10)
+		newBitrate = int(float64(newBitrate) * 1.20)
 		newBitrate = clampInt(newBitrate, a.minBitrate, a.maxBitrate)
 		newQuality = stepQuality(newQuality, 1, a.minQuality, a.maxQuality)
 	}

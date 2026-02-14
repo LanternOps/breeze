@@ -139,7 +139,8 @@ func (h *WindowsInputHandler) SendMouseScroll(x, y int, delta int) error {
 
 	inp := input{inputType: INPUT_MOUSE}
 	inp.mi.dwFlags = MOUSEEVENTF_WHEEL
-	inp.mi.mouseData = uint32(delta * 120) // Windows uses multiples of 120
+	// Negate: browser deltaY positive = scroll down, but Windows WHEEL positive = scroll up
+	inp.mi.mouseData = uint32(-delta * 120) // Windows uses multiples of WHEEL_DELTA (120)
 
 	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
 	return nil

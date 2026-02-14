@@ -34,6 +34,7 @@ type Session struct {
 	encoderPF       PixelFormat // cached encoder input format for CPU Encode() path
 	clipboardSync   *clipboard.ClipboardSync
 	fileDropHandler *filedrop.FileDropHandler
+	cursorDC        *webrtc.DataChannel
 	done            chan struct{}
 	mu              sync.RWMutex
 	isActive        bool
@@ -243,10 +244,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 
 	// Scale initial bitrate to resolution. 2.5Mbps is fine for 1080p but
-	// starves 1440p+ text clarity.
+	// starves 1440p+ text clarity. Main profile CABAC makes better use of bits.
 	initBitrate := 2_500_000
 	if w*h > 1920*1080 {
-		initBitrate = 5_000_000
+		initBitrate = 8_000_000
 	}
 
 	// Create H264 encoder via factory (will use MFT on Windows).
@@ -300,9 +301,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 
 	// Create adaptive bitrate controller — ceiling scales with resolution
-	maxAdaptiveBitrate := 5_000_000
+	maxAdaptiveBitrate := 8_000_000
 	if w*h > 1920*1080 {
-		maxAdaptiveBitrate = 10_000_000
+		maxAdaptiveBitrate = 15_000_000
 	}
 	adaptive, err := NewAdaptiveBitrate(AdaptiveConfig{
 		Encoder:    enc,
@@ -332,6 +333,21 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err)
 	} else if filedropDC != nil {
 		session.fileDropHandler = filedrop.NewFileDropHandler(filedropDC, "")
+	}
+
+	// Create cursor DataChannel — streams remote cursor position to viewer for
+	// instant cursor rendering independent of video frame rate.
+	// Unordered + unreliable: latest-wins semantics, no head-of-line blocking.
+	ordered := false
+	maxRetransmits := uint16(0)
+	cursorDC, err := peerConn.CreateDataChannel("cursor", &webrtc.DataChannelInit{
+		Ordered:        &ordered,
+		MaxRetransmits: &maxRetransmits,
+	})
+	if err != nil {
+		slog.Warn("Failed to create cursor DataChannel", "session", sessionID, "error", err)
+	} else {
+		session.cursorDC = cursorDC
 	}
 
 	// Handle incoming data channels (input + control from viewer)
@@ -482,6 +498,15 @@ func (s *Session) startStreaming() {
 			defer s.wg.Done()
 			s.adaptiveLoop()
 		}()
+		if s.cursorDC != nil {
+			if cp, ok := s.capturer.(CursorProvider); ok {
+				s.wg.Add(1)
+				go func() {
+					defer s.wg.Done()
+					s.cursorStreamLoop(cp)
+				}()
+			}
+		}
 
 		w, h, _ := s.capturer.GetScreenBounds()
 		slog.Info("Desktop WebRTC session started",
@@ -499,6 +524,9 @@ func (s *Session) doCleanup() {
 		}
 		if s.fileDropHandler != nil {
 			s.fileDropHandler.Close()
+		}
+		if s.cursorDC != nil {
+			s.cursorDC.Close()
 		}
 		if s.encoder != nil {
 			s.encoder.Close()
@@ -586,6 +614,38 @@ func (s *Session) captureLoopDXGI() {
 		s.captureAndSendFrame(frameDuration)
 		if elapsed := time.Since(loopStart); elapsed < frameDuration {
 			time.Sleep(frameDuration - elapsed)
+		}
+	}
+}
+
+// cursorStreamLoop runs an independent 120Hz loop that polls cursor position
+// and sends updates over the cursor data channel. Decoupled from the capture
+// loop so cursor movement stays smooth even when DXGI blocks on AcquireNextFrame.
+func (s *Session) cursorStreamLoop(prov CursorProvider) {
+	ticker := time.NewTicker(time.Second / 120)
+	defer ticker.Stop()
+
+	var lastX, lastY int32
+	var lastV bool
+
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			if s.cursorDC.ReadyState() != webrtc.DataChannelStateOpen {
+				continue
+			}
+			cx, cy, cv := prov.CursorPosition()
+			if cx == lastX && cy == lastY && cv == lastV {
+				continue
+			}
+			lastX, lastY, lastV = cx, cy, cv
+			v := 0
+			if cv {
+				v = 1
+			}
+			_ = s.cursorDC.SendText(fmt.Sprintf(`{"x":%d,"y":%d,"v":%d}`, cx, cy, v))
 		}
 	}
 }
