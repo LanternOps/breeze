@@ -1780,6 +1780,12 @@ agentRoutes.post(
       return c.json({ error: 'Agent context not found' }, 401);
     }
 
+    // Ephemeral commands (terminal/desktop) have non-UUID IDs and no DB record.
+    // Results are handled via WebSocket; if the agent falls back to REST, just ACK.
+    if (commandId.startsWith('term-') || commandId.startsWith('desk-')) {
+      return c.json({ success: true });
+    }
+
     const [command] = await db
       .select()
       .from(deviceCommands)

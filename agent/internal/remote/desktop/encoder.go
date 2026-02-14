@@ -25,6 +25,14 @@ const (
 	QualityUltra  QualityPreset = "ultra"
 )
 
+// PixelFormat describes the input pixel byte order.
+type PixelFormat int
+
+const (
+	PixelFormatRGBA PixelFormat = iota
+	PixelFormatBGRA
+)
+
 var (
 	ErrInvalidCodec   = errors.New("invalid codec")
 	ErrInvalidQuality = errors.New("invalid quality preset")
@@ -56,6 +64,12 @@ type VideoEncoder struct {
 	backend encoderBackend
 }
 
+// optionalKeyframeForcer is implemented by encoder backends that can force the
+// next output to be an IDR/keyframe (useful for WebRTC startup and PLI/FIR).
+type optionalKeyframeForcer interface {
+	ForceKeyframe() error
+}
+
 type encoderBackend interface {
 	Encode(frame []byte) ([]byte, error)
 	SetCodec(codec Codec) error
@@ -63,9 +77,16 @@ type encoderBackend interface {
 	SetBitrate(bitrate int) error
 	SetFPS(fps int) error
 	SetDimensions(width, height int) error
+	SetPixelFormat(pf PixelFormat)
 	Close() error
 	Name() string
 	IsHardware() bool
+	IsPlaceholder() bool
+
+	// GPU zero-copy pipeline methods
+	SetD3D11Device(device, context uintptr)
+	SupportsGPUInput() bool
+	EncodeTexture(bgraTexture uintptr) ([]byte, error)
 }
 
 type backendFactory func(cfg EncoderConfig) (encoderBackend, error)
@@ -165,6 +186,14 @@ func (v *VideoEncoder) SetDimensions(width, height int) error {
 	return v.backend.SetDimensions(width, height)
 }
 
+func (v *VideoEncoder) SetPixelFormat(pf PixelFormat) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend != nil {
+		v.backend.SetPixelFormat(pf)
+	}
+}
+
 func (v *VideoEncoder) Close() error {
 	v.mu.Lock()
 	backend := v.backend
@@ -174,6 +203,73 @@ func (v *VideoEncoder) Close() error {
 		return nil
 	}
 	return backend.Close()
+}
+
+// ForceKeyframe requests the encoder output an IDR/keyframe as soon as possible.
+// If the backend doesn't support it, this is a no-op.
+func (v *VideoEncoder) ForceKeyframe() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return errors.New("encoder not initialized")
+	}
+	if kf, ok := v.backend.(optionalKeyframeForcer); ok {
+		return kf.ForceKeyframe()
+	}
+	return nil
+}
+
+func (v *VideoEncoder) BackendName() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return ""
+	}
+	return v.backend.Name()
+}
+
+func (v *VideoEncoder) BackendIsHardware() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return false
+	}
+	return v.backend.IsHardware()
+}
+
+func (v *VideoEncoder) BackendIsPlaceholder() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return true
+	}
+	return v.backend.IsPlaceholder()
+}
+
+func (v *VideoEncoder) SetD3D11Device(device, context uintptr) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend != nil {
+		v.backend.SetD3D11Device(device, context)
+	}
+}
+
+func (v *VideoEncoder) SupportsGPUInput() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return false
+	}
+	return v.backend.SupportsGPUInput()
+}
+
+func (v *VideoEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return nil, errors.New("encoder not initialized")
+	}
+	return v.backend.EncodeTexture(bgraTexture)
 }
 
 func (c Codec) valid() bool {

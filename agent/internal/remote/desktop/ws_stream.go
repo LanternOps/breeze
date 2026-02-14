@@ -23,7 +23,9 @@ func DefaultStreamConfig() StreamConfig {
 	}
 }
 
-// SendFrameFunc is the callback used to send a JPEG frame to the API
+// SendFrameFunc is the callback used to send a JPEG frame to the API.
+// The provided data slice is only valid for the duration of the call; if an
+// implementation needs to retain it, it must make a copy.
 type SendFrameFunc func(sessionId string, data []byte) error
 
 // WsStreamSession manages a single WebSocket-based desktop streaming session
@@ -69,18 +71,9 @@ func (s *WsStreamSession) Start() {
 
 // captureLoop runs at the configured FPS and sends JPEG frames
 func (s *WsStreamSession) captureLoop() {
-	s.mu.RLock()
-	fps := s.config.MaxFPS
-	s.mu.RUnlock()
-
-	if fps < 1 {
-		fps = 1
-	}
-	if fps > 30 {
-		fps = 30
-	}
-
-	ticker := time.NewTicker(time.Second / time.Duration(fps))
+	fps := s.getFPS()
+	frameDuration := time.Second / time.Duration(fps)
+	ticker := time.NewTicker(frameDuration)
 	defer ticker.Stop()
 
 	for {
@@ -88,9 +81,22 @@ func (s *WsStreamSession) captureLoop() {
 		case <-s.done:
 			return
 		case <-ticker.C:
+			newFPS := s.getFPS()
+			if newFPS != fps {
+				fps = newFPS
+				frameDuration = time.Second / time.Duration(fps)
+				ticker.Reset(frameDuration)
+			}
 			s.captureAndSend()
 		}
 	}
+}
+
+func (s *WsStreamSession) getFPS() int {
+	s.mu.RLock()
+	fps := s.config.MaxFPS
+	s.mu.RUnlock()
+	return clampInt(fps, 1, 30)
 }
 
 // captureAndSend captures one frame through the optimized pipeline:
@@ -112,7 +118,18 @@ func (s *WsStreamSession) captureAndSend() {
 		slog.Warn("Desktop capture error", "sessionId", s.id, "error", err)
 		return
 	}
+	if img == nil {
+		// DXGI capturers return nil,nil when no new frame is available.
+		s.metrics.RecordSkip()
+		return
+	}
 	s.metrics.RecordCapture(captureTime)
+
+	// WS streaming uses image operations (cursor overlay, JPEG encoding) that assume RGBA byte order.
+	// Convert DXGI's BGRA frames in-place to avoid swapped channels in JPEG output.
+	if bgraCap, ok := s.capturer.(BGRAProvider); ok && bgraCap.IsBGRA() {
+		bgraToRGBAInPlace(img.Pix)
+	}
 
 	// 2. Frame differencing — skip encode+send if pixels unchanged
 	if !s.differ.HasChanged(img.Pix) {

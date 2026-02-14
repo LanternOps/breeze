@@ -84,12 +84,22 @@ int initX11(int displayIndex) {
             );
 
             if (g_ctx.shmInfo.shmid >= 0) {
-                g_ctx.shmInfo.shmaddr = g_ctx.shmImage->data = shmat(g_ctx.shmInfo.shmid, 0, 0);
-                g_ctx.shmInfo.readOnly = False;
+                void* addr = shmat(g_ctx.shmInfo.shmid, 0, 0);
+                if (addr != (void*)-1) {
+                    g_ctx.shmInfo.shmaddr = g_ctx.shmImage->data = addr;
+                    g_ctx.shmInfo.readOnly = False;
 
-                if (XShmAttach(g_ctx.display, &g_ctx.shmInfo)) {
-                    return 0; // SHM setup complete
+                    if (XShmAttach(g_ctx.display, &g_ctx.shmInfo)) {
+                        return 0; // SHM setup complete
+                    }
+
+                    // Attach failed: detach and mark the shm segment for removal.
+                    shmdt(g_ctx.shmInfo.shmaddr);
                 }
+                shmctl(g_ctx.shmInfo.shmid, IPC_RMID, 0);
+                g_ctx.shmInfo.shmaddr = NULL;
+                g_ctx.shmInfo.shmid = -1;
+                g_ctx.shmImage->data = NULL;
             }
 
             // SHM setup failed, fall back to regular capture

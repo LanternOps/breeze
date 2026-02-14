@@ -56,63 +56,80 @@ export async function createWebRTCSession(
   // Receive-only video transceiver (agent sends H264 video track)
   pc.addTransceiver('video', { direction: 'recvonly' });
 
-  // DataChannels for input events and control messages
-  const inputChannel = pc.createDataChannel('input', { ordered: true });
+  // DataChannels for input events and control messages.
+  // Input uses unordered + unreliable delivery to avoid head-of-line blocking
+  // under packet loss — mouse/keyboard events use latest-wins semantics.
+  const inputChannel = pc.createDataChannel('input', { ordered: false, maxRetransmits: 0 });
   const controlChannel = pc.createDataChannel('control', { ordered: true });
 
-  // Wire incoming video track to the <video> element
-  pc.ontrack = (event) => {
-    if (event.track.kind === 'video' && event.streams[0]) {
-      videoEl.srcObject = event.streams[0];
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    try { inputChannel.close(); } catch { /* ignore */ }
+    try { controlChannel.close(); } catch { /* ignore */ }
+    try { pc.close(); } catch { /* ignore */ }
+  };
+
+  try {
+    // Wire incoming video track to the <video> element
+    pc.ontrack = (event) => {
+      if (event.track.kind === 'video' && event.streams[0]) {
+        videoEl.srcObject = event.streams[0];
+
+        // Minimize jitter buffer for low-latency screen sharing.
+        // Chrome 109+ / Firefox 120+ support jitterBufferTarget on RTCRtpReceiver.
+        const receiver = event.receiver;
+        if (receiver && 'jitterBufferTarget' in receiver) {
+          (receiver as any).jitterBufferTarget = 0;
+        }
+      }
+    };
+
+    // Create offer and wait for ICE gathering to complete
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    await waitForIceGathering(pc, 10000);
+
+    const localDesc = pc.localDescription;
+    if (!localDesc?.sdp) {
+      throw new Error('Failed to generate local SDP');
     }
-  };
 
-  // Create offer and wait for ICE gathering to complete
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
+    // POST offer to API — this triggers the agent to create a pion session
+    const offerResp = await apiFetch(
+      params.apiUrl,
+      `/api/v1/remote/sessions/${params.sessionId}/offer`,
+      params.accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({ offer: localDesc.sdp }),
+      },
+    );
 
-  await waitForIceGathering(pc, 5000);
+    if (!offerResp.ok) {
+      const msg = await offerResp.text().catch(() => 'unknown error');
+      throw new Error(`Failed to submit WebRTC offer: ${msg}`);
+    }
 
-  const localDesc = pc.localDescription;
-  if (!localDesc?.sdp) {
-    pc.close();
-    throw new Error('Failed to generate local SDP');
+    // Poll for the answer (agent processes offer and returns SDP answer)
+    const answerSdp = await pollForAnswer(params, 15000);
+
+    await pc.setRemoteDescription(
+      new RTCSessionDescription({ type: 'answer', sdp: answerSdp }),
+    );
+
+    return {
+      pc,
+      inputChannel,
+      controlChannel,
+      close,
+    };
+  } catch (err) {
+    close();
+    throw err;
   }
-
-  // POST offer to API — this triggers the agent to create a pion session
-  const offerResp = await apiFetch(
-    params.apiUrl,
-    `/api/v1/remote/sessions/${params.sessionId}/offer`,
-    params.accessToken,
-    {
-      method: 'POST',
-      body: JSON.stringify({ offer: localDesc.sdp }),
-    },
-  );
-
-  if (!offerResp.ok) {
-    pc.close();
-    const msg = await offerResp.text().catch(() => 'unknown error');
-    throw new Error(`Failed to submit WebRTC offer: ${msg}`);
-  }
-
-  // Poll for the answer (agent processes offer and returns SDP answer)
-  const answerSdp = await pollForAnswer(params, 15000);
-
-  await pc.setRemoteDescription(
-    new RTCSessionDescription({ type: 'answer', sdp: answerSdp }),
-  );
-
-  return {
-    pc,
-    inputChannel,
-    controlChannel,
-    close: () => {
-      inputChannel.close();
-      controlChannel.close();
-      pc.close();
-    },
-  };
 }
 
 /**

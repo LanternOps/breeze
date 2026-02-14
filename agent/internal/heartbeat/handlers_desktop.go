@@ -67,10 +67,12 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if raw, ok := cmd.Payload["iceServers"].([]interface{}); ok {
 		for _, item := range raw {
 			if m, ok := item.(map[string]interface{}); ok {
+				username, _ := m["username"].(string)
+				credential, _ := m["credential"].(string)
 				s := desktop.ICEServerConfig{
 					URLs:       m["urls"],
-					Username:   fmt.Sprintf("%v", m["username"]),
-					Credential: fmt.Sprintf("%v", m["credential"]),
+					Username:   username,
+					Credential: credential,
 				}
 				iceServers = append(iceServers, s)
 			}

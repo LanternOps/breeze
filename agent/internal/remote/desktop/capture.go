@@ -46,6 +46,46 @@ func NewScreenCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	return newPlatformCapturer(config)
 }
 
+// BGRAProvider is implemented by capturers that produce BGRA pixel data
+// (stored in image.RGBA.Pix). This lets the encoder skip the BGRA→RGBA
+// conversion and go directly to BGRA→NV12.
+type BGRAProvider interface {
+	IsBGRA() bool
+}
+
+// TightLoopHint is implemented by capturers that internally block waiting for
+// new frames (e.g. DXGI AcquireNextFrame). This allows the caller to run a
+// tight capture loop without a ticker.
+//
+// Implementations should return false when operating in a non-blocking fallback
+// mode (e.g. DXGI capturer falling back to GDI) to avoid busy loops.
+type TightLoopHint interface {
+	TightLoop() bool
+}
+
+// FrameChangeHint is implemented by capturers that can report whether new
+// frames are available without a full pixel-level comparison (e.g. DXGI
+// AccumulatedFrames). When Capture() returns nil,nil the caller should skip
+// encoding entirely.
+type FrameChangeHint interface {
+	AccumulatedFrames() uint32
+}
+
+// TextureProvider is implemented by capturers that can provide raw GPU
+// textures for zero-copy GPU encoding pipelines.
+type TextureProvider interface {
+	// CaptureTexture acquires a frame and copies it to the staging texture.
+	// Returns a BGRA GPU texture handle. Returns 0, nil when no new frame
+	// is available. Caller must call ReleaseTexture() when done.
+	CaptureTexture() (texture uintptr, err error)
+	// ReleaseTexture releases the DXGI frame acquired by CaptureTexture.
+	ReleaseTexture()
+	// GetD3D11Device returns the D3D11 device handle.
+	GetD3D11Device() uintptr
+	// GetD3D11Context returns the immediate device context handle.
+	GetD3D11Context() uintptr
+}
+
 // ErrNotSupported is returned when screen capture is not supported on the platform
 var ErrNotSupported = fmt.Errorf("screen capture not supported on this platform")
 

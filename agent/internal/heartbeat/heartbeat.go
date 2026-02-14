@@ -1378,6 +1378,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
+		tools.CmdStartDesktop, tools.CmdStopDesktop,
 		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig:
 		return true
 	}

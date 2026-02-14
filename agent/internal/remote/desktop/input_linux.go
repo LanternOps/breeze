@@ -119,6 +119,7 @@ func (h *LinuxInputHandler) SendKeyUp(key string) error {
 
 func (h *LinuxInputHandler) translateKey(key string) string {
 	switch strings.ToLower(key) {
+	// Whitespace / editing
 	case "enter", "return":
 		return "Return"
 	case "tab":
@@ -131,6 +132,10 @@ func (h *LinuxInputHandler) translateKey(key string) string {
 		return "Escape"
 	case "delete", "del":
 		return "Delete"
+	case "insert":
+		return "Insert"
+
+	// Navigation
 	case "home":
 		return "Home"
 	case "end":
@@ -147,6 +152,103 @@ func (h *LinuxInputHandler) translateKey(key string) string {
 		return "Left"
 	case "right":
 		return "Right"
+
+	// Function keys
+	case "f1":
+		return "F1"
+	case "f2":
+		return "F2"
+	case "f3":
+		return "F3"
+	case "f4":
+		return "F4"
+	case "f5":
+		return "F5"
+	case "f6":
+		return "F6"
+	case "f7":
+		return "F7"
+	case "f8":
+		return "F8"
+	case "f9":
+		return "F9"
+	case "f10":
+		return "F10"
+	case "f11":
+		return "F11"
+	case "f12":
+		return "F12"
+
+	// Symbols — use X11 keysym names so xdotool doesn't misinterpret them as flags
+	case "-":
+		return "minus"
+	case "=":
+		return "equal"
+	case "[":
+		return "bracketleft"
+	case "]":
+		return "bracketright"
+	case "\\":
+		return "backslash"
+	case ";":
+		return "semicolon"
+	case "'":
+		return "apostrophe"
+	case "`":
+		return "grave"
+	case ",":
+		return "comma"
+	case ".":
+		return "period"
+	case "/":
+		return "slash"
+
+	// Numpad
+	case "num0":
+		return "KP_0"
+	case "num1":
+		return "KP_1"
+	case "num2":
+		return "KP_2"
+	case "num3":
+		return "KP_3"
+	case "num4":
+		return "KP_4"
+	case "num5":
+		return "KP_5"
+	case "num6":
+		return "KP_6"
+	case "num7":
+		return "KP_7"
+	case "num8":
+		return "KP_8"
+	case "num9":
+		return "KP_9"
+	case "add":
+		return "KP_Add"
+	case "subtract":
+		return "KP_Subtract"
+	case "multiply":
+		return "KP_Multiply"
+	case "divide":
+		return "KP_Divide"
+	case "decimal":
+		return "KP_Decimal"
+
+	// Lock / toggle keys
+	case "capslock":
+		return "Caps_Lock"
+	case "numlock":
+		return "Num_Lock"
+	case "scrolllock":
+		return "Scroll_Lock"
+
+	// Misc
+	case "printscreen":
+		return "Print"
+	case "pause":
+		return "Pause"
+
 	default:
 		return key
 	}

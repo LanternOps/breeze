@@ -87,7 +87,10 @@ static void inputKeyUp(int keycode, int flags) {
 */
 import "C"
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // macOS virtual keycodes (from Carbon HIToolbox/Events.h)
 var keyNameToKeycode = map[string]int{
@@ -147,7 +150,7 @@ func NewInputHandler() InputHandler {
 }
 
 func buttonToInt(button string) int {
-	switch button {
+	switch strings.ToLower(button) {
 	case "right":
 		return 1
 	case "middle":
@@ -160,18 +163,22 @@ func buttonToInt(button string) int {
 func modifiersToFlags(modifiers []string) C.int {
 	var flags int
 	for _, mod := range modifiers {
-		switch mod {
+		switch strings.ToLower(mod) {
 		case "shift":
 			flags |= 0x00020000 // kCGEventFlagMaskShift
-		case "ctrl":
+		case "ctrl", "control":
 			flags |= 0x00040000 // kCGEventFlagMaskControl
 		case "alt":
 			flags |= 0x00080000 // kCGEventFlagMaskAlternate
-		case "meta", "cmd":
+		case "meta", "cmd", "win", "super":
 			flags |= 0x00100000 // kCGEventFlagMaskCommand
 		}
 	}
 	return C.int(flags)
+}
+
+func normalizeKeyName(key string) string {
+	return strings.ToLower(strings.TrimSpace(key))
 }
 
 func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
@@ -210,6 +217,7 @@ func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
 }
 
 func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error {
+	key = normalizeKeyName(key)
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
@@ -221,6 +229,7 @@ func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error 
 }
 
 func (h *DarwinInputHandler) SendKeyDown(key string) error {
+	key = normalizeKeyName(key)
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
@@ -230,6 +239,7 @@ func (h *DarwinInputHandler) SendKeyDown(key string) error {
 }
 
 func (h *DarwinInputHandler) SendKeyUp(key string) error {
+	key = normalizeKeyName(key)
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)

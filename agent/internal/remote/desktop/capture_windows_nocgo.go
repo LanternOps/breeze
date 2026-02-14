@@ -81,10 +81,6 @@ func init() {
 	}
 }
 
-func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
-	return &gdiCapturer{config: config}, nil
-}
-
 // ensureHandles creates or recreates GDI handles if needed.
 func (c *gdiCapturer) ensureHandles() error {
 	w, _, _ := procGetSystemMetrics.Call(smCxScreen)

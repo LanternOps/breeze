@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X } from 'lucide-react';
 
 interface Props {
   status: 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -12,11 +12,32 @@ interface Props {
   scale: number;
   maxFps: number;
   bitrate: number;
+  pasteProgress: { current: number; total: number } | null;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
   onBitrateChange: (bitrate: number) => void;
-  onCtrlAltDel: () => void;
+  onSendKeys: (key: string, modifiers: string[]) => void;
+  onPasteAsKeystrokes: () => void;
+  onCancelPaste: () => void;
   onDisconnect: () => void;
 }
+
+interface KeyCombo {
+  label: string;
+  key: string;
+  modifiers: string[];
+  description: string;
+}
+
+const KEY_COMBOS: KeyCombo[] = [
+  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen' },
+  { label: 'Ctrl+Shift+Esc',  key: 'escape', modifiers: ['ctrl', 'shift'], description: 'Task Manager' },
+  { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
+  { label: 'Alt+F4',          key: 'f4',     modifiers: ['alt'],           description: 'Close window' },
+  { label: 'Win+L',           key: 'l',      modifiers: ['win'],           description: 'Lock workstation' },
+  { label: 'Win+R',           key: 'r',      modifiers: ['win'],           description: 'Run dialog' },
+  { label: 'Win+E',           key: 'e',      modifiers: ['win'],           description: 'File Explorer' },
+  { label: 'Win+D',           key: 'd',      modifiers: ['win'],           description: 'Show desktop' },
+];
 
 function formatDuration(startDate: Date): string {
   const seconds = Math.floor((Date.now() - startDate.getTime()) / 1000);
@@ -37,9 +58,12 @@ export default function ViewerToolbar({
   scale,
   maxFps,
   bitrate,
+  pasteProgress,
   onConfigChange,
   onBitrateChange,
-  onCtrlAltDel,
+  onSendKeys,
+  onPasteAsKeystrokes,
+  onCancelPaste,
   onDisconnect,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
@@ -49,9 +73,14 @@ export default function ViewerToolbar({
   const MaximizeIcon = Maximize as unknown as ComponentType<{ className?: string }>;
   const PowerIcon = Power as unknown as ComponentType<{ className?: string }>;
   const KeyboardIcon = Keyboard as unknown as ComponentType<{ className?: string }>;
+  const PasteIcon = ClipboardPaste as unknown as ComponentType<{ className?: string }>;
+  const ChevronDownIcon = ChevronDown as unknown as ComponentType<{ className?: string }>;
+  const XIcon = X as unknown as ComponentType<{ className?: string }>;
 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
+  const [keysOpen, setKeysOpen] = useState(false);
+  const keysDropdownRef = useRef<HTMLDivElement>(null);
 
   // Update duration every second
   useEffect(() => {
@@ -70,6 +99,18 @@ export default function ViewerToolbar({
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!keysOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (keysDropdownRef.current && !keysDropdownRef.current.contains(e.target as Node)) {
+        setKeysOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [keysOpen]);
 
   const toggleFullscreen = async () => {
     try {
@@ -128,7 +169,7 @@ export default function ViewerToolbar({
       <div className="w-px h-5 bg-gray-600" />
 
       {/* WebRTC mode: Bitrate control */}
-      {isWebRTC && (
+      {transport === 'webrtc' && (
         <div className="flex items-center gap-1.5">
           <label className="text-gray-400 text-xs">Bitrate</label>
           <input
@@ -145,7 +186,7 @@ export default function ViewerToolbar({
       )}
 
       {/* WebSocket mode: Quality / Scale / FPS Limit */}
-      {!isWebRTC && (
+      {transport === 'websocket' && (
         <>
           <div className="flex items-center gap-1.5">
             <label className="text-gray-400 text-xs">Quality</label>
@@ -194,15 +235,61 @@ export default function ViewerToolbar({
 
       <div className="flex-1" />
 
-      {/* Actions */}
+      {/* Paste progress indicator */}
+      {pasteProgress && (
+        <div className="flex items-center gap-1.5 text-xs text-yellow-400">
+          <span>Pasting {pasteProgress.current}/{pasteProgress.total}</span>
+          <button
+            onClick={onCancelPaste}
+            className="p-0.5 hover:bg-gray-700 rounded"
+            title="Cancel paste"
+          >
+            <XIcon className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Paste as Keystrokes */}
       <button
-        onClick={onCtrlAltDel}
-        className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded"
-        title="Send Ctrl+Alt+Del"
+        onClick={onPasteAsKeystrokes}
+        disabled={!!pasteProgress}
+        className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+        title="Paste clipboard text as keystrokes"
       >
-        <KeyboardIcon className="w-3.5 h-3.5" />
-        <span>Ctrl+Alt+Del</span>
+        <PasteIcon className="w-3.5 h-3.5" />
+        <span>Paste Text</span>
       </button>
+
+      {/* Send Keys dropdown */}
+      <div className="relative" ref={keysDropdownRef}>
+        <button
+          onClick={() => setKeysOpen(!keysOpen)}
+          className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded"
+          title="Send key combination"
+        >
+          <KeyboardIcon className="w-3.5 h-3.5" />
+          <span>Send Keys</span>
+          <ChevronDownIcon className="w-3 h-3" />
+        </button>
+
+        {keysOpen && (
+          <div className="absolute right-0 top-full mt-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
+            {KEY_COMBOS.map((combo) => (
+              <button
+                key={combo.label}
+                onClick={() => {
+                  onSendKeys(combo.key, combo.modifiers);
+                  setKeysOpen(false);
+                }}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-xs hover:bg-gray-700 text-left"
+              >
+                <span className="text-gray-200 font-mono">{combo.label}</span>
+                <span className="text-gray-500">{combo.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       <button
         onClick={toggleFullscreen}

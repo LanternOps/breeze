@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -30,8 +31,12 @@ const (
 	MOUSEEVENTF_WHEEL      = 0x0800
 	MOUSEEVENTF_ABSOLUTE   = 0x8000
 
-	KEYEVENTF_KEYUP   = 0x0002
-	KEYEVENTF_UNICODE = 0x0004
+	KEYEVENTF_KEYUP       = 0x0002
+	KEYEVENTF_UNICODE     = 0x0004
+	KEYEVENTF_SCANCODE    = 0x0008
+	KEYEVENTF_EXTENDEDKEY = 0x0001
+
+	MAPVK_VK_TO_VSC = 0
 
 	VK_SHIFT   = 0x10
 	VK_CONTROL = 0x11
@@ -147,7 +152,13 @@ func (h *WindowsInputHandler) SendKeyPress(key string, modifiers []string) error
 	}
 
 	// Press and release key
-	h.SendKeyDown(key)
+	if err := h.SendKeyDown(key); err != nil {
+		// Still release modifiers before returning
+		for i := len(modifiers) - 1; i >= 0; i-- {
+			h.sendModifierKey(modifiers[i], true)
+		}
+		return err
+	}
 	h.SendKeyUp(key)
 
 	// Release modifiers (in reverse order)
@@ -167,7 +178,10 @@ func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 		vk = VK_MENU
 	case "shift":
 		vk = VK_SHIFT
-	case "meta", "win", "cmd":
+	case "meta", "cmd":
+		// Mac Cmd → Windows Ctrl so copy/paste/undo behave as expected
+		vk = VK_CONTROL
+	case "win":
 		vk = VK_LWIN
 	default:
 		return
@@ -176,6 +190,7 @@ func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 	inp := input{inputType: INPUT_KEYBOARD}
 	ki := (*keybdInput)(unsafe.Pointer(&inp.mi))
 	ki.wVk = vk
+	ki.wScan = vkToScanCode(vk)
 	if up {
 		ki.dwFlags = KEYEVENTF_KEYUP
 	}
@@ -183,26 +198,72 @@ func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
 }
 
+// vkToScanCode uses MapVirtualKeyW to derive the hardware scan code for a VK.
+// Many Windows apps (e.g. RDP, games, some text editors) require the scan code
+// field to be populated in the INPUT struct for key events to register.
+func vkToScanCode(vk uint16) uint16 {
+	sc, _, _ := mapvirtualkey.Call(uintptr(vk), MAPVK_VK_TO_VSC)
+	return uint16(sc)
+}
+
+// isExtendedKey returns true for keys that require the KEYEVENTF_EXTENDEDKEY flag
+// (right-hand nav cluster, numpad enter, etc.).
+func isExtendedKey(vk uint16) bool {
+	switch vk {
+	case 0x21, 0x22, 0x23, 0x24, // PageUp, PageDown, End, Home
+		0x25, 0x26, 0x27, 0x28, // Arrow keys
+		0x2D, 0x2E, // Insert, Delete
+		0x5B, 0x5C, // LWin, RWin
+		0x6F, // Numpad Divide
+		0x90, // NumLock
+		0x91, // ScrollLock
+		0x2C: // PrintScreen
+		return true
+	}
+	return false
+}
+
 func (h *WindowsInputHandler) SendKeyDown(key string) error {
 	vk := charToVK(key)
+	if vk == 0 {
+		slog.Warn("Unknown key — no VK mapping, input dropped", "key", key)
+		return fmt.Errorf("unknown key: %s", key)
+	}
 
 	inp := input{inputType: INPUT_KEYBOARD}
 	ki := (*keybdInput)(unsafe.Pointer(&inp.mi))
 	ki.wVk = vk
+	ki.wScan = vkToScanCode(vk)
+	if isExtendedKey(vk) {
+		ki.dwFlags = KEYEVENTF_EXTENDEDKEY
+	}
 
-	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		return fmt.Errorf("SendInput failed for key_down vk=0x%X", vk)
+	}
 	return nil
 }
 
 func (h *WindowsInputHandler) SendKeyUp(key string) error {
 	vk := charToVK(key)
+	if vk == 0 {
+		return fmt.Errorf("unknown key: %s", key)
+	}
 
 	inp := input{inputType: INPUT_KEYBOARD}
 	ki := (*keybdInput)(unsafe.Pointer(&inp.mi))
 	ki.wVk = vk
+	ki.wScan = vkToScanCode(vk)
 	ki.dwFlags = KEYEVENTF_KEYUP
+	if isExtendedKey(vk) {
+		ki.dwFlags |= KEYEVENTF_EXTENDEDKEY
+	}
 
-	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		return fmt.Errorf("SendInput failed for key_up vk=0x%X", vk)
+	}
 	return nil
 }
 
@@ -230,8 +291,13 @@ func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
 }
 
 func charToVK(key string) uint16 {
+	// Single ASCII letters → VK_A..VK_Z (0x41..0x5A)
+	// Single ASCII digits  → VK_0..VK_9 (0x30..0x39)
 	if len(key) == 1 {
-		c := strings.ToUpper(key)[0]
+		c := key[0]
+		if c >= 'a' && c <= 'z' {
+			return uint16(c - 'a' + 'A')
+		}
 		if c >= 'A' && c <= 'Z' {
 			return uint16(c)
 		}
@@ -240,8 +306,8 @@ func charToVK(key string) uint16 {
 		}
 	}
 
-	// Common special keys
 	switch strings.ToLower(key) {
+	// Whitespace / editing
 	case "enter", "return":
 		return 0x0D
 	case "tab":
@@ -254,6 +320,10 @@ func charToVK(key string) uint16 {
 		return 0x1B
 	case "delete", "del":
 		return 0x2E
+	case "insert":
+		return 0x2D
+
+	// Navigation
 	case "home":
 		return 0x24
 	case "end":
@@ -270,6 +340,8 @@ func charToVK(key string) uint16 {
 		return 0x25
 	case "right":
 		return 0x27
+
+	// Function keys
 	case "f1":
 		return 0x70
 	case "f2":
@@ -294,6 +366,76 @@ func charToVK(key string) uint16 {
 		return 0x7A
 	case "f12":
 		return 0x7B
+
+	// Symbol keys (OEM VK codes — US keyboard layout)
+	case "-":
+		return 0xBD // VK_OEM_MINUS
+	case "=":
+		return 0xBB // VK_OEM_PLUS (the =/+ key)
+	case "[":
+		return 0xDB // VK_OEM_4
+	case "]":
+		return 0xDD // VK_OEM_6
+	case "\\":
+		return 0xDC // VK_OEM_5
+	case ";":
+		return 0xBA // VK_OEM_1
+	case "'":
+		return 0xDE // VK_OEM_7
+	case "`":
+		return 0xC0 // VK_OEM_3
+	case ",":
+		return 0xBC // VK_OEM_COMMA
+	case ".":
+		return 0xBE // VK_OEM_PERIOD
+	case "/":
+		return 0xBF // VK_OEM_2
+
+	// Numpad
+	case "num0":
+		return 0x60 // VK_NUMPAD0
+	case "num1":
+		return 0x61
+	case "num2":
+		return 0x62
+	case "num3":
+		return 0x63
+	case "num4":
+		return 0x64
+	case "num5":
+		return 0x65
+	case "num6":
+		return 0x66
+	case "num7":
+		return 0x67
+	case "num8":
+		return 0x68
+	case "num9":
+		return 0x69
+	case "multiply":
+		return 0x6A // VK_MULTIPLY
+	case "add":
+		return 0x6B // VK_ADD
+	case "subtract":
+		return 0x6D // VK_SUBTRACT
+	case "decimal":
+		return 0x6E // VK_DECIMAL
+	case "divide":
+		return 0x6F // VK_DIVIDE
+
+	// Lock / toggle keys
+	case "capslock":
+		return 0x14 // VK_CAPITAL
+	case "numlock":
+		return 0x90 // VK_NUMLOCK
+	case "scrolllock":
+		return 0x91 // VK_SCROLL
+
+	// Misc
+	case "printscreen":
+		return 0x2C // VK_SNAPSHOT
+	case "pause":
+		return 0x13 // VK_PAUSE
 	}
 
 	return 0

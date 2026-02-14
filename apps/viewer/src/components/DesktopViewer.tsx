@@ -3,6 +3,8 @@ import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
 import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
 import { createWebRTCSession, scaleVideoCoords, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
+import { textToKeyEvents } from '../lib/paste';
+import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import ViewerToolbar from './ViewerToolbar';
 
 interface Props {
@@ -19,6 +21,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const webrtcRef = useRef<WebRTCSession | null>(null);
+  const transportRef = useRef<Transport | null>(null);
+  const wsCleanupRef = useRef<(() => void) | null>(null);
+  const authRef = useRef<AuthenticatedConnectionParams | null>(null);
+  const cancelledRef = useRef(false);
+  const webrtcFallbackAttemptedRef = useRef(false);
+  const pressedKeysRef = useRef<Set<string>>(new Set());
+  const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
+  const pasteCancelRef = useRef(false);
+
+  const webrtcMouseMovePendingRef = useRef<{ x: number; y: number } | null>(null);
+  const webrtcMouseMoveRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [transport, setTransport] = useState<Transport | null>(null);
   const [fps, setFps] = useState(0);
@@ -29,6 +42,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [hostname, setHostname] = useState('');
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [pasteProgress, setPasteProgress] = useState<{ current: number; total: number } | null>(null);
+
+  const setTransportState = useCallback((t: Transport | null) => {
+    transportRef.current = t;
+    setTransport(t);
+  }, []);
 
   // Frame rate tracking
   const frameCountRef = useRef(0);
@@ -37,29 +56,52 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // Remote screen size (actual pixels from agent)
   const remoteScreenRef = useRef({ width: 1920, height: 1080 });
 
+  // WebSocket JPEG decode backpressure: keep at most one decode in-flight and
+  // always prefer the latest pending frame.
+  const jpegDecodeInFlightRef = useRef(false);
+  const jpegPendingFrameRef = useRef<ArrayBuffer | null>(null);
+
   // ── WebRTC connection ──────────────────────────────────────────────
 
   const connectWebRTC = useCallback(async (auth: AuthenticatedConnectionParams): Promise<boolean> => {
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
-    try {
-      const session = await createWebRTCSession(auth, videoEl);
-      webrtcRef.current = session;
+	    try {
+	      const session = await createWebRTCSession(auth, videoEl);
+	      webrtcRef.current = session;
 
-      // Monitor connection state
-      session.pc.onconnectionstatechange = () => {
-        const state = session.pc.connectionState;
-        if (state === 'connected') {
-          setStatus('connected');
-          setConnectedAt(new Date());
-          setErrorMessage(null);
-        } else if (state === 'failed' || state === 'closed') {
-          setStatus('disconnected');
-        }
-      };
+	      // Reduce input lag under loss: coalesce mouse moves, and avoid unbounded buffering.
+	      try {
+	        session.inputChannel.bufferedAmountLowThreshold = 256 * 1024;
+	        session.inputChannel.onbufferedamountlow = () => {
+	          if (webrtcMouseMovePendingRef.current && webrtcMouseMoveRafRef.current === null) {
+	            webrtcMouseMoveRafRef.current = requestAnimationFrame(flushWebRTCMouseMove);
+	          }
+	        };
+	      } catch {
+	        // Some environments may not support these fields.
+	      }
 
-      setTransport('webrtc');
+	      // Monitor connection state
+	      session.pc.onconnectionstatechange = () => {
+	        if (webrtcRef.current !== session) return;
+	        const state = session.pc.connectionState;
+	        if (state === 'connected') {
+	          setStatus('connected');
+	          setConnectedAt(new Date());
+	          setErrorMessage(null);
+	          // Ensure keyboard input is captured without an extra click.
+	          videoRef.current?.focus();
+	        } else if (state === 'failed') {
+	          void fallbackToWebSocket('WebRTC connection failed. Falling back to WebSocket...');
+	        } else if (state === 'closed') {
+	          setStatus('disconnected');
+	          setConnectedAt(null);
+	        }
+	      };
+
+      setTransportState('webrtc');
       setHostname('Remote Desktop');
       // Connection state will flip to 'connected' via onconnectionstatechange
       return true;
@@ -85,13 +127,38 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
+    let closed = false;
+    let hadError = false;
+
+    // Ping keep-alive
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 15000);
+
+	    const cleanup = () => {
+	      // Always clear the shared cleanup ref, even if already closed (race-safe).
+	      wsCleanupRef.current = null;
+	      if (closed) return;
+	      closed = true;
+	      clearInterval(pingInterval);
+	      wsRef.current = null;
+	      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+	        ws.close();
+	      }
+	    };
+
+	    // Expose cleanup immediately so early onerror/onclose can clear it.
+	    wsCleanupRef.current = cleanup;
+
     ws.onopen = () => {
       console.log('Desktop WebSocket connected');
     };
 
     ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        renderFrame(new Uint8Array(event.data));
+        renderFrame(event.data);
         return;
       }
 
@@ -110,10 +177,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             break;
           case 'error':
             console.error('Server error:', msg.message);
-            if (msg.code === 'AUTH_FAILED' || msg.code === 'AGENT_OFFLINE') {
-              setErrorMessage(msg.message);
-              onError(msg.message);
-            }
+            setStatus('error');
+            setConnectedAt(null);
+            setErrorMessage(msg.message || 'Remote desktop error');
+            hadError = true;
+            cleanup();
+            onError(msg.message || 'Remote desktop error');
             break;
         }
       } catch {
@@ -122,71 +191,135 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     };
 
     ws.onclose = () => {
-      setStatus('disconnected');
+      cleanup();
+      setConnectedAt(null);
+      if (!hadError) setStatus('disconnected');
     };
 
     ws.onerror = () => {
+      hadError = true;
       setStatus('error');
       setErrorMessage('WebSocket connection error');
+      setConnectedAt(null);
+      cleanup();
       onError('WebSocket connection error');
     };
 
-    // Ping keep-alive
-    const pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ping' }));
-      }
-    }, 15000);
+    setTransportState('websocket');
 
-    setTransport('websocket');
-
-    return () => {
-      clearInterval(pingInterval);
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
-      }
-      wsRef.current = null;
-    };
+    return cleanup;
   }, [onError]);
+
+  async function fallbackToWebSocket(reason: string) {
+    if (cancelledRef.current) return;
+    if (webrtcFallbackAttemptedRef.current) return;
+
+    const auth = authRef.current;
+    if (!auth) return;
+
+    webrtcFallbackAttemptedRef.current = true;
+
+    console.warn(reason);
+    setStatus('connecting');
+    setTransportState(null);
+    setConnectedAt(null);
+    setErrorMessage(null);
+
+    if (webrtcMouseMoveRafRef.current !== null) {
+      cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+      webrtcMouseMoveRafRef.current = null;
+    }
+    webrtcMouseMovePendingRef.current = null;
+
+    // Best-effort: release any held keys before switching transports.
+    releaseAllKeys();
+
+    // Tear down the WebRTC session before starting WS fallback.
+    webrtcRef.current?.close();
+    webrtcRef.current = null;
+
+    const cleanup = await connectWebSocket(auth);
+    if (cancelledRef.current) {
+      cleanup?.();
+      return;
+    }
+    if (cleanup) {
+      wsCleanupRef.current = cleanup;
+    }
+  }
 
   // ── Connection lifecycle ───────────────────────────────────────────
 
   useEffect(() => {
-    let cancelled = false;
-    let wsCleanup: (() => void) | null = null;
+    cancelledRef.current = false;
+    webrtcFallbackAttemptedRef.current = false;
+    authRef.current = null;
+    wheelAccRef.current = DEFAULT_WHEEL_ACCUMULATOR;
+
+    // Ensure any previous transport is fully torn down before reconnect.
+    releaseAllKeys();
+    wsCleanupRef.current?.();
+    wsCleanupRef.current = null;
+    wsRef.current?.close();
+    wsRef.current = null;
+    webrtcRef.current?.close();
+    webrtcRef.current = null;
+
+    setStatus('connecting');
+    setTransportState(null);
+    setHostname('');
+    setConnectedAt(null);
+    setErrorMessage(null);
 
     async function connect() {
-      const exchange = await exchangeDesktopConnectCode(
-        params.apiUrl,
-        params.sessionId,
-        params.connectCode
-      );
-      if (cancelled) return;
+      try {
+        const exchange = await exchangeDesktopConnectCode(
+          params.apiUrl,
+          params.sessionId,
+          params.connectCode
+        );
+        if (cancelledRef.current) return;
 
-      if (!exchange?.accessToken) {
+        if (!exchange?.accessToken) {
+          setStatus('error');
+          setErrorMessage('Invalid or expired connection code');
+          setConnectedAt(null);
+          onError('Invalid or expired connection code');
+          return;
+        }
+
+        const authParams: AuthenticatedConnectionParams = {
+          sessionId: params.sessionId,
+          apiUrl: params.apiUrl,
+          accessToken: exchange.accessToken
+        };
+        authRef.current = authParams;
+
+        // Try WebRTC first
+        const webrtcOk = await connectWebRTC(authParams);
+        if (cancelledRef.current) {
+          webrtcRef.current?.close();
+          webrtcRef.current = null;
+          return;
+        }
+
+        if (!webrtcOk) {
+          // Fall back to WebSocket
+          const cleanup = await connectWebSocket(authParams);
+          if (cancelledRef.current) {
+            cleanup?.();
+            return;
+          }
+          wsCleanupRef.current = cleanup;
+        }
+      } catch (err) {
+        if (cancelledRef.current) return;
+        console.error('Remote desktop connect failed:', err);
+        const msg = err instanceof Error ? err.message : 'Connection failed';
         setStatus('error');
-        setErrorMessage('Invalid or expired connection code');
-        onError('Invalid or expired connection code');
-        return;
-      }
-
-      const authParams: AuthenticatedConnectionParams = {
-        sessionId: params.sessionId,
-        apiUrl: params.apiUrl,
-        accessToken: exchange.accessToken
-      };
-
-      // Try WebRTC first
-      const webrtcOk = await connectWebRTC(authParams);
-      if (cancelled) {
-        webrtcRef.current?.close();
-        webrtcRef.current = null;
-        return;
-      }
-
-      if (!webrtcOk) {
-        // Fall back to WebSocket
-        wsCleanup = await connectWebSocket(authParams);
+        setErrorMessage(msg);
+        setConnectedAt(null);
+        onError(msg);
       }
     }
 
@@ -199,9 +332,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }, 1000);
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
+
+      // Best-effort: release keys before closing the transport.
+      releaseAllKeys();
+
+      if (webrtcMouseMoveRafRef.current !== null) {
+        cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+        webrtcMouseMoveRafRef.current = null;
+      }
+      webrtcMouseMovePendingRef.current = null;
+
       clearInterval(fpsIntervalRef.current);
-      wsCleanup?.();
+      wsCleanupRef.current?.();
+      wsCleanupRef.current = null;
       webrtcRef.current?.close();
       webrtcRef.current = null;
     };
@@ -214,58 +358,97 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!videoEl) return;
 
     let active = true;
-    function countFrame() {
-      if (!active) return;
-      frameCountRef.current++;
-      videoEl!.requestVideoFrameCallback(countFrame);
+
+    const rvfc = (videoEl as unknown as { requestVideoFrameCallback?: (cb: () => void) => number })
+      .requestVideoFrameCallback;
+
+    if (typeof rvfc === 'function') {
+      const onFrame = () => {
+        if (!active) return;
+        frameCountRef.current++;
+        rvfc.call(videoEl, onFrame);
+      };
+      rvfc.call(videoEl, onFrame);
+      return () => { active = false; };
     }
-    videoEl.requestVideoFrameCallback(countFrame);
+
+    // Fallback: approximate frames by watching currentTime advance.
+    let lastTime = videoEl.currentTime;
+    const tick = () => {
+      if (!active) return;
+      const t = videoEl.currentTime;
+      if (t !== lastTime) {
+        lastTime = t;
+        frameCountRef.current++;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
     return () => { active = false; };
   }, [transport]);
 
-  // Native wheel handler to enable preventDefault on non-passive listener
-  useEffect(() => {
-    const el = transport === 'webrtc' ? videoRef.current : canvasRef.current;
-    if (!el) return;
-
-    function onWheel(event: Event) {
-      const e = event as WheelEvent;
-      e.preventDefault();
-      const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
-      sendInputFn({ type: 'mouse_scroll', x, y, delta: Math.sign(e.deltaY) * 3 });
-    }
-
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  });
-
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
-  const renderFrame = useCallback((data: Uint8Array) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  const processJpegFrames = useCallback(async () => {
+    if (jpegDecodeInFlightRef.current) return;
+    jpegDecodeInFlightRef.current = true;
 
-    const copy = new Uint8Array(data);
-    const blob = new Blob([copy], { type: 'image/jpeg' });
-    createImageBitmap(blob).then((bitmap) => {
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+    try {
+      while (true) {
+        const data = jpegPendingFrameRef.current;
+        jpegPendingFrameRef.current = null;
+        if (!data) break;
 
-      remoteScreenRef.current.width = bitmap.width;
-      remoteScreenRef.current.height = bitmap.height;
+        const blob = new Blob([data], { type: 'image/jpeg' });
+        let bitmap: ImageBitmap;
+        try {
+          bitmap = await createImageBitmap(blob);
+        } catch {
+          // Skip corrupted frames
+          continue;
+        }
 
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
+        const canvas = canvasRef.current;
+        if (!canvas) {
+          bitmap.close();
+          continue;
+        }
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          bitmap.close();
+          continue;
+        }
+
+        remoteScreenRef.current.width = bitmap.width;
+        remoteScreenRef.current.height = bitmap.height;
+
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+        }
+
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        frameCountRef.current++;
       }
+    } finally {
+      jpegDecodeInFlightRef.current = false;
 
-      ctx.drawImage(bitmap, 0, 0);
-      bitmap.close();
-      frameCountRef.current++;
-    }).catch(() => {
-      // Skip corrupted frames
-    });
+      // If a frame arrived right as we finished, kick the loop again.
+      if (jpegPendingFrameRef.current) {
+        Promise.resolve().then(() => { void processJpegFrames(); });
+      }
+    }
   }, []);
+
+  const renderFrame = useCallback((data: ArrayBuffer) => {
+    // Overwrite any pending frame; we only care about the latest.
+    jpegPendingFrameRef.current = data;
+    if (!jpegDecodeInFlightRef.current) {
+      void processJpegFrames();
+    }
+  }, [processJpegFrames]);
 
   // Map browser pixel coordinates to remote screen coordinates.
   const scaleCoordsFn = useCallback((clientX: number, clientY: number) => {
@@ -292,7 +475,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // ── Input: send event ──────────────────────────────────────────────
 
   const sendInputFn = useCallback((event: Record<string, unknown>) => {
-    if (transport === 'webrtc') {
+    const t = transportRef.current;
+    if (t === 'webrtc') {
       const ch = webrtcRef.current?.inputChannel;
       if (ch && ch.readyState === 'open') {
         ch.send(JSON.stringify(event));
@@ -304,17 +488,73 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'input', event }));
     }
-  }, [transport]);
+  }, []);
+
+  const releaseAllKeys = useCallback(() => {
+    const keys = Array.from(pressedKeysRef.current);
+    if (keys.length === 0) return;
+    for (const key of keys) {
+      sendInputFn({ type: 'key_up', key });
+    }
+    pressedKeysRef.current.clear();
+  }, [sendInputFn]);
+
+  const flushWebRTCMouseMove = useCallback(() => {
+    webrtcMouseMoveRafRef.current = null;
+    const pending = webrtcMouseMovePendingRef.current;
+    if (!pending) return;
+
+    const session = webrtcRef.current;
+    if (!session) return;
+    const ch = session.inputChannel;
+    if (!ch || ch.readyState !== 'open') return;
+
+    const maxBuffered = 512 * 1024;
+    if (ch.bufferedAmount > maxBuffered) return; // wait for bufferedamountlow
+
+    webrtcMouseMovePendingRef.current = null;
+    ch.send(JSON.stringify({ type: 'mouse_move', x: pending.x, y: pending.y }));
+  }, []);
+
+  // Native wheel handler to enable preventDefault on non-passive listener
+  useEffect(() => {
+    if (!transport) return;
+    const el = transport === 'webrtc' ? videoRef.current : canvasRef.current;
+    if (!el) return;
+
+    function onWheel(event: Event) {
+      const e = event as WheelEvent;
+      e.preventDefault();
+      const r = wheelDeltaToSteps(wheelAccRef.current, e.deltaY, e.deltaMode);
+      wheelAccRef.current = r.acc;
+      if (r.steps === 0) return;
+      const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
+      sendInputFn({ type: 'mouse_scroll', x, y, delta: r.steps });
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [transport, scaleCoordsFn, sendInputFn]);
 
   // ── Input: mouse handlers ──────────────────────────────────────────
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
+    if (transport === 'webrtc') {
+      webrtcMouseMovePendingRef.current = { x, y };
+      if (webrtcMouseMoveRafRef.current === null) {
+        webrtcMouseMoveRafRef.current = requestAnimationFrame(flushWebRTCMouseMove);
+      }
+      return;
+    }
     sendInputFn({ type: 'mouse_move', x, y });
-  }, [scaleCoordsFn, sendInputFn]);
+  }, [flushWebRTCMouseMove, scaleCoordsFn, sendInputFn, transport]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    // preventDefault on mousedown suppresses the browser's default focus behavior,
+    // so explicitly re-focus the video/canvas to ensure keyboard events are captured.
+    (e.currentTarget as HTMLElement).focus();
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
     const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
     sendInputFn({ type: 'mouse_down', x, y, button });
@@ -330,22 +570,80 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     e.preventDefault();
   }, []);
 
+  // ── Input: paste as keystrokes ────────────────────────────────────
+
+  const handlePasteAsKeystrokes = useCallback(async () => {
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      return;
+    }
+    if (!text) return;
+
+    const events = textToKeyEvents(text);
+    pasteCancelRef.current = false;
+    setPasteProgress({ current: 0, total: events.length });
+
+    for (let i = 0; i < events.length; i++) {
+      if (pasteCancelRef.current) break;
+      sendInputFn({ ...events[i] });
+
+      if (i % 20 === 0) {
+        setPasteProgress({ current: i + 1, total: events.length });
+        // Yield to event loop every 20 chars to keep UI responsive
+        await new Promise(r => setTimeout(r, 5));
+      }
+    }
+
+    setPasteProgress(null);
+  }, [sendInputFn]);
+
+  const handleCancelPaste = useCallback(() => {
+    pasteCancelRef.current = true;
+  }, []);
+
   // ── Input: keyboard handlers ───────────────────────────────────────
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
     if (isModifierOnly(e.nativeEvent)) return;
 
-    const key = mapKey(e.nativeEvent);
+    // Ctrl+Shift+V / Cmd+Shift+V → paste as keystrokes
+    const ne = e.nativeEvent;
+    if (ne.code === 'KeyV' && ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
+      handlePasteAsKeystrokes();
+      return;
+    }
+
+    const key = mapKey(ne);
     if (!key) return;
 
-    const modifiers = getModifiers(e.nativeEvent);
-    sendInputFn({ type: 'key_press', key, modifiers });
-  }, [sendInputFn]);
+    const modifiers = getModifiers(ne);
+    // If any modifier is held, fall back to the agent's key_press (which applies modifiers).
+    // Otherwise, use key_down/key_up for proper "held key" semantics.
+    if (modifiers.length > 0) {
+      sendInputFn({ type: 'key_press', key, modifiers });
+      return;
+    }
+
+    if (e.repeat) return;
+    if (pressedKeysRef.current.has(key)) return;
+    pressedKeysRef.current.add(key);
+    sendInputFn({ type: 'key_down', key });
+  }, [sendInputFn, handlePasteAsKeystrokes]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
-  }, []);
+    if (isModifierOnly(e.nativeEvent)) return;
+
+    const key = mapKey(e.nativeEvent);
+    if (!key) return;
+
+    if (!pressedKeysRef.current.has(key)) return;
+    pressedKeysRef.current.delete(key);
+    sendInputFn({ type: 'key_up', key });
+  }, [sendInputFn]);
 
   // ── Toolbar: config changes ────────────────────────────────────────
 
@@ -375,15 +673,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, []);
 
-  const handleCtrlAltDel = useCallback(() => {
-    sendInputFn({ type: 'key_press', key: 'delete', modifiers: ['ctrl', 'alt'] });
+  const handleSendKeys = useCallback((key: string, modifiers: string[]) => {
+    sendInputFn({ type: 'key_press', key, modifiers });
   }, [sendInputFn]);
 
   const handleDisconnect = useCallback(() => {
-    wsRef.current?.close();
+    releaseAllKeys();
+
+    if (webrtcMouseMoveRafRef.current !== null) {
+      cancelAnimationFrame(webrtcMouseMoveRafRef.current);
+      webrtcMouseMoveRafRef.current = null;
+    }
+    webrtcMouseMovePendingRef.current = null;
+
+    wsCleanupRef.current?.();
+    wsCleanupRef.current = null;
     webrtcRef.current?.close();
+    webrtcRef.current = null;
     onDisconnect();
-  }, [onDisconnect]);
+  }, [onDisconnect, releaseAllKeys]);
 
   // ── Render ─────────────────────────────────────────────────────────
 
@@ -408,9 +716,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         scale={scale}
         maxFps={maxFps}
         bitrate={bitrate}
+        pasteProgress={pasteProgress}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}
-        onCtrlAltDel={handleCtrlAltDel}
+        onSendKeys={handleSendKeys}
+        onPasteAsKeystrokes={handlePasteAsKeystrokes}
+        onCancelPaste={handleCancelPaste}
         onDisconnect={handleDisconnect}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black">
@@ -422,7 +733,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           playsInline
           muted
           className={`max-w-full max-h-full object-contain outline-none cursor-default ${transport !== 'webrtc' ? 'hidden' : ''}`}
-          style={{ imageRendering: 'auto' }}
           {...interactionProps}
         />
 
@@ -431,7 +741,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           ref={canvasRef}
           tabIndex={0}
           className={`max-w-full max-h-full object-contain outline-none cursor-default ${transport !== 'websocket' ? 'hidden' : ''}`}
-          style={{ imageRendering: 'auto' }}
           {...interactionProps}
         />
 

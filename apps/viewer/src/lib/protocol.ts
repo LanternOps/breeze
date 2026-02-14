@@ -8,6 +8,17 @@ export interface ConnectionParams {
   apiUrl: string;
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+}
+
+function joinPaths(basePath: string, path: string): string {
+  const base = basePath.endsWith('/') ? basePath.slice(0, -1) : basePath;
+  const extra = path.startsWith('/') ? path : `/${path}`;
+  if (base === '' || base === '/') return extra;
+  return `${base}${extra}`;
+}
+
 export function parseDeepLink(url: string): ConnectionParams | null {
   try {
     // Normalize various URL formats that macOS/Windows/Linux may deliver:
@@ -30,7 +41,16 @@ export function parseDeepLink(url: string): ConnectionParams | null {
       return null;
     }
 
-    return { sessionId, connectCode, apiUrl };
+    // Validate apiUrl and require https except for localhost/loopback (dev).
+    const api = new URL(apiUrl.trim());
+    if (api.protocol !== 'https:' && api.protocol !== 'http:') {
+      return null;
+    }
+    if (api.protocol === 'http:' && !isLoopbackHost(api.hostname)) {
+      return null;
+    }
+
+    return { sessionId, connectCode, apiUrl: api.toString().replace(/\/$/, '') };
   } catch {
     return null;
   }
@@ -40,6 +60,13 @@ export function parseDeepLink(url: string): ConnectionParams | null {
  * Build the WebSocket URL for a desktop session
  */
 export function buildWsUrl(apiUrl: string, sessionId: string, ticket: string): string {
-  const wsBase = apiUrl.replace(/^http/, 'ws');
-  return `${wsBase}/api/v1/desktop-ws/${sessionId}/ws?ticket=${encodeURIComponent(ticket)}`;
+  const u = new URL(apiUrl);
+  if (u.protocol === 'https:') u.protocol = 'wss:';
+  else if (u.protocol === 'http:') u.protocol = 'ws:';
+  else throw new Error(`Unsupported API protocol for WebSocket: ${u.protocol}`);
+
+  u.pathname = joinPaths(u.pathname, `/api/v1/desktop-ws/${sessionId}/ws`);
+  u.search = new URLSearchParams({ ticket }).toString();
+  u.hash = '';
+  return u.toString();
 }
