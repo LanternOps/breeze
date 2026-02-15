@@ -362,6 +362,28 @@ coreRoutes.get(
   }
 );
 
+// Get management posture for a device
+coreRoutes.get(
+  '/:id/management-posture',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    return c.json({
+      deviceId,
+      hostname: device.hostname,
+      posture: device.managementPosture ?? null,
+      collected: device.managementPosture != null,
+    });
+  }
+);
+
 // PATCH /devices/:id - Update device
 coreRoutes.patch(
   '/:id',
