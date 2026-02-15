@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/host"
+
 	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -51,6 +53,7 @@ type HeartbeatPayload struct {
 	AgentVersion     string                    `json:"agentVersion"`
 	PendingReboot    bool                      `json:"pendingReboot,omitempty"`
 	LastUser         string                    `json:"lastUser,omitempty"`
+	UptimeSeconds    int64                     `json:"uptime,omitempty"`
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 }
 
@@ -1139,6 +1142,13 @@ func (h *Heartbeat) sendHeartbeat() {
 	payload.PendingReboot = pendingReboot
 	if h.sessionCol != nil {
 		payload.LastUser = h.sessionCol.LastUser()
+	}
+
+	// Compute uptime from boot time
+	if bootTime, err := host.BootTime(); err != nil {
+		log.Warn("failed to read boot time for uptime calculation", "error", err)
+	} else if bootTime > 0 {
+		payload.UptimeSeconds = time.Now().Unix() - int64(bootTime)
 	}
 
 	// Include user helper session info in heartbeat

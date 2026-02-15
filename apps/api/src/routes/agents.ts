@@ -127,8 +127,8 @@ const heartbeatSchema = z.object({
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   pendingReboot: z.boolean().optional(),
-  lastUser: z.string().optional(),
-  uptime: z.number().int().optional()
+  lastUser: z.string().max(255).optional(),
+  uptime: z.number().int().min(0).optional()
 });
 
 const commandResultSchema = z.object({
@@ -1612,6 +1612,8 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
       lastSeenAt: new Date(),
       status: 'online',
       agentVersion: data.agentVersion,
+      lastUser: data.lastUser ?? null,
+      uptimeSeconds: data.uptime ?? null,
       updatedAt: new Date()
     })
     .where(eq(devices.id, device.id));

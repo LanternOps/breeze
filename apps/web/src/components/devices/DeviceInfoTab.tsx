@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Monitor, Cpu, HardDrive, MemoryStick, Shield, Tag, Info, ListChecks, Pencil, Check, X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatUptime } from '../../lib/utils';
 
 type DeviceInfoTabProps = {
   deviceId: string;
@@ -28,6 +29,8 @@ type DeviceInfo = {
   status?: string | null;
   lastSeenAt?: string | null;
   enrolledAt?: string | null;
+  lastUser?: string | null;
+  uptimeSeconds?: number | null;
   tags?: string[];
   customFields?: Record<string, unknown>;
   hardware?: {
@@ -336,6 +339,8 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           </div>
           <InfoRow label="Last Seen" value={formatDate(info?.lastSeenAt)} />
           <InfoRow label="Enrolled" value={formatDate(info?.enrolledAt)} />
+          <InfoRow label="Uptime" value={formatUptime(info?.uptimeSeconds)} />
+          <InfoRow label="Logged-in User" value={info?.lastUser ?? '—'} />
         </Section>
 
         {tags.length > 0 && (

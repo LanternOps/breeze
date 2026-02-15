@@ -33,6 +33,8 @@ export const devices = pgTable('devices', {
   enrolledBy: uuid('enrolled_by').references(() => users.id),
   tags: text('tags').array().default([]),
   customFields: jsonb('custom_fields').default({}),
+  lastUser: varchar('last_user', { length: 255 }),
+  uptimeSeconds: integer('uptime_seconds'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

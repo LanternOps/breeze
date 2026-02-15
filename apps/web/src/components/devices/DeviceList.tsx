@@ -21,6 +21,8 @@ export type Device = {
   siteName: string;
   agentVersion: string;
   tags: string[];
+  lastUser?: string;
+  uptimeSeconds?: number;
 };
 
 type DeviceListProps = {
