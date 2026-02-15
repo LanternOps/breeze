@@ -8,8 +8,8 @@ func ListMonitors() ([]MonitorInfo, error) {
 	return []MonitorInfo{{
 		Index:     0,
 		Name:      "Default",
-		Width:     0,
-		Height:    0,
+		Width:     1920,
+		Height:    1080,
 		IsPrimary: true,
 	}}, nil
 }

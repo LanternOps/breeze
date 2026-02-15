@@ -48,8 +48,8 @@ export async function createWebRTCSession(
         iceServers = iceData.iceServers;
       }
     }
-  } catch {
-    // Fall back to STUN only
+  } catch (error) {
+    console.warn('Failed to fetch ICE servers, falling back to STUN-only:', error);
   }
 
   const pc = new RTCPeerConnection({ iceServers });

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -75,9 +76,15 @@ type input struct {
 
 // WindowsInputHandler handles input on Windows
 type WindowsInputHandler struct {
-	buttonDown bool // true while any mouse button is held (between down/up)
-	offsetX    int  // virtual screen X offset of captured monitor
-	offsetY    int  // virtual screen Y offset of captured monitor
+	mu           sync.Mutex
+	buttonDown   bool // true while any mouse button is held (between down/up)
+	offsetX      int  // virtual screen X offset of captured monitor
+	offsetY      int  // virtual screen Y offset of captured monitor
+	cachedVX     int
+	cachedVY     int
+	cachedCW     int
+	cachedCH     int
+	metricsValid bool
 }
 
 // NewInputHandler creates a Windows input handler
@@ -86,23 +93,32 @@ func NewInputHandler() InputHandler {
 }
 
 func (h *WindowsInputHandler) SetDisplayOffset(x, y int) {
+	h.mu.Lock()
 	h.offsetX = x
 	h.offsetY = y
+	h.mu.Unlock()
 }
 
 func (h *WindowsInputHandler) SendMouseMove(x, y int) error {
-	if h.buttonDown {
+	h.mu.Lock()
+	dragging := h.buttonDown
+	h.mu.Unlock()
+
+	if dragging {
 		// During a drag, use SendInput so the move goes through the Windows
 		// input queue and respects mouse capture. Without this, apps like
 		// Windows Terminal don't see WM_MOUSEMOVE with MK_LBUTTON and
 		// click-drag text selection breaks.
-		vx, vy, ok := screenToAbsolute(x, y)
+		vx, vy, ok := h.screenToAbsolute(x, y)
 		if ok {
 			inp := input{inputType: INPUT_MOUSE}
 			inp.mi.dx = vx
 			inp.mi.dy = vy
 			inp.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
-			sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+			ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+			if ret == 0 {
+				slog.Debug("SendInput failed", "flags", inp.mi.dwFlags)
+			}
 			return nil
 		}
 	}
@@ -114,31 +130,28 @@ func (h *WindowsInputHandler) SendMouseMove(x, y int) error {
 	return nil
 }
 
-// Cached virtual screen metrics — refreshed once per drag start.
-var (
-	cachedVX, cachedVY int
-	cachedCW, cachedCH int
-	metricsValid       bool
-)
-
-func refreshScreenMetrics() {
+// refreshScreenMetrics refreshes the cached virtual screen metrics.
+// Caller must hold h.mu.
+func (h *WindowsInputHandler) refreshScreenMetrics() {
 	vx, _, _ := getSystemMetrics.Call(SM_XVIRTUALSCREEN)
 	vy, _, _ := getSystemMetrics.Call(SM_YVIRTUALSCREEN)
 	cw, _, _ := getSystemMetrics.Call(SM_CXVIRTUALSCREEN)
 	ch, _, _ := getSystemMetrics.Call(SM_CYVIRTUALSCREEN)
-	cachedVX, cachedVY = int(vx), int(vy)
-	cachedCW, cachedCH = int(cw), int(ch)
-	metricsValid = cachedCW > 0 && cachedCH > 0
+	h.cachedVX, h.cachedVY = int(vx), int(vy)
+	h.cachedCW, h.cachedCH = int(cw), int(ch)
+	h.metricsValid = h.cachedCW > 0 && h.cachedCH > 0
 }
 
 // screenToAbsolute converts screen coordinates to the normalized 0–65535
 // coordinate space required by MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK.
-func screenToAbsolute(x, y int) (absX, absY int32, ok bool) {
-	if !metricsValid {
+func (h *WindowsInputHandler) screenToAbsolute(x, y int) (absX, absY int32, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.metricsValid {
 		return 0, 0, false
 	}
-	absX = int32(((x - cachedVX) * 65536) / cachedCW)
-	absY = int32(((y - cachedVY) * 65536) / cachedCH)
+	absX = int32(((x - h.cachedVX) * 65536) / h.cachedCW)
+	absY = int32(((y - h.cachedVY) * 65536) / h.cachedCH)
 	return absX, absY, true
 }
 
@@ -153,8 +166,11 @@ func (h *WindowsInputHandler) SendMouseClick(x, y int, button string) error {
 }
 
 func (h *WindowsInputHandler) SendMouseDown(x, y int, button string) error {
+	h.mu.Lock()
 	h.buttonDown = true
-	refreshScreenMetrics() // cache once per drag — avoid 4 syscalls per move
+	h.refreshScreenMetrics() // cache once per drag — avoid 4 syscalls per move
+	h.mu.Unlock()
+
 	// Position cursor before pressing — without this, the button press fires
 	// at the previous cursor location and drag-select operations start from
 	// the wrong origin (e.g. terminal text selection fails).
@@ -177,7 +193,10 @@ func (h *WindowsInputHandler) SendMouseDown(x, y int, button string) error {
 	inp := input{inputType: INPUT_MOUSE}
 	inp.mi.dwFlags = flags
 
-	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		slog.Debug("SendInput failed", "flags", inp.mi.dwFlags)
+	}
 	return nil
 }
 
@@ -187,7 +206,10 @@ func (h *WindowsInputHandler) SendMouseUp(x, y int, button string) error {
 	if err := h.SendMouseMove(x, y); err != nil {
 		return err
 	}
+
+	h.mu.Lock()
 	h.buttonDown = false
+	h.mu.Unlock()
 
 	var flags uint32
 	switch button {
@@ -204,7 +226,10 @@ func (h *WindowsInputHandler) SendMouseUp(x, y int, button string) error {
 	inp := input{inputType: INPUT_MOUSE}
 	inp.mi.dwFlags = flags
 
-	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		slog.Debug("SendInput failed", "flags", inp.mi.dwFlags)
+	}
 	return nil
 }
 
@@ -218,7 +243,10 @@ func (h *WindowsInputHandler) SendMouseScroll(x, y int, delta int) error {
 	// Negate: browser deltaY positive = scroll down, but Windows WHEEL positive = scroll up
 	inp.mi.mouseData = uint32(-delta * 120) // Windows uses multiples of WHEEL_DELTA (120)
 
-	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		slog.Debug("SendInput failed", "flags", inp.mi.dwFlags)
+	}
 	return nil
 }
 
@@ -272,7 +300,10 @@ func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 		ki.dwFlags = KEYEVENTF_KEYUP
 	}
 
-	sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	if ret == 0 {
+		slog.Debug("SendInput failed", "flags", ki.dwFlags)
+	}
 }
 
 // vkToScanCode uses MapVirtualKeyW to derive the hardware scan code for a VK.
@@ -346,8 +377,11 @@ func (h *WindowsInputHandler) SendKeyUp(key string) error {
 
 func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
 	// Translate viewer-relative coordinates to virtual screen coordinates.
+	h.mu.Lock()
 	event.X += h.offsetX
 	event.Y += h.offsetY
+	h.mu.Unlock()
+
 	switch event.Type {
 	case "mouse_move":
 		return h.SendMouseMove(event.X, event.Y)

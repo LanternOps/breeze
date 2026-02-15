@@ -21,7 +21,7 @@ type comGUID struct {
 
 // comCall invokes a COM vtable method at the given index.
 // obj is a pointer to a COM interface (pointer to pointer to vtable).
-// Uses a stack-allocated array for up to 4 args to avoid heap allocations in the hot path.
+// Uses a stack-allocated array for up to 3 extra args to avoid heap allocations in the hot path.
 func comCall(obj uintptr, vtableIdx int, args ...uintptr) (uintptr, error) {
 	if obj == 0 {
 		return 0, fmt.Errorf("COM vtable[%d] called on nil object", vtableIdx)
@@ -220,11 +220,11 @@ const (
 	vtblProcessOutput       = 25 // 3 + 22
 
 	// IMFSample vtable offsets (extends IMFAttributes, base 33 + method index)
-	vtblSetSampleTime       = 36 // 33 + 3
-	vtblSetSampleDuration   = 38 // 33 + 5
-	vtblAddBuffer           = 42 // 33 + 9
-	vtblConvertToContiguous = 41 // 33 + 8
-	vtblGetTotalLength      = 45 // 33 + 12
+	vtblSetSampleTime       = 36 // IMFSample: 33 + 3 (SetSampleTime)
+	vtblSetSampleDuration   = 38 // IMFSample: 33 + 5 (SetSampleDuration)
+	vtblConvertToContiguous = 41 // IMFSample: 33 + 8 (ConvertToContiguousBuffer)
+	vtblAddBuffer           = 42 // IMFSample: 33 + 9 (AddBuffer)
+	vtblGetTotalLength      = 45 // IMFSample: 33 + 12 (GetTotalLength)
 
 	// IMFMediaBuffer vtable offsets (base 3 + method index)
 	vtblBufLock             = 3
@@ -239,7 +239,7 @@ const (
 	vtblQueryInterface = 0
 
 	// ICodecAPI vtable offsets (extends IUnknown)
-	vtblCodecAPISetValue = 9 // 3(IUnknown) + 6(IsSupported..GetValue) + 0
+	vtblCodecAPISetValue = 9 // ICodecAPI: 3(IUnknown) + 6(IsSupported through GetValue)
 
 	// ID3D11VideoDevice vtable offsets (IUnknown base 0-2, then methods)
 	// 3=CreateVideoDecoder, 4=CreateVideoProcessor, 5=CreateAuthenticatedChannel,

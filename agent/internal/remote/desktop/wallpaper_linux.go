@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -42,10 +43,18 @@ func (b *linuxWallpaperBackend) SetSolidBlack() error {
 	switch de {
 	case "gnome", "cinnamon":
 		// Remove wallpaper image, set solid color to black
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "''").Run()
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "''").Run()
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "primary-color", "#000000").Run()
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "color-shading-type", "solid").Run()
+		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "").Run(); err != nil {
+			slog.Debug("gsettings set picture-uri failed", "error", err)
+		}
+		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "").Run(); err != nil {
+			slog.Debug("gsettings set picture-uri-dark failed", "error", err)
+		}
+		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "primary-color", "#000000").Run(); err != nil {
+			slog.Debug("gsettings set primary-color failed", "error", err)
+		}
+		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "color-shading-type", "solid").Run(); err != nil {
+			slog.Debug("gsettings set color-shading-type failed", "error", err)
+		}
 		return nil
 	case "xfce":
 		_ = exec.Command("xfconf-query", "-c", "xfce4-desktop",

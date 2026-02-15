@@ -535,8 +535,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         let bitmap: ImageBitmap;
         try {
           bitmap = await createImageBitmap(blob);
-        } catch {
-          // Skip corrupted frames
+        } catch (err) {
+          console.warn('JPEG frame decode failed, skipping corrupted frame:', err);
           continue;
         }
 
@@ -687,11 +687,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // preventDefault on mousedown suppresses the browser's default focus behavior,
     // so explicitly re-focus the video/canvas to ensure keyboard events are captured.
     (e.currentTarget as HTMLElement).focus();
-    // Flush any pending RAF mouse_move so it doesn't arrive after mouse_down.
+    // Flush any pending RAF mouse_move so the cursor is at the correct
+    // position when the button press fires (consistent with mouseup).
     if (webrtcMouseMoveRafRef.current !== null) {
       cancelAnimationFrame(webrtcMouseMoveRafRef.current);
       webrtcMouseMoveRafRef.current = null;
+    }
+    const pending = webrtcMouseMovePendingRef.current;
+    if (pending) {
       webrtcMouseMovePendingRef.current = null;
+      sendInputFn({ type: 'mouse_move', x: pending.x, y: pending.y });
     }
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
     const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';

@@ -90,6 +90,8 @@ func NewSessionManager() *SessionManager {
 
 // ICEServerConfig represents an ICE server from the API payload.
 type ICEServerConfig struct {
+	// URLs can be a string or []string in the API payload, so we use interface{}
+	// and handle both cases in parseICEServers.
 	URLs       interface{} `json:"urls"`
 	Username   string      `json:"username,omitempty"`
 	Credential string      `json:"credential,omitempty"`
@@ -207,7 +209,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		webrtc.RTPCodecCapability{
 			MimeType:    webrtc.MimeTypeH264,
 			ClockRate:   90000,
-			SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f",
+			// Main profile Level 3.1 — matches MFT encoder's CABAC configuration.
+			// VideoToolbox uses Baseline; browser decoders accept both transparently.
+			SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d001f",
 		},
 		"video",
 		"desktop",
@@ -714,6 +718,11 @@ func (s *Session) captureLoopDXGI() {
 			if hasTP && s.encoder != nil {
 				s.encoder.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
 			}
+			// Update encoder dimensions for the new monitor
+			if w, h, err := newCap.GetScreenBounds(); err == nil && s.encoder != nil {
+				_ = s.encoder.SetDimensions(w, h)
+				_ = s.encoder.ForceKeyframe()
+			}
 		}
 
 		// If the capturer falls back to a non-blocking mode (e.g. DXGI→GDI),
@@ -870,6 +879,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	t0 := time.Now()
 	img, err := s.capturer.Capture()
 	if err != nil {
+		slog.Debug("Screen capture error", "session", s.id, "error", err)
 		return
 	}
 	if img == nil {
@@ -1127,13 +1137,12 @@ func (s *Session) handleControlMessage(data []byte) {
 		s.mu.Unlock()
 		s.capturerSwapped.Store(true)
 		applyDisplayOffset(s.inputHandler, msg.Value)
-		// Reinit encoder dimensions for the new monitor
+		// Get bounds for viewer notification — encoder dimensions are updated
+		// by the capture loop when it detects capturerSwapped, avoiding a race
+		// with the encoding goroutine.
 		w, h, boundsErr := newCap.GetScreenBounds()
 		if boundsErr != nil {
 			slog.Warn("Failed to get bounds for new monitor", "display", msg.Value, "error", boundsErr)
-		} else if s.encoder != nil {
-			_ = s.encoder.SetDimensions(w, h)
-			_ = s.encoder.ForceKeyframe()
 		}
 		// Notify viewer of new resolution
 		resp, _ := json.Marshal(map[string]any{

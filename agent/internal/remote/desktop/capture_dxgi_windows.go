@@ -465,12 +465,17 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	}
 
 	// CopyResource(staging, texture) — GPU-to-GPU copy
-	syscall.SyscallN(
+	copyHr, _, _ := syscall.SyscallN(
 		comVtblFn(c.context, d3d11CtxCopyResource),
 		c.context,
 		c.staging,
 		texture,
 	)
+	if int32(copyHr) < 0 {
+		comRelease(texture)
+		syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
+		return nil, fmt.Errorf("CopyResource failed: 0x%08X", uint32(copyHr))
+	}
 	comRelease(texture)
 
 	// Map staging texture
@@ -786,12 +791,17 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 
 	// CopyResource(gpuTexture, texture) — GPU-to-GPU copy into DEFAULT-usage texture
 	// This texture has RENDER_TARGET bind, compatible with video processor input views.
-	syscall.SyscallN(
+	copyHr, _, _ := syscall.SyscallN(
 		comVtblFn(c.context, d3d11CtxCopyResource),
 		c.context,
 		c.gpuTexture,
 		texture,
 	)
+	if int32(copyHr) < 0 {
+		comRelease(texture)
+		syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
+		return 0, fmt.Errorf("CopyResource failed: 0x%08X", uint32(copyHr))
+	}
 	comRelease(texture)
 
 	// Return GPU texture handle — caller must call ReleaseTexture()

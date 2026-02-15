@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -57,6 +58,7 @@ type waveFormatEx struct {
 // wasapiCapturer captures system audio via WASAPI loopback.
 type wasapiCapturer struct {
 	mu            sync.Mutex
+	started       bool
 	enumerator    uintptr
 	device        uintptr
 	audioClient   uintptr
@@ -73,6 +75,17 @@ func NewAudioCapturer() AudioCapturer {
 }
 
 func (w *wasapiCapturer) Start(callback func([]byte)) error {
+	w.mu.Lock()
+	if w.started {
+		w.mu.Unlock()
+		return fmt.Errorf("audio capturer already started")
+	}
+	w.started = true
+	w.mu.Unlock()
+
+	// Lock this goroutine to its OS thread for the lifetime of COM operations
+	runtime.LockOSThread()
+
 	// Initialize COM for this goroutine (S_FALSE = already initialized, which is OK)
 	hr, _, _ := procCoInitializeEx.Call(0, 0) // COINIT_MULTITHREADED
 	if int32(hr) < 0 {
@@ -177,6 +190,9 @@ func (w *wasapiCapturer) Start(callback func([]byte)) error {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
+		// Lock goroutine to OS thread for COM apartment safety
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
 		// COM per-thread init
 		hr, _, _ := procCoInitializeEx.Call(0, 0)
 		if int32(hr) < 0 {
@@ -233,7 +249,8 @@ func (w *wasapiCapturer) captureLoop(callback func([]byte), channels, sampleRate
 					slog.Warn("Audio device invalidated, stopping capture")
 					return
 				}
-				break // no data or transient error, retry on next tick
+				slog.Debug("WASAPI GetBuffer transient error", "hr", fmt.Sprintf("0x%08X", uint32(hr)))
+				break // retry on next tick
 			}
 			if numFrames == 0 {
 				break

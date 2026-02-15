@@ -617,11 +617,7 @@ func (m *mftEncoder) unlockAsyncMFT(transform uintptr) error {
 	return nil
 }
 
-// handleStreamChange logs MF_E_TRANSFORM_STREAM_CHANGE. The software H264
-// encoder signals this on its first output to report the chosen codec params
-// (profile/level). The output format is still H264 — just retry ProcessOutput.
-
-// Encode takes RGBA pixel data, converts to NV12, encodes to H264.
+// Encode takes RGBA or BGRA pixel data (per SetPixelFormat), converts to NV12, and encodes to H264.
 // Returns nil, nil when the MFT is buffering (no output yet).
 func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	m.mu.Lock()
@@ -755,8 +751,12 @@ func (m *mftEncoder) createSample(nv12 []byte) (uintptr, error) {
 	sampleTime := int64(m.frameIdx) * frameDuration100ns
 	m.frameIdx++
 
-	comCall(pSample, vtblSetSampleTime, uintptr(sampleTime))
-	comCall(pSample, vtblSetSampleDuration, uintptr(frameDuration100ns))
+	if _, err := comCall(pSample, vtblSetSampleTime, uintptr(sampleTime)); err != nil {
+		slog.Debug("SetSampleTime failed (non-fatal)", "error", err)
+	}
+	if _, err := comCall(pSample, vtblSetSampleDuration, uintptr(frameDuration100ns)); err != nil {
+		slog.Debug("SetSampleDuration failed (non-fatal)", "error", err)
+	}
 
 	// Add buffer to sample
 	_, err = comCall(pSample, vtblAddBuffer, pBuffer)

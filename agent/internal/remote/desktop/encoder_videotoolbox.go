@@ -321,6 +321,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime/cgo"
 	"sync"
 	"time"
@@ -514,15 +515,21 @@ func (v *videotoolboxEncoder) SetDimensions(width, height int) error {
 	}
 
 	// Apply baseline realtime config.
-	_ = C.vtSetPropertyBool(session, C.kVTCompressionPropertyKey_RealTime, 1)
+	if st := C.vtSetPropertyBool(session, C.kVTCompressionPropertyKey_RealTime, 1); st != 0 {
+		slog.Warn("VideoToolbox: failed to set RealTime", "OSStatus", int32(st))
+	}
 	_ = C.vtSetPropertyBool(session, C.kVTCompressionPropertyKey_AllowFrameReordering, 0)
 	_ = C.vtSetPropertyString(session, C.kVTCompressionPropertyKey_ProfileLevel, C.kVTProfileLevel_H264_Baseline_AutoLevel)
 	_ = C.vtSetPropertyString(session, C.kVTCompressionPropertyKey_H264EntropyMode, C.kVTH264EntropyMode_CAVLC)
 
 	// Bitrate + FPS.
-	_ = C.vtSetPropertyInt(session, C.kVTCompressionPropertyKey_AverageBitRate, C.int32_t(v.cfg.Bitrate))
+	if st := C.vtSetPropertyInt(session, C.kVTCompressionPropertyKey_AverageBitRate, C.int32_t(v.cfg.Bitrate)); st != 0 {
+		slog.Warn("VideoToolbox: failed to set bitrate", "bitrate", v.cfg.Bitrate, "OSStatus", int32(st))
+	}
 	_ = C.vtSetDataRateLimits(session, C.int32_t(v.cfg.Bitrate/8), 1)
-	_ = C.vtSetPropertyInt(session, C.kVTCompressionPropertyKey_ExpectedFrameRate, C.int32_t(v.cfg.FPS))
+	if st := C.vtSetPropertyInt(session, C.kVTCompressionPropertyKey_ExpectedFrameRate, C.int32_t(v.cfg.FPS)); st != 0 {
+		slog.Warn("VideoToolbox: failed to set FPS", "fps", v.cfg.FPS, "OSStatus", int32(st))
+	}
 	_ = C.vtSetPropertyInt(session, C.kVTCompressionPropertyKey_MaxKeyFrameInterval, C.int32_t(v.cfg.FPS*2))
 
 	if q, ok := vtQualityFloat(v.cfg.Quality); ok {
@@ -616,7 +623,9 @@ func goVTCompressionOutputCallback(outputCallbackRefCon C.uintptr_t, sourceFrame
 	defer func() {
 		// Defensive: a stale/invalid sourceFrameRefCon would otherwise panic
 		// on cgo.Handle.Value() and crash the process.
-		_ = recover()
+		if r := recover(); r != nil {
+			slog.Error("VideoToolbox output callback recovered from panic", "panic", r)
+		}
 	}()
 
 	_ = outputCallbackRefCon

@@ -264,12 +264,15 @@ func (g *gpuConverter) ConvertAndReadback() ([]byte, error) {
 	}
 
 	// 2. CopyResource: NV12 render target → NV12 staging (GPU-to-GPU)
-	syscall.SyscallN(
+	copyHr, _, _ := syscall.SyscallN(
 		comVtblFn(g.d3dContext, d3d11CtxCopyResource),
 		g.d3dContext,
 		g.nv12Staging,
 		g.nv12Texture,
 	)
+	if int32(copyHr) < 0 {
+		return nil, fmt.Errorf("CopyResource NV12: 0x%08X", uint32(copyHr))
+	}
 
 	// 3. Map staging texture to read NV12 data
 	var mapped d3d11MappedSubresource
@@ -320,7 +323,9 @@ func (g *gpuConverter) ConvertAndReadback() ([]byte, error) {
 	// 5. Unmap
 	syscall.SyscallN(comVtblFn(g.d3dContext, d3d11CtxUnmap), g.d3dContext, g.nv12Staging, 0)
 
-	_ = nv12Size // sanity: nv12 slice is exactly this size
+	if len(nv12) != nv12Size {
+		return nil, fmt.Errorf("NV12 buffer size mismatch: got %d, want %d", len(nv12), nv12Size)
+	}
 	return nv12, nil
 }
 
