@@ -263,6 +263,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 	session.capturer = capturer
 
+	// Set display offset so input handler translates viewer-relative coords
+	// to virtual screen coords (required for multi-monitor setups).
+	displayIdx := 0
+	if len(displayIndex) > 0 {
+		displayIdx = displayIndex[0]
+	}
+	applyDisplayOffset(session.inputHandler, displayIdx)
+
 	// Get screen bounds first — needed for bitrate scaling and encoder init
 	w, h, err := capturer.GetScreenBounds()
 	if err != nil {
@@ -332,11 +340,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		maxAdaptiveBitrate = 15_000_000
 	}
 	adaptive, err := NewAdaptiveBitrate(AdaptiveConfig{
-		Encoder:    enc,
-		MinBitrate: 500_000,
-		MaxBitrate: maxAdaptiveBitrate,
-		MinQuality: QualityLow,
-		MaxQuality: QualityUltra,
+		Encoder:        enc,
+		InitialBitrate: initBitrate,
+		MinBitrate:     500_000,
+		MaxBitrate:     maxAdaptiveBitrate,
+		MinQuality:     QualityLow,
+		MaxQuality:     QualityUltra,
 	})
 	if err == nil {
 		session.adaptive = adaptive
@@ -1026,11 +1035,9 @@ func (s *Session) handleInputMessage(data []byte) {
 	// and polls at full speed. This covers mouse_move, key_down, scroll, etc.
 	s.inputActive.Store(true)
 
-	// On mouse down/up, signal the capture loop to flush the encoder pipeline.
-	// Down: drops stale frames so the click result appears immediately.
-	// Up: after dragging a window, drops buffered animation frames so the
-	// final resting position renders instantly instead of replaying the drag.
-	if event.Type == "mouse_down" || event.Type == "mouse_up" {
+	// On mouse down, signal the capture loop to flush the encoder pipeline so
+	// stale buffered frames are dropped and the click result appears immediately.
+	if event.Type == "mouse_down" {
 		s.clickFlush.Store(true)
 	}
 
@@ -1119,6 +1126,7 @@ func (s *Session) handleControlMessage(data []byte) {
 		s.capturer = newCap
 		s.mu.Unlock()
 		s.capturerSwapped.Store(true)
+		applyDisplayOffset(s.inputHandler, msg.Value)
 		// Reinit encoder dimensions for the new monitor
 		w, h, boundsErr := newCap.GetScreenBounds()
 		if boundsErr != nil {
@@ -1199,4 +1207,22 @@ func (s *Session) AddICECandidate(candidate string) error {
 	return s.peerConn.AddICECandidate(webrtc.ICECandidateInit{
 		Candidate: candidate,
 	})
+}
+
+// applyDisplayOffset queries the monitor list and sets the input handler's
+// coordinate offset so viewer-relative (0,0) maps to the captured monitor's
+// top-left corner in virtual screen space.
+func applyDisplayOffset(handler InputHandler, displayIndex int) {
+	monitors, err := ListMonitors()
+	if err != nil {
+		handler.SetDisplayOffset(0, 0)
+		return
+	}
+	for _, m := range monitors {
+		if m.Index == displayIndex {
+			handler.SetDisplayOffset(m.X, m.Y)
+			return
+		}
+	}
+	handler.SetDisplayOffset(0, 0)
 }

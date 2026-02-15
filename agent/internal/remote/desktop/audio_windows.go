@@ -30,17 +30,17 @@ const (
 	waveFormatIEEEFloat      = 0x0003
 	waveFormatExtensible     = 0xFFFE
 
-	// COM vtable indices
-	mmdeGetDefaultAudioEndpoint = 4 // IMMDeviceEnumerator::GetDefaultAudioEndpoint
-	mmDeviceActivate            = 3 // IMMDevice::Activate
-	audioClientInitialize       = 3 // IAudioClient::Initialize
-	audioClientGetBufferSize    = 4 // IAudioClient::GetBufferSize
-	audioClientGetService       = 14 // IAudioClient::GetService
-	audioClientStart            = 7 // IAudioClient::Start
-	audioClientStop             = 8 // IAudioClient::Stop
-	audioClientGetMixFormat     = 6 // IAudioClient::GetMixFormat
-	capClientGetBuffer          = 3 // IAudioCaptureClient::GetBuffer
-	capClientReleaseBuffer      = 4 // IAudioCaptureClient::ReleaseBuffer
+	// COM vtable indices (IUnknown = 0,1,2; interface methods start at 3)
+	mmdeGetDefaultAudioEndpoint = 4  // IMMDeviceEnumerator::GetDefaultAudioEndpoint
+	mmDeviceActivate            = 3  // IMMDevice::Activate
+	audioClientInitialize       = 3  // IAudioClient::Initialize
+	audioClientGetBufferSize    = 4  // IAudioClient::GetBufferSize
+	audioClientGetMixFormat     = 8  // IAudioClient::GetMixFormat (after GetStreamLatency=5, GetCurrentPadding=6, IsFormatSupported=7)
+	audioClientStart            = 10 // IAudioClient::Start (after GetDevicePeriod=9)
+	audioClientStop             = 11 // IAudioClient::Stop
+	audioClientGetService       = 14 // IAudioClient::GetService (after Reset=12, SetEventHandle=13)
+	capClientGetBuffer          = 3  // IAudioCaptureClient::GetBuffer
+	capClientReleaseBuffer      = 4  // IAudioCaptureClient::ReleaseBuffer
 )
 
 // WAVEFORMATEX layout
@@ -122,10 +122,9 @@ func (w *wasapiCapturer) Start(callback func([]byte)) error {
 	if err != nil {
 		return fmt.Errorf("GetMixFormat: %w", err)
 	}
-	// Copy by value before freeing COM memory to avoid dangling pointer.
+	// Copy by value so we own the struct (used after Initialize for capture loop config).
 	fmtCopy := *(*waveFormatEx)(unsafe.Pointer(mixFormatPtr))
 	w.mixFormat = &fmtCopy
-	procCoTaskMemFree.Call(mixFormatPtr)
 
 	slog.Info("WASAPI mix format",
 		"channels", w.mixFormat.Channels,
@@ -142,9 +141,11 @@ func (w *wasapiCapturer) Start(callback func([]byte)) error {
 		uintptr(audclntStreamLoopback),
 		uintptr(bufferDuration),
 		0, // periodicity
-		mixFormatPtr,
+		mixFormatPtr, // must be valid COM memory — free AFTER Initialize
 		0, // AudioSessionGuid
 	)
+	// Free COM memory now that Initialize has consumed it.
+	procCoTaskMemFree.Call(mixFormatPtr)
 	if err != nil {
 		return fmt.Errorf("Initialize: %w", err)
 	}

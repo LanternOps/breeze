@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -14,9 +15,17 @@ import (
 
 // DXGI/D3D11 DLL procs
 var (
-	d3d11DLL = syscall.NewLazyDLL("d3d11.dll")
+	d3d11DLL   = syscall.NewLazyDLL("d3d11.dll")
+	kernel32   = syscall.NewLazyDLL("kernel32.dll")
 
 	procD3D11CreateDevice = d3d11DLL.NewProc("D3D11CreateDevice")
+
+	// Desktop switching — needed to follow UAC/lock screen secure desktop.
+	procOpenInputDesktop  = user32.NewProc("OpenInputDesktop")
+	procSetThreadDesktop  = user32.NewProc("SetThreadDesktop")
+	procGetThreadDesktop  = user32.NewProc("GetThreadDesktop")
+	procCloseDesktop      = user32.NewProc("CloseDesktop")
+	procGetCurrentThreadId = kernel32.NewProc("GetCurrentThreadId")
 )
 
 // D3D11/DXGI constants
@@ -37,6 +46,10 @@ const (
 	dxgiErrAccessLost    = 0x887A0026
 	dxgiErrDeviceRemoved = 0x887A0005
 	dxgiErrDeviceReset   = 0x887A0007
+
+	// Desktop access rights for OpenInputDesktop (GENERIC_ALL).
+	// Required to attach to the secure desktop (UAC, lock screen).
+	desktopGenericAll = 0x10000000
 
 	// DXGI/D3D11 COM vtable indices
 	dxgiDeviceGetAdapter       = 7  // IDXGIDevice (after IUnknown+IDXGIObject)
@@ -135,6 +148,10 @@ type dxgiCapturer struct {
 
 	// True when CaptureTexture has an in-flight AcquireNextFrame that hasn't been released yet.
 	textureFrameAcquired bool
+
+	// Desktop handle opened via OpenInputDesktop for secure desktop capture.
+	// Closed on next switch or release. Zero means no explicit desktop switch.
+	currentDesktop uintptr
 
 	// Last AcquireNextFrame accumulated count
 	lastAccumulatedFrames uint32
@@ -389,7 +406,10 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	if hresult == dxgiErrAccessLost {
 		slog.Warn("DXGI access lost (desktop switch/resolution change), reinitializing")
 		c.releaseDXGI()
-		time.Sleep(500 * time.Millisecond)
+		// Try switching to the active input desktop. This handles UAC/lock
+		// screen transitions where Windows moves to the Secure Desktop.
+		c.switchToInputDesktop()
+		time.Sleep(200 * time.Millisecond)
 		if err := c.initDXGI(); err != nil {
 			slog.Warn("DXGI reinit failed, falling back to GDI", "error", err)
 			c.switchToGDI()
@@ -408,6 +428,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 			c.switchToGDI()
 			return c.gdiFallback.Capture()
 		}
+		c.switchToInputDesktop()
 		time.Sleep(500 * time.Millisecond)
 		if err := c.initDXGI(); err != nil {
 			c.switchToGDI()
@@ -545,9 +566,11 @@ func (c *dxgiCapturer) Close() error {
 	defer c.mu.Unlock()
 
 	if c.gdiFallback != nil {
+		c.closeDesktopHandle()
 		return c.gdiFallback.Close()
 	}
 	c.releaseDXGI()
+	c.closeDesktopHandle()
 	return nil
 }
 
@@ -581,6 +604,63 @@ func (c *dxgiCapturer) releaseDXGI() {
 		c.device = 0
 	}
 	c.inited = false
+}
+
+// closeDesktopHandle closes the desktop handle opened via OpenInputDesktop.
+// Called during final cleanup (Close).
+func (c *dxgiCapturer) closeDesktopHandle() {
+	if c.currentDesktop != 0 {
+		procCloseDesktop.Call(c.currentDesktop)
+		c.currentDesktop = 0
+	}
+}
+
+// switchToInputDesktop attempts to switch the calling thread to the currently
+// active input desktop. This allows DXGI Desktop Duplication to capture the
+// Secure Desktop (UAC prompts, lock screen, Ctrl+Alt+Del) when the agent runs
+// as an elevated process. Returns true if the desktop was switched.
+//
+// Must be called before initDXGI() — DuplicateOutput binds to whichever
+// desktop is current on the calling thread.
+func (c *dxgiCapturer) switchToInputDesktop() bool {
+	// Pin the goroutine to its OS thread. SetThreadDesktop is per-thread,
+	// and DXGI COM objects have thread affinity. Safe to call multiple times
+	// (increments internal counter). We intentionally never unlock because
+	// the capture loop should stay on one thread for the session lifetime.
+	runtime.LockOSThread()
+
+	// Open the currently active input desktop.
+	hDesk, _, err := procOpenInputDesktop.Call(
+		0,                           // dwFlags
+		0,                           // fInherit (FALSE)
+		uintptr(desktopGenericAll), // dwDesiredAccess
+	)
+	if hDesk == 0 {
+		slog.Warn("OpenInputDesktop failed", "error", err)
+		return false
+	}
+
+	// Attempt to switch. SetThreadDesktop fails if the thread has any
+	// windows or hooks on the current desktop, which shouldn't apply to
+	// our capture goroutine.
+	ret, _, err := procSetThreadDesktop.Call(hDesk)
+	if ret == 0 {
+		// Fails with ERROR_INVALID_PARAMETER if already on this desktop,
+		// or ACCESS_DENIED if the thread owns windows. Either way, clean up.
+		procCloseDesktop.Call(hDesk)
+		slog.Debug("SetThreadDesktop failed (may already be on input desktop)", "error", err)
+		return false
+	}
+
+	// Close the previous desktop handle we opened (if any).
+	if c.currentDesktop != 0 {
+		procCloseDesktop.Call(c.currentDesktop)
+	}
+	c.currentDesktop = hDesk
+
+	slog.Info("Switched to input desktop for secure desktop capture",
+		"desktop", fmt.Sprintf("0x%X", hDesk))
+	return true
 }
 
 func (c *dxgiCapturer) switchToGDI() {
@@ -653,7 +733,8 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 	if hresult == dxgiErrAccessLost {
 		slog.Warn("DXGI access lost during GPU capture (desktop switch/resolution change), reinitializing")
 		c.releaseDXGI()
-		time.Sleep(500 * time.Millisecond)
+		c.switchToInputDesktop()
+		time.Sleep(200 * time.Millisecond)
 		if err := c.initDXGI(); err != nil {
 			slog.Warn("DXGI reinit failed after access lost (GPU capture), falling back to GDI", "error", err)
 			c.switchToGDI()
@@ -670,6 +751,7 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 			c.switchToGDI()
 			return 0, nil
 		}
+		c.switchToInputDesktop()
 		time.Sleep(500 * time.Millisecond)
 		if err := c.initDXGI(); err != nil {
 			c.switchToGDI()

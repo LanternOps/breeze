@@ -149,6 +149,10 @@ func NewInputHandler() InputHandler {
 	return &DarwinInputHandler{}
 }
 
+func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
+	// macOS CGEvents use global display coordinates; offset handled by capturer.
+}
+
 func buttonToInt(button string) int {
 	switch strings.ToLower(button) {
 	case "right":

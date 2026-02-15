@@ -74,53 +74,71 @@ type input struct {
 }
 
 // WindowsInputHandler handles input on Windows
-type WindowsInputHandler struct{}
+type WindowsInputHandler struct {
+	buttonDown bool // true while any mouse button is held (between down/up)
+	offsetX    int  // virtual screen X offset of captured monitor
+	offsetY    int  // virtual screen Y offset of captured monitor
+}
 
 // NewInputHandler creates a Windows input handler
 func NewInputHandler() InputHandler {
 	return &WindowsInputHandler{}
 }
 
+func (h *WindowsInputHandler) SetDisplayOffset(x, y int) {
+	h.offsetX = x
+	h.offsetY = y
+}
+
 func (h *WindowsInputHandler) SendMouseMove(x, y int) error {
-	// Use SendInput with MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK instead of
-	// SetCursorPos. SetCursorPos bypasses Windows mouse capture, so apps like
-	// Windows Terminal never see WM_MOUSEMOVE with MK_LBUTTON during a drag,
-	// breaking click-drag text selection. SendInput goes through the full input
-	// queue and respects mouse capture.
-	vx, vy, ok := screenToAbsolute(x, y)
-	if !ok {
-		// Fallback to SetCursorPos if metrics unavailable
-		ret, _, _ := setcursorpos.Call(uintptr(x), uintptr(y))
-		if ret == 0 {
-			return fmt.Errorf("SetCursorPos failed")
+	if h.buttonDown {
+		// During a drag, use SendInput so the move goes through the Windows
+		// input queue and respects mouse capture. Without this, apps like
+		// Windows Terminal don't see WM_MOUSEMOVE with MK_LBUTTON and
+		// click-drag text selection breaks.
+		vx, vy, ok := screenToAbsolute(x, y)
+		if ok {
+			inp := input{inputType: INPUT_MOUSE}
+			inp.mi.dx = vx
+			inp.mi.dy = vy
+			inp.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+			sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+			return nil
 		}
-		return nil
 	}
-
-	inp := input{inputType: INPUT_MOUSE}
-	inp.mi.dx = vx
-	inp.mi.dy = vy
-	inp.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
-
-	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
+	// Normal hover: use SetCursorPos — fast and auto-coalesces rapid moves.
+	ret, _, _ := setcursorpos.Call(uintptr(x), uintptr(y))
 	if ret == 0 {
-		return fmt.Errorf("SendInput MOUSEEVENTF_MOVE failed")
+		return fmt.Errorf("SetCursorPos failed")
 	}
 	return nil
+}
+
+// Cached virtual screen metrics — refreshed once per drag start.
+var (
+	cachedVX, cachedVY int
+	cachedCW, cachedCH int
+	metricsValid       bool
+)
+
+func refreshScreenMetrics() {
+	vx, _, _ := getSystemMetrics.Call(SM_XVIRTUALSCREEN)
+	vy, _, _ := getSystemMetrics.Call(SM_YVIRTUALSCREEN)
+	cw, _, _ := getSystemMetrics.Call(SM_CXVIRTUALSCREEN)
+	ch, _, _ := getSystemMetrics.Call(SM_CYVIRTUALSCREEN)
+	cachedVX, cachedVY = int(vx), int(vy)
+	cachedCW, cachedCH = int(cw), int(ch)
+	metricsValid = cachedCW > 0 && cachedCH > 0
 }
 
 // screenToAbsolute converts screen coordinates to the normalized 0–65535
 // coordinate space required by MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK.
 func screenToAbsolute(x, y int) (absX, absY int32, ok bool) {
-	vx, _, _ := getSystemMetrics.Call(SM_XVIRTUALSCREEN)
-	vy, _, _ := getSystemMetrics.Call(SM_YVIRTUALSCREEN)
-	cw, _, _ := getSystemMetrics.Call(SM_CXVIRTUALSCREEN)
-	ch, _, _ := getSystemMetrics.Call(SM_CYVIRTUALSCREEN)
-	if cw == 0 || ch == 0 {
+	if !metricsValid {
 		return 0, 0, false
 	}
-	absX = int32(((x - int(vx)) * 65536) / int(cw))
-	absY = int32(((y - int(vy)) * 65536) / int(ch))
+	absX = int32(((x - cachedVX) * 65536) / cachedCW)
+	absY = int32(((y - cachedVY) * 65536) / cachedCH)
 	return absX, absY, true
 }
 
@@ -135,6 +153,8 @@ func (h *WindowsInputHandler) SendMouseClick(x, y int, button string) error {
 }
 
 func (h *WindowsInputHandler) SendMouseDown(x, y int, button string) error {
+	h.buttonDown = true
+	refreshScreenMetrics() // cache once per drag — avoid 4 syscalls per move
 	// Position cursor before pressing — without this, the button press fires
 	// at the previous cursor location and drag-select operations start from
 	// the wrong origin (e.g. terminal text selection fails).
@@ -167,6 +187,7 @@ func (h *WindowsInputHandler) SendMouseUp(x, y int, button string) error {
 	if err := h.SendMouseMove(x, y); err != nil {
 		return err
 	}
+	h.buttonDown = false
 
 	var flags uint32
 	switch button {
@@ -324,6 +345,9 @@ func (h *WindowsInputHandler) SendKeyUp(key string) error {
 }
 
 func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
+	// Translate viewer-relative coordinates to virtual screen coordinates.
+	event.X += h.offsetX
+	event.Y += h.offsetY
 	switch event.Type {
 	case "mouse_move":
 		return h.SendMouseMove(event.X, event.Y)

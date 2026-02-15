@@ -17,6 +17,10 @@ func NewInputHandler() InputHandler {
 	return &LinuxInputHandler{}
 }
 
+func (h *LinuxInputHandler) SetDisplayOffset(x, y int) {
+	// xdotool uses global screen coordinates; offset not needed.
+}
+
 func (h *LinuxInputHandler) SendMouseMove(x, y int) error {
 	return exec.Command("xdotool", "mousemove", strconv.Itoa(x), strconv.Itoa(y)).Run()
 }
