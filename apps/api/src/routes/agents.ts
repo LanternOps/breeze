@@ -127,8 +127,8 @@ const heartbeatSchema = z.object({
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   pendingReboot: z.boolean().optional(),
-  lastUser: z.string().optional(),
-  uptime: z.number().int().optional()
+  lastUser: z.string().max(255).optional(),
+  uptime: z.number().int().min(0).optional()
 });
 
 const commandResultSchema = z.object({
@@ -1433,6 +1433,9 @@ agentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
     // Generate unique identifiers
     const agentId = generateAgentId();
     const apiKey = generateApiKey();
+    // Agent bearer tokens are high-entropy random values; we store only a SHA-256 hash and never persist
+    // the plaintext token.
+    // lgtm[js/insufficient-password-hash]
     const tokenHash = createHash('sha256').update(apiKey).digest('hex');
 
     // Check for existing device with same hostname + org + site (re-enrollment)
@@ -1609,6 +1612,8 @@ agentRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c
       lastSeenAt: new Date(),
       status: 'online',
       agentVersion: data.agentVersion,
+      lastUser: data.lastUser ?? null,
+      uptimeSeconds: data.uptime ?? null,
       updatedAt: new Date()
     })
     .where(eq(devices.id, device.id));
@@ -1852,6 +1857,12 @@ agentRoutes.post(
 
     if (!agent?.deviceId) {
       return c.json({ error: 'Agent context not found' }, 401);
+    }
+
+    // Ephemeral commands (terminal/desktop) have non-UUID IDs and no DB record.
+    // Results are handled via WebSocket; if the agent falls back to REST, just ACK.
+    if (commandId.startsWith('term-') || commandId.startsWith('desk-')) {
+      return c.json({ success: true });
     }
 
     const [command] = await db

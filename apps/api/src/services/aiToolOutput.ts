@@ -252,7 +252,38 @@ function applyToolSpecificCompaction(
     return compactCommandStylePayload(parsed, stats);
   }
 
+  // Fleet tools: compact large arrays in standard list/data responses
+  const fleetListTools = [
+    'manage_policies', 'manage_deployments', 'manage_patches',
+    'manage_groups', 'manage_maintenance_windows', 'manage_automations',
+    'manage_alert_rules', 'generate_report',
+  ];
+  if (fleetListTools.includes(toolName)) {
+    return compactFleetPayload(parsed, stats);
+  }
+
   return parsed;
+}
+
+function compactFleetPayload(payload: Record<string, unknown>, stats: CompactStats): Record<string, unknown> {
+  const output = { ...payload };
+  const listKeys = [
+    'policies', 'deployments', 'patches', 'groups', 'windows',
+    'automations', 'rules', 'channels', 'reports', 'runs',
+    'devices', 'members', 'log', 'data', 'activeWindows',
+  ];
+  for (const key of listKeys) {
+    if (Array.isArray(output[key])) {
+      const { items, dropped } = pruneLargeList(output[key], 40);
+      output[key] = items;
+      if (dropped > 0) {
+        stats.arraysTruncated += 1;
+        stats.arrayItemsDropped += dropped;
+        output[`${key}Dropped`] = dropped;
+      }
+    }
+  }
+  return output;
 }
 
 function appendChatMeta(result: unknown, stats: CompactStats, originalChars: number): unknown {

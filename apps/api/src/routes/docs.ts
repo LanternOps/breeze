@@ -196,7 +196,8 @@ function jsonToYaml(obj: unknown, indent = 0): string {
         return `|\n${lines.map((line) => spaces + '  ' + line).join('\n')}`;
       }
       // Quote single-line strings that need it
-      return `"${obj.replace(/"/g, '\\"')}"`;
+      // YAML double-quoted scalars treat backslash as an escape character, so we must escape it too.
+      return `"${obj.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
     }
     return obj;
   }

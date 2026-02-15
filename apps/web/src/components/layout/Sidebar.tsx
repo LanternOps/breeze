@@ -24,6 +24,7 @@ import {
   Network,
   HardDrive,
   BarChart3,
+  BrainCircuit,
   Activity
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -43,6 +44,7 @@ const navigation = [
   { name: 'Alerts', href: '/alerts', icon: Bell },
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
   { name: 'Remote Access', href: '/remote', icon: Terminal }
 ];
 
@@ -53,7 +55,8 @@ const integrationsNav = [
 
 const monitoringNav = [
   { name: 'Monitoring', href: '/monitoring', icon: Activity },
-  { name: 'Security', href: '/security', icon: ShieldCheck }
+  { name: 'Security', href: '/security', icon: ShieldCheck },
+  { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit }
 ];
 
 const operationsNav = [

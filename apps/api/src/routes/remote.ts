@@ -31,6 +31,10 @@ function generateTurnCredentials(): { username: string; credential: string } | n
   const ttl = 86400; // 24 hours
   const expiry = Math.floor(Date.now() / 1000) + ttl;
   const username = `${expiry}:breeze`;
+  // TURN credential generation commonly uses HMAC-SHA1 with a shared secret on the TURN server.
+  // This is not used for password storage or encryption; if your TURN server supports HMAC-SHA256,
+  // prefer switching to it on both ends.
+  // lgtm[js/weak-cryptographic-algorithm]
   const credential = createHmac('sha1', secret).update(username).digest('base64');
 
   return { username, credential };
@@ -311,7 +315,8 @@ const sessionHistorySchema = z.object({
 });
 
 const webrtcOfferSchema = z.object({
-  offer: z.string().min(1).max(65536)
+  offer: z.string().min(1).max(65536),
+  displayIndex: z.number().int().min(0).max(15).optional()
 });
 
 const webrtcAnswerSchema = z.object({
@@ -975,7 +980,7 @@ remoteRoutes.post(
       agentReachable = sendCommandToAgent(device.agentId, {
         id: `desk-${sessionId}`,
         type: 'start_desktop',
-        payload: { sessionId, offer: data.offer, iceServers: getIceServers() }
+        payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}) }
       });
       if (!agentReachable) {
         console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);

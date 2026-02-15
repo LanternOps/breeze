@@ -14,8 +14,10 @@ import {
   Network,
   CheckCircle,
   Info,
-  Shield
+  Shield,
+  User
 } from 'lucide-react';
+import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import DeviceActions from './DeviceActions';
 import DeviceInfoTab from './DeviceInfoTab';
@@ -70,6 +72,16 @@ const osLabels: Record<OSType, string> = {
   macos: 'macOS',
   linux: 'Linux'
 };
+
+function formatOsVersion(os: OSType, osVersion: string): string {
+  if (!osVersion) return osLabels[os];
+  let v = osVersion;
+  // Strip redundant "Microsoft Windows" prefix since osLabels already shows "Windows"
+  v = v.replace(/^Microsoft Windows\s*/i, '');
+  // Strip build/version numbers (e.g. "10.0.26200.7623 Build 26200.7623")
+  v = v.replace(/\s*\d+\.\d+\.\d+[\d.]*\s*(Build\s*[\d.]+)?/i, '').trim();
+  return v ? `${osLabels[os]} ${v}` : osLabels[os];
+}
 
 function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
@@ -126,7 +138,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                 </span>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                <span>{osLabels[device.os]} {device.osVersion}</span>
+                <span>{formatOsVersion(device.os, device.osVersion)}</span>
                 <span>Agent v{device.agentVersion}</span>
                 <span>{device.siteName}</span>
               </div>
@@ -159,7 +171,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       {activeTab === 'overview' && (
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2 space-y-6">
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
               <div className="rounded-lg border bg-card p-4 shadow-sm">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Cpu className="h-4 w-4" />
@@ -180,6 +192,20 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                   Last Seen
                 </div>
                 <p className="mt-2 text-2xl font-bold">{formatLastSeen(device.lastSeen, effectiveTimezone)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Clock className="h-4 w-4" />
+                  Uptime
+                </div>
+                <p className="mt-2 text-2xl font-bold">{formatUptime(device.uptimeSeconds)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <User className="h-4 w-4" />
+                  Logged-in User
+                </div>
+                <p className="mt-2 text-2xl font-bold truncate" title={device.lastUser}>{device.lastUser || '—'}</p>
               </div>
             </div>
 

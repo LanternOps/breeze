@@ -88,6 +88,12 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
 
   const previewUrl = `https://${portalSubdomain || 'your-org'}.breeze.app`;
   const isDarkTheme = theme === 'dark';
+  const hasSafeLogoPreview =
+    !!logoPreview &&
+    (logoPreview.startsWith('blob:') ||
+      logoPreview.startsWith('https://') ||
+      logoPreview.startsWith('http://') ||
+      (logoPreview.startsWith('/') && !logoPreview.startsWith('//') && !logoPreview.startsWith('/\\')));
 
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
@@ -133,7 +139,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             </div>
             <div className="flex flex-wrap items-center gap-4 rounded-lg border bg-muted/40 p-4">
               <div className="flex h-16 w-16 items-center justify-center rounded-full border bg-background text-xs text-muted-foreground">
-                {logoPreview ? (
+                {hasSafeLogoPreview ? (
                   <img
                     src={logoPreview}
                     alt="Organization logo preview"
@@ -309,7 +315,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-xs font-semibold">
-                      {logoPreview ? (
+                      {hasSafeLogoPreview ? (
                         <img src={logoPreview} alt="Preview logo" className="h-9 w-9 rounded-full object-cover" />
                       ) : (
                         organizationName.slice(0, 2).toUpperCase()

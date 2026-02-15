@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/host"
+
 	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -52,6 +54,7 @@ type HeartbeatPayload struct {
 	AgentVersion     string                    `json:"agentVersion"`
 	PendingReboot    bool                      `json:"pendingReboot,omitempty"`
 	LastUser         string                    `json:"lastUser,omitempty"`
+	UptimeSeconds    int64                     `json:"uptime,omitempty"`
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
 }
 
@@ -172,6 +175,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		seenCommands:    make(map[string]time.Time),
 	}
 	h.accepting.Store(true)
+
+	// Trigger wallpaper crash recovery (restores wallpaper if agent crashed mid-session)
+	_ = desktop.GetWallpaperManager()
 
 	// Initialize audit logger if enabled
 	if cfg.AuditEnabled {
@@ -1162,6 +1168,13 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.LastUser = h.sessionCol.LastUser()
 	}
 
+	// Compute uptime from boot time
+	if bootTime, err := host.BootTime(); err != nil {
+		log.Warn("failed to read boot time for uptime calculation", "error", err)
+	} else if bootTime > 0 {
+		payload.UptimeSeconds = time.Now().Unix() - int64(bootTime)
+	}
+
 	// Include user helper session info in heartbeat
 	if h.sessionBroker != nil {
 		sessions := h.sessionBroker.AllSessions()
@@ -1399,6 +1412,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
+		tools.CmdStartDesktop, tools.CmdStopDesktop,
 		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig:
 		return true
 	}

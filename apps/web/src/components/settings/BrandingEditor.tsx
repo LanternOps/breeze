@@ -121,6 +121,12 @@ function UploadDropzone({
   onFileSelect
 }: UploadDropzoneProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const hasSafePreview =
+    !!preview &&
+    (preview.startsWith('blob:') ||
+      preview.startsWith('https://') ||
+      preview.startsWith('http://') ||
+      (preview.startsWith('/') && !preview.startsWith('//') && !preview.startsWith('/\\')));
 
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -167,7 +173,7 @@ function UploadDropzone({
         <div
           className={`flex items-center justify-center rounded-md border ${previewSizeClassName} ${previewClassName ?? 'bg-background'}`}
         >
-          {preview ? (
+          {hasSafePreview ? (
             <img src={preview} alt={`${title} preview`} className="h-full w-full rounded-md object-contain" />
           ) : (
             <span className="text-xs font-medium text-muted-foreground">{placeholder}</span>
@@ -422,6 +428,24 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
   const primaryText = getContrastColor(resolvedPrimary, '#f8fafc');
   const secondaryText = getContrastColor(resolvedSecondary, '#0f172a');
   const initials = getInitials(branding.organizationName || 'Breeze');
+  const hasSafeLogoLightPreview =
+    !!logoLightPreview &&
+    (logoLightPreview.startsWith('blob:') ||
+      logoLightPreview.startsWith('https://') ||
+      logoLightPreview.startsWith('http://') ||
+      (logoLightPreview.startsWith('/') && !logoLightPreview.startsWith('//') && !logoLightPreview.startsWith('/\\')));
+  const hasSafeLogoDarkPreview =
+    !!logoDarkPreview &&
+    (logoDarkPreview.startsWith('blob:') ||
+      logoDarkPreview.startsWith('https://') ||
+      logoDarkPreview.startsWith('http://') ||
+      (logoDarkPreview.startsWith('/') && !logoDarkPreview.startsWith('//') && !logoDarkPreview.startsWith('/\\')));
+  const hasSafeFaviconPreview =
+    !!faviconPreview &&
+    (faviconPreview.startsWith('blob:') ||
+      faviconPreview.startsWith('https://') ||
+      faviconPreview.startsWith('http://') ||
+      (faviconPreview.startsWith('/') && !faviconPreview.startsWith('//') && !faviconPreview.startsWith('/\\')));
 
   if (loading) {
     return (
@@ -621,7 +645,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                   style={{ backgroundColor: resolvedPrimary, color: primaryText }}
                 >
                   <div className="flex items-center gap-2">
-                    {logoLightPreview ? (
+                    {hasSafeLogoLightPreview ? (
                       <img
                         src={logoLightPreview}
                         alt="Light logo preview"
@@ -672,7 +696,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex h-8 w-8 items-center justify-center rounded-md border bg-muted text-xs font-semibold">
-                      {faviconPreview ? (
+                      {hasSafeFaviconPreview ? (
                         <img
                           src={faviconPreview}
                           alt="Favicon preview"
@@ -683,7 +707,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                       )}
                     </div>
                     <div className="flex items-center gap-3">
-                      {logoLightPreview ? (
+                      {hasSafeLogoLightPreview ? (
                         <img
                           src={logoLightPreview}
                           alt="Portal logo preview"
@@ -722,7 +746,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
 
                 <div className="rounded-md border border-slate-800 bg-slate-950 p-3 text-slate-100">
                   <div className="flex items-center gap-3">
-                    {logoDarkPreview ? (
+                    {hasSafeLogoDarkPreview ? (
                       <img
                         src={logoDarkPreview}
                         alt="Dark logo preview"

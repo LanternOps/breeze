@@ -24,8 +24,8 @@ import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { writeRouteAudit } from '../services/auditEvents';
 import { db } from '../db';
-import { aiSessions, aiMessages, auditLogs } from '../db/schema';
-import { eq, and, desc, gte, sql as drizzleSql } from 'drizzle-orm';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs } from '../db/schema';
+import { eq, and, desc, gte, count, avg, sql as drizzleSql } from 'drizzle-orm';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
   sendAiMessageSchema,
@@ -457,7 +457,10 @@ aiRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
-    if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+
+    if (!orgId) {
+      return c.json({ data: [] });
+    }
 
     if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
@@ -478,7 +481,10 @@ aiRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
-    if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+
+    if (!orgId) {
+      return c.json({ data: [] });
+    }
 
     if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
@@ -521,5 +527,144 @@ aiRoutes.get(
       .limit(limit);
 
     return c.json({ data: events });
+  }
+);
+
+// GET /admin/tool-executions - Get tool execution analytics for AI risk dashboard
+aiRoutes.get(
+  '/admin/tool-executions',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = c.req.query('orgId') || auth.orgId;
+
+    if (!orgId) {
+      // Partner/system users without a specific org — return empty analytics
+      return c.json({
+        summary: { total: 0, byStatus: {}, byTool: [] },
+        timeSeries: [],
+        executions: [],
+      });
+    }
+
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const limit = Math.min(parseInt(c.req.query('limit') ?? '100', 10) || 100, 200);
+    const sinceParam = c.req.query('since');
+    const untilParam = c.req.query('until');
+    const statusFilter = c.req.query('status');
+    const toolNameFilter = c.req.query('toolName');
+
+    const since = sinceParam
+      ? new Date(sinceParam)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const until = untilParam ? new Date(untilParam) : new Date();
+
+    if (isNaN(since.getTime())) {
+      return c.json({ error: `Invalid 'since' date: ${sinceParam}` }, 400);
+    }
+    if (isNaN(until.getTime())) {
+      return c.json({ error: `Invalid 'until' date: ${untilParam}` }, 400);
+    }
+
+    // Base conditions: org-scoped via session join + date range
+    const baseConditions = [
+      eq(aiSessions.orgId, orgId),
+      gte(aiToolExecutions.createdAt, since),
+      drizzleSql`${aiToolExecutions.createdAt} <= ${until}`,
+    ];
+    if (statusFilter) {
+      baseConditions.push(drizzleSql`${aiToolExecutions.status} = ${statusFilter}`);
+    }
+    if (toolNameFilter) {
+      baseConditions.push(eq(aiToolExecutions.toolName, toolNameFilter));
+    }
+
+    // 1. Status counts
+    const statusCounts = await db
+      .select({
+        status: aiToolExecutions.status,
+        count: count(),
+      })
+      .from(aiToolExecutions)
+      .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
+      .where(and(...baseConditions))
+      .groupBy(aiToolExecutions.status);
+
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const row of statusCounts) {
+      byStatus[row.status] = Number(row.count);
+      total += Number(row.count);
+    }
+
+    // 2. Per-tool stats
+    const toolStats = await db
+      .select({
+        toolName: aiToolExecutions.toolName,
+        count: count(),
+        avgDurationMs: avg(aiToolExecutions.durationMs),
+        completedCount: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'completed')`,
+      })
+      .from(aiToolExecutions)
+      .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
+      .where(and(...baseConditions))
+      .groupBy(aiToolExecutions.toolName)
+      .orderBy(drizzleSql`COUNT(*) DESC`);
+
+    const byTool = toolStats.map((row) => ({
+      toolName: row.toolName,
+      count: Number(row.count),
+      avgDurationMs: row.avgDurationMs ? Math.round(Number(row.avgDurationMs)) : null,
+      successRate: Number(row.count) > 0 ? Number(row.completedCount) / Number(row.count) : 0,
+    }));
+
+    // 3. Daily time series
+    const timeSeries = await db
+      .select({
+        date: drizzleSql<string>`DATE(${aiToolExecutions.createdAt})::text`,
+        completed: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'completed')`,
+        failed: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'failed')`,
+        rejected: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'rejected')`,
+      })
+      .from(aiToolExecutions)
+      .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
+      .where(and(...baseConditions))
+      .groupBy(drizzleSql`DATE(${aiToolExecutions.createdAt})`)
+      .orderBy(drizzleSql`DATE(${aiToolExecutions.createdAt}) ASC`);
+
+    // 4. Raw executions list
+    const executions = await db
+      .select({
+        id: aiToolExecutions.id,
+        sessionId: aiToolExecutions.sessionId,
+        toolName: aiToolExecutions.toolName,
+        status: aiToolExecutions.status,
+        toolInput: aiToolExecutions.toolInput,
+        approvedBy: aiToolExecutions.approvedBy,
+        approvedAt: aiToolExecutions.approvedAt,
+        durationMs: aiToolExecutions.durationMs,
+        errorMessage: aiToolExecutions.errorMessage,
+        createdAt: aiToolExecutions.createdAt,
+        completedAt: aiToolExecutions.completedAt,
+      })
+      .from(aiToolExecutions)
+      .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
+      .where(and(...baseConditions))
+      .orderBy(desc(aiToolExecutions.createdAt))
+      .limit(limit);
+
+    return c.json({
+      summary: { total, byStatus, byTool },
+      timeSeries: timeSeries.map((row) => ({
+        date: row.date,
+        completed: Number(row.completed),
+        failed: Number(row.failed),
+        rejected: Number(row.rejected),
+      })),
+      executions,
+    });
   }
 );

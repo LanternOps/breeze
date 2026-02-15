@@ -25,6 +25,7 @@ import { eq, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
+import { registerFleetTools } from './aiToolsFleet';
 import { publishEvent } from './eventBus';
 import {
   buildCleanupPreview,
@@ -1304,53 +1305,7 @@ registerTool({
   }
 });
 
-// ============================================
-// create_automation - Tier 3 (requires approval)
-// ============================================
-
-registerTool({
-  tier: 3,
-  definition: {
-    name: 'create_automation',
-    description: 'Create a new automation rule. Always requires user approval before creating.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        name: { type: 'string', description: 'Automation name' },
-        description: { type: 'string', description: 'What this automation does' },
-        trigger: { type: 'object', description: 'Trigger configuration (schedule, event, webhook, manual)' },
-        conditions: { type: 'object', description: 'Optional conditions for when the automation should run' },
-        actions: { type: 'array', items: { type: 'object' }, description: 'List of actions to perform' },
-        enabled: { type: 'boolean', description: 'Whether to enable immediately (default: false)' }
-      },
-      required: ['name', 'trigger', 'actions']
-    }
-  },
-  handler: async (input, auth) => {
-    const { automations } = await import('../db/schema');
-
-    const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-    if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-
-    const [automation] = await db
-      .insert(automations)
-      .values({
-        orgId,
-        name: input.name as string,
-        description: (input.description as string) ?? null,
-        enabled: (input.enabled as boolean) ?? false,
-        trigger: input.trigger as Record<string, unknown>,
-        conditions: (input.conditions as Record<string, unknown>) ?? null,
-        actions: input.actions as Record<string, unknown>[],
-        onFailure: 'stop',
-        createdBy: auth.user.id
-      })
-      .returning();
-
-    if (!automation) return JSON.stringify({ error: 'Failed to create automation' });
-    return JSON.stringify({ success: true, automationId: automation.id, name: automation.name });
-  }
-});
+// create_automation — DEPRECATED: superseded by manage_automations (fleet tools)
 
 // ============================================
 // network_discovery - Tier 3 (requires approval)
@@ -1386,6 +1341,12 @@ registerTool({
     return JSON.stringify(result);
   }
 });
+
+// ============================================
+// Fleet Orchestration Tools (8 tools)
+// ============================================
+
+registerFleetTools(aiTools);
 
 // ============================================
 // Helper Functions
