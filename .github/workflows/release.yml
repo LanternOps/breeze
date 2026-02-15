@@ -438,6 +438,8 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           path: artifacts
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-viewer-*}'
+          merge-multiple: false
 
       - name: Prepare release assets
         run: |
