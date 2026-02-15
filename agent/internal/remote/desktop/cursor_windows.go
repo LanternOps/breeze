@@ -29,6 +29,21 @@ type iconInfoW struct {
 	HbmColor uintptr
 }
 
+// CursorPosition implements CursorProvider for real-time cursor streaming.
+// Uses GetCursorInfo (independent of DXGI) so it works even when the desktop
+// is static and AcquireNextFrame times out.
+func (c *dxgiCapturer) CursorPosition() (x, y int32, visible bool) {
+	var ci cursorInfoW
+	ci.CbSize = uint32(unsafe.Sizeof(ci))
+	ret, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci)))
+	if ret == 0 {
+		return 0, 0, false
+	}
+	return ci.PtScreenPos.X, ci.PtScreenPos.Y, ci.Flags&cursorShowing != 0
+}
+
+var _ CursorProvider = (*dxgiCapturer)(nil)
+
 type cursorOverlay struct{}
 
 func newCursorOverlay() *cursorOverlay {

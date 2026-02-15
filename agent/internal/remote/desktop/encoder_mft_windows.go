@@ -1,4 +1,4 @@
-//go:build windows && !cgo
+//go:build windows
 
 package desktop
 
@@ -24,9 +24,12 @@ type mftEncoder struct {
 	stride int
 
 	// COM handles (persistent across frames)
-	transform uintptr // IMFTransform
-	inited    bool
-	isHW      bool
+	transform       uintptr // IMFTransform
+	codecAPI        uintptr // ICodecAPI (for dynamic bitrate), may be 0
+	inited          bool
+	isHW            bool
+	providesSamples bool // MFT allocates its own output samples
+	outputBufSize   int  // required output buffer size from GetOutputStreamInfo
 
 	// Frame timing
 	frameIdx  uint64
@@ -34,6 +37,21 @@ type mftEncoder struct {
 
 	// Thread affinity
 	threadLocked bool
+
+	// Pixel format of incoming frames
+	pixelFormat PixelFormat
+
+	// GPU zero-copy pipeline
+	d3d11Device    uintptr // ID3D11Device (from capturer, not owned)
+	d3d11Context   uintptr // ID3D11DeviceContext (from capturer, not owned)
+	gpuConv        *gpuConverter
+	dxgiManager    uintptr // IMFDXGIDeviceManager
+	dxgiResetToken uint32
+	gpuEnabled     bool
+	gpuFailed      bool // permanently disabled after init failure
+
+	// Keyframe forcing: set when we want the next output to be an IDR.
+	forceKeyframePending bool
 }
 
 func init() {
@@ -78,6 +96,25 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		return fmt.Errorf("no H264 encoder found: %w", err)
 	}
 
+	// Hardware MFTs are async and must be unlocked before configuration.
+	// Without this, SetOutputType/SetInputType return MF_E_TRANSFORM_ASYNC_LOCKED.
+	if isHW {
+		if err := m.unlockAsyncMFT(transform); err != nil {
+			slog.Warn("Failed to unlock async MFT, falling back to software", "error", err)
+			comRelease(transform)
+			transform, err = m.enumAndActivate(
+				mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter,
+				&mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12},
+				&mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264},
+			)
+			if err != nil {
+				procMFShutdown.Call()
+				return fmt.Errorf("software MFT fallback after async unlock failure: %w", err)
+			}
+			isHW = false
+		}
+	}
+
 	// Configure output type (H264) — must be set BEFORE input
 	if err := m.setOutputType(transform, width, height); err != nil {
 		comRelease(transform)
@@ -87,9 +124,31 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 
 	// Configure input type (NV12)
 	if err := m.setInputType(transform, width, height); err != nil {
-		comRelease(transform)
-		procMFShutdown.Call()
-		return fmt.Errorf("set input type: %w", err)
+		// Hardware encoder may reject this format — fall back to software MFT
+		if isHW {
+			comRelease(transform)
+			slog.Warn("Hardware MFT rejected input type, falling back to software", "error", err)
+			transform, err = m.enumAndActivate(mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12}, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264})
+			if err != nil {
+				procMFShutdown.Call()
+				return fmt.Errorf("software MFT fallback failed: %w", err)
+			}
+			isHW = false
+			if err := m.setOutputType(transform, width, height); err != nil {
+				comRelease(transform)
+				procMFShutdown.Call()
+				return fmt.Errorf("set output type (software fallback): %w", err)
+			}
+			if err := m.setInputType(transform, width, height); err != nil {
+				comRelease(transform)
+				procMFShutdown.Call()
+				return fmt.Errorf("set input type (software fallback): %w", err)
+			}
+		} else {
+			comRelease(transform)
+			procMFShutdown.Call()
+			return fmt.Errorf("set input type: %w", err)
+		}
 	}
 
 	// Enable low-latency mode
@@ -110,6 +169,68 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	m.isHW = isHW
 	m.inited = true
 
+	// Query output stream info for buffer requirements and sample allocation
+	var streamInfo mftOutputStreamInfo
+	hr, _, _ = syscall.SyscallN(
+		m.vtblFn(vtblGetOutputStreamInfo),
+		m.transform,
+		0, // stream ID
+		uintptr(unsafe.Pointer(&streamInfo)),
+	)
+	if int32(hr) >= 0 {
+		m.providesSamples = (streamInfo.dwFlags & mftOutputStreamProvidesSamples) != 0
+		m.outputBufSize = int(streamInfo.cbSize)
+	}
+	// Ensure we have a reasonable minimum buffer size
+	if m.outputBufSize <= 0 {
+		// Default: uncompressed frame size (generous for H264 output)
+		m.outputBufSize = width * height * 3 / 2
+	}
+
+	// Acquire ICodecAPI for dynamic bitrate control.
+	// QueryInterface on the transform for IID_ICodecAPI.
+	var codecAPI uintptr
+	_, qiErr := comCall(m.transform, vtblQueryInterface,
+		uintptr(unsafe.Pointer(&iidICodecAPI)),
+		uintptr(unsafe.Pointer(&codecAPI)),
+	)
+	if qiErr == nil && codecAPI != 0 {
+		m.codecAPI = codecAPI
+
+		// Set GOP size (keyframe interval) = 5 seconds at configured FPS.
+		// Longer GOPs save bandwidth for mostly-static screen sharing content.
+		// WebRTC PLI/FIR handles on-demand keyframe recovery.
+		cfgFPS := m.cfg.FPS
+		if cfgFPS <= 0 {
+			cfgFPS = 30
+		}
+		gopSize := uint32(cfgFPS * 5)
+		if gopSize < 60 {
+			gopSize = 60
+		}
+		gv := comVariant{vt: vtUI4, val: uint64(gopSize)}
+		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+			uintptr(unsafe.Pointer(&codecAPIAVEncMPVGOPSize)),
+			uintptr(unsafe.Pointer(&gv)),
+		); err != nil {
+			slog.Debug("ICodecAPI SetValue(GOPSize) failed (non-fatal)", "gopSize", gopSize, "error", err)
+		} else {
+			slog.Debug("GOP size set via ICodecAPI", "gopSize", gopSize)
+		}
+	} else {
+		slog.Debug("ICodecAPI not available on this MFT (dynamic bitrate disabled)", "error", qiErr)
+	}
+
+	// If streaming requested a keyframe before init, apply now (best-effort).
+	if m.forceKeyframePending {
+		_ = m.forceKeyframeLocked()
+	}
+
+	// NOTE: We no longer set up the DXGI device manager on the MFT.
+	// The GPU pipeline uses VideoProcessorBlt for BGRA→NV12 on the GPU,
+	// then reads back NV12 to CPU and feeds it as a regular memory buffer.
+	// This avoids DXGI surface buffer compatibility issues with hardware MFTs.
+
 	hwStr := "software"
 	if isHW {
 		hwStr = "hardware"
@@ -120,8 +241,82 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		"height", height,
 		"bitrate", m.cfg.Bitrate,
 		"fps", m.cfg.FPS,
+		"providesSamples", m.providesSamples,
+		"outputBufSize", m.outputBufSize,
+		"hasCodecAPI", m.codecAPI != 0,
+		"gpuPipeline", m.gpuEnabled,
 	)
 	return nil
+}
+
+// tryInitGPUPipeline attempts to set up DXGI device manager + GPU color converter.
+// On failure, logs a warning and falls back to CPU path.
+func (m *mftEncoder) tryInitGPUPipeline() {
+	// 1. Create DXGI device manager
+	var token uint32
+	var manager uintptr
+	hr, _, _ := procMFCreateDXGIDeviceManager.Call(
+		uintptr(unsafe.Pointer(&token)),
+		uintptr(unsafe.Pointer(&manager)),
+	)
+	if int32(hr) < 0 {
+		slog.Warn("MFCreateDXGIDeviceManager failed, using CPU path", "hr", fmt.Sprintf("0x%08X", uint32(hr)))
+		return
+	}
+
+	// 2. ResetDevice(d3d11Device, token)
+	_, err := comCall(manager, vtblDXGIManagerResetDevice, m.d3d11Device, uintptr(token))
+	if err != nil {
+		comRelease(manager)
+		slog.Warn("DXGI device manager ResetDevice failed, using CPU path", "error", err)
+		return
+	}
+
+	// 3. Set MF_SA_D3D11_AWARE = TRUE on MFT attributes
+	var attrs uintptr
+	_, err = comCall(m.transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
+	if err == nil && attrs != 0 {
+		comCall(attrs, vtblSetUINT32,
+			uintptr(unsafe.Pointer(&mfSAD3D11Aware)),
+			uintptr(uint32(1)),
+		)
+		comRelease(attrs)
+	}
+
+	// 4. ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager)
+	_, err = comCall(m.transform, vtblProcessMessage, uintptr(mftMessageSetD3DManager), manager)
+	if err != nil {
+		comRelease(manager)
+		slog.Warn("MFT SET_D3D_MANAGER failed, using CPU path", "error", err)
+		return
+	}
+
+	m.dxgiManager = manager
+	m.dxgiResetToken = token
+
+	slog.Info("DXGI device manager configured for MFT")
+	// gpuConv will be initialized lazily on first EncodeTexture call
+	// since we need the BGRA staging texture handle at that point
+}
+
+// teardownDXGIManager removes the DXGI device manager from the MFT,
+// reverting it to CPU buffer mode. Called when GPU converter init fails.
+func (m *mftEncoder) teardownDXGIManager() {
+	if m.dxgiManager == 0 {
+		return
+	}
+	// Tell MFT to stop using the D3D manager (pass NULL)
+	comCall(m.transform, vtblProcessMessage, uintptr(mftMessageSetD3DManager), 0)
+	comRelease(m.dxgiManager)
+	m.dxgiManager = 0
+
+	// Some hardware MFTs appear to get "stuck" after switching D3D manager state.
+	// A flush + restart messages help restore CPU buffer mode.
+	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+
+	slog.Info("DXGI device manager removed from MFT (GPU converter failed)")
 }
 
 // findEncoder enumerates MFT encoders, trying hardware first.
@@ -267,6 +462,17 @@ func (m *mftEncoder) setOutputType(transform uintptr, width, height int) error {
 		return err
 	}
 
+	// H264 profile = Main (CABAC entropy coding = 10-15% better compression than
+	// Baseline's CAVLC, critical for text clarity in screen sharing).
+	// No B-frames needed — Main profile without B-frames still enables CABAC.
+	if _, err := comCall(mediaType, vtblSetUINT32,
+		uintptr(unsafe.Pointer(&mfMTMpeg2Profile)),
+		uintptr(eAVEncH264VProfileMain),
+	); err != nil {
+		// Non-fatal: encoder will use default profile
+		slog.Debug("Failed to set Main profile", "error", err)
+	}
+
 	// Pixel aspect ratio = 1:1
 	par := pack64(1, 1)
 	if _, err := comCall(mediaType, vtblSetUINT64,
@@ -351,6 +557,15 @@ func (m *mftEncoder) setInputType(transform uintptr, width, height int) error {
 		return err
 	}
 
+	// Default stride (NV12 Y plane stride = width).
+	// Required by some hardware MFT encoders.
+	if _, err := comCall(mediaType, vtblSetUINT32,
+		uintptr(unsafe.Pointer(&mfMTDefaultStride)),
+		uintptr(uint32(width)),
+	); err != nil {
+		return err
+	}
+
 	// Set on transform
 	if _, err := comCall(transform, vtblSetInputType,
 		0, // stream ID
@@ -367,16 +582,42 @@ func (m *mftEncoder) setLowLatency(transform uintptr) {
 	var attrs uintptr
 	_, err := comCall(transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
 	if err != nil || attrs == 0 {
+		slog.Warn("MFT GetAttributes failed, cannot set low-latency", "error", err)
 		return
 	}
 	defer comRelease(attrs)
-	comCall(attrs, vtblSetUINT32,
+	_, err = comCall(attrs, vtblSetUINT32,
 		uintptr(unsafe.Pointer(&mfLowLatency)),
 		uintptr(uint32(1)),
 	)
+	if err != nil {
+		slog.Warn("Failed to set MF_LOW_LATENCY", "error", err)
+	}
 }
 
-// Encode takes BGRA pixel data, converts to NV12, encodes to H264.
+// unlockAsyncMFT sets MF_TRANSFORM_ASYNC_UNLOCK = TRUE on a hardware MFT.
+// Hardware MFTs (NVENC, QuickSync, AMD VCE) are async and locked by default.
+// Without unlocking, all configuration calls return MF_E_TRANSFORM_ASYNC_LOCKED.
+func (m *mftEncoder) unlockAsyncMFT(transform uintptr) error {
+	var attrs uintptr
+	_, err := comCall(transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
+	if err != nil || attrs == 0 {
+		return fmt.Errorf("GetAttributes for async unlock: %w", err)
+	}
+	defer comRelease(attrs)
+
+	_, err = comCall(attrs, vtblSetUINT32,
+		uintptr(unsafe.Pointer(&mfTransformAsyncUnlock)),
+		uintptr(uint32(1)), // TRUE
+	)
+	if err != nil {
+		return fmt.Errorf("SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK): %w", err)
+	}
+	slog.Info("Hardware MFT async unlock succeeded")
+	return nil
+}
+
+// Encode takes RGBA or BGRA pixel data (per SetPixelFormat), converts to NV12, and encodes to H264.
 // Returns nil, nil when the MFT is buffering (no output yet).
 func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	m.mu.Lock()
@@ -388,7 +629,7 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 
 	// Lazy init: need dimensions to configure MFT
 	if !m.inited {
-		// Infer dimensions from BGRA frame size
+		// Infer dimensions from RGBA frame size
 		// frame is from img.Pix where img is width*height*4 bytes
 		pixelCount := len(frame) / 4
 		if m.width == 0 || m.height == 0 {
@@ -403,8 +644,13 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		}
 	}
 
-	// Convert BGRA → NV12
-	nv12 := bgraToNV12(frame, m.width, m.height, m.stride)
+	// Convert pixels → NV12
+	var nv12 []byte
+	if m.pixelFormat == PixelFormatBGRA {
+		nv12 = bgraToNV12(frame, m.width, m.height, m.stride)
+	} else {
+		nv12 = rgbaToNV12(frame, m.width, m.height, m.stride)
+	}
 	defer putNV12Buffer(nv12)
 
 	// Create MF sample with NV12 data
@@ -413,6 +659,11 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		return nil, fmt.Errorf("create sample: %w", err)
 	}
 	defer comRelease(sample)
+
+	// If requested, force an IDR as early as possible in this stream.
+	if m.forceKeyframePending {
+		_ = m.forceKeyframeLocked()
+	}
 
 	// Feed to encoder
 	ret, _, _ := syscall.SyscallN(
@@ -500,8 +751,12 @@ func (m *mftEncoder) createSample(nv12 []byte) (uintptr, error) {
 	sampleTime := int64(m.frameIdx) * frameDuration100ns
 	m.frameIdx++
 
-	comCall(pSample, vtblSetSampleTime, uintptr(sampleTime))
-	comCall(pSample, vtblSetSampleDuration, uintptr(frameDuration100ns))
+	if _, err := comCall(pSample, vtblSetSampleTime, uintptr(sampleTime)); err != nil {
+		slog.Debug("SetSampleTime failed (non-fatal)", "error", err)
+	}
+	if _, err := comCall(pSample, vtblSetSampleDuration, uintptr(frameDuration100ns)); err != nil {
+		slog.Debug("SetSampleDuration failed (non-fatal)", "error", err)
+	}
 
 	// Add buffer to sample
 	_, err = comCall(pSample, vtblAddBuffer, pBuffer)
@@ -516,33 +771,36 @@ func (m *mftEncoder) createSample(nv12 []byte) (uintptr, error) {
 
 func (m *mftEncoder) drainOutput() ([]byte, error) {
 	var allNALs []byte
+	streamChangeRetries := 0
 
 	for {
-		// Create output buffer
-		var pOutputBuffer uintptr
-		outputBufSize := m.width * m.height // generous estimate for H264
-		hr, _, _ := procMFCreateMemoryBuffer.Call(
-			uintptr(uint32(outputBufSize)),
-			uintptr(unsafe.Pointer(&pOutputBuffer)),
-		)
-		if int32(hr) < 0 {
-			return allNALs, fmt.Errorf("MFCreateMemoryBuffer for output: 0x%08X", uint32(hr))
-		}
+		// Build output data buffer. If the MFT provides its own samples
+		// (common for the software H264 encoder), we must NOT provide one.
+		var callerSample uintptr
+		outputData := mftOutputDataBuffer{dwStreamID: 0}
 
-		// Create output sample
-		var pOutputSample uintptr
-		hr, _, _ = procMFCreateSample.Call(uintptr(unsafe.Pointer(&pOutputSample)))
-		if int32(hr) < 0 {
+		if !m.providesSamples {
+			// Caller must allocate the output sample + buffer
+			var pOutputBuffer uintptr
+			hr, _, _ := procMFCreateMemoryBuffer.Call(
+				uintptr(uint32(m.outputBufSize)),
+				uintptr(unsafe.Pointer(&pOutputBuffer)),
+			)
+			if int32(hr) < 0 {
+				return allNALs, fmt.Errorf("MFCreateMemoryBuffer for output: 0x%08X", uint32(hr))
+			}
+
+			hr, _, _ = procMFCreateSample.Call(uintptr(unsafe.Pointer(&callerSample)))
+			if int32(hr) < 0 {
+				comRelease(pOutputBuffer)
+				return allNALs, fmt.Errorf("MFCreateSample for output: 0x%08X", uint32(hr))
+			}
+			comCall(callerSample, vtblAddBuffer, pOutputBuffer)
 			comRelease(pOutputBuffer)
-			return allNALs, fmt.Errorf("MFCreateSample for output: 0x%08X", uint32(hr))
+			outputData.pSample = callerSample
 		}
-		comCall(pOutputSample, vtblAddBuffer, pOutputBuffer)
-		comRelease(pOutputBuffer) // sample owns it now
+		// else: pSample stays 0 — MFT will fill it in
 
-		outputData := mftOutputDataBuffer{
-			dwStreamID: 0,
-			pSample:    pOutputSample,
-		}
 		var status uint32
 
 		ret, _, _ := syscall.SyscallN(
@@ -554,28 +812,106 @@ func (m *mftEncoder) drainOutput() ([]byte, error) {
 			uintptr(unsafe.Pointer(&status)),
 		)
 
-		if uint32(ret) == mfETransformNeedInput {
-			comRelease(pOutputSample)
+		// Determine which sample to use (MFT-provided or caller-provided)
+		resultSample := outputData.pSample
+		callerOwned := !m.providesSamples
+
+		if uint32(ret) == mfETransformNeedInput || uint32(ret) == eUnexpected {
+			// MF_E_TRANSFORM_NEED_INPUT: encoder needs more input before producing output.
+			// E_UNEXPECTED: async hardware MFTs return this when output isn't ready yet.
+			if callerOwned && callerSample != 0 {
+				comRelease(callerSample)
+			}
 			if len(allNALs) > 0 {
 				return allNALs, nil
 			}
-			return nil, nil // No output ready yet
+			return nil, nil
+		}
+		if uint32(ret) == mfETransformStreamChange {
+			// Software H264 encoder signals this on its first output to
+			// report chosen codec params (profile/level). Per MFT docs we
+			// must renegotiate the output type, then re-check stream info.
+			if callerOwned && callerSample != 0 {
+				comRelease(callerSample)
+			}
+			streamChangeRetries++
+			if streamChangeRetries > 5 {
+				m.shutdown()
+				return allNALs, fmt.Errorf("too many stream changes (%d), encoder reset", streamChangeRetries)
+			}
+			// Renegotiate: query the MFT's preferred output type and re-set it
+			var newType uintptr
+			hr, _, _ := syscall.SyscallN(
+				m.vtblFn(vtblGetOutputAvailType),
+				m.transform,
+				0, // stream ID
+				0, // type index
+				uintptr(unsafe.Pointer(&newType)),
+			)
+			if int32(hr) >= 0 && newType != 0 {
+				syscall.SyscallN(
+					m.vtblFn(vtblSetOutputType),
+					m.transform,
+					0, // stream ID
+					newType,
+					0, // flags
+				)
+				comRelease(newType)
+			}
+			// Re-check if MFT now provides samples (can change after stream change)
+			var streamInfo mftOutputStreamInfo
+			hr2, _, _ := syscall.SyscallN(
+				m.vtblFn(vtblGetOutputStreamInfo),
+				m.transform,
+				0,
+				uintptr(unsafe.Pointer(&streamInfo)),
+			)
+			if int32(hr2) >= 0 {
+				m.providesSamples = (streamInfo.dwFlags & mftOutputStreamProvidesSamples) != 0
+				if int(streamInfo.cbSize) > m.outputBufSize {
+					m.outputBufSize = int(streamInfo.cbSize)
+				}
+			}
+			slog.Debug("MFT stream change, renegotiated output type",
+				"attempt", streamChangeRetries,
+				"providesSamples", m.providesSamples,
+				"outputBufSize", m.outputBufSize,
+			)
+			continue
+		}
+		if uint32(ret) == mfEBufferTooSmall {
+			// Output buffer too small — grow it and retry
+			if callerOwned && callerSample != 0 {
+				comRelease(callerSample)
+			}
+			m.outputBufSize *= 2
+			slog.Info("MFT output buffer too small, growing", "newSize", m.outputBufSize)
+			continue
 		}
 		if int32(ret) < 0 {
-			comRelease(pOutputSample)
+			if callerOwned && callerSample != 0 {
+				comRelease(callerSample)
+			}
 			return allNALs, fmt.Errorf("ProcessOutput: 0x%08X", uint32(ret))
 		}
 
-		// Extract encoded data from output sample
-		nalChunk, err := m.extractSampleData(pOutputSample)
-		comRelease(pOutputSample)
+		// Extract encoded data from whichever sample has the output
+		if resultSample == 0 {
+			return allNALs, fmt.Errorf("ProcessOutput succeeded but no output sample")
+		}
+		nalChunk, err := m.extractSampleData(resultSample)
+		// Release: MFT-provided samples must be released by us too
+		if m.providesSamples {
+			comRelease(resultSample)
+		} else if callerSample != 0 {
+			comRelease(callerSample)
+		}
 		if err != nil {
 			return allNALs, err
 		}
 
 		allNALs = append(allNALs, nalChunk...)
 
-		// If MFT_OUTPUT_DATA_BUFFER_INCOMPLETE is set, more output is available
 		if outputData.dwStatus&mftOutputDataBufferIncomplete == 0 {
 			break
 		}
@@ -629,10 +965,94 @@ func (m *mftEncoder) SetQuality(quality QualityPreset) error {
 
 func (m *mftEncoder) SetBitrate(bitrate int) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.cfg.Bitrate = bitrate
-	m.mu.Unlock()
-	// TODO: dynamically update MFT bitrate via ICodecAPI if available
+
+	if m.codecAPI == 0 || !m.inited {
+		return nil
+	}
+
+	// Apply bitrate dynamically via ICodecAPI::SetValue(CODECAPI_AVEncCommonMeanBitRate, VT_UI4)
+	v := comVariant{vt: vtUI4}
+	v.val = uint64(uint32(bitrate))
+	_, err := comCall(m.codecAPI, vtblCodecAPISetValue,
+		uintptr(unsafe.Pointer(&codecAPIAVEncCommonMeanBitRate)),
+		uintptr(unsafe.Pointer(&v)),
+	)
+	if err != nil {
+		slog.Debug("ICodecAPI SetValue(bitrate) failed", "bitrate", bitrate, "error", err)
+		return nil // non-fatal: adaptive loop will keep trying
+	}
+	slog.Debug("Dynamic bitrate applied via ICodecAPI", "bitrate", bitrate)
 	return nil
+}
+
+// ForceKeyframe requests the encoder emit an IDR/keyframe as soon as possible.
+// Best-effort: if unsupported, it becomes a no-op.
+func (m *mftEncoder) ForceKeyframe() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// If we're not initialized yet, remember the request and apply after init.
+	if !m.inited {
+		m.forceKeyframePending = true
+		return nil
+	}
+	return m.forceKeyframeLocked()
+}
+
+// Flush drops all buffered frames from the MFT encoder pipeline and forces the
+// next output to be an IDR keyframe. Used on mouse clicks so the viewer
+// immediately shows the result of the click instead of displaying stale
+// animation frames queued before the click.
+func (m *mftEncoder) Flush() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.inited || m.transform == 0 {
+		return nil
+	}
+
+	// 1. Flush all buffered input/output from the MFT pipeline.
+	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
+
+	// 2. Restart the streaming session so the MFT accepts new input.
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
+	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+
+	// 3. Force the next output to be an IDR keyframe so the viewer can
+	//    decode immediately without waiting for a reference frame.
+	m.forceKeyframePending = true
+	_ = m.forceKeyframeLocked()
+
+	return nil
+}
+
+func (m *mftEncoder) forceKeyframeLocked() error {
+	if m.codecAPI == 0 {
+		m.forceKeyframePending = false
+		return nil
+	}
+
+	// ICodecAPI::SetValue(CODECAPI_AVEncVideoForceKeyFrame, VT_UI4=1)
+	v := comVariant{vt: vtUI4, val: 1}
+	_, err := comCall(m.codecAPI, vtblCodecAPISetValue,
+		uintptr(unsafe.Pointer(&codecAPIAVEncVideoForceKeyFrame)),
+		uintptr(unsafe.Pointer(&v)),
+	)
+	if err != nil {
+		// Keep it pending; some hardware MFTs are picky during startup.
+		m.forceKeyframePending = true
+		return err
+	}
+	m.forceKeyframePending = false
+	return nil
+}
+
+func (m *mftEncoder) SetPixelFormat(pf PixelFormat) {
+	m.mu.Lock()
+	m.pixelFormat = pf
+	m.mu.Unlock()
 }
 
 func (m *mftEncoder) SetFPS(fps int) error {
@@ -643,6 +1063,10 @@ func (m *mftEncoder) SetFPS(fps int) error {
 }
 
 func (m *mftEncoder) SetDimensions(w, h int) error {
+	// NV12 requires even dimensions; H264 macroblocks prefer multiples of 16.
+	// Round down to even to avoid MF_E_INVALIDMEDIATYPE from SetInputType.
+	w = w &^ 1
+	h = h &^ 1
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.inited && (m.width != w || m.height != h) {
@@ -665,6 +1089,26 @@ func (m *mftEncoder) Close() error {
 func (m *mftEncoder) shutdown() {
 	if !m.inited {
 		return
+	}
+	// Release GPU converter first
+	if m.gpuConv != nil {
+		m.gpuConv.Close()
+		m.gpuConv = nil
+	}
+	m.gpuEnabled = false
+	m.gpuFailed = false
+	m.forceKeyframePending = false
+
+	// Release DXGI device manager
+	if m.dxgiManager != 0 {
+		comRelease(m.dxgiManager)
+		m.dxgiManager = 0
+	}
+
+	// Release ICodecAPI before the transform
+	if m.codecAPI != 0 {
+		comRelease(m.codecAPI)
+		m.codecAPI = 0
 	}
 	// Flush
 	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
@@ -695,4 +1139,117 @@ func (m *mftEncoder) Name() string {
 
 func (m *mftEncoder) IsHardware() bool {
 	return m.isHW
+}
+
+func (m *mftEncoder) IsPlaceholder() bool {
+	return false
+}
+
+func (m *mftEncoder) SetD3D11Device(device, context uintptr) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.d3d11Device = device
+	m.d3d11Context = context
+}
+
+func (m *mftEncoder) SupportsGPUInput() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.gpuFailed {
+		return false
+	}
+	return m.gpuEnabled || m.d3d11Device != 0
+}
+
+// EncodeTexture encodes a BGRA GPU texture via the zero-copy GPU pipeline.
+// Converts BGRA→NV12 on GPU, wraps as DXGI surface buffer, feeds to MFT.
+func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if bgraTexture == 0 {
+		return nil, fmt.Errorf("nil BGRA texture")
+	}
+
+	// Lazy init MFT if needed
+	if !m.inited {
+		if m.width == 0 || m.height == 0 {
+			return nil, fmt.Errorf("MFT encoder: call SetDimensions before EncodeTexture")
+		}
+		if err := m.initialize(m.width, m.height, m.width*4); err != nil {
+			return nil, err
+		}
+	}
+
+	// Lazy init GPU converter
+	if m.gpuConv == nil {
+		conv, err := newGPUConverter(m.d3d11Device, m.d3d11Context, bgraTexture, m.width, m.height)
+		if err != nil {
+			slog.Warn("GPU converter init failed, falling back to CPU path permanently", "error", err)
+			m.gpuEnabled = false
+			m.gpuFailed = true
+			// Tear down DXGI device manager so MFT reverts to CPU buffer mode
+			m.teardownDXGIManager()
+			return nil, fmt.Errorf("GPU converter init: %w", err)
+		}
+		m.gpuConv = conv
+		m.gpuEnabled = true
+		slog.Info("MFT GPU pipeline enabled", "width", m.width, "height", m.height)
+	}
+
+	// If requested, force an IDR as early as possible in this stream.
+	if m.forceKeyframePending {
+		_ = m.forceKeyframeLocked()
+	}
+
+	// 1. GPU BGRA→NV12 conversion + readback to CPU memory.
+	// We use ConvertAndReadback instead of the DXGI surface buffer path because
+	// hardware MFT encoders often have issues reading DXGI surface buffers directly.
+	// The GPU still does the expensive BGRA→NV12 color conversion; the only extra
+	// cost is a ~5.5MB NV12 GPU→CPU readback (fast over PCIe).
+	nv12, err := m.gpuConv.ConvertAndReadback()
+	if err != nil {
+		return nil, fmt.Errorf("GPU convert: %w", err)
+	}
+	defer putNV12Buffer(nv12)
+
+	// 2. Create MF sample with NV12 data (same path as CPU Encode)
+	sample, err := m.createSample(nv12)
+	if err != nil {
+		return nil, fmt.Errorf("create sample: %w", err)
+	}
+	defer comRelease(sample)
+
+	// 3. Feed to encoder
+	ret, _, _ := syscall.SyscallN(
+		m.vtblFn(vtblProcessInput),
+		m.transform,
+		0, // stream ID
+		sample,
+		0, // flags
+	)
+
+	if uint32(ret) == mfENotAccepting {
+		out, err := m.drainOutput()
+		if err != nil {
+			return nil, err
+		}
+		ret, _, _ = syscall.SyscallN(
+			m.vtblFn(vtblProcessInput),
+			m.transform,
+			0,
+			sample,
+			0,
+		)
+		if int32(ret) < 0 {
+			return out, nil
+		}
+		if out != nil {
+			return out, nil
+		}
+	} else if int32(ret) < 0 {
+		return nil, fmt.Errorf("ProcessInput (GPU): 0x%08X", uint32(ret))
+	}
+
+	return m.drainOutput()
 }

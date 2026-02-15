@@ -78,6 +78,8 @@ func (q *quicksyncEncoder) SetFPS(fps int) error {
 	return nil
 }
 
+func (q *quicksyncEncoder) SetPixelFormat(pf PixelFormat) {}
+
 func (q *quicksyncEncoder) SetDimensions(width, height int) error {
 	return nil
 }
@@ -92,4 +94,14 @@ func (q *quicksyncEncoder) Name() string {
 
 func (q *quicksyncEncoder) IsHardware() bool {
 	return true
+}
+
+func (q *quicksyncEncoder) IsPlaceholder() bool {
+	return true
+}
+
+func (q *quicksyncEncoder) SetD3D11Device(device, context uintptr)            {}
+func (q *quicksyncEncoder) SupportsGPUInput() bool                            { return false }
+func (q *quicksyncEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
+	return nil, errors.New("GPU input not supported by quicksync encoder")
 }

@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -54,8 +55,14 @@ func (m *WsSessionManager) StartSession(id string, config StreamConfig, sendFram
 	m.sessions[id] = session
 	session.Start()
 
-	fmt.Printf("Desktop WS stream session %s started (screen: %dx%d, quality: %d, scale: %.1f, fps: %d)\n",
-		id, w, h, config.Quality, config.ScaleFactor, config.MaxFPS)
+	slog.Info("Desktop WS stream session started",
+		"sessionId", id,
+		"width", w,
+		"height", h,
+		"quality", config.Quality,
+		"scaleFactor", config.ScaleFactor,
+		"fps", config.MaxFPS,
+	)
 
 	return w, h, nil
 }

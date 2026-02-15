@@ -36,27 +36,33 @@ type imagePool struct {
 
 func (p *imagePool) Get(w, h int) *image.RGBA {
 	p.mu.Lock()
-	if p.w == w && p.h == h {
-		p.mu.Unlock()
-		if v := p.pool.Get(); v != nil {
-			return v.(*image.RGBA)
-		}
-		return image.NewRGBA(image.Rect(0, 0, w, h))
-	}
-	// Resolution changed — reset pool
 	p.w = w
 	p.h = h
-	p.pool = sync.Pool{}
 	p.mu.Unlock()
+
+	for {
+		v := p.pool.Get()
+		if v == nil {
+			break
+		}
+		img := v.(*image.RGBA)
+		b := img.Bounds()
+		if b.Dx() == w && b.Dy() == h {
+			return img
+		}
+	}
 	return image.NewRGBA(image.Rect(0, 0, w, h))
 }
 
 func (p *imagePool) Put(img *image.RGBA) {
+	if img == nil {
+		return
+	}
 	b := img.Bounds()
 	p.mu.Lock()
-	match := p.w == b.Dx() && p.h == b.Dy()
+	w, h := p.w, p.h
 	p.mu.Unlock()
-	if match {
+	if w == b.Dx() && h == b.Dy() {
 		p.pool.Put(img)
 	}
 }

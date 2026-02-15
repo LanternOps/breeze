@@ -78,6 +78,8 @@ func (n *nvencEncoder) SetFPS(fps int) error {
 	return nil
 }
 
+func (n *nvencEncoder) SetPixelFormat(pf PixelFormat) {}
+
 func (n *nvencEncoder) SetDimensions(width, height int) error {
 	return nil
 }
@@ -92,4 +94,14 @@ func (n *nvencEncoder) Name() string {
 
 func (n *nvencEncoder) IsHardware() bool {
 	return true
+}
+
+func (n *nvencEncoder) IsPlaceholder() bool {
+	return true
+}
+
+func (n *nvencEncoder) SetD3D11Device(device, context uintptr)            {}
+func (n *nvencEncoder) SupportsGPUInput() bool                            { return false }
+func (n *nvencEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
+	return nil, errors.New("GPU input not supported by nvenc encoder")
 }

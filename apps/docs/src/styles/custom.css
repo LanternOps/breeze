@@ -1,10 +1,10 @@
 /* Breeze RMM Docs — matching breezermm.com branding */
 
-/* Accent: teal #0ED4C5 mapped to Starlight's color scale */
+/* Accent: sky blue #7EB4CC mapped to Starlight's color scale */
 :root {
-  --sl-color-accent-low: #062e2b;
-  --sl-color-accent: #0ED4C5;
-  --sl-color-accent-high: #7eeee5;
+  --sl-color-accent-low: #0f1e25;
+  --sl-color-accent: #7EB4CC;
+  --sl-color-accent-high: #b5d6e6;
 
   --sl-font: 'Satoshi', system-ui, -apple-system, sans-serif;
   --sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
@@ -12,26 +12,26 @@
 
 /* Dark theme overrides to match breezermm.com */
 :root[data-theme='dark'] {
-  --sl-color-bg: #0A0A0B;
-  --sl-color-bg-nav: #0f0f11;
-  --sl-color-bg-sidebar: #0c0c0e;
-  --sl-color-hairline-light: rgba(255, 255, 255, 0.05);
-  --sl-color-hairline: rgba(255, 255, 255, 0.08);
-  --sl-color-text: #F0EDE8;
-  --sl-color-text-accent: #0ED4C5;
+  --sl-color-bg: #0C0E12;
+  --sl-color-bg-nav: #101318;
+  --sl-color-bg-sidebar: #0e1015;
+  --sl-color-hairline-light: rgba(228, 232, 239, 0.05);
+  --sl-color-hairline: rgba(228, 232, 239, 0.08);
+  --sl-color-text: #E4E8EF;
+  --sl-color-text-accent: #7EB4CC;
 }
 
-/* Light theme keeps defaults with teal accent */
+/* Light theme keeps defaults with sky blue accent */
 :root[data-theme='light'] {
-  --sl-color-accent-low: #d5faf7;
-  --sl-color-accent: #0aa89c;
-  --sl-color-accent-high: #064e48;
+  --sl-color-accent-low: #daedf5;
+  --sl-color-accent: #5a97b0;
+  --sl-color-accent-high: #1e4a5c;
 }
 
 /* Code blocks */
 :root[data-theme='dark'] .expressive-code {
-  --ec-codeBg: #111113;
-  --ec-codeBrdCol: rgba(14, 212, 197, 0.12);
+  --ec-codeBg: #111318;
+  --ec-codeBrdCol: rgba(126, 180, 204, 0.12);
 }
 
 /* Sidebar active item */
@@ -39,10 +39,10 @@ nav[aria-label='Main'] a[aria-current='page'] {
   border-color: var(--sl-color-accent);
 }
 
-/* Hero badge / callouts with teal glow */
+/* Hero badge / callouts with sky blue glow */
 .sl-badge {
-  --sl-badge-default-bg: rgba(14, 212, 197, 0.12);
-  --sl-badge-default-text: #0ED4C5;
+  --sl-badge-default-bg: rgba(126, 180, 204, 0.12);
+  --sl-badge-default-text: #7EB4CC;
 }
 
 /* Smooth link transitions */

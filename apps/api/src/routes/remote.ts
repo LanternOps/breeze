@@ -315,7 +315,8 @@ const sessionHistorySchema = z.object({
 });
 
 const webrtcOfferSchema = z.object({
-  offer: z.string().min(1).max(65536)
+  offer: z.string().min(1).max(65536),
+  displayIndex: z.number().int().min(0).max(15).optional()
 });
 
 const webrtcAnswerSchema = z.object({
@@ -979,7 +980,7 @@ remoteRoutes.post(
       agentReachable = sendCommandToAgent(device.agentId, {
         id: `desk-${sessionId}`,
         type: 'start_desktop',
-        payload: { sessionId, offer: data.offer, iceServers: getIceServers() }
+        payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}) }
       });
       if (!agentReachable) {
         console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);

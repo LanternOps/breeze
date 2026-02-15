@@ -586,7 +586,7 @@ export default function DevicesPage() {
 
               {(() => {
                 const apiUrl = (import.meta.env.PUBLIC_API_URL || window.location.origin).replace(/\/$/, '');
-                const ghBase = 'https://github.com/toddhebebrand/breeze/releases/latest/download';
+                const ghBase = (import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL || 'https://github.com/lanternops/breeze/releases/latest/download').replace(/\/$/, '');
                 const token = onboardingToken || '<TOKEN>';
 
                 const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"`;

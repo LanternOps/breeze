@@ -154,3 +154,11 @@ func bgraToRGBA(src, dst []byte, pixelCount int) {
 		dst[i+3] = 255      // A
 	}
 }
+
+// bgraToRGBAInPlace converts a BGRA pixel buffer to RGBA by swapping R/B bytes per pixel.
+// This is safe for in-place conversion and preserves the alpha channel.
+func bgraToRGBAInPlace(pix []byte) {
+	for i := 0; i+3 < len(pix); i += 4 {
+		pix[i+0], pix[i+2] = pix[i+2], pix[i+0]
+	}
+}

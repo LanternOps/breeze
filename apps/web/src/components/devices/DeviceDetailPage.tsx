@@ -5,7 +5,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice } from '../../services/deviceActions';
+import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 
 type DeviceDetailPageProps = {
@@ -140,6 +140,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         case 'settings':
           setSettingsOpen(true);
           break;
+
+        case 'clear-sessions': {
+          const result = await clearDeviceSessions(device.id);
+          showToast('success', `Cleared ${result.cleaned} session${result.cleaned !== 1 ? 's' : ''} for ${device.hostname}`);
+          break;
+        }
 
         case 'decommission':
           await decommissionDevice(device.id);
