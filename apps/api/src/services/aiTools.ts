@@ -25,6 +25,7 @@ import { eq, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
+import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { registerFleetTools } from './aiToolsFleet';
 import { publishEvent } from './eventBus';
 import {
@@ -1347,6 +1348,7 @@ registerTool({
 // ============================================
 
 registerFleetTools(aiTools);
+registerAgentLogTools(aiTools);
 
 // ============================================
 // Helper Functions

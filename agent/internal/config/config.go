@@ -42,7 +42,8 @@ type Config struct {
 	LogFormat     string `mapstructure:"log_format"`
 	LogFile       string `mapstructure:"log_file"`
 	LogMaxSizeMB  int    `mapstructure:"log_max_size_mb"`
-	LogMaxBackups int    `mapstructure:"log_max_backups"`
+	LogMaxBackups    int    `mapstructure:"log_max_backups"`
+	LogShippingLevel string `mapstructure:"log_shipping_level"`
 
 	// Concurrency limits
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
@@ -87,6 +88,7 @@ func Default() *Config {
 		LogFormat:                "text",
 		LogMaxSizeMB:             50,
 		LogMaxBackups:            3,
+		LogShippingLevel:         "warn",
 		MaxConcurrentCommands:    10,
 		CommandQueueSize:         100,
 		AuditEnabled:             true,

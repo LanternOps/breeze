@@ -121,6 +121,9 @@ const (
 	CmdBackupRun  = "backup_run"
 	CmdBackupList = "backup_list"
 	CmdBackupStop = "backup_stop"
+
+	// Log shipping
+	CmdSetLogLevel = "set_log_level"
 )
 
 // CommandResult represents the result of a command execution
