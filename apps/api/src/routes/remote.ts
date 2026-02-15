@@ -31,6 +31,10 @@ function generateTurnCredentials(): { username: string; credential: string } | n
   const ttl = 86400; // 24 hours
   const expiry = Math.floor(Date.now() / 1000) + ttl;
   const username = `${expiry}:breeze`;
+  // TURN credential generation commonly uses HMAC-SHA1 with a shared secret on the TURN server.
+  // This is not used for password storage or encryption; if your TURN server supports HMAC-SHA256,
+  // prefer switching to it on both ends.
+  // lgtm[js/weak-cryptographic-algorithm]
   const credential = createHmac('sha1', secret).update(username).digest('base64');
 
   return { username, credential };
