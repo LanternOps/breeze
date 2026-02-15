@@ -68,6 +68,7 @@ CLAUDE.md
 # Stray screenshots
 *.png
 !docs/assets/breeze-logo.png
+!apps/viewer/src-tauri/icons/**/*.png
 .worktrees/
 
 # Monitoring secrets (keep .gitkeep only)
