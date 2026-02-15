@@ -14,8 +14,10 @@ import {
   Network,
   CheckCircle,
   Info,
-  Shield
+  Shield,
+  User
 } from 'lucide-react';
+import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import DeviceActions from './DeviceActions';
 import DeviceInfoTab from './DeviceInfoTab';
@@ -159,7 +161,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       {activeTab === 'overview' && (
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2 space-y-6">
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
               <div className="rounded-lg border bg-card p-4 shadow-sm">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Cpu className="h-4 w-4" />
@@ -180,6 +182,20 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                   Last Seen
                 </div>
                 <p className="mt-2 text-2xl font-bold">{formatLastSeen(device.lastSeen, effectiveTimezone)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Clock className="h-4 w-4" />
+                  Uptime
+                </div>
+                <p className="mt-2 text-2xl font-bold">{formatUptime(device.uptimeSeconds)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 shadow-sm">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <User className="h-4 w-4" />
+                  Logged-in User
+                </div>
+                <p className="mt-2 text-2xl font-bold truncate" title={device.lastUser}>{device.lastUser || '—'}</p>
               </div>
             </div>
 
