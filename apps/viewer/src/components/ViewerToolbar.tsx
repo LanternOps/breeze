@@ -1,6 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX } from 'lucide-react';
+
+interface MonitorInfo {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  isPrimary: boolean;
+}
 
 interface Props {
   status: 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -12,11 +20,40 @@ interface Props {
   scale: number;
   maxFps: number;
   bitrate: number;
+  pasteProgress: { current: number; total: number } | null;
+  remapCmdCtrl: boolean;
+  monitors: MonitorInfo[];
+  activeMonitor: number;
+  audioEnabled: boolean;
+  hasAudioTrack: boolean;
+  onRemapCmdCtrlChange: (v: boolean) => void;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
   onBitrateChange: (bitrate: number) => void;
-  onCtrlAltDel: () => void;
+  onSwitchMonitor: (index: number) => void;
+  onToggleAudio: () => void;
+  onSendKeys: (key: string, modifiers: string[]) => void;
+  onPasteAsKeystrokes: () => void;
+  onCancelPaste: () => void;
   onDisconnect: () => void;
 }
+
+interface KeyCombo {
+  label: string;
+  key: string;
+  modifiers: string[];
+  description: string;
+}
+
+const KEY_COMBOS: KeyCombo[] = [
+  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen' },
+  { label: 'Ctrl+Shift+Esc',  key: 'escape', modifiers: ['ctrl', 'shift'], description: 'Task Manager' },
+  { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
+  { label: 'Alt+F4',          key: 'f4',     modifiers: ['alt'],           description: 'Close window' },
+  { label: 'Win+L',           key: 'l',      modifiers: ['win'],           description: 'Lock workstation' },
+  { label: 'Win+R',           key: 'r',      modifiers: ['win'],           description: 'Run dialog' },
+  { label: 'Win+E',           key: 'e',      modifiers: ['win'],           description: 'File Explorer' },
+  { label: 'Win+D',           key: 'd',      modifiers: ['win'],           description: 'Show desktop' },
+];
 
 function formatDuration(startDate: Date): string {
   const seconds = Math.floor((Date.now() - startDate.getTime()) / 1000);
@@ -37,9 +74,20 @@ export default function ViewerToolbar({
   scale,
   maxFps,
   bitrate,
+  pasteProgress,
+  remapCmdCtrl,
+  monitors,
+  activeMonitor,
+  audioEnabled,
+  hasAudioTrack,
+  onRemapCmdCtrlChange,
   onConfigChange,
   onBitrateChange,
-  onCtrlAltDel,
+  onSwitchMonitor,
+  onToggleAudio,
+  onSendKeys,
+  onPasteAsKeystrokes,
+  onCancelPaste,
   onDisconnect,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
@@ -49,9 +97,17 @@ export default function ViewerToolbar({
   const MaximizeIcon = Maximize as unknown as ComponentType<{ className?: string }>;
   const PowerIcon = Power as unknown as ComponentType<{ className?: string }>;
   const KeyboardIcon = Keyboard as unknown as ComponentType<{ className?: string }>;
+  const PasteIcon = ClipboardPaste as unknown as ComponentType<{ className?: string }>;
+  const ChevronDownIcon = ChevronDown as unknown as ComponentType<{ className?: string }>;
+  const XIcon = X as unknown as ComponentType<{ className?: string }>;
+  const SwapIcon = ArrowLeftRight as unknown as ComponentType<{ className?: string }>;
+  const VolumeOnIcon = Volume2 as unknown as ComponentType<{ className?: string }>;
+  const VolumeOffIcon = VolumeX as unknown as ComponentType<{ className?: string }>;
 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
+  const [keysOpen, setKeysOpen] = useState(false);
+  const keysDropdownRef = useRef<HTMLDivElement>(null);
 
   // Update duration every second
   useEffect(() => {
@@ -70,6 +126,18 @@ export default function ViewerToolbar({
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!keysOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (keysDropdownRef.current && !keysDropdownRef.current.contains(e.target as Node)) {
+        setKeysOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [keysOpen]);
 
   const toggleFullscreen = async () => {
     try {
@@ -128,13 +196,13 @@ export default function ViewerToolbar({
       <div className="w-px h-5 bg-gray-600" />
 
       {/* WebRTC mode: Bitrate control */}
-      {isWebRTC && (
+      {transport === 'webrtc' && (
         <div className="flex items-center gap-1.5">
-          <label className="text-gray-400 text-xs">Bitrate</label>
+          <label className="text-gray-400 text-xs">Max Bitrate</label>
           <input
             type="range"
             min="500"
-            max="8000"
+            max="15000"
             step="250"
             value={bitrate}
             onChange={(e) => onBitrateChange(parseInt(e.target.value))}
@@ -145,7 +213,7 @@ export default function ViewerToolbar({
       )}
 
       {/* WebSocket mode: Quality / Scale / FPS Limit */}
-      {!isWebRTC && (
+      {transport === 'websocket' && (
         <>
           <div className="flex items-center gap-1.5">
             <label className="text-gray-400 text-xs">Quality</label>
@@ -192,17 +260,114 @@ export default function ViewerToolbar({
         </>
       )}
 
+      {/* Monitor picker (only shown with 2+ monitors on WebRTC) */}
+      {monitors.length > 1 && transport === 'webrtc' && (
+        <>
+          <div className="w-px h-5 bg-gray-600" />
+          <div className="flex items-center gap-1.5">
+            <MonitorIcon className="w-3.5 h-3.5 text-gray-400" />
+            <select
+              value={activeMonitor}
+              onChange={(e) => onSwitchMonitor(parseInt(e.target.value))}
+              className="bg-gray-700 text-gray-300 text-xs rounded px-1 py-0.5 border border-gray-600"
+            >
+              {monitors.map((m) => (
+                <option key={m.index} value={m.index}>
+                  {m.name || `Display ${m.index + 1}`}{m.isPrimary ? ' (Primary)' : ''}{m.width ? ` ${m.width}x${m.height}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        </>
+      )}
+
       <div className="flex-1" />
 
-      {/* Actions */}
+      {/* Paste progress indicator */}
+      {pasteProgress && (
+        <div className="flex items-center gap-1.5 text-xs text-yellow-400">
+          <span>Pasting {pasteProgress.current}/{pasteProgress.total}</span>
+          <button
+            onClick={onCancelPaste}
+            className="p-0.5 hover:bg-gray-700 rounded"
+            title="Cancel paste"
+          >
+            <XIcon className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Audio toggle (only shown when agent has audio track) */}
+      {hasAudioTrack && (
+        <button
+          onClick={onToggleAudio}
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
+            audioEnabled
+              ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
+              : 'text-gray-400 hover:text-white hover:bg-gray-700'
+          }`}
+          title={audioEnabled ? 'Mute remote audio' : 'Unmute remote audio'}
+        >
+          {audioEnabled ? <VolumeOnIcon className="w-3.5 h-3.5" /> : <VolumeOffIcon className="w-3.5 h-3.5" />}
+          <span>Audio</span>
+        </button>
+      )}
+
+      {/* Paste as Keystrokes */}
       <button
-        onClick={onCtrlAltDel}
-        className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded"
-        title="Send Ctrl+Alt+Del"
+        onClick={onPasteAsKeystrokes}
+        disabled={!!pasteProgress}
+        className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+        title="Paste clipboard text as keystrokes"
       >
-        <KeyboardIcon className="w-3.5 h-3.5" />
-        <span>Ctrl+Alt+Del</span>
+        <PasteIcon className="w-3.5 h-3.5" />
+        <span>Paste Text</span>
       </button>
+
+      {/* Cmd↔Ctrl remap toggle */}
+      <button
+        onClick={() => onRemapCmdCtrlChange(!remapCmdCtrl)}
+        className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
+          remapCmdCtrl
+            ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
+            : 'text-gray-400 hover:text-white hover:bg-gray-700'
+        }`}
+        title={remapCmdCtrl ? 'Cmd↔Ctrl remap ON (click to disable)' : 'Cmd↔Ctrl remap OFF (click to enable)'}
+      >
+        <SwapIcon className="w-3.5 h-3.5" />
+        <span>Cmd↔Ctrl</span>
+      </button>
+
+      {/* Send Keys dropdown */}
+      <div className="relative" ref={keysDropdownRef}>
+        <button
+          onClick={() => setKeysOpen(!keysOpen)}
+          className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded"
+          title="Send key combination"
+        >
+          <KeyboardIcon className="w-3.5 h-3.5" />
+          <span>Send Keys</span>
+          <ChevronDownIcon className="w-3 h-3" />
+        </button>
+
+        {keysOpen && (
+          <div className="absolute right-0 top-full mt-1 w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
+            {KEY_COMBOS.map((combo) => (
+              <button
+                key={combo.label}
+                onClick={() => {
+                  onSendKeys(combo.key, combo.modifiers);
+                  setKeysOpen(false);
+                }}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-xs hover:bg-gray-700 text-left"
+              >
+                <span className="text-gray-200 font-mono">{combo.label}</span>
+                <span className="text-gray-500">{combo.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       <button
         onClick={toggleFullscreen}

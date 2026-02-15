@@ -13,6 +13,11 @@ type InputEvent struct {
 
 // InputHandler processes input events
 type InputHandler interface {
+	// SetDisplayOffset sets the virtual screen offset of the captured monitor.
+	// All mouse coordinates from the viewer are relative to the captured monitor;
+	// this offset translates them to virtual screen coordinates.
+	SetDisplayOffset(x, y int)
+
 	// SendMouseMove moves the mouse cursor to the specified position
 	SendMouseMove(x, y int) error
 

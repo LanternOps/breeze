@@ -73,6 +73,16 @@ const osLabels: Record<OSType, string> = {
   linux: 'Linux'
 };
 
+function formatOsVersion(os: OSType, osVersion: string): string {
+  if (!osVersion) return osLabels[os];
+  let v = osVersion;
+  // Strip redundant "Microsoft Windows" prefix since osLabels already shows "Windows"
+  v = v.replace(/^Microsoft Windows\s*/i, '');
+  // Strip build/version numbers (e.g. "10.0.26200.7623 Build 26200.7623")
+  v = v.replace(/\s*\d+\.\d+\.\d+[\d.]*\s*(Build\s*[\d.]+)?/i, '').trim();
+  return v ? `${osLabels[os]} ${v}` : osLabels[os];
+}
+
 function formatLastSeen(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
@@ -128,7 +138,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
                 </span>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                <span>{osLabels[device.os]} {device.osVersion}</span>
+                <span>{formatOsVersion(device.os, device.osVersion)}</span>
                 <span>Agent v{device.agentVersion}</span>
                 <span>{device.siteName}</span>
               </div>

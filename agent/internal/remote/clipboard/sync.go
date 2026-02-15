@@ -63,14 +63,21 @@ func (c *ClipboardSync) Watch() {
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
+		var lastErrMsg string
 		for {
 			select {
 			case <-ticker.C:
 				content, err := c.provider.GetContent()
 				if err != nil {
-					log.Printf("[clipboard] failed to get content: %v", err)
+					// Only log when the error message changes to avoid spam
+					msg := err.Error()
+					if msg != lastErrMsg {
+						log.Printf("[clipboard] failed to get content: %v", err)
+						lastErrMsg = msg
+					}
 					continue
 				}
+				lastErrMsg = ""
 				hash := fingerprint(content)
 				c.mu.Lock()
 				shouldSend := hash != c.lastSentHash

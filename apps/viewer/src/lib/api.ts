@@ -2,13 +2,28 @@
  * Simple fetch wrapper with Bearer token auth for Breeze API
  */
 
+function joinPaths(basePath: string, path: string): string {
+  const base = basePath.endsWith('/') ? basePath.slice(0, -1) : basePath;
+  const extra = path.startsWith('/') ? path : `/${path}`;
+  if (base === '' || base === '/') return extra;
+  return `${base}${extra}`;
+}
+
+function buildApiUrl(apiUrl: string, path: string): string {
+  const u = new URL(apiUrl);
+  u.pathname = joinPaths(u.pathname, path);
+  u.search = '';
+  u.hash = '';
+  return u.toString();
+}
+
 export async function apiFetch(
   apiUrl: string,
   path: string,
   token: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const url = `${apiUrl}${path}`;
+  const url = buildApiUrl(apiUrl, path);
   return fetch(url, {
     ...options,
     headers: {
@@ -44,7 +59,7 @@ export async function exchangeDesktopConnectCode(
   sessionId: string,
   code: string
 ): Promise<{ accessToken: string; expiresInSeconds: number } | null> {
-  const resp = await fetch(`${apiUrl}/api/v1/desktop-ws/connect/exchange`, {
+  const resp = await fetch(buildApiUrl(apiUrl, '/api/v1/desktop-ws/connect/exchange'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, code }),

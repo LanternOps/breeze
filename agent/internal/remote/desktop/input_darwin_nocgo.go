@@ -13,6 +13,8 @@ func NewInputHandler() InputHandler {
 	return &darwinInputHandlerNoCgo{}
 }
 
+func (h *darwinInputHandlerNoCgo) SetDisplayOffset(x, y int) {}
+
 func (h *darwinInputHandlerNoCgo) SendMouseMove(x, y int) error {
 	return fmt.Errorf("input handler unavailable: built without CGO")
 }

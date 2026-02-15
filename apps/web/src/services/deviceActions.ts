@@ -123,6 +123,18 @@ export async function bulkDecommissionDevices(
   return { succeeded, failed };
 }
 
+export async function clearDeviceSessions(deviceId: string): Promise<{ cleaned: number }> {
+  const response = await fetchWithAuth(`/remote/sessions/stale?deviceId=${encodeURIComponent(deviceId)}`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to clear sessions'));
+  }
+
+  return await response.json();
+}
+
 export async function toggleMaintenanceMode(
   deviceId: string,
   enable: boolean,

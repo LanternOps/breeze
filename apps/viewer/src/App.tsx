@@ -12,27 +12,48 @@ export default function App() {
   const [params, setParams] = useState<ConnectionParams | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [manualUrl, setManualUrl] = useState('');
-  const lastSessionRef = useRef<string | null>(null);
+  const lastDeepLinkRef = useRef<{ key: string; at: number } | null>(null);
 
-  // Apply a parsed deep link, deduplicating by session ID
+  // Apply a parsed deep link, deduplicating burst delivery (multiple backend paths may emit the same URL)
   const applyDeepLink = useCallback((url: string) => {
     const parsed = parseDeepLink(url);
-    if (parsed && parsed.sessionId !== lastSessionRef.current) {
-      lastSessionRef.current = parsed.sessionId;
-      setParams(parsed);
-      setError(null);
-    }
+    if (!parsed) return;
+
+    const key = `${parsed.sessionId}|${parsed.connectCode}|${parsed.apiUrl}`;
+    const now = Date.now();
+    const last = lastDeepLinkRef.current;
+    if (last && last.key === key && now - last.at < 2000) return;
+
+    lastDeepLinkRef.current = { key, at: now };
+    // Clear the pending URL in Rust so we don't re-apply it on next poll
+    invoke('clear_pending_deep_link').catch(() => {});
+    setParams(parsed);
+    setError(null);
   }, []);
 
   useEffect(() => {
-    // Path 1: Ask the Rust backend for the deep link that launched the app.
-    // On macOS this may return null due to async URL delivery timing.
-    invoke<string | null>('get_initial_deep_link').then((url) => {
-      if (url) applyDeepLink(url);
-    });
+    // Path 1: Poll the Rust backend for a pending deep link URL.
+    // Uses an interval instead of a one-shot invoke to handle the race where
+    // macOS delivers the URL after our first check but before the event listener
+    // is registered. Polls every 300ms for up to 5 seconds on cold launch.
+    let pollCount = 0;
+    const maxPolls = 17; // ~5 seconds
+    const pollTimer = setInterval(() => {
+      pollCount++;
+      invoke<string | null>('get_pending_deep_link').then((url) => {
+        if (url) {
+          clearInterval(pollTimer);
+          applyDeepLink(url);
+        } else if (pollCount >= maxPolls) {
+          clearInterval(pollTimer);
+        }
+      }).catch(() => {
+        if (pollCount >= maxPolls) clearInterval(pollTimer);
+      });
+    }, 300);
 
     // Path 2: Listen for deep-link-received events. This fires when:
-    // - The Rust backend emits the initial URL after a short delay (macOS race fix)
+    // - The Rust backend emits the initial URL after a delay (cold launch)
     // - The app is already running and a new deep link is triggered (on_open_url)
     // - On Linux/Windows, the single-instance plugin forwards the URL from argv
     const unlisten = listen<string>('deep-link-received', (event) => {
@@ -40,33 +61,39 @@ export default function App() {
     });
 
     return () => {
+      clearInterval(pollTimer);
       unlisten.then((fn) => fn());
     };
   }, [applyDeepLink]);
 
   const handleDisconnect = useCallback(() => {
-    lastSessionRef.current = null;
+    lastDeepLinkRef.current = null;
     setParams(null);
     setError(null);
   }, []);
 
   const handleError = useCallback((msg: string) => {
+    // Allow the same deep link to be re-applied immediately after an error.
+    lastDeepLinkRef.current = null;
     setError(msg);
   }, []);
 
   const handleManualConnect = useCallback(() => {
     const parsed = parseDeepLink(manualUrl);
     if (parsed) {
-      lastSessionRef.current = parsed.sessionId;
+      lastDeepLinkRef.current = {
+        key: `${parsed.sessionId}|${parsed.connectCode}|${parsed.apiUrl}`,
+        at: Date.now(),
+      };
       setParams(parsed);
       setError(null);
     } else {
-      setError('Invalid connection URL. Expected format: breeze://connect?session=...&code=...&api=...');
+      setError('Invalid connection URL. Expected: breeze://connect?session=...&code=...&api=... (api must be https, or http://localhost for dev).');
     }
   }, [manualUrl]);
 
-  // Show viewer if connected
-  if (params && !error) {
+  // Show viewer if connected. Connection errors are handled in-view.
+  if (params) {
     return (
       <DesktopViewer
         params={params}

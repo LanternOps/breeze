@@ -7,8 +7,8 @@ export interface ViewerDownloadInfo {
   readonly filename: string;
 }
 
-const REPO = 'toddhebebrand/breeze';
-const BASE_URL = `https://github.com/${REPO}/releases/latest/download`;
+const BASE_URL = import.meta.env.PUBLIC_VIEWER_DOWNLOAD_URL
+  || 'https://github.com/lanternops/breeze/releases/latest/download';
 
 const PLATFORMS: readonly ViewerDownloadInfo[] = [
   { os: 'macos', label: 'macOS', filename: 'breeze-viewer-macos.dmg', url: `${BASE_URL}/breeze-viewer-macos.dmg` },
