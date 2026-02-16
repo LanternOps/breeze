@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { existsSync, statSync, createReadStream } from 'node:fs';
+import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
@@ -58,7 +58,12 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   const filePath = join(binaryDir, filename);
 
-  if (!existsSync(filePath)) {
+  let fileStat: ReturnType<typeof statSync>;
+  let stream: ReturnType<typeof createReadStream>;
+  try {
+    fileStat = statSync(filePath);
+    stream = createReadStream(filePath);
+  } catch {
     return c.json(
       {
         error: 'Binary not found',
@@ -68,9 +73,6 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
       404
     );
   }
-
-  const stat = statSync(filePath);
-  const stream = createReadStream(filePath);
 
   const webStream = new ReadableStream({
     start(controller) {
@@ -95,7 +97,7 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
     headers: {
       'Content-Type': 'application/octet-stream',
       'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': String(stat.size),
+      'Content-Length': String(fileStat.size),
       'Cache-Control': 'no-cache',
     },
   });

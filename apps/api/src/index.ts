@@ -944,7 +944,7 @@ async function bootstrap(): Promise<void> {
   try {
     await syncBinaries();
   } catch (err) {
-    console.warn('[startup] Binary sync failed (non-fatal):', err);
+    console.error('[startup] Binary sync failed (non-fatal):', err);
   }
 
   server = serve({

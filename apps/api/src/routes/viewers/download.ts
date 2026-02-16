@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { existsSync, statSync, createReadStream } from 'node:fs';
+import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
 import { getBinarySource, getGithubViewerUrl } from '../../services/binarySource';
@@ -49,7 +49,12 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
   const viewerDir = resolve(process.env.VIEWER_BINARY_DIR || './viewer/bin');
   const filePath = join(viewerDir, filename);
 
-  if (!existsSync(filePath)) {
+  let fileStat: ReturnType<typeof statSync>;
+  let stream: ReturnType<typeof createReadStream>;
+  try {
+    fileStat = statSync(filePath);
+    stream = createReadStream(filePath);
+  } catch {
     return c.json(
       {
         error: 'Installer not found',
@@ -58,9 +63,6 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
       404
     );
   }
-
-  const stat = statSync(filePath);
-  const stream = createReadStream(filePath);
 
   const webStream = new ReadableStream({
     start(controller) {
@@ -85,7 +87,7 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
     headers: {
       'Content-Type': 'application/octet-stream',
       'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': String(stat.size),
+      'Content-Length': String(fileStat.size),
       'Cache-Control': 'no-cache',
     },
   });
