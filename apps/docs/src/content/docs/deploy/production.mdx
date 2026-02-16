@@ -16,9 +16,10 @@ The production Docker Compose stack (`docker/docker-compose.prod.yml`) includes:
 
 | Service | Image | Purpose |
 |---|---|---|
+| **Binaries Init** | `ghcr.io/lanternops/breeze/binaries` | Copies agent/viewer binaries to a shared volume, then exits |
 | **Caddy** | `caddy:2.8-alpine` | Reverse proxy, auto-TLS, security headers |
-| **API** | Built from `apps/api/Dockerfile` | Hono API server (read-only rootfs) |
-| **Web** | Built from `apps/web/Dockerfile` | Astro SSR dashboard (read-only rootfs) |
+| **API** | `ghcr.io/lanternops/breeze/api` | Hono API server (read-only rootfs) |
+| **Web** | `ghcr.io/lanternops/breeze/web` | Astro SSR dashboard (read-only rootfs) |
 | **PostgreSQL** | `postgres:16-alpine` | Primary database |
 | **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
 | **Prometheus** | `prom/prometheus:v2.52.0` | Metrics collection |
