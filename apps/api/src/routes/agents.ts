@@ -32,6 +32,7 @@ import {
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { existsSync, statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -2773,10 +2774,33 @@ const agentLogIngestSchema = z.object({
   logs: z.array(agentLogEntrySchema).max(500),
 });
 
-agentRoutes.post('/:id/logs', zValidator('json', agentLogIngestSchema), async (c) => {
+agentRoutes.post('/:id/logs', async (c) => {
   const agentId = c.req.param('id');
-  const data = c.req.valid('json');
-  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+  let body: unknown;
+
+  try {
+    const raw = Buffer.from(await c.req.arrayBuffer());
+    const encoding = c.req.header('content-encoding')?.toLowerCase() ?? '';
+    const decoded = encoding.includes('gzip') ? gunzipSync(raw) : raw;
+    body = JSON.parse(decoded.toString('utf-8'));
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const parsed = agentLogIngestSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: 'Invalid request body',
+        details: parsed.error.issues.map((issue) => ({
+          path: issue.path.join('.'),
+          message: issue.message,
+        })),
+      },
+      400
+    );
+  }
+  const data = parsed.data;
 
   const [device] = await db
     .select()

@@ -2,9 +2,11 @@ import { Hono } from 'hono';
 import { randomUUID, createHash } from 'crypto';
 import { createReadStream, createWriteStream } from 'fs';
 import { mkdir, unlink, stat } from 'fs/promises';
-import { pipeline } from 'stream/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../db';
+import { devices } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { getDeviceWithOrgCheck } from './devices/helpers';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
@@ -25,6 +27,12 @@ function cleanupDownload(token: string) {
     unlink(entry.filePath).catch(() => {});
     pendingDownloads.delete(token);
   }
+}
+
+function resolveDownloadBaseUrl(): string | null {
+  const raw = process.env.PUBLIC_API_URL || process.env.BREEZE_SERVER;
+  if (!raw) return null;
+  return raw.replace(/\/+$/, '');
 }
 
 export const devPushRoutes = new Hono();
@@ -91,10 +99,13 @@ devPushRoutes.post('/push', authMiddleware, async (c) => {
   const timer = setTimeout(() => cleanupDownload(downloadToken), TTL_MS);
   pendingDownloads.set(downloadToken, { filePath, timer, agentId: device.agentId });
 
-  // Build download URL
-  const proto = c.req.header('x-forwarded-proto') ?? 'http';
-  const host = c.req.header('host') ?? 'localhost:3001';
-  const downloadUrl = `${proto}://${host}/api/v1/dev/push/download/${downloadToken}`;
+  // Build download URL from configured canonical origin (not request headers).
+  const downloadBaseUrl = resolveDownloadBaseUrl();
+  if (!downloadBaseUrl) {
+    cleanupDownload(downloadToken);
+    return c.json({ error: 'PUBLIC_API_URL or BREEZE_SERVER must be set for dev push' }, 500);
+  }
+  const downloadUrl = `${downloadBaseUrl}/api/v1/dev/push/download/${downloadToken}`;
 
   // Send dev_update command to agent via WebSocket
   const commandId = `dev-push-${downloadToken}`;
@@ -135,6 +146,26 @@ devPushRoutes.get('/push/download/:token', async (c) => {
   const authHeader = c.req.header('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return c.json({ error: 'Authorization required' }, 401);
+  }
+  const bearerToken = authHeader.slice(7).trim();
+  if (!bearerToken) {
+    return c.json({ error: 'Authorization required' }, 401);
+  }
+
+  const tokenHash = createHash('sha256').update(bearerToken).digest('hex');
+  const [agentDevice] = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.agentId, entry.agentId),
+        eq(devices.agentTokenHash, tokenHash)
+      )
+    )
+    .limit(1);
+
+  if (!agentDevice) {
+    return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 
   // Stream the file
