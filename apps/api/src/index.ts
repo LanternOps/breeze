@@ -66,6 +66,7 @@ import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
+import { helperRoutes } from './routes/helper';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -599,6 +600,7 @@ api.route('/viewers', viewerRoutes);
 api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
+api.route('/helper', helperRoutes);
 
 app.route('/api/v1', api);
 

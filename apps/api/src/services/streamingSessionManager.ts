@@ -232,6 +232,7 @@ export class StreamingSessionManager {
     requestContext: RequestLike | undefined,
     systemPrompt: string,
     maxBudgetUsd: number | undefined,
+    allowedTools?: string[],
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
       ip: requestContext?.req.header('x-forwarded-for') ?? requestContext?.req.header('x-real-ip'),
@@ -301,7 +302,7 @@ export class StreamingSessionManager {
           maxTurns,
           maxBudgetUsd,
           tools: [],
-          allowedTools: BREEZE_MCP_TOOL_NAMES,
+          allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
           mcpServers: { breeze: mcpServer },
           includePartialMessages: true,
           abortController,

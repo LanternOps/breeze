@@ -1,0 +1,473 @@
+/* ============================================================
+   Breeze Helper – Tray Chat Window Styles
+   Dark theme, compact, frameless, 380x600 popup
+   ============================================================ */
+
+/* ----------------------------------------------------------
+   CSS Variables
+   ---------------------------------------------------------- */
+:root {
+  --bg-primary: #1a1b1e;
+  --bg-secondary: #25262b;
+  --bg-tertiary: #2c2e33;
+  --bg-hover: #343a40;
+  --bg-input: #2c2e33;
+
+  --text-primary: #e4e5e7;
+  --text-secondary: #909296;
+  --text-muted: #6b6e73;
+  --text-placeholder: #555860;
+
+  --accent: #4c9aff;
+  --accent-hover: #3d8af0;
+  --accent-subtle: rgba(76, 154, 255, 0.12);
+
+  --user-bubble: #2b5a9e;
+  --user-bubble-text: #e4e5e7;
+  --assistant-bubble: #2c2e33;
+  --assistant-bubble-text: #e4e5e7;
+
+  --error-bg: rgba(255, 69, 58, 0.12);
+  --error-text: #ff6b6b;
+  --error-border: rgba(255, 69, 58, 0.25);
+
+  --success: #51cf66;
+
+  --border: #373a40;
+  --border-light: #2c2e33;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas,
+    'DejaVu Sans Mono', monospace;
+
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+}
+
+/* ----------------------------------------------------------
+   Reset & Base
+   ---------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+}
+
+/* ----------------------------------------------------------
+   Container
+   ---------------------------------------------------------- */
+.helper-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.helper-center {
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  padding: 24px;
+  color: var(--text-secondary);
+}
+
+.helper-center p {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* ----------------------------------------------------------
+   Header (draggable title bar)
+   ---------------------------------------------------------- */
+.helper-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.helper-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.helper-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  transition: background var(--transition-normal);
+}
+
+.helper-status-connected {
+  background: var(--success);
+  box-shadow: 0 0 6px rgba(81, 207, 102, 0.4);
+}
+
+.helper-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+/* ----------------------------------------------------------
+   Error Banner
+   ---------------------------------------------------------- */
+.helper-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--error-bg);
+  border-bottom: 1px solid var(--error-border);
+  color: var(--error-text);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.helper-error-banner span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper-error-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ----------------------------------------------------------
+   Buttons
+   ---------------------------------------------------------- */
+.helper-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.helper-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+
+.helper-btn:active {
+  transform: scale(0.97);
+}
+
+.helper-btn-sm {
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+}
+
+.helper-btn-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--error-text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.helper-btn-close:hover {
+  background: rgba(255, 69, 58, 0.15);
+}
+
+/* ----------------------------------------------------------
+   Messages Area
+   ---------------------------------------------------------- */
+.helper-messages {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.helper-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.helper-empty p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.helper-empty p:first-child {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* ----------------------------------------------------------
+   Message Bubbles
+   ---------------------------------------------------------- */
+.helper-message {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  font-size: 13px;
+  line-height: 1.45;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  animation: messageIn 200ms ease-out;
+}
+
+@keyframes messageIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.helper-message-user {
+  align-self: flex-end;
+  background: var(--user-bubble);
+  color: var(--user-bubble-text);
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.helper-message-assistant {
+  align-self: flex-start;
+  background: var(--assistant-bubble);
+  color: var(--assistant-bubble-text);
+  border-bottom-left-radius: var(--radius-sm);
+}
+
+.helper-message-content {
+  white-space: pre-wrap;
+}
+
+/* ----------------------------------------------------------
+   Streaming Cursor
+   ---------------------------------------------------------- */
+.helper-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  margin-left: 2px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink 800ms step-end infinite;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ----------------------------------------------------------
+   Tool Use Indicator
+   ---------------------------------------------------------- */
+.helper-tool-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  align-self: flex-start;
+  max-width: 85%;
+  animation: messageIn 200ms ease-out;
+}
+
+/* ----------------------------------------------------------
+   Spinner
+   ---------------------------------------------------------- */
+.helper-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ----------------------------------------------------------
+   Input Area
+   ---------------------------------------------------------- */
+.helper-input-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.helper-input {
+  flex: 1;
+  min-height: 34px;
+  max-height: 100px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  resize: none;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.helper-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.helper-input:focus {
+  border-color: var(--accent);
+}
+
+.helper-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.helper-btn-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform var(--transition-fast);
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  height: 34px;
+}
+
+.helper-btn-send:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.helper-btn-send:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.helper-btn-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ----------------------------------------------------------
+   Custom Scrollbar
+   ---------------------------------------------------------- */
+.helper-messages::-webkit-scrollbar {
+  width: 5px;
+}
+
+.helper-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.helper-messages::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.helper-messages::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Firefox scrollbar */
+.helper-messages {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}

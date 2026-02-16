@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { users } from './users';
+import { devices } from './devices';
 
 // ============================================
 // Enums
@@ -17,7 +18,8 @@ export const aiToolStatusEnum = pgEnum('ai_tool_status', ['pending', 'approved',
 export const aiSessions = pgTable('ai_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').references(() => users.id),
+  deviceId: uuid('device_id').references(() => devices.id),
   status: aiSessionStatusEnum('status').notNull().default('active'),
   title: varchar('title', { length: 255 }),
   model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
@@ -121,3 +123,26 @@ export const aiBudgets = pgTable('ai_budgets', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// ============================================
+// AI Screenshots (temporary storage for vision analysis)
+// ============================================
+
+export const aiScreenshots = pgTable('ai_screenshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  sessionId: uuid('session_id'),
+  storageKey: varchar('storage_key', { length: 500 }).notNull(),
+  width: integer('width').notNull(),
+  height: integer('height').notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  capturedBy: varchar('captured_by', { length: 50 }).notNull().default('agent'),
+  reason: varchar('reason', { length: 200 }),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  deviceIdIdx: index('ai_screenshots_device_id_idx').on(table.deviceId),
+  orgIdIdx: index('ai_screenshots_org_id_idx').on(table.orgId),
+  expiresAtIdx: index('ai_screenshots_expires_at_idx').on(table.expiresAt),
+}));
