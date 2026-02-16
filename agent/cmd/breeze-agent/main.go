@@ -151,6 +151,19 @@ func runAgent() {
 	cfg.AuthToken = "" // Clear plaintext from config struct
 	defer secureToken.Zero()
 
+	// Initialize log shipper for centralized diagnostics
+	if cfg.AgentID != "" && cfg.ServerURL != "" {
+		logging.InitShipper(logging.ShipperConfig{
+			ServerURL:    cfg.ServerURL,
+			AgentID:      cfg.AgentID,
+			AuthToken:    secureToken.Reveal(),
+			AgentVersion: version,
+			HTTPClient:   nil, // will use default
+			MinLevel:     cfg.LogShippingLevel,
+		})
+		defer logging.StopShipper()
+	}
+
 	log.Info("starting agent",
 		"version", version,
 		"server", cfg.ServerURL,

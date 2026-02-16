@@ -68,6 +68,9 @@ export const CommandTypes = {
   SECURITY_THREAT_QUARANTINE: 'security_threat_quarantine',
   SECURITY_THREAT_REMOVE: 'security_threat_remove',
   SECURITY_THREAT_RESTORE: 'security_threat_restore',
+
+  // Log shipping
+  SET_LOG_LEVEL: 'set_log_level',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];

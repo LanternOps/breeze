@@ -36,6 +36,12 @@ func restartLaunchd() error {
 	return cmd.Run()
 }
 
+// RestartWithHelper is Windows-only; on Unix it's never called because
+// updater.go gates on runtime.GOOS == "windows".
+func RestartWithHelper(_, _ string) error {
+	return fmt.Errorf("RestartWithHelper is only supported on Windows")
+}
+
 func restartExec() error {
 	binary, err := os.Executable()
 	if err != nil {

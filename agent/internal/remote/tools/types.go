@@ -121,6 +121,12 @@ const (
 	CmdBackupRun  = "backup_run"
 	CmdBackupList = "backup_list"
 	CmdBackupStop = "backup_stop"
+
+	// Log shipping
+	CmdSetLogLevel = "set_log_level"
+
+	// Dev push (fast dev binary update)
+	CmdDevUpdate = "dev_update"
 )
 
 // CommandResult represents the result of a command execution

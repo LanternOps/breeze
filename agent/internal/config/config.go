@@ -42,7 +42,8 @@ type Config struct {
 	LogFormat     string `mapstructure:"log_format"`
 	LogFile       string `mapstructure:"log_file"`
 	LogMaxSizeMB  int    `mapstructure:"log_max_size_mb"`
-	LogMaxBackups int    `mapstructure:"log_max_backups"`
+	LogMaxBackups    int    `mapstructure:"log_max_backups"`
+	LogShippingLevel string `mapstructure:"log_shipping_level"`
 
 	// Concurrency limits
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
@@ -72,10 +73,25 @@ type Config struct {
 	PolicyRegistryStateProbes []PolicyRegistryStateProbe `mapstructure:"policy_registry_state_probes"`
 	PolicyConfigStateProbes   []PolicyConfigStateProbe   `mapstructure:"policy_config_state_probes"`
 
+	// Auto-update toggle (default: true)
+	AutoUpdate bool `mapstructure:"auto_update"`
+
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
+}
+
+// defaultLogFile returns the platform-specific default log file path.
+func defaultLogFile() string {
+	switch runtime.GOOS {
+	case "windows":
+		return filepath.Join(os.Getenv("ProgramData"), "Breeze", "logs", "agent.log")
+	case "darwin":
+		return "/Library/Application Support/Breeze/logs/agent.log"
+	default:
+		return "/var/log/breeze/agent.log"
+	}
 }
 
 func Default() *Config {
@@ -85,14 +101,17 @@ func Default() *Config {
 		EnabledCollectors:        []string{"hardware", "software", "metrics", "network"},
 		LogLevel:                 "info",
 		LogFormat:                "text",
+		LogFile:                  defaultLogFile(),
 		LogMaxSizeMB:             50,
 		LogMaxBackups:            3,
+		LogShippingLevel:         "warn",
 		MaxConcurrentCommands:    10,
 		CommandQueueSize:         100,
 		AuditEnabled:             true,
 		AuditMaxSizeMB:           50,
 		AuditMaxBackups:          3,
 
+		AutoUpdate:                 true,
 		PatchExcludeFeatureUpdates: true,
 		PatchMinDiskSpaceGB:        2.0,
 		PatchRequireACPower:        true,
@@ -158,6 +177,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
 	viper.Set("policy_registry_state_probes", cfg.PolicyRegistryStateProbes)
 	viper.Set("policy_config_state_probes", cfg.PolicyConfigStateProbes)
+	viper.Set("auto_update", cfg.AutoUpdate)
 	viper.Set("mtls_cert_pem", cfg.MtlsCertPEM)
 	viper.Set("mtls_key_pem", cfg.MtlsKeyPEM)
 	viper.Set("mtls_cert_expires", cfg.MtlsCertExpires)
