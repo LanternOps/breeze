@@ -90,6 +90,18 @@ All configuration is done through environment variables, defined in your `.env.p
 | `TWILIO_MESSAGING_SERVICE_SID` | — | Twilio Messaging Service SID (for alert SMS) |
 | `TWILIO_PHONE_NUMBER` | — | Twilio phone number for outbound SMS |
 
+## Binary Distribution
+
+| Variable | Default | Description |
+|---|---|---|
+| `BINARY_SOURCE` | `local` | Download source: `local` (serve from disk, optional S3) or `github` (redirect to GitHub Releases) |
+| `AGENT_BINARY_DIR` | `./agent/bin` | Local directory containing agent binaries |
+| `VIEWER_BINARY_DIR` | `./viewer/bin` | Local directory containing viewer installers |
+| `BINARY_VERSION_FILE` | — | Path to `VERSION` file (set automatically in Docker Compose) |
+| `BINARY_VERSION` | — | Override release version for GitHub redirect mode |
+
+See [Binary Distribution](/deploy/binaries/) for details on local vs GitHub mode and S3 offloading.
+
 ## Object Storage
 
 | Variable | Default | Description |
@@ -99,6 +111,7 @@ All configuration is done through environment variables, defined in your `.env.p
 | `S3_SECRET_KEY` | `minioadmin` | Secret key |
 | `S3_BUCKET` | `breeze` | Bucket name |
 | `S3_REGION` | `us-east-1` | Bucket region |
+| `S3_PRESIGN_TTL` | `900` | Presigned URL expiration in seconds (15 min) |
 | `MINIO_API_PORT` | `9000` | MinIO API port (Docker only) |
 | `MINIO_CONSOLE_PORT` | `9001` | MinIO web console port (Docker only) |
 

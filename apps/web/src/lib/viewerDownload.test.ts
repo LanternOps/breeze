@@ -14,7 +14,7 @@ describe('getViewerDownloadInfo', () => {
     expect(info!.os).toBe('macos');
     expect(info!.label).toBe('macOS');
     expect(info!.filename).toBe('breeze-viewer-macos.dmg');
-    expect(info!.url).toContain('breeze-viewer-macos.dmg');
+    expect(info!.url).toContain('/api/v1/viewers/download/macos');
   });
 
   it('returns Windows info for Windows platform', () => {
@@ -24,7 +24,7 @@ describe('getViewerDownloadInfo', () => {
     expect(info!.os).toBe('windows');
     expect(info!.label).toBe('Windows');
     expect(info!.filename).toBe('breeze-viewer-windows.msi');
-    expect(info!.url).toContain('breeze-viewer-windows.msi');
+    expect(info!.url).toContain('/api/v1/viewers/download/windows');
   });
 
   it('returns Linux info for Linux platform', () => {
@@ -34,7 +34,7 @@ describe('getViewerDownloadInfo', () => {
     expect(info!.os).toBe('linux');
     expect(info!.label).toBe('Linux');
     expect(info!.filename).toBe('breeze-viewer-linux.AppImage');
-    expect(info!.url).toContain('breeze-viewer-linux.AppImage');
+    expect(info!.url).toContain('/api/v1/viewers/download/linux');
   });
 
   it('falls back to navigator.platform when userAgentData unavailable', () => {
@@ -81,13 +81,13 @@ describe('getAllViewerDownloads', () => {
     expect(osValues).toContain('linux');
   });
 
-  it('each entry has correct structure and GitHub release URL', () => {
+  it('each entry has correct structure and API download URL', () => {
     const all = getAllViewerDownloads();
     for (const entry of all) {
       expect(entry.os).toBeTruthy();
       expect(entry.label).toBeTruthy();
       expect(entry.filename).toBeTruthy();
-      expect(entry.url).toMatch(/^https:\/\/github\.com\/toddhebebrand\/breeze\/releases\/latest\/download\//);
+      expect(entry.url).toMatch(/\/api\/v1\/viewers\/download\/(macos|windows|linux)$/);
     }
   });
 });

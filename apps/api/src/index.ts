@@ -61,6 +61,7 @@ import { createAgentWsRoutes } from './routes/agentWs';
 import { createTerminalWsRoutes } from './routes/terminalWs';
 import { createDesktopWsRoutes } from './routes/desktopWs';
 import { agentVersionRoutes } from './routes/agentVersions';
+import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
@@ -88,6 +89,7 @@ import { writeAuditEvent } from './services/auditEvents';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { autoMigrate } from './db/autoMigrate';
+import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
@@ -269,6 +271,7 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/mcp',
   '/audit-logs',
   '/agent-versions',
+  '/viewers',
   '/devices',
   '/security',
   '/system-tools'
@@ -590,6 +593,7 @@ api.route('/deployments', deploymentRoutes);
 api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
+api.route('/viewers', viewerRoutes);
 api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
@@ -934,6 +938,13 @@ async function bootstrap(): Promise<void> {
   // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to disable)
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
+  }
+
+  // Sync agent/viewer binaries from init container volume to DB + S3
+  try {
+    await syncBinaries();
+  } catch (err) {
+    console.error('[startup] Binary sync failed (non-fatal):', err);
   }
 
   server = serve({

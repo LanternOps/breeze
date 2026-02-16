@@ -7,13 +7,14 @@ export interface ViewerDownloadInfo {
   readonly filename: string;
 }
 
-const BASE_URL = import.meta.env.PUBLIC_VIEWER_DOWNLOAD_URL
-  || 'https://github.com/lanternops/breeze/releases/latest/download';
+const API_BASE = import.meta.env.PUBLIC_VIEWER_DOWNLOAD_URL
+  || import.meta.env.PUBLIC_API_URL
+  || '';
 
 const PLATFORMS: readonly ViewerDownloadInfo[] = [
-  { os: 'macos', label: 'macOS', filename: 'breeze-viewer-macos.dmg', url: `${BASE_URL}/breeze-viewer-macos.dmg` },
-  { os: 'windows', label: 'Windows', filename: 'breeze-viewer-windows.msi', url: `${BASE_URL}/breeze-viewer-windows.msi` },
-  { os: 'linux', label: 'Linux', filename: 'breeze-viewer-linux.AppImage', url: `${BASE_URL}/breeze-viewer-linux.AppImage` },
+  { os: 'macos', label: 'macOS', filename: 'breeze-viewer-macos.dmg', url: `${API_BASE}/api/v1/viewers/download/macos` },
+  { os: 'windows', label: 'Windows', filename: 'breeze-viewer-windows.msi', url: `${API_BASE}/api/v1/viewers/download/windows` },
+  { os: 'linux', label: 'Linux', filename: 'breeze-viewer-linux.AppImage', url: `${API_BASE}/api/v1/viewers/download/linux` },
 ];
 
 function detectOS(): OSType | null {

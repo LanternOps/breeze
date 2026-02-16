@@ -16,6 +16,13 @@ x-healthcheck-defaults: &healthcheck
   retries: 3
 
 services:
+  binaries-init:
+    image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    container_name: breeze-binaries-init
+    volumes:
+      - binaries:/target
+    restart: "no"
+
   caddy:
     image: caddy:2.8-alpine
     container_name: breeze-caddy
@@ -98,9 +105,21 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_BINARY_DIR: /data/binaries/agent
+      VIEWER_BINARY_DIR: /data/binaries/viewer
+      BINARY_VERSION_FILE: /data/binaries/VERSION
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-}
+      S3_PRESIGN_TTL: ${S3_PRESIGN_TTL:-900}
     volumes:
       - api_data:/data
+      - binaries:/data/binaries:ro
     depends_on:
+      binaries-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -174,6 +193,7 @@ networks:
     name: breeze
 
 volumes:
+  binaries:
   caddy_data:
   caddy_config:
   api_data:
