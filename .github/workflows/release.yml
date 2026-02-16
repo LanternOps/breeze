@@ -482,6 +482,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Sync agent versions to Breeze API
+        if: ${{ !contains(github.ref_name, '-') && vars.BREEZE_API_URL != '' }}
+        env:
+          BREEZE_API_URL: ${{ vars.BREEZE_API_URL }}
+          BREEZE_API_KEY: ${{ secrets.BREEZE_API_KEY }}
+        run: |
+          curl -sf -X POST "${BREEZE_API_URL}/api/v1/agent-versions/sync-github" \
+            -H "Authorization: Bearer ${BREEZE_API_KEY}" \
+            -H "Content-Type: application/json" \
+            || echo "::warning::Agent version sync failed (non-fatal)"
+
   build-docker-api:
     name: Build & Push API Docker Image
     runs-on: ubuntu-latest
