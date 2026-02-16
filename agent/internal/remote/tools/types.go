@@ -124,6 +124,9 @@ const (
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
+
+	// Dev push (fast dev binary update)
+	CmdDevUpdate = "dev_update"
 )
 
 // CommandResult represents the result of a command execution

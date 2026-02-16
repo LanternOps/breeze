@@ -63,6 +63,7 @@ import { createDesktopWsRoutes } from './routes/desktopWs';
 import { agentVersionRoutes } from './routes/agentVersions';
 import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
+import { devPushRoutes } from './routes/devPush';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -591,6 +592,7 @@ api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
+api.route('/dev', devPushRoutes);
 
 app.route('/api/v1', api);
 

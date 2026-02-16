@@ -3,6 +3,7 @@ package updater
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -187,25 +188,34 @@ func TestDownloadBinary(t *testing.T) {
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request format
-		if r.Header.Get("Authorization") != "Bearer test-token" {
-			t.Errorf("missing or wrong auth: %s", r.Header.Get("Authorization"))
-		}
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			// Verify auth
+			if r.Header.Get("Authorization") != "Bearer test-token" {
+				t.Errorf("missing or wrong auth: %s", r.Header.Get("Authorization"))
+			}
 
-		expectedPath := "/api/v1/agent-versions/1.0.0/download"
-		if r.URL.Path != expectedPath {
-			t.Errorf("unexpected path: %s (want %s)", r.URL.Path, expectedPath)
-		}
+			platform := r.URL.Query().Get("platform")
+			arch := r.URL.Query().Get("arch")
+			if platform == "" || arch == "" {
+				t.Error("missing platform or arch query params")
+			}
 
-		platform := r.URL.Query().Get("platform")
-		arch := r.URL.Query().Get("arch")
-		if platform == "" || arch == "" {
-			t.Error("missing platform or arch query params")
-		}
+			// Return JSON with download info
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(downloadInfo{
+				URL:      "http://" + r.Host + "/binary/breeze-agent",
+				Checksum: checksum,
+			})
 
-		w.Header().Set("X-Checksum", checksum)
-		w.WriteHeader(http.StatusOK)
-		w.Write(binaryContent)
+		case r.URL.Path == "/binary/breeze-agent":
+			// Serve the actual binary
+			w.Write(binaryContent)
+
+		default:
+			t.Errorf("unexpected request path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -231,11 +241,13 @@ func TestDownloadBinary(t *testing.T) {
 	}
 }
 
-func TestDownloadBinaryNoChecksum(t *testing.T) {
+func TestDownloadBinaryMissingChecksum(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// No X-Checksum header
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("binary"))
+		// JSON response missing checksum
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"url": "http://" + r.Host + "/binary",
+		})
 	}))
 	defer server.Close()
 
@@ -244,7 +256,7 @@ func TestDownloadBinaryNoChecksum(t *testing.T) {
 
 	_, _, err := u.downloadBinary("1.0.0")
 	if err == nil {
-		t.Fatal("should fail when no checksum header present")
+		t.Fatal("should fail when checksum missing from JSON response")
 	}
 }
 
@@ -277,9 +289,18 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Checksum", checksum)
-		w.WriteHeader(http.StatusOK)
-		w.Write(newContent)
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(downloadInfo{
+				URL:      "http://" + r.Host + "/binary/breeze-agent",
+				Checksum: checksum,
+			})
+		case r.URL.Path == "/binary/breeze-agent":
+			w.Write(newContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
