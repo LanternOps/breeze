@@ -1,0 +1,178 @@
+---
+title: Binary Distribution
+description: How Breeze serves agent and viewer downloads — local disk, GitHub Releases, or S3.
+sidebar:
+  order: 5
+  label: Binary Distribution
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze serves agent binaries and viewer installers through its own API. The download source is configurable via `BINARY_SOURCE`, so downloads work regardless of how you deploy.
+
+## Binary Source Modes
+
+Set `BINARY_SOURCE` to control where downloads come from:
+
+| Mode | Description | When to use |
+|---|---|---|
+| `local` (default) | Serve from disk. Optional S3 offload. | Docker Compose (init container populates a volume) |
+| `github` | 302 redirect to GitHub Releases | Standalone API image, or any deployment without local binaries |
+
+### Local Mode
+
+Binaries are served from disk. The API reads from two directories:
+
+| Variable | Default | Contents |
+|---|---|---|
+| `AGENT_BINARY_DIR` | `./agent/bin` | Agent binaries (e.g. `breeze-agent-linux-amd64`) |
+| `VIEWER_BINARY_DIR` | `./viewer/bin` | Viewer installers (e.g. `breeze-viewer-macos.dmg`) |
+
+On startup, the API:
+1. Scans `AGENT_BINARY_DIR` for agent binaries
+2. Computes SHA-256 checksums and registers each binary in the `agent_versions` table
+3. Marks them as the latest version
+4. If S3 is configured, syncs both directories to your S3 bucket
+
+### GitHub Mode
+
+No local binaries needed. Download requests redirect to GitHub Releases:
+
+```
+GET /api/v1/agents/download/linux/amd64
+→ 302 https://github.com/lanternops/breeze/releases/download/v0.3.0/breeze-agent-linux-amd64
+```
+
+The release version is determined by `BINARY_VERSION` or `BREEZE_VERSION`. If neither is set, redirects to the `latest` release.
+
+<Aside type="tip">
+  Use `BINARY_SOURCE=github` when running the API image standalone (without Docker Compose). No init container or volume mount is needed.
+</Aside>
+
+## Docker Compose Setup
+
+The default `docker-compose.yml` includes a **binaries init container** that bundles agent and viewer binaries into a shared volume:
+
+```yaml
+services:
+  binaries-init:
+    image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    volumes:
+      - binaries:/target
+    restart: "no"
+
+  api:
+    volumes:
+      - binaries:/data/binaries:ro
+    environment:
+      AGENT_BINARY_DIR: /data/binaries/agent
+      VIEWER_BINARY_DIR: /data/binaries/viewer
+    depends_on:
+      binaries-init:
+        condition: service_completed_successfully
+```
+
+The init container:
+1. Runs once on `docker compose up`
+2. Copies bundled binaries to the shared `binaries` volume
+3. Exits (restart: "no")
+4. The API mounts the volume read-only and serves files from it
+
+<Aside>
+  The init container keeps the API image lean. Agent and viewer binaries (~50 MB+) are separate from the API runtime (~30 MB).
+</Aside>
+
+## S3 Offload (Optional)
+
+When `BINARY_SOURCE=local` and S3 credentials are configured, Breeze:
+
+1. **On startup**: syncs local binaries to your S3 bucket
+2. **On download**: returns a 302 redirect to a presigned S3 URL (falls back to disk if presigning fails)
+
+This offloads download bandwidth from your API server to S3/R2/MinIO.
+
+| Variable | Default | Description |
+|---|---|---|
+| `S3_ENDPOINT` | — | S3-compatible endpoint |
+| `S3_ACCESS_KEY` | — | Access key |
+| `S3_SECRET_KEY` | — | Secret key |
+| `S3_BUCKET` | — | Bucket name |
+| `S3_REGION` | `us-east-1` | Bucket region |
+| `S3_PRESIGN_TTL` | `900` | Presigned URL expiration in seconds (15 min) |
+
+S3 is activated when `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` are all set. Files are uploaded to:
+- `s3://{bucket}/agent/` — agent binaries
+- `s3://{bucket}/viewer/` — viewer installers
+
+## Download Endpoints
+
+### Agent Binaries
+
+```
+GET /api/v1/agents/download/:os/:arch
+```
+
+| Parameter | Values |
+|---|---|
+| `os` | `linux`, `darwin`, `windows` |
+| `arch` | `amd64`, `arm64` |
+
+### Viewer Installers
+
+```
+GET /api/v1/viewers/download/:platform
+```
+
+| Parameter | Values | File |
+|---|---|---|
+| `platform` | `macos` | `breeze-viewer-macos.dmg` |
+| | `windows` | `breeze-viewer-windows.msi` |
+| | `linux` | `breeze-viewer-linux.AppImage` |
+
+### Install Script
+
+```
+GET /api/v1/agents/install.sh
+```
+
+One-line agent installer that auto-detects OS/arch, downloads the binary, enrolls, and installs as a system service.
+
+## Decision Guide
+
+<Tabs>
+  <TabItem label="Docker Compose">
+    Use the default setup. The init container handles everything:
+
+    ```bash
+    # .env
+    # BINARY_SOURCE=local  (default, no change needed)
+    ```
+
+    Optionally add S3 for CDN-like distribution:
+
+    ```bash
+    S3_ENDPOINT=https://your-bucket.s3.amazonaws.com
+    S3_ACCESS_KEY=AKIA...
+    S3_SECRET_KEY=...
+    S3_BUCKET=breeze-binaries
+    ```
+  </TabItem>
+  <TabItem label="Standalone API">
+    Point downloads at GitHub Releases:
+
+    ```bash
+    BINARY_SOURCE=github
+    BREEZE_VERSION=0.3.0  # or omit for "latest"
+    ```
+
+    No volume mounts or init container needed.
+  </TabItem>
+  <TabItem label="Local Dev">
+    Build the agent and binaries are served from `./agent/bin`:
+
+    ```bash
+    cd agent && make build-all
+    # API serves from AGENT_BINARY_DIR=./agent/bin (default)
+    ```
+  </TabItem>
+</Tabs>
