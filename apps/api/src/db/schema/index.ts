@@ -33,3 +33,4 @@ export * from './ai';
 export * from './monitors';
 export * from './filesystem';
 export * from './sessions';
+export * from './agentLogs';

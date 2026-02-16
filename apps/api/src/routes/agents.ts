@@ -26,6 +26,7 @@ import {
   deviceFilesystemSnapshots,
   deviceSessions,
   agentVersions,
+  agentLogs,
   organizations
 } from '../db/schema';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
@@ -2753,6 +2754,68 @@ agentRoutes.put('/:id/connections', zValidator('json', submitConnectionsSchema),
   });
 
   return c.json({ success: true, count: data.connections.length });
+});
+
+// ============================================
+// Agent Diagnostic Log Shipping
+// ============================================
+
+const agentLogEntrySchema = z.object({
+  timestamp: z.string().datetime(),
+  level: z.enum(['debug', 'info', 'warn', 'error']),
+  component: z.string().max(100),
+  message: z.string(),
+  fields: z.record(z.any()).optional(),
+  agentVersion: z.string().max(50).optional(),
+});
+
+const agentLogIngestSchema = z.object({
+  logs: z.array(agentLogEntrySchema).max(500),
+});
+
+agentRoutes.post('/:id/logs', zValidator('json', agentLogIngestSchema), async (c) => {
+  const agentId = c.req.param('id');
+  const data = c.req.valid('json');
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
+  if (data.logs.length === 0) {
+    return c.json({ received: 0 }, 200);
+  }
+
+  const rows = data.logs.map((log: any) => ({
+    deviceId: device.id,
+    orgId: device.orgId,
+    timestamp: new Date(log.timestamp),
+    level: log.level,
+    component: log.component,
+    message: log.message,
+    fields: log.fields || null,
+    agentVersion: log.agentVersion || null,
+  }));
+
+  let inserted = 0;
+  try {
+    // Insert in batches of 100 to avoid oversized queries
+    for (let i = 0; i < rows.length; i += 100) {
+      const batch = rows.slice(i, i + 100);
+      await db.insert(agentLogs).values(batch);
+      inserted += batch.length;
+    }
+  } catch (err) {
+    console.error(`[AgentLogs] Error batch inserting logs for device ${device.id}:`, err);
+  }
+
+  return c.json({ received: inserted }, 201);
 });
 
 // Submit event logs

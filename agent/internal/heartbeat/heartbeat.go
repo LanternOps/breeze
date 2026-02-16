@@ -1249,9 +1249,13 @@ func (h *Heartbeat) sendHeartbeat() {
 		}
 	}
 
-	// Handle upgrade if requested
+	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
-		go h.handleUpgrade(response.UpgradeTo)
+		if h.config.AutoUpdate {
+			go h.handleUpgrade(response.UpgradeTo)
+		} else {
+			log.Info("upgrade available but auto_update is disabled", "targetVersion", response.UpgradeTo)
+		}
 	}
 
 	// Handle mTLS cert renewal if signaled by server

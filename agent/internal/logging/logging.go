@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -97,8 +98,10 @@ func (h *switchableHandler) WithGroup(name string) slog.Handler {
 }
 
 var (
-	rootHandler   = newSwitchableHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	rootHandler   = newSwitchableHandler(&shippingHandler{base: slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})})
 	defaultLogger = slog.New(rootHandler)
+	globalShipper *Shipper
+	shipperMu     sync.RWMutex
 )
 
 func init() {
@@ -127,9 +130,99 @@ func Init(format, level string, output io.Writer) {
 		handler = slog.NewTextHandler(output, opts)
 	}
 
+	// Wrap with shipping handler to forward logs to remote
+	handler = &shippingHandler{base: handler}
+
 	rootHandler.set(handler)
 	defaultLogger = slog.New(rootHandler)
 	slog.SetDefault(defaultLogger)
+}
+
+// InitShipper initializes the log shipper (call after enrollment).
+func InitShipper(cfg ShipperConfig) {
+	shipperMu.Lock()
+	defer shipperMu.Unlock()
+
+	if globalShipper != nil {
+		globalShipper.Stop()
+	}
+
+	globalShipper = NewShipper(cfg)
+	globalShipper.Start()
+}
+
+// StopShipper gracefully stops the log shipper.
+func StopShipper() {
+	shipperMu.Lock()
+	defer shipperMu.Unlock()
+
+	if globalShipper != nil {
+		globalShipper.Stop()
+		globalShipper = nil
+	}
+}
+
+// SetShipperLevel dynamically adjusts minimum log level for shipping.
+func SetShipperLevel(level string) {
+	shipperMu.RLock()
+	defer shipperMu.RUnlock()
+
+	if globalShipper != nil {
+		globalShipper.SetMinLevel(level)
+	}
+}
+
+// shippingHandler wraps a base slog.Handler to also ship logs remotely.
+type shippingHandler struct {
+	base slog.Handler
+}
+
+func (h *shippingHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.base.Enabled(ctx, level)
+}
+
+func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error {
+	// Ship to remote
+	shipperMu.RLock()
+	shipper := globalShipper
+	shipperMu.RUnlock()
+
+	if shipper != nil && shipper.ShouldShip(record.Level) {
+		fields := make(map[string]any)
+		record.Attrs(func(a slog.Attr) bool {
+			fields[a.Key] = a.Value.Any()
+			return true
+		})
+
+		entry := LogEntry{
+			Timestamp:    record.Time,
+			Level:        record.Level.String(),
+			Component:    extractComponent(fields),
+			Message:      record.Message,
+			Fields:       fields,
+			AgentVersion: shipper.agentVersion,
+		}
+
+		shipper.Enqueue(entry)
+	}
+
+	// Still write to local handler
+	return h.base.Handle(ctx, record)
+}
+
+func (h *shippingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &shippingHandler{base: h.base.WithAttrs(attrs)}
+}
+
+func (h *shippingHandler) WithGroup(name string) slog.Handler {
+	return &shippingHandler{base: h.base.WithGroup(name)}
+}
+
+func extractComponent(fields map[string]any) string {
+	if c, ok := fields[KeyComponent].(string); ok {
+		return c
+	}
+	return "unknown"
 }
 
 // L returns a logger tagged with the given component name.

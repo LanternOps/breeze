@@ -70,6 +70,9 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdTerminalData:   handleTerminalData,
 	tools.CmdTerminalResize: handleTerminalResize,
 	tools.CmdTerminalStop:   handleTerminalStop,
+
+	// Log shipping
+	tools.CmdSetLogLevel: handleSetLogLevel,
 }
 
 // dispatchCommand looks up the handler for a command type and executes it,

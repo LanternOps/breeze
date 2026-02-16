@@ -3,6 +3,7 @@ package updater
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,35 +41,47 @@ func New(cfg *Config) *Updater {
 
 // UpdateTo downloads and installs a new version
 func (u *Updater) UpdateTo(version string) error {
-	fmt.Printf("Starting update to version %s\n", version)
+	log.Info("starting update", "targetVersion", version)
 
 	// 1. Download binary to temp file
 	tempPath, checksum, err := u.downloadBinary(version)
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
-	defer os.Remove(tempPath)
 
 	// 2. Verify checksum
 	if err := u.verifyChecksum(tempPath, checksum); err != nil {
+		os.Remove(tempPath)
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
 	// 3. Backup current binary
 	if err := u.backupCurrentBinary(); err != nil {
+		os.Remove(tempPath)
 		return fmt.Errorf("failed to backup current binary: %w", err)
 	}
 
-	// 4. Replace current binary with new one
+	// 4. On Windows, spawn a helper script that swaps the binary externally.
+	//    The script handles: stop service → copy new binary → start service.
+	//    The agent exits normally after spawning the script.
+	if runtime.GOOS == "windows" {
+		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
+			os.Remove(tempPath)
+			u.Rollback()
+			return fmt.Errorf("failed to spawn update helper: %w", err)
+		}
+		// Helper script will handle the rest — agent exits via service stop.
+		return nil
+	}
+
+	// 5. Non-Windows: replace binary inline and restart
+	defer os.Remove(tempPath)
 	if err := u.replaceBinary(tempPath); err != nil {
-		// Attempt rollback
 		u.Rollback()
 		return fmt.Errorf("failed to replace binary: %w", err)
 	}
 
-	// 5. Restart the agent
 	if err := Restart(); err != nil {
-		// Attempt rollback
 		u.Rollback()
 		return fmt.Errorf("failed to restart: %w", err)
 	}
@@ -76,12 +89,20 @@ func (u *Updater) UpdateTo(version string) error {
 	return nil
 }
 
-// downloadBinary downloads the new binary and returns temp path and checksum
+// downloadInfo holds the JSON response from the download endpoint
+type downloadInfo struct {
+	URL      string `json:"url"`
+	Checksum string `json:"checksum"`
+}
+
+// downloadBinary fetches download info from the API, then downloads the binary.
+// Returns (tempPath, checksum, error).
 func (u *Updater) downloadBinary(version string) (string, string, error) {
-	url := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s",
+	// Step 1: Get download URL + checksum from API (JSON response)
+	infoURL := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s",
 		u.config.ServerURL, version, runtime.GOOS, runtime.GOARCH)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", infoURL, nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -94,29 +115,46 @@ func (u *Updater) downloadBinary(version string) (string, string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("download failed with status %d", resp.StatusCode)
+		return "", "", fmt.Errorf("download info request failed with status %d", resp.StatusCode)
 	}
 
-	// Get checksum from header
-	checksum := resp.Header.Get("X-Checksum")
-	if checksum == "" {
-		return "", "", fmt.Errorf("no checksum in response")
+	var info downloadInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return "", "", fmt.Errorf("failed to parse download info: %w", err)
+	}
+	if info.URL == "" || info.Checksum == "" {
+		return "", "", fmt.Errorf("download info missing url or checksum")
 	}
 
-	// Create temp file
+	// Step 2: Download the actual binary from the URL
+	binReq, err := http.NewRequest("GET", info.URL, nil)
+	if err != nil {
+		return "", "", err
+	}
+
+	binResp, err := u.client.Do(binReq)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to download binary: %w", err)
+	}
+	defer binResp.Body.Close()
+
+	if binResp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("binary download failed with status %d", binResp.StatusCode)
+	}
+
+	// Write to temp file
 	tempFile, err := os.CreateTemp("", "breeze-agent-*")
 	if err != nil {
 		return "", "", err
 	}
 	defer tempFile.Close()
 
-	// Copy body to temp file
-	if _, err := io.Copy(tempFile, resp.Body); err != nil {
+	if _, err := io.Copy(tempFile, binResp.Body); err != nil {
 		os.Remove(tempFile.Name())
 		return "", "", err
 	}
 
-	return tempFile.Name(), checksum, nil
+	return tempFile.Name(), info.Checksum, nil
 }
 
 // verifyChecksum verifies the SHA256 checksum of a file
@@ -209,9 +247,89 @@ func (u *Updater) replaceBinary(newPath string) error {
 	return nil
 }
 
+// UpdateFromURL downloads a binary directly from a URL (skipping the version-lookup
+// API call used by UpdateTo). Used by dev_push for fast iteration.
+func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
+	log.Info("starting dev update from URL", "url", url)
+
+	// 1. Download binary directly
+	tempPath, err := u.downloadFromURL(url)
+	if err != nil {
+		return fmt.Errorf("failed to download binary: %w", err)
+	}
+
+	// 2. Verify checksum
+	if err := u.verifyChecksum(tempPath, expectedChecksum); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+
+	// 3. Backup current binary
+	if err := u.backupCurrentBinary(); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to backup current binary: %w", err)
+	}
+
+	// 4. Windows: spawn helper script for binary swap
+	if runtime.GOOS == "windows" {
+		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
+			os.Remove(tempPath)
+			u.Rollback()
+			return fmt.Errorf("failed to spawn update helper: %w", err)
+		}
+		return nil
+	}
+
+	// 5. Non-Windows: replace binary inline and restart
+	defer os.Remove(tempPath)
+	if err := u.replaceBinary(tempPath); err != nil {
+		u.Rollback()
+		return fmt.Errorf("failed to replace binary: %w", err)
+	}
+
+	if err := Restart(); err != nil {
+		u.Rollback()
+		return fmt.Errorf("failed to restart: %w", err)
+	}
+
+	return nil
+}
+
+// downloadFromURL downloads a binary directly from the given URL to a temp file.
+func (u *Updater) downloadFromURL(url string) (string, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken)
+
+	resp, err := u.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download binary: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("binary download failed with status %d", resp.StatusCode)
+	}
+
+	tempFile, err := os.CreateTemp("", "breeze-agent-dev-*")
+	if err != nil {
+		return "", err
+	}
+	defer tempFile.Close()
+
+	if _, err := io.Copy(tempFile, resp.Body); err != nil {
+		os.Remove(tempFile.Name())
+		return "", err
+	}
+
+	return tempFile.Name(), nil
+}
+
 // Rollback restores the backup binary
 func (u *Updater) Rollback() error {
-	fmt.Println("Rolling back to previous version...")
+	log.Info("rolling back to previous version")
 
 	if _, err := os.Stat(u.config.BackupPath); os.IsNotExist(err) {
 		return fmt.Errorf("no backup found at %s", u.config.BackupPath)

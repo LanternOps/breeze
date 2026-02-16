@@ -1,0 +1,190 @@
+package logging
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+)
+
+const (
+	defaultBatchInterval = 60 * time.Second
+	defaultMaxBatchSize  = 500
+	defaultBufferSize    = 1000
+)
+
+// LogEntry represents a single log entry to be shipped remotely.
+type LogEntry struct {
+	Timestamp    time.Time      `json:"timestamp"`
+	Level        string         `json:"level"`
+	Component    string         `json:"component"`
+	Message      string         `json:"message"`
+	Fields       map[string]any `json:"fields,omitempty"`
+	AgentVersion string         `json:"agentVersion"`
+}
+
+// Shipper buffers log entries and ships them to the API in compressed batches.
+type Shipper struct {
+	serverURL    string
+	agentID      string
+	authToken    string
+	agentVersion string
+	httpClient   *http.Client
+	buffer       chan LogEntry
+	stopChan     chan struct{}
+	wg           sync.WaitGroup
+	minLevel     slog.Level
+	mu           sync.RWMutex // protects minLevel
+}
+
+// ShipperConfig configures the log shipper.
+type ShipperConfig struct {
+	ServerURL    string
+	AgentID      string
+	AuthToken    string
+	AgentVersion string
+	HTTPClient   *http.Client
+	MinLevel     string // "debug", "info", "warn", "error"
+}
+
+// NewShipper creates a new log shipper.
+func NewShipper(cfg ShipperConfig) *Shipper {
+	client := cfg.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	return &Shipper{
+		serverURL:    cfg.ServerURL,
+		agentID:      cfg.AgentID,
+		authToken:    cfg.AuthToken,
+		agentVersion: cfg.AgentVersion,
+		httpClient:   client,
+		buffer:       make(chan LogEntry, defaultBufferSize),
+		stopChan:     make(chan struct{}),
+		minLevel:     parseLevel(cfg.MinLevel),
+	}
+}
+
+// Start begins the background shipping loop.
+func (s *Shipper) Start() {
+	s.wg.Add(1)
+	go s.shipLoop()
+}
+
+// Stop gracefully stops the shipper, flushing remaining logs.
+func (s *Shipper) Stop() {
+	close(s.stopChan)
+	s.wg.Wait()
+}
+
+// Enqueue adds a log entry to the buffer. Non-blocking; drops if buffer is full.
+func (s *Shipper) Enqueue(entry LogEntry) {
+	select {
+	case s.buffer <- entry:
+	default:
+		// Buffer full, drop log to prevent blocking agent
+	}
+}
+
+// SetMinLevel dynamically adjusts the minimum shipping level.
+func (s *Shipper) SetMinLevel(level string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.minLevel = parseLevel(level)
+}
+
+// ShouldShip returns true if the given level meets the minimum threshold.
+func (s *Shipper) ShouldShip(level slog.Level) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return level >= s.minLevel
+}
+
+func (s *Shipper) shipLoop() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(defaultBatchInterval)
+	defer ticker.Stop()
+
+	batch := make([]LogEntry, 0, defaultMaxBatchSize)
+
+	for {
+		select {
+		case <-s.stopChan:
+			// Drain remaining buffered entries
+		drain:
+			for {
+				select {
+				case entry := <-s.buffer:
+					batch = append(batch, entry)
+					if len(batch) >= defaultMaxBatchSize {
+						s.shipBatch(batch)
+						batch = batch[:0]
+					}
+				default:
+					break drain
+				}
+			}
+			if len(batch) > 0 {
+				s.shipBatch(batch)
+			}
+			return
+
+		case entry := <-s.buffer:
+			batch = append(batch, entry)
+			if len(batch) >= defaultMaxBatchSize {
+				s.shipBatch(batch)
+				batch = batch[:0]
+			}
+
+		case <-ticker.C:
+			if len(batch) > 0 {
+				s.shipBatch(batch)
+				batch = batch[:0]
+			}
+		}
+	}
+}
+
+func (s *Shipper) shipBatch(entries []LogEntry) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	payload, err := json.Marshal(map[string]any{
+		"logs": entries,
+	})
+	if err != nil {
+		return
+	}
+
+	// Compress payload with gzip
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(payload); err != nil {
+		return
+	}
+	gw.Close()
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", s.serverURL, s.agentID)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
+	if err != nil {
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+s.authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+}

@@ -4,6 +4,10 @@ package updater
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -12,7 +16,8 @@ import (
 
 const serviceName = "BreezeAgent"
 
-// Restart restarts the Windows service
+// Restart restarts the Windows service via SCM.
+// Used for non-update restarts where no binary swap is needed.
 func Restart() error {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -66,5 +71,62 @@ func Restart() error {
 		time.Sleep(300 * time.Millisecond)
 	}
 
+	return nil
+}
+
+// RestartWithHelper spawns a detached PowerShell script that:
+//  1. Waits for the current process to exit
+//  2. Stops the service
+//  3. Copies the new binary over the old one
+//  4. Starts the service
+//  5. Cleans up temp files
+//
+// This avoids the race where the agent tries to SCM-stop itself
+// (killing the goroutine before it can call Start).
+func RestartWithHelper(newBinaryPath, targetPath string) error {
+	script := strings.Join([]string{
+		"Start-Sleep -Seconds 3",
+		"Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
+		"Start-Sleep -Seconds 2",
+		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", newBinaryPath, targetPath),
+		"Start-Service -Name '" + serviceName + "'",
+		fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", newBinaryPath),
+		"Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue",
+	}, "\r\n")
+
+	scriptFile, err := os.CreateTemp("", "breeze-update-*.ps1")
+	if err != nil {
+		return fmt.Errorf("failed to create update script: %w", err)
+	}
+	if _, err := scriptFile.WriteString(script); err != nil {
+		scriptFile.Close()
+		os.Remove(scriptFile.Name())
+		return fmt.Errorf("failed to write update script: %w", err)
+	}
+	scriptFile.Close()
+
+	log.Info("spawning update helper script",
+		"script", scriptFile.Name(),
+		"newBinary", newBinaryPath,
+		"target", targetPath,
+	)
+
+	cmd := exec.Command("powershell.exe",
+		"-NoProfile", "-ExecutionPolicy", "Bypass",
+		"-File", scriptFile.Name(),
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	}
+
+	if err := cmd.Start(); err != nil {
+		os.Remove(scriptFile.Name())
+		return fmt.Errorf("failed to start update helper: %w", err)
+	}
+
+	// Detach — don't wait for the process
+	_ = cmd.Process.Release()
+
+	log.Info("update helper spawned, agent will exit via service stop")
 	return nil
 }

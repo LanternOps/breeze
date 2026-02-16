@@ -1,4 +1,4 @@
-.PHONY: build build-all build-winres build-windows-msi clean test install install-service uninstall-service
+.PHONY: build build-all build-winres build-windows-msi clean test install install-service uninstall-service dev-push
 
 VERSION ?= 0.1.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -112,3 +112,28 @@ fmt:
 # Lint
 lint:
 	golangci-lint run
+
+# Dev push: build + upload to API + trigger agent update
+# Usage: make dev-push DEVICE=<deviceId> [API_URL=http://localhost:3001] [AUTH_TOKEN=...]
+API_URL ?= http://localhost:3001
+dev-push:
+ifndef DEVICE
+	$(error DEVICE is required. Usage: make dev-push DEVICE=<deviceId> AUTH_TOKEN=<jwt>)
+endif
+ifndef AUTH_TOKEN
+	$(error AUTH_TOKEN is required. Usage: make dev-push DEVICE=<deviceId> AUTH_TOKEN=<jwt>)
+endif
+	$(eval DEV_VERSION := dev-$(shell date +%s))
+	@echo "Querying device platform..."
+	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "Authorization: Bearer $(AUTH_TOKEN)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','linux').lower()+'/'+d.get('arch','amd64'))" 2>/dev/null || echo "darwin/arm64"))
+	$(eval TARGET_GOOS := $(word 1,$(subst /, ,$(PLATFORM))))
+	$(eval TARGET_GOARCH := $(word 2,$(subst /, ,$(PLATFORM))))
+	@echo "Building for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION)..."
+	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) CGO_ENABLED=0 go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-agent-dev ./cmd/breeze-agent
+	@echo "Uploading binary to API..."
+	@curl -sf -X POST "$(API_URL)/api/v1/dev/push" \
+		-H "Authorization: Bearer $(AUTH_TOKEN)" \
+		-F "agentId=$(DEVICE)" \
+		-F "version=$(DEV_VERSION)" \
+		-F "binary=@bin/breeze-agent-dev" | python3 -m json.tool
+	@echo "Dev push complete — agent will restart with $(DEV_VERSION)"
