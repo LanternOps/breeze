@@ -230,6 +230,14 @@ export const orgMtlsSettingsSchema = z.object({
 });
 
 // ============================================
+// Helper Chat Settings Validators
+// ============================================
+
+export const orgHelperSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+});
+
+// ============================================
 // Agent Validators
 // ============================================
 
