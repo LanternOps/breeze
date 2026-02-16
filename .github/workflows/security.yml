@@ -61,7 +61,7 @@ jobs:
           cache-dependency-path: agent/go.sum
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev libx11-dev libxext-dev
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
