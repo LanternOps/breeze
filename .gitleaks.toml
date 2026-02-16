@@ -1,0 +1,13 @@
+title = "Breeze RMM gitleaks configuration"
+
+[allowlist]
+  description = "Allow known false positives"
+
+  paths = [
+    '''\.test\.ts$''',
+    '''\.test\.tsx$''',
+    '''__tests__/''',
+    '''\.md$''',
+    '''\.mdx$''',
+    '''e2e\.yml$''',
+  ]

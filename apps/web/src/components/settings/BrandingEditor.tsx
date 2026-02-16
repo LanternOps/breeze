@@ -1,6 +1,7 @@
 import { type ChangeEvent, type DragEvent, useCallback, useEffect, useState } from 'react';
 import { FileCode, Globe, Image, Mail, Palette, RefreshCcw, Save } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 
 type BrandingEditorProps = {
   organizationId?: string;
@@ -121,12 +122,7 @@ function UploadDropzone({
   onFileSelect
 }: UploadDropzoneProps) {
   const [isDragging, setIsDragging] = useState(false);
-  const hasSafePreview =
-    !!preview &&
-    (preview.startsWith('blob:') ||
-      preview.startsWith('https://') ||
-      preview.startsWith('http://') ||
-      (preview.startsWith('/') && !preview.startsWith('//') && !preview.startsWith('/\\')));
+  const safePreview = sanitizeImageSrc(preview);
 
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -173,8 +169,8 @@ function UploadDropzone({
         <div
           className={`flex items-center justify-center rounded-md border ${previewSizeClassName} ${previewClassName ?? 'bg-background'}`}
         >
-          {hasSafePreview ? (
-            <img src={preview} alt={`${title} preview`} className="h-full w-full rounded-md object-contain" />
+          {safePreview ? (
+            <img src={safePreview} alt={`${title} preview`} className="h-full w-full rounded-md object-contain" />
           ) : (
             <span className="text-xs font-medium text-muted-foreground">{placeholder}</span>
           )}
@@ -428,24 +424,9 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
   const primaryText = getContrastColor(resolvedPrimary, '#f8fafc');
   const secondaryText = getContrastColor(resolvedSecondary, '#0f172a');
   const initials = getInitials(branding.organizationName || 'Breeze');
-  const hasSafeLogoLightPreview =
-    !!logoLightPreview &&
-    (logoLightPreview.startsWith('blob:') ||
-      logoLightPreview.startsWith('https://') ||
-      logoLightPreview.startsWith('http://') ||
-      (logoLightPreview.startsWith('/') && !logoLightPreview.startsWith('//') && !logoLightPreview.startsWith('/\\')));
-  const hasSafeLogoDarkPreview =
-    !!logoDarkPreview &&
-    (logoDarkPreview.startsWith('blob:') ||
-      logoDarkPreview.startsWith('https://') ||
-      logoDarkPreview.startsWith('http://') ||
-      (logoDarkPreview.startsWith('/') && !logoDarkPreview.startsWith('//') && !logoDarkPreview.startsWith('/\\')));
-  const hasSafeFaviconPreview =
-    !!faviconPreview &&
-    (faviconPreview.startsWith('blob:') ||
-      faviconPreview.startsWith('https://') ||
-      faviconPreview.startsWith('http://') ||
-      (faviconPreview.startsWith('/') && !faviconPreview.startsWith('//') && !faviconPreview.startsWith('/\\')));
+  const safeLogoLightPreview = sanitizeImageSrc(logoLightPreview);
+  const safeLogoDarkPreview = sanitizeImageSrc(logoDarkPreview);
+  const safeFaviconPreview = sanitizeImageSrc(faviconPreview);
 
   if (loading) {
     return (
@@ -645,9 +626,9 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                   style={{ backgroundColor: resolvedPrimary, color: primaryText }}
                 >
                   <div className="flex items-center gap-2">
-                    {hasSafeLogoLightPreview ? (
+                    {safeLogoLightPreview ? (
                       <img
-                        src={logoLightPreview}
+                        src={safeLogoLightPreview}
                         alt="Light logo preview"
                         className="h-8 w-8 rounded-full bg-white/20 object-cover"
                       />
@@ -696,9 +677,9 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex h-8 w-8 items-center justify-center rounded-md border bg-muted text-xs font-semibold">
-                      {hasSafeFaviconPreview ? (
+                      {safeFaviconPreview ? (
                         <img
-                          src={faviconPreview}
+                          src={safeFaviconPreview}
                           alt="Favicon preview"
                           className="h-6 w-6 rounded-sm object-contain"
                         />
@@ -707,9 +688,9 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                       )}
                     </div>
                     <div className="flex items-center gap-3">
-                      {hasSafeLogoLightPreview ? (
+                      {safeLogoLightPreview ? (
                         <img
-                          src={logoLightPreview}
+                          src={safeLogoLightPreview}
                           alt="Portal logo preview"
                           className="h-8 w-8 rounded-md object-cover"
                         />
@@ -746,9 +727,9 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
 
                 <div className="rounded-md border border-slate-800 bg-slate-950 p-3 text-slate-100">
                   <div className="flex items-center gap-3">
-                    {hasSafeLogoDarkPreview ? (
+                    {safeLogoDarkPreview ? (
                       <img
-                        src={logoDarkPreview}
+                        src={safeLogoDarkPreview}
                         alt="Dark logo preview"
                         className="h-7 w-7 rounded-md object-cover"
                       />
