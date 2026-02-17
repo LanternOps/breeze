@@ -302,7 +302,7 @@ describe('createSystemAuthContext', () => {
 
   it('orgCondition returns undefined (no filter)', () => {
     const ctx = createSystemAuthContext();
-    expect(ctx.orgCondition()).toBeUndefined();
+    expect(ctx.orgCondition(null as any)).toBeUndefined();
   });
 
   it('token has expected system fields', () => {
