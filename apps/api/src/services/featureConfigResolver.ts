@@ -611,7 +611,7 @@ export function isInMaintenanceWindow(
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-      hour12: false,
+      hourCycle: 'h23',
     });
     const parts = formatter.formatToParts(currentTime);
     const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0';

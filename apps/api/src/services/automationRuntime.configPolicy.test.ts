@@ -310,7 +310,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(1);
     // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
     expect(lastSetCall.status).toBe('failed');
   });
 
@@ -376,7 +376,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.devicesSucceeded).toBe(1);
     expect(result.devicesFailed).toBe(0);
     // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
     expect(lastSetCall.status).toBe('completed');
   });
 
@@ -438,7 +438,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.status).toBe('failed');
     expect(result.devicesFailed).toBe(1);
     // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
     expect(lastSetCall.status).toBe('failed');
   });
 
@@ -505,7 +505,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.devicesSucceeded).toBe(1);
     expect(result.devicesFailed).toBe(1);
     // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
     expect(lastSetCall.status).toBe('partial');
   });
 
@@ -683,7 +683,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
     // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
     expect(lastSetCall.status).toBe('completed');
   });
 
