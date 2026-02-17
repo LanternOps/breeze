@@ -72,8 +72,14 @@ test.describe('Authentication', () => {
     await page.waitForURL('/', { timeout: 15_000 });
     await waitForApp(page);
 
+    // Intercept the logout API call so it does NOT revoke all server-side
+    // tokens for the admin user. Other tests share the same admin session,
+    // and revokeAllUserTokens() would invalidate their access tokens too.
+    await page.route('**/api/v1/auth/logout', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+    );
+
     // Now log out — open the user menu dropdown in the header
-    // The user menu button has aria-haspopup="true" and contains the user avatar
     const userMenuButton = page.locator('header button[aria-haspopup="true"]');
     await userMenuButton.click({ timeout: 5_000 });
 

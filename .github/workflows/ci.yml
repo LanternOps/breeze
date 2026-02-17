@@ -410,7 +410,7 @@ jobs:
 
       - name: Run Playwright tests
         working-directory: e2e-tests
-        run: npx playwright test tests/debug-auth.spec.ts --reporter=list
+        run: npx playwright test --reporter=list
         env:
           CI: true
 
