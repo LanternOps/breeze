@@ -289,7 +289,7 @@ jobs:
   # is baked in at Vite compile time and E2E has no reverse proxy.
   e2e:
     name: E2E Tests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [build-api]
     timeout-minutes: 20
 
