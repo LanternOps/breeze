@@ -1386,7 +1386,8 @@ registerTool({
           userId: auth.user.id,
           timeoutMs: 15000,
         });
-      } catch {
+      } catch (err) {
+        console.warn(`[AI] Boot performance collection trigger failed for device ${deviceId}:`, err);
         // Non-fatal: proceed with existing data
       }
     }
@@ -1483,14 +1484,14 @@ registerTool({
   tier: 3,
   definition: {
     name: 'manage_startup_items',
-    description: 'Disable or enable startup items on a device. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+    description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
     input_schema: {
       type: 'object' as const,
       properties: {
         deviceId: { type: 'string', description: 'The device UUID' },
         itemName: { type: 'string', description: 'The exact name of the startup item to manage' },
         action: { type: 'string', enum: ['disable', 'enable'], description: 'Action to perform' },
-        reason: { type: 'string', description: 'Justification for this change (for audit log)' }
+        reason: { type: 'string', description: 'Justification for this change' }
       },
       required: ['deviceId', 'itemName', 'action']
     }
@@ -1534,6 +1535,10 @@ registerTool({
       return JSON.stringify({ error: `Startup item "${itemName}" is already enabled.` });
     }
 
+    // Note: On macOS, re-enabling login items is not supported by the agent
+    // (requires the application path which is not stored). The agent will return
+    // an error in this case.
+
     // Send command to agent
     const { executeCommand } = await getCommandQueue();
     const result = await executeCommand(
@@ -1542,6 +1547,13 @@ registerTool({
       { itemName, itemType: item.type, itemPath: item.path, action },
       { userId: auth.user.id, timeoutMs: 30000 }
     );
+
+    if (result.status !== 'completed') {
+      return JSON.stringify({
+        error: `Failed to ${action} startup item "${itemName}": ${result.error || 'unknown error'}`,
+        device: { hostname: device.hostname, osType: device.osType },
+      });
+    }
 
     return JSON.stringify({
       success: true,

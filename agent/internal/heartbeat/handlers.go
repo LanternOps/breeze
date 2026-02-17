@@ -266,8 +266,7 @@ func handleTerminalStop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleCollectBootPerformance(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	collector := collectors.NewBootPerformanceCollector()
-	metrics, err := collector.Collect()
+	metrics, err := h.bootCol.Collect()
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}

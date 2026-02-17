@@ -119,9 +119,18 @@ foreach ($d in $data) { $obj[$d.Name] = $d.'#text' }
 	}
 
 	// Values are in milliseconds
-	mainPathMs, _ := strconv.ParseFloat(diag.MainPathBootTime, 64)
-	postBootMs, _ := strconv.ParseFloat(diag.BootPostBootTime, 64)
-	bootTimeMs, _ := strconv.ParseFloat(diag.BootTime, 64)
+	mainPathMs, err := strconv.ParseFloat(diag.MainPathBootTime, 64)
+	if err != nil {
+		slog.Warn("failed to parse MainPathBootTime", "value", diag.MainPathBootTime, "error", err)
+	}
+	postBootMs, err := strconv.ParseFloat(diag.BootPostBootTime, 64)
+	if err != nil {
+		slog.Warn("failed to parse BootPostBootTime", "value", diag.BootPostBootTime, "error", err)
+	}
+	bootTimeMs, err := strconv.ParseFloat(diag.BootTime, 64)
+	if err != nil {
+		slog.Warn("failed to parse BootTime", "value", diag.BootTime, "error", err)
+	}
 
 	// MainPathBootTime = BIOS + OS loader time
 	// BootPostBootTime = time from login screen to desktop ready
@@ -151,8 +160,8 @@ foreach ($d in $data) { $obj[$d.Name] = $d.'#text' }
 	return nil
 }
 
-// collectBootTimingFallback uses gopsutil to get at least the boot timestamp
-// and derives total boot time from uptime.
+// collectBootTimingFallback uses gopsutil to get the boot timestamp.
+// Boot phase timing breakdowns are unavailable via this fallback.
 func collectBootTimingFallback(m *BootPerformanceMetrics) {
 	bootEpoch, err := host.BootTime()
 	if err != nil {
@@ -476,8 +485,8 @@ func manageService(name, action string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 
-	// sc.exe config <service> start= <type>
-	// Note: the space after "start=" is required by sc.exe
+	// sc.exe requires the format "start= <type>" (space between = and value).
+	// Go's exec.Command joins "start=" and the start type with a space automatically.
 	cmd := exec.CommandContext(ctx, "sc.exe", "config", name, "start=", startType)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

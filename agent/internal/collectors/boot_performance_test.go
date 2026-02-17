@@ -122,3 +122,31 @@ func TestMarkCollectedAndHasCollected(t *testing.T) {
 		t.Error("HasCollected should return false for different boot time")
 	}
 }
+
+func TestMarkCollectedPrunesStaleEntries(t *testing.T) {
+	collector := NewBootPerformanceCollector()
+
+	// Add an entry with a very old boot time (>24h ago)
+	oldBoot := time.Now().Add(-48 * time.Hour)
+	collector.mu.Lock()
+	collector.collectedForBoot[oldBoot] = true
+	collector.mu.Unlock()
+
+	if !collector.HasCollected(oldBoot) {
+		t.Fatal("setup: old boot should be present")
+	}
+
+	// Mark a recent boot - this should prune the old entry
+	recentBoot := time.Now().Add(-5 * time.Minute)
+	collector.MarkCollected(recentBoot)
+
+	// Recent boot should be present
+	if !collector.HasCollected(recentBoot) {
+		t.Error("recent boot should be present after MarkCollected")
+	}
+
+	// Old boot should have been pruned
+	if collector.HasCollected(oldBoot) {
+		t.Error("old boot (>24h) should have been pruned by MarkCollected")
+	}
+}

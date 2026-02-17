@@ -365,6 +365,7 @@ func (h *Heartbeat) Start() {
 				uptimeSec := time.Now().Unix() - int64(bootTime)
 				bt := time.Unix(int64(bootTime), 0)
 				if h.bootCol.ShouldCollect(uptimeSec, bt) {
+					h.bootCol.MarkCollected(bt)
 					go func() {
 						log.Info("detected recent boot, collecting boot performance")
 						metrics, err := h.bootCol.Collect()
@@ -372,8 +373,12 @@ func (h *Heartbeat) Start() {
 							log.Error("failed to collect boot performance", "error", err)
 							return
 						}
-						h.bootCol.MarkCollected(bt)
-						// Send boot metrics to server
+						// Check if agent is shutting down before sending
+						select {
+						case <-h.stopChan:
+							return
+						default:
+						}
 						h.sendBootPerformance(metrics)
 					}()
 				}

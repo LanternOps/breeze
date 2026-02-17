@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,23 +60,26 @@ func (c *BootPerformanceCollector) Collect() (*BootPerformanceMetrics, error) {
 	}
 
 	// --- Boot timestamp ---
+	var bootTimeErr error
 	bootTimeSec, err := host.BootTime()
 	if err == nil && bootTimeSec > 0 {
 		metrics.BootTimestamp = time.Unix(int64(bootTimeSec), 0)
 	} else {
+		bootTimeErr = err
 		// Fallback: read /proc/stat btime
 		metrics.BootTimestamp = readProcBtime()
+	}
+
+	if metrics.BootTimestamp.IsZero() {
+		return nil, fmt.Errorf("failed to determine boot timestamp: gopsutil: %v; /proc/stat btime not available", bootTimeErr)
 	}
 
 	// --- Boot timing via systemd-analyze ---
 	collectSystemdTiming(metrics)
 
-	// If systemd-analyze gave us nothing, compute a rough total from uptime
-	if metrics.TotalBootSeconds == 0 && !metrics.BootTimestamp.IsZero() {
-		// We cannot determine BIOS/loader/userspace breakdown without systemd,
-		// so leave those at zero and only set TotalBootSeconds as a rough estimate.
-		// This is intentionally left at 0 since we don't have reliable data.
-	}
+	// If systemd-analyze gave us nothing, TotalBootSeconds remains at 0.
+	// On non-systemd systems we cannot reliably determine boot timing, so we
+	// leave all timing fields at their zero values rather than guessing.
 
 	// --- Startup items ---
 	collectSystemdUnits(metrics)
@@ -128,7 +132,7 @@ func collectSystemdTiming(metrics *BootPerformanceMetrics) {
 	cmd := exec.Command("systemd-analyze")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// systemd-analyze not available (non-systemd system), skip gracefully
+		slog.Info("systemd-analyze not available; boot phase timing will be unavailable", "error", err)
 		return
 	}
 
@@ -148,6 +152,9 @@ func collectSystemdTiming(metrics *BootPerformanceMetrics) {
 				}
 				// matches[3] is kernel time - we don't have a dedicated field,
 				// so it contributes to TotalBootSeconds via the total.
+				// matches[4] is userspace time. We map it to DesktopReadySeconds as the
+				// closest cross-platform analog (on headless Linux this represents total
+				// userspace init time rather than actual desktop readiness).
 				if matches[4] != "" {
 					metrics.DesktopReadySeconds = parseSystemdTime(matches[4])
 				}
@@ -166,6 +173,7 @@ func collectSystemdUnits(metrics *BootPerformanceMetrics) {
 		"--state=enabled", "--type=service", "--no-pager", "--no-legend")
 	output, err := cmd.Output()
 	if err != nil {
+		slog.Info("systemctl list-unit-files not available; systemd units will be omitted", "error", err)
 		return
 	}
 
@@ -325,6 +333,7 @@ func collectSystemdBlame() map[string]int64 {
 	cmd := exec.Command("systemd-analyze", "blame", "--no-pager")
 	output, err := cmd.Output()
 	if err != nil {
+		slog.Info("systemd-analyze blame not available; per-service timing will be unavailable", "error", err)
 		return result
 	}
 
@@ -418,10 +427,14 @@ func enrichDiskIO(metrics *BootPerformanceMetrics) {
 			ioLine := ioScanner.Text()
 			if strings.HasPrefix(ioLine, "read_bytes:") {
 				val := strings.TrimSpace(strings.TrimPrefix(ioLine, "read_bytes:"))
-				readBytes, _ = strconv.ParseUint(val, 10, 64)
+				if v, err := strconv.ParseUint(val, 10, 64); err == nil {
+					readBytes = v
+				}
 			} else if strings.HasPrefix(ioLine, "write_bytes:") {
 				val := strings.TrimSpace(strings.TrimPrefix(ioLine, "write_bytes:"))
-				writeBytes, _ = strconv.ParseUint(val, 10, 64)
+				if v, err := strconv.ParseUint(val, 10, 64); err == nil {
+					writeBytes = v
+				}
 			}
 		}
 
@@ -434,6 +447,24 @@ func enrichDiskIO(metrics *BootPerformanceMetrics) {
 			)
 		}
 	}
+}
+
+// cachedClkTck holds the clock ticks per second value, determined once via getconf.
+var cachedClkTck int64
+
+func getClkTck() int64 {
+	if cachedClkTck > 0 {
+		return cachedClkTck
+	}
+	clkTck := int64(100) // default: sysconf(_SC_CLK_TCK) on most Linux
+	cmd := exec.Command("getconf", "CLK_TCK")
+	if out, err := cmd.Output(); err == nil {
+		if val, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); err == nil && val > 0 {
+			clkTck = val
+		}
+	}
+	cachedClkTck = clkTck
+	return clkTck
 }
 
 // getProcessStartTime returns the approximate Unix timestamp when a process started.
@@ -469,16 +500,7 @@ func getProcessStartTime(pid string, bootUnix int64) int64 {
 		return 0
 	}
 
-	// Get clock ticks per second (usually 100 on Linux)
-	clkTck := int64(100) // sysconf(_SC_CLK_TCK) default
-	cmd := exec.Command("getconf", "CLK_TCK")
-	if out, err := cmd.Output(); err == nil {
-		if val, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); err == nil && val > 0 {
-			clkTck = val
-		}
-	}
-
-	return bootUnix + (startTicks / clkTck)
+	return bootUnix + (startTicks / getClkTck())
 }
 
 // ManageStartupItem enables or disables a startup item on Linux.
@@ -533,6 +555,13 @@ func manageCronReboot(path, action string) error {
 	cronFile := parts[0]
 	cronCommand := parts[1]
 
+	// Read original file permissions to preserve them on write-back
+	info, err := os.Stat(cronFile)
+	if err != nil {
+		return fmt.Errorf("failed to stat cron file %s: %v", cronFile, err)
+	}
+	originalPerm := info.Mode().Perm()
+
 	data, err := os.ReadFile(cronFile)
 	if err != nil {
 		return fmt.Errorf("failed to read cron file %s: %v", cronFile, err)
@@ -577,8 +606,8 @@ func manageCronReboot(path, action string) error {
 		return fmt.Errorf("@reboot entry for command %q not found in %s", cronCommand, cronFile)
 	}
 
-	// Write the modified file back
-	err = os.WriteFile(cronFile, []byte(strings.Join(lines, "\n")), 0644)
+	// Write the modified file back, preserving original permissions
+	err = os.WriteFile(cronFile, []byte(strings.Join(lines, "\n")), originalPerm)
 	if err != nil {
 		return fmt.Errorf("failed to write cron file %s: %v", cronFile, err)
 	}
@@ -602,8 +631,7 @@ func manageInitDService(name, action string) error {
 		if err == nil {
 			return nil
 		}
-		// If update-rc.d fails, fall through to systemctl
-		_ = output
+		slog.Info("update-rc.d failed, falling back to systemctl", "service", name, "error", strings.TrimSpace(string(output)))
 	}
 
 	// Fallback: use systemctl

@@ -31,7 +31,6 @@ type StartupItem struct {
 // BootPerformanceCollector collects boot time metrics and startup item analysis.
 // Platform-specific implementations are in boot_performance_*.go files.
 type BootPerformanceCollector struct {
-	lastBootTime     time.Time
 	collectedForBoot map[time.Time]bool
 	mu               sync.RWMutex
 }
@@ -43,11 +42,20 @@ func NewBootPerformanceCollector() *BootPerformanceCollector {
 	}
 }
 
-// MarkCollected marks a boot timestamp as already collected to prevent duplicates
+// MarkCollected marks a boot timestamp as already collected to prevent duplicates.
+// It also prunes entries older than 24 hours to prevent unbounded map growth.
 func (c *BootPerformanceCollector) MarkCollected(bootTime time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.collectedForBoot[bootTime] = true
+
+	// Prune stale entries (boot times older than 24 hours)
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for bt := range c.collectedForBoot {
+		if bt.Before(cutoff) {
+			delete(c.collectedForBoot, bt)
+		}
+	}
 }
 
 // HasCollected checks if boot performance has already been collected for the given boot time
@@ -58,7 +66,8 @@ func (c *BootPerformanceCollector) HasCollected(bootTime time.Time) bool {
 }
 
 // ShouldCollect returns true if we detect a recent boot that hasn't been collected yet.
-// It checks if uptime is under 10 minutes and we haven't already collected for this boot.
+// It checks if uptime is between 2 and 10 minutes (allowing services to settle) and
+// we haven't already collected for this boot.
 func (c *BootPerformanceCollector) ShouldCollect(uptimeSeconds int64, bootTime time.Time) bool {
 	if uptimeSeconds > 600 { // More than 10 minutes
 		return false
@@ -78,6 +87,3 @@ func CalculateImpactScore(cpuTimeMs int64, diskIoBytes uint64) float64 {
 	return math.Round((cpuScore+diskScore)*10) / 10
 }
 
-// ManageStartupItem enables or disables a startup item on the system.
-// Platform-specific implementations are in boot_performance_*.go files.
-// The implementation is in boot_performance_<platform>.go files.

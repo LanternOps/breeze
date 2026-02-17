@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +51,8 @@ func (c *BootPerformanceCollector) Collect() (*BootPerformanceMetrics, error) {
 	desktopReady := getDesktopReadyTime(bootTime)
 	if desktopReady > 0 {
 		metrics.DesktopReadySeconds = desktopReady
-		// OsLoader = total - desktop ready (approximation of kernel + kext load)
+		// OsLoader = total uptime - desktop ready. On macOS this is approximate since
+		// TotalBootSeconds reflects total uptime rather than true boot duration.
 		metrics.OsLoaderSeconds = metrics.TotalBootSeconds - desktopReady
 		if metrics.OsLoaderSeconds < 0 {
 			metrics.OsLoaderSeconds = 0
@@ -124,6 +126,7 @@ func getDesktopReadyTime(bootTime time.Time) float64 {
 		"--style", "compact",
 	).Output()
 	if err != nil {
+		slog.Warn("failed to query unified log for desktop-ready time", "error", err)
 		return 0
 	}
 
@@ -174,6 +177,9 @@ type plistJSON struct {
 func enumerateLaunchItems(dir, itemType string) []StartupItem {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to read launch items directory", "dir", dir, "error", err)
+		}
 		return nil
 	}
 
@@ -240,6 +246,7 @@ func getLoginItems() []StartupItem {
 		`tell application "System Events" to get the name of every login item`,
 	).Output()
 	if err != nil {
+		slog.Warn("failed to enumerate login items via osascript", "error", err)
 		return nil
 	}
 
@@ -282,6 +289,7 @@ func getEarlyBootProcesses(bootTime time.Time) []processInfo {
 	// cputime format: [[DD-]HH:]MM:SS
 	out, err := exec.Command("ps", "-eo", "etime,cputime,comm").Output()
 	if err != nil {
+		slog.Warn("failed to enumerate early boot processes; startup item impact scores will be unavailable", "error", err)
 		return nil
 	}
 
@@ -407,8 +415,9 @@ func enrichItemsWithPerformance(items []StartupItem, procs []processInfo) {
 			procLower := strings.ToLower(proc.comm)
 			if procLower == itemBase || strings.Contains(itemName, procLower) || strings.Contains(procLower, itemName) {
 				items[i].CpuTimeMs = proc.cpuTimeMs
-				// Disk I/O is not directly available from ps; estimate based on CPU time.
-				// Assume ~10KB per ms of CPU time as a rough heuristic.
+				// Disk I/O is not available from ps on macOS (unlike Linux /proc/pid/io).
+				// We use a rough heuristic of ~10KB per ms of CPU time. This is an
+				// order-of-magnitude estimate only and may over- or under-report actual I/O.
 				items[i].DiskIoBytes = uint64(proc.cpuTimeMs) * 10240
 				items[i].ImpactScore = CalculateImpactScore(items[i].CpuTimeMs, items[i].DiskIoBytes)
 				break
@@ -475,7 +484,7 @@ func manageLaunchdItem(label, path, action string) error {
 		target := domain + "/" + label
 		cmd := exec.Command("launchctl", "bootout", target)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			// Fallback: try legacy unload.
+			slog.Info("launchctl bootout failed, falling back to legacy unload", "label", label, "error", strings.TrimSpace(string(out)))
 			cmd2 := exec.Command("launchctl", "unload", "-w", path)
 			if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
 				return fmt.Errorf("failed to disable %s (bootout: %s; unload: %s)", label, string(out), string(out2))
@@ -487,7 +496,7 @@ func manageLaunchdItem(label, path, action string) error {
 		// Bootstrap (load) the plist into the domain.
 		cmd := exec.Command("launchctl", "bootstrap", domain, path)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			// Fallback: try legacy load.
+			slog.Info("launchctl bootstrap failed, falling back to legacy load", "label", label, "error", strings.TrimSpace(string(out)))
 			cmd2 := exec.Command("launchctl", "load", "-w", path)
 			if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
 				return fmt.Errorf("failed to enable %s (bootstrap: %s; load: %s)", label, string(out), string(out2))
