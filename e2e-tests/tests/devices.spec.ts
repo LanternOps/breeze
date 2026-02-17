@@ -10,9 +10,9 @@ test.describe('Device Management', () => {
     await expect(page.locator('h1, h2').first()).toContainText(/Device/i);
 
     // The page should have some kind of list/table or empty state
-    const listOrEmpty = page.locator(
-      'table, [data-testid="device-list"], [data-testid="empty-state"], text=No devices',
-    ).first();
+    const listOrEmpty = page.locator('table')
+      .or(page.locator('text=No devices'))
+      .first();
     await expect(listOrEmpty).toBeVisible({ timeout: 15_000 });
   });
 
@@ -21,10 +21,11 @@ test.describe('Device Management', () => {
     await waitForApp(page, '/devices');
 
     // Either we see table rows for devices, or an empty-state message
-    const deviceRow = page.locator('table tbody tr, [data-testid="device-row"]').first();
-    const emptyState = page.locator(
-      '[data-testid="empty-state"], text=No devices found, text=No devices, text=Get started',
-    ).first();
+    const deviceRow = page.locator('table tbody tr').first();
+    const emptyState = page.locator('text=No devices found')
+      .or(page.locator('text=No devices'))
+      .or(page.locator('text=Get started'))
+      .first();
 
     // One of these should be visible
     await expect(
@@ -37,7 +38,7 @@ test.describe('Device Management', () => {
     await waitForApp(page, '/devices');
 
     // If there are devices, click the first one to go to detail view
-    const firstDevice = page.locator('table tbody tr, [data-testid="device-row"]').first();
+    const firstDevice = page.locator('table tbody tr').first();
     const hasDevices = await firstDevice.isVisible({ timeout: 5_000 }).catch(() => false);
 
     test.skip(!hasDevices, 'No devices enrolled — skipping detail view test');
@@ -48,14 +49,17 @@ test.describe('Device Management', () => {
     await expect(page).toHaveURL(/\/devices\/.+/);
 
     // Detail page should show tab navigation (Overview, Hardware, Software, etc.)
-    const tabs = page.locator(
-      '[role="tablist"], [data-testid="device-tabs"], nav:has(button:has-text("Overview"))',
-    ).first();
+    const tabs = page.locator('[role="tablist"]')
+      .or(page.locator('nav:has(button:has-text("Overview"))'))
+      .first();
     await expect(tabs).toBeVisible({ timeout: 10_000 });
 
     // At minimum, an "Overview" tab should exist
     await expect(
-      page.locator('button:has-text("Overview"), [role="tab"]:has-text("Overview"), a:has-text("Overview")').first(),
+      page.locator('button:has-text("Overview")')
+        .or(page.locator('[role="tab"]:has-text("Overview")'))
+        .or(page.locator('a:has-text("Overview")'))
+        .first(),
     ).toBeVisible();
   });
 
@@ -65,7 +69,7 @@ test.describe('Device Management', () => {
 
     // Look for a search / filter input
     const searchInput = page.locator(
-      'input[placeholder*="Search"], input[placeholder*="Filter"], [data-testid="device-search"]',
+      'input[placeholder*="Search"], input[placeholder*="Filter"]',
     ).first();
 
     const hasSearch = await searchInput.isVisible({ timeout: 5_000 }).catch(() => false);
@@ -76,9 +80,10 @@ test.describe('Device Management', () => {
 
     // Should show no results or an empty state
     await expect(
-      page.locator(
-        'text=No devices found, text=No results, [data-testid="empty-state"], text=0 devices',
-      ).first(),
+      page.locator('text=No devices found')
+        .or(page.locator('text=No results'))
+        .or(page.locator('text=0 devices'))
+        .first(),
     ).toBeVisible({ timeout: 10_000 });
 
     // Clear the filter
@@ -94,10 +99,13 @@ test.describe('Device Management', () => {
       page.locator('h1, h2').first(),
     ).toContainText(/Group|Device/i, { timeout: 10_000 });
 
-    // Should have a create button or existing groups list
-    const createOrList = page.locator(
-      'button:has-text("New"), button:has-text("Create"), table, [data-testid="group-list"], text=No groups',
-    ).first();
+    // Should have a create button or existing groups list or empty state
+    const createOrList = page.locator('button:has-text("New")')
+      .or(page.locator('button:has-text("Create")'))
+      .or(page.locator('table'))
+      .or(page.locator('text=No device groups yet'))
+      .or(page.locator('text=No groups'))
+      .first();
     await expect(createOrList).toBeVisible({ timeout: 10_000 });
   });
 });

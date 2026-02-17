@@ -6,13 +6,12 @@ test.describe('Reports', () => {
     await page.goto('/reports');
     await waitForApp(page, '/reports');
 
-    // Page heading should reference reports
-    await expect(page.locator('h1, h2').first()).toContainText(/Report/i, { timeout: 10_000 });
+    // Page heading should say "Reports"
+    await expect(page.locator('h1').first()).toContainText('Reports', { timeout: 10_000 });
 
     // Should show a report list, table, or empty state
-    const content = page.locator(
-      'table, [data-testid="report-list"], [data-testid="empty-state"], text=No reports',
-    ).first();
+    const content = page.locator('table').first()
+      .or(page.getByText('No reports').first());
     await expect(content).toBeVisible({ timeout: 15_000 });
   });
 
@@ -20,9 +19,12 @@ test.describe('Reports', () => {
     await page.goto('/reports/new');
     await waitForApp(page, '/reports/new');
 
-    // Should show a heading or form for creating a new report
-    const headingOrForm = page.locator('h1, h2').first()
-      .or(page.locator('form, [data-testid="report-form"]').first());
+    // Should show a heading for creating a new report
+    const headingOrForm = page.locator('h1').first()
+      .or(page.locator('form').first());
     await expect(headingOrForm).toBeVisible({ timeout: 10_000 });
+
+    // Verify the heading text
+    await expect(page.locator('h1').first()).toContainText('Create Report');
   });
 });
