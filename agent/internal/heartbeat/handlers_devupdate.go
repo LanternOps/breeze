@@ -74,7 +74,8 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	}()
 
 	return tools.NewSuccessResult(map[string]any{
-		"message": "dev_update initiated",
+		"message": "dev_update initiated asynchronously — check agent logs for outcome",
 		"version": version,
+		"note":    "result reported before update completes; failures will only appear in agent logs",
 	}, time.Since(start).Milliseconds())
 }

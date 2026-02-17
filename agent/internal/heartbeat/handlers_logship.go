@@ -31,7 +31,12 @@ func handleSetLogLevel(_ *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	logging.SetShipperLevel(level)
+	if !logging.SetShipperLevel(level) {
+		return tools.CommandResult{
+			Status: "failed",
+			Error:  "log shipper not initialized — agent may not be enrolled or log shipping is not configured",
+		}
+	}
 
 	// Auto-revert after specified duration (default 60 minutes).
 	// Cancel any pending revert timer to prevent goroutine stacking.

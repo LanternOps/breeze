@@ -14,6 +14,9 @@ import { getRedisConnection } from '../services/redis';
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
+  if (typeof withSystem !== 'function') {
+    console.error('[AgentLogRetention] withSystemDbAccessContext is not available — running without access context');
+  }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
@@ -48,11 +51,18 @@ export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
           .delete(agentLogs)
           .where(lt(agentLogs.timestamp, cutoff));
 
-        const deletedCount = (result as any).rowCount ?? 0;
+        // Drizzle returns different shapes per driver; try common patterns.
+        const raw = result as unknown as Record<string, unknown>;
+        const deletedCount = typeof raw?.rowCount === 'number'
+          ? raw.rowCount
+          : typeof raw?.count === 'number'
+            ? raw.count
+            : Array.isArray(result) ? (result as unknown[]).length : 'unknown';
+
         const durationMs = Date.now() - startTime;
         console.log(`[AgentLogRetention] Pruned ${deletedCount} agent logs older than ${retentionDays} days in ${durationMs}ms`);
 
-        return { durationMs };
+        return { durationMs, deletedCount };
       });
     },
     {

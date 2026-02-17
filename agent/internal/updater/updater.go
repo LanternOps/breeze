@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"time"
@@ -67,7 +68,9 @@ func (u *Updater) UpdateTo(version string) error {
 	if runtime.GOOS == "windows" {
 		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
 			os.Remove(tempPath)
-			u.Rollback()
+			if rbErr := u.Rollback(); rbErr != nil {
+				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
+			}
 			return fmt.Errorf("failed to spawn update helper: %w", err)
 		}
 		// Helper script will handle the rest — agent exits via service stop.
@@ -77,13 +80,19 @@ func (u *Updater) UpdateTo(version string) error {
 	// 5. Non-Windows: replace binary inline and restart
 	defer os.Remove(tempPath)
 	if err := u.replaceBinary(tempPath); err != nil {
-		u.Rollback()
-		return fmt.Errorf("failed to replace binary: %w", err)
+		if rbErr := u.Rollback(); rbErr != nil {
+			log.Error("rollback also failed after replace error", "replaceError", err, "rollbackError", rbErr)
+			return fmt.Errorf("failed to replace binary: %w (rollback also failed: %v)", err, rbErr)
+		}
+		return fmt.Errorf("failed to replace binary (rolled back): %w", err)
 	}
 
 	if err := Restart(); err != nil {
-		u.Rollback()
-		return fmt.Errorf("failed to restart: %w", err)
+		if rbErr := u.Rollback(); rbErr != nil {
+			log.Error("rollback also failed after restart error", "restartError", err, "rollbackError", rbErr)
+			return fmt.Errorf("failed to restart: %w (rollback also failed: %v)", err, rbErr)
+		}
+		return fmt.Errorf("failed to restart (rolled back): %w", err)
 	}
 
 	return nil
@@ -306,7 +315,9 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 	if runtime.GOOS == "windows" {
 		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
 			os.Remove(tempPath)
-			u.Rollback()
+			if rbErr := u.Rollback(); rbErr != nil {
+				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
+			}
 			return fmt.Errorf("failed to spawn update helper: %w", err)
 		}
 		return nil
@@ -315,21 +326,40 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 	// 5. Non-Windows: replace binary inline and restart
 	defer os.Remove(tempPath)
 	if err := u.replaceBinary(tempPath); err != nil {
-		u.Rollback()
-		return fmt.Errorf("failed to replace binary: %w", err)
+		if rbErr := u.Rollback(); rbErr != nil {
+			log.Error("rollback also failed after replace error", "replaceError", err, "rollbackError", rbErr)
+			return fmt.Errorf("failed to replace binary: %w (rollback also failed: %v)", err, rbErr)
+		}
+		return fmt.Errorf("failed to replace binary (rolled back): %w", err)
 	}
 
 	if err := Restart(); err != nil {
-		u.Rollback()
-		return fmt.Errorf("failed to restart: %w", err)
+		if rbErr := u.Rollback(); rbErr != nil {
+			log.Error("rollback also failed after restart error", "restartError", err, "rollbackError", rbErr)
+			return fmt.Errorf("failed to restart: %w (rollback also failed: %v)", err, rbErr)
+		}
+		return fmt.Errorf("failed to restart (rolled back): %w", err)
 	}
 
 	return nil
 }
 
 // downloadFromURL downloads a binary directly from the given URL to a temp file.
-func (u *Updater) downloadFromURL(url string) (string, error) {
-	req, err := http.NewRequest("GET", url, nil)
+// The URL host must match the configured ServerURL to prevent credential leakage.
+func (u *Updater) downloadFromURL(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid download URL: %w", err)
+	}
+	serverParsed, err := url.Parse(u.config.ServerURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid server URL: %w", err)
+	}
+	if parsed.Host != serverParsed.Host {
+		return "", fmt.Errorf("download URL host %q does not match server %q", parsed.Host, serverParsed.Host)
+	}
+
+	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return "", err
 	}

@@ -41,6 +41,7 @@ type Shipper struct {
 	buffer       chan LogEntry
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
+	stopOnce     sync.Once
 	minLevel     slog.Level
 	mu           sync.RWMutex // protects minLevel
 	droppedCount atomic.Int64
@@ -81,8 +82,11 @@ func (s *Shipper) Start() {
 }
 
 // Stop gracefully stops the shipper, flushing remaining logs.
+// Safe to call multiple times.
 func (s *Shipper) Stop() {
-	close(s.stopChan)
+	s.stopOnce.Do(func() {
+		close(s.stopChan)
+	})
 	s.wg.Wait()
 }
 
@@ -199,9 +203,11 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 400 {
-		fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries\n", resp.StatusCode, len(entries))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries: %s\n", resp.StatusCode, len(entries), string(body))
+		return
 	}
+	io.Copy(io.Discard, resp.Body)
 }

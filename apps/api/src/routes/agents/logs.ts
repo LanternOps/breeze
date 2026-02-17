@@ -34,10 +34,14 @@ logsRoutes.post('/:id/logs', async (c) => {
   try {
     const raw = Buffer.from(await c.req.arrayBuffer());
     const encoding = c.req.header('content-encoding')?.toLowerCase() ?? '';
-    const decoded = encoding.includes('gzip') ? gunzipSync(raw) : raw;
+    const decoded = encoding.includes('gzip')
+      ? gunzipSync(raw, { maxOutputLength: 10 * 1024 * 1024 }) // 10MB limit
+      : raw;
     body = JSON.parse(decoded.toString('utf-8'));
-  } catch {
-    return c.json({ error: 'Invalid JSON body' }, 400);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[AgentLogs] Failed to decode request body for agent ${agentId}:`, message);
+    return c.json({ error: 'Failed to decode request body', detail: message }, 400);
   }
 
   const parsed = agentLogIngestSchema.safeParse(body);
@@ -145,6 +149,7 @@ logsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema), asyn
   }));
 
   let inserted = 0;
+  let insertError: unknown = null;
   try {
     for (let i = 0; i < rows.length; i += 100) {
       const batch = rows.slice(i, i + 100);
@@ -152,7 +157,8 @@ logsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema), asyn
       inserted += batch.length;
     }
   } catch (err) {
-    console.error(`[EventLogs] Error batch inserting events for device ${device.id}:`, err);
+    insertError = err;
+    console.error(`[EventLogs] Partial insert failure for device ${device.id}: inserted ${inserted}/${rows.length}`, err);
   }
 
   writeAuditEvent(c, {
@@ -168,5 +174,11 @@ logsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema), asyn
     },
   });
 
+  if (insertError) {
+    if (inserted === 0) {
+      return c.json({ error: 'Failed to insert events', count: 0 }, 500);
+    }
+    return c.json({ success: true, count: inserted, total: data.events.length, partial: true }, 207);
+  }
   return c.json({ success: true, count: inserted });
 });

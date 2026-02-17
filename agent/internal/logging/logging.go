@@ -163,13 +163,17 @@ func StopShipper() {
 }
 
 // SetShipperLevel dynamically adjusts minimum log level for shipping.
-func SetShipperLevel(level string) {
+// Returns true if the shipper was active and the level was changed,
+// false if no shipper is initialized.
+func SetShipperLevel(level string) bool {
 	shipperMu.RLock()
 	defer shipperMu.RUnlock()
 
 	if globalShipper != nil {
 		globalShipper.SetMinLevel(level)
+		return true
 	}
+	return false
 }
 
 // shippingHandler wraps a base slog.Handler to also ship logs remotely.

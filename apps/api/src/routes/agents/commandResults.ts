@@ -55,8 +55,9 @@ function parseResultJson(stdout: string | undefined): Record<string, unknown> | 
   try {
     const parsed = JSON.parse(stdout);
     return isObject(parsed) ? parsed : undefined;
-  } catch {
-    console.warn('[agents] Failed to parse command result JSON:', stdout?.slice(0, 500));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('[agents] Failed to parse command result JSON:', message, stdout?.slice(0, 500));
     return undefined;
   }
 }
@@ -403,6 +404,8 @@ commandResultsRoutes.post(
       })
       .where(eq(deviceCommands.id, commandId));
 
+    const warnings: string[] = [];
+
     if (
       command.type === securityCommandTypes.collectStatus ||
       command.type === securityCommandTypes.scan ||
@@ -413,7 +416,9 @@ commandResultsRoutes.post(
       try {
         await handleSecurityCommandResult(command, data);
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.error(`[agents] security command post-processing failed for ${commandId}:`, err);
+        warnings.push(`Security post-processing failed: ${message}`);
       }
     }
 
@@ -421,7 +426,9 @@ commandResultsRoutes.post(
       try {
         await handleFilesystemAnalysisCommandResult(command, data);
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.error(`[agents] filesystem analysis post-processing failed for ${commandId}:`, err);
+        warnings.push(`Filesystem analysis post-processing failed: ${message}`);
       }
     }
 
@@ -440,6 +447,6 @@ commandResultsRoutes.post(
       result: data.status === 'completed' ? 'success' : 'failure',
     });
 
-    return c.json({ success: true });
+    return c.json({ success: true, ...(warnings.length > 0 ? { warnings } : {}) });
   }
 );

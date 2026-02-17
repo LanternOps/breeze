@@ -3,8 +3,22 @@ package heartbeat
 import (
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
+
+// initTestShipper initializes a global shipper so SetShipperLevel succeeds in tests.
+func initTestShipper(t *testing.T) {
+	t.Helper()
+	logging.InitShipper(logging.ShipperConfig{
+		ServerURL:    "http://localhost:3001",
+		AgentID:      "test-agent",
+		AuthToken:    "test-token",
+		AgentVersion: "1.0.0",
+		MinLevel:     "warn",
+	})
+	t.Cleanup(func() { logging.StopShipper() })
+}
 
 func TestHandleSetLogLevelMissingLevel(t *testing.T) {
 	result := handleSetLogLevel(nil, Command{
@@ -49,6 +63,7 @@ func TestHandleSetLogLevelInvalidLevel(t *testing.T) {
 }
 
 func TestHandleSetLogLevelValidLevels(t *testing.T) {
+	initTestShipper(t)
 	validLevels := []string{"debug", "info", "warn", "error"}
 
 	for _, level := range validLevels {
@@ -69,7 +84,26 @@ func TestHandleSetLogLevelValidLevels(t *testing.T) {
 	}
 }
 
+func TestHandleSetLogLevelNoShipper(t *testing.T) {
+	// Without initTestShipper, SetShipperLevel should return false
+	result := handleSetLogLevel(nil, Command{
+		ID:   "cmd-1",
+		Type: tools.CmdSetLogLevel,
+		Payload: map[string]any{
+			"level":           "debug",
+			"durationMinutes": 0,
+		},
+	})
+	if result.Status != "failed" {
+		t.Fatalf("expected failed when shipper not initialized, got %s", result.Status)
+	}
+	if result.Error == "" {
+		t.Fatal("expected error about shipper not initialized")
+	}
+}
+
 func TestHandleSetLogLevelDefaultDuration(t *testing.T) {
+	initTestShipper(t)
 	result := handleSetLogLevel(nil, Command{
 		ID:   "cmd-1",
 		Type: tools.CmdSetLogLevel,

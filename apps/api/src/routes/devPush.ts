@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireScope } from '../middleware/auth';
 import { getDeviceWithOrgCheck } from './devices/helpers';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 
@@ -52,8 +52,10 @@ devPushRoutes.use('*', async (c, next) => {
   await next();
 });
 
+const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB
+
 // POST /dev/push — upload binary + trigger agent update
-devPushRoutes.post('/push', authMiddleware, async (c) => {
+devPushRoutes.post('/push', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth');
 
   const body = await c.req.parseBody({ all: true });
@@ -70,6 +72,10 @@ devPushRoutes.post('/push', authMiddleware, async (c) => {
 
   if (!(file instanceof File)) {
     return c.json({ error: 'binary file is required' }, 400);
+  }
+
+  if (file.size > MAX_BINARY_SIZE) {
+    return c.json({ error: `Binary too large (max ${MAX_BINARY_SIZE / 1024 / 1024}MB)` }, 413);
   }
 
   // Verify device access
