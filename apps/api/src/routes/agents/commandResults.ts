@@ -25,7 +25,8 @@ import {
   commandResultSchema,
   securityCommandTypes,
   securityStatusIngestSchema,
-  filesystemAnalysisCommandType
+  filesystemAnalysisCommandType,
+  parseEnvBoundedNumber
 } from './schemas';
 import type { SecurityStatusPayload } from './schemas';
 import {
@@ -37,7 +38,6 @@ import {
   normalizeProvider,
   normalizeSeverity,
   upsertSecurityStatusForDevice,
-  parseEnvBoundedNumber
 } from './helpers';
 import type { AgentContext } from './helpers';
 

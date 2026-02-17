@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { db } from '../../db';
+import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
   deviceCommands,
@@ -39,6 +40,9 @@ import {
   filesystemAutoResumeMaxRuns,
   uuidRegex,
 } from './schemas';
+
+// Re-export for convenience — route files import as AgentContext
+export type AgentContext = AgentAuthContext;
 
 // ============================================
 // Generic Utilities
@@ -93,15 +97,6 @@ export function readTrimmedString(value: unknown): string | null {
 
 export function isUuid(value: unknown): value is string {
   return typeof value === 'string' && uuidRegex.test(value);
-}
-
-export function parseEnvBoundedNumber(raw: string | undefined, fallback: number, min: number, max: number): number {
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return fallback;
-  const rounded = Math.round(parsed);
-  if (rounded < min || rounded > max) return fallback;
-  return rounded;
 }
 
 export function parseResultJson(stdout: string | undefined): Record<string, unknown> | undefined {

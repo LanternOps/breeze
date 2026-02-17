@@ -25,6 +25,17 @@ function makeAuth(orgId: string): AuthContext {
   } as any;
 }
 
+/** Mock db.select chain to return a device for org-scoped lookups */
+function mockDeviceSelect(deviceId = 'dev-1') {
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ id: deviceId }]),
+      }),
+    }),
+  } as any);
+}
+
 describe('aiToolsAgentLogs', () => {
   let tools: Map<string, AiTool>;
 
@@ -151,6 +162,7 @@ describe('aiToolsAgentLogs', () => {
     });
 
     it('should queue command on success', async () => {
+      mockDeviceSelect('dev-1');
       vi.mocked(queueCommandForExecution).mockResolvedValue({
         command: { id: 'cmd-123' },
         error: null,
@@ -177,6 +189,7 @@ describe('aiToolsAgentLogs', () => {
     });
 
     it('should return error from command queue', async () => {
+      mockDeviceSelect('dev-1');
       vi.mocked(queueCommandForExecution).mockResolvedValue({
         command: null,
         error: 'Device offline',
@@ -193,6 +206,7 @@ describe('aiToolsAgentLogs', () => {
     });
 
     it('should default durationMinutes to 60', async () => {
+      mockDeviceSelect('dev-1');
       vi.mocked(queueCommandForExecution).mockResolvedValue({
         command: { id: 'cmd-456' },
         error: null,
