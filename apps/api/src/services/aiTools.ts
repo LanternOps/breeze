@@ -13,6 +13,7 @@ import {
   deviceNetwork,
   deviceDisks,
   deviceMetrics,
+  deviceBootMetrics,
   alerts,
   sites,
   organizations,
@@ -1346,6 +1347,214 @@ registerTool({
     }, { userId: auth.user.id, timeoutMs: 120000 });
 
     return JSON.stringify(result);
+  }
+});
+
+// ============================================
+// Boot Performance Tools
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'analyze_boot_performance',
+    description: 'Analyze boot performance and startup items for a device. Returns boot time history, slowest startup items by impact score, and optimization recommendations.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'The device UUID' },
+        bootsBack: { type: 'number', description: 'Number of recent boots to analyze (default: 10, max: 30)' },
+        triggerCollection: { type: 'boolean', description: 'If true and device is online, trigger fresh collection before analysis (default: false)' }
+      },
+      required: ['deviceId']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const bootsBack = Math.min(Number(input.bootsBack) || 10, 30);
+    const triggerCollection = Boolean(input.triggerCollection);
+
+    const access = await verifyDeviceAccess(deviceId, auth, false);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+    const { device } = access;
+
+    // Optionally trigger fresh collection
+    if (triggerCollection && device.status === 'online') {
+      const { executeCommand } = await getCommandQueue();
+      try {
+        await executeCommand(deviceId, 'collect_boot_performance', {}, {
+          userId: auth.user.id,
+          timeoutMs: 15000,
+        });
+      } catch {
+        // Non-fatal: proceed with existing data
+      }
+    }
+
+    const bootRecords = await db
+      .select()
+      .from(deviceBootMetrics)
+      .where(eq(deviceBootMetrics.deviceId, deviceId))
+      .orderBy(desc(deviceBootMetrics.bootTimestamp))
+      .limit(bootsBack);
+
+    if (bootRecords.length === 0) {
+      return JSON.stringify({
+        error: 'No boot performance data available. Try triggerCollection: true if device is online.'
+      });
+    }
+
+    // Summary statistics
+    const totalBootTimes = bootRecords
+      .map(b => b.totalBootSeconds)
+      .filter((t): t is number => t !== null);
+    const avgBootTime = totalBootTimes.length > 0
+      ? totalBootTimes.reduce((a, b) => a + b, 0) / totalBootTimes.length
+      : 0;
+    const latestBoot = bootRecords[0]!;
+
+    // Top impact startup items from latest boot
+    const allStartupItems = (latestBoot.startupItems ?? []) as Array<{
+      name: string; type: string; path: string; enabled: boolean;
+      cpuTimeMs: number; diskIoBytes: number; impactScore: number;
+    }>;
+    const topImpactItems = [...allStartupItems]
+      .sort((a, b) => b.impactScore - a.impactScore)
+      .slice(0, 10);
+
+    // Recommendations
+    const recommendations: string[] = [];
+    if (avgBootTime > 120) {
+      recommendations.push('Average boot time is slow (>2 minutes). Review high-impact startup items.');
+    }
+    if (topImpactItems.some(item => item.impactScore > 60)) {
+      recommendations.push('Several startup items have high resource usage. Consider disabling non-essential items.');
+    }
+    if (latestBoot.startupItemCount > 50) {
+      recommendations.push(`High startup item count (${latestBoot.startupItemCount}). Disable unused services.`);
+    }
+    if (totalBootTimes.length >= 3) {
+      const recent = totalBootTimes.slice(0, 3);
+      const older = totalBootTimes.slice(3);
+      if (older.length > 0) {
+        const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
+        if (recentAvg > olderAvg * 1.2) {
+          recommendations.push('Boot times are trending slower. New startup items may have been added recently.');
+        }
+      }
+    }
+
+    return JSON.stringify({
+      device: { id: device.id, hostname: device.hostname, osType: device.osType },
+      bootHistory: {
+        totalBoots: bootRecords.length,
+        avgBootTimeSeconds: Number(avgBootTime.toFixed(2)),
+        fastestBootSeconds: totalBootTimes.length > 0 ? Number(Math.min(...totalBootTimes).toFixed(2)) : null,
+        slowestBootSeconds: totalBootTimes.length > 0 ? Number(Math.max(...totalBootTimes).toFixed(2)) : null,
+        recentBoots: bootRecords.slice(0, 5).map(b => ({
+          timestamp: b.bootTimestamp,
+          totalSeconds: b.totalBootSeconds,
+          biosSeconds: b.biosSeconds,
+          osLoaderSeconds: b.osLoaderSeconds,
+          desktopReadySeconds: b.desktopReadySeconds,
+        })),
+      },
+      latestBoot: {
+        timestamp: latestBoot.bootTimestamp,
+        totalSeconds: latestBoot.totalBootSeconds,
+        startupItemCount: latestBoot.startupItemCount,
+        topImpactItems: topImpactItems.map(item => ({
+          name: item.name,
+          type: item.type,
+          path: item.path,
+          enabled: item.enabled,
+          impactScore: Number(item.impactScore.toFixed(1)),
+          cpuTimeMs: item.cpuTimeMs,
+          diskIoMB: Number((item.diskIoBytes / 1048576).toFixed(2)),
+        })),
+      },
+      recommendations,
+    });
+  }
+});
+
+registerTool({
+  tier: 3,
+  definition: {
+    name: 'manage_startup_items',
+    description: 'Disable or enable startup items on a device. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'The device UUID' },
+        itemName: { type: 'string', description: 'The exact name of the startup item to manage' },
+        action: { type: 'string', enum: ['disable', 'enable'], description: 'Action to perform' },
+        reason: { type: 'string', description: 'Justification for this change (for audit log)' }
+      },
+      required: ['deviceId', 'itemName', 'action']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const itemName = input.itemName as string;
+    const action = input.action as 'disable' | 'enable';
+    const reason = (input.reason as string) || 'No reason provided';
+
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+    const { device } = access;
+
+    // Verify item exists in latest boot record
+    const [latestBoot] = await db
+      .select()
+      .from(deviceBootMetrics)
+      .where(eq(deviceBootMetrics.deviceId, deviceId))
+      .orderBy(desc(deviceBootMetrics.bootTimestamp))
+      .limit(1);
+
+    if (!latestBoot) {
+      return JSON.stringify({ error: 'No boot performance data available for this device.' });
+    }
+
+    const allItems = (latestBoot.startupItems ?? []) as Array<{
+      name: string; type: string; path: string; enabled: boolean;
+    }>;
+    const item = allItems.find(i => i.name === itemName);
+    if (!item) {
+      return JSON.stringify({
+        error: `Startup item "${itemName}" not found. Available items: ${allItems.map(i => i.name).slice(0, 20).join(', ')}`
+      });
+    }
+
+    if (action === 'disable' && !item.enabled) {
+      return JSON.stringify({ error: `Startup item "${itemName}" is already disabled.` });
+    }
+    if (action === 'enable' && item.enabled) {
+      return JSON.stringify({ error: `Startup item "${itemName}" is already enabled.` });
+    }
+
+    // Send command to agent
+    const { executeCommand } = await getCommandQueue();
+    const result = await executeCommand(
+      deviceId,
+      'manage_startup_item',
+      { itemName, itemType: item.type, itemPath: item.path, action },
+      { userId: auth.user.id, timeoutMs: 30000 }
+    );
+
+    return JSON.stringify({
+      success: true,
+      message: `Startup item "${itemName}" ${action}d successfully.`,
+      device: { hostname: device.hostname, osType: device.osType },
+      item: {
+        name: item.name,
+        type: item.type,
+        path: item.path,
+        previouslyEnabled: item.enabled,
+        newState: action === 'enable',
+      },
+    });
   }
 });
 
