@@ -105,6 +105,7 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BINARY_SOURCE: ${BINARY_SOURCE:-local}
       AGENT_BINARY_DIR: /data/binaries/agent
       VIEWER_BINARY_DIR: /data/binaries/viewer
       BINARY_VERSION_FILE: /data/binaries/VERSION

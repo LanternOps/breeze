@@ -2,17 +2,11 @@ import { Hono } from 'hono';
 import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
-import { getBinarySource, getGithubViewerUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubViewerUrl, VIEWER_FILENAMES } from '../../services/binarySource';
 
 export const viewerDownloadRoutes = new Hono();
 
-const VALID_PLATFORMS = new Set(['macos', 'windows', 'linux']);
-
-const PLATFORM_FILES: Record<string, string> = {
-  macos: 'breeze-viewer-macos.dmg',
-  windows: 'breeze-viewer-windows.msi',
-  linux: 'breeze-viewer-linux.AppImage',
-};
+const VALID_PLATFORMS = new Set(Object.keys(VIEWER_FILENAMES));
 
 viewerDownloadRoutes.get('/download/:platform', async (c) => {
   const platform = c.req.param('platform');
@@ -27,7 +21,7 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
     );
   }
 
-  const filename = PLATFORM_FILES[platform]!;
+  const filename = VIEWER_FILENAMES[platform]!;
 
   // GitHub redirect mode — no local binaries needed
   if (getBinarySource() === 'github') {
@@ -41,7 +35,10 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      console.error(`[viewer-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      const errName = (err as { name?: string }).name;
+      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
+      const level = isNotFound ? 'warn' : 'error';
+      console[level](`[viewer-download] S3 presign failed for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -54,7 +51,12 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
   try {
     fileStat = statSync(filePath);
     stream = createReadStream(filePath);
-  } catch {
+  } catch (err) {
+    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!isNotFound) {
+      console.error(`[viewer-download] Failed to read installer ${filename}:`, err);
+      return c.json({ error: 'Internal server error', message: 'Failed to read installer file' }, 500);
+    }
     return c.json(
       {
         error: 'Installer not found',
@@ -74,6 +76,7 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
         controller.close();
       });
       stream.on('error', (err) => {
+        console.error(`[viewer-download] Stream error while serving ${filename}:`, err);
         controller.error(err);
       });
     },

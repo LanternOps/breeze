@@ -940,7 +940,7 @@ async function bootstrap(): Promise<void> {
     await autoMigrate();
   }
 
-  // Sync agent/viewer binaries from init container volume to DB + S3
+  // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
   try {
     await syncBinaries();
   } catch (err) {
