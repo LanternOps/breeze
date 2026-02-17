@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 /**
  * Minimal debug test to diagnose why some pages redirect to /login
- * while others work fine with the same stored auth state.
+ * while others work fine with the same stored auth state. v2
  */
 test.describe('Debug Auth State', () => {
   test('dump auth state on a PASSING page (/alerts/rules)', async ({ page }) => {
