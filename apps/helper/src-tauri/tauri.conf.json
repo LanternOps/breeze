@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Breeze Helper",
+  "version": "0.1.0",
+  "identifier": "com.breezermm.helper",
+  "build": {
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Breeze Helper",
+        "width": 380,
+        "height": 600,
+        "resizable": true,
+        "decorations": false,
+        "center": true
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    },
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' https://*; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

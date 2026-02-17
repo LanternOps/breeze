@@ -56,6 +56,9 @@ export const TOOL_TIERS = {
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
   query_audit_log: 1,
   network_discovery: 3,
+  take_screenshot: 2,
+  analyze_screen: 1,
+  computer_control: 3,
   // Fleet orchestration tools
   manage_policies: 1,        // Action-level escalation in guardrails
   manage_deployments: 1,     // Action-level escalation in guardrails
@@ -129,6 +132,56 @@ function makeHandler(
         toolName,
       );
       const compactResult = compactToolResultForChat(toolName, result);
+
+      // For screenshot/vision tools, return image content blocks for Claude Vision
+      if ((toolName === 'take_screenshot' || toolName === 'analyze_screen' || toolName === 'computer_control') && !compactResult.includes('"error"')) {
+        try {
+          const parsed = JSON.parse(result);
+          const imageBase64 = parsed.imageBase64;
+          if (imageBase64) {
+            const durationMs = Date.now() - startTime;
+            if (onPostToolUse) {
+              try { await onPostToolUse(toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs); }
+              catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
+            }
+            const contentBlocks: Array<{ type: string; source?: { type: string; media_type: string; data: string }; text?: string }> = [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/jpeg',
+                  data: imageBase64,
+                },
+              },
+            ];
+            if (toolName === 'analyze_screen' && parsed.device) {
+              contentBlocks.push({
+                type: 'text',
+                text: JSON.stringify({
+                  analysisContext: parsed.analysisContext,
+                  device: parsed.device,
+                  capturedAt: parsed.capturedAt,
+                  resolution: `${parsed.width}x${parsed.height}`,
+                }),
+              });
+            }
+            if (toolName === 'computer_control') {
+              contentBlocks.push({
+                type: 'text',
+                text: JSON.stringify({
+                  actionExecuted: parsed.actionExecuted,
+                  capturedAt: parsed.capturedAt,
+                  resolution: `${parsed.width}x${parsed.height}`,
+                }),
+              });
+            }
+            return { content: contentBlocks };
+          }
+        } catch {
+          // Fall through to normal text response
+        }
+      }
+
       const durationMs = Date.now() - startTime;
       if (onPostToolUse) {
         try { await onPostToolUse(toolName, args, compactResult, false, durationMs); }
@@ -371,6 +424,46 @@ export function createBreezeMcpServer(
         scanType: z.enum(['ping', 'arp', 'full']).optional(),
       },
       makeHandler('network_discovery', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'take_screenshot',
+      'Capture a screenshot of the device screen for visual analysis.',
+      {
+        deviceId: uuid,
+        monitor: z.number().int().min(0).max(10).optional(),
+      },
+      makeHandler('take_screenshot', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'analyze_screen',
+      'Take a screenshot and analyze what is visible on the device screen.',
+      {
+        deviceId: uuid,
+        context: z.string().max(500).optional(),
+        monitor: z.number().int().min(0).max(10).optional(),
+      },
+      makeHandler('analyze_screen', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'computer_control',
+      'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action. Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
+      {
+        deviceId: uuid,
+        action: z.enum(['screenshot', 'left_click', 'right_click', 'middle_click', 'double_click', 'mouse_move', 'scroll', 'key', 'type']),
+        x: z.number().int().min(0).max(10000).optional(),
+        y: z.number().int().min(0).max(10000).optional(),
+        text: z.string().max(1000).optional(),
+        key: z.string().max(50).optional(),
+        modifiers: z.array(z.enum(['ctrl', 'alt', 'shift', 'meta'])).max(4).optional(),
+        scrollDelta: z.number().int().min(-100).max(100).optional(),
+        monitor: z.number().int().min(0).max(10).optional(),
+        captureAfter: z.boolean().optional(),
+        captureDelayMs: z.number().int().min(0).max(3000).optional(),
+      },
+      makeHandler('computer_control', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Fleet orchestration tools

@@ -131,6 +131,12 @@ const (
 
 	// Dev push (fast dev binary update)
 	CmdDevUpdate = "dev_update"
+
+	// Screenshot (AI Vision)
+	CmdTakeScreenshot = "take_screenshot"
+
+	// Computer control (AI Computer Use)
+	CmdComputerAction = "computer_action"
 )
 
 // CommandResult represents the result of a command execution
@@ -422,6 +428,24 @@ type FilesystemAnalysisResponse struct {
 	DuplicateCandidates []FilesystemDuplicateCandidate `json:"duplicateCandidates"`
 	CleanupCandidates   []FilesystemCleanupCandidate   `json:"cleanupCandidates"`
 	Errors              []FilesystemScanError          `json:"errors"`
+}
+
+// ScreenshotResponse represents the result of a screenshot capture
+type ScreenshotResponse struct {
+	ImageBase64 string `json:"imageBase64"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Format      string `json:"format"`
+	SizeBytes   int    `json:"sizeBytes"`
+	Monitor     int    `json:"monitor"`
+	CapturedAt  string `json:"capturedAt"`
+}
+
+// ComputerActionResponse represents the result of a computer action
+type ComputerActionResponse struct {
+	ActionExecuted string              `json:"actionExecuted"`
+	Screenshot     *ScreenshotResponse `json:"screenshot,omitempty"`
+	Error          string              `json:"error,omitempty"`
 }
 
 // RequirePayloadString extracts a required string field from the payload.

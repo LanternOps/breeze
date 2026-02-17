@@ -392,7 +392,7 @@ export async function updateBudget(orgId: string, settings: {
  */
 export async function getSessionHistory(orgId: string, options: { limit?: number; offset?: number }): Promise<Array<{
   id: string;
-  userId: string;
+  userId: string | null;
   title: string | null;
   model: string;
   turnCount: number;

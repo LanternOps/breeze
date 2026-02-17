@@ -65,6 +65,9 @@ var allCommandTypes = []string{
 
 	// handlers_devupdate.go init()
 	tools.CmdDevUpdate,
+
+	// handlers_screenshot.go + handlers_computer_action.go init()
+	tools.CmdTakeScreenshot, tools.CmdComputerAction,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {
