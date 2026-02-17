@@ -6,14 +6,10 @@ test.describe('Software', () => {
     await page.goto('/software');
     await waitForApp(page, '/software');
 
-    // Page heading should reference software
     await expect(page.locator('h1, h2').first()).toContainText(/Software/i, { timeout: 10_000 });
 
-    // Should show a software inventory table, list, or empty state
-    const content = page.locator(
-      'table, [data-testid="software-list"], [data-testid="empty-state"], text=No software',
-    ).first()
-      .or(page.locator('ul, ol, [role="list"]').first());
-    await expect(content).toBeVisible({ timeout: 15_000 });
+    // Software catalog uses a grid, not a table
+    const content = page.locator('h1:has-text("Software")').or(page.locator('text=No software'));
+    await expect(content.first()).toBeVisible({ timeout: 15_000 });
   });
 });

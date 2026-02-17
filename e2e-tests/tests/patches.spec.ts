@@ -6,14 +6,10 @@ test.describe('Patch Management', () => {
     await page.goto('/patches');
     await waitForApp(page, '/patches');
 
-    // Page heading should reference patches
     await expect(page.locator('h1, h2').first()).toContainText(/Patch/i, { timeout: 10_000 });
 
-    // Should show a patch list, table, or empty state
-    const content = page.locator(
-      'table, [data-testid="patch-list"], [data-testid="empty-state"], text=No patches',
-    ).first()
-      .or(page.locator('ul, ol, [role="list"]').first());
-    await expect(content).toBeVisible({ timeout: 15_000 });
+    // Patch management page has tabs
+    const content = page.locator('table').or(page.locator('text=No patches')).or(page.locator('[role="tablist"]'));
+    await expect(content.first()).toBeVisible({ timeout: 15_000 });
   });
 });

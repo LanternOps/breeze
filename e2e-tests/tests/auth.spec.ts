@@ -72,14 +72,10 @@ test.describe('Authentication', () => {
     await page.waitForURL('/', { timeout: 15_000 });
     await waitForApp(page);
 
-    // Now log out — look for a user menu or direct logout link
-    const logoutTrigger = page.locator(
-      '[data-testid="user-menu"], button:has-text("Account"), button:has-text("Profile")',
-    ).first();
-
-    if (await logoutTrigger.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await logoutTrigger.click();
-    }
+    // Now log out — open the user menu dropdown in the header
+    // The user menu button has aria-haspopup="true" and contains the user avatar
+    const userMenuButton = page.locator('header button[aria-haspopup="true"]');
+    await userMenuButton.click({ timeout: 5_000 });
 
     const logoutButton = page.locator(
       'button:has-text("Log out"), button:has-text("Sign out"), a:has-text("Log out"), a:has-text("Sign out")',
@@ -103,7 +99,7 @@ test.describe('Authentication', () => {
 
     // Should show confirmation message
     await expect(
-      page.locator('text=Check your email').or(page.locator('text=reset link')),
+      page.locator('text=Check your email').or(page.locator('text=reset link')).first(),
     ).toBeVisible({ timeout: 10_000 });
   });
 });
