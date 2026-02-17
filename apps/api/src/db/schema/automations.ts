@@ -72,4 +72,7 @@ export const automationPolicyCompliance = pgTable('automation_policy_compliance'
   lastCheckedAt: timestamp('last_checked_at'),
   remediationAttempts: integer('remediation_attempts').notNull().default(0),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  configPolicyIdIdx: index('apc_config_policy_id_idx').on(table.configPolicyId),
+  deviceIdIdx: index('apc_device_id_idx').on(table.deviceId),
+}));

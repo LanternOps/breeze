@@ -151,8 +151,8 @@ export interface ScheduledPatchSettingsWithTarget {
  * Scans all active config policies that have patch feature links,
  * returning the patch settings with their assignment targets.
  *
- * Used by a future patch scheduler worker to find devices that need
- * patch jobs created based on their scheduleFrequency / scheduleTime.
+ * FIXME: Not yet wired to a worker — needs a patch scheduler worker
+ * to call this periodically and create patch jobs for due devices.
  */
 export async function scanScheduledPatchSettings(): Promise<ScheduledPatchSettingsWithTarget[]> {
   const rows = await db

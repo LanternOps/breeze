@@ -193,11 +193,12 @@ export function collectDueConfigPolicyScheduleDispatches(
   for (const candidate of candidates) {
     const { automation: cpAutomation } = candidate;
 
-    if (!cpAutomation.cronExpression || !cpAutomation.timezone) {
+    if (!cpAutomation.cronExpression) {
       continue;
     }
+    const tz = cpAutomation.timezone || 'UTC';
 
-    if (!isCronDue(cpAutomation.cronExpression, cpAutomation.timezone, scanDate)) {
+    if (!isCronDue(cpAutomation.cronExpression, tz, scanDate)) {
       continue;
     }
 

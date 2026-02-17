@@ -690,7 +690,7 @@ async function triggerAutomationRun(
   c: Context,
   automationId: string,
   triggeredBy: string,
-  _details?: Record<string, unknown>,
+  details?: Record<string, unknown>,
 ) {
   const auth = c.get('auth');
 
@@ -706,6 +706,7 @@ async function triggerAutomationRun(
   const { run, targetDeviceIds } = await createAutomationRunRecord({
     automation,
     triggeredBy,
+    details,
   });
 
   await enqueueAutomationRun(run.id, targetDeviceIds);
