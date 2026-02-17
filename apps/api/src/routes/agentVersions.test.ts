@@ -99,7 +99,7 @@ describe('agentVersions routes', () => {
   });
 
   describe('GET /agent-versions/:version/download', () => {
-    it('should redirect to download URL with checksum header', async () => {
+    it('should return JSON with download URL and checksum', async () => {
       const checksum = 'b'.repeat(64);
 
       vi.mocked(db.select).mockReturnValue({
@@ -115,12 +115,12 @@ describe('agentVersions routes', () => {
 
       const res = await app.request(
         '/agent-versions/1.0.0/download?platform=linux&arch=amd64',
-        { redirect: 'manual' },
       );
 
-      expect(res.status).toBe(302);
-      expect(res.headers.get('X-Checksum')).toBe(checksum);
-      expect(res.headers.get('Location')).toBe('https://s3.example.com/agent-1.0.0');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.url).toBe('https://s3.example.com/agent-1.0.0');
+      expect(body.checksum).toBe(checksum);
     });
 
     it('should return 404 for unknown version', async () => {
