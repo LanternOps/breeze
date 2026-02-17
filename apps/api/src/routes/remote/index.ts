@@ -16,6 +16,3 @@ remoteRoutes.route('/', sessionRoutes);
 remoteRoutes.route('/', transferRoutes);
 remoteRoutes.route('/', internalRoutes);
 
-// Re-export helpers and schemas for potential use elsewhere
-export * from './helpers';
-export * from './schemas';

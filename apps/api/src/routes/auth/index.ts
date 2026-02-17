@@ -16,6 +16,3 @@ authRoutes.route('/', mfaRoutes);
 authRoutes.route('/', phoneRoutes);
 authRoutes.route('/', passwordRoutes);
 
-// Re-export helpers and schemas for potential use elsewhere
-export * from './helpers';
-export * from './schemas';

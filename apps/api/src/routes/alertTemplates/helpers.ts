@@ -1,11 +1,8 @@
 import type { AlertRule } from './schemas';
 import { builtInTemplates, customTemplates, customTemplateOrgById, alertRules, correlationAlerts, correlationLinks, correlationGroups } from './data';
+import { getPagination } from '../../utils/pagination';
 
-export function getPagination(query: { page?: string; limit?: string }) {
-  const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
-  return { page, limit, offset: (page - 1) * limit };
-}
+export { getPagination } from '../../utils/pagination';
 
 export function paginate<T>(items: T[], query: { page?: string; limit?: string }) {
   const { page, limit, offset } = getPagination(query);

@@ -13,5 +13,3 @@ policyRoutes.route('/', complianceRoutes);
 policyRoutes.route('/', crudRoutes);
 policyRoutes.route('/', actionRoutes);
 
-export * from './helpers';
-export * from './schemas';
