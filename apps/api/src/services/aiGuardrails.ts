@@ -173,8 +173,8 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   // Brain device context tools
   get_device_context: { resource: 'devices', action: 'read' },
-  set_device_context: { resource: 'devices', action: 'read' },
-  resolve_device_context: { resource: 'devices', action: 'read' },
+  set_device_context: { resource: 'devices', action: 'write' },
+  resolve_device_context: { resource: 'devices', action: 'write' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }

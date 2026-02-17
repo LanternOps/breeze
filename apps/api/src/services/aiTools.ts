@@ -1385,6 +1385,10 @@ registerTool({
     const deviceId = input.deviceId as string;
     const includeResolved = Boolean(input.includeResolved);
 
+    // Verify device exists and user has access
+    const access = await verifyDeviceAccess(deviceId, auth);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
     const results = includeResolved
       ? await getAllDeviceContext(deviceId, auth)
       : await getActiveDeviceContext(deviceId, auth);
@@ -1502,7 +1506,10 @@ registerTool({
   },
   handler: async (input, auth) => {
     const contextId = input.contextId as string;
-    await resolveDeviceContext(contextId, auth);
+    const { updated } = await resolveDeviceContext(contextId, auth);
+    if (!updated) {
+      return JSON.stringify({ error: 'Context entry not found or access denied' });
+    }
     return 'Context entry marked as resolved.';
   },
 });

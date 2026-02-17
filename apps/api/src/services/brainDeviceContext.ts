@@ -42,7 +42,8 @@ export async function getActiveDeviceContext(
     .select()
     .from(brainDeviceContext)
     .where(and(...conditions))
-    .orderBy(desc(brainDeviceContext.createdAt));
+    .orderBy(desc(brainDeviceContext.createdAt))
+    .limit(100);
 
   const now = new Date();
   return results.filter(r => !r.expiresAt || r.expiresAt > now) as ContextEntry[];
@@ -63,7 +64,8 @@ export async function getAllDeviceContext(
     .select()
     .from(brainDeviceContext)
     .where(and(...conditions))
-    .orderBy(desc(brainDeviceContext.createdAt)) as ContextEntry[];
+    .orderBy(desc(brainDeviceContext.createdAt))
+    .limit(100) as ContextEntry[];
 }
 
 /**
@@ -100,18 +102,22 @@ export async function createDeviceContext(
 }
 
 /**
- * Mark context entry as resolved
+ * Mark context entry as resolved.
+ * Returns whether a row was actually updated.
  */
 export async function resolveDeviceContext(
   contextId: string,
   auth: AuthContext
-): Promise<void> {
+): Promise<{ updated: boolean }> {
   const conditions: SQL[] = [eq(brainDeviceContext.id, contextId)];
   const orgCond = auth.orgCondition(brainDeviceContext.orgId);
   if (orgCond) conditions.push(orgCond);
 
-  await db
+  const result = await db
     .update(brainDeviceContext)
     .set({ resolvedAt: new Date() })
-    .where(and(...conditions));
+    .where(and(...conditions))
+    .returning({ id: brainDeviceContext.id });
+
+  return { updated: result.length > 0 };
 }
