@@ -26,6 +26,7 @@ import {
   resolveAutomationsForDevice,
   resolveMaintenanceConfigForDevice,
   isInMaintenanceWindow,
+  type ScheduledAutomationWithTarget,
 } from '../services/featureConfigResolver';
 import { getRedisConnection, isRedisAvailable } from '../services/redis';
 
@@ -65,12 +66,19 @@ interface ExecuteRunJobData {
   targetDeviceIds?: string[];
 }
 
+interface ConfigPolicyAssignmentTarget {
+  level: string;
+  targetId: string;
+}
+
 interface TriggerConfigPolicyScheduleJobData {
   type: 'trigger-config-policy-schedule';
   configPolicyAutomationId: string;
   configPolicyAutomationName: string;
-  assignmentLevel: string;
-  assignmentTargetId: string;
+  assignmentTargets?: ConfigPolicyAssignmentTarget[];
+  // Backward compatibility with already-enqueued jobs from older payloads.
+  assignmentLevel?: string;
+  assignmentTargetId?: string;
   policyId: string;
   policyName: string;
   slotKey: string;
@@ -163,6 +171,60 @@ export function shouldTriggerEventAutomation(
   payload: Record<string, unknown>,
 ): boolean {
   return trigger.eventType === eventType && matchesEventFilter(trigger.filter, payload);
+}
+
+export interface DueConfigPolicyScheduleDispatch {
+  configPolicyAutomationId: string;
+  configPolicyAutomationName: string;
+  assignmentTargets: ConfigPolicyAssignmentTarget[];
+  policyId: string;
+  policyName: string;
+}
+
+export function collectDueConfigPolicyScheduleDispatches(
+  candidates: ScheduledAutomationWithTarget[],
+  scanDate: Date,
+): DueConfigPolicyScheduleDispatch[] {
+  const grouped = new Map<
+    string,
+    DueConfigPolicyScheduleDispatch & { targetKeys: Set<string> }
+  >();
+
+  for (const candidate of candidates) {
+    const { automation: cpAutomation } = candidate;
+
+    if (!cpAutomation.cronExpression || !cpAutomation.timezone) {
+      continue;
+    }
+
+    if (!isCronDue(cpAutomation.cronExpression, cpAutomation.timezone, scanDate)) {
+      continue;
+    }
+
+    let entry = grouped.get(cpAutomation.id);
+    if (!entry) {
+      entry = {
+        configPolicyAutomationId: cpAutomation.id,
+        configPolicyAutomationName: cpAutomation.name,
+        assignmentTargets: [],
+        policyId: candidate.policyId,
+        policyName: candidate.policyName,
+        targetKeys: new Set<string>(),
+      };
+      grouped.set(cpAutomation.id, entry);
+    }
+
+    const targetKey = `${candidate.assignmentLevel}:${candidate.assignmentTargetId}`;
+    if (!entry.targetKeys.has(targetKey)) {
+      entry.targetKeys.add(targetKey);
+      entry.assignmentTargets.push({
+        level: candidate.assignmentLevel,
+        targetId: candidate.assignmentTargetId,
+      });
+    }
+  }
+
+  return Array.from(grouped.values()).map(({ targetKeys: _targetKeys, ...dispatch }) => dispatch);
 }
 
 export function getAutomationQueue(): Queue<AutomationJobData> {
@@ -278,36 +340,24 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
   // ---- Config policy automations scan ----
   try {
     const configPolicyCandidates = await scanScheduledAutomations();
+    const dueConfigPolicyDispatches = collectDueConfigPolicyScheduleDispatches(configPolicyCandidates, scanDate);
 
-    for (const candidate of configPolicyCandidates) {
-      const { automation: cpAutomation } = candidate;
-
-      // Use the existing isCronDue to check if this automation is due
-      if (!cpAutomation.cronExpression || !cpAutomation.timezone) {
-        continue;
-      }
-
-      if (!isCronDue(cpAutomation.cronExpression, cpAutomation.timezone, scanDate)) {
-        continue;
-      }
-
+    for (const dispatch of dueConfigPolicyDispatches) {
       due += 1;
-
       await queue.add(
         'trigger-config-policy-schedule',
         {
           type: 'trigger-config-policy-schedule',
-          configPolicyAutomationId: cpAutomation.id,
-          configPolicyAutomationName: cpAutomation.name,
-          assignmentLevel: candidate.assignmentLevel,
-          assignmentTargetId: candidate.assignmentTargetId,
-          policyId: candidate.policyId,
-          policyName: candidate.policyName,
+          configPolicyAutomationId: dispatch.configPolicyAutomationId,
+          configPolicyAutomationName: dispatch.configPolicyAutomationName,
+          assignmentTargets: dispatch.assignmentTargets,
+          policyId: dispatch.policyId,
+          policyName: dispatch.policyName,
           slotKey,
           scanAt: scanDate.toISOString(),
         },
         {
-          jobId: `cp-automation:schedule:${cpAutomation.id}:${candidate.assignmentTargetId}:${slotKey}`,
+          jobId: `cp-automation:schedule:${dispatch.configPolicyAutomationId}:${slotKey}`,
           removeOnComplete: { count: 200 },
           removeOnFail: { count: 500 },
         },
@@ -496,8 +546,26 @@ async function processTriggerConfigPolicySchedule(
     return { skipped: 'config_policy_automation_not_found_or_disabled' };
   }
 
-  // Resolve target devices based on assignment level
-  const allDeviceIds = await resolveDeviceIdsForAssignment(data.assignmentLevel, data.assignmentTargetId);
+  const assignmentTargets =
+    data.assignmentTargets && data.assignmentTargets.length > 0
+      ? data.assignmentTargets
+      : data.assignmentLevel && data.assignmentTargetId
+        ? [{ level: data.assignmentLevel, targetId: data.assignmentTargetId }]
+        : [];
+
+  if (assignmentTargets.length === 0) {
+    return { skipped: 'no_assignment_targets' };
+  }
+
+  // Resolve target devices across all assignment targets, then deduplicate.
+  const allDeviceIdSet = new Set<string>();
+  for (const target of assignmentTargets) {
+    const ids = await resolveDeviceIdsForAssignment(target.level, target.targetId);
+    for (const id of ids) {
+      allDeviceIdSet.add(id);
+    }
+  }
+  const allDeviceIds = Array.from(allDeviceIdSet);
 
   if (allDeviceIds.length === 0) {
     return { skipped: 'no_target_devices' };

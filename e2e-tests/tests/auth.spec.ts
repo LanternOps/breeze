@@ -5,8 +5,8 @@ test.describe('Authentication', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
   test('login with valid credentials redirects to dashboard', async ({ page }) => {
-    const email = process.env.E2E_ADMIN_EMAIL || 'admin@breeze.test';
-    const password = process.env.E2E_ADMIN_PASSWORD || 'TestPassword123!';
+    const email = process.env.E2E_ADMIN_EMAIL || 'admin@breeze.local';
+    const password = process.env.E2E_ADMIN_PASSWORD || 'BreezeAdmin123!';
 
     await page.goto('/login');
 
@@ -61,8 +61,8 @@ test.describe('Authentication', () => {
 
   test('logout redirects to login page', async ({ page }) => {
     // First, log in
-    const email = process.env.E2E_ADMIN_EMAIL || 'admin@breeze.test';
-    const password = process.env.E2E_ADMIN_PASSWORD || 'TestPassword123!';
+    const email = process.env.E2E_ADMIN_EMAIL || 'admin@breeze.local';
+    const password = process.env.E2E_ADMIN_PASSWORD || 'BreezeAdmin123!';
 
     await page.goto('/login');
     await page.locator('#email').fill(email);

@@ -52,6 +52,16 @@ function mockDbInsertReturning(result: unknown[]) {
   } as any);
 }
 
+function mockDbInsertCapturingValues(result: unknown[]) {
+  const valuesMock = vi.fn().mockReturnValue({
+    returning: vi.fn().mockResolvedValue(result),
+  });
+  vi.mocked(db.insert).mockReturnValue({
+    values: valuesMock,
+  } as any);
+  return valuesMock;
+}
+
 function mockDbSelectChain(result: unknown[]) {
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
@@ -81,29 +91,32 @@ describe('patchJobService', () => {
         name: 'Daily patch job @ 02:00',
         status: 'scheduled',
       };
-      mockDbInsertReturning([job]);
+      const valuesMock = mockDbInsertCapturingValues([job]);
 
       const result = await createPatchJobFromConfigPolicy('dev-1', makePatchSettings(), 'org-1', 'cp-1');
       expect(result.job.policyId).toBeNull();
       expect(result.job.configPolicyId).toBe('cp-1');
+      // Verify computed values passed to DB
+      expect(valuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ policyId: null, configPolicyId: 'cp-1', orgId: 'org-1' })
+      );
     });
 
     it('generates correct daily job name', async () => {
       const job = { id: 'job-1', name: 'Daily patch job @ 02:00' };
-      mockDbInsertReturning([job]);
+      const valuesMock = mockDbInsertCapturingValues([job]);
 
       const settings = makePatchSettings({ scheduleFrequency: 'daily', scheduleTime: '02:00' });
-      const result = await createPatchJobFromConfigPolicy('dev-1', settings, 'org-1', 'cp-1');
-      expect(result.job).toBeDefined();
+      await createPatchJobFromConfigPolicy('dev-1', settings, 'org-1', 'cp-1');
 
-      // Verify insert was called with correct values
-      const insertCall = vi.mocked(db.insert).mock.calls[0];
-      expect(insertCall).toBeDefined();
+      expect(valuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Daily patch job @ 02:00' })
+      );
     });
 
     it('generates correct weekly job name', async () => {
       const job = { id: 'job-1', name: 'Weekly patch job (sun) @ 03:00' };
-      mockDbInsertReturning([job]);
+      const valuesMock = mockDbInsertCapturingValues([job]);
 
       const settings = makePatchSettings({
         scheduleFrequency: 'weekly',
@@ -111,12 +124,15 @@ describe('patchJobService', () => {
         scheduleDayOfWeek: 'sun',
       });
       await createPatchJobFromConfigPolicy('dev-1', settings, 'org-1', 'cp-1');
-      expect(vi.mocked(db.insert)).toHaveBeenCalledOnce();
+
+      expect(valuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Weekly patch job (sun) @ 03:00' })
+      );
     });
 
     it('generates correct monthly job name', async () => {
       const job = { id: 'job-1', name: 'Monthly patch job (day 15) @ 04:00' };
-      mockDbInsertReturning([job]);
+      const valuesMock = mockDbInsertCapturingValues([job]);
 
       const settings = makePatchSettings({
         scheduleFrequency: 'monthly',
@@ -124,16 +140,22 @@ describe('patchJobService', () => {
         scheduleDayOfMonth: 15,
       });
       await createPatchJobFromConfigPolicy('dev-1', settings, 'org-1', 'cp-1');
-      expect(vi.mocked(db.insert)).toHaveBeenCalledOnce();
+
+      expect(valuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Monthly patch job (day 15) @ 04:00' })
+      );
     });
 
     it('generates manual job name when frequency is unknown', async () => {
       const job = { id: 'job-1', name: 'Patch job (Manual)' };
-      mockDbInsertReturning([job]);
+      const valuesMock = mockDbInsertCapturingValues([job]);
 
       const settings = makePatchSettings({ scheduleFrequency: 'manual' });
       await createPatchJobFromConfigPolicy('dev-1', settings, 'org-1', 'cp-1');
-      expect(vi.mocked(db.insert)).toHaveBeenCalledOnce();
+
+      expect(valuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Patch job (Manual)' })
+      );
     });
 
     it('throws when DB insert returns empty', async () => {
@@ -249,6 +271,40 @@ describe('patchJobService', () => {
 
       const result = await createPatchJobForDeviceFromPolicy('dev-1', 'org-1');
       expect(result).not.toBeNull();
+    });
+
+    it('propagates error when DB insert returns empty in inner createPatchJobFromConfigPolicy', async () => {
+      vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
+        active: false, suppressAlerts: false, suppressPatching: false,
+        suppressAutomations: false, suppressScripts: false,
+      });
+      vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
+      mockDbSelectChain([{ configPolicyId: 'cp-1' }]);
+      mockDbInsertReturning([]); // Empty -> triggers throw
+
+      await expect(
+        createPatchJobForDeviceFromPolicy('dev-1', 'org-1')
+      ).rejects.toThrow('Failed to create patch job');
+    });
+
+    it('propagates error when checkDeviceMaintenanceWindow rejects', async () => {
+      vi.mocked(checkDeviceMaintenanceWindow).mockRejectedValue(new Error('DB timeout'));
+
+      await expect(
+        createPatchJobForDeviceFromPolicy('dev-1', 'org-1')
+      ).rejects.toThrow('DB timeout');
+    });
+
+    it('propagates error when resolvePatchConfigForDevice rejects', async () => {
+      vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
+        active: false, suppressAlerts: false, suppressPatching: false,
+        suppressAutomations: false, suppressScripts: false,
+      });
+      vi.mocked(resolvePatchConfigForDevice).mockRejectedValue(new Error('DB connection lost'));
+
+      await expect(
+        createPatchJobForDeviceFromPolicy('dev-1', 'org-1')
+      ).rejects.toThrow('DB connection lost');
     });
   });
 });

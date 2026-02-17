@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { isInMaintenanceWindow, createSystemAuthContext } from './featureConfigResolver';
 
 // Helper to build a maintenance settings object.
@@ -188,20 +188,29 @@ describe('isInMaintenanceWindow', () => {
       expect(result.active).toBe(true);
     });
 
-    it('falls back gracefully on invalid timezone (does not throw)', () => {
+    it('falls back gracefully on invalid timezone and logs a warning', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const now = new Date('2026-02-17T01:00:00Z');
       const settings = makeSettings({ timezone: 'Invalid/Zone' });
       const result = isInMaintenanceWindow(settings, now);
-      // Fallback behavior depends on system TZ, so just verify it returns a valid shape
       expect(typeof result.active).toBe('boolean');
       expect(typeof result.suppressAlerts).toBe('boolean');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid timezone'),
+        expect.anything()
+      );
+      warnSpy.mockRestore();
     });
 
     it('uses UTC when timezone is empty string', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const now = new Date('2026-02-17T01:00:00Z');
       const settings = makeSettings({ timezone: '' });
       const result = isInMaintenanceWindow(settings, now);
       expect(result.active).toBe(true);
+      // Empty string falls back to UTC silently (no warning)
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
   });
 

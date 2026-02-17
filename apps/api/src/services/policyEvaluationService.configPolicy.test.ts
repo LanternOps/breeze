@@ -367,13 +367,24 @@ describe('evaluateConfigPolicyComplianceRule', () => {
       expect(result.details[0]?.message).toContain('Unsupported');
     });
 
-    it('returns error status when rules field throws during parsing', () => {
-      // This tests the catch block — passing something that will cause an internal error
+    it('returns non_compliant for non-array rules input (null)', () => {
       const rule = makeRule({ rules: null });
       const ctx = makeContext();
       const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
-      // When rules is null, parsePolicyRules returns { inputHadArray: false }, causing non_compliant
       expect(result.status).toBe('non_compliant');
+    });
+
+    it('returns error status when evaluation throws unexpectedly', () => {
+      const badRule = Object.create(null);
+      Object.defineProperty(badRule, 'type', {
+        get() { throw new Error('Corrupted JSONB data'); },
+        enumerable: true,
+      });
+      const rule = makeRule({ rules: [badRule] });
+      const ctx = makeContext();
+      const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
+      expect(result.status).toBe('error');
+      expect(result.details[0]?.message).toContain('Failed to evaluate');
     });
 
     it('handles mixed pass/fail rules — one fail makes overall non_compliant', () => {

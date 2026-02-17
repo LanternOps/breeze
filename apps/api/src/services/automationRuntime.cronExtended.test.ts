@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { matchesCronField, isCronDue } from './automationRuntime';
 
 describe('matchesCronField (extended)', () => {
@@ -190,16 +190,25 @@ describe('isCronDue (extended)', () => {
   // Invalid cron
   // ============================================
 
-  it('returns false for too few fields', () => {
+  it('returns false for too few fields and logs a warning', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(isCronDue('30 14 * *', 'UTC', new Date())).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid cron expression'));
+    warnSpy.mockRestore();
   });
 
-  it('returns false for too many fields', () => {
+  it('returns false for too many fields and logs a warning', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(isCronDue('30 14 * * * *', 'UTC', new Date())).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid cron expression'));
+    warnSpy.mockRestore();
   });
 
-  it('returns false for empty string', () => {
+  it('returns false for empty string and logs a warning', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(isCronDue('', 'UTC', new Date())).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid cron expression'));
+    warnSpy.mockRestore();
   });
 
   // ============================================

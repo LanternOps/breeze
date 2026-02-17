@@ -1449,6 +1449,7 @@ function getZonedDateParts(date: Date, timeZone: string): {
 export function isCronDue(cronExpression: string, timeZone: string, date: Date = new Date()): boolean {
   const fields = cronExpression.trim().split(/\s+/);
   if (fields.length !== 5) {
+    console.warn(`[AutomationRuntime] Invalid cron expression "${cronExpression}" (expected 5 fields, got ${fields.length})`);
     return false;
   }
 
