@@ -90,6 +90,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   network_discovery: { resource: 'devices', action: 'execute' },
   analyze_boot_performance: { resource: 'devices', action: 'read' },
   manage_startup_items: { resource: 'devices', action: 'execute' },
+  take_screenshot: { resource: 'devices', action: 'execute' },
+  analyze_screen: { resource: 'devices', action: 'execute' },
+  computer_control: { resource: 'devices', action: 'execute' },
   // Fleet tools — RBAC mappings
   manage_policies: {
     list: { resource: 'policies', action: 'read' },
@@ -191,6 +194,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
   manage_startup_items: { limit: 5, windowSeconds: 600 },
+  take_screenshot: { limit: 10, windowSeconds: 300 },
+  analyze_screen: { limit: 10, windowSeconds: 300 },
+  computer_control: { limit: 20, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
   manage_policies: { limit: 20, windowSeconds: 300 },
   manage_deployments: { limit: 10, windowSeconds: 600 },
@@ -381,6 +387,19 @@ function buildApprovalDescription(
     case 'network_discovery':
       parts.push(`Network discovery scan`);
       if (input.subnet) parts.push(`on ${input.subnet}`);
+      break;
+
+    case 'take_screenshot':
+      parts.push('Capture screenshot');
+      if (input.deviceId) parts.push(`from device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'computer_control':
+      parts.push(`Send input action: ${input.action}`);
+      if (input.x !== undefined && input.y !== undefined) parts.push(`at (${input.x}, ${input.y})`);
+      if (input.text) parts.push(`text: "${(input.text as string).slice(0, 30)}${(input.text as string).length > 30 ? '...' : ''}"`);
+      if (input.key) parts.push(`key: ${input.key}`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
 
     // Fleet tools

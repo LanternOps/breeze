@@ -1,7 +1,7 @@
 /**
  * AI Agent SDK Tool Definitions
  *
- * Defines all 17 Breeze tools for use with the Claude Agent SDK's MCP server.
+ * Defines all Breeze tools for use with the Claude Agent SDK's MCP server.
  * Each tool delegates to executeTool() from aiTools.ts, which validates input
  * via Zod schemas and calls the existing handler with org-scoped auth context.
  */
@@ -57,7 +57,7 @@ export const TOOL_TIERS = {
   query_audit_log: 1,
   network_discovery: 3,
   take_screenshot: 2,
-  analyze_screen: 1,
+  analyze_screen: 2,
   computer_control: 3,
   // Fleet orchestration tools
   manage_policies: 1,        // Action-level escalation in guardrails
@@ -133,12 +133,16 @@ function makeHandler(
       );
       const compactResult = compactToolResultForChat(toolName, result);
 
-      // For screenshot/vision tools, return image content blocks for Claude Vision
-      if ((toolName === 'take_screenshot' || toolName === 'analyze_screen' || toolName === 'computer_control') && !compactResult.includes('"error"')) {
+      // For screenshot/vision tools, return image content blocks for Claude Vision.
+      // Claude's vision API requires image data in structured content blocks (type: 'image'
+      // with base64 source). Returning the image as plain text would not trigger visual analysis.
+      if (toolName === 'take_screenshot' || toolName === 'analyze_screen' || toolName === 'computer_control') {
         try {
           const parsed = JSON.parse(result);
-          const imageBase64 = parsed.imageBase64;
-          if (imageBase64) {
+          if ((parsed.error || parsed.screenshotError) && !parsed.imageBase64) {
+            // Error response with no image — fall through to normal text response
+          } else if (parsed.imageBase64) {
+            const imageBase64 = parsed.imageBase64;
             const durationMs = Date.now() - startTime;
             if (onPostToolUse) {
               try { await onPostToolUse(toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs); }
@@ -154,6 +158,7 @@ function makeHandler(
                 },
               },
             ];
+            // For analyze_screen, include device context as text
             if (toolName === 'analyze_screen' && parsed.device) {
               contentBlocks.push({
                 type: 'text',
@@ -165,19 +170,20 @@ function makeHandler(
                 }),
               });
             }
+            // For computer_control, include action metadata as text
             if (toolName === 'computer_control') {
-              contentBlocks.push({
-                type: 'text',
-                text: JSON.stringify({
-                  actionExecuted: parsed.actionExecuted,
-                  capturedAt: parsed.capturedAt,
-                  resolution: `${parsed.width}x${parsed.height}`,
-                }),
-              });
+              const meta: Record<string, unknown> = {
+                actionExecuted: parsed.actionExecuted,
+                capturedAt: parsed.capturedAt,
+                resolution: `${parsed.width}x${parsed.height}`,
+              };
+              if (parsed.screenshotError) meta.screenshotError = parsed.screenshotError;
+              contentBlocks.push({ type: 'text', text: JSON.stringify(meta) });
             }
             return { content: contentBlocks };
           }
-        } catch {
+        } catch (err) {
+          console.error(`[AI-SDK] Failed to parse vision content blocks for ${toolName}:`, err);
           // Fall through to normal text response
         }
       }
@@ -449,14 +455,14 @@ export function createBreezeMcpServer(
 
     tool(
       'computer_control',
-      'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action. Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
+      'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action by default (configurable via captureAfter). Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
       {
         deviceId: uuid,
         action: z.enum(['screenshot', 'left_click', 'right_click', 'middle_click', 'double_click', 'mouse_move', 'scroll', 'key', 'type']),
         x: z.number().int().min(0).max(10000).optional(),
         y: z.number().int().min(0).max(10000).optional(),
         text: z.string().max(1000).optional(),
-        key: z.string().max(50).optional(),
+        key: z.string().max(50).regex(/^[a-zA-Z0-9_]+$/, 'Invalid key name').optional(),
         modifiers: z.array(z.enum(['ctrl', 'alt', 'shift', 'meta'])).max(4).optional(),
         scrollDelta: z.number().int().min(-100).max(100).optional(),
         monitor: z.number().int().min(0).max(10).optional(),

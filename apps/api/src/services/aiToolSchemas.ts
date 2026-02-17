@@ -39,6 +39,7 @@ export function normalizePath(path: string): string {
 }
 
 export function isBlockedPath(path: string): boolean {
+  if (path.includes('..')) return true;
   const normalized = normalizePath(path);
   return BLOCKED_PATH_PREFIXES.some(prefix => {
     const normalizedPrefix = normalizePath(prefix);
@@ -231,6 +232,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
 
+  take_screenshot: deviceId.extend({
+    monitor: z.number().int().min(0).max(10).optional(),
+  }),
+
+  analyze_screen: deviceId.extend({
+    context: z.string().max(500).optional(),
+    monitor: z.number().int().min(0).max(10).optional(),
+  }),
+
   // Brain device context tools
   get_device_context: z.object({
     deviceId: uuid,
@@ -259,7 +269,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     x: z.number().int().min(0).max(10000).optional(),
     y: z.number().int().min(0).max(10000).optional(),
     text: z.string().max(1000).optional(),
-    key: z.string().max(50).optional(),
+    key: z.string().max(50).regex(/^[a-zA-Z0-9_]+$/, 'Invalid key name').optional(),
     modifiers: z.array(z.enum(['ctrl', 'alt', 'shift', 'meta'])).max(4).optional(),
     scrollDelta: z.number().int().min(-100).max(100).optional(),
     monitor: z.number().int().min(0).max(10).optional(),
