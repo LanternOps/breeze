@@ -50,6 +50,10 @@ const (
 	// Software inventory
 	CmdCollectSoftware = "collect_software"
 
+	// Boot performance
+	CmdCollectBootPerformance = "collect_boot_performance"
+	CmdManageStartupItem      = "manage_startup_item"
+
 	// File transfer
 	CmdFileTransfer   = "file_transfer"
 	CmdCancelTransfer = "cancel_transfer"

@@ -13,6 +13,7 @@ import { eventLogsRoutes } from './eventlogs';
 import { filesystemRoutes } from './filesystem';
 import { sessionsRoutes } from './sessions';
 import { diagnosticLogsRoutes } from './diagnosticLogs';
+import { bootMetricsRoutes } from './bootMetrics';
 
 export const deviceRoutes = new Hono();
 
@@ -37,6 +38,7 @@ deviceRoutes.route('/', eventsRoutes);
 deviceRoutes.route('/', eventLogsRoutes);
 deviceRoutes.route('/', sessionsRoutes);
 deviceRoutes.route('/', diagnosticLogsRoutes);
+deviceRoutes.route('/', bootMetricsRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere
 export * from './helpers';

@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
 import type { InterfaceBandwidth } from '@breeze/shared';
@@ -206,3 +206,33 @@ export const deviceConnections = pgTable('device_connections', {
   processName: varchar('process_name', { length: 255 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// Boot performance metrics - stores boot time history and startup item analysis per device
+export interface BootStartupItem {
+  name: string;
+  type: 'service' | 'run_key' | 'startup_folder' | 'login_item' | 'launch_agent' | 'launch_daemon' | 'systemd' | 'cron' | 'init_d';
+  path: string;
+  enabled: boolean;
+  cpuTimeMs: number;
+  diskIoBytes: number;
+  impactScore: number;
+}
+
+export const deviceBootMetrics = pgTable('device_boot_metrics', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  bootTimestamp: timestamp('boot_timestamp').notNull(),
+  biosSeconds: real('bios_seconds'),
+  osLoaderSeconds: real('os_loader_seconds'),
+  desktopReadySeconds: real('desktop_ready_seconds'),
+  totalBootSeconds: real('total_boot_seconds').notNull(),
+  startupItemCount: integer('startup_item_count').notNull(),
+  startupItems: jsonb('startup_items').notNull().$type<BootStartupItem[]>(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  deviceBootIdx: index('device_boot_metrics_device_boot_idx').on(table.deviceId, table.bootTimestamp),
+  deviceCreatedIdx: index('device_boot_metrics_device_created_idx').on(table.deviceId, table.createdAt),
+  orgDeviceIdx: index('device_boot_metrics_org_device_idx').on(table.orgId, table.deviceId),
+  deviceBootUnique: unique('device_boot_metrics_device_boot_uniq').on(table.deviceId, table.bootTimestamp),
+}));
