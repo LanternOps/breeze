@@ -30,6 +30,9 @@ func TestSignaturesHaveRequiredFields(t *testing.T) {
 }
 
 func TestSignaturesForCurrentOS(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("management tool signatures target windows/darwin endpoints only")
+	}
 	count := 0
 	for _, sig := range AllSignatures() {
 		if sig.MatchesOS(runtime.GOOS) {

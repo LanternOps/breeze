@@ -123,7 +123,7 @@ describe('registerFleetTools', () => {
     const tool = toolMap.get(toolName)!;
     expect(tool.definition.name).toBe(toolName);
     expect(typeof tool.definition.description).toBe('string');
-    expect(tool.definition.description.length).toBeGreaterThan(10);
+    expect(tool.definition.description!.length).toBeGreaterThan(10);
   });
 
   it.each(EXPECTED_TOOLS)('%s has an input_schema with action enum', (toolName) => {

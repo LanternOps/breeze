@@ -109,7 +109,7 @@ describe('aiToolsAgentLogs', () => {
       await tool.handler({ limit: 9999 }, makeAuth('org-1'));
 
       // The limit call should have been called with 500
-      const limitFn = vi.mocked(db.select).mock.results[0].value.from().where().orderBy().limit;
+      const limitFn = vi.mocked(db.select).mock.results[0]!.value.from().where().orderBy().limit;
       expect(limitFn).toHaveBeenCalledWith(500);
     });
 

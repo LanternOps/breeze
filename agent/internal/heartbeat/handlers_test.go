@@ -61,6 +61,9 @@ var allCommandTypes = []string{
 
 	// handlers.go — log shipping
 	tools.CmdSetLogLevel,
+
+	// handlers_devupdate.go init()
+	tools.CmdDevUpdate,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {
