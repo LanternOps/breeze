@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import ConfigPolicyDetailPage from '../../components/configurationPolicies/ConfigPolicyDetailPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Configuration Policy">
+  <ConfigPolicyDetailPage policyId={id} client:load />
+</DashboardLayout>

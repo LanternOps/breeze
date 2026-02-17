@@ -173,119 +173,19 @@ describe('policy routes', () => {
     expect(body.pagination.total).toBe(1);
   });
 
-  it('creates a policy', async () => {
-    vi.mocked(db.insert).mockReturnValue({
-      values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([basePolicyRow]),
-      }),
-    } as any);
-
+  it('returns 404 for POST (create removed)', async () => {
     const res = await app.request('/policies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         orgId,
         name: 'Endpoint Baseline',
-        description: 'Ensure baseline configuration.',
-        rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
         targetType: 'all',
-        enforcementLevel: 'monitor',
-        checkIntervalMinutes: 30,
-      })
-    });
-
-    expect(res.status).toBe(201);
-    const body = await res.json();
-    expect(body.id).toBe(policyId);
-    expect(body.enforcementLevel).toBe('monitor');
-  });
-
-  it('rejects missing targetIds for scoped policies', async () => {
-    const res = await app.request('/policies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        orgId,
-        name: 'Scoped Policy',
-        targetType: 'sites',
         rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
       })
     });
 
-    expect(res.status).toBe(400);
-  });
-
-  it('rejects non-UUID targetIds for non-tag targets', async () => {
-    const res = await app.request('/policies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        orgId,
-        name: 'Scoped Policy',
-        targetType: 'sites',
-        targetIds: ['production'],
-        rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
-      })
-    });
-
-    expect(res.status).toBe(400);
-    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-  });
-
-  it('allows string targetIds for tags and preserves them in targets', async () => {
-    const valuesMock = vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue([{
-        ...basePolicyRow,
-        targets: {
-          targetType: 'tags',
-          targetIds: ['production'],
-          tags: ['production'],
-        },
-      }]),
-    });
-
-    vi.mocked(db.insert).mockReturnValue({
-      values: valuesMock,
-    } as any);
-
-    const res = await app.request('/policies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        orgId,
-        name: 'Tag Policy',
-        targetType: 'tags',
-        targetIds: ['production'],
-        rules: [{ type: 'config_check', configFilePath: '/etc/example.conf', configKey: 'enabled', configExpectedValue: 'true' }],
-      })
-    });
-
-    expect(res.status).toBe(201);
-    expect(valuesMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        targets: expect.objectContaining({
-          targetType: 'tags',
-          targetIds: ['production'],
-          tags: ['production'],
-        }),
-      })
-    );
-  });
-
-  it('rejects invalid rules during policy creation', async () => {
-    const res = await app.request('/policies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        orgId,
-        name: 'Invalid Rule Policy',
-        targetType: 'all',
-        rules: [{ type: 'required_software', versionOperator: 'minimum' }],
-      })
-    });
-
-    expect(res.status).toBe(400);
-    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(res.status).toBe(404);
   });
 
   it('evaluates a policy through policyEvaluationService', async () => {
@@ -333,26 +233,13 @@ describe('policy routes', () => {
     expect(res.status).toBe(400);
   });
 
-  it('removes policy and compliance records', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([basePolicyRow]),
-        }),
-      }),
-    } as any);
-
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
-    } as any);
-
+  it('returns 404 for DELETE (delete removed)', async () => {
     const res = await app.request(`/policies/${policyId}`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer token' },
     });
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true });
+    expect(res.status).toBe(404);
   });
 
   it('does not expose legacy assignments endpoints', async () => {

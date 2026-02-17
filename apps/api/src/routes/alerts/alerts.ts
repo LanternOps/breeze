@@ -324,23 +324,25 @@ alertsRoutes.post(
     }
 
     // Set cooldown to prevent immediate re-trigger by the evaluation worker
-    const [rule] = await db
-      .select()
-      .from(alertRules)
-      .where(eq(alertRules.id, alert.ruleId))
-      .limit(1);
-
-    if (rule) {
-      const [template] = await db
+    if (alert.ruleId) {
+      const [rule] = await db
         .select()
-        .from(alertTemplates)
-        .where(eq(alertTemplates.id, rule.templateId))
+        .from(alertRules)
+        .where(eq(alertRules.id, alert.ruleId))
         .limit(1);
 
-      const overrides = rule.overrideSettings as Record<string, unknown> | null;
-      const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-        template?.cooldownMinutes ?? 15;
-      await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+      if (rule) {
+        const [template] = await db
+          .select()
+          .from(alertTemplates)
+          .where(eq(alertTemplates.id, rule.templateId))
+          .limit(1);
+
+        const overrides = rule.overrideSettings as Record<string, unknown> | null;
+        const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
+          template?.cooldownMinutes ?? 15;
+        await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+      }
     }
 
     try {
@@ -456,11 +458,11 @@ alertsRoutes.get(
       .where(eq(devices.id, alert.deviceId))
       .limit(1);
 
-    const [rule] = await db
+    const [rule] = alert.ruleId ? await db
       .select()
       .from(alertRules)
       .where(eq(alertRules.id, alert.ruleId))
-      .limit(1);
+      .limit(1) : [undefined];
 
     // Get notification history
     const notifications = await db

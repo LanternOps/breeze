@@ -6,6 +6,7 @@ import { db } from '../db';
 import { maintenanceWindows, maintenanceOccurrences } from '../db/schema/maintenance';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { isDeviceInMaintenance } from '../services/maintenanceService';
 
 export const maintenanceRoutes = new Hono();
 
@@ -221,6 +222,39 @@ function generateOccurrences(
 // Apply auth middleware to all routes
 maintenanceRoutes.use('*', authMiddleware);
 
+// ============================================
+// Config Policy Integration: Device Maintenance Status
+// ============================================
+
+// GET /device/:deviceId/status - Resolve maintenance status for a device.
+// Checks config policy maintenance settings first (hierarchy-resolved),
+// then falls back to standalone maintenance windows for backward compatibility.
+maintenanceRoutes.get(
+  '/device/:deviceId/status',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const deviceId = c.req.param('deviceId');
+
+    const status = await isDeviceInMaintenance(deviceId);
+
+    return c.json({
+      data: {
+        deviceId,
+        active: status.active,
+        source: status.source,
+        suppressAlerts: status.suppressAlerts,
+        suppressPatching: status.suppressPatching,
+        suppressAutomations: status.suppressAutomations,
+        suppressScripts: status.suppressScripts,
+      },
+    });
+  }
+);
+
+// ============================================
+// Standalone Maintenance Window Routes (Legacy)
+// ============================================
+
 // GET /windows - List maintenance windows for org with filters
 maintenanceRoutes.get(
   '/windows',
@@ -255,6 +289,8 @@ maintenanceRoutes.get(
   }
 );
 
+// DEPRECATED: Maintenance windows are now managed via Configuration Policies.
+// This route remains for legacy compatibility.
 // POST /windows - Create maintenance window
 maintenanceRoutes.post(
   '/windows',
@@ -368,6 +404,8 @@ maintenanceRoutes.get(
   }
 );
 
+// DEPRECATED: Maintenance windows are now managed via Configuration Policies.
+// This route remains for legacy compatibility.
 // PATCH /windows/:id - Update window
 maintenanceRoutes.patch(
   '/windows/:id',
@@ -439,6 +477,8 @@ maintenanceRoutes.patch(
   }
 );
 
+// DEPRECATED: Maintenance windows are now managed via Configuration Policies.
+// This route remains for legacy compatibility.
 // DELETE /windows/:id - Delete window (and future occurrences)
 maintenanceRoutes.delete(
   '/windows/:id',
@@ -482,6 +522,8 @@ maintenanceRoutes.delete(
   }
 );
 
+// DEPRECATED: Maintenance windows are now managed via Configuration Policies.
+// This route remains for legacy compatibility.
 // POST /windows/:id/cancel - Cancel window
 maintenanceRoutes.post(
   '/windows/:id/cancel',
@@ -632,6 +674,8 @@ maintenanceRoutes.get(
   }
 );
 
+// DEPRECATED: Maintenance windows are now managed via Configuration Policies.
+// This route remains for legacy compatibility.
 // PATCH /occurrences/:id - Update occurrence
 maintenanceRoutes.patch(
   '/occurrences/:id',
@@ -705,6 +749,8 @@ maintenanceRoutes.patch(
   }
 );
 
+// DEPRECATED: Maintenance windows are now managed via Configuration Policies.
+// This route remains for legacy compatibility.
 // POST /occurrences/:id/start - Manually start occurrence early
 maintenanceRoutes.post(
   '/occurrences/:id/start',
@@ -759,6 +805,8 @@ maintenanceRoutes.post(
   }
 );
 
+// DEPRECATED: Maintenance windows are now managed via Configuration Policies.
+// This route remains for legacy compatibility.
 // POST /occurrences/:id/end - Manually end occurrence early
 maintenanceRoutes.post(
   '/occurrences/:id/end',
