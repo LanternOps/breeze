@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, LogOut, UserCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { usePortalBranding } from './BrandingProvider';
 
 type PortalUser = {
@@ -24,6 +25,8 @@ export default function PortalHeader({
 }: PortalHeaderProps) {
   const branding = usePortalBranding();
   const [menuOpen, setMenuOpen] = useState(false);
+  const safeLogoUrl = sanitizeImageSrc(branding.logoUrl);
+  const safeAvatarUrl = sanitizeImageSrc(user.avatarUrl);
 
   return (
     <header
@@ -33,9 +36,9 @@ export default function PortalHeader({
       )}
     >
       <div className="flex items-center gap-3">
-        {branding.logoUrl ? (
+        {safeLogoUrl ? (
           <img
-            src={branding.logoUrl}
+            src={safeLogoUrl}
             alt={branding.logoAlt ?? branding.name}
             className="h-8 w-auto"
           />
@@ -56,9 +59,9 @@ export default function PortalHeader({
           onClick={() => setMenuOpen(!menuOpen)}
           className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
         >
-          {user.avatarUrl ? (
+          {safeAvatarUrl ? (
             <img
-              src={user.avatarUrl}
+              src={safeAvatarUrl}
               alt={user.name}
               className="h-7 w-7 rounded-full object-cover"
             />
