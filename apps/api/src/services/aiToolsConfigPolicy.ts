@@ -227,7 +227,11 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('remove_configuration_policy_assignment', async (input, auth) => {
-      // First verify the assignment belongs to an accessible policy
+      // First verify the assignment belongs to an accessible policy (with org isolation)
+      const conditions: SQL[] = [eq(configPolicyAssignments.id, input.assignmentId as string)];
+      const oc = orgWhere(auth, configurationPolicies.orgId);
+      if (oc) conditions.push(oc);
+
       const [assignment] = await db
         .select({
           id: configPolicyAssignments.id,
@@ -238,7 +242,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         })
         .from(configPolicyAssignments)
         .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-        .where(eq(configPolicyAssignments.id, input.assignmentId as string))
+        .where(and(...conditions))
         .limit(1);
 
       if (!assignment) return JSON.stringify({ error: 'Assignment not found' });

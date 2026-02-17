@@ -146,26 +146,25 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     console.error('[NotificationDispatcher] Failed to send in-app notifications:', error);
   }
 
-  // Get rule for channel configuration (ruleId is null for config policy alerts)
-  if (!alert.ruleId) {
-    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+  // Get notification channels — from rule overrides or org defaults
+  let channelIds: string[] = [];
+  let ruleOverrides: Record<string, unknown> | null = null;
+
+  if (alert.ruleId) {
+    const [rule] = await db
+      .select()
+      .from(alertRules)
+      .where(eq(alertRules.id, alert.ruleId))
+      .limit(1);
+
+    if (rule) {
+      ruleOverrides = rule.overrideSettings as Record<string, unknown> | null;
+      channelIds = (ruleOverrides?.notificationChannelIds as string[]) || [];
+    }
   }
 
-  const [rule] = await db
-    .select()
-    .from(alertRules)
-    .where(eq(alertRules.id, alert.ruleId))
-    .limit(1);
-
-  if (!rule) {
-    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
-  }
-
-  // Get notification channels from rule overrides or org defaults
-  const overrides = rule.overrideSettings as Record<string, unknown> | null;
-  let channelIds = (overrides?.notificationChannelIds as string[]) || [];
-
-  // If no specific channels, get all enabled channels for the org
+  // For config policy alerts (no ruleId) or rules without channel overrides,
+  // fall back to all enabled channels for the org
   if (channelIds.length === 0) {
     const orgChannels = await db
       .select({ id: notificationChannels.id })
@@ -220,8 +219,8 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
 
   await queue.addBulk(jobs);
 
-  // Check for escalation policy
-  const escalationPolicyId = overrides?.escalationPolicyId as string | undefined;
+  // Check for escalation policy (only applicable to rule-based alerts)
+  const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
   if (escalationPolicyId) {
     await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId);
   }
