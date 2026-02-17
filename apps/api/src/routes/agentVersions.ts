@@ -7,6 +7,23 @@ import { agentVersions } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
+const GITHUB_REPO = process.env.GITHUB_REPO || 'LanternOps/breeze';
+
+// Map Go GOOS names to DB platform names
+const PLATFORM_MAP: Record<string, string> = {
+  linux: 'linux',
+  darwin: 'macos',
+  windows: 'windows'
+};
+
+// Supported platform/arch combos (must match release matrix)
+const ASSET_TARGETS = [
+  { goos: 'linux', goarch: 'amd64' },
+  { goos: 'darwin', goarch: 'amd64' },
+  { goos: 'darwin', goarch: 'arm64' },
+  { goos: 'windows', goarch: 'amd64' }
+] as const;
+
 export const agentVersionRoutes = new Hono();
 
 // Validation schemas
@@ -107,11 +124,11 @@ agentVersionRoutes.get(
       return c.json({ error: 'Version not found for the specified platform and architecture' }, 404);
     }
 
-    // Set checksum header for verification
-    c.header('X-Checksum', versionInfo.checksum);
-
-    // Redirect to download URL
-    return c.redirect(versionInfo.downloadUrl, 302);
+    // Return JSON with download URL and checksum (avoids lost headers on redirect)
+    return c.json({
+      url: versionInfo.downloadUrl,
+      checksum: versionInfo.checksum
+    });
   }
 );
 
@@ -181,5 +198,133 @@ agentVersionRoutes.post(
       isLatest: newVersion.isLatest,
       createdAt: newVersion.createdAt
     }, 201);
+  }
+);
+
+// POST /agent-versions/sync-github - Sync latest release from GitHub (admin only)
+agentVersionRoutes.post(
+  '/sync-github',
+  authMiddleware,
+  requireScope('system'),
+  async (c) => {
+    const auth = c.get('auth');
+
+    // Fetch latest release from GitHub
+    const ghResp = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+      {
+        headers: {
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'breeze-api'
+        }
+      }
+    );
+    if (!ghResp.ok) {
+      return c.json({ error: `GitHub API error: ${ghResp.status}` }, 502);
+    }
+
+    const release = (await ghResp.json()) as {
+      tag_name: string;
+      body?: string;
+      assets: Array<{
+        name: string;
+        browser_download_url: string;
+        size: number;
+      }>;
+    };
+
+    const version = release.tag_name.replace(/^v/, '');
+
+    // Find and download checksums.txt
+    const checksumAsset = release.assets.find((a) => a.name === 'checksums.txt');
+    if (!checksumAsset) {
+      return c.json({ error: 'No checksums.txt found in release assets' }, 422);
+    }
+
+    const checksumResp = await fetch(checksumAsset.browser_download_url, {
+      headers: { 'User-Agent': 'breeze-api' }
+    });
+    if (!checksumResp.ok) {
+      return c.json({ error: 'Failed to download checksums.txt' }, 502);
+    }
+    const checksumText = await checksumResp.text();
+
+    // Parse checksums: "hash  filename\n"
+    const checksums = new Map<string, string>();
+    for (const line of checksumText.split('\n')) {
+      const match = line.match(/^([a-f0-9]{64})\s+(.+)$/);
+      if (match && match[2] && match[1]) {
+        checksums.set(match[2].trim(), match[1]);
+      }
+    }
+
+    const upserted: string[] = [];
+
+    for (const target of ASSET_TARGETS) {
+      const suffix = target.goos === 'windows' ? '.exe' : '';
+      const assetName = `breeze-agent-${target.goos}-${target.goarch}${suffix}`;
+
+      const asset = release.assets.find((a) => a.name === assetName);
+      if (!asset) continue;
+
+      const checksum = checksums.get(assetName);
+      if (!checksum) continue;
+
+      const platform = PLATFORM_MAP[target.goos];
+      if (!platform) continue;
+
+      // Unset isLatest for this platform/arch combo
+      await db
+        .update(agentVersions)
+        .set({ isLatest: false })
+        .where(
+          and(
+            eq(agentVersions.platform, platform),
+            eq(agentVersions.architecture, target.goarch),
+            eq(agentVersions.isLatest, true)
+          )
+        );
+
+      // Upsert version record
+      await db
+        .insert(agentVersions)
+        .values({
+          version,
+          platform,
+          architecture: target.goarch,
+          downloadUrl: asset.browser_download_url,
+          checksum,
+          fileSize: BigInt(asset.size),
+          releaseNotes: release.body ?? null,
+          isLatest: true
+        })
+        .onConflictDoUpdate({
+          target: [agentVersions.version, agentVersions.platform, agentVersions.architecture],
+          set: {
+            downloadUrl: asset.browser_download_url,
+            checksum,
+            fileSize: BigInt(asset.size),
+            releaseNotes: release.body ?? null,
+            isLatest: true
+          }
+        });
+
+      upserted.push(`${platform}/${target.goarch}`);
+    }
+
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'agent_version.sync_github',
+      resourceType: 'agent_version',
+      resourceId: version,
+      resourceName: `v${version}`,
+      details: { repo: GITHUB_REPO, targets: upserted }
+    });
+
+    return c.json({
+      version,
+      synced: upserted,
+      releaseNotes: release.body ?? null
+    });
   }
 );
