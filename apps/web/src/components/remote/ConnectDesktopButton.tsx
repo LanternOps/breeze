@@ -25,7 +25,7 @@ function tryDeepLink(url: string) {
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
-  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const sessionIdRef = useRef<string | null>(null);
 
   // Clean up timer on unmount
