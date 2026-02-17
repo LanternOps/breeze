@@ -128,6 +128,26 @@ func initLogging(cfg *config.Config) {
 	}
 }
 
+// agentComponents holds the running components created by runAgent so that
+// service wrappers (Windows SCM, etc.) can shut them down gracefully.
+type agentComponents struct {
+	hb       *heartbeat.Heartbeat
+	wsClient *websocket.Client
+}
+
+// shutdownAgent gracefully stops all agent components.
+func shutdownAgent(comps *agentComponents) {
+	if comps == nil {
+		return
+	}
+	comps.hb.StopAcceptingCommands()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	comps.hb.DrainAndWait(ctx)
+	comps.wsClient.Stop()
+	comps.hb.Stop()
+}
+
 // runAgent starts the main agent run loop. The heartbeat module handles:
 // - Periodic heartbeat calls to the API endpoint
 // - Receiving pending commands from the server via heartbeat response
