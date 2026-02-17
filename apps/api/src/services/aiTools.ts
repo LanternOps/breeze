@@ -26,6 +26,7 @@ import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
 import { registerAgentLogTools } from './aiToolsAgentLogs';
+import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 import { registerFleetTools } from './aiToolsFleet';
 import {
   getActiveDeviceContext,
@@ -1355,6 +1356,7 @@ registerTool({
 
 registerFleetTools(aiTools);
 registerAgentLogTools(aiTools);
+registerConfigPolicyTools(aiTools);
 
 // ============================================
 // get_device_context - Tier 1 (auto-execute)
