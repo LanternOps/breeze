@@ -27,6 +27,7 @@ function getS3Client(): S3Client {
       endpoint: process.env.S3_ENDPOINT || undefined,
       region: process.env.S3_REGION || 'us-east-1',
       credentials: { accessKeyId, secretAccessKey },
+      // Required for MinIO and other S3-compatible providers that use path-style URLs
       forcePathStyle: true,
     });
   }
@@ -86,9 +87,10 @@ export async function uploadBinary(localPath: string, s3Key: string, checksum?: 
 export async function getPresignedUrl(s3Key: string, ttlSeconds?: number): Promise<string> {
   const bucket = requireBucket();
   const client = getS3Client();
-  const ttl = ttlSeconds ?? parseInt(process.env.S3_PRESIGN_TTL || '900', 10);
+  const rawTtl = parseInt(process.env.S3_PRESIGN_TTL || '900', 10);
+  const ttl = ttlSeconds ?? (Number.isFinite(rawTtl) && rawTtl > 0 ? rawTtl : 900);
 
-  // Verify the object exists before generating a presigned URL
+  // Presigned URLs are valid even for non-existent keys, so verify first
   await client.send(new HeadObjectCommand({ Bucket: bucket, Key: s3Key }));
 
   return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: s3Key }), {

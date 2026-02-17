@@ -50,7 +50,10 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      console.error(`[agent-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      const errName = (err as { name?: string }).name;
+      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
+      const level = isNotFound ? 'warn' : 'error';
+      console[level](`[agent-download] S3 presign failed for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -63,7 +66,12 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
   try {
     fileStat = statSync(filePath);
     stream = createReadStream(filePath);
-  } catch {
+  } catch (err) {
+    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!isNotFound) {
+      console.error(`[agent-download] Failed to read binary ${filename}:`, err);
+      return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
+    }
     return c.json(
       {
         error: 'Binary not found',
