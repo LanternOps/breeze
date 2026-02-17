@@ -14,7 +14,7 @@ export const updateConfigPolicySchema = z.object({
 });
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation']),
   featurePolicyId: z.string().uuid().optional(),
   inlineSettings: z.record(z.unknown()).optional(),
 }).refine(

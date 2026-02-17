@@ -3,6 +3,11 @@ import {
   configurationPolicies,
   configPolicyFeatureLinks,
   configPolicyAssignments,
+  configPolicyAlertRules,
+  configPolicyAutomations,
+  configPolicyComplianceRules,
+  configPolicyPatchSettings,
+  configPolicyMaintenanceSettings,
   devices,
   organizations,
   deviceGroupMemberships,
@@ -13,14 +18,14 @@ import {
   automationPolicies,
   maintenanceWindows,
 } from '../db/schema';
-import { and, eq, desc, sql, inArray, SQL } from 'drizzle-orm';
+import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 
 // ============================================
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -177,6 +182,277 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
 }
 
 // ============================================
+// Decompose / Assemble — normalized per-feature tables
+// ============================================
+
+/**
+ * Decompose inlineSettings JSONB into normalized per-feature table rows.
+ * Should be called inside a transaction after the feature link row is inserted/updated.
+ */
+async function decomposeInlineSettings(
+  linkId: string,
+  featureType: ConfigFeatureType,
+  settings: unknown,
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0]
+): Promise<void> {
+  if (!settings || typeof settings !== 'object') return;
+
+  const s = settings as Record<string, unknown>;
+
+  switch (featureType) {
+    case 'alert_rule': {
+      const items = Array.isArray(s.items) ? s.items : [];
+      if (items.length > 0) {
+        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+        type AlertSeverity = (typeof VALID_SEVERITIES)[number];
+        await tx.insert(configPolicyAlertRules).values(
+          items.map((item: Record<string, unknown>, idx: number) => ({
+            featureLinkId: linkId,
+            name: String(item.name ?? `Rule ${idx + 1}`),
+            severity: (VALID_SEVERITIES.includes(item.severity as AlertSeverity) ? item.severity : 'medium') as AlertSeverity,
+            conditions: item.conditions ?? {},
+            cooldownMinutes: typeof item.cooldownMinutes === 'number' ? item.cooldownMinutes : 5,
+            autoResolve: typeof item.autoResolve === 'boolean' ? item.autoResolve : false,
+            autoResolveConditions: item.autoResolveConditions ?? null,
+            titleTemplate: typeof item.titleTemplate === 'string' ? item.titleTemplate : '{{ruleName}} triggered on {{deviceName}}',
+            messageTemplate: typeof item.messageTemplate === 'string' ? item.messageTemplate : '{{ruleName}} condition met',
+            sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
+          }))
+        );
+      }
+      break;
+    }
+
+    case 'automation': {
+      const items = Array.isArray(s.items) ? s.items : [];
+      if (items.length > 0) {
+        const VALID_ON_FAILURE = ['stop', 'continue', 'notify'] as const;
+        type OnFailure = (typeof VALID_ON_FAILURE)[number];
+        await tx.insert(configPolicyAutomations).values(
+          items.map((item: Record<string, unknown>, idx: number) => ({
+            featureLinkId: linkId,
+            name: String(item.name ?? `Automation ${idx + 1}`),
+            enabled: typeof item.enabled === 'boolean' ? item.enabled : true,
+            triggerType: String(item.triggerType ?? 'scheduled'),
+            cronExpression: typeof item.cronExpression === 'string' ? item.cronExpression : null,
+            timezone: typeof item.timezone === 'string' ? item.timezone : null,
+            eventType: typeof item.eventType === 'string' ? item.eventType : null,
+            actions: item.actions ?? [],
+            onFailure: (VALID_ON_FAILURE.includes(item.onFailure as OnFailure) ? item.onFailure : 'stop') as OnFailure,
+            sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
+          }))
+        );
+      }
+      break;
+    }
+
+    case 'compliance': {
+      const items = Array.isArray(s.items) ? s.items : [];
+      if (items.length > 0) {
+        const VALID_ENFORCEMENT = ['monitor', 'warn', 'enforce'] as const;
+        type Enforcement = (typeof VALID_ENFORCEMENT)[number];
+        await tx.insert(configPolicyComplianceRules).values(
+          items.map((item: Record<string, unknown>, idx: number) => ({
+            featureLinkId: linkId,
+            name: String(item.name ?? `Compliance Rule ${idx + 1}`),
+            rules: item.rules ?? {},
+            enforcementLevel: (VALID_ENFORCEMENT.includes(item.enforcementLevel as Enforcement) ? item.enforcementLevel : 'monitor') as Enforcement,
+            checkIntervalMinutes: typeof item.checkIntervalMinutes === 'number' ? item.checkIntervalMinutes : 60,
+            remediationScriptId: typeof item.remediationScriptId === 'string' ? item.remediationScriptId : null,
+            sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
+          }))
+        );
+      }
+      break;
+    }
+
+    case 'patch': {
+      await tx.insert(configPolicyPatchSettings).values({
+        featureLinkId: linkId,
+        sources: Array.isArray(s.sources) ? s.sources as string[] : ['os'],
+        autoApprove: typeof s.autoApprove === 'boolean' ? s.autoApprove : false,
+        autoApproveSeverities: Array.isArray(s.autoApproveSeverities) ? s.autoApproveSeverities as string[] : [],
+        scheduleFrequency: typeof s.scheduleFrequency === 'string' ? s.scheduleFrequency : 'weekly',
+        scheduleTime: typeof s.scheduleTime === 'string' ? s.scheduleTime : '02:00',
+        scheduleDayOfWeek: typeof s.scheduleDayOfWeek === 'string' ? s.scheduleDayOfWeek : 'sun',
+        scheduleDayOfMonth: typeof s.scheduleDayOfMonth === 'number' ? s.scheduleDayOfMonth : 1,
+        rebootPolicy: typeof s.rebootPolicy === 'string' ? s.rebootPolicy : 'if_required',
+      });
+      break;
+    }
+
+    case 'maintenance': {
+      await tx.insert(configPolicyMaintenanceSettings).values({
+        featureLinkId: linkId,
+        recurrence: typeof s.recurrence === 'string' ? s.recurrence : 'weekly',
+        durationHours: typeof s.durationHours === 'number' ? s.durationHours : 2,
+        timezone: typeof s.timezone === 'string' ? s.timezone : 'UTC',
+        suppressAlerts: typeof s.suppressAlerts === 'boolean' ? s.suppressAlerts : true,
+        suppressPatching: typeof s.suppressPatching === 'boolean' ? s.suppressPatching : false,
+        suppressAutomations: typeof s.suppressAutomations === 'boolean' ? s.suppressAutomations : false,
+        suppressScripts: typeof s.suppressScripts === 'boolean' ? s.suppressScripts : false,
+        notifyBeforeMinutes: typeof s.notifyBeforeMinutes === 'number' ? s.notifyBeforeMinutes : 15,
+        notifyOnStart: typeof s.notifyOnStart === 'boolean' ? s.notifyOnStart : true,
+        notifyOnEnd: typeof s.notifyOnEnd === 'boolean' ? s.notifyOnEnd : true,
+      });
+      break;
+    }
+
+    default:
+      // monitoring, backup, security — no normalized tables yet
+      break;
+  }
+}
+
+/**
+ * Delete existing normalized rows for a feature link.
+ * Used before re-decomposing on update.
+ */
+async function deleteNormalizedRows(
+  linkId: string,
+  featureType: ConfigFeatureType,
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0]
+): Promise<void> {
+  switch (featureType) {
+    case 'alert_rule':
+      await tx.delete(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkId));
+      break;
+    case 'automation':
+      await tx.delete(configPolicyAutomations).where(eq(configPolicyAutomations.featureLinkId, linkId));
+      break;
+    case 'compliance':
+      await tx.delete(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.featureLinkId, linkId));
+      break;
+    case 'patch':
+      await tx.delete(configPolicyPatchSettings).where(eq(configPolicyPatchSettings.featureLinkId, linkId));
+      break;
+    case 'maintenance':
+      await tx.delete(configPolicyMaintenanceSettings).where(eq(configPolicyMaintenanceSettings.featureLinkId, linkId));
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * Assemble inlineSettings from normalized per-feature table rows.
+ * Returns the reconstructed settings object, or null if the feature type
+ * has no normalized table or no rows exist.
+ */
+async function assembleInlineSettings(
+  featureType: ConfigFeatureType,
+  linkId: string
+): Promise<unknown | null> {
+  switch (featureType) {
+    case 'alert_rule': {
+      const rows = await db
+        .select()
+        .from(configPolicyAlertRules)
+        .where(eq(configPolicyAlertRules.featureLinkId, linkId))
+        .orderBy(asc(configPolicyAlertRules.sortOrder));
+      if (rows.length === 0) return null;
+      return {
+        items: rows.map((r) => ({
+          name: r.name,
+          severity: r.severity,
+          conditions: r.conditions,
+          cooldownMinutes: r.cooldownMinutes,
+          autoResolve: r.autoResolve,
+          autoResolveConditions: r.autoResolveConditions,
+          titleTemplate: r.titleTemplate,
+          messageTemplate: r.messageTemplate,
+          sortOrder: r.sortOrder,
+        })),
+      };
+    }
+
+    case 'automation': {
+      const rows = await db
+        .select()
+        .from(configPolicyAutomations)
+        .where(eq(configPolicyAutomations.featureLinkId, linkId))
+        .orderBy(asc(configPolicyAutomations.sortOrder));
+      if (rows.length === 0) return null;
+      return {
+        items: rows.map((r) => ({
+          name: r.name,
+          enabled: r.enabled,
+          triggerType: r.triggerType,
+          cronExpression: r.cronExpression,
+          timezone: r.timezone,
+          eventType: r.eventType,
+          actions: r.actions,
+          onFailure: r.onFailure,
+          sortOrder: r.sortOrder,
+        })),
+      };
+    }
+
+    case 'compliance': {
+      const rows = await db
+        .select()
+        .from(configPolicyComplianceRules)
+        .where(eq(configPolicyComplianceRules.featureLinkId, linkId))
+        .orderBy(asc(configPolicyComplianceRules.sortOrder));
+      if (rows.length === 0) return null;
+      return {
+        items: rows.map((r) => ({
+          name: r.name,
+          rules: r.rules,
+          enforcementLevel: r.enforcementLevel,
+          checkIntervalMinutes: r.checkIntervalMinutes,
+          remediationScriptId: r.remediationScriptId,
+          sortOrder: r.sortOrder,
+        })),
+      };
+    }
+
+    case 'patch': {
+      const [row] = await db
+        .select()
+        .from(configPolicyPatchSettings)
+        .where(eq(configPolicyPatchSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        sources: row.sources,
+        autoApprove: row.autoApprove,
+        autoApproveSeverities: row.autoApproveSeverities,
+        scheduleFrequency: row.scheduleFrequency,
+        scheduleTime: row.scheduleTime,
+        scheduleDayOfWeek: row.scheduleDayOfWeek,
+        scheduleDayOfMonth: row.scheduleDayOfMonth,
+        rebootPolicy: row.rebootPolicy,
+      };
+    }
+
+    case 'maintenance': {
+      const [row] = await db
+        .select()
+        .from(configPolicyMaintenanceSettings)
+        .where(eq(configPolicyMaintenanceSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        recurrence: row.recurrence,
+        durationHours: row.durationHours,
+        timezone: row.timezone,
+        suppressAlerts: row.suppressAlerts,
+        suppressPatching: row.suppressPatching,
+        suppressAutomations: row.suppressAutomations,
+        suppressScripts: row.suppressScripts,
+        notifyBeforeMinutes: row.notifyBeforeMinutes,
+        notifyOnStart: row.notifyOnStart,
+        notifyOnEnd: row.notifyOnEnd,
+      };
+    }
+
+    default:
+      return null;
+  }
+}
+
+// ============================================
 // Feature Links
 // ============================================
 
@@ -186,32 +462,60 @@ export async function addFeatureLink(
   featurePolicyId?: string | null,
   inlineSettings?: unknown
 ) {
-  const [link] = await db
-    .insert(configPolicyFeatureLinks)
-    .values({
-      configPolicyId,
-      featureType,
-      featurePolicyId: featurePolicyId ?? null,
-      inlineSettings: inlineSettings ?? null,
-    })
-    .returning();
-  return link!;
+  return db.transaction(async (tx) => {
+    const [link] = await tx
+      .insert(configPolicyFeatureLinks)
+      .values({
+        configPolicyId,
+        featureType,
+        featurePolicyId: featurePolicyId ?? null,
+        inlineSettings: inlineSettings ?? null,
+      })
+      .returning();
+
+    // Decompose inlineSettings into normalized per-feature table
+    if (inlineSettings) {
+      await decomposeInlineSettings(link!.id, featureType, inlineSettings, tx);
+    }
+
+    return link!;
+  });
 }
 
 export async function updateFeatureLink(
   linkId: string,
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown }
 ) {
-  const setValues: Record<string, unknown> = { updatedAt: new Date() };
-  if (updates.featurePolicyId !== undefined) setValues.featurePolicyId = updates.featurePolicyId;
-  if (updates.inlineSettings !== undefined) setValues.inlineSettings = updates.inlineSettings;
+  return db.transaction(async (tx) => {
+    // Fetch current link to get featureType
+    const [existing] = await tx
+      .select()
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, linkId))
+      .limit(1);
+    if (!existing) return null;
 
-  const [updated] = await db
-    .update(configPolicyFeatureLinks)
-    .set(setValues)
-    .where(eq(configPolicyFeatureLinks.id, linkId))
-    .returning();
-  return updated ?? null;
+    const setValues: Record<string, unknown> = { updatedAt: new Date() };
+    if (updates.featurePolicyId !== undefined) setValues.featurePolicyId = updates.featurePolicyId;
+    if (updates.inlineSettings !== undefined) setValues.inlineSettings = updates.inlineSettings;
+
+    const [updated] = await tx
+      .update(configPolicyFeatureLinks)
+      .set(setValues)
+      .where(eq(configPolicyFeatureLinks.id, linkId))
+      .returning();
+
+    // If inlineSettings changed, replace normalized rows (delete + re-insert)
+    if (updates.inlineSettings !== undefined) {
+      const featureType = existing.featureType as ConfigFeatureType;
+      await deleteNormalizedRows(linkId, featureType, tx);
+      if (updates.inlineSettings) {
+        await decomposeInlineSettings(linkId, featureType, updates.inlineSettings, tx);
+      }
+    }
+
+    return updated ?? null;
+  });
 }
 
 export async function removeFeatureLink(linkId: string) {
@@ -223,10 +527,25 @@ export async function removeFeatureLink(linkId: string) {
 }
 
 export async function listFeatureLinks(configPolicyId: string) {
-  return db
+  const links = await db
     .select()
     .from(configPolicyFeatureLinks)
     .where(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+
+  // Assemble inlineSettings from normalized tables for each link
+  const enriched = await Promise.all(
+    links.map(async (link) => {
+      const featureType = link.featureType as ConfigFeatureType;
+      const assembled = await assembleInlineSettings(featureType, link.id);
+      return {
+        ...link,
+        // Prefer assembled normalized data; fall back to stored JSONB
+        inlineSettings: assembled ?? link.inlineSettings,
+      };
+    })
+  );
+
+  return enriched;
 }
 
 // ============================================
@@ -516,9 +835,21 @@ export async function validateFeaturePolicyExists(
   }
 
   if (!featurePolicyId) {
-    return { valid: false, error: `featurePolicyId is required for feature type "${featureType}"` };
+    return { valid: true }; // inline-only is allowed; schema ensures inlineSettings is present
   }
 
+  // Check if it's a reference to another Configuration Policy (whole-policy linking)
+  const [configPolicy] = await db
+    .select({ id: configurationPolicies.id })
+    .from(configurationPolicies)
+    .where(and(eq(configurationPolicies.id, featurePolicyId), eq(configurationPolicies.orgId, orgId)))
+    .limit(1);
+
+  if (configPolicy) {
+    return { valid: true };
+  }
+
+  // Fall through to per-feature-type policy validation
   const mapping = FEATURE_TABLE_MAP[featureType];
   if (!mapping) {
     return { valid: false, error: `Unknown feature type: ${featureType}` };
@@ -531,7 +862,7 @@ export async function validateFeaturePolicyExists(
     .limit(1);
 
   if (!row) {
-    return { valid: false, error: `${featureType} policy "${featurePolicyId}" not found in this organization` };
+    return { valid: false, error: `Policy "${featurePolicyId}" not found in this organization` };
   }
 
   return { valid: true };

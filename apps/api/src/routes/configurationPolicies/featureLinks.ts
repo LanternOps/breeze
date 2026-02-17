@@ -51,14 +51,16 @@ featureLinkRoutes.post(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    // Validate the referenced feature policy exists
-    const validation = await validateFeaturePolicyExists(
-      data.featureType,
-      data.featurePolicyId,
-      policy.orgId
-    );
-    if (!validation.valid) {
-      return c.json({ error: validation.error }, 400);
+    // Validate the referenced feature policy exists (only when a policy ID is provided)
+    if (data.featurePolicyId) {
+      const validation = await validateFeaturePolicyExists(
+        data.featureType,
+        data.featurePolicyId,
+        policy.orgId
+      );
+      if (!validation.valid) {
+        return c.json({ error: validation.error }, 400);
+      }
     }
 
     try {

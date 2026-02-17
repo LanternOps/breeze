@@ -593,23 +593,25 @@ mobileRoutes.post(
       .returning();
 
     try {
-      const [rule] = await db
-        .select()
-        .from(alertRules)
-        .where(eq(alertRules.id, alert.ruleId))
-        .limit(1);
-
-      if (rule) {
-        const [template] = await db
+      if (alert.ruleId) {
+        const [rule] = await db
           .select()
-          .from(alertTemplates)
-          .where(eq(alertTemplates.id, rule.templateId))
+          .from(alertRules)
+          .where(eq(alertRules.id, alert.ruleId))
           .limit(1);
 
-        const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
-        const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-          template?.cooldownMinutes ?? 15;
-        await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+        if (rule) {
+          const [template] = await db
+            .select()
+            .from(alertTemplates)
+            .where(eq(alertTemplates.id, rule.templateId))
+            .limit(1);
+
+          const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
+          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
+            template?.cooldownMinutes ?? 15;
+          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+        }
       }
     } catch (error) {
       console.error('[MobileRoutes] Failed to set alert cooldown on resolve:', error);
