@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Policies', () => {
   test('policies page loads', async ({ page }) => {
     await page.goto('/policies');
+    await waitForApp(page, '/policies');
 
     // Page heading should reference policies
     await expect(page.locator('h1, h2').first()).toContainText(/Polic/i, { timeout: 10_000 });
@@ -16,6 +18,7 @@ test.describe('Policies', () => {
 
   test('new policy page loads', async ({ page }) => {
     await page.goto('/policies/new');
+    await waitForApp(page, '/policies/new');
 
     // Should show a form or heading for creating a new policy
     const formOrHeading = page.locator('form, [data-testid="policy-form"], h1, h2').first();
@@ -24,6 +27,7 @@ test.describe('Policies', () => {
 
   test('configuration policies page loads', async ({ page }) => {
     await page.goto('/configuration-policies');
+    await waitForApp(page, '/configuration-policies');
 
     // Page heading should reference configuration or policies
     await expect(page.locator('h1, h2').first()).toContainText(/Config|Polic/i, { timeout: 10_000 });

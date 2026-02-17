@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Patch Management', () => {
   test('patches page loads', async ({ page }) => {
     await page.goto('/patches');
+    await waitForApp(page, '/patches');
 
     // Page heading should reference patches
     await expect(page.locator('h1, h2').first()).toContainText(/Patch/i, { timeout: 10_000 });

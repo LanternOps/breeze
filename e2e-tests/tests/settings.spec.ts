@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Settings', () => {
   test('organization settings page loads', async ({ page }) => {
     await page.goto('/settings/organization');
+    await waitForApp(page, '/settings/organization');
 
     await expect(page.locator('h1, h2').first()).toContainText(/Organization|Settings/i, { timeout: 10_000 });
 
@@ -15,6 +17,7 @@ test.describe('Settings', () => {
 
   test('user management page loads', async ({ page }) => {
     await page.goto('/settings/users');
+    await waitForApp(page, '/settings/users');
 
     await expect(page.locator('h1, h2').first()).toContainText(/User|Team|Member/i, { timeout: 10_000 });
 
@@ -27,6 +30,7 @@ test.describe('Settings', () => {
 
   test('role management page loads', async ({ page }) => {
     await page.goto('/settings/roles');
+    await waitForApp(page, '/settings/roles');
 
     await expect(page.locator('h1, h2').first()).toContainText(/Role|Permission/i, { timeout: 10_000 });
 
@@ -39,6 +43,7 @@ test.describe('Settings', () => {
 
   test('API keys page loads', async ({ page }) => {
     await page.goto('/settings/api-keys');
+    await waitForApp(page, '/settings/api-keys');
 
     await expect(page.locator('h1, h2').first()).toContainText(/API|Key/i, { timeout: 10_000 });
 
@@ -51,6 +56,7 @@ test.describe('Settings', () => {
 
   test('API key creation flow', async ({ page }) => {
     await page.goto('/settings/api-keys');
+    await waitForApp(page, '/settings/api-keys');
 
     // Look for create button
     const createBtn = page.locator(
@@ -85,12 +91,14 @@ test.describe('Settings', () => {
 
   test('SSO settings page loads', async ({ page }) => {
     await page.goto('/settings/sso');
+    await waitForApp(page, '/settings/sso');
 
     await expect(page.locator('h1, h2').first()).toContainText(/SSO|Single Sign|SAML|OIDC/i, { timeout: 10_000 });
   });
 
   test('profile page loads', async ({ page }) => {
     await page.goto('/settings/profile');
+    await waitForApp(page, '/settings/profile');
 
     await expect(page.locator('h1, h2').first()).toContainText(/Profile|Account/i, { timeout: 10_000 });
 

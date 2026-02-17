@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Dashboard', () => {
   test('dashboard loads with key stats', async ({ page }) => {
     await page.goto('/');
+    await waitForApp(page);
 
     // The page title / heading should contain "Dashboard"
     await expect(page.locator('h1')).toContainText('Dashboard');
@@ -21,6 +23,7 @@ test.describe('Dashboard', () => {
 
   test('navigation to devices page works', async ({ page }) => {
     await page.goto('/');
+    await waitForApp(page);
 
     // Click on the Devices link in the sidebar or nav
     const devicesLink = page.locator(
@@ -29,11 +32,13 @@ test.describe('Dashboard', () => {
     await devicesLink.click();
 
     await expect(page).toHaveURL(/\/devices/);
+    await waitForApp(page, '/devices');
     await expect(page.locator('h1, h2').first()).toContainText(/Device/i);
   });
 
   test('navigation to scripts page works', async ({ page }) => {
     await page.goto('/');
+    await waitForApp(page);
 
     // Click on the Scripts link in the sidebar or nav
     const scriptsLink = page.locator(
@@ -42,6 +47,7 @@ test.describe('Dashboard', () => {
     await scriptsLink.click();
 
     await expect(page).toHaveURL(/\/scripts/);
+    await waitForApp(page, '/scripts');
     await expect(page.locator('h1, h2').first()).toContainText(/Script/i);
   });
 });

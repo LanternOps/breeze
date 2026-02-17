@@ -19,6 +19,26 @@ setup('authenticate as admin', async ({ page }) => {
   const email = process.env.E2E_ADMIN_EMAIL || 'admin@breeze.local';
   const password = process.env.E2E_ADMIN_PASSWORD || 'BreezeAdmin123!';
 
+  // Intercept the login API response to capture the access token.
+  // The Zustand persist middleware only stores `user` to localStorage,
+  // so subsequent tests would need a refresh-cookie round trip to get
+  // an access token. That cross-port fetch is unreliable in CI, so we
+  // inject the token into localStorage directly.
+  let capturedTokens: { accessToken: string; expiresInSeconds: number } | null = null;
+
+  page.on('response', async (response) => {
+    if (response.url().includes('/auth/login') && response.ok()) {
+      try {
+        const body = await response.json();
+        if (body.tokens?.accessToken) {
+          capturedTokens = body.tokens;
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+  });
+
   await page.goto('/login');
 
   // Fill the login form
@@ -39,6 +59,24 @@ setup('authenticate as admin', async ({ page }) => {
   });
 
   await expect(page.locator('h1')).toContainText('Dashboard');
+
+  // Inject the captured access token into the Zustand localStorage state.
+  // This ensures subsequent tests have a valid access token immediately,
+  // without needing a refresh-cookie round trip that can fail in CI.
+  if (capturedTokens) {
+    await page.evaluate((tokens) => {
+      const key = 'breeze-auth';
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+
+      const store = JSON.parse(raw);
+      if (store.state) {
+        store.state.tokens = tokens;
+        store.state.isAuthenticated = true;
+        localStorage.setItem(key, JSON.stringify(store));
+      }
+    }, capturedTokens);
+  }
 
   // Persist signed-in state so other tests reuse it
   await page.context().storageState({ path: authFile });

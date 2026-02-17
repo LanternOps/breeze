@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Alert Lifecycle', () => {
   test('alert rules page loads', async ({ page }) => {
     await page.goto('/alerts/rules');
+    await waitForApp(page, '/alerts/rules');
 
     // Heading should reference alerts or rules
     await expect(page.locator('h1, h2').first()).toContainText(/Alert|Rule/i, { timeout: 10_000 });
@@ -16,6 +18,7 @@ test.describe('Alert Lifecycle', () => {
 
   test('create alert rule page loads', async ({ page }) => {
     await page.goto('/alerts/rules');
+    await waitForApp(page, '/alerts/rules');
 
     const newBtn = page.locator(
       'a[href="/alerts/rules/new"], button:has-text("New Rule"), button:has-text("Create"), a:has-text("New Rule")',
@@ -37,6 +40,7 @@ test.describe('Alert Lifecycle', () => {
 
   test('active alerts page loads', async ({ page }) => {
     await page.goto('/alerts');
+    await waitForApp(page, '/alerts');
 
     await expect(page.locator('h1, h2').first()).toContainText(/Alert/i, { timeout: 10_000 });
 
@@ -49,6 +53,7 @@ test.describe('Alert Lifecycle', () => {
 
   test('alert detail shows acknowledge and resolve actions', async ({ page }) => {
     await page.goto('/alerts');
+    await waitForApp(page, '/alerts');
 
     // If there are active alerts, click the first one
     const firstAlert = page.locator('table tbody tr, [data-testid="alert-row"]').first();
@@ -70,6 +75,7 @@ test.describe('Alert Lifecycle', () => {
 
   test('alert channels page loads', async ({ page }) => {
     await page.goto('/alerts/channels');
+    await waitForApp(page, '/alerts/channels');
 
     // Should show notification channels configuration
     await expect(page.locator('h1, h2').first()).toContainText(/Channel|Notification|Alert/i, { timeout: 10_000 });

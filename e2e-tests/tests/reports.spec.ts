@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Reports', () => {
   test('reports page loads', async ({ page }) => {
     await page.goto('/reports');
+    await waitForApp(page, '/reports');
 
     // Page heading should reference reports
     await expect(page.locator('h1, h2').first()).toContainText(/Report/i, { timeout: 10_000 });
@@ -16,6 +18,7 @@ test.describe('Reports', () => {
 
   test('new report page loads', async ({ page }) => {
     await page.goto('/reports/new');
+    await waitForApp(page, '/reports/new');
 
     // Should show a heading or form for creating a new report
     const headingOrForm = page.locator('h1, h2').first()

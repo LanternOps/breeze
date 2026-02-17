@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Device Management', () => {
   test('device list page loads', async ({ page }) => {
     await page.goto('/devices');
+    await waitForApp(page, '/devices');
 
     // Page heading should reference devices
     await expect(page.locator('h1, h2').first()).toContainText(/Device/i);
@@ -16,6 +18,7 @@ test.describe('Device Management', () => {
 
   test('device list shows enrolled devices or empty state', async ({ page }) => {
     await page.goto('/devices');
+    await waitForApp(page, '/devices');
 
     // Either we see table rows for devices, or an empty-state message
     const deviceRow = page.locator('table tbody tr, [data-testid="device-row"]').first();
@@ -31,6 +34,7 @@ test.describe('Device Management', () => {
 
   test('device detail page shows tabs', async ({ page }) => {
     await page.goto('/devices');
+    await waitForApp(page, '/devices');
 
     // If there are devices, click the first one to go to detail view
     const firstDevice = page.locator('table tbody tr, [data-testid="device-row"]').first();
@@ -57,6 +61,7 @@ test.describe('Device Management', () => {
 
   test('device filtering works', async ({ page }) => {
     await page.goto('/devices');
+    await waitForApp(page, '/devices');
 
     // Look for a search / filter input
     const searchInput = page.locator(
@@ -82,6 +87,7 @@ test.describe('Device Management', () => {
 
   test('device groups page loads', async ({ page }) => {
     await page.goto('/devices/groups');
+    await waitForApp(page, '/devices/groups');
 
     // Should show group management UI
     await expect(

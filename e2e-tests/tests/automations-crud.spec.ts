@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Automations CRUD', () => {
   test.describe.configure({ mode: 'serial' });
@@ -8,6 +9,7 @@ test.describe('Automations CRUD', () => {
 
   test('automations list page loads', async ({ page }) => {
     await page.goto('/automations');
+    await waitForApp(page, '/automations');
 
     // Page heading should reference automations
     const heading = page.locator('h1:has-text("Automation")').or(
@@ -26,6 +28,7 @@ test.describe('Automations CRUD', () => {
 
   test('navigate to create automation page', async ({ page }) => {
     await page.goto('/automations');
+    await waitForApp(page, '/automations');
 
     // Look for New Automation link/button
     const newBtn = page.locator('a[href="/automations/new"]').or(
@@ -42,6 +45,7 @@ test.describe('Automations CRUD', () => {
       await newBtn.first().click();
     } else {
       await page.goto('/automations/new');
+      await waitForApp(page, '/automations/new');
     }
 
     await expect(page).toHaveURL(/\/automations\/new/);
@@ -59,6 +63,7 @@ test.describe('Automations CRUD', () => {
     automationName = `E2E Test Automation ${Date.now()}`;
 
     await page.goto('/automations/new');
+    await waitForApp(page, '/automations/new');
 
     // Wait for the form to render
     const nameInput = page.locator('#automation-name').or(
@@ -105,6 +110,7 @@ test.describe('Automations CRUD', () => {
     test.skip(!automationName, 'No automation was created -- skipping list verification');
 
     await page.goto('/automations');
+    await waitForApp(page, '/automations');
 
     // Wait for list to load
     await expect(
@@ -129,6 +135,7 @@ test.describe('Automations CRUD', () => {
     test.skip(!automationName, 'No automation was created -- skipping detail view');
 
     await page.goto('/automations');
+    await waitForApp(page, '/automations');
 
     // Wait for table
     await expect(page.locator('table')).toBeVisible({ timeout: 15_000 });
