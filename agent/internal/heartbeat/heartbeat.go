@@ -59,10 +59,11 @@ type HeartbeatPayload struct {
 }
 
 type HeartbeatResponse struct {
-	Commands     []Command      `json:"commands"`
-	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
-	UpgradeTo    string         `json:"upgradeTo,omitempty"`
-	RenewCert    bool           `json:"renewCert,omitempty"`
+	Commands      []Command      `json:"commands"`
+	ConfigUpdate  map[string]any `json:"configUpdate,omitempty"`
+	UpgradeTo     string         `json:"upgradeTo,omitempty"`
+	RenewCert     bool           `json:"renewCert,omitempty"`
+	HelperEnabled bool           `json:"helperEnabled,omitempty"`
 }
 
 type Command struct {
@@ -123,6 +124,9 @@ type Heartbeat struct {
 
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing atomic.Bool
+
+	// Helper chat enabled flag from org settings
+	helperEnabled atomic.Bool
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -1261,6 +1265,26 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Handle mTLS cert renewal if signaled by server
 	if response.RenewCert {
 		go h.handleCertRenewal()
+	}
+
+	// Update helper enabled state from org settings
+	h.handleHelperEnabled(response.HelperEnabled)
+}
+
+// IsHelperEnabled returns whether the helper chat is enabled for this device's org.
+func (h *Heartbeat) IsHelperEnabled() bool {
+	return h.helperEnabled.Load()
+}
+
+// handleHelperEnabled updates the helper enabled flag and logs state transitions.
+func (h *Heartbeat) handleHelperEnabled(enabled bool) {
+	prev := h.helperEnabled.Swap(enabled)
+	if prev != enabled {
+		if enabled {
+			log.Info("helper chat enabled for this device")
+		} else {
+			log.Info("helper chat disabled for this device")
+		}
 	}
 }
 

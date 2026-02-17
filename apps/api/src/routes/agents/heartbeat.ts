@@ -16,6 +16,7 @@ import {
   buildPolicyProbeConfigUpdate,
   normalizeAgentArchitecture,
   compareAgentVersions,
+  getOrgHelperSettings,
 } from './helpers';
 
 export const heartbeatRoutes = new Hono();
@@ -151,6 +152,14 @@ heartbeatRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), asyn
     }
   }
 
+  let helperEnabled = false;
+  try {
+    const helperSettings = await getOrgHelperSettings(device.orgId);
+    helperEnabled = helperSettings.enabled;
+  } catch (err) {
+    console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
+  }
+
   return c.json({
     commands: commands.map(cmd => ({
       id: cmd.id,
@@ -159,7 +168,8 @@ heartbeatRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), asyn
     })),
     configUpdate,
     upgradeTo,
-    renewCert: renewCert || undefined
+    renewCert: renewCert || undefined,
+    helperEnabled,
   });
 });
 

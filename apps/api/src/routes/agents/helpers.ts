@@ -806,6 +806,18 @@ export function generateApiKey(): string {
 // mTLS
 // ============================================
 
+export async function getOrgHelperSettings(orgId: string): Promise<{ enabled: boolean }> {
+  const [org] = await db
+    .select({ settings: organizations.settings })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const settings = isObject(org?.settings) ? org.settings : {};
+  const helper = isObject(settings.helper) ? settings.helper : {};
+  const enabled = typeof helper.enabled === 'boolean' ? helper.enabled : false;
+  return { enabled };
+}
+
 export async function getOrgMtlsSettings(orgId: string): Promise<{ certLifetimeDays: number; expiredCertPolicy: 'auto_reissue' | 'quarantine' }> {
   const [org] = await db
     .select({ settings: organizations.settings })

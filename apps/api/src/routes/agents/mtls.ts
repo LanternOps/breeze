@@ -7,8 +7,8 @@ import { devices, organizations } from '../../db/schema';
 import { authMiddleware, requirePermission } from '../../middleware/auth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
-import { orgMtlsSettingsSchema } from '@breeze/shared';
-import { getOrgMtlsSettings, issueMtlsCertForDevice, isObject } from './helpers';
+import { orgMtlsSettingsSchema, orgHelperSettingsSchema } from '@breeze/shared';
+import { getOrgMtlsSettings, getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
 
 export const mtlsRoutes = new Hono();
 
@@ -316,5 +316,80 @@ mtlsRoutes.patch(
     });
 
     return c.json({ success: true, settings: updatedSettings.mtls });
+  }
+);
+
+// ============================================
+// Org Helper Settings (user JWT auth)
+// ============================================
+
+mtlsRoutes.get(
+  '/org/:orgId/settings/helper',
+  authMiddleware,
+  requirePermission('orgs', 'read'),
+  async (c) => {
+    const orgId = c.req.param('orgId');
+    const auth = c.get('auth') as { canAccessOrg?: (id: string) => boolean };
+
+    if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Not authorized' }, 403);
+    }
+
+    const helperSettings = await getOrgHelperSettings(orgId);
+    return c.json(helperSettings);
+  }
+);
+
+mtlsRoutes.patch(
+  '/org/:orgId/settings/helper',
+  authMiddleware,
+  requirePermission('orgs', 'write'),
+  zValidator('json', orgHelperSettingsSchema),
+  async (c) => {
+    const orgId = c.req.param('orgId');
+    const data = c.req.valid('json');
+    const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
+
+    if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Not authorized' }, 403);
+    }
+
+    const [org] = await db
+      .select({ id: organizations.id, settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+
+    if (!org) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+
+    const currentSettings = isObject(org.settings) ? org.settings : {};
+    const updatedSettings = {
+      ...currentSettings,
+      helper: {
+        enabled: data.enabled,
+      },
+    };
+
+    await db
+      .update(organizations)
+      .set({
+        settings: updatedSettings,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, orgId));
+
+    writeAuditEvent(c, {
+      orgId,
+      actorType: 'user',
+      actorId: auth.user?.id ?? 'unknown',
+      action: 'admin.org.helper_settings.update',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: data,
+    });
+
+    return c.json({ success: true, settings: updatedSettings.helper });
   }
 );
