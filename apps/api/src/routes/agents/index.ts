@@ -13,6 +13,7 @@ import { connectionsRoutes } from './connections';
 import { eventLogsRoutes } from './eventlogs';
 import { logsRoutes } from './logs';
 import { mtlsRoutes } from './mtls';
+import { bootPerformanceRoutes } from './bootPerformance';
 
 export const agentRoutes = new Hono();
 
@@ -53,4 +54,5 @@ agentRoutes.route('/', patchesRoutes);
 agentRoutes.route('/', connectionsRoutes);
 agentRoutes.route('/', eventLogsRoutes);
 agentRoutes.route('/', logsRoutes);
+agentRoutes.route('/', bootPerformanceRoutes);
 
