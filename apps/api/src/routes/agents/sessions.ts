@@ -1,42 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceSessions } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
+import { submitSessionsSchema } from './schemas';
 import { parseDate } from './helpers';
-import type { AgentContext } from './helpers';
 
 export const sessionsRoutes = new Hono();
-
-const sessionTypeSchema = z.enum(['console', 'rdp', 'ssh', 'other']);
-const sessionActivityStateSchema = z.enum(['active', 'idle', 'locked', 'away', 'disconnected']);
-const sessionEventTypeSchema = z.enum(['login', 'logout', 'lock', 'unlock', 'switch']);
-
-const submitSessionsSchema = z.object({
-  sessions: z.array(z.object({
-    username: z.string().min(1).max(255),
-    sessionType: sessionTypeSchema,
-    sessionId: z.string().max(128).optional(),
-    loginAt: z.string().optional(),
-    idleMinutes: z.number().int().min(0).max(10080).optional(),
-    activityState: sessionActivityStateSchema.optional(),
-    loginPerformanceSeconds: z.number().int().min(0).max(36000).optional(),
-    isActive: z.boolean().optional(),
-    lastActivityAt: z.string().optional(),
-  })).max(128).default([]),
-  events: z.array(z.object({
-    type: sessionEventTypeSchema,
-    username: z.string().min(1).max(255),
-    sessionType: sessionTypeSchema,
-    sessionId: z.string().max(128).optional(),
-    timestamp: z.string().optional(),
-    activityState: sessionActivityStateSchema.optional(),
-  })).max(256).optional(),
-  collectedAt: z.string().optional(),
-});
 
 function getSessionIdentityKey(input: {
   username: string;
@@ -49,7 +21,7 @@ function getSessionIdentityKey(input: {
 sessionsRoutes.put('/:id/sessions', zValidator('json', submitSessionsSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
-  const agent = c.get('agent') as AgentContext | undefined;
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
 
   const [device] = await db
     .select({

@@ -1,42 +1,18 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, patches, devicePatches } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { parseDate, inferPatchOsType } from './helpers';
-import type { AgentContext } from './helpers';
+import { submitPatchesSchema } from './schemas';
+import { inferPatchOsType, parseDate } from './helpers';
 
 export const patchesRoutes = new Hono();
-
-const submitPatchesSchema = z.object({
-  patches: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    currentVersion: z.string().optional(),
-    kbNumber: z.string().optional(),
-    category: z.string().optional(),
-    severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
-    size: z.number().int().optional(),
-    requiresRestart: z.boolean().optional(),
-    releaseDate: z.string().optional(),
-    description: z.string().optional(),
-    source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom')
-  })),
-  installed: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    category: z.string().optional(),
-    source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
-    installedAt: z.string().optional()
-  })).optional()
-});
 
 patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
-  const agent = c.get('agent') as AgentContext | undefined;
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
   const installedCount = data.installed?.length || 0;
   console.log(`[PATCHES] Agent ${agentId} submitting ${data.patches.length} pending, ${installedCount} installed`);
 

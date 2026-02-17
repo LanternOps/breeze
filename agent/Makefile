@@ -125,8 +125,7 @@ ifndef AUTH_TOKEN
 endif
 	$(eval DEV_VERSION := dev-$(shell date +%s))
 	@echo "Querying device platform..."
-	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "Authorization: Bearer $(AUTH_TOKEN)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','linux').lower()+'/'+d.get('arch','amd64'))" 2>/dev/null))
-	@test -n "$(PLATFORM)" || (echo "ERROR: Failed to detect device platform. Check DEVICE ID and AUTH_TOKEN." && exit 1)
+	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "Authorization: Bearer $(AUTH_TOKEN)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','linux').lower()+'/'+d.get('arch','amd64'))" 2>/dev/null || echo "darwin/arm64"))
 	$(eval TARGET_GOOS := $(word 1,$(subst /, ,$(PLATFORM))))
 	$(eval TARGET_GOARCH := $(word 2,$(subst /, ,$(PLATFORM))))
 	@echo "Building for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION)..."

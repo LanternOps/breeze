@@ -360,7 +360,7 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 	u.client = server.Client()
 
 	// We can't test the full UpdateTo because Restart() would fail,
-	// but we can test the download → verify → backup → replace pipeline manually
+	// but we can test the download -> verify -> backup -> replace pipeline manually
 	tempPath, dlChecksum, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("download: %v", err)

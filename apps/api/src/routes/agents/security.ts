@@ -1,21 +1,18 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { securityStatusIngestSchema } from './schemas';
+import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
 import { upsertSecurityStatusForDevice } from './helpers';
-import type { AgentContext } from './helpers';
 
 export const securityRoutes = new Hono();
 
-// Submit device security status
 securityRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestSchema), async (c) => {
   const agentId = c.req.param('id');
   const payload = c.req.valid('json');
-  const agent = c.get('agent') as AgentContext | undefined;
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
 
   const [device] = await db
     .select({ id: devices.id, orgId: devices.orgId })
@@ -43,39 +40,10 @@ securityRoutes.put('/:id/security/status', zValidator('json', securityStatusInge
   return c.json({ success: true });
 });
 
-// Submit management posture
-const managementPostureIngestSchema = z.object({
-  collectedAt: z.string().datetime(),
-  scanDurationMs: z.number().int().nonnegative(),
-  categories: z.record(
-    z.enum(['mdm', 'rmm', 'remoteAccess', 'endpointSecurity',
-            'policyEngine', 'backup', 'identityMfa', 'siem',
-            'dnsFiltering', 'zeroTrustVpn', 'patchManagement']),
-    z.array(z.object({
-      name: z.string(),
-      version: z.string().optional(),
-      status: z.enum(['active', 'installed', 'unknown']),
-      serviceName: z.string().optional(),
-      details: z.record(z.string(), z.unknown()).optional(),
-    }))
-  ),
-  identity: z.object({
-    joinType: z.enum(['hybrid_azure_ad', 'azure_ad', 'on_prem_ad', 'workplace', 'none']),
-    azureAdJoined: z.boolean(),
-    domainJoined: z.boolean(),
-    workplaceJoined: z.boolean(),
-    domainName: z.string().optional(),
-    tenantId: z.string().optional(),
-    mdmUrl: z.string().optional(),
-    source: z.string(),
-  }),
-  errors: z.array(z.string()).optional(),
-});
-
 securityRoutes.put('/:id/management/posture', zValidator('json', managementPostureIngestSchema), async (c) => {
   const agentId = c.req.param('id');
   const payload = c.req.valid('json');
-  const agent = c.get('agent') as AgentContext | undefined;
+  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
 
   const [device] = await db
     .select({ id: devices.id, orgId: devices.orgId })

@@ -24,6 +24,7 @@ func handleSetLogLevel(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 	switch level {
 	case "debug", "info", "warn", "error":
+		// valid
 	default:
 		return tools.CommandResult{
 			Status: "failed",

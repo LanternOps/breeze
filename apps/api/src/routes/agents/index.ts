@@ -1,17 +1,18 @@
 import { Hono } from 'hono';
 import { agentAuthMiddleware } from '../../middleware/agentAuth';
 import { downloadRoutes } from './download';
-import { enrollRoutes } from './enroll';
+import { enrollmentRoutes } from './enrollment';
 import { heartbeatRoutes } from './heartbeat';
+import { commandsRoutes } from './commands';
 import { securityRoutes } from './security';
-import { commandResultsRoutes } from './commandResults';
 import { inventoryRoutes } from './inventory';
-import { stateReportingRoutes } from './stateReporting';
+import { stateRoutes } from './state';
 import { sessionsRoutes } from './sessions';
 import { patchesRoutes } from './patches';
-import { logsRoutes } from './logs';
+import { connectionsRoutes } from './connections';
+import { eventLogsRoutes } from './eventlogs';
 import { mtlsRoutes } from './mtls';
-import { quarantineRoutes } from './quarantine';
+import { logsRoutes } from './logs';
 
 export const agentRoutes = new Hono();
 
@@ -33,20 +34,25 @@ agentRoutes.use('/:id/*', async (c, next) => {
   return agentAuthMiddleware(c, next);
 });
 
-// Mount fixed-path routes first (before /:id wildcards)
+// Mount static/public routes first
 agentRoutes.route('/', downloadRoutes);
-agentRoutes.route('/', enrollRoutes);
-agentRoutes.route('/', mtlsRoutes);
-agentRoutes.route('/', quarantineRoutes);
 
-// Mount /:id/* routes
+// Mount mTLS routes (special paths like /renew-cert, /quarantined, /org/*)
+agentRoutes.route('/', mtlsRoutes);
+
+// Mount enrollment
+agentRoutes.route('/', enrollmentRoutes);
+
+// Mount all `:id/*` routes
 agentRoutes.route('/', heartbeatRoutes);
+agentRoutes.route('/', commandsRoutes);
 agentRoutes.route('/', securityRoutes);
-agentRoutes.route('/', commandResultsRoutes);
 agentRoutes.route('/', inventoryRoutes);
-agentRoutes.route('/', stateReportingRoutes);
+agentRoutes.route('/', stateRoutes);
 agentRoutes.route('/', sessionsRoutes);
 agentRoutes.route('/', patchesRoutes);
+agentRoutes.route('/', connectionsRoutes);
+agentRoutes.route('/', eventLogsRoutes);
 agentRoutes.route('/', logsRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere

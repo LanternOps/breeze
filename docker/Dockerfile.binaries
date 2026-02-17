@@ -1,0 +1,6 @@
+FROM alpine:3.19
+# Binaries are COPY'd in during CI build (not at runtime)
+COPY agent/ /binaries/agent/
+COPY viewer/ /binaries/viewer/
+COPY VERSION /binaries/VERSION
+ENTRYPOINT ["sh", "-c", "cp -r /binaries/* /target/ && echo 'Binaries synced to volume'"]

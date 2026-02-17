@@ -63,7 +63,7 @@ func (u *Updater) UpdateTo(version string) error {
 	}
 
 	// 4. On Windows, spawn a helper script that swaps the binary externally.
-	//    The script handles: stop service → copy new binary → start service.
+	//    The script handles: stop service -> copy new binary -> start service.
 	//    The agent exits normally after spawning the script.
 	if runtime.GOOS == "windows" {
 		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
@@ -73,7 +73,7 @@ func (u *Updater) UpdateTo(version string) error {
 			}
 			return fmt.Errorf("failed to spawn update helper: %w", err)
 		}
-		// Helper script will handle the rest — agent exits via service stop.
+		// Helper script will handle the rest -- agent exits via service stop.
 		return nil
 	}
 
