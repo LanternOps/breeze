@@ -27,6 +27,12 @@ import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { registerFleetTools } from './aiToolsFleet';
+import {
+  getActiveDeviceContext,
+  getAllDeviceContext,
+  createDeviceContext,
+  resolveDeviceContext,
+} from './brainDeviceContext';
 import { publishEvent } from './eventBus';
 import {
   buildCleanupPreview,
@@ -1349,6 +1355,157 @@ registerTool({
 
 registerFleetTools(aiTools);
 registerAgentLogTools(aiTools);
+
+// ============================================
+// get_device_context - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_device_context',
+    description: 'Retrieve past AI memory/context about a device. Returns known issues, quirks, follow-ups, and preferences from previous interactions. Use this AUTOMATICALLY when asked about a device to recall past conversations and context.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: {
+          type: 'string',
+          description: 'UUID of the device to get context for',
+        },
+        includeResolved: {
+          type: 'boolean',
+          description: 'Include resolved/completed context entries (default: false)',
+          default: false,
+        },
+      },
+      required: ['deviceId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const includeResolved = Boolean(input.includeResolved);
+
+    const results = includeResolved
+      ? await getAllDeviceContext(deviceId, auth)
+      : await getActiveDeviceContext(deviceId, auth);
+
+    if (results.length === 0) {
+      return 'No context found for this device. This is a fresh start with no previous memory.';
+    }
+
+    const formatted = results.map(r => {
+      const status = r.resolvedAt
+        ? 'RESOLVED'
+        : r.expiresAt && r.expiresAt < new Date()
+        ? 'EXPIRED'
+        : 'ACTIVE';
+
+      let output = `[${status}] ${r.contextType.toUpperCase()}: ${r.summary}`;
+      if (r.details) {
+        output += `\nDetails: ${JSON.stringify(r.details, null, 2)}`;
+      }
+      output += `\nRecorded: ${r.createdAt.toISOString()} | ID: ${r.id}`;
+      if (r.resolvedAt) {
+        output += `\nResolved: ${r.resolvedAt.toISOString()}`;
+      }
+      return output;
+    });
+
+    return `Found ${results.length} context entries:\n\n${formatted.join('\n\n---\n\n')}`;
+  },
+});
+
+// ============================================
+// set_device_context - Tier 2 (audit)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'set_device_context',
+    description: 'Record new context/memory about a device for future reference. Use this to remember issues, quirks, follow-ups, or preferences discovered during troubleshooting. This helps maintain continuity across conversations.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: {
+          type: 'string',
+          description: 'UUID of the device',
+        },
+        contextType: {
+          type: 'string',
+          enum: ['issue', 'quirk', 'followup', 'preference'],
+          description: 'Type of context: issue (known problem), quirk (device behavior), followup (action item), preference (user config)',
+        },
+        summary: {
+          type: 'string',
+          description: 'Brief summary (max 255 chars)',
+        },
+        details: {
+          type: 'object',
+          description: 'Optional structured details as JSON object',
+        },
+        expiresInDays: {
+          type: 'number',
+          description: 'Optional expiration in days (1-365). Use for temporary notes or time-bound follow-ups.',
+        },
+      },
+      required: ['deviceId', 'contextType', 'summary'],
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const contextType = input.contextType as 'issue' | 'quirk' | 'followup' | 'preference';
+    const summary = input.summary as string;
+    const details = (input.details as Record<string, unknown>) ?? null;
+    const expiresInDays = input.expiresInDays as number | undefined;
+
+    const expiresAt = expiresInDays
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+      : undefined;
+
+    const result = await createDeviceContext(
+      deviceId,
+      contextType,
+      summary,
+      details,
+      auth,
+      expiresAt
+    );
+
+    if ('error' in result) {
+      return JSON.stringify({ error: result.error });
+    }
+
+    return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.`;
+  },
+});
+
+// ============================================
+// resolve_device_context - Tier 2 (audit)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'resolve_device_context',
+    description: 'Mark a context entry as resolved/completed. Use this when an issue is fixed or a follow-up is completed. Resolved items are hidden from active context but preserved in history.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        contextId: {
+          type: 'string',
+          description: 'UUID of the context entry to resolve',
+        },
+      },
+      required: ['contextId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const contextId = input.contextId as string;
+    await resolveDeviceContext(contextId, auth);
+    return 'Context entry marked as resolved.';
+  },
+});
 
 // ============================================
 // Helper Functions

@@ -171,6 +171,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     delete: { resource: 'reports', action: 'write' },
     history: { resource: 'reports', action: 'read' },
   },
+  // Brain device context tools
+  get_device_context: { resource: 'devices', action: 'read' },
+  set_device_context: { resource: 'devices', action: 'read' },
+  resolve_device_context: { resource: 'devices', action: 'read' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -192,6 +196,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   manage_automations: { limit: 10, windowSeconds: 600 },
   manage_alert_rules: { limit: 15, windowSeconds: 300 },
   generate_report: { limit: 10, windowSeconds: 300 },
+  // Brain device context tools
+  set_device_context: { limit: 20, windowSeconds: 300 },
+  resolve_device_context: { limit: 20, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {
