@@ -315,6 +315,7 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
     }
   } catch (error) {
     console.error('[AutomationWorker] Failed to scan config policy automations:', error);
+    throw error; // Propagate so BullMQ can retry the job
   }
 
   return { due };
@@ -476,6 +477,7 @@ async function resolveDeviceIdsForAssignment(
     }
 
     default:
+      console.warn(`[AutomationWorker] Unknown assignment level: ${assignmentLevel}`);
       return [];
   }
 }
@@ -513,9 +515,10 @@ async function processTriggerConfigPolicySchedule(
         }
       }
       eligibleDeviceIds.push(deviceId);
-    } catch {
-      // If maintenance check fails, include the device anyway
-      eligibleDeviceIds.push(deviceId);
+    } catch (err) {
+      // If maintenance check fails, exclude the device (fail-closed) to avoid
+      // running automations during an active maintenance window we can't verify.
+      console.warn(`[AutomationWorker] Maintenance check failed for device ${deviceId}, excluding from run:`, err);
     }
   }
 
@@ -688,8 +691,10 @@ async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): 
               continue;
             }
           }
-        } catch {
-          // If maintenance check fails, proceed with the automation
+        } catch (err) {
+          // If maintenance check fails, skip this device (fail-closed)
+          console.warn(`[AutomationWorker] Maintenance check failed for device ${deviceId} during event trigger, skipping:`, err);
+          continue;
         }
 
         await queue.add(
@@ -710,6 +715,7 @@ async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): 
     }
   } catch (error) {
     console.error('[AutomationWorker] Failed to queue config policy event triggers:', error);
+    throw error; // Propagate so failures are visible to BullMQ
   }
 }
 

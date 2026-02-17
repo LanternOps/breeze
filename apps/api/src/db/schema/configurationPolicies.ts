@@ -166,6 +166,8 @@ export const configPolicyMaintenanceSettings = pgTable('config_policy_maintenanc
   recurrence: varchar('recurrence', { length: 20 }).notNull().default('weekly'),
   durationHours: integer('duration_hours').notNull().default(2),
   timezone: varchar('timezone', { length: 100 }).notNull().default('UTC'),
+  /** ISO-8601 datetime for 'once' recurrence (e.g. "2026-03-15T02:00:00"). Ignored for other recurrence types. */
+  windowStart: varchar('window_start', { length: 30 }),
   suppressAlerts: boolean('suppress_alerts').notNull().default(true),
   suppressPatching: boolean('suppress_patching').notNull().default(false),
   suppressAutomations: boolean('suppress_automations').notNull().default(false),

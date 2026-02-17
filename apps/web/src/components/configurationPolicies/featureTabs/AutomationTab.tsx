@@ -23,6 +23,7 @@ type AutomationItem = {
   enabled: boolean;
   triggerType: TriggerType;
   cronExpression: string;
+  timezone: string;
   eventType: string;
   actions: Action[];
   onFailure: OnFailure;
@@ -33,10 +34,23 @@ const defaultItem: AutomationItem = {
   enabled: true,
   triggerType: 'schedule',
   cronExpression: '0 */6 * * *',
+  timezone: 'UTC',
   eventType: '',
   actions: [{ type: 'run_script' }],
   onFailure: 'stop',
 };
+
+const timezoneOptions = [
+  { value: 'UTC', label: 'UTC' },
+  { value: 'America/New_York', label: 'Eastern (America/New_York)' },
+  { value: 'America/Chicago', label: 'Central (America/Chicago)' },
+  { value: 'America/Denver', label: 'Mountain (America/Denver)' },
+  { value: 'America/Los_Angeles', label: 'Pacific (America/Los_Angeles)' },
+  { value: 'Europe/London', label: 'Europe/London' },
+  { value: 'Europe/Paris', label: 'Europe/Paris' },
+  { value: 'Asia/Tokyo', label: 'Asia/Tokyo' },
+  { value: 'Australia/Sydney', label: 'Australia/Sydney' },
+];
 
 const triggerOptions: { value: TriggerType; label: string; icon: React.ReactNode }[] = [
   { value: 'schedule', label: 'Schedule', icon: <Clock className="h-3.5 w-3.5" /> },
@@ -90,7 +104,10 @@ function loadItems(existingLink: FeatureTabProps['existingLink']): AutomationIte
 }
 
 function triggerSummary(item: AutomationItem): string {
-  if (item.triggerType === 'schedule') return item.cronExpression || 'No schedule';
+  if (item.triggerType === 'schedule') {
+    const tz = item.timezone && item.timezone !== 'UTC' ? ` (${item.timezone})` : '';
+    return (item.cronExpression || 'No schedule') + tz;
+  }
   if (item.triggerType === 'event') return item.eventType || 'No event';
   return 'Manual';
 }
@@ -325,29 +342,43 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
 
                   {/* Schedule config */}
                   {item.triggerType === 'schedule' && (
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground">Cron Expression</label>
-                      <input
-                        value={item.cronExpression}
-                        onChange={(e) => updateItem(index, { cronExpression: e.target.value })}
-                        placeholder="0 */6 * * *"
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {cronPresets.map((preset) => (
-                          <button
-                            key={preset.value}
-                            type="button"
-                            onClick={() => updateItem(index, { cronExpression: preset.value })}
-                            className={`rounded-md border px-2 py-1 text-xs transition ${
-                              item.cronExpression === preset.value
-                                ? 'border-primary bg-primary/10 text-foreground'
-                                : 'text-muted-foreground hover:bg-muted'
-                            }`}
-                          >
-                            {preset.label}
-                          </button>
-                        ))}
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">Cron Expression</label>
+                        <input
+                          value={item.cronExpression}
+                          onChange={(e) => updateItem(index, { cronExpression: e.target.value })}
+                          placeholder="0 */6 * * *"
+                          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {cronPresets.map((preset) => (
+                            <button
+                              key={preset.value}
+                              type="button"
+                              onClick={() => updateItem(index, { cronExpression: preset.value })}
+                              className={`rounded-md border px-2 py-1 text-xs transition ${
+                                item.cronExpression === preset.value
+                                  ? 'border-primary bg-primary/10 text-foreground'
+                                  : 'text-muted-foreground hover:bg-muted'
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">Timezone</label>
+                        <select
+                          value={item.timezone || 'UTC'}
+                          onChange={(e) => updateItem(index, { timezone: e.target.value })}
+                          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
+                        >
+                          {timezoneOptions.map((tz) => (
+                            <option key={tz.value} value={tz.value}>{tz.label}</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
                   )}

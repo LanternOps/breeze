@@ -618,8 +618,8 @@ export function isInMaintenanceWindow(
     localNow = new Date(
       `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`
     );
-  } catch {
-    // If timezone is invalid, fall back to UTC
+  } catch (err) {
+    console.warn(`[FeatureConfigResolver] Invalid timezone "${settings.timezone}", falling back to UTC:`, err);
     localNow = currentTime;
   }
 
@@ -629,6 +629,22 @@ export function isInMaintenanceWindow(
   let windowStart: Date;
 
   switch (settings.recurrence) {
+    case 'once': {
+      // Window starts at the stored windowStart datetime (in the configured timezone).
+      // If no windowStart is stored, treat as inactive.
+      if (!settings.windowStart) {
+        return inactive;
+      }
+      try {
+        windowStart = new Date(settings.windowStart);
+        if (Number.isNaN(windowStart.getTime())) {
+          return inactive;
+        }
+      } catch {
+        return inactive;
+      }
+      break;
+    }
     case 'daily': {
       // Window starts at midnight local time each day
       windowStart = new Date(localNow);

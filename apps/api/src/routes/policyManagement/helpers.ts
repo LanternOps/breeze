@@ -1,6 +1,13 @@
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { automationPolicies, automationPolicyCompliance } from '../../db/schema';
+import {
+  automationPolicies,
+  automationPolicyCompliance,
+  configPolicyFeatureLinks,
+  configPolicyComplianceRules,
+  configurationPolicies,
+  devices,
+} from '../../db/schema';
 import { AuthContext, TargetType, targetTypeSchema, uuidRegex } from './schemas';
 
 export { getPagination } from '../../utils/pagination';
@@ -317,6 +324,7 @@ export async function getPolicyComplianceMap(policyIds: string[]) {
 
   const grouped = new Map<string, Array<{ status: string; count: number }>>();
   for (const row of rows) {
+    if (!row.policyId) continue;
     const policyRows = grouped.get(row.policyId) ?? [];
     policyRows.push({ status: row.status, count: Number(row.count) });
     grouped.set(row.policyId, policyRows);
@@ -328,4 +336,272 @@ export async function getPolicyComplianceMap(policyIds: string[]) {
   }
 
   return complianceMap;
+}
+
+// ============================================
+// Config Policy Compliance Helpers
+// ============================================
+
+export type ConfigPolicyComplianceInfo = {
+  configPolicyId: string;
+  configPolicyName: string;
+  featureLinkId: string;
+  complianceRuleId: string;
+  complianceRuleName: string;
+  enforcementLevel: string;
+};
+
+/**
+ * Fetches config policy compliance rule metadata for config policies within the given org IDs.
+ * Returns a map keyed by featureLinkId (which is stored as configPolicyId in automationPolicyCompliance).
+ */
+export async function getConfigPolicyComplianceRuleInfo(
+  orgIds: string[]
+): Promise<Map<string, ConfigPolicyComplianceInfo[]>> {
+  if (orgIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = await db
+    .select({
+      configPolicyId: configurationPolicies.id,
+      configPolicyName: configurationPolicies.name,
+      featureLinkId: configPolicyFeatureLinks.id,
+      complianceRuleId: configPolicyComplianceRules.id,
+      complianceRuleName: configPolicyComplianceRules.name,
+      enforcementLevel: configPolicyComplianceRules.enforcementLevel,
+    })
+    .from(configPolicyComplianceRules)
+    .innerJoin(
+      configPolicyFeatureLinks,
+      eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
+    )
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .where(inArray(configurationPolicies.orgId, orgIds));
+
+  const infoMap = new Map<string, ConfigPolicyComplianceInfo[]>();
+  for (const row of rows) {
+    const existing = infoMap.get(row.featureLinkId) ?? [];
+    existing.push({
+      configPolicyId: row.configPolicyId,
+      configPolicyName: row.configPolicyName,
+      featureLinkId: row.featureLinkId,
+      complianceRuleId: row.complianceRuleId,
+      complianceRuleName: row.complianceRuleName,
+      enforcementLevel: row.enforcementLevel,
+    });
+    infoMap.set(row.featureLinkId, existing);
+  }
+
+  return infoMap;
+}
+
+/**
+ * Gets aggregate compliance stats for config policy compliance rows (those with policyId IS NULL
+ * and configPolicyId IS NOT NULL), scoped to a set of featureLinkIds.
+ */
+export async function getConfigPolicyComplianceStats(
+  featureLinkIds: string[]
+): Promise<{
+  complianceRows: Array<{ status: string; count: number }>;
+  byFeatureLink: Map<string, ReturnType<typeof buildComplianceSummary>>;
+}> {
+  if (featureLinkIds.length === 0) {
+    return {
+      complianceRows: [],
+      byFeatureLink: new Map(),
+    };
+  }
+
+  const rows = await db
+    .select({
+      configPolicyId: automationPolicyCompliance.configPolicyId,
+      status: automationPolicyCompliance.status,
+      count: sql<number>`count(*)`,
+    })
+    .from(automationPolicyCompliance)
+    .where(
+      and(
+        isNull(automationPolicyCompliance.policyId),
+        isNotNull(automationPolicyCompliance.configPolicyId),
+        inArray(automationPolicyCompliance.configPolicyId, featureLinkIds)
+      )
+    )
+    .groupBy(automationPolicyCompliance.configPolicyId, automationPolicyCompliance.status);
+
+  // Aggregate totals
+  const aggregateMap = new Map<string, number>();
+  const byFeatureLinkGrouped = new Map<string, Array<{ status: string; count: number }>>();
+
+  for (const row of rows) {
+    if (!row.configPolicyId) continue;
+    const count = Number(row.count);
+
+    // Aggregate across all feature links
+    aggregateMap.set(row.status, (aggregateMap.get(row.status) ?? 0) + count);
+
+    // Per feature link
+    const featureLinkRows = byFeatureLinkGrouped.get(row.configPolicyId) ?? [];
+    featureLinkRows.push({ status: row.status, count });
+    byFeatureLinkGrouped.set(row.configPolicyId, featureLinkRows);
+  }
+
+  const complianceRows = Array.from(aggregateMap.entries()).map(([status, count]) => ({
+    status,
+    count,
+  }));
+
+  const byFeatureLink = new Map<string, ReturnType<typeof buildComplianceSummary>>();
+  for (const [featureLinkId, statusRows] of byFeatureLinkGrouped.entries()) {
+    byFeatureLink.set(featureLinkId, buildComplianceSummary(statusRows));
+  }
+
+  return { complianceRows, byFeatureLink };
+}
+
+/**
+ * Fetches non-compliant config policy compliance rows with device info, scoped to featureLinkIds.
+ */
+export async function getConfigPolicyNonCompliantDevices(
+  featureLinkIds: string[],
+  ruleInfoMap: Map<string, ConfigPolicyComplianceInfo[]>
+) {
+  if (featureLinkIds.length === 0) {
+    return [];
+  }
+
+  const violationRows = await db
+    .select({
+      configPolicyId: automationPolicyCompliance.configPolicyId,
+      configItemName: automationPolicyCompliance.configItemName,
+      status: automationPolicyCompliance.status,
+      details: automationPolicyCompliance.details,
+      lastCheckedAt: automationPolicyCompliance.lastCheckedAt,
+      deviceId: devices.id,
+      hostname: devices.hostname,
+    })
+    .from(automationPolicyCompliance)
+    .innerJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
+    .where(
+      and(
+        isNull(automationPolicyCompliance.policyId),
+        isNotNull(automationPolicyCompliance.configPolicyId),
+        inArray(automationPolicyCompliance.configPolicyId, featureLinkIds),
+        eq(automationPolicyCompliance.status, 'non_compliant')
+      )
+    );
+
+  const deviceMap = new Map<string, {
+    deviceId: string;
+    deviceName: string;
+    status: 'non_compliant';
+    violations: Array<{
+      policyId: string;
+      policyName: string;
+      ruleName: string;
+      message: string;
+    }>;
+    lastCheckedAt: string;
+  }>();
+
+  for (const row of violationRows) {
+    if (!row.configPolicyId) continue;
+
+    const ruleInfos = ruleInfoMap.get(row.configPolicyId) ?? [];
+    // Find the matching rule info by configItemName
+    const matchingInfo = ruleInfos.find((info) => info.complianceRuleName === row.configItemName);
+    const policyName = matchingInfo?.configPolicyName ?? 'Configuration Policy';
+    const ruleName = row.configItemName ?? 'Compliance rule';
+    const policyIdForDisplay = matchingInfo?.configPolicyId ?? row.configPolicyId;
+
+    const existing = deviceMap.get(row.deviceId) ?? {
+      deviceId: row.deviceId,
+      deviceName: row.hostname,
+      status: 'non_compliant' as const,
+      violations: [],
+      lastCheckedAt: row.lastCheckedAt?.toISOString() ?? new Date().toISOString(),
+    };
+
+    const violations = extractViolationsFromComplianceDetails(
+      row.details,
+      policyIdForDisplay,
+      `${policyName}: ${ruleName}`
+    );
+    existing.violations.push(...violations);
+
+    if (row.lastCheckedAt && row.lastCheckedAt.toISOString() > existing.lastCheckedAt) {
+      existing.lastCheckedAt = row.lastCheckedAt.toISOString();
+    }
+
+    deviceMap.set(row.deviceId, existing);
+  }
+
+  return Array.from(deviceMap.values()).map((device) => {
+    const dedupedViolations = Array.from(
+      new Map(
+        device.violations.map((violation) => [
+          `${violation.policyId}:${violation.ruleName}:${violation.message}`,
+          violation,
+        ])
+      ).values()
+    );
+
+    return {
+      ...device,
+      violations: dedupedViolations,
+      violationCount: dedupedViolations.length,
+    };
+  });
+}
+
+/**
+ * Gets config policy compliance results for a specific device.
+ */
+export async function getConfigPolicyComplianceForDevice(
+  deviceId: string,
+  orgIds: string[]
+) {
+  if (orgIds.length === 0) {
+    return { rows: [], ruleInfoMap: new Map<string, ConfigPolicyComplianceInfo[]>() };
+  }
+
+  const rows = await db
+    .select({
+      id: automationPolicyCompliance.id,
+      policyId: automationPolicyCompliance.policyId,
+      configPolicyId: automationPolicyCompliance.configPolicyId,
+      configItemName: automationPolicyCompliance.configItemName,
+      deviceId: automationPolicyCompliance.deviceId,
+      status: automationPolicyCompliance.status,
+      details: automationPolicyCompliance.details,
+      lastCheckedAt: automationPolicyCompliance.lastCheckedAt,
+      remediationAttempts: automationPolicyCompliance.remediationAttempts,
+      updatedAt: automationPolicyCompliance.updatedAt,
+      deviceHostname: devices.hostname,
+      deviceStatus: devices.status,
+      deviceOsType: devices.osType,
+    })
+    .from(automationPolicyCompliance)
+    .leftJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
+    .where(
+      and(
+        eq(automationPolicyCompliance.deviceId, deviceId),
+        isNull(automationPolicyCompliance.policyId),
+        isNotNull(automationPolicyCompliance.configPolicyId)
+      )
+    );
+
+  // Get the featureLinkIds from the results and load rule info
+  const featureLinkIds = [...new Set(rows.map((r) => r.configPolicyId).filter(Boolean) as string[])];
+  const ruleInfoMap = featureLinkIds.length > 0
+    ? await getConfigPolicyComplianceRuleInfo(orgIds)
+    : new Map<string, ConfigPolicyComplianceInfo[]>();
+
+  return { rows, ruleInfoMap };
 }

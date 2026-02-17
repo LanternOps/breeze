@@ -21,7 +21,7 @@ import {
   scanDueComplianceChecks,
 } from './featureConfigResolver';
 
-export type EvaluationStatus = 'compliant' | 'non_compliant';
+export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
 
 type PolicyRow = typeof automationPolicies.$inferSelect;
 
@@ -378,11 +378,13 @@ function evaluateRequiredSoftwareRule(
   }
 
   const operatorValue = readString(rule.raw.versionOperator)?.toLowerCase();
-  const versionOperator: VersionOperator = operatorValue === 'exact'
-    || operatorValue === 'minimum'
-    || operatorValue === 'maximum'
-    ? operatorValue
-    : 'any';
+  const versionOperator: VersionOperator = operatorValue === 'exact' || operatorValue === 'eq'
+    ? 'exact'
+    : operatorValue === 'minimum' || operatorValue === 'gte' || operatorValue === 'gt'
+      ? 'minimum'
+      : operatorValue === 'maximum' || operatorValue === 'lte'
+        ? 'maximum'
+        : 'any';
 
   const requiredVersion = readString(rule.raw.softwareVersion);
   if (versionOperator !== 'any' && !requiredVersion) {
@@ -423,12 +425,12 @@ function evaluateProhibitedSoftwareRule(
   rule: ParsedRule,
   context: DeviceEvaluationContext
 ): RuleEvaluationDetail {
-  const softwareName = readString(rule.raw.softwareName);
+  const softwareName = readString(rule.raw.prohibitedName ?? rule.raw.softwareName);
   if (!softwareName) {
     return {
       ruleType: rule.type,
       passed: false,
-      message: 'Prohibited software rule is missing softwareName.',
+      message: 'Prohibited software rule is missing prohibitedName.',
     };
   }
 
@@ -473,12 +475,12 @@ function evaluateDiskSpaceRule(
   rule: ParsedRule,
   context: DeviceEvaluationContext
 ): RuleEvaluationDetail {
-  const minimumFreeGb = readNumber(rule.raw.diskSpaceGB);
+  const minimumFreeGb = readNumber(rule.raw.minGb ?? rule.raw.diskSpaceGB);
   if (minimumFreeGb === null) {
     return {
       ruleType: rule.type,
       passed: false,
-      message: 'Disk space rule is missing diskSpaceGB.',
+      message: 'Disk space rule is missing minGb.',
     };
   }
 
@@ -525,7 +527,7 @@ function evaluateOsVersionRule(
   context: DeviceEvaluationContext
 ): RuleEvaluationDetail {
   const requiredOsType = readString(rule.raw.osType)?.toLowerCase() ?? 'any';
-  const requiredMinVersion = readString(rule.raw.osMinVersion);
+  const requiredMinVersion = readString(rule.raw.minOsVersion ?? rule.raw.osMinVersion);
   const currentOsType = context.device.osType.toLowerCase();
 
   if (requiredOsType !== 'any' && currentOsType !== requiredOsType) {
@@ -1120,8 +1122,8 @@ async function triggerRemediationAutomation(
           ],
         })
         .where(eq(automationRuns.id, run.id));
-    } catch {
-      // Non-critical completion simulation.
+    } catch (err) {
+      console.error(`[PolicyEvaluation] Failed to update remediation run ${run.id}:`, err);
     }
   }, 1000);
 
@@ -1761,8 +1763,8 @@ async function triggerConfigPolicyRemediation(
           ],
         })
         .where(eq(automationRuns.id, run.id));
-    } catch {
-      // Non-critical completion simulation.
+    } catch (err) {
+      console.error(`[PolicyEvaluation] Failed to update config policy remediation run ${run.id}:`, err);
     }
   }, 1000);
 
@@ -1818,6 +1820,7 @@ async function resolveDevicesForAssignmentTarget(
       return deviceRows.map((r) => r.id);
     }
     default: {
+      console.warn(`[PolicyEvaluation] Unknown assignment level: ${level}`);
       return [];
     }
   }

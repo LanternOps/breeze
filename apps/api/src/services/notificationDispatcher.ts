@@ -146,7 +146,11 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     console.error('[NotificationDispatcher] Failed to send in-app notifications:', error);
   }
 
-  // Get rule for channel configuration
+  // Get rule for channel configuration (ruleId is null for config policy alerts)
+  if (!alert.ruleId) {
+    return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
+  }
+
   const [rule] = await db
     .select()
     .from(alertRules)
@@ -463,12 +467,12 @@ async function sendWebhookChannelNotification(
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
-  // Get rule for additional context
-  const [rule] = await db
+  // Get rule for additional context (ruleId may be null for config policy alerts)
+  const rule = alert.ruleId ? (await db
     .select()
     .from(alertRules)
     .where(eq(alertRules.id, alert.ruleId))
-    .limit(1);
+    .limit(1))[0] : undefined;
 
   return sendWebhookNotification(config, {
     alertId: alert.id,
@@ -476,11 +480,11 @@ async function sendWebhookChannelNotification(
     severity: alert.severity,
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
-    deviceName: device?.displayName || device?.hostname,
+    deviceName: device?.displayName ?? device?.hostname ?? undefined,
     orgId: alert.orgId,
     orgName: org?.name,
     triggeredAt: alert.triggeredAt.toISOString(),
-    ruleId: alert.ruleId,
+    ruleId: alert.ruleId ?? undefined,
     ruleName: rule?.name,
     context: alert.context as Record<string, unknown>
   });
@@ -520,11 +524,11 @@ async function sendChatWebhookChannelNotification(
       severity: alert.severity,
       summary: alert.message || alert.title,
       deviceId: alert.deviceId,
-      deviceName: device?.displayName || device?.hostname,
+      deviceName: device?.displayName ?? device?.hostname ?? undefined,
       orgId: alert.orgId,
       orgName: org?.name,
       triggeredAt: alert.triggeredAt.toISOString(),
-      ruleId: alert.ruleId,
+      ruleId: alert.ruleId ?? undefined,
       context: {
         dashboardUrl: dashboardUrl ? ` ${dashboardUrl}` : ''
       }
@@ -580,11 +584,11 @@ async function sendPagerDutyChannelNotification(
     severity: alert.severity as AlertSeverity,
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
-    deviceName: device?.displayName || device?.hostname,
+    deviceName: device?.displayName ?? device?.hostname ?? undefined,
     orgId: alert.orgId,
     orgName: org?.name,
     triggeredAt: alert.triggeredAt.toISOString(),
-    ruleId: alert.ruleId,
+    ruleId: alert.ruleId ?? undefined,
     dashboardUrl
   });
 

@@ -79,7 +79,8 @@ export async function createConfigPolicy(
       createdBy: userId,
     })
     .returning();
-  return policy!;
+  if (!policy) throw new Error('Failed to create configuration policy');
+  return policy;
 }
 
 export async function getConfigPolicy(id: string, auth: AuthContext) {
@@ -119,7 +120,9 @@ export async function listConfigPolicies(
     conditions.push(eq(configurationPolicies.status, filters.status as 'active' | 'inactive' | 'archived'));
   }
   if (filters.search) {
-    conditions.push(sql`${configurationPolicies.name} ILIKE ${'%' + filters.search + '%'}`);
+    // Escape LIKE special characters to prevent pattern injection
+    const escaped = filters.search.replace(/[%_\\]/g, '\\$&');
+    conditions.push(sql`${configurationPolicies.name} ILIKE ${'%' + escaped + '%'}`);
   }
 
   const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -163,10 +166,11 @@ export async function updateConfigPolicy(
   const [updated] = await db
     .update(configurationPolicies)
     .set(updates)
-    .where(eq(configurationPolicies.id, id))
+    .where(and(...conditions))
     .returning();
 
-  return updated!;
+  if (!updated) return null;
+  return updated;
 }
 
 export async function deleteConfigPolicy(id: string, auth: AuthContext) {
@@ -174,11 +178,11 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
   const orgCond = auth.orgCondition(configurationPolicies.orgId);
   if (orgCond) conditions.push(orgCond);
 
-  const [existing] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
-  if (!existing) return null;
-
-  await db.delete(configurationPolicies).where(eq(configurationPolicies.id, id));
-  return existing;
+  const [deleted] = await db
+    .delete(configurationPolicies)
+    .where(and(...conditions))
+    .returning();
+  return deleted ?? null;
 }
 
 // ============================================
@@ -233,9 +237,9 @@ async function decomposeInlineSettings(
             featureLinkId: linkId,
             name: String(item.name ?? `Automation ${idx + 1}`),
             enabled: typeof item.enabled === 'boolean' ? item.enabled : true,
-            triggerType: String(item.triggerType ?? 'scheduled'),
+            triggerType: String(item.triggerType ?? 'schedule'),
             cronExpression: typeof item.cronExpression === 'string' ? item.cronExpression : null,
-            timezone: typeof item.timezone === 'string' ? item.timezone : null,
+            timezone: typeof item.timezone === 'string' && item.timezone.length > 0 ? item.timezone : 'UTC',
             eventType: typeof item.eventType === 'string' ? item.eventType : null,
             actions: item.actions ?? [],
             onFailure: (VALID_ON_FAILURE.includes(item.onFailure as OnFailure) ? item.onFailure : 'stop') as OnFailure,
@@ -287,6 +291,7 @@ async function decomposeInlineSettings(
         recurrence: typeof s.recurrence === 'string' ? s.recurrence : 'weekly',
         durationHours: typeof s.durationHours === 'number' ? s.durationHours : 2,
         timezone: typeof s.timezone === 'string' ? s.timezone : 'UTC',
+        windowStart: typeof s.windowStart === 'string' ? s.windowStart : null,
         suppressAlerts: typeof s.suppressAlerts === 'boolean' ? s.suppressAlerts : true,
         suppressPatching: typeof s.suppressPatching === 'boolean' ? s.suppressPatching : false,
         suppressAutomations: typeof s.suppressAutomations === 'boolean' ? s.suppressAutomations : false,
@@ -417,7 +422,7 @@ async function assembleInlineSettings(
       return {
         sources: row.sources,
         autoApprove: row.autoApprove,
-        autoApproveSeverities: row.autoApproveSeverities,
+        autoApproveSeverities: row.autoApproveSeverities ?? [],
         scheduleFrequency: row.scheduleFrequency,
         scheduleTime: row.scheduleTime,
         scheduleDayOfWeek: row.scheduleDayOfWeek,
@@ -437,6 +442,7 @@ async function assembleInlineSettings(
         recurrence: row.recurrence,
         durationHours: row.durationHours,
         timezone: row.timezone,
+        windowStart: row.windowStart,
         suppressAlerts: row.suppressAlerts,
         suppressPatching: row.suppressPatching,
         suppressAutomations: row.suppressAutomations,
@@ -473,25 +479,32 @@ export async function addFeatureLink(
       })
       .returning();
 
+    if (!link) throw new Error('Failed to create feature link');
+
     // Decompose inlineSettings into normalized per-feature table
     if (inlineSettings) {
-      await decomposeInlineSettings(link!.id, featureType, inlineSettings, tx);
+      await decomposeInlineSettings(link.id, featureType, inlineSettings, tx);
     }
 
-    return link!;
+    return link;
   });
 }
 
 export async function updateFeatureLink(
   linkId: string,
-  updates: { featurePolicyId?: string | null; inlineSettings?: unknown }
+  updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
+  configPolicyId?: string
 ) {
   return db.transaction(async (tx) => {
-    // Fetch current link to get featureType
+    // Fetch current link to get featureType, scoped to configPolicyId when provided
+    const conditions = [eq(configPolicyFeatureLinks.id, linkId)];
+    if (configPolicyId) {
+      conditions.push(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+    }
     const [existing] = await tx
       .select()
       .from(configPolicyFeatureLinks)
-      .where(eq(configPolicyFeatureLinks.id, linkId))
+      .where(and(...conditions))
       .limit(1);
     if (!existing) return null;
 
@@ -518,10 +531,15 @@ export async function updateFeatureLink(
   });
 }
 
-export async function removeFeatureLink(linkId: string) {
+export async function removeFeatureLink(linkId: string, configPolicyId: string) {
   const [deleted] = await db
     .delete(configPolicyFeatureLinks)
-    .where(eq(configPolicyFeatureLinks.id, linkId))
+    .where(
+      and(
+        eq(configPolicyFeatureLinks.id, linkId),
+        eq(configPolicyFeatureLinks.configPolicyId, configPolicyId)
+      )
+    )
     .returning();
   return deleted ?? null;
 }
@@ -569,13 +587,19 @@ export async function assignPolicy(
       assignedBy: userId,
     })
     .returning();
-  return assignment!;
+  if (!assignment) throw new Error('Failed to create policy assignment');
+  return assignment;
 }
 
-export async function unassignPolicy(assignmentId: string) {
+export async function unassignPolicy(assignmentId: string, configPolicyId: string) {
   const [deleted] = await db
     .delete(configPolicyAssignments)
-    .where(eq(configPolicyAssignments.id, assignmentId))
+    .where(
+      and(
+        eq(configPolicyAssignments.id, assignmentId),
+        eq(configPolicyAssignments.configPolicyId, configPolicyId)
+      )
+    )
     .returning();
   return deleted ?? null;
 }
@@ -594,6 +618,7 @@ export async function listAssignmentsForTarget(level: ConfigAssignmentLevel, tar
       assignment: configPolicyAssignments,
       policyName: configurationPolicies.name,
       policyStatus: configurationPolicies.status,
+      policyOrgId: configurationPolicies.orgId,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
@@ -763,46 +788,45 @@ export async function previewEffectiveConfig(
   changes: { add?: Array<{ configPolicyId: string; level: ConfigAssignmentLevel; targetId: string; priority?: number }>; remove?: string[] },
   auth: AuthContext
 ): Promise<{ current: EffectiveConfiguration | null; proposed: EffectiveConfiguration | null } | null> {
+  // Resolve current config outside the transaction (read-only)
   const current = await resolveEffectiveConfig(deviceId, auth);
   if (!current) return null;
 
-  // Apply changes temporarily
-  if (changes.add?.length) {
-    for (const assignment of changes.add) {
-      await db.insert(configPolicyAssignments).values({
-        configPolicyId: assignment.configPolicyId,
-        level: assignment.level,
-        targetId: assignment.targetId,
-        priority: assignment.priority ?? 0,
-        assignedBy: auth.user.id,
-      }).onConflictDoNothing();
-    }
-  }
+  // Use a transaction with forced rollback so changes are never committed.
+  // This is safe for both adds and removes — the DB state is always restored.
+  class PreviewRollback extends Error {}
 
-  if (changes.remove?.length) {
-    await db.delete(configPolicyAssignments).where(
-      inArray(configPolicyAssignments.id, changes.remove)
-    );
-  }
+  let proposed: EffectiveConfiguration | null = null;
+  try {
+    await db.transaction(async (tx) => {
+      // Apply proposed additions
+      if (changes.add?.length) {
+        for (const assignment of changes.add) {
+          await tx.insert(configPolicyAssignments).values({
+            configPolicyId: assignment.configPolicyId,
+            level: assignment.level,
+            targetId: assignment.targetId,
+            priority: assignment.priority ?? 0,
+            assignedBy: auth.user.id,
+          }).onConflictDoNothing();
+        }
+      }
 
-  const proposed = await resolveEffectiveConfig(deviceId, auth);
+      // Apply proposed removals
+      if (changes.remove?.length) {
+        await tx.delete(configPolicyAssignments).where(
+          inArray(configPolicyAssignments.id, changes.remove)
+        );
+      }
 
-  // Rollback changes
-  if (changes.add?.length) {
-    for (const assignment of changes.add) {
-      await db.delete(configPolicyAssignments).where(
-        and(
-          eq(configPolicyAssignments.configPolicyId, assignment.configPolicyId),
-          eq(configPolicyAssignments.level, assignment.level),
-          eq(configPolicyAssignments.targetId, assignment.targetId)
-        )
-      );
-    }
-  }
+      // Resolve the proposed config within the transaction's view
+      proposed = await resolveEffectiveConfig(deviceId, auth);
 
-  if (changes.remove?.length) {
-    // We can't easily restore deleted rows, so this preview is destructive for removals.
-    // A transaction-based approach would be better for production use.
+      // Force rollback — no changes are persisted
+      throw new PreviewRollback();
+    });
+  } catch (err) {
+    if (!(err instanceof PreviewRollback)) throw err;
   }
 
   return { current, proposed };

@@ -11,7 +11,7 @@ import {
   devices,
 } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
-import { setCooldown } from '../../services/alertCooldown';
+import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema } from './schemas';
@@ -343,6 +343,11 @@ alertsRoutes.post(
           template?.cooldownMinutes ?? 15;
         await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
       }
+    } else if (alert.configPolicyId) {
+      // Config policy alert — cooldownMinutes stored in alert context
+      const ctx = alert.context as Record<string, unknown> | null;
+      const cooldownMinutes = typeof ctx?.cooldownMinutes === 'number' ? ctx.cooldownMinutes : 5;
+      await markConfigPolicyRuleCooldown(alert.configPolicyId, alert.deviceId, cooldownMinutes);
     }
 
     try {

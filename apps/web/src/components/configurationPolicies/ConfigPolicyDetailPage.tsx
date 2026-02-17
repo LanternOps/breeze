@@ -13,7 +13,6 @@ import {
   Link2,
   HardDrive,
   Shield,
-  Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -23,7 +22,6 @@ import PatchTab from './featureTabs/PatchTab';
 import AlertRuleTab from './featureTabs/AlertRuleTab';
 import BackupTab from './featureTabs/BackupTab';
 import SecurityTab from './featureTabs/SecurityTab';
-import MonitoringTab from './featureTabs/MonitoringTab';
 import MaintenanceTab from './featureTabs/MaintenanceTab';
 import ComplianceTab from './featureTabs/ComplianceTab';
 import AutomationTab from './featureTabs/AutomationTab';
@@ -69,13 +67,12 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   alert_rule: <Bell className="h-4 w-4" />,
   backup: <HardDrive className="h-4 w-4" />,
   security: <Shield className="h-4 w-4" />,
-  monitoring: <Activity className="h-4 w-4" />,
   maintenance: <Wrench className="h-4 w-4" />,
   compliance: <ClipboardCheck className="h-4 w-4" />,
   automation: <Zap className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'maintenance', 'compliance', 'automation'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -346,7 +343,6 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       case 'alert_rule': return <AlertRuleTab {...props} />;
       case 'backup': return <BackupTab {...props} />;
       case 'security': return <SecurityTab {...props} />;
-      case 'monitoring': return <MonitoringTab {...props} />;
       case 'maintenance': return <MaintenanceTab {...props} />;
       case 'compliance': return <ComplianceTab {...props} />;
       case 'automation': return <AutomationTab {...props} />;

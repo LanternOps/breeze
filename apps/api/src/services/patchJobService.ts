@@ -14,7 +14,7 @@ import {
   configurationPolicies,
 } from '../db/schema';
 import { eq, and, asc } from 'drizzle-orm';
-import { resolvePatchConfigForDevice } from './featureConfigResolver';
+import { resolvePatchConfigForDevice, checkDeviceMaintenanceWindow } from './featureConfigResolver';
 
 // ============================================
 // Types
@@ -56,13 +56,15 @@ function buildJobName(settings: PatchSettings): string {
  * instead of the legacy `patchPolicies` table.
  *
  * - `policyId` is set to null (no legacy policy link).
- * - `configPolicyId` is set to the `featureLinkId` from the resolved settings.
+ * - `configPolicyId` is set to the actual configuration policy ID
+ *   (resolved via the feature link's `configPolicyId` column).
  * - Sources, schedule, etc. are taken directly from the typed columns.
  */
 export async function createPatchJobFromConfigPolicy(
   deviceId: string,
   patchSettings: PatchSettings,
-  orgId: string
+  orgId: string,
+  configPolicyId: string
 ): Promise<CreatePatchJobFromConfigPolicyResult> {
   const name = buildJobName(patchSettings);
 
@@ -71,7 +73,7 @@ export async function createPatchJobFromConfigPolicy(
     .values({
       orgId,
       policyId: null,
-      configPolicyId: patchSettings.featureLinkId,
+      configPolicyId,
       name,
       patches: {
         sources: patchSettings.sources,
@@ -89,7 +91,8 @@ export async function createPatchJobFromConfigPolicy(
     })
     .returning();
 
-  return { job: job! };
+  if (!job) throw new Error('Failed to create patch job');
+  return { job };
 }
 
 // ============================================
@@ -100,16 +103,36 @@ export async function createPatchJobFromConfigPolicy(
  * Resolves the config-policy patch settings for a device via
  * the hierarchy, then creates a patch job if settings exist.
  *
- * Returns `null` when no config policy patch settings apply to this device.
+ * Looks up the actual `configPolicyId` from the feature link
+ * so the patch job references the configuration policy, not the
+ * feature link.
+ *
+ * Returns `null` when no config policy patch settings apply to this device,
+ * or when the device is in a maintenance window with patching suppressed.
  */
 export async function createPatchJobForDeviceFromPolicy(
   deviceId: string,
   orgId: string
 ): Promise<CreatePatchJobFromConfigPolicyResult | null> {
+  // Check if patching is suppressed by an active maintenance window
+  const maintenanceStatus = await checkDeviceMaintenanceWindow(deviceId);
+  if (maintenanceStatus.active && maintenanceStatus.suppressPatching) {
+    return null;
+  }
+
   const settings = await resolvePatchConfigForDevice(deviceId);
   if (!settings) return null;
 
-  return createPatchJobFromConfigPolicy(deviceId, settings, orgId);
+  // Resolve the configPolicyId from the feature link
+  const [featureLink] = await db
+    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
+    .from(configPolicyFeatureLinks)
+    .where(eq(configPolicyFeatureLinks.id, settings.featureLinkId))
+    .limit(1);
+
+  if (!featureLink) return null;
+
+  return createPatchJobFromConfigPolicy(deviceId, settings, orgId, featureLink.configPolicyId);
 }
 
 // ============================================
