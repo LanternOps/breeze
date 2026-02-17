@@ -13,6 +13,7 @@ import {
   deviceNetwork,
   deviceDisks,
   deviceMetrics,
+  deviceBootMetrics,
   alerts,
   sites,
   organizations,
@@ -26,7 +27,14 @@ import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
 import { registerAgentLogTools } from './aiToolsAgentLogs';
+import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 import { registerFleetTools } from './aiToolsFleet';
+import {
+  getActiveDeviceContext,
+  getAllDeviceContext,
+  createDeviceContext,
+  resolveDeviceContext,
+} from './brainDeviceContext';
 import { publishEvent } from './eventBus';
 import {
   buildCleanupPreview,
@@ -1344,11 +1352,390 @@ registerTool({
 });
 
 // ============================================
+// Boot Performance Tools
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'analyze_boot_performance',
+    description: 'Analyze boot performance and startup items for a device. Returns boot time history, slowest startup items by impact score, and optimization recommendations.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'The device UUID' },
+        bootsBack: { type: 'number', description: 'Number of recent boots to analyze (default: 10, max: 30)' },
+        triggerCollection: { type: 'boolean', description: 'If true and device is online, trigger fresh collection before analysis (default: false)' }
+      },
+      required: ['deviceId']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const bootsBack = Math.min(Number(input.bootsBack) || 10, 30);
+    const triggerCollection = Boolean(input.triggerCollection);
+
+    const access = await verifyDeviceAccess(deviceId, auth, false);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+    const { device } = access;
+
+    // Optionally trigger fresh collection
+    if (triggerCollection && device.status === 'online') {
+      const { executeCommand } = await getCommandQueue();
+      try {
+        await executeCommand(deviceId, 'collect_boot_performance', {}, {
+          userId: auth.user.id,
+          timeoutMs: 15000,
+        });
+      } catch (err) {
+        console.warn(`[AI] Boot performance collection trigger failed for device ${deviceId}:`, err);
+        // Non-fatal: proceed with existing data
+      }
+    }
+
+    const bootRecords = await db
+      .select()
+      .from(deviceBootMetrics)
+      .where(eq(deviceBootMetrics.deviceId, deviceId))
+      .orderBy(desc(deviceBootMetrics.bootTimestamp))
+      .limit(bootsBack);
+
+    if (bootRecords.length === 0) {
+      return JSON.stringify({
+        error: 'No boot performance data available. Try triggerCollection: true if device is online.'
+      });
+    }
+
+    // Summary statistics
+    const totalBootTimes = bootRecords
+      .map(b => b.totalBootSeconds)
+      .filter((t): t is number => t !== null);
+    const avgBootTime = totalBootTimes.length > 0
+      ? totalBootTimes.reduce((a, b) => a + b, 0) / totalBootTimes.length
+      : 0;
+    const latestBoot = bootRecords[0]!;
+
+    // Top impact startup items from latest boot
+    const allStartupItems = (latestBoot.startupItems ?? []) as Array<{
+      name: string; type: string; path: string; enabled: boolean;
+      cpuTimeMs: number; diskIoBytes: number; impactScore: number;
+    }>;
+    const topImpactItems = [...allStartupItems]
+      .sort((a, b) => b.impactScore - a.impactScore)
+      .slice(0, 10);
+
+    // Recommendations
+    const recommendations: string[] = [];
+    if (avgBootTime > 120) {
+      recommendations.push('Average boot time is slow (>2 minutes). Review high-impact startup items.');
+    }
+    if (topImpactItems.some(item => item.impactScore > 60)) {
+      recommendations.push('Several startup items have high resource usage. Consider disabling non-essential items.');
+    }
+    if (latestBoot.startupItemCount > 50) {
+      recommendations.push(`High startup item count (${latestBoot.startupItemCount}). Disable unused services.`);
+    }
+    if (totalBootTimes.length >= 3) {
+      const recent = totalBootTimes.slice(0, 3);
+      const older = totalBootTimes.slice(3);
+      if (older.length > 0) {
+        const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
+        if (recentAvg > olderAvg * 1.2) {
+          recommendations.push('Boot times are trending slower. New startup items may have been added recently.');
+        }
+      }
+    }
+
+    return JSON.stringify({
+      device: { id: device.id, hostname: device.hostname, osType: device.osType },
+      bootHistory: {
+        totalBoots: bootRecords.length,
+        avgBootTimeSeconds: Number(avgBootTime.toFixed(2)),
+        fastestBootSeconds: totalBootTimes.length > 0 ? Number(Math.min(...totalBootTimes).toFixed(2)) : null,
+        slowestBootSeconds: totalBootTimes.length > 0 ? Number(Math.max(...totalBootTimes).toFixed(2)) : null,
+        recentBoots: bootRecords.slice(0, 5).map(b => ({
+          timestamp: b.bootTimestamp,
+          totalSeconds: b.totalBootSeconds,
+          biosSeconds: b.biosSeconds,
+          osLoaderSeconds: b.osLoaderSeconds,
+          desktopReadySeconds: b.desktopReadySeconds,
+        })),
+      },
+      latestBoot: {
+        timestamp: latestBoot.bootTimestamp,
+        totalSeconds: latestBoot.totalBootSeconds,
+        startupItemCount: latestBoot.startupItemCount,
+        topImpactItems: topImpactItems.map(item => ({
+          name: item.name,
+          type: item.type,
+          path: item.path,
+          enabled: item.enabled,
+          impactScore: Number(item.impactScore.toFixed(1)),
+          cpuTimeMs: item.cpuTimeMs,
+          diskIoMB: Number((item.diskIoBytes / 1048576).toFixed(2)),
+        })),
+      },
+      recommendations,
+    });
+  }
+});
+
+registerTool({
+  tier: 3,
+  definition: {
+    name: 'manage_startup_items',
+    description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'The device UUID' },
+        itemName: { type: 'string', description: 'The exact name of the startup item to manage' },
+        action: { type: 'string', enum: ['disable', 'enable'], description: 'Action to perform' },
+        reason: { type: 'string', description: 'Justification for this change' }
+      },
+      required: ['deviceId', 'itemName', 'action']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const itemName = input.itemName as string;
+    const action = input.action as 'disable' | 'enable';
+    const reason = (input.reason as string) || 'No reason provided';
+
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+    const { device } = access;
+
+    // Verify item exists in latest boot record
+    const [latestBoot] = await db
+      .select()
+      .from(deviceBootMetrics)
+      .where(eq(deviceBootMetrics.deviceId, deviceId))
+      .orderBy(desc(deviceBootMetrics.bootTimestamp))
+      .limit(1);
+
+    if (!latestBoot) {
+      return JSON.stringify({ error: 'No boot performance data available for this device.' });
+    }
+
+    const allItems = (latestBoot.startupItems ?? []) as Array<{
+      name: string; type: string; path: string; enabled: boolean;
+    }>;
+    const item = allItems.find(i => i.name === itemName);
+    if (!item) {
+      return JSON.stringify({
+        error: `Startup item "${itemName}" not found. Available items: ${allItems.map(i => i.name).slice(0, 20).join(', ')}`
+      });
+    }
+
+    if (action === 'disable' && !item.enabled) {
+      return JSON.stringify({ error: `Startup item "${itemName}" is already disabled.` });
+    }
+    if (action === 'enable' && item.enabled) {
+      return JSON.stringify({ error: `Startup item "${itemName}" is already enabled.` });
+    }
+
+    // Note: On macOS, re-enabling login items is not supported by the agent
+    // (requires the application path which is not stored). The agent will return
+    // an error in this case.
+
+    // Send command to agent
+    const { executeCommand } = await getCommandQueue();
+    const result = await executeCommand(
+      deviceId,
+      'manage_startup_item',
+      { itemName, itemType: item.type, itemPath: item.path, action },
+      { userId: auth.user.id, timeoutMs: 30000 }
+    );
+
+    if (result.status !== 'completed') {
+      return JSON.stringify({
+        error: `Failed to ${action} startup item "${itemName}": ${result.error || 'unknown error'}`,
+        device: { hostname: device.hostname, osType: device.osType },
+      });
+    }
+
+    return JSON.stringify({
+      success: true,
+      message: `Startup item "${itemName}" ${action}d successfully.`,
+      device: { hostname: device.hostname, osType: device.osType },
+      item: {
+        name: item.name,
+        type: item.type,
+        path: item.path,
+        previouslyEnabled: item.enabled,
+        newState: action === 'enable',
+      },
+    });
+  }
+});
+
+// ============================================
 // Fleet Orchestration Tools (8 tools)
 // ============================================
 
 registerFleetTools(aiTools);
 registerAgentLogTools(aiTools);
+registerConfigPolicyTools(aiTools);
+
+// ============================================
+// get_device_context - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_device_context',
+    description: 'Retrieve past AI memory/context about a device. Returns known issues, quirks, follow-ups, and preferences from previous interactions. Use this AUTOMATICALLY when asked about a device to recall past conversations and context.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: {
+          type: 'string',
+          description: 'UUID of the device to get context for',
+        },
+        includeResolved: {
+          type: 'boolean',
+          description: 'Include resolved/completed context entries (default: false)',
+          default: false,
+        },
+      },
+      required: ['deviceId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const includeResolved = Boolean(input.includeResolved);
+
+    // Verify device exists and user has access
+    const access = await verifyDeviceAccess(deviceId, auth);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
+    const results = includeResolved
+      ? await getAllDeviceContext(deviceId, auth)
+      : await getActiveDeviceContext(deviceId, auth);
+
+    if (results.length === 0) {
+      return 'No context found for this device. This is a fresh start with no previous memory.';
+    }
+
+    const formatted = results.map(r => {
+      const status = r.resolvedAt
+        ? 'RESOLVED'
+        : r.expiresAt && r.expiresAt < new Date()
+        ? 'EXPIRED'
+        : 'ACTIVE';
+
+      let output = `[${status}] ${r.contextType.toUpperCase()}: ${r.summary}`;
+      if (r.details) {
+        output += `\nDetails: ${JSON.stringify(r.details, null, 2)}`;
+      }
+      output += `\nRecorded: ${r.createdAt.toISOString()} | ID: ${r.id}`;
+      if (r.resolvedAt) {
+        output += `\nResolved: ${r.resolvedAt.toISOString()}`;
+      }
+      return output;
+    });
+
+    return `Found ${results.length} context entries:\n\n${formatted.join('\n\n---\n\n')}`;
+  },
+});
+
+// ============================================
+// set_device_context - Tier 2 (audit)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'set_device_context',
+    description: 'Record new context/memory about a device for future reference. Use this to remember issues, quirks, follow-ups, or preferences discovered during troubleshooting. This helps maintain continuity across conversations.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: {
+          type: 'string',
+          description: 'UUID of the device',
+        },
+        contextType: {
+          type: 'string',
+          enum: ['issue', 'quirk', 'followup', 'preference'],
+          description: 'Type of context: issue (known problem), quirk (device behavior), followup (action item), preference (user config)',
+        },
+        summary: {
+          type: 'string',
+          description: 'Brief summary (max 255 chars)',
+        },
+        details: {
+          type: 'object',
+          description: 'Optional structured details as JSON object',
+        },
+        expiresInDays: {
+          type: 'number',
+          description: 'Optional expiration in days (1-365). Use for temporary notes or time-bound follow-ups.',
+        },
+      },
+      required: ['deviceId', 'contextType', 'summary'],
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const contextType = input.contextType as 'issue' | 'quirk' | 'followup' | 'preference';
+    const summary = input.summary as string;
+    const details = (input.details as Record<string, unknown>) ?? null;
+    const expiresInDays = input.expiresInDays as number | undefined;
+
+    const expiresAt = expiresInDays
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+      : undefined;
+
+    const result = await createDeviceContext(
+      deviceId,
+      contextType,
+      summary,
+      details,
+      auth,
+      expiresAt
+    );
+
+    if ('error' in result) {
+      return JSON.stringify({ error: result.error });
+    }
+
+    return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.`;
+  },
+});
+
+// ============================================
+// resolve_device_context - Tier 2 (audit)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'resolve_device_context',
+    description: 'Mark a context entry as resolved/completed. Use this when an issue is fixed or a follow-up is completed. Resolved items are hidden from active context but preserved in history.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        contextId: {
+          type: 'string',
+          description: 'UUID of the context entry to resolve',
+        },
+      },
+      required: ['contextId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const contextId = input.contextId as string;
+    const { updated } = await resolveDeviceContext(contextId, auth);
+    if (!updated) {
+      return JSON.stringify({ error: 'Context entry not found or access denied' });
+    }
+    return 'Context entry marked as resolved.';
+  },
+});
 
 // ============================================
 // Helper Functions

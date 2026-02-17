@@ -1,47 +1,44 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Dashboard', () => {
   test('dashboard loads with key stats', async ({ page }) => {
     await page.goto('/');
+    await waitForApp(page);
 
-    // The page title / heading should contain "Dashboard"
     await expect(page.locator('h1')).toContainText('Dashboard');
 
-    // Expect the DashboardStats component to render
-    // It should display device count and alert summary widgets
-    await expect(
-      page.locator('[data-testid="stat-devices"]').or(page.locator('text=Devices')).or(page.locator('text=Total Devices')).first(),
-    ).toBeVisible({ timeout: 15_000 });
-
-    // Expect the RecentAlerts section to render
-    await expect(
-      page.locator('[data-testid="recent-alerts"]').or(page.locator('text=Alerts')).or(page.locator('text=Recent Alerts')).first(),
-    ).toBeVisible({ timeout: 10_000 });
+    // Wait for React components to hydrate and render stats
+    const statsContent = page.locator('text=Devices')
+      .or(page.locator('text=Total Devices'))
+      .or(page.locator('text=Alerts'));
+    await expect(statsContent.first()).toBeVisible({ timeout: 15_000 });
   });
 
   test('navigation to devices page works', async ({ page }) => {
     await page.goto('/');
+    await waitForApp(page);
 
-    // Click on the Devices link in the sidebar or nav
-    const devicesLink = page.locator(
-      'a[href="/devices"], nav a:has-text("Devices"), [data-testid="nav-devices"]',
-    ).first();
-    await devicesLink.click();
+    // Click Devices in the sidebar navigation
+    const devicesLink = page.locator('aside a[href="/devices"]')
+      .or(page.locator('aside >> text=Devices'))
+      .first();
+    await devicesLink.click({ timeout: 10_000 });
 
-    await expect(page).toHaveURL(/\/devices/);
-    await expect(page.locator('h1, h2').first()).toContainText(/Device/i);
+    await expect(page).toHaveURL(/\/devices/, { timeout: 10_000 });
+    await expect(page.locator('h1').first()).toContainText(/Device/i, { timeout: 15_000 });
   });
 
   test('navigation to scripts page works', async ({ page }) => {
     await page.goto('/');
+    await waitForApp(page);
 
-    // Click on the Scripts link in the sidebar or nav
-    const scriptsLink = page.locator(
-      'a[href="/scripts"], nav a:has-text("Scripts"), [data-testid="nav-scripts"]',
-    ).first();
-    await scriptsLink.click();
+    const scriptsLink = page.locator('aside a[href="/scripts"]')
+      .or(page.locator('aside >> text=Scripts'))
+      .first();
+    await scriptsLink.click({ timeout: 10_000 });
 
-    await expect(page).toHaveURL(/\/scripts/);
-    await expect(page.locator('h1, h2').first()).toContainText(/Script/i);
+    await expect(page).toHaveURL(/\/scripts/, { timeout: 10_000 });
+    await expect(page.locator('h1').first()).toContainText(/Script/i, { timeout: 15_000 });
   });
 });

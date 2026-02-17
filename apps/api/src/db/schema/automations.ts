@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { scripts } from './scripts';
@@ -30,7 +30,9 @@ export const automations = pgTable('automations', {
 
 export const automationRuns = pgTable('automation_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  automationId: uuid('automation_id').notNull().references(() => automations.id),
+  automationId: uuid('automation_id').references(() => automations.id),
+  configPolicyId: uuid('config_policy_id'),
+  configItemName: varchar('config_item_name', { length: 200 }),
   triggeredBy: varchar('triggered_by', { length: 255 }).notNull(),
   status: automationRunStatusEnum('status').notNull().default('running'),
   devicesTargeted: integer('devices_targeted').notNull().default(0),
@@ -61,11 +63,16 @@ export const automationPolicies = pgTable('automation_policies', {
 
 export const automationPolicyCompliance = pgTable('automation_policy_compliance', {
   id: uuid('id').primaryKey().defaultRandom(),
-  policyId: uuid('policy_id').notNull().references(() => automationPolicies.id),
+  policyId: uuid('policy_id').references(() => automationPolicies.id),
+  configPolicyId: uuid('config_policy_id'),
+  configItemName: varchar('config_item_name', { length: 200 }),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   status: complianceStatusEnum('status').notNull().default('pending'),
   details: jsonb('details'),
   lastCheckedAt: timestamp('last_checked_at'),
   remediationAttempts: integer('remediation_attempts').notNull().default(0),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  configPolicyIdIdx: index('apc_config_policy_id_idx').on(table.configPolicyId),
+  deviceIdIdx: index('apc_device_id_idx').on(table.deviceId),
+}));

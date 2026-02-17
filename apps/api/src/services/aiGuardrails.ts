@@ -47,6 +47,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_services: ['start', 'stop', 'restart'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
+  manage_startup_items: ['disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
   manage_policies: ['create', 'update', 'delete', 'remediate'],
   manage_deployments: ['create', 'start', 'cancel'],
@@ -87,6 +88,8 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   },
   query_audit_log: { resource: 'audit', action: 'read' },
   network_discovery: { resource: 'devices', action: 'execute' },
+  analyze_boot_performance: { resource: 'devices', action: 'read' },
+  manage_startup_items: { resource: 'devices', action: 'execute' },
   // Fleet tools — RBAC mappings
   manage_policies: {
     list: { resource: 'policies', action: 'read' },
@@ -171,6 +174,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     delete: { resource: 'reports', action: 'write' },
     history: { resource: 'reports', action: 'read' },
   },
+  // Brain device context tools
+  get_device_context: { resource: 'devices', action: 'read' },
+  set_device_context: { resource: 'devices', action: 'write' },
+  resolve_device_context: { resource: 'devices', action: 'write' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -183,6 +190,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   manage_services: { limit: 10, windowSeconds: 300 },
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
+  manage_startup_items: { limit: 5, windowSeconds: 600 },
   // Fleet tools — per-tool rate limits
   manage_policies: { limit: 20, windowSeconds: 300 },
   manage_deployments: { limit: 10, windowSeconds: 600 },
@@ -192,6 +200,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   manage_automations: { limit: 10, windowSeconds: 600 },
   manage_alert_rules: { limit: 15, windowSeconds: 300 },
   generate_report: { limit: 10, windowSeconds: 300 },
+  // Brain device context tools
+  set_device_context: { limit: 20, windowSeconds: 300 },
+  resolve_device_context: { limit: 20, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {

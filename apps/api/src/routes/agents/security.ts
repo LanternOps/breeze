@@ -7,9 +7,9 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
 import { upsertSecurityStatusForDevice } from './helpers';
 
-export const securityRoutes = new Hono();
+export const agentSecurityRoutes = new Hono();
 
-securityRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestSchema), async (c) => {
+agentSecurityRoutes.put('/:id/security/status', zValidator('json', securityStatusIngestSchema), async (c) => {
   const agentId = c.req.param('id');
   const payload = c.req.valid('json');
   const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
@@ -40,7 +40,7 @@ securityRoutes.put('/:id/security/status', zValidator('json', securityStatusInge
   return c.json({ success: true });
 });
 
-securityRoutes.put('/:id/management/posture', zValidator('json', managementPostureIngestSchema), async (c) => {
+agentSecurityRoutes.put('/:id/management/posture', zValidator('json', managementPostureIngestSchema), async (c) => {
   const agentId = c.req.param('id');
   const payload = c.req.valid('json');
   const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;

@@ -168,6 +168,7 @@ export const patchJobs = pgTable('patch_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   policyId: uuid('policy_id').references(() => patchPolicies.id),
+  configPolicyId: uuid('config_policy_id'),
   name: varchar('name', { length: 255 }).notNull(),
   patches: jsonb('patches').notNull().default({}),
   targets: jsonb('targets').notNull().default({}),

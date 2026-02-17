@@ -59,10 +59,11 @@ type HeartbeatPayload struct {
 }
 
 type HeartbeatResponse struct {
-	Commands     []Command      `json:"commands"`
-	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
-	UpgradeTo    string         `json:"upgradeTo,omitempty"`
-	RenewCert    bool           `json:"renewCert,omitempty"`
+	Commands      []Command      `json:"commands"`
+	ConfigUpdate  map[string]any `json:"configUpdate,omitempty"`
+	UpgradeTo     string         `json:"upgradeTo,omitempty"`
+	RenewCert     bool           `json:"renewCert,omitempty"`
+	HelperEnabled bool           `json:"helperEnabled,omitempty"`
 }
 
 type Command struct {
@@ -86,6 +87,7 @@ type Heartbeat struct {
 	patchMgr            *patching.PatchManager
 	connectionsCol      *collectors.ConnectionsCollector
 	eventLogCol         *collectors.EventLogCollector
+	bootCol             *collectors.BootPerformanceCollector
 	agentVersion        string
 	fileTransferMgr     *filetransfer.Manager
 	desktopMgr          *desktop.SessionManager
@@ -123,6 +125,9 @@ type Heartbeat struct {
 
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing atomic.Bool
+
+	// Helper chat enabled flag from org settings
+	helperEnabled atomic.Bool
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -162,6 +167,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		patchMgr:        patching.NewDefaultManager(cfg),
 		connectionsCol:  collectors.NewConnectionsCollector(),
 		eventLogCol:     collectors.NewEventLogCollector(),
+		bootCol:         collectors.NewBootPerformanceCollector(),
 		agentVersion:    version,
 		executor:        executor.New(cfg),
 		fileTransferMgr: filetransfer.NewManager(ftConfig),
@@ -357,6 +363,31 @@ func (h *Heartbeat) Start() {
 				h.lastPostureUpdate = time.Now()
 			}
 			h.mu.Unlock()
+
+			// Check for recent boot to collect boot performance
+			if bootTime, err := host.BootTime(); err == nil && bootTime > 0 {
+				uptimeSec := time.Now().Unix() - int64(bootTime)
+				bt := time.Unix(int64(bootTime), 0)
+				if h.bootCol.ShouldCollect(uptimeSec, bt) {
+					h.bootCol.MarkCollected(bt)
+					go func() {
+						log.Info("detected recent boot, collecting boot performance")
+						metrics, err := h.bootCol.Collect()
+						if err != nil {
+							log.Error("failed to collect boot performance", "error", err)
+							return
+						}
+						// Check if agent is shutting down before sending
+						select {
+						case <-h.stopChan:
+							return
+						default:
+						}
+						h.sendBootPerformance(metrics)
+					}()
+				}
+			}
+
 			if shouldSendInventory {
 				go h.sendInventory()
 			}
@@ -1134,6 +1165,34 @@ func (h *Heartbeat) sendSessionInventory() {
 	h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
 }
 
+func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetrics) {
+	body, err := json.Marshal(metrics)
+	if err != nil {
+		log.Error("failed to marshal boot performance", "error", err)
+		return
+	}
+	url := fmt.Sprintf("%s/api/v1/agents/%s/boot-performance", h.config.ServerURL, h.config.AgentID)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {h.authHeader()},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
+	if err != nil {
+		log.Error("failed to send boot performance", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		log.Warn("boot performance upload returned non-success", "status", resp.StatusCode)
+	} else {
+		log.Info("boot performance uploaded successfully")
+	}
+}
+
 func (h *Heartbeat) sendHeartbeat() {
 	metrics, err := h.metricsCol.Collect()
 	metricsAvailable := true
@@ -1261,6 +1320,26 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Handle mTLS cert renewal if signaled by server
 	if response.RenewCert {
 		go h.handleCertRenewal()
+	}
+
+	// Update helper enabled state from org settings
+	h.handleHelperEnabled(response.HelperEnabled)
+}
+
+// IsHelperEnabled returns whether the helper chat is enabled for this device's org.
+func (h *Heartbeat) IsHelperEnabled() bool {
+	return h.helperEnabled.Load()
+}
+
+// handleHelperEnabled updates the helper enabled flag and logs state transitions.
+func (h *Heartbeat) handleHelperEnabled(enabled bool) {
+	prev := h.helperEnabled.Swap(enabled)
+	if prev != enabled {
+		if enabled {
+			log.Info("helper chat enabled for this device")
+		} else {
+			log.Info("helper chat disabled for this device")
+		}
 	}
 }
 

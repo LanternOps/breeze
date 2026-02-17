@@ -98,76 +98,80 @@ export async function syncBinaries(): Promise<void> {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[binarySync] Could not read version file: ${versionFile} (${msg})`);
     }
+  } else {
+    console.warn('[binarySync] BINARY_VERSION_FILE not set, using "unknown" as version');
   }
 
-  // Scan agent binaries
+  // Scan and register agent binaries in DB
   const binaries = await scanBinaryDir(agentBinaryDir);
-  if (binaries.length === 0) {
-    console.log('[binarySync] No agent binaries found, skipping DB registration');
-    return;
-  }
+  if (binaries.length > 0) {
+    const serverUrl =
+      process.env.PUBLIC_APP_URL ||
+      process.env.BREEZE_SERVER ||
+      `http://localhost:${process.env.API_PORT || '3001'}`;
 
-  const serverUrl =
-    process.env.PUBLIC_APP_URL ||
-    process.env.BREEZE_SERVER ||
-    `http://localhost:${process.env.API_PORT || '3001'}`;
+    await db.transaction(async (tx) => {
+      for (const bin of binaries) {
+        const osParam = bin.platform === 'macos' ? 'darwin' : bin.platform;
+        const downloadUrl = `${serverUrl}/api/v1/agents/download/${osParam}/${bin.architecture}`;
 
-  // Register each binary in the DB inside a transaction
-  await db.transaction(async (tx) => {
-    for (const bin of binaries) {
-      const osParam = bin.platform === 'macos' ? 'darwin' : bin.platform;
-      const downloadUrl = `${serverUrl}/api/v1/agents/download/${osParam}/${bin.architecture}`;
+        // Demote existing "isLatest" entries for this platform/arch
+        await tx
+          .update(agentVersions)
+          .set({ isLatest: false })
+          .where(
+            and(
+              eq(agentVersions.platform, bin.platform),
+              eq(agentVersions.architecture, bin.architecture),
+              eq(agentVersions.isLatest, true)
+            )
+          );
 
-      // Demote existing "isLatest" entries for this platform/arch
-      await tx
-        .update(agentVersions)
-        .set({ isLatest: false })
-        .where(
-          and(
-            eq(agentVersions.platform, bin.platform),
-            eq(agentVersions.architecture, bin.architecture),
-            eq(agentVersions.isLatest, true)
-          )
-        );
-
-      // Upsert the new version
-      await tx
-        .insert(agentVersions)
-        .values({
-          version,
-          platform: bin.platform,
-          architecture: bin.architecture,
-          downloadUrl,
-          checksum: bin.checksum,
-          fileSize: bin.fileSize,
-          isLatest: true,
-        })
-        .onConflictDoUpdate({
-          target: [agentVersions.version, agentVersions.platform, agentVersions.architecture],
-          set: {
+        // Upsert the new version
+        await tx
+          .insert(agentVersions)
+          .values({
+            version,
+            platform: bin.platform,
+            architecture: bin.architecture,
             downloadUrl,
             checksum: bin.checksum,
             fileSize: bin.fileSize,
             isLatest: true,
-          },
-        });
-    }
-  });
+          })
+          .onConflictDoUpdate({
+            target: [agentVersions.version, agentVersions.platform, agentVersions.architecture],
+            set: {
+              downloadUrl,
+              checksum: bin.checksum,
+              fileSize: bin.fileSize,
+              isLatest: true,
+            },
+          });
+      }
+    });
 
-  console.log(`[binarySync] Registered ${binaries.length} agent binaries (version: ${version})`);
+    console.log(`[binarySync] Registered ${binaries.length} agent binaries (version: ${version})`);
+  } else {
+    console.log('[binarySync] No agent binaries found, skipping DB registration');
+  }
 
-  // Sync to S3 if configured
+  // Sync to S3 if configured (runs regardless of whether agent binaries were found)
   if (isS3Configured()) {
+    const logSyncResult = (label: string, result: import('./s3Storage').SyncResult) => {
+      console.log(
+        `[binarySync] S3 ${label} sync: ${result.uploaded} uploaded, ${result.skipped} skipped` +
+          (result.errors.length > 0 ? `, ${result.errors.length} errors` : '')
+      );
+      for (const err of result.errors) {
+        console.error(`[binarySync] S3 ${label} sync error: ${err}`);
+      }
+    };
+
     const agentSync = await syncDirectory(agentBinaryDir, 'agent');
-    console.log(
-      `[binarySync] S3 agent sync: ${agentSync.uploaded} uploaded, ${agentSync.skipped} skipped` +
-        (agentSync.errors.length > 0 ? `, ${agentSync.errors.length} errors` : '')
-    );
+    logSyncResult('agent', agentSync);
 
     const viewerSync = await syncDirectory(viewerBinaryDir, 'viewer');
-    console.log(
-      `[binarySync] S3 viewer sync: ${viewerSync.uploaded} uploaded, ${viewerSync.skipped} skipped` +
-        (viewerSync.errors.length > 0 ? `, ${viewerSync.errors.length} errors` : '')
-    );
+    logSyncResult('viewer', viewerSync);
   }
 }

@@ -9,7 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { automationPolicies } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
-import { evaluatePolicy } from '../services/policyEvaluationService';
+import { evaluatePolicy, scanAndEvaluateConfigPolicyCompliance } from '../services/policyEvaluationService';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -29,7 +29,11 @@ type EvaluatePolicyJob = {
   policyId: string;
 };
 
-type PolicyEvaluationJobData = ScanDuePoliciesJob | EvaluatePolicyJob;
+type ScanConfigPolicyComplianceJob = {
+  type: 'scan-config-policy-compliance';
+};
+
+type PolicyEvaluationJobData = ScanDuePoliciesJob | EvaluatePolicyJob | ScanConfigPolicyComplianceJob;
 
 let policyEvaluationQueue: Queue<PolicyEvaluationJobData> | null = null;
 let policyEvaluationWorker: Worker<PolicyEvaluationJobData> | null = null;
@@ -128,6 +132,17 @@ async function processEvaluatePolicy(policyId: string): Promise<{
   };
 }
 
+async function processConfigPolicyComplianceScan(): Promise<{
+  rulesScanned: number;
+  devicesEvaluated: number;
+}> {
+  const result = await scanAndEvaluateConfigPolicyCompliance();
+  return {
+    rulesScanned: result.rulesScanned,
+    devicesEvaluated: result.devicesEvaluated,
+  };
+}
+
 export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> {
   return new Worker<PolicyEvaluationJobData>(
     POLICY_EVALUATION_QUEUE,
@@ -135,6 +150,10 @@ export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> 
       return runWithSystemDbAccess(async () => {
         if (job.data.type === 'scan-due-policies') {
           return processScanDuePolicies();
+        }
+
+        if (job.data.type === 'scan-config-policy-compliance') {
+          return processConfigPolicyComplianceScan();
         }
 
         return processEvaluatePolicy(job.data.policyId);
@@ -175,7 +194,18 @@ export async function initializePolicyEvaluationWorker(): Promise<void> {
     }
   );
 
-  console.log('[PolicyEvaluationWorker] Scheduled policy evaluation scan jobs');
+  // Schedule config policy compliance scans (runs alongside standalone policy scans)
+  await queue.add(
+    'scan-config-policy-compliance',
+    { type: 'scan-config-policy-compliance' },
+    {
+      repeat: { every: SCAN_INTERVAL_MS },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 50 },
+    }
+  );
+
+  console.log('[PolicyEvaluationWorker] Scheduled policy evaluation scan jobs (standalone + config policy)');
 }
 
 export async function shutdownPolicyEvaluationWorker(): Promise<void> {

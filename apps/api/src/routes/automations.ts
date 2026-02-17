@@ -214,6 +214,10 @@ const listRunsSchema = z.object({
 
 automationRoutes.use('*', authMiddleware);
 
+// ============================================
+// Read-only routes
+// ============================================
+
 automationRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
@@ -295,6 +299,18 @@ automationRoutes.get(
       return c.json({ error: 'Automation run not found' }, 404);
     }
 
+    // For config policy runs (automationId is null), return a lightweight response
+    if (!run.automationId) {
+      return c.json({
+        ...run,
+        status: toRunStatus(run.status),
+        logs: serializeRunLogs(run.logs),
+        automation: null,
+        configPolicyId: run.configPolicyId,
+        configItemName: run.configItemName,
+      });
+    }
+
     const automation = await getAutomationWithOrgCheck(run.automationId, auth);
     if (!automation) {
       return c.json({ error: 'Automation run not found' }, 404);
@@ -363,6 +379,60 @@ automationRoutes.get(
   },
 );
 
+automationRoutes.get(
+  '/:id/runs',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', listRunsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const automationId = c.req.param('id');
+    const query = c.req.valid('query');
+    const { page, limit, offset } = getPagination(query);
+
+    const automation = await getAutomationWithOrgCheck(automationId, auth);
+    if (!automation) {
+      return c.json({ error: 'Automation not found' }, 404);
+    }
+
+    const conditions: SQL<unknown>[] = [eq(automationRuns.automationId, automationId)];
+
+    if (query.status) {
+      conditions.push(eq(automationRuns.status, query.status));
+    }
+
+    const whereCondition = and(...conditions);
+
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(automationRuns)
+      .where(whereCondition);
+    const total = Number(countResult[0]?.count ?? 0);
+
+    const rows = await db
+      .select()
+      .from(automationRuns)
+      .where(whereCondition)
+      .orderBy(desc(automationRuns.startedAt))
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({
+      data: rows.map((run) => ({
+        ...run,
+        status: toRunStatus(run.status),
+        logs: serializeRunLogs(run.logs),
+      })),
+      pagination: { page, limit, total },
+    });
+  },
+);
+
+// ============================================
+// DEPRECATED: Automations are now managed via Configuration Policies.
+// These mutation routes remain for legacy compatibility.
+// ============================================
+
+// DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
@@ -451,6 +521,7 @@ automationRoutes.post(
   },
 );
 
+// DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 async function handleUpdateAutomation(c: Context) {
   const auth = c.get('auth');
   const automationId = c.req.param('id');
@@ -549,6 +620,7 @@ async function handleUpdateAutomation(c: Context) {
   }
 }
 
+// DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.put(
   '/:id',
   requireScope('organization', 'partner', 'system'),
@@ -556,6 +628,7 @@ automationRoutes.put(
   handleUpdateAutomation,
 );
 
+// DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
@@ -563,6 +636,7 @@ automationRoutes.patch(
   handleUpdateAutomation,
 );
 
+// DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
@@ -607,6 +681,10 @@ automationRoutes.delete(
     return c.json({ success: true });
   },
 );
+
+// ============================================
+// Manual trigger routes (kept for standalone automations)
+// ============================================
 
 async function triggerAutomationRun(
   c: Context,
@@ -677,53 +755,9 @@ automationRoutes.post(
   },
 );
 
-automationRoutes.get(
-  '/:id/runs',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('query', listRunsSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const automationId = c.req.param('id');
-    const query = c.req.valid('query');
-    const { page, limit, offset } = getPagination(query);
-
-    const automation = await getAutomationWithOrgCheck(automationId, auth);
-    if (!automation) {
-      return c.json({ error: 'Automation not found' }, 404);
-    }
-
-    const conditions: SQL<unknown>[] = [eq(automationRuns.automationId, automationId)];
-
-    if (query.status) {
-      conditions.push(eq(automationRuns.status, query.status));
-    }
-
-    const whereCondition = and(...conditions);
-
-    const countResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(automationRuns)
-      .where(whereCondition);
-    const total = Number(countResult[0]?.count ?? 0);
-
-    const rows = await db
-      .select()
-      .from(automationRuns)
-      .where(whereCondition)
-      .orderBy(desc(automationRuns.startedAt))
-      .limit(limit)
-      .offset(offset);
-
-    return c.json({
-      data: rows.map((run) => ({
-        ...run,
-        status: toRunStatus(run.status),
-        logs: serializeRunLogs(run.logs),
-      })),
-      pagination: { page, limit, total },
-    });
-  },
-);
+// ============================================
+// Webhook trigger route
+// ============================================
 
 automationWebhookRoutes.post('/:id', async (c) => {
   const automationId = c.req.param('id');

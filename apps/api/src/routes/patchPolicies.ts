@@ -5,7 +5,6 @@ import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { patchPolicies } from '../db/schema';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
-import { writeRouteAudit } from '../services/auditEvents';
 
 export const patchPolicyRoutes = new Hono();
 
@@ -61,8 +60,6 @@ async function getPatchPolicyWithOrgCheck(
 // Validation Schemas
 // ============================================
 
-const patchSourceValues = ['microsoft', 'apple', 'linux', 'third_party', 'custom'] as const;
-
 const listPatchPoliciesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -70,39 +67,13 @@ const listPatchPoliciesSchema = z.object({
   enabled: z.enum(['true', 'false']).optional()
 });
 
-const createPatchPolicySchema = z.object({
-  orgId: z.string().uuid().optional(),
-  name: z.string().min(1).max(255),
-  description: z.string().optional(),
-  targets: z.any(),
-  sources: z.array(z.enum(patchSourceValues)).min(1),
-  autoApprove: z.any().optional(),
-  schedule: z.any(),
-  rebootPolicy: z.any().optional(),
-  enabled: z.boolean().optional(),
-  rollbackOnFailure: z.boolean().optional(),
-  preInstallScript: z.string().uuid().optional(),
-  postInstallScript: z.string().uuid().optional(),
-  notifyOnComplete: z.boolean().optional()
-});
-
-const updatePatchPolicySchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  description: z.string().optional(),
-  targets: z.any().optional(),
-  sources: z.array(z.enum(patchSourceValues)).min(1).optional(),
-  autoApprove: z.any().optional(),
-  schedule: z.any().optional(),
-  rebootPolicy: z.any().optional(),
-  enabled: z.boolean().optional(),
-  rollbackOnFailure: z.boolean().optional(),
-  preInstallScript: z.string().uuid().nullable().optional(),
-  postInstallScript: z.string().uuid().nullable().optional(),
-  notifyOnComplete: z.boolean().optional()
-});
-
 // ============================================
 // Routes
+//
+// NOTE: Patch policies are now managed via the Configuration Policy system
+// (configPolicyPatchSettings). These standalone patch policy routes remain
+// for legacy compatibility. New integrations should use
+// POST /configuration-policies/:id/patch-job instead.
 // ============================================
 
 // Apply auth middleware to all routes
@@ -175,70 +146,9 @@ patchPolicyRoutes.get(
   }
 );
 
-// POST /patch-policies - Create policy
-patchPolicyRoutes.post(
-  '/',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('json', createPatchPolicySchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const data = c.req.valid('json');
-
-    // Determine orgId
-    let orgId = data.orgId;
-
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for partner scope' }, 400);
-      }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
-      }
-    } else if (auth.scope === 'system' && !orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
-    }
-
-    const [policy] = await db
-      .insert(patchPolicies)
-      .values({
-        orgId: orgId!,
-        name: data.name,
-        description: data.description,
-        enabled: data.enabled,
-        targets: data.targets,
-        sources: data.sources,
-        autoApprove: data.autoApprove,
-        schedule: data.schedule,
-        rebootPolicy: data.rebootPolicy,
-        rollbackOnFailure: data.rollbackOnFailure,
-        preInstallScript: data.preInstallScript,
-        postInstallScript: data.postInstallScript,
-        notifyOnComplete: data.notifyOnComplete,
-        createdBy: auth.user.id
-      })
-      .returning();
-
-    writeRouteAudit(c, {
-      orgId: policy?.orgId,
-      action: 'patch_policy.create',
-      resourceType: 'patch_policy',
-      resourceId: policy?.id,
-      resourceName: policy?.name,
-      details: {
-        enabled: policy?.enabled,
-        sourceCount: policy?.sources?.length ?? 0
-      }
-    });
-
-    return c.json(policy, 201);
-  }
-);
+// POST, PATCH, DELETE routes have been removed.
+// Patch policies are now managed via the Configuration Policy system.
+// Use /configuration-policies and their feature links instead.
 
 // GET /patch-policies/:id - Get policy details
 patchPolicyRoutes.get(
@@ -257,86 +167,3 @@ patchPolicyRoutes.get(
   }
 );
 
-// PATCH /patch-policies/:id - Update policy
-patchPolicyRoutes.patch(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('json', updatePatchPolicySchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const policyId = c.req.param('id');
-    const data = c.req.valid('json');
-
-    if (Object.keys(data).length === 0) {
-      return c.json({ error: 'No updates provided' }, 400);
-    }
-
-    const policy = await getPatchPolicyWithOrgCheck(policyId, auth);
-    if (!policy) {
-      return c.json({ error: 'Patch policy not found' }, 404);
-    }
-
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
-
-    if (data.name !== undefined) updates.name = data.name;
-    if (data.description !== undefined) updates.description = data.description;
-    if (data.targets !== undefined) updates.targets = data.targets;
-    if (data.sources !== undefined) updates.sources = data.sources;
-    if (data.autoApprove !== undefined) updates.autoApprove = data.autoApprove;
-    if (data.schedule !== undefined) updates.schedule = data.schedule;
-    if (data.rebootPolicy !== undefined) updates.rebootPolicy = data.rebootPolicy;
-    if (data.enabled !== undefined) updates.enabled = data.enabled;
-    if (data.rollbackOnFailure !== undefined) updates.rollbackOnFailure = data.rollbackOnFailure;
-    if (data.preInstallScript !== undefined) updates.preInstallScript = data.preInstallScript;
-    if (data.postInstallScript !== undefined) updates.postInstallScript = data.postInstallScript;
-    if (data.notifyOnComplete !== undefined) updates.notifyOnComplete = data.notifyOnComplete;
-
-    const [updated] = await db
-      .update(patchPolicies)
-      .set(updates)
-      .where(eq(patchPolicies.id, policyId))
-      .returning();
-
-    writeRouteAudit(c, {
-      orgId: policy.orgId,
-      action: 'patch_policy.update',
-      resourceType: 'patch_policy',
-      resourceId: updated?.id,
-      resourceName: updated?.name,
-      details: {
-        changedFields: Object.keys(data)
-      }
-    });
-
-    return c.json(updated);
-  }
-);
-
-// DELETE /patch-policies/:id - Delete policy
-patchPolicyRoutes.delete(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth');
-    const policyId = c.req.param('id');
-
-    const policy = await getPatchPolicyWithOrgCheck(policyId, auth);
-    if (!policy) {
-      return c.json({ error: 'Patch policy not found' }, 404);
-    }
-
-    await db
-      .delete(patchPolicies)
-      .where(eq(patchPolicies.id, policyId));
-
-    writeRouteAudit(c, {
-      orgId: policy.orgId,
-      action: 'patch_policy.delete',
-      resourceType: 'patch_policy',
-      resourceId: policy.id,
-      resourceName: policy.name
-    });
-
-    return c.json({ success: true });
-  }
-);

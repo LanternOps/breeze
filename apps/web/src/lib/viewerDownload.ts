@@ -7,14 +7,39 @@ export interface ViewerDownloadInfo {
   readonly filename: string;
 }
 
-const API_BASE = import.meta.env.PUBLIC_VIEWER_DOWNLOAD_URL
-  || import.meta.env.PUBLIC_API_URL
-  || '';
+const LEGACY_DOWNLOAD_BASE = (import.meta.env.PUBLIC_VIEWER_DOWNLOAD_URL || '').trim();
+const API_BASE = (import.meta.env.PUBLIC_API_URL || '').trim();
+
+function withoutTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function getDownloadUrl(os: OSType, filename: string): string {
+  if (LEGACY_DOWNLOAD_BASE) {
+    return `${withoutTrailingSlash(LEGACY_DOWNLOAD_BASE)}/${filename}`;
+  }
+  return `${withoutTrailingSlash(API_BASE)}/api/v1/viewers/download/${os}`;
+}
 
 const PLATFORMS: readonly ViewerDownloadInfo[] = [
-  { os: 'macos', label: 'macOS', filename: 'breeze-viewer-macos.dmg', url: `${API_BASE}/api/v1/viewers/download/macos` },
-  { os: 'windows', label: 'Windows', filename: 'breeze-viewer-windows.msi', url: `${API_BASE}/api/v1/viewers/download/windows` },
-  { os: 'linux', label: 'Linux', filename: 'breeze-viewer-linux.AppImage', url: `${API_BASE}/api/v1/viewers/download/linux` },
+  {
+    os: 'macos',
+    label: 'macOS',
+    filename: 'breeze-viewer-macos.dmg',
+    url: getDownloadUrl('macos', 'breeze-viewer-macos.dmg')
+  },
+  {
+    os: 'windows',
+    label: 'Windows',
+    filename: 'breeze-viewer-windows.msi',
+    url: getDownloadUrl('windows', 'breeze-viewer-windows.msi')
+  },
+  {
+    os: 'linux',
+    label: 'Linux',
+    filename: 'breeze-viewer-linux.AppImage',
+    url: getDownloadUrl('linux', 'breeze-viewer-linux.AppImage')
+  },
 ];
 
 function detectOS(): OSType | null {

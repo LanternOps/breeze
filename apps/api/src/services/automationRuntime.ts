@@ -8,6 +8,7 @@ import {
   alertTemplates,
   automations,
   automationRuns,
+  configPolicyAutomations,
   deviceGroupMemberships,
   devices,
   notificationChannels,
@@ -607,7 +608,7 @@ async function ensureAutomationAlertRule(orgId: string): Promise<string> {
 }
 
 type ActionExecutionContext = {
-  automation: AutomationRow;
+  automation: Pick<AutomationRow, 'id' | 'orgId' | 'name' | 'createdBy'>;
   runId: string;
   device: {
     id: string;
@@ -1153,6 +1154,10 @@ export async function executeAutomationRun(
     throw new Error('Automation run not found');
   }
 
+  if (!run.automationId) {
+    throw new Error('Automation run is not linked to a standalone automation (may be a config policy run)');
+  }
+
   const [automation] = await db
     .select()
     .from(automations)
@@ -1414,7 +1419,7 @@ function getZonedDateParts(date: Date, timeZone: string): {
     day: 'numeric',
     hour: 'numeric',
     minute: 'numeric',
-    hour12: false,
+    hourCycle: 'h23',
     weekday: 'short',
   });
 
@@ -1444,6 +1449,7 @@ function getZonedDateParts(date: Date, timeZone: string): {
 export function isCronDue(cronExpression: string, timeZone: string, date: Date = new Date()): boolean {
   const fields = cronExpression.trim().split(/\s+/);
   if (fields.length !== 5) {
+    console.warn(`[AutomationRuntime] Invalid cron expression "${cronExpression}" (expected 5 fields, got ${fields.length})`);
     return false;
   }
 
@@ -1467,4 +1473,286 @@ export function isCronDue(cronExpression: string, timeZone: string, date: Date =
     : dayOfMonthMatches || dayOfWeekMatches;
 
   return minuteMatches && hourMatches && monthMatches && dayMatches;
+}
+
+// ============================================
+// Config Policy Automation Support
+// ============================================
+
+type ConfigPolicyAutomationRow = typeof configPolicyAutomations.$inferSelect;
+
+/**
+ * Resolves the orgId for a configPolicyAutomation by traversing:
+ *   configPolicyAutomations -> configPolicyFeatureLinks -> configurationPolicies.orgId
+ *
+ * This is needed because configPolicyAutomations does not store orgId directly.
+ */
+async function resolveConfigPolicyOrgId(featureLinkId: string): Promise<string | null> {
+  // Import here to avoid circular dependency at module level
+  const { configPolicyFeatureLinks, configurationPolicies } = await import('../db/schema');
+
+  const [row] = await db
+    .select({ orgId: configurationPolicies.orgId })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+    )
+    .where(eq(configPolicyFeatureLinks.id, featureLinkId))
+    .limit(1);
+
+  return row?.orgId ?? null;
+}
+
+/**
+ * Creates an automationRuns record for a config policy automation execution.
+ * Uses `automationId: null` and fills `configPolicyId` + `configItemName`.
+ */
+export async function createConfigPolicyAutomationRun(options: {
+  automation: ConfigPolicyAutomationRow;
+  targetDeviceIds: string[];
+  triggeredBy: string;
+  details?: Record<string, unknown>;
+}): Promise<AutomationRunRow> {
+  const [run] = await db
+    .insert(automationRuns)
+    .values({
+      automationId: null,
+      configPolicyId: options.automation.featureLinkId,
+      configItemName: options.automation.name,
+      triggeredBy: options.triggeredBy,
+      status: 'running',
+      devicesTargeted: options.targetDeviceIds.length,
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+      logs: [
+        logEntry('Config policy automation run created', 'info', {
+          details: {
+            triggeredBy: options.triggeredBy,
+            configPolicyAutomationId: options.automation.id,
+            configItemName: options.automation.name,
+            ...options.details,
+          },
+        }),
+      ],
+    })
+    .returning();
+
+  if (!run) {
+    throw new Error('Failed to create config policy automation run record');
+  }
+
+  return run;
+}
+
+/**
+ * Executes a config policy automation against a list of target devices.
+ * Reuses the existing action execution infrastructure (executeAction) under the hood.
+ */
+export async function executeConfigPolicyAutomationRun(
+  automation: ConfigPolicyAutomationRow,
+  targetDeviceIds: string[],
+  triggeredBy: string,
+): Promise<{
+  runId: string;
+  status: 'completed' | 'failed' | 'partial';
+  devicesSucceeded: number;
+  devicesFailed: number;
+}> {
+  // Resolve the orgId from the policy hierarchy
+  const orgId = await resolveConfigPolicyOrgId(automation.featureLinkId);
+  if (!orgId) {
+    throw new Error(`Could not resolve orgId for config policy automation ${automation.id}`);
+  }
+
+  // Create the run record
+  const run = await createConfigPolicyAutomationRun({
+    automation,
+    targetDeviceIds,
+    triggeredBy,
+  });
+
+  // Parse the actions from the jsonb column
+  let actions: AutomationAction[];
+  try {
+    actions = normalizeAutomationActions(automation.actions);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    await db
+      .update(automationRuns)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        logs: [
+          ...getExistingLogs(run.logs),
+          logEntry(`Failed to parse automation actions: ${errorMsg}`, 'error'),
+        ],
+      })
+      .where(eq(automationRuns.id, run.id));
+
+    return {
+      runId: run.id,
+      status: 'failed',
+      devicesSucceeded: 0,
+      devicesFailed: targetDeviceIds.length,
+    };
+  }
+
+  const onFailure = automation.onFailure ?? 'stop';
+
+  // Load target devices
+  const deviceRows = targetDeviceIds.length > 0
+    ? await db
+      .select({
+        id: devices.id,
+        hostname: devices.hostname,
+        displayName: devices.displayName,
+        osType: devices.osType,
+        status: devices.status,
+      })
+      .from(devices)
+      .where(inArray(devices.id, targetDeviceIds))
+    : [];
+
+  // Pre-fetch scripts referenced in actions
+  const scriptIds = [...new Set(
+    actions
+      .filter((action): action is RunScriptAction => action.type === 'run_script')
+      .map((action) => action.scriptId),
+  )];
+
+  const scriptRows = scriptIds.length > 0
+    ? await db.select().from(scripts).where(inArray(scripts.id, scriptIds))
+    : [];
+  const scriptsById = new Map(scriptRows.map((s) => [s.id, s]));
+
+  // Pre-fetch notification channels referenced in actions
+  const notificationChannelIds = new Set<string>();
+  for (const action of actions) {
+    if (action.type === 'send_notification') {
+      notificationChannelIds.add(action.notificationChannelId);
+    }
+  }
+
+  const channelRows = notificationChannelIds.size > 0
+    ? await db
+      .select()
+      .from(notificationChannels)
+      .where(
+        and(
+          eq(notificationChannels.orgId, orgId),
+          inArray(notificationChannels.id, [...notificationChannelIds]),
+        ),
+      )
+    : [];
+  const channelsById = new Map(channelRows.map((ch) => [ch.id, ch]));
+
+  const syntheticAutomation = {
+    id: automation.id,
+    orgId,
+    name: automation.name,
+    createdBy: null,
+  };
+
+  const existingLogs = getExistingLogs(run.logs);
+  const logs: AutomationLogEntry[] = [...existingLogs];
+  let devicesSucceeded = 0;
+  let devicesFailed = 0;
+
+  await runWithConcurrency(deviceRows, 5, async (device) => {
+    let deviceFailed = false;
+
+    for (const [actionIndex, action] of actions.entries()) {
+      const result = await executeAction(action, actionIndex, {
+        automation: syntheticAutomation,
+        runId: run.id,
+        device,
+        scriptsById,
+        channelsById,
+      });
+
+      logs.push(result.log);
+
+      if (!result.success) {
+        deviceFailed = true;
+
+        if (onFailure === 'notify') {
+          const notifyTargets: NotificationTargets | undefined =
+            notificationChannelIds.size > 0
+              ? { channelIds: [...notificationChannelIds] }
+              : undefined;
+          const failureLogs = await sendOnFailureNotifications(
+            syntheticAutomation as AutomationRow,
+            channelsById,
+            notifyTargets,
+            {
+              runId: run.id,
+              deviceId: device.id,
+              message: result.log.message,
+            },
+          );
+          logs.push(...failureLogs);
+        }
+
+        if (onFailure === 'stop' || onFailure === 'notify') {
+          break;
+        }
+      }
+    }
+
+    if (deviceFailed) {
+      devicesFailed += 1;
+    } else {
+      devicesSucceeded += 1;
+    }
+  });
+
+  const status: 'completed' | 'failed' | 'partial' =
+    devicesFailed === 0
+      ? 'completed'
+      : devicesSucceeded === 0
+        ? 'failed'
+        : 'partial';
+
+  logs.push(logEntry(`Config policy automation run finished with status ${status}`, status === 'completed' ? 'info' : 'warning', {
+    details: {
+      devicesSucceeded,
+      devicesFailed,
+      devicesTargeted: targetDeviceIds.length,
+    },
+  }));
+
+  await db
+    .update(automationRuns)
+    .set({
+      status,
+      devicesSucceeded,
+      devicesFailed,
+      completedAt: new Date(),
+      logs,
+    })
+    .where(eq(automationRuns.id, run.id));
+
+  await publishEvent(
+    status === 'completed' ? 'automation.completed' : 'automation.failed',
+    orgId,
+    {
+      configPolicyAutomationId: automation.id,
+      configItemName: automation.name,
+      runId: run.id,
+      triggeredBy,
+      status,
+      devicesTargeted: targetDeviceIds.length,
+      devicesSucceeded,
+      devicesFailed,
+    },
+    'automation-runtime',
+  );
+
+  return {
+    runId: run.id,
+    status,
+    devicesSucceeded,
+    devicesFailed,
+  };
 }

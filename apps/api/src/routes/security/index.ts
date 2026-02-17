@@ -22,5 +22,3 @@ securityRoutes.route('/', postureRoutes);
 securityRoutes.route('/', complianceRoutes);
 securityRoutes.route('/', recommendationsRoutes);
 
-export * from './helpers';
-export * from './schemas';
