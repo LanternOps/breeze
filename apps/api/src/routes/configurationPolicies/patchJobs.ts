@@ -12,7 +12,7 @@ import {
   patchJobs,
   devices,
 } from '../../db/schema';
-import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import { resolvePatchConfigForDevice, checkDeviceMaintenanceWindow } from '../../services/featureConfigResolver';
 import { getConfigPolicy } from '../../services/configurationPolicy';
 
 export const patchJobRoutes = new Hono();
@@ -121,7 +121,7 @@ patchJobRoutes.post(
       }, 404);
     }
 
-    // 4. For each accessible device, resolve the effective patch config
+    // 4. For each accessible device, check maintenance window and resolve the effective patch config
     //    (the hierarchy may override settings for specific devices)
     const devicePatchConfigs: Array<{
       deviceId: string;
@@ -130,7 +130,16 @@ patchJobRoutes.post(
       resolvedSettings: typeof configPolicyPatchSettings.$inferSelect;
     }> = [];
 
+    const maintenanceSuppressedDeviceIds: string[] = [];
+
     for (const device of accessibleDevices) {
+      // Check if patching is suppressed by a maintenance window
+      const maintenanceStatus = await checkDeviceMaintenanceWindow(device.id);
+      if (maintenanceStatus.active && maintenanceStatus.suppressPatching) {
+        maintenanceSuppressedDeviceIds.push(device.id);
+        continue;
+      }
+
       const resolved = await resolvePatchConfigForDevice(device.id);
       // If the device has no resolved config, fall back to the policy-level settings
       devicePatchConfigs.push({
@@ -139,6 +148,13 @@ patchJobRoutes.post(
         hostname: device.hostname,
         resolvedSettings: resolved ?? patchSettings,
       });
+    }
+
+    if (devicePatchConfigs.length === 0) {
+      return c.json({
+        error: 'All devices are currently in a maintenance window with patching suppressed',
+        skipped: { missingDeviceIds, inaccessibleDeviceIds, maintenanceSuppressedDeviceIds },
+      }, 409);
     }
 
     // 5. Group devices by orgId to create per-org patch jobs
@@ -164,7 +180,7 @@ patchJobRoutes.post(
         .values({
           orgId,
           policyId: null, // Not a legacy patch policy
-          configPolicyId: patchSettings.id,
+          configPolicyId,
           name: jobName,
           patches: {
             sources: representativeSettings.sources,
@@ -181,7 +197,7 @@ patchJobRoutes.post(
             configPolicyId,
             configPolicyName: policy.name,
           },
-          status: data.scheduledAt ? 'scheduled' : 'scheduled',
+          status: 'scheduled',
           scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
           devicesTotal: orgDevices.length,
           devicesPending: orgDevices.length,
@@ -207,7 +223,7 @@ patchJobRoutes.post(
       resourceName: policy.name,
       details: {
         jobCount: createdJobs.length,
-        totalDevices: accessibleDevices.length,
+        totalDevices: devicePatchConfigs.length,
         jobs: createdJobs,
         patchSettingsId: patchSettings.id,
         sources: patchSettings.sources,
@@ -216,6 +232,7 @@ patchJobRoutes.post(
         scheduleFrequency: patchSettings.scheduleFrequency,
         missingDeviceIds,
         inaccessibleDeviceIds,
+        maintenanceSuppressedDeviceIds,
       },
     });
 
@@ -234,10 +251,11 @@ patchJobRoutes.post(
         rebootPolicy: patchSettings.rebootPolicy,
       },
       jobs: createdJobs,
-      totalDevices: accessibleDevices.length,
+      totalDevices: devicePatchConfigs.length,
       skipped: {
         missingDeviceIds,
         inaccessibleDeviceIds,
+        maintenanceSuppressedDeviceIds,
       },
     }, 201);
   }
@@ -288,7 +306,7 @@ patchJobRoutes.get(
 );
 
 /**
- * POST /:id/resolve-patch-config/:deviceId
+ * GET /:id/resolve-patch-config/:deviceId
  *
  * Resolves the effective patch configuration for a specific device through the
  * configuration policy hierarchy. Returns the winning patch settings row.
@@ -308,6 +326,18 @@ patchJobRoutes.get(
     const policy = await getConfigPolicy(configPolicyId, auth);
     if (!policy) {
       return c.json({ error: 'Configuration policy not found' }, 404);
+    }
+
+    // Verify the caller has access to this device's org
+    const [device] = await db.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, deviceId)).limit(1);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    if (auth.scope === 'organization' && auth.orgId !== device.orgId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    if (auth.scope === 'partner' && !auth.canAccessOrg(device.orgId)) {
+      return c.json({ error: 'Access denied' }, 403);
     }
 
     const resolved = await resolvePatchConfigForDevice(deviceId);

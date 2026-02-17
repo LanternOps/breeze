@@ -231,6 +231,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const [assignment] = await db
         .select({
           id: configPolicyAssignments.id,
+          configPolicyId: configPolicyAssignments.configPolicyId,
           policyName: configurationPolicies.name,
           level: configPolicyAssignments.level,
           targetId: configPolicyAssignments.targetId,
@@ -242,7 +243,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       if (!assignment) return JSON.stringify({ error: 'Assignment not found' });
 
-      const deleted = await unassignPolicy(input.assignmentId as string);
+      const deleted = await unassignPolicy(input.assignmentId as string, assignment.configPolicyId);
       if (!deleted) return JSON.stringify({ error: 'Assignment not found' });
 
       return JSON.stringify({

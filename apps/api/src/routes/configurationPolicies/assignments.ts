@@ -90,7 +90,7 @@ assignmentRoutes.delete(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    const deleted = await unassignPolicy(aid);
+    const deleted = await unassignPolicy(aid, id);
     if (!deleted) return c.json({ error: 'Assignment not found' }, 404);
 
     writeRouteAudit(c, {
@@ -112,8 +112,17 @@ assignmentRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', targetQuerySchema),
   async (c) => {
+    const auth = c.get('auth') as AuthContext;
     const query = c.req.valid('query');
     const result = await listAssignmentsForTarget(query.level, query.targetId);
-    return c.json({ data: result });
+
+    // Filter results to only include policies the caller can access
+    const filtered = result.filter((r) => {
+      if (auth.scope === 'system') return true;
+      if (auth.scope === 'organization') return auth.orgId === r.policyOrgId;
+      return auth.canAccessOrg(r.policyOrgId);
+    });
+
+    return c.json({ data: filtered });
   }
 );

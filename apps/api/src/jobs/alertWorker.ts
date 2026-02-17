@@ -7,10 +7,15 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { devices, deviceMetrics, organizations } from '../db/schema';
-import { eq, and, gte, desc, inArray } from 'drizzle-orm';
+import { devices, deviceMetrics, organizations, alerts } from '../db/schema';
+import { eq, and, gte, desc, inArray, isNotNull } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
-import { evaluateDeviceAlerts, checkAllAutoResolve } from '../services/alertService';
+import {
+  evaluateDeviceAlerts,
+  checkAllAutoResolve,
+  evaluateDeviceAlertsFromPolicy,
+  checkAutoResolveFromConfigPolicy,
+} from '../services/alertService';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -169,10 +174,12 @@ async function processEvaluateDevice(data: EvaluateDeviceJobData): Promise<{
   const startTime = Date.now();
 
   try {
-    const alertIds = await evaluateDeviceAlerts(data.deviceId);
+    const legacyAlertIds = await evaluateDeviceAlerts(data.deviceId);
+    const configPolicyAlertIds = await evaluateDeviceAlertsFromPolicy(data.deviceId);
+    const alertIds = [...legacyAlertIds, ...configPolicyAlertIds];
 
     if (alertIds.length > 0) {
-      console.log(`[AlertWorker] Created ${alertIds.length} alerts for device ${data.deviceId}`);
+      console.log(`[AlertWorker] Created ${alertIds.length} alerts for device ${data.deviceId} (legacy=${legacyAlertIds.length}, configPolicy=${configPolicyAlertIds.length})`);
     }
 
     return {
@@ -197,10 +204,42 @@ async function processAutoResolve(data: AutoResolveJobData): Promise<{
   const startTime = Date.now();
 
   try {
-    const resolvedCount = await checkAllAutoResolve(data.orgId);
+    // Legacy auto-resolve: checks per-alert against standalone alert rules
+    const legacyResolvedCount = await checkAllAutoResolve(data.orgId);
+
+    // Config policy auto-resolve: checks per-device against config policy alert rules
+    let configPolicyResolvedCount = 0;
+    try {
+      const orgConditions = [
+        eq(alerts.status, 'active'),
+        isNotNull(alerts.configPolicyId)
+      ];
+      if (data.orgId) {
+        orgConditions.push(eq(alerts.orgId, data.orgId));
+      }
+
+      const configPolicyAlerts = await db
+        .select({ deviceId: alerts.deviceId })
+        .from(alerts)
+        .where(and(...orgConditions));
+
+      const uniqueDeviceIds = [...new Set(configPolicyAlerts.map(a => a.deviceId))];
+
+      for (const deviceId of uniqueDeviceIds) {
+        try {
+          configPolicyResolvedCount += await checkAutoResolveFromConfigPolicy(deviceId);
+        } catch (error) {
+          console.error(`[AlertWorker] Error in config policy auto-resolve for device ${deviceId}:`, error);
+        }
+      }
+    } catch (error) {
+      console.error('[AlertWorker] Error querying config policy alerts for auto-resolve:', error);
+    }
+
+    const resolvedCount = legacyResolvedCount + configPolicyResolvedCount;
 
     if (resolvedCount > 0) {
-      console.log(`[AlertWorker] Auto-resolved ${resolvedCount} alerts`);
+      console.log(`[AlertWorker] Auto-resolved ${resolvedCount} alerts (legacy=${legacyResolvedCount}, configPolicy=${configPolicyResolvedCount})`);
     }
 
     return {

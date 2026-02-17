@@ -14,6 +14,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { PERMISSIONS } from '../services/permissions';
 import { sendCommandToAgent } from './agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
+import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
 
 export const scriptRoutes = new Hono();
 
@@ -624,13 +625,32 @@ scriptRoutes.post(
       return c.json({ error: 'No accessible or compatible devices found' }, 400);
     }
 
+    // Filter out devices where script execution is suppressed by a maintenance window
+    const maintenanceSuppressedDeviceIds: string[] = [];
+    const executableDevices: typeof validDevices = [];
+    for (const device of validDevices) {
+      const maintenanceStatus = await checkDeviceMaintenanceWindow(device.id);
+      if (maintenanceStatus.active && maintenanceStatus.suppressScripts) {
+        maintenanceSuppressedDeviceIds.push(device.id);
+      } else {
+        executableDevices.push(device);
+      }
+    }
+
+    if (executableDevices.length === 0) {
+      return c.json({
+        error: 'All target devices are in a maintenance window with script execution suppressed',
+        maintenanceSuppressedDeviceIds,
+      }, 409);
+    }
+
     const triggerType = data.triggerType ?? 'manual';
     const parameters = data.parameters ?? {};
     const runAs = data.runAs ?? script.runAs;
 
     // Create batch if multiple devices
     let batchId: string | null = null;
-    if (validDevices.length > 1) {
+    if (executableDevices.length > 1) {
       const [batch] = await db
         .insert(scriptExecutionBatches)
         .values({
@@ -638,7 +658,7 @@ scriptRoutes.post(
           triggeredBy: auth.user.id,
           triggerType,
           parameters,
-          devicesTargeted: validDevices.length,
+          devicesTargeted: executableDevices.length,
           status: 'pending'
         })
         .returning();
@@ -651,7 +671,7 @@ scriptRoutes.post(
     // Create executions and queue commands for each device
     const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
 
-    for (const device of validDevices) {
+    for (const device of executableDevices) {
       // Create execution record
       const [execution] = await db
         .insert(scriptExecutions)
@@ -730,14 +750,15 @@ scriptRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: resolveScriptAuditOrgId(auth, script.orgId, validDevices[0]?.orgId ?? null),
+      orgId: resolveScriptAuditOrgId(auth, script.orgId, executableDevices[0]?.orgId ?? null),
       action: 'script.execute',
       resourceType: 'script',
       resourceId: script.id,
       resourceName: script.name,
       details: {
         batchId,
-        devicesTargeted: validDevices.length,
+        devicesTargeted: executableDevices.length,
+        maintenanceSuppressedDeviceIds,
         triggerType,
         runAs
       }
@@ -746,7 +767,8 @@ scriptRoutes.post(
     return c.json({
       batchId,
       scriptId,
-      devicesTargeted: validDevices.length,
+      devicesTargeted: executableDevices.length,
+      maintenanceSuppressedDeviceIds: maintenanceSuppressedDeviceIds.length > 0 ? maintenanceSuppressedDeviceIds : undefined,
       executions,
       status: 'queued'
     }, 201);

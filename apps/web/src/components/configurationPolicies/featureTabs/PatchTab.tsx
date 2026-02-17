@@ -94,7 +94,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
   };
 
   const toggleSeverity = (sev: Severity) => {
-    const current = settings.autoApproveSeverities;
+    const current = settings.autoApproveSeverities ?? [];
     update('autoApproveSeverities', current.includes(sev) ? current.filter((s) => s !== sev) : [...current, sev]);
   };
 
@@ -186,7 +186,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
                   onClick={() => toggleSeverity(sev.value)}
                   className={cn(
                     'rounded-full border px-3 py-1 text-xs font-medium transition',
-                    settings.autoApproveSeverities.includes(sev.value)
+                    (settings.autoApproveSeverities ?? []).includes(sev.value)
                       ? sev.color
                       : 'border-muted text-muted-foreground hover:text-foreground'
                   )}

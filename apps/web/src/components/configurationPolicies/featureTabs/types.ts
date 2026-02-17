@@ -28,7 +28,7 @@ export const FEATURE_META: Record<FeatureType, {
   alert_rule:   { label: 'Alerts',       fetchUrl: '/alerts/rules',        description: 'Alert rule configuration' },
   backup:       { label: 'Backup',       fetchUrl: '/backup/configs',      description: 'Backup schedule and retention' },
   security:     { label: 'Security',     fetchUrl: '/security/policies',   description: 'Security policy settings' },
-  monitoring:   { label: 'Monitoring',   fetchUrl: null,                   description: 'Monitoring check configuration' },
+  monitoring:   { label: 'Monitoring',   fetchUrl: '/monitoring',          description: 'Monitoring check configuration' },
   maintenance:  { label: 'Maintenance',  fetchUrl: '/maintenance/windows', description: 'Maintenance window settings' },
   compliance:   { label: 'Compliance',   fetchUrl: '/policies',            description: 'Compliance rules and enforcement' },
   automation:   { label: 'Automations',  fetchUrl: '/automations',         description: 'Automated tasks and responses' },

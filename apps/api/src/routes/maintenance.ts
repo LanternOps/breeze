@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { eq, and, or, lte, gte, inArray, desc, asc, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { maintenanceWindows, maintenanceOccurrences } from '../db/schema/maintenance';
+import { devices } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isDeviceInMaintenance } from '../services/maintenanceService';
@@ -233,7 +234,18 @@ maintenanceRoutes.get(
   '/device/:deviceId/status',
   requireScope('organization', 'partner', 'system'),
   async (c) => {
+    const auth = c.get('auth');
     const deviceId = c.req.param('deviceId');
+
+    // Verify the caller has access to this device's org
+    const [device] = await db.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, deviceId)).limit(1);
+    if (!device) return c.json({ error: 'Device not found' }, 404);
+    if (auth.scope === 'organization' && auth.orgId !== device.orgId) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    if (auth.scope === 'partner' && !auth.canAccessOrg(device.orgId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
 
     const status = await isDeviceInMaintenance(deviceId);
 

@@ -285,6 +285,7 @@ async function migrateOrgLive(orgId: string) {
       })
       .returning({ id: configurationPolicies.id });
 
+    if (!policy) throw new Error(`Failed to create configuration policy for org ${orgId}`);
     const policyId = policy.id;
     summary.policiesCreated++;
 
@@ -348,10 +349,11 @@ async function migrateAlertRulesLive(
     .insert(configPolicyFeatureLinks)
     .values({ configPolicyId: policyId, featureType: 'alert_rule' })
     .returning({ id: configPolicyFeatureLinks.id });
+  if (!featureLink) throw new Error('Failed to create alert_rule feature link');
   summary.featureLinksCreated++;
 
   for (let i = 0; i < legacyRules.length; i++) {
-    const rule = legacyRules[i];
+    const rule = legacyRules[i]!;
     const template = templateMap.get(rule.templateId);
     const overrides = asObj<AlertOverrideSettings>(rule.overrideSettings);
 
@@ -413,10 +415,11 @@ async function migrateAutomationsLive(
     .insert(configPolicyFeatureLinks)
     .values({ configPolicyId: policyId, featureType: 'automation' })
     .returning({ id: configPolicyFeatureLinks.id });
+  if (!featureLink) throw new Error('Failed to create automation feature link');
   summary.featureLinksCreated++;
 
   for (let i = 0; i < legacyAutos.length; i++) {
-    const auto = legacyAutos[i];
+    const auto = legacyAutos[i]!;
     const trigger = asObj<AutomationTrigger>(auto.trigger);
 
     // Map trigger type: 'schedule' -> 'schedule', 'event' -> 'event', etc.
@@ -455,7 +458,7 @@ async function migratePatchPoliciesLive(
   if (legacyPatches.length === 0) return;
 
   // One feature link for patch; take the first enabled policy (or just the first).
-  const primary = legacyPatches.find((p) => p.enabled) ?? legacyPatches[0];
+  const primary = legacyPatches.find((p) => p.enabled) ?? legacyPatches[0]!;
 
   const autoApproveObj = asObj<PatchAutoApprove>(primary.autoApprove);
   const scheduleObj = asObj<PatchSchedule>(primary.schedule);
@@ -465,6 +468,7 @@ async function migratePatchPoliciesLive(
     .insert(configPolicyFeatureLinks)
     .values({ configPolicyId: policyId, featureType: 'patch' })
     .returning({ id: configPolicyFeatureLinks.id });
+  if (!featureLink) throw new Error('Failed to create patch feature link');
   summary.featureLinksCreated++;
 
   // sources is a patchSourceEnum[] on the legacy table, text[] on the target.
@@ -502,14 +506,16 @@ async function migrateMaintenanceWindowsLive(
   if (legacyMaint.length === 0) return;
 
   // Take the first active/scheduled window as the representative.
-  const primary =
+  const primary = (
     legacyMaint.find((w) => w.status === 'active' || w.status === 'scheduled') ??
-    legacyMaint[0];
+    legacyMaint[0]
+  )!;
 
   const [featureLink] = await tx
     .insert(configPolicyFeatureLinks)
     .values({ configPolicyId: policyId, featureType: 'maintenance' })
     .returning({ id: configPolicyFeatureLinks.id });
+  if (!featureLink) throw new Error('Failed to create maintenance feature link');
   summary.featureLinksCreated++;
 
   const durationHours = hoursBetween(primary.startTime, primary.endTime);
@@ -519,6 +525,10 @@ async function migrateMaintenanceWindowsLive(
     recurrence: primary.recurrence ?? 'weekly',
     durationHours,
     timezone: primary.timezone ?? 'UTC',
+    // For 'once' recurrence, store the original startTime as windowStart
+    windowStart: primary.recurrence === 'once' && primary.startTime
+      ? primary.startTime.toISOString()
+      : null,
     suppressAlerts: primary.suppressAlerts ?? true,
     suppressPatching: primary.suppressPatching ?? false,
     suppressAutomations: primary.suppressAutomations ?? false,
@@ -551,10 +561,11 @@ async function migrateComplianceLive(
     .insert(configPolicyFeatureLinks)
     .values({ configPolicyId: policyId, featureType: 'compliance' })
     .returning({ id: configPolicyFeatureLinks.id });
+  if (!featureLink) throw new Error('Failed to create compliance feature link');
   summary.featureLinksCreated++;
 
   for (let i = 0; i < legacyCompliance.length; i++) {
-    const policy = legacyCompliance[i];
+    const policy = legacyCompliance[i]!;
 
     await tx.insert(configPolicyComplianceRules).values({
       featureLinkId: featureLink.id,

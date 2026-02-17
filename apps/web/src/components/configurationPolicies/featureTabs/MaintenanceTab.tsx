@@ -9,6 +9,8 @@ type MaintenanceSettings = {
   recurrence: 'once' | 'daily' | 'weekly' | 'monthly';
   durationHours: number;
   timezone: string;
+  /** ISO-8601 local datetime for 'once' recurrence (e.g. "2026-03-15T02:00"). Only used when recurrence is 'once'. */
+  windowStart: string;
   suppressAlerts: boolean;
   suppressPatching: boolean;
   suppressAutomations: boolean;
@@ -22,6 +24,7 @@ const defaults: MaintenanceSettings = {
   recurrence: 'weekly',
   durationHours: 2,
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  windowStart: '',
   suppressAlerts: true,
   suppressPatching: false,
   suppressAutomations: false,
@@ -147,6 +150,20 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
             ))}
           </select>
         </div>
+
+        {/* Window Start (only for 'once' recurrence) */}
+        {settings.recurrence === 'once' && (
+          <div>
+            <label className="text-sm font-medium">Start Date/Time</label>
+            <input
+              type="datetime-local"
+              value={settings.windowStart}
+              onChange={(e) => update('windowStart', e.target.value)}
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">The specific date and time for this one-time maintenance window.</p>
+          </div>
+        )}
 
         {/* Duration */}
         <div>

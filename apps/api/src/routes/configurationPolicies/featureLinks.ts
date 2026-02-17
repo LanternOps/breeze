@@ -118,7 +118,7 @@ featureLinkRoutes.patch(
       }
     }
 
-    const updated = await updateFeatureLink(linkId, data);
+    const updated = await updateFeatureLink(linkId, data, id);
     if (!updated) return c.json({ error: 'Feature link not found' }, 404);
 
     writeRouteAudit(c, {
@@ -146,7 +146,7 @@ featureLinkRoutes.delete(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    const deleted = await removeFeatureLink(linkId);
+    const deleted = await removeFeatureLink(linkId, id);
     if (!deleted) return c.json({ error: 'Feature link not found' }, 404);
 
     writeRouteAudit(c, {

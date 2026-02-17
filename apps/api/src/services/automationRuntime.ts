@@ -608,7 +608,7 @@ async function ensureAutomationAlertRule(orgId: string): Promise<string> {
 }
 
 type ActionExecutionContext = {
-  automation: AutomationRow;
+  automation: Pick<AutomationRow, 'id' | 'orgId' | 'name' | 'createdBy'>;
   runId: string;
   device: {
     id: string;
@@ -1646,13 +1646,12 @@ export async function executeConfigPolicyAutomationRun(
     : [];
   const channelsById = new Map(channelRows.map((ch) => [ch.id, ch]));
 
-  // Build a synthetic AutomationRow-compatible object for the action execution context
   const syntheticAutomation = {
     id: automation.id,
     orgId,
     name: automation.name,
     createdBy: null,
-  } as AutomationRow;
+  };
 
   const existingLogs = getExistingLogs(run.logs);
   const logs: AutomationLogEntry[] = [...existingLogs];
@@ -1675,6 +1674,24 @@ export async function executeConfigPolicyAutomationRun(
 
       if (!result.success) {
         deviceFailed = true;
+
+        if (onFailure === 'notify') {
+          const notifyTargets: NotificationTargets | undefined =
+            notificationChannelIds.size > 0
+              ? { channelIds: [...notificationChannelIds] }
+              : undefined;
+          const failureLogs = await sendOnFailureNotifications(
+            syntheticAutomation as AutomationRow,
+            channelsById,
+            notifyTargets,
+            {
+              runId: run.id,
+              deviceId: device.id,
+              message: result.log.message,
+            },
+          );
+          logs.push(...failureLogs);
+        }
 
         if (onFailure === 'stop' || onFailure === 'notify') {
           break;

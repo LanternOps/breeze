@@ -15,7 +15,7 @@ import {
   scripts
 } from '../db/schema';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
-import { setCooldown } from '../services/alertCooldown';
+import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 
@@ -612,6 +612,10 @@ mobileRoutes.post(
             template?.cooldownMinutes ?? 15;
           await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
         }
+      } else if (alert.configPolicyId) {
+        const ctx = alert.context as Record<string, unknown> | null;
+        const cooldownMinutes = typeof ctx?.cooldownMinutes === 'number' ? ctx.cooldownMinutes : 5;
+        await markConfigPolicyRuleCooldown(alert.configPolicyId, alert.deviceId, cooldownMinutes);
       }
     } catch (error) {
       console.error('[MobileRoutes] Failed to set alert cooldown on resolve:', error);
