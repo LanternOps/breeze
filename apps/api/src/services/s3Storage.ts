@@ -84,10 +84,16 @@ export async function uploadBinary(localPath: string, s3Key: string, checksum?: 
   );
 }
 
+let presignTtlWarned = false;
+
 export async function getPresignedUrl(s3Key: string, ttlSeconds?: number): Promise<string> {
   const bucket = requireBucket();
   const client = getS3Client();
   const rawTtl = parseInt(process.env.S3_PRESIGN_TTL || '900', 10);
+  if (process.env.S3_PRESIGN_TTL && (!Number.isFinite(rawTtl) || rawTtl <= 0) && !presignTtlWarned) {
+    console.warn(`[s3Storage] Invalid S3_PRESIGN_TTL="${process.env.S3_PRESIGN_TTL}", using default 900`);
+    presignTtlWarned = true;
+  }
   const ttl = ttlSeconds ?? (Number.isFinite(rawTtl) && rawTtl > 0 ? rawTtl : 900);
 
   // Presigned URLs are valid even for non-existent keys, so verify first

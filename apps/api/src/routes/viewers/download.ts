@@ -76,6 +76,7 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
         controller.close();
       });
       stream.on('error', (err) => {
+        console.error(`[viewer-download] Stream error while serving ${filename}:`, err);
         controller.error(err);
       });
     },

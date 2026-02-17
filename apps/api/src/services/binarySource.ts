@@ -2,11 +2,14 @@ export type BinarySource = 'local' | 'github';
 
 const GITHUB_RELEASE_BASE = 'https://github.com/lanternops/breeze/releases';
 
+let binarySourceWarned = false;
+
 export function getBinarySource(): BinarySource {
   const raw = (process.env.BINARY_SOURCE || 'local').trim().toLowerCase();
   if (raw === 'github') return 'github';
-  if (raw !== 'local') {
+  if (raw !== 'local' && !binarySourceWarned) {
     console.warn(`[binarySource] Unrecognized BINARY_SOURCE="${raw}", defaulting to "local"`);
+    binarySourceWarned = true;
   }
   return 'local';
 }

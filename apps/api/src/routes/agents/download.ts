@@ -92,6 +92,7 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
         controller.close();
       });
       stream.on('error', (err) => {
+        console.error(`[agent-download] Stream error while serving ${filename}:`, err);
         controller.error(err);
       });
     },
