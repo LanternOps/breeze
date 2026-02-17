@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Script CRUD Lifecycle', () => {
   test.describe.configure({ mode: 'serial' });
@@ -9,6 +10,7 @@ test.describe('Script CRUD Lifecycle', () => {
 
   test('create a new script', async ({ page }) => {
     await page.goto('/scripts/new');
+    await waitForApp(page, '/scripts/new');
 
     // Wait for the form to load
     const form = page.locator('form, [data-testid="script-editor"]').first();
@@ -67,6 +69,7 @@ test.describe('Script CRUD Lifecycle', () => {
 
   test('verify script appears in the list', async ({ page }) => {
     await page.goto('/scripts');
+    await waitForApp(page, '/scripts');
 
     // Wait for the script list to load
     const table = page.locator('table').first();
@@ -79,6 +82,7 @@ test.describe('Script CRUD Lifecycle', () => {
 
   test('view script detail page', async ({ page }) => {
     await page.goto('/scripts');
+    await waitForApp(page, '/scripts');
 
     // Wait for list to load
     await expect(page.locator('table').first()).toBeVisible({ timeout: 15_000 });
@@ -111,6 +115,7 @@ test.describe('Script CRUD Lifecycle', () => {
 
   test('delete the script', async ({ page }) => {
     await page.goto('/scripts');
+    await waitForApp(page, '/scripts');
 
     // Wait for list to load
     await expect(page.locator('table').first()).toBeVisible({ timeout: 15_000 });
@@ -148,6 +153,7 @@ test.describe('Script CRUD Lifecycle', () => {
 
   test('verify script is removed from the list', async ({ page }) => {
     await page.goto('/scripts');
+    await waitForApp(page, '/scripts');
 
     // Wait for the script list to load
     const table = page.locator('table').first();

@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Security', () => {
   test('security overview page loads', async ({ page }) => {
     await page.goto('/security');
+    await waitForApp(page, '/security');
 
     // Page heading should reference security
     await expect(page.locator('h1, h2').first()).toContainText(/Security/i, { timeout: 10_000 });
@@ -17,6 +19,7 @@ test.describe('Security', () => {
 
   test('security score page loads', async ({ page }) => {
     await page.goto('/security/score');
+    await waitForApp(page, '/security/score');
 
     // Page heading should reference score or security
     await expect(page.locator('h1, h2').first()).toContainText(/Score|Security/i, { timeout: 10_000 });
@@ -31,6 +34,7 @@ test.describe('Security', () => {
 
   test('security vulnerabilities page loads', async ({ page }) => {
     await page.goto('/security/vulnerabilities');
+    await waitForApp(page, '/security/vulnerabilities');
 
     // Page heading should reference vulnerabilities or security
     await expect(page.locator('h1, h2').first()).toContainText(/Vulnerabilit|Security/i, { timeout: 10_000 });

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Authentication', () => {
   // Auth tests do NOT use the stored auth state — they exercise the login flow itself.
@@ -69,6 +70,7 @@ test.describe('Authentication', () => {
     await page.locator('#password').fill(password);
     await page.locator('button[type="submit"]').click();
     await page.waitForURL('/', { timeout: 15_000 });
+    await waitForApp(page);
 
     // Now log out — look for a user menu or direct logout link
     const logoutTrigger = page.locator(

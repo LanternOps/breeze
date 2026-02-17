@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Sites CRUD', () => {
   test.describe.configure({ mode: 'serial' });
@@ -11,6 +12,7 @@ test.describe('Sites CRUD', () => {
 
   test('page loads with Sites heading', async ({ page }) => {
     await page.goto('/settings/sites');
+    await waitForApp(page, '/settings/sites');
 
     const heading = page.locator('h1:has-text("Sites"), h2:has-text("Sites")').first();
     await expect(heading).toBeVisible({ timeout: 15_000 });
@@ -18,6 +20,7 @@ test.describe('Sites CRUD', () => {
 
   test('create a new site', async ({ page }) => {
     await page.goto('/settings/sites');
+    await waitForApp(page, '/settings/sites');
 
     // Wait for page to finish loading
     const addBtn = page.locator(
@@ -62,6 +65,7 @@ test.describe('Sites CRUD', () => {
     test.skip(!created, 'Site was not created -- skipping');
 
     await page.goto('/settings/sites');
+    await waitForApp(page, '/settings/sites');
     await expect(page.locator(`text=${siteName}`).first()).toBeVisible({ timeout: 15_000 });
   });
 
@@ -69,6 +73,7 @@ test.describe('Sites CRUD', () => {
     test.skip(!created, 'Site was not created -- skipping');
 
     await page.goto('/settings/sites');
+    await waitForApp(page, '/settings/sites');
 
     // Find the row containing our site and click Edit
     const row = page.locator('tr', { hasText: siteName }).first();
@@ -104,6 +109,7 @@ test.describe('Sites CRUD', () => {
     test.skip(!created, 'Site was not created -- skipping');
 
     await page.goto('/settings/sites');
+    await waitForApp(page, '/settings/sites');
 
     // Use updated name if edit succeeded, otherwise original
     const nameToFind = await page.locator(`text=${updatedSiteName}`).isVisible({ timeout: 5_000 }).catch(() => false)

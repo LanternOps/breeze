@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
+import { waitForApp } from './helpers';
 
 test.describe('Script Management', () => {
   test('script library loads', async ({ page }) => {
     await page.goto('/scripts');
+    await waitForApp(page, '/scripts');
 
     // Page heading
     await expect(page.locator('h1, h2').first()).toContainText(/Script/i);
@@ -16,6 +18,7 @@ test.describe('Script Management', () => {
 
   test('create new script page loads', async ({ page }) => {
     await page.goto('/scripts');
+    await waitForApp(page, '/scripts');
 
     // Click the "New Script" button (or navigate directly)
     const newBtn = page.locator(
@@ -29,6 +32,7 @@ test.describe('Script Management', () => {
     } else {
       // Navigate directly
       await page.goto('/scripts/new');
+      await waitForApp(page, '/scripts/new');
     }
 
     await expect(page).toHaveURL(/\/scripts\/new/);
@@ -42,6 +46,7 @@ test.describe('Script Management', () => {
 
   test('create and save a script', async ({ page }) => {
     await page.goto('/scripts/new');
+    await waitForApp(page, '/scripts/new');
 
     // Fill in script name
     const nameInput = page.locator('[name="name"], #name, input[placeholder*="name" i]').first();
@@ -74,6 +79,7 @@ test.describe('Script Management', () => {
 
   test('script execution results page is accessible', async ({ page }) => {
     await page.goto('/scripts');
+    await waitForApp(page, '/scripts');
 
     // If scripts exist, click the first one to see its detail
     const firstScript = page.locator('table tbody tr, [data-testid="script-row"]').first();
