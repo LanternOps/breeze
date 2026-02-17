@@ -24,7 +24,11 @@ function cleanupDownload(token: string) {
   const entry = pendingDownloads.get(token);
   if (entry) {
     clearTimeout(entry.timer);
-    unlink(entry.filePath).catch(() => {});
+    unlink(entry.filePath).catch((err) => {
+      if (err.code !== 'ENOENT') {
+        console.error(`[DevPush] Failed to clean up temp file ${entry.filePath}:`, err);
+      }
+    });
     pendingDownloads.delete(token);
   }
 }
@@ -186,8 +190,12 @@ devPushRoutes.get('/push/download/:token', async (c) => {
         'Content-Disposition': 'attachment; filename="breeze-agent"',
       },
     });
-  } catch {
+  } catch (err: any) {
     cleanupDownload(token);
-    return c.json({ error: 'Binary file not found' }, 404);
+    if (err?.code === 'ENOENT') {
+      return c.json({ error: 'Binary file not found' }, 404);
+    }
+    console.error(`[DevPush] Error streaming binary for token ${token}:`, err);
+    return c.json({ error: 'Failed to stream binary' }, 500);
   }
 });

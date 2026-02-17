@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -44,5 +45,49 @@ func TestPreInitLoggerRespectsConfiguredLevel(t *testing.T) {
 	}
 	if !strings.Contains(out, "shown") {
 		t.Fatalf("warn log should be emitted: %s", out)
+	}
+}
+
+func TestShippingHandlerIncludesLoggerAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	handler := &shippingHandler{
+		base: slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	}
+
+	shipper := &Shipper{
+		buffer:       make(chan LogEntry, 1),
+		minLevel:     slog.LevelDebug,
+		agentVersion: "1.2.3",
+	}
+
+	shipperMu.Lock()
+	prev := globalShipper
+	globalShipper = shipper
+	shipperMu.Unlock()
+	t.Cleanup(func() {
+		shipperMu.Lock()
+		globalShipper = prev
+		shipperMu.Unlock()
+	})
+
+	logger := slog.New(handler).With(
+		slog.String(KeyComponent, "heartbeat"),
+		slog.String("subsystem", "poller"),
+	)
+	logger.Info("test shipping attrs", slog.String("requestId", "req-1"))
+
+	select {
+	case entry := <-shipper.buffer:
+		if entry.Component != "heartbeat" {
+			t.Fatalf("expected component from logger attrs, got %q", entry.Component)
+		}
+		if got := entry.Fields["subsystem"]; got != "poller" {
+			t.Fatalf("expected subsystem field, got %#v", got)
+		}
+		if got := entry.Fields["requestId"]; got != "req-1" {
+			t.Fatalf("expected requestId field, got %#v", got)
+		}
+	default:
+		t.Fatal("expected shipped log entry")
 	}
 }

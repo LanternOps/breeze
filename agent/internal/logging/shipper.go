@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +43,7 @@ type Shipper struct {
 	wg           sync.WaitGroup
 	minLevel     slog.Level
 	mu           sync.RWMutex // protects minLevel
+	droppedCount atomic.Int64
 }
 
 // ShipperConfig configures the log shipper.
@@ -88,7 +91,10 @@ func (s *Shipper) Enqueue(entry LogEntry) {
 	select {
 	case s.buffer <- entry:
 	default:
-		// Buffer full, drop log to prevent blocking agent
+		dropped := s.droppedCount.Add(1)
+		if dropped == 1 || dropped%100 == 0 {
+			fmt.Fprintf(os.Stderr, "[log-shipper] buffer full, dropped %d log entries\n", dropped)
+		}
 	}
 }
 
@@ -160,6 +166,7 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 		"logs": entries,
 	})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[log-shipper] marshal error: %v\n", err)
 		return
 	}
 
@@ -167,13 +174,18 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	if _, err := gw.Write(payload); err != nil {
+		fmt.Fprintf(os.Stderr, "[log-shipper] gzip write error: %v\n", err)
 		return
 	}
-	gw.Close()
+	if err := gw.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "[log-shipper] gzip close error: %v\n", err)
+		return
+	}
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", s.serverURL, s.agentID)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[log-shipper] request build error: %v\n", err)
 		return
 	}
 
@@ -183,8 +195,13 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[log-shipper] HTTP error: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 400 {
+		fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries\n", resp.StatusCode, len(entries))
+	}
 }

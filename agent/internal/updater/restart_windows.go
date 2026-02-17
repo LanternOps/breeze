@@ -84,13 +84,17 @@ func Restart() error {
 // This avoids the race where the agent tries to SCM-stop itself
 // (killing the goroutine before it can call Start).
 func RestartWithHelper(newBinaryPath, targetPath string) error {
+	// Escape single quotes to prevent PowerShell injection
+	safeBinary := strings.ReplaceAll(newBinaryPath, "'", "''")
+	safeTarget := strings.ReplaceAll(targetPath, "'", "''")
+
 	script := strings.Join([]string{
 		"Start-Sleep -Seconds 3",
 		"Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
 		"Start-Sleep -Seconds 2",
-		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", newBinaryPath, targetPath),
+		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeBinary, safeTarget),
 		"Start-Service -Name '" + serviceName + "'",
-		fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", newBinaryPath),
+		fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeBinary),
 		"Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue",
 	}, "\r\n")
 

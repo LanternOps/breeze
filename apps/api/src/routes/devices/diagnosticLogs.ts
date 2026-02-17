@@ -44,10 +44,18 @@ diagnosticLogsRoutes.get(
 
     // Time range: ?since=ISO&until=ISO
     if (query.since) {
-      conditions.push(gte(agentLogs.timestamp, new Date(query.since)));
+      const d = new Date(query.since);
+      if (isNaN(d.getTime())) {
+        return c.json({ error: 'Invalid since date' }, 400);
+      }
+      conditions.push(gte(agentLogs.timestamp, d));
     }
     if (query.until) {
-      conditions.push(lte(agentLogs.timestamp, new Date(query.until)));
+      const d = new Date(query.until);
+      if (isNaN(d.getTime())) {
+        return c.json({ error: 'Invalid until date' }, 400);
+      }
+      conditions.push(lte(agentLogs.timestamp, d));
     }
 
     // Message text search: ?search=keyword

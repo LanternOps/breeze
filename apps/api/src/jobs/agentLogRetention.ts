@@ -41,15 +41,16 @@ export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const startTime = Date.now();
-        const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
+        const retentionDays = Math.max(1, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS);
         const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
         const result = await db
           .delete(agentLogs)
           .where(lt(agentLogs.timestamp, cutoff));
 
+        const deletedCount = (result as any).rowCount ?? 0;
         const durationMs = Date.now() - startTime;
-        console.log(`[AgentLogRetention] Pruned agent logs older than ${retentionDays} days in ${durationMs}ms`);
+        console.log(`[AgentLogRetention] Pruned ${deletedCount} agent logs older than ${retentionDays} days in ${durationMs}ms`);
 
         return { durationMs };
       });
@@ -79,7 +80,7 @@ export async function initializeAgentLogRetention(): Promise<void> {
       await queue.removeRepeatableByKey(job.key);
     }
 
-    // Schedule daily cleanup at 2 AM
+    // Schedule cleanup every 24 hours (runs at interval from worker start, not at a fixed time)
     await queue.add(
       'cleanup',
       { retentionDays: DEFAULT_RETENTION_DAYS },
