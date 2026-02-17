@@ -26,6 +26,7 @@ import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
 import { registerAgentLogTools } from './aiToolsAgentLogs';
+import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 import { registerFleetTools } from './aiToolsFleet';
 import { publishEvent } from './eventBus';
 import {
@@ -1349,6 +1350,7 @@ registerTool({
 
 registerFleetTools(aiTools);
 registerAgentLogTools(aiTools);
+registerConfigPolicyTools(aiTools);
 
 // ============================================
 // Helper Functions
