@@ -57,6 +57,19 @@ async function loadConfigPolicyPatchSettings(configPolicyId: string) {
   return result?.patchSettings ?? null;
 }
 
+function getPatchSettingsSignature(settings: typeof configPolicyPatchSettings.$inferSelect): string {
+  return JSON.stringify({
+    sources: settings.sources,
+    autoApprove: settings.autoApprove,
+    autoApproveSeverities: settings.autoApproveSeverities ?? [],
+    rebootPolicy: settings.rebootPolicy,
+    scheduleFrequency: settings.scheduleFrequency,
+    scheduleTime: settings.scheduleTime,
+    scheduleDayOfWeek: settings.scheduleDayOfWeek ?? null,
+    scheduleDayOfMonth: settings.scheduleDayOfMonth ?? null,
+  });
+}
+
 // ============================================
 // Routes
 // ============================================
@@ -126,7 +139,6 @@ patchJobRoutes.post(
     const devicePatchConfigs: Array<{
       deviceId: string;
       orgId: string;
-      hostname: string | null;
       resolvedSettings: typeof configPolicyPatchSettings.$inferSelect;
     }> = [];
 
@@ -145,7 +157,6 @@ patchJobRoutes.post(
       devicePatchConfigs.push({
         deviceId: device.id,
         orgId: device.orgId,
-        hostname: device.hostname,
         resolvedSettings: resolved ?? patchSettings,
       });
     }
@@ -157,60 +168,71 @@ patchJobRoutes.post(
       }, 409);
     }
 
-    // 5. Group devices by orgId to create per-org patch jobs
-    const orgGroups = new Map<string, typeof devicePatchConfigs>();
+    // 5. Group devices by org and resolved settings to avoid mixing
+    // different effective patch configs into a single job.
+    const orgGroups = new Map<
+      string,
+      Map<string, { settings: typeof configPolicyPatchSettings.$inferSelect; deviceIds: string[] }>
+    >();
     for (const config of devicePatchConfigs) {
-      const existing = orgGroups.get(config.orgId) ?? [];
-      existing.push(config);
-      orgGroups.set(config.orgId, existing);
+      const settingsKey = getPatchSettingsSignature(config.resolvedSettings);
+      const settingsGroups = orgGroups.get(config.orgId) ?? new Map<string, { settings: typeof configPolicyPatchSettings.$inferSelect; deviceIds: string[] }>();
+      const existing = settingsGroups.get(settingsKey);
+      if (existing) {
+        existing.deviceIds.push(config.deviceId);
+      } else {
+        settingsGroups.set(settingsKey, {
+          settings: config.resolvedSettings,
+          deviceIds: [config.deviceId],
+        });
+      }
+      orgGroups.set(config.orgId, settingsGroups);
     }
 
-    // 6. Create patch jobs (one per org for proper org scoping)
+    // 6. Create patch jobs (one per org/settings group for correct config fidelity)
     const createdJobs: Array<{ jobId: string; orgId: string; deviceCount: number }> = [];
 
-    for (const [orgId, orgDevices] of orgGroups) {
-      // Use the first device's resolved settings as representative
-      // (in practice, all devices in same org under same config policy will have same settings)
-      const representativeSettings = orgDevices[0]!.resolvedSettings;
+    for (const [orgId, settingsGroups] of orgGroups) {
+      for (const { settings, deviceIds } of settingsGroups.values()) {
+        const jobName = data.name ?? `Config Policy Patch Job - ${policy.name}`;
 
-      const jobName = data.name ?? `Config Policy Patch Job - ${policy.name}`;
-
-      const [job] = await db
-        .insert(patchJobs)
-        .values({
-          orgId,
-          policyId: null, // Not a legacy patch policy
-          configPolicyId,
-          name: jobName,
-          patches: {
-            sources: representativeSettings.sources,
-            autoApprove: representativeSettings.autoApprove,
-            autoApproveSeverities: representativeSettings.autoApproveSeverities,
-            rebootPolicy: representativeSettings.rebootPolicy,
-            scheduleFrequency: representativeSettings.scheduleFrequency,
-            scheduleTime: representativeSettings.scheduleTime,
-            scheduleDayOfWeek: representativeSettings.scheduleDayOfWeek,
-            scheduleDayOfMonth: representativeSettings.scheduleDayOfMonth,
-          },
-          targets: {
-            deviceIds: orgDevices.map((d) => d.deviceId),
+        const [job] = await db
+          .insert(patchJobs)
+          .values({
+            orgId,
+            policyId: null, // Not a legacy patch policy
             configPolicyId,
-            configPolicyName: policy.name,
-          },
-          status: 'scheduled',
-          scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
-          devicesTotal: orgDevices.length,
-          devicesPending: orgDevices.length,
-          createdBy: auth.user.id,
-        })
-        .returning();
+            name: jobName,
+            patches: {
+              sources: settings.sources,
+              autoApprove: settings.autoApprove,
+              autoApproveSeverities: settings.autoApproveSeverities,
+              rebootPolicy: settings.rebootPolicy,
+              scheduleFrequency: settings.scheduleFrequency,
+              scheduleTime: settings.scheduleTime,
+              scheduleDayOfWeek: settings.scheduleDayOfWeek,
+              scheduleDayOfMonth: settings.scheduleDayOfMonth,
+            },
+            targets: {
+              deviceIds,
+              configPolicyId,
+              configPolicyName: policy.name,
+            },
+            status: 'scheduled',
+            scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
+            devicesTotal: deviceIds.length,
+            devicesPending: deviceIds.length,
+            createdBy: auth.user.id,
+          })
+          .returning();
 
-      if (job) {
-        createdJobs.push({
-          jobId: job.id,
-          orgId,
-          deviceCount: orgDevices.length,
-        });
+        if (job) {
+          createdJobs.push({
+            jobId: job.id,
+            orgId,
+            deviceCount: deviceIds.length,
+          });
+        }
       }
     }
 

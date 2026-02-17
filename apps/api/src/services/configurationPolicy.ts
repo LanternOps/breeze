@@ -47,6 +47,8 @@ interface ResolvedFeature {
   sourcePriority: number;
 }
 
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export interface EffectiveConfiguration {
   deviceId: string;
   features: Record<string, ResolvedFeature>;
@@ -635,24 +637,28 @@ export async function listAssignmentsForTarget(level: ConfigAssignmentLevel, tar
 // Resolution — "closest wins" algorithm
 // ============================================
 
-export async function resolveEffectiveConfig(deviceId: string, auth: AuthContext): Promise<EffectiveConfiguration | null> {
+async function resolveEffectiveConfigWithExecutor(
+  executor: DbExecutor,
+  deviceId: string,
+  auth: AuthContext
+): Promise<EffectiveConfiguration | null> {
   // 1. Load device
   const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) deviceConditions.push(orgCond);
 
-  const [device] = await db.select().from(devices).where(and(...deviceConditions)).limit(1);
+  const [device] = await executor.select().from(devices).where(and(...deviceConditions)).limit(1);
   if (!device) return null;
 
   // 2. Load org for partnerId
-  const [org] = await db
+  const [org] = await executor
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
+  const groupRows = await executor
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
@@ -696,7 +702,7 @@ export async function resolveEffectiveConfig(deviceId: string, auth: AuthContext
   }
 
   // 5. Single query: assignments → policies (active) → feature links
-  const rows = await db
+  const rows = await executor
     .select({
       assignmentId: configPolicyAssignments.id,
       assignmentLevel: configPolicyAssignments.level,
@@ -779,6 +785,10 @@ export async function resolveEffectiveConfig(deviceId: string, auth: AuthContext
   return { deviceId, features, inheritanceChain };
 }
 
+export async function resolveEffectiveConfig(deviceId: string, auth: AuthContext): Promise<EffectiveConfiguration | null> {
+  return resolveEffectiveConfigWithExecutor(db, deviceId, auth);
+}
+
 // ============================================
 // Preview — diff current vs proposed
 // ============================================
@@ -820,7 +830,7 @@ export async function previewEffectiveConfig(
       }
 
       // Resolve the proposed config within the transaction's view
-      proposed = await resolveEffectiveConfig(deviceId, auth);
+      proposed = await resolveEffectiveConfigWithExecutor(tx, deviceId, auth);
 
       // Force rollback — no changes are persisted
       throw new PreviewRollback();

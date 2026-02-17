@@ -48,6 +48,8 @@ vi.mock('../../db/schema', () => ({
 
 import { db } from '../../db';
 import { patchJobRoutes } from './patchJobs';
+import { writeRouteAudit } from '../../services/auditEvents';
+import { requireScope } from '../../middleware/auth';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -243,6 +245,7 @@ describe('configurationPolicies patchJob routes', () => {
       expect(res.status).toBe(201);
       const json = await res.json();
       expect(json.success).toBe(true);
+      expect(writeRouteAudit).toHaveBeenCalled();
     });
 
     it('returns 404 when no accessible devices found', async () => {
@@ -369,6 +372,72 @@ describe('configurationPolicies patchJob routes', () => {
       expect(res.status).toBe(201);
       const json = await res.json();
       expect(json.totalDevices).toBe(1); // Only device2 passed
+      // Verify the correct device was suppressed
+      expect(checkDeviceMaintenanceWindowMock).toHaveBeenCalledTimes(2);
+      if (json.skipped?.maintenanceSuppressedDeviceIds) {
+        expect(json.skipped.maintenanceSuppressedDeviceIds).toContain(DEVICE_ID);
+      }
+    });
+
+    it('creates separate jobs when devices resolve different patch settings', async () => {
+      const device2 = '66666666-6666-6666-6666-666666666666';
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+
+      let selectCallCount = 0;
+      vi.mocked(db.select).mockImplementation(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          return {
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
+                }),
+              }),
+            }),
+          } as any;
+        }
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
+              { id: device2, orgId: ORG_ID, hostname: 'host-2' },
+            ]),
+          }),
+        } as any;
+      });
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+      resolvePatchConfigForDeviceMock.mockImplementation(async (deviceId: string) => {
+        if (deviceId === DEVICE_ID) {
+          return makePatchSettings({ scheduleTime: '01:00' });
+        }
+        return makePatchSettings({ scheduleTime: '03:00' });
+      });
+
+      const insertReturningMock = vi.fn()
+        .mockResolvedValueOnce([{ id: 'job-1' }])
+        .mockResolvedValueOnce([{ id: 'job-2' }]);
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: insertReturningMock,
+      });
+      vi.mocked(db.insert).mockReturnValue({
+        values: insertValuesMock,
+      } as any);
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID, device2] }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValuesMock).toHaveBeenCalledTimes(2);
+
+      const firstPayload = insertValuesMock.mock.calls[0]?.[0];
+      const secondPayload = insertValuesMock.mock.calls[1]?.[0];
+      const scheduleTimes = [firstPayload?.patches?.scheduleTime, secondPayload?.patches?.scheduleTime];
+      expect(scheduleTimes.sort()).toEqual(['01:00', '03:00']);
     });
   });
 
@@ -506,6 +575,83 @@ describe('configurationPolicies patchJob routes', () => {
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.resolved).toBeNull();
+    });
+  });
+
+  // ============================================
+  // Service exception handling
+  // ============================================
+
+  describe('service exceptions', () => {
+    it('returns 500 when getConfigPolicy throws in POST /:id/patch-job', async () => {
+      getConfigPolicyMock.mockRejectedValue(new Error('DB connection lost'));
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID] }),
+      });
+      expect(res.status).toBe(500);
+    });
+
+    it('returns 500 when checkDeviceMaintenanceWindow throws', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+
+      let selectCallCount = 0;
+      vi.mocked(db.select).mockImplementation(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          return {
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
+                }),
+              }),
+            }),
+          } as any;
+        }
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
+            ]),
+          }),
+        } as any;
+      });
+
+      checkDeviceMaintenanceWindowMock.mockRejectedValue(new Error('DB timeout'));
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID] }),
+      });
+      expect(res.status).toBe(500);
+    });
+
+    it('returns 500 when getConfigPolicy throws in GET patch-settings', async () => {
+      getConfigPolicyMock.mockRejectedValue(new Error('DB error'));
+
+      const res = await app.request(`/${POLICY_ID}/patch-settings`);
+      expect(res.status).toBe(500);
+    });
+
+    it('returns 500 when resolvePatchConfigForDevice throws', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+          }),
+        }),
+      } as any);
+
+      resolvePatchConfigForDeviceMock.mockRejectedValue(new Error('Hierarchy error'));
+
+      const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
+      expect(res.status).toBe(500);
     });
   });
 });

@@ -45,6 +45,7 @@ vi.mock('./notificationSenders', () => ({
 
 import { db } from '../db';
 import { createConfigPolicyAutomationRun, executeConfigPolicyAutomationRun } from './automationRuntime';
+import { queueCommandForExecution } from './commandQueue';
 import { publishEvent } from './eventBus';
 
 function makeConfigPolicyAutomation(overrides: Record<string, unknown> = {}): any {
@@ -74,6 +75,16 @@ function mockInsertReturning(result: unknown[]) {
   } as any);
 }
 
+function mockInsertCapturingValues(result: unknown[]) {
+  const valuesMock = vi.fn().mockReturnValue({
+    returning: vi.fn().mockResolvedValue(result),
+  });
+  vi.mocked(db.insert).mockReturnValue({
+    values: valuesMock,
+  } as any);
+  return valuesMock;
+}
+
 function mockSelectChain(result: unknown[]) {
   return vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
@@ -94,7 +105,7 @@ describe('createConfigPolicyAutomationRun', () => {
     vi.clearAllMocks();
   });
 
-  it('creates a run record with automationId=null', async () => {
+  it('creates a run record with automationId=null and verifies DB values', async () => {
     const run = {
       id: 'run-1',
       automationId: null,
@@ -107,7 +118,7 @@ describe('createConfigPolicyAutomationRun', () => {
       devicesFailed: 0,
       logs: [],
     };
-    mockInsertReturning([run]);
+    const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
       automation: makeConfigPolicyAutomation(),
@@ -118,6 +129,15 @@ describe('createConfigPolicyAutomationRun', () => {
     expect(result.automationId).toBeNull();
     expect(result.configPolicyId).toBe('fl-1');
     expect(result.configItemName).toBe('Test Automation');
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        automationId: null,
+        configPolicyId: 'fl-1',
+        configItemName: 'Test Automation',
+        triggeredBy: 'scheduler',
+        devicesTargeted: 2,
+      })
+    );
   });
 
   it('sets configPolicyId to automation.featureLinkId', async () => {
@@ -129,7 +149,7 @@ describe('createConfigPolicyAutomationRun', () => {
       configItemName: 'Test Automation',
       status: 'running',
     };
-    mockInsertReturning([run]);
+    const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
       automation,
@@ -138,6 +158,13 @@ describe('createConfigPolicyAutomationRun', () => {
     });
 
     expect(result.configPolicyId).toBe('fl-custom');
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        automationId: null,
+        configPolicyId: 'fl-custom',
+        triggeredBy: 'manual',
+      })
+    );
   });
 
   it('sets configItemName to automation.name', async () => {
@@ -148,7 +175,7 @@ describe('createConfigPolicyAutomationRun', () => {
       configItemName: 'Custom Name',
       status: 'running',
     };
-    mockInsertReturning([run]);
+    const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
       automation,
@@ -157,6 +184,12 @@ describe('createConfigPolicyAutomationRun', () => {
     });
 
     expect(result.configItemName).toBe('Custom Name');
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        automationId: null,
+        configItemName: 'Custom Name',
+      })
+    );
   });
 
   it('throws when DB insert returns empty', async () => {
@@ -266,17 +299,19 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    // Mock update for status change
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
+    // Mock update for status change with captured setMock
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
     expect(result.status).toBe('failed');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(1);
+    // Verify final status was persisted to DB
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    expect(lastSetCall.status).toBe('failed');
   });
 
   it('returns completed when all devices succeed', async () => {
@@ -325,15 +360,13 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    // Mock update
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
+    // Mock update with captured setMock
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
     // Mock command queue to succeed
-    const { queueCommandForExecution } = await import('./commandQueue');
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: { id: 'cmd-1' },
     } as any);
@@ -342,6 +375,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.status).toBe('completed');
     expect(result.devicesSucceeded).toBe(1);
     expect(result.devicesFailed).toBe(0);
+    // Verify final status was persisted to DB
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    expect(lastSetCall.status).toBe('completed');
   });
 
   it('returns failed when device action fails and onFailure is stop', async () => {
@@ -387,14 +423,12 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
     // Command queue fails
-    const { queueCommandForExecution } = await import('./commandQueue');
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: null,
       error: 'Queue error',
@@ -403,6 +437,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
     expect(result.status).toBe('failed');
     expect(result.devicesFailed).toBe(1);
+    // Verify final status was persisted to DB
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    expect(lastSetCall.status).toBe('failed');
   });
 
   it('returns partial when some devices fail and some succeed', async () => {
@@ -449,14 +486,13 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    // First device fails, second succeeds
-    const { queueCommandForExecution } = await import('./commandQueue');
+    // First device fails, second succeeds (counter-based: queueCommandForExecution
+    // does not receive deviceId directly, so we rely on call order)
     let cmdCallCount = 0;
     vi.mocked(queueCommandForExecution).mockImplementation(async () => {
       cmdCallCount++;
@@ -468,6 +504,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.status).toBe('partial');
     expect(result.devicesSucceeded).toBe(1);
     expect(result.devicesFailed).toBe(1);
+    // Verify final status was persisted to DB
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    expect(lastSetCall.status).toBe('partial');
   });
 
   it('publishes automation.completed event on success', async () => {
@@ -518,7 +557,6 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    const { queueCommandForExecution } = await import('./commandQueue');
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: { id: 'cmd-1' },
     } as any);
@@ -584,7 +622,6 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    const { queueCommandForExecution } = await import('./commandQueue');
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: null,
       error: 'Queue error',
@@ -636,15 +673,76 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+    const result = await executeConfigPolicyAutomationRun(automation, [], 'scheduler');
+    expect(result.status).toBe('completed');
+    expect(result.devicesSucceeded).toBe(0);
+    expect(result.devicesFailed).toBe(0);
+    // Verify final status was persisted to DB
+    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1][0];
+    expect(lastSetCall.status).toBe('completed');
+  });
+
+  it('propagates error when publishEvent rejects', async () => {
+    const automation = makeConfigPolicyAutomation({
+      actions: [{ type: 'execute_command', command: 'echo ok' }],
+    });
+
+    let selectCallCount = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCallCount++;
+      if (selectCallCount === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 2) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'dev-1', hostname: 'host-1', displayName: null, osType: 'linux', status: 'online' },
+            ]),
+          }),
+        } as any;
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      } as any;
+    });
+
+    const run = { id: 'run-1', automationId: null, status: 'running', logs: [] };
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([run]),
+      }),
+    } as any);
+
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, [], 'scheduler');
-    expect(result.status).toBe('completed');
-    expect(result.devicesSucceeded).toBe(0);
-    expect(result.devicesFailed).toBe(0);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-1' },
+    } as any);
+
+    vi.mocked(publishEvent).mockRejectedValue(new Error('Redis down'));
+
+    await expect(
+      executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler')
+    ).rejects.toThrow('Redis down');
   });
 });
