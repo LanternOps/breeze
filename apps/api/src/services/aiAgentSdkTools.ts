@@ -65,6 +65,10 @@ export const TOOL_TIERS = {
   manage_automations: 1,     // Action-level escalation in guardrails
   manage_alert_rules: 1,     // Action-level escalation in guardrails
   generate_report: 1,        // Action-level escalation in guardrails
+  // Brain device context tools
+  get_device_context: 1,
+  set_device_context: 2,
+  resolve_device_context: 2,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -519,6 +523,40 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('generate_report', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Brain device context tools
+
+    tool(
+      'get_device_context',
+      'Retrieve past AI memory/context about a device. Returns known issues, quirks, follow-ups, and preferences from previous interactions.',
+      {
+        deviceId: uuid,
+        includeResolved: z.boolean().optional().default(false),
+      },
+      makeHandler('get_device_context', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'set_device_context',
+      'Record new context/memory about a device for future reference. Use to remember issues, quirks, follow-ups, or preferences.',
+      {
+        deviceId: uuid,
+        contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
+        summary: z.string().min(1).max(255),
+        details: z.record(z.unknown()).optional(),
+        expiresInDays: z.number().int().positive().max(365).optional(),
+      },
+      makeHandler('set_device_context', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'resolve_device_context',
+      'Mark a context entry as resolved/completed. Resolved items are hidden from active context but preserved in history.',
+      {
+        contextId: uuid,
+      },
+      makeHandler('resolve_device_context', getAuth, onPreToolUse, onPostToolUse)
     ),
   ];
 

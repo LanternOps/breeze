@@ -226,6 +226,24 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
 
+  // Brain device context tools
+  get_device_context: z.object({
+    deviceId: uuid,
+    includeResolved: z.boolean().optional().default(false),
+  }),
+
+  set_device_context: z.object({
+    deviceId: uuid,
+    contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
+    summary: z.string().min(1).max(255),
+    details: z.record(z.unknown()).optional(),
+    expiresInDays: z.number().int().positive().max(365).optional(),
+  }),
+
+  resolve_device_context: z.object({
+    contextId: uuid,
+  }),
+
   // Fleet orchestration tools
   ...fleetToolInputSchemas,
 };
