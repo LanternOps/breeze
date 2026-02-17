@@ -1,5 +1,6 @@
 import type { AlertRule } from './schemas';
 import { builtInTemplates, customTemplates, customTemplateOrgById, alertRules, correlationAlerts, correlationLinks, correlationGroups } from './data';
+import { getPagination } from '../../utils/pagination';
 
 export { getPagination } from '../../utils/pagination';
 
