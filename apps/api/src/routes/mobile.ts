@@ -15,7 +15,7 @@ import {
   scripts
 } from '../db/schema';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
-import { setCooldown } from '../services/alertCooldown';
+import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 
@@ -593,23 +593,29 @@ mobileRoutes.post(
       .returning();
 
     try {
-      const [rule] = await db
-        .select()
-        .from(alertRules)
-        .where(eq(alertRules.id, alert.ruleId))
-        .limit(1);
-
-      if (rule) {
-        const [template] = await db
+      if (alert.ruleId) {
+        const [rule] = await db
           .select()
-          .from(alertTemplates)
-          .where(eq(alertTemplates.id, rule.templateId))
+          .from(alertRules)
+          .where(eq(alertRules.id, alert.ruleId))
           .limit(1);
 
-        const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
-        const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-          template?.cooldownMinutes ?? 15;
-        await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+        if (rule) {
+          const [template] = await db
+            .select()
+            .from(alertTemplates)
+            .where(eq(alertTemplates.id, rule.templateId))
+            .limit(1);
+
+          const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
+          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
+            template?.cooldownMinutes ?? 15;
+          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes);
+        }
+      } else if (alert.configPolicyId) {
+        const ctx = alert.context as Record<string, unknown> | null;
+        const cooldownMinutes = typeof ctx?.cooldownMinutes === 'number' ? ctx.cooldownMinutes : 5;
+        await markConfigPolicyRuleCooldown(alert.configPolicyId, alert.deviceId, cooldownMinutes);
       }
     } catch (error) {
       console.error('[MobileRoutes] Failed to set alert cooldown on resolve:', error);

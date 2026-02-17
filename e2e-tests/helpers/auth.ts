@@ -6,8 +6,8 @@ import { expect } from '@playwright/test';
  * After calling this the page will be on the dashboard.
  */
 export async function loginAsAdmin(page: Page): Promise<void> {
-  const email = process.env.E2E_ADMIN_EMAIL || 'admin@breeze.test';
-  const password = process.env.E2E_ADMIN_PASSWORD || 'TestPassword123!';
+  const email = process.env.E2E_ADMIN_EMAIL || 'admin@breeze.local';
+  const password = process.env.E2E_ADMIN_PASSWORD || 'BreezeAdmin123!';
   await loginAsUser(page, email, password);
 }
 

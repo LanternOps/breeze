@@ -126,6 +126,7 @@ rulesRoutes.get(
 );
 
 // POST /alerts/rules - Create alert rule
+// DEPRECATED: Alert rules are now managed via Configuration Policies. These routes remain for legacy compatibility.
 rulesRoutes.post(
   '/rules',
   requireScope('organization', 'partner', 'system'),
@@ -246,6 +247,7 @@ rulesRoutes.post(
 );
 
 // PUT /alerts/rules/:id - Update alert rule
+// DEPRECATED: Alert rules are now managed via Configuration Policies. These routes remain for legacy compatibility.
 rulesRoutes.put(
   '/rules/:id',
   requireScope('organization', 'partner', 'system'),
@@ -425,6 +427,7 @@ rulesRoutes.put(
 );
 
 // DELETE /alerts/rules/:id - Delete alert rule
+// DEPRECATED: Alert rules are now managed via Configuration Policies. These routes remain for legacy compatibility.
 rulesRoutes.delete(
   '/rules/:id',
   requireScope('organization', 'partner', 'system'),

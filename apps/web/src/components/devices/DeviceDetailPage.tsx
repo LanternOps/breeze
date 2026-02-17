@@ -68,7 +68,9 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         siteId: data.siteId ?? '',
         siteName: data.siteName ?? 'Unknown Site',
         agentVersion: data.agentVersion ?? '',
-        tags: data.tags ?? []
+        tags: data.tags ?? [],
+        lastUser: data.lastUser ?? undefined,
+        uptimeSeconds: typeof data.uptimeSeconds === 'number' ? data.uptimeSeconds : (latestMetrics?.uptimeSeconds ?? undefined)
       };
 
       setDevice(transformedDevice);

@@ -3,7 +3,6 @@ import {
   LayoutDashboard,
   Monitor,
   FileCode,
-  Zap,
   Bell,
   Terminal,
   FileText,
@@ -15,7 +14,6 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
-  Shield,
   ShieldCheck,
   KeyRound,
   Package,
@@ -25,7 +23,8 @@ import {
   HardDrive,
   BarChart3,
   BrainCircuit,
-  Activity
+  Activity,
+  Layers
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -38,9 +37,6 @@ const navigation = [
   { name: 'Devices', href: '/devices', icon: Monitor },
   { name: 'Discovery', href: '/discovery', icon: Network },
   { name: 'Scripts', href: '/scripts', icon: FileCode },
-  { name: 'Automations', href: '/automations', icon: Zap },
-  { name: 'Policies', href: '/policies', icon: Shield },
-  { name: 'Patches', href: '/patches', icon: Package },
   { name: 'Alerts', href: '/alerts', icon: Bell },
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
@@ -66,7 +62,7 @@ const operationsNav = [
 
 const managementNav = [
   { name: 'Software', href: '/software', icon: Package },
-  { name: 'Policies', href: '/policies', icon: Shield },
+  { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
   { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
   { name: 'Users', href: '/settings/users', icon: Users },
   { name: 'Roles', href: '/settings/roles', icon: KeyRound },

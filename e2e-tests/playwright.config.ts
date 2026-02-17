@@ -24,6 +24,8 @@ export default defineConfig({
     timeout: 10_000,
   },
 
+  globalTeardown: './tests/global-teardown.ts',
+
   reporter: [
     ['list'],
     ['html', { outputFolder: 'playwright-report', open: isCI ? 'never' : 'on-failure' }],
@@ -54,31 +56,15 @@ export default defineConfig({
       },
       dependencies: ['setup'],
     },
-    {
+    // Firefox only runs locally — skip in CI to keep runs fast
+    ...(isCI ? [] : [{
       name: 'firefox',
       testMatch: /\.spec\.ts$/,
       use: {
         ...devices['Desktop Firefox'],
-        storageState: '.auth/user.json',
+        storageState: '.auth/user.json' as const,
       },
       dependencies: ['setup'],
-    },
+    }]),
   ],
-
-  /* Web server configuration — start the app before running tests in CI */
-  // Uncomment if you want Playwright to start the dev servers automatically:
-  // webServer: [
-  //   {
-  //     command: 'pnpm --filter @breeze/api dev',
-  //     url: 'http://localhost:3001/health',
-  //     reuseExistingServer: !isCI,
-  //     timeout: 30_000,
-  //   },
-  //   {
-  //     command: 'pnpm --filter @breeze/web dev',
-  //     url: 'http://localhost:4321',
-  //     reuseExistingServer: !isCI,
-  //     timeout: 30_000,
-  //   },
-  // ],
 });

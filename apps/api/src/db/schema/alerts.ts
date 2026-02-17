@@ -52,9 +52,11 @@ export const alertRules = pgTable('alert_rules', {
 
 export const alerts = pgTable('alerts', {
   id: uuid('id').primaryKey().defaultRandom(),
-  ruleId: uuid('rule_id').notNull().references(() => alertRules.id),
+  ruleId: uuid('rule_id').references(() => alertRules.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  configPolicyId: uuid('config_policy_id'),
+  configItemName: varchar('config_item_name', { length: 200 }),
   status: alertStatusEnum('status').notNull().default('active'),
   severity: alertSeverityEnum('severity').notNull(),
   title: varchar('title', { length: 500 }).notNull(),

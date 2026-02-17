@@ -23,7 +23,7 @@ export * from './deployments';
 export * from './backup';
 export * from './snmp';
 export * from './notifications';
-export * from './policies';
+export * from './configurationPolicies';
 export * from './automations';
 export * from './filters';
 export * from './customFields';

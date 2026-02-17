@@ -3,19 +3,25 @@ import { db } from '../db';
 import {
   automationPolicies,
   automationPolicyCompliance,
-  automations,
   automationRuns,
+  automations,
+  configPolicyComplianceRules,
   deviceConfigState,
   deviceDisks,
-  deviceRegistryState,
-  devices,
   deviceGroupMemberships,
+  deviceRegistryState,
   deviceSoftware,
+  devices,
+  organizations,
   softwareInventory,
 } from '../db/schema';
 import { publishEvent } from './eventBus';
+import {
+  resolveComplianceRulesForDevice,
+  scanDueComplianceChecks,
+} from './featureConfigResolver';
 
-export type EvaluationStatus = 'compliant' | 'non_compliant';
+export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
 
 type PolicyRow = typeof automationPolicies.$inferSelect;
 
@@ -372,11 +378,13 @@ function evaluateRequiredSoftwareRule(
   }
 
   const operatorValue = readString(rule.raw.versionOperator)?.toLowerCase();
-  const versionOperator: VersionOperator = operatorValue === 'exact'
-    || operatorValue === 'minimum'
-    || operatorValue === 'maximum'
-    ? operatorValue
-    : 'any';
+  const versionOperator: VersionOperator = operatorValue === 'exact' || operatorValue === 'eq'
+    ? 'exact'
+    : operatorValue === 'minimum' || operatorValue === 'gte' || operatorValue === 'gt'
+      ? 'minimum'
+      : operatorValue === 'maximum' || operatorValue === 'lte'
+        ? 'maximum'
+        : 'any';
 
   const requiredVersion = readString(rule.raw.softwareVersion);
   if (versionOperator !== 'any' && !requiredVersion) {
@@ -417,12 +425,12 @@ function evaluateProhibitedSoftwareRule(
   rule: ParsedRule,
   context: DeviceEvaluationContext
 ): RuleEvaluationDetail {
-  const softwareName = readString(rule.raw.softwareName);
+  const softwareName = readString(rule.raw.prohibitedName ?? rule.raw.softwareName);
   if (!softwareName) {
     return {
       ruleType: rule.type,
       passed: false,
-      message: 'Prohibited software rule is missing softwareName.',
+      message: 'Prohibited software rule is missing prohibitedName.',
     };
   }
 
@@ -467,12 +475,12 @@ function evaluateDiskSpaceRule(
   rule: ParsedRule,
   context: DeviceEvaluationContext
 ): RuleEvaluationDetail {
-  const minimumFreeGb = readNumber(rule.raw.diskSpaceGB);
+  const minimumFreeGb = readNumber(rule.raw.minGb ?? rule.raw.diskSpaceGB);
   if (minimumFreeGb === null) {
     return {
       ruleType: rule.type,
       passed: false,
-      message: 'Disk space rule is missing diskSpaceGB.',
+      message: 'Disk space rule is missing minGb.',
     };
   }
 
@@ -519,7 +527,7 @@ function evaluateOsVersionRule(
   context: DeviceEvaluationContext
 ): RuleEvaluationDetail {
   const requiredOsType = readString(rule.raw.osType)?.toLowerCase() ?? 'any';
-  const requiredMinVersion = readString(rule.raw.osMinVersion);
+  const requiredMinVersion = readString(rule.raw.minOsVersion ?? rule.raw.osMinVersion);
   const currentOsType = context.device.osType.toLowerCase();
 
   if (requiredOsType !== 'any' && currentOsType !== requiredOsType) {
@@ -1114,8 +1122,8 @@ async function triggerRemediationAutomation(
           ],
         })
         .where(eq(automationRuns.id, run.id));
-    } catch {
-      // Non-critical completion simulation.
+    } catch (err) {
+      console.error(`[PolicyEvaluation] Failed to update remediation run ${run.id}:`, err);
     }
   }, 1000);
 
@@ -1365,5 +1373,501 @@ export async function evaluatePolicy(
       non_compliant: evaluationResults.filter((result) => result.status === 'non_compliant').length,
     },
     evaluatedAt: new Date().toISOString(),
+  };
+}
+
+// ============================================
+// Config Policy Compliance Evaluation
+// ============================================
+
+export type ConfigPolicyEvaluationResult = {
+  deviceId: string;
+  complianceRuleId: string;
+  complianceRuleName: string;
+  status: EvaluationStatus;
+  enforcementLevel: string;
+  remediationTriggered: boolean;
+};
+
+/**
+ * Evaluates a single config policy compliance rule against a device's telemetry context.
+ * Parses the `rules` JSONB field (same structure as automationPolicies.rules)
+ * and delegates to the existing rule evaluators.
+ *
+ * Returns a compliance status of 'compliant', 'non_compliant', or 'error'.
+ */
+export function evaluateConfigPolicyComplianceRule(
+  complianceRule: typeof configPolicyComplianceRules.$inferSelect,
+  _deviceId: string,
+  context: DeviceEvaluationContext
+): { status: 'compliant' | 'non_compliant' | 'error'; details: RuleEvaluationDetail[] } {
+  try {
+    const parsedRules = parsePolicyRules(complianceRule.rules);
+    const evaluation = evaluateDeviceRules(parsedRules, context);
+    const status: 'compliant' | 'non_compliant' = evaluation.passed ? 'compliant' : 'non_compliant';
+    return { status, details: evaluation.details };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown evaluation error';
+    return {
+      status: 'error',
+      details: [{
+        ruleType: 'evaluation_error',
+        passed: false,
+        message: `Failed to evaluate compliance rule "${complianceRule.name}": ${message}`,
+      }],
+    };
+  }
+}
+
+/**
+ * Evaluates all winning configuration-policy compliance rules for a single device.
+ * Calls resolveComplianceRulesForDevice to get applicable rules, evaluates each via
+ * evaluateConfigPolicyComplianceRule, and upserts results into automationPolicyCompliance
+ * with policyId: null, configPolicyId: rule.featureLinkId, configItemName: rule.name.
+ *
+ * If enforcement is 'enforce' and non-compliant, queues remediation if remediationScriptId is set.
+ */
+export async function evaluateDeviceComplianceFromConfigPolicy(
+  deviceId: string
+): Promise<ConfigPolicyEvaluationResult[]> {
+  const complianceRules = await resolveComplianceRulesForDevice(deviceId);
+  if (complianceRules.length === 0) {
+    return [];
+  }
+
+  // Load the device (with orgId for event publishing)
+  const [device] = await db
+    .select({
+      id: devices.id,
+      hostname: devices.hostname,
+      osType: devices.osType,
+      osVersion: devices.osVersion,
+      orgId: devices.orgId,
+    })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) {
+    return [];
+  }
+
+  const deviceOrgId = device.orgId;
+
+  // Load device context data
+  const [
+    diskRows,
+    installedSoftwareRows,
+    inventoryRows,
+    registryStateRows,
+    configStateRows,
+  ] = await Promise.all([
+    db
+      .select({
+        deviceId: deviceDisks.deviceId,
+        mountPoint: deviceDisks.mountPoint,
+        device: deviceDisks.device,
+        freeGb: deviceDisks.freeGb,
+      })
+      .from(deviceDisks)
+      .where(eq(deviceDisks.deviceId, deviceId)),
+    db
+      .select({
+        deviceId: deviceSoftware.deviceId,
+        name: deviceSoftware.name,
+        version: deviceSoftware.version,
+      })
+      .from(deviceSoftware)
+      .where(eq(deviceSoftware.deviceId, deviceId)),
+    db
+      .select({
+        deviceId: softwareInventory.deviceId,
+        name: softwareInventory.name,
+        version: softwareInventory.version,
+      })
+      .from(softwareInventory)
+      .where(eq(softwareInventory.deviceId, deviceId)),
+    db
+      .select({
+        deviceId: deviceRegistryState.deviceId,
+        registryPath: deviceRegistryState.registryPath,
+        valueName: deviceRegistryState.valueName,
+        valueData: deviceRegistryState.valueData,
+        valueType: deviceRegistryState.valueType,
+      })
+      .from(deviceRegistryState)
+      .where(eq(deviceRegistryState.deviceId, deviceId)),
+    db
+      .select({
+        deviceId: deviceConfigState.deviceId,
+        filePath: deviceConfigState.filePath,
+        configKey: deviceConfigState.configKey,
+        configValue: deviceConfigState.configValue,
+      })
+      .from(deviceConfigState)
+      .where(eq(deviceConfigState.deviceId, deviceId)),
+  ]);
+
+  const softwareRows = [...installedSoftwareRows, ...inventoryRows];
+
+  const targetDevice: TargetDevice = {
+    id: device.id,
+    hostname: device.hostname,
+    osType: device.osType,
+    osVersion: device.osVersion,
+  };
+
+  const context: DeviceEvaluationContext = {
+    device: targetDevice,
+    software: buildSoftwareMap(softwareRows).get(deviceId) ?? [],
+    disks: buildDiskMap(diskRows).get(deviceId) ?? [],
+    registryState: buildRegistryStateMap(registryStateRows).get(deviceId) ?? [],
+    configState: buildConfigStateMap(configStateRows).get(deviceId) ?? [],
+  };
+
+  const results: ConfigPolicyEvaluationResult[] = [];
+
+  for (const complianceRule of complianceRules) {
+    const { status, details: ruleDetails } = evaluateConfigPolicyComplianceRule(
+      complianceRule,
+      deviceId,
+      context
+    );
+
+    const ruleKeys = parsePolicyRules(complianceRule.rules).rules.map((rule) => rule.type);
+
+    const evaluationDetails = {
+      evaluatedAt: new Date().toISOString(),
+      rules: ruleKeys,
+      passed: status === 'compliant',
+      ruleResults: ruleDetails,
+      source: 'config-policy-compliance',
+      enforcementLevel: complianceRule.enforcementLevel,
+    };
+
+    // Upsert compliance row keyed by (configPolicyId=featureLinkId, configItemName, deviceId)
+    const [existing] = await db
+      .select()
+      .from(automationPolicyCompliance)
+      .where(
+        and(
+          eq(automationPolicyCompliance.configPolicyId, complianceRule.featureLinkId),
+          eq(automationPolicyCompliance.configItemName, complianceRule.name),
+          eq(automationPolicyCompliance.deviceId, deviceId)
+        )
+      )
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(automationPolicyCompliance)
+        .set({
+          status,
+          details: evaluationDetails,
+          lastCheckedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(automationPolicyCompliance.id, existing.id));
+    } else {
+      await db
+        .insert(automationPolicyCompliance)
+        .values({
+          policyId: null,
+          configPolicyId: complianceRule.featureLinkId,
+          configItemName: complianceRule.name,
+          deviceId,
+          status,
+          details: evaluationDetails,
+          lastCheckedAt: new Date(),
+        });
+    }
+
+    // Trigger remediation if enforcement is 'enforce' and a remediation script is configured
+    let remediationTriggered = false;
+    if (
+      status === 'non_compliant'
+      && complianceRule.enforcementLevel === 'enforce'
+      && complianceRule.remediationScriptId
+    ) {
+      remediationTriggered = await triggerConfigPolicyRemediation(
+        complianceRule,
+        targetDevice
+      );
+    }
+
+    results.push({
+      deviceId,
+      complianceRuleId: complianceRule.id,
+      complianceRuleName: complianceRule.name,
+      status,
+      enforcementLevel: complianceRule.enforcementLevel,
+      remediationTriggered,
+    });
+
+    // Publish events for config policy compliance
+    try {
+      const eventPayload = {
+        configPolicyComplianceRuleId: complianceRule.id,
+        configPolicyComplianceRuleName: complianceRule.name,
+        configPolicyId: complianceRule.featureLinkId,
+        deviceId: device.id,
+        hostname: device.hostname,
+        status,
+        enforcementLevel: complianceRule.enforcementLevel,
+        evaluatedAt: new Date().toISOString(),
+      };
+
+      await publishEvent('policy.evaluated', deviceOrgId, eventPayload, 'config-policy-compliance');
+
+      if (status === 'non_compliant') {
+        await publishEvent('policy.violation', deviceOrgId, eventPayload, 'config-policy-compliance');
+      } else {
+        await publishEvent('policy.compliant', deviceOrgId, eventPayload, 'config-policy-compliance');
+      }
+    } catch (error) {
+      console.error('[ConfigPolicyCompliance] Failed to publish event:', error);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Triggers a remediation automation for a config policy compliance rule.
+ * Finds an enabled automation whose actions reference the compliance rule's remediationScriptId.
+ */
+async function triggerConfigPolicyRemediation(
+  complianceRule: typeof configPolicyComplianceRules.$inferSelect,
+  device: TargetDevice
+): Promise<boolean> {
+  if (!complianceRule.remediationScriptId) {
+    return false;
+  }
+
+  // Find the device's orgId so we can search for automations in the correct org
+  const [deviceRow] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, device.id))
+    .limit(1);
+
+  if (!deviceRow) {
+    return false;
+  }
+
+  // Find an automation that uses the remediation script
+  const candidates = await db
+    .select({ id: automations.id, actions: automations.actions })
+    .from(automations)
+    .where(
+      and(
+        eq(automations.orgId, deviceRow.orgId),
+        eq(automations.enabled, true)
+      )
+    );
+
+  let automationId: string | null = null;
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate.actions)) {
+      continue;
+    }
+    for (const action of candidate.actions) {
+      if (!action || typeof action !== 'object') continue;
+      const typedAction = action as Record<string, unknown>;
+      const scriptId = typeof typedAction.scriptId === 'string'
+        ? typedAction.scriptId
+        : typeof typedAction.script_id === 'string'
+          ? typedAction.script_id
+          : null;
+      if (scriptId === complianceRule.remediationScriptId) {
+        automationId = candidate.id;
+        break;
+      }
+    }
+    if (automationId) break;
+  }
+
+  if (!automationId) {
+    return false;
+  }
+
+  const [automation] = await db
+    .select()
+    .from(automations)
+    .where(
+      and(
+        eq(automations.id, automationId),
+        eq(automations.orgId, deviceRow.orgId)
+      )
+    )
+    .limit(1);
+
+  if (!automation || !automation.enabled) {
+    return false;
+  }
+
+  const [run] = await db
+    .insert(automationRuns)
+    .values({
+      automationId: automation.id,
+      configPolicyId: complianceRule.featureLinkId,
+      configItemName: complianceRule.name,
+      triggeredBy: `config-policy-compliance:${complianceRule.id}`,
+      status: 'running',
+      devicesTargeted: 1,
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+      logs: [
+        {
+          timestamp: new Date().toISOString(),
+          level: 'info',
+          message: `Triggered by config policy compliance rule "${complianceRule.name}" for device ${device.hostname}`,
+          complianceRuleId: complianceRule.id,
+          deviceId: device.id,
+        },
+      ],
+    })
+    .returning();
+
+  if (!run) {
+    return false;
+  }
+
+  await db
+    .update(automations)
+    .set({
+      runCount: sql`${automations.runCount} + 1`,
+      lastRunAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(automations.id, automation.id));
+
+  // Simulate completion (same pattern as standalone policy remediation)
+  setTimeout(async () => {
+    try {
+      await db
+        .update(automationRuns)
+        .set({
+          status: 'completed',
+          devicesSucceeded: 1,
+          completedAt: new Date(),
+          logs: [
+            ...(Array.isArray(run.logs) ? run.logs : []),
+            {
+              timestamp: new Date().toISOString(),
+              level: 'info',
+              message: 'Config policy compliance remediation completed',
+              complianceRuleId: complianceRule.id,
+              deviceId: device.id,
+            },
+          ],
+        })
+        .where(eq(automationRuns.id, run.id));
+    } catch (err) {
+      console.error(`[PolicyEvaluation] Failed to update config policy remediation run ${run.id}:`, err);
+    }
+  }, 1000);
+
+  return true;
+}
+
+/**
+ * Resolves assignment targets to actual device IDs.
+ * Maps level + targetId to an array of device IDs.
+ */
+async function resolveDevicesForAssignmentTarget(
+  level: string,
+  targetId: string
+): Promise<string[]> {
+  switch (level) {
+    case 'device': {
+      return [targetId];
+    }
+    case 'device_group': {
+      const rows = await db
+        .select({ deviceId: deviceGroupMemberships.deviceId })
+        .from(deviceGroupMemberships)
+        .where(eq(deviceGroupMemberships.groupId, targetId));
+      return rows.map((r) => r.deviceId);
+    }
+    case 'site': {
+      const rows = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(eq(devices.siteId, targetId));
+      return rows.map((r) => r.id);
+    }
+    case 'organization': {
+      const rows = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(eq(devices.orgId, targetId));
+      return rows.map((r) => r.id);
+    }
+    case 'partner': {
+      // Find all orgs under this partner, then all devices in those orgs
+      const orgRows = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.partnerId, targetId));
+      const orgIds = orgRows.map((r) => r.id);
+      if (orgIds.length === 0) return [];
+
+      const deviceRows = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(inArray(devices.orgId, orgIds));
+      return deviceRows.map((r) => r.id);
+    }
+    default: {
+      console.warn(`[PolicyEvaluation] Unknown assignment level: ${level}`);
+      return [];
+    }
+  }
+}
+
+/**
+ * Background worker function: scans all due config-policy compliance checks
+ * and evaluates them for their target devices.
+ */
+export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
+  rulesScanned: number;
+  devicesEvaluated: number;
+  results: ConfigPolicyEvaluationResult[];
+}> {
+  const dueChecks = await scanDueComplianceChecks();
+  if (dueChecks.length === 0) {
+    return { rulesScanned: 0, devicesEvaluated: 0, results: [] };
+  }
+
+  // Expand each check's assignment target into device IDs, deduplicate
+  const deviceIdSet = new Set<string>();
+
+  for (const check of dueChecks) {
+    const deviceIds = await resolveDevicesForAssignmentTarget(
+      check.assignmentLevel,
+      check.assignmentTargetId
+    );
+    for (const id of deviceIds) {
+      deviceIdSet.add(id);
+    }
+  }
+
+  const allDeviceIds = Array.from(deviceIdSet);
+  const allResults: ConfigPolicyEvaluationResult[] = [];
+
+  for (const deviceId of allDeviceIds) {
+    try {
+      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId);
+      allResults.push(...deviceResults);
+    } catch (error) {
+      console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
+    }
+  }
+
+  return {
+    rulesScanned: dueChecks.length,
+    devicesEvaluated: allDeviceIds.length,
+    results: allResults,
   };
 }

@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -410,7 +411,7 @@ jobs:
 
       - name: Run Playwright tests
         working-directory: e2e-tests
-        run: npx playwright test
+        run: npx playwright test --reporter=list
         env:
           CI: true
 

@@ -77,7 +77,9 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'breeze-auth',
       partialize: (state) => ({
-        user: state.user
+        user: state.user,
+        tokens: state.tokens,
+        isAuthenticated: state.isAuthenticated,
       }),
       onRehydrateStorage: () => (state) => {
         // Set isLoading to false after rehydration completes

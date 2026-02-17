@@ -56,7 +56,7 @@ const basePolicy = {
   createdBy: 'user-123'
 };
 
-describe('patch policy routes', () => {
+describe('patch policy routes (read-only)', () => {
   let app: Hono;
 
   beforeEach(() => {
@@ -65,7 +65,7 @@ describe('patch policy routes', () => {
     app.route('/patch-policies', patchPolicyRoutes);
   });
 
-  describe('CRUD', () => {
+  describe('GET routes', () => {
     it('should list patch policies with pagination', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -96,33 +96,6 @@ describe('patch policy routes', () => {
       expect(body.pagination.total).toBe(1);
     });
 
-    it('should create a patch policy', async () => {
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([basePolicy])
-        })
-      } as any);
-
-      const res = await app.request('/patch-policies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orgId,
-          name: basePolicy.name,
-          description: basePolicy.description,
-          targets: basePolicy.targets,
-          sources: basePolicy.sources,
-          schedule: basePolicy.schedule,
-          enabled: basePolicy.enabled
-        })
-      });
-
-      expect(res.status).toBe(201);
-      const body = await res.json();
-      expect(body.id).toBe(policyId);
-      expect(body.name).toBe(basePolicy.name);
-    });
-
     it('should fetch a patch policy by id', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -142,64 +115,42 @@ describe('patch policy routes', () => {
       expect(body.id).toBe(policyId);
       expect(body.orgId).toBe(orgId);
     });
+  });
 
-    it('should update a patch policy', async () => {
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([basePolicy])
-          })
-        })
-      } as any);
-
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{
-              ...basePolicy,
-              name: 'Updated Patch Baseline',
-              enabled: false
-            }])
-          })
-        })
-      } as any);
-
-      const res = await app.request(`/patch-policies/${policyId}`, {
-        method: 'PATCH',
+  describe('removed mutation routes', () => {
+    it('should return 404 for POST (create removed)', async () => {
+      const res = await app.request('/patch-policies', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: 'Updated Patch Baseline',
-          enabled: false
+          orgId,
+          name: 'New Policy',
+          sources: ['microsoft'],
+          targets: { all: true },
+          schedule: { cadence: 'weekly' }
         })
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.name).toBe('Updated Patch Baseline');
-      expect(body.enabled).toBe(false);
+      expect(res.status).toBe(404);
     });
 
-    it('should delete a patch policy', async () => {
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([basePolicy])
-          })
-        })
-      } as any);
+    it('should return 404 for PATCH (update removed)', async () => {
+      const res = await app.request(`/patch-policies/${policyId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' })
+      });
 
-      vi.mocked(db.delete).mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      } as any);
+      expect(res.status).toBe(404);
+    });
 
+    it('should return 404 for DELETE (delete removed)', async () => {
       const res = await app.request(`/patch-policies/${policyId}`, {
         method: 'DELETE',
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.success).toBe(true);
+      expect(res.status).toBe(404);
     });
   });
 });

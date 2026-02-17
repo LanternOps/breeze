@@ -57,8 +57,8 @@ export function apiClient(opts: ApiClientOptions = {}) {
      * Returns the login response payload.
      */
     async login(email?: string, password?: string) {
-      const e = email || process.env.E2E_ADMIN_EMAIL || 'admin@breeze.test';
-      const p = password || process.env.E2E_ADMIN_PASSWORD || 'TestPassword123!';
+      const e = email || process.env.E2E_ADMIN_EMAIL || 'admin@breeze.local';
+      const p = password || process.env.E2E_ADMIN_PASSWORD || 'BreezeAdmin123!';
 
       const { status, data } = await request<{
         tokens?: { accessToken: string };

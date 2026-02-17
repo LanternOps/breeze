@@ -14,8 +14,10 @@ import {
   Network,
   CheckCircle,
   Info,
+  Server,
   Shield,
-  User
+  User,
+  Layers
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
@@ -32,6 +34,8 @@ import DeviceEventLogViewer from './DeviceEventLogViewer';
 import DeviceLogsTab from './DeviceLogsTab';
 import DeviceNetworkConnections from './DeviceNetworkConnections';
 import DeviceFilesystemTab from './DeviceFilesystemTab';
+import DeviceManagementTab from './DeviceManagementTab';
+import DeviceEffectiveConfigTab from './DeviceEffectiveConfigTab';
 
 type Tab =
   | 'overview'
@@ -40,6 +44,8 @@ type Tab =
   | 'software'
   | 'patches'
   | 'security'
+  | 'management'
+  | 'effective-config'
   | 'alerts'
   | 'scripts'
   | 'performance'
@@ -114,6 +120,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'patches', label: 'Patch Status', icon: <CheckCircle className="h-4 w-4" /> },
     { id: 'filesystem', label: 'Disk Cleanup', icon: <HardDrive className="h-4 w-4" /> },
     { id: 'security', label: 'Security', icon: <Shield className="h-4 w-4" /> },
+    { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" /> },
+    { id: 'effective-config', label: 'Effective Config', icon: <Layers className="h-4 w-4" /> },
     { id: 'alerts', label: 'Alert History', icon: <AlertTriangle className="h-4 w-4" /> },
     { id: 'scripts', label: 'Script History', icon: <Terminal className="h-4 w-4" /> },
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" /> },
@@ -248,6 +256,14 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'security' && (
         <DeviceSecurityTab deviceId={device.id} timezone={effectiveTimezone} />
+      )}
+
+      {activeTab === 'management' && (
+        <DeviceManagementTab deviceId={device.id} />
+      )}
+
+      {activeTab === 'effective-config' && (
+        <DeviceEffectiveConfigTab deviceId={device.id} />
       )}
 
       {activeTab === 'alerts' && (
