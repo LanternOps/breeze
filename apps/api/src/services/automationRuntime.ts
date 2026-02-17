@@ -1419,7 +1419,7 @@ function getZonedDateParts(date: Date, timeZone: string): {
     day: 'numeric',
     hour: 'numeric',
     minute: 'numeric',
-    hour12: false,
+    hourCycle: 'h23',
     weekday: 'short',
   });
 
