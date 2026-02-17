@@ -3,11 +3,7 @@ import { db } from '../../db';
 import { automationPolicies, automationPolicyCompliance } from '../../db/schema';
 import { AuthContext, TargetType, targetTypeSchema, uuidRegex } from './schemas';
 
-export function getPagination(query: { page?: string; limit?: string }) {
-  const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
-  return { page, limit, offset: (page - 1) * limit };
-}
+export { getPagination } from '../../utils/pagination';
 
 export function ensureOrgAccess(orgId: string, auth: AuthContext) {
   if (typeof auth.canAccessOrg === 'function') {

@@ -57,11 +57,7 @@ export function getIceServers(): Array<{ urls: string | string[]; username?: str
 // HELPER FUNCTIONS
 // ============================================
 
-export function getPagination(query: { page?: string; limit?: string }) {
-  const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
-  return { page, limit, offset: (page - 1) * limit };
-}
+export { getPagination } from '../../utils/pagination';
 
 export function envInt(name: string, defaultValue: number): number {
   const raw = process.env[name];

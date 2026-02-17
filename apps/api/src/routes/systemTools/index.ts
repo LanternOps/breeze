@@ -51,7 +51,3 @@ systemToolsRoutes.route('/', eventLogsRoutes);
 systemToolsRoutes.route('/', scheduledTasksRoutes);
 systemToolsRoutes.route('/', fileBrowserRoutes);
 
-// Re-export helpers, schemas and types for potential use elsewhere
-export * from './helpers';
-export * from './schemas';
-export * from './types';

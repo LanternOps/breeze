@@ -4,13 +4,14 @@ import { downloadRoutes } from './download';
 import { enrollmentRoutes } from './enrollment';
 import { heartbeatRoutes } from './heartbeat';
 import { commandsRoutes } from './commands';
-import { securityRoutes } from './security';
+import { agentSecurityRoutes } from './security';
 import { inventoryRoutes } from './inventory';
 import { stateRoutes } from './state';
 import { sessionsRoutes } from './sessions';
 import { patchesRoutes } from './patches';
 import { connectionsRoutes } from './connections';
 import { eventLogsRoutes } from './eventlogs';
+import { logsRoutes } from './logs';
 import { mtlsRoutes } from './mtls';
 
 export const agentRoutes = new Hono();
@@ -44,14 +45,12 @@ agentRoutes.route('/', enrollmentRoutes);
 // Mount all `:id/*` routes
 agentRoutes.route('/', heartbeatRoutes);
 agentRoutes.route('/', commandsRoutes);
-agentRoutes.route('/', securityRoutes);
+agentRoutes.route('/', agentSecurityRoutes);
 agentRoutes.route('/', inventoryRoutes);
 agentRoutes.route('/', stateRoutes);
 agentRoutes.route('/', sessionsRoutes);
 agentRoutes.route('/', patchesRoutes);
 agentRoutes.route('/', connectionsRoutes);
 agentRoutes.route('/', eventLogsRoutes);
+agentRoutes.route('/', logsRoutes);
 
-// Re-export helpers and schemas for potential use elsewhere
-export * from './helpers';
-export * from './schemas';
