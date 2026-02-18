@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync"
@@ -196,7 +197,8 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 
 	for attempt := 0; attempt <= shipRetryCount; attempt++ {
 		if attempt > 0 {
-			time.Sleep(shipRetryBackoff)
+			jitter := time.Duration(rand.Intn(int(shipRetryBackoff / 2)))
+			time.Sleep(shipRetryBackoff + jitter)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -260,9 +262,16 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 	}
 }
 
-// DroppedLogCount returns the current count of dropped log entries and resets
-// the counter to zero. This allows the heartbeat to report and clear the count
-// atomically.
+// DroppedLogCount returns the current count of dropped log entries without
+// resetting the counter. Use CommitDroppedLogCount to clear it after the
+// heartbeat has been successfully sent.
 func (s *Shipper) DroppedLogCount() int64 {
-	return s.droppedCount.Swap(0)
+	return s.droppedCount.Load()
+}
+
+// CommitDroppedLogCount resets the dropped log counter to zero. Call this
+// after the heartbeat POST succeeds so that the count is preserved for retry
+// if the heartbeat fails.
+func (s *Shipper) CommitDroppedLogCount() {
+	s.droppedCount.Store(0)
 }

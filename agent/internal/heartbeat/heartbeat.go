@@ -1296,6 +1296,11 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
 
+	// Heartbeat succeeded — commit (clear) the dropped log counter so it is
+	// not re-reported. If the POST had failed, the count would be preserved
+	// for the next attempt.
+	logging.CommitDroppedLogCount()
+
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		log.Error("failed to decode heartbeat response", "error", err)
