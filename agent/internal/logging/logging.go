@@ -163,18 +163,24 @@ func StopShipper() {
 }
 
 // SetShipperLevel dynamically adjusts minimum log level for shipping.
-func SetShipperLevel(level string) {
+// Returns true if the shipper was active and the level was changed,
+// false if no shipper is initialized.
+func SetShipperLevel(level string) bool {
 	shipperMu.RLock()
 	defer shipperMu.RUnlock()
 
 	if globalShipper != nil {
 		globalShipper.SetMinLevel(level)
+		return true
 	}
+	return false
 }
 
 // shippingHandler wraps a base slog.Handler to also ship logs remotely.
 type shippingHandler struct {
-	base slog.Handler
+	base   slog.Handler
+	attrs  []slog.Attr
+	groups []string
 }
 
 func (h *shippingHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -189,14 +195,17 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 
 	if shipper != nil && shipper.ShouldShip(record.Level) {
 		fields := make(map[string]any)
+		for _, attr := range h.attrs {
+			addField(fields, h.groups, attr)
+		}
 		record.Attrs(func(a slog.Attr) bool {
-			fields[a.Key] = a.Value.Any()
+			addField(fields, h.groups, a)
 			return true
 		})
 
 		entry := LogEntry{
 			Timestamp:    record.Time,
-			Level:        record.Level.String(),
+			Level:        strings.ToLower(record.Level.String()),
 			Component:    extractComponent(fields),
 			Message:      record.Message,
 			Fields:       fields,
@@ -211,16 +220,66 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 }
 
 func (h *shippingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &shippingHandler{base: h.base.WithAttrs(attrs)}
+	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	merged = append(merged, h.attrs...)
+	merged = append(merged, attrs...)
+
+	groups := make([]string, len(h.groups))
+	copy(groups, h.groups)
+
+	return &shippingHandler{
+		base:   h.base.WithAttrs(attrs),
+		attrs:  merged,
+		groups: groups,
+	}
 }
 
 func (h *shippingHandler) WithGroup(name string) slog.Handler {
-	return &shippingHandler{base: h.base.WithGroup(name)}
+	attrs := make([]slog.Attr, len(h.attrs))
+	copy(attrs, h.attrs)
+
+	groups := make([]string, 0, len(h.groups)+1)
+	groups = append(groups, h.groups...)
+	groups = append(groups, name)
+
+	return &shippingHandler{
+		base:   h.base.WithGroup(name),
+		attrs:  attrs,
+		groups: groups,
+	}
+}
+
+func addField(fields map[string]any, groups []string, attr slog.Attr) {
+	keyParts := make([]string, 0, len(groups)+1)
+	keyParts = append(keyParts, groups...)
+	if attr.Key != "" {
+		keyParts = append(keyParts, attr.Key)
+	}
+
+	if attr.Value.Kind() == slog.KindGroup {
+		for _, nested := range attr.Value.Group() {
+			addField(fields, keyParts, nested)
+		}
+		return
+	}
+
+	if len(keyParts) == 0 {
+		return
+	}
+	fields[strings.Join(keyParts, ".")] = attr.Value.Any()
 }
 
 func extractComponent(fields map[string]any) string {
-	if c, ok := fields[KeyComponent].(string); ok {
+	if c, ok := fields[KeyComponent].(string); ok && c != "" {
 		return c
+	}
+	suffix := "." + KeyComponent
+	for key, value := range fields {
+		if strings.HasSuffix(key, suffix) {
+			if c, ok := value.(string); ok && c != "" {
+				return c
+			}
+		}
 	}
 	return "unknown"
 }

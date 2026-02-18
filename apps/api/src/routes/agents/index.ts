@@ -27,6 +27,7 @@ agentRoutes.use('/:id/*', async (c, next) => {
   if (id === 'enroll' || id === 'renew-cert' || id === 'quarantined' || id === 'org' || id === 'download') {
     return next();
   }
+  // Check if the sub-path is an admin endpoint that uses user JWT auth
   const path = c.req.path;
   if (path.endsWith('/approve') || path.endsWith('/deny')) {
     return next();
@@ -55,4 +56,3 @@ agentRoutes.route('/', connectionsRoutes);
 agentRoutes.route('/', eventLogsRoutes);
 agentRoutes.route('/', logsRoutes);
 agentRoutes.route('/', bootPerformanceRoutes);
-

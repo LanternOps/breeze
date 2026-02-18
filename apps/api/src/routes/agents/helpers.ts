@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { db } from '../../db';
+import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
   deviceCommands,
@@ -39,6 +40,9 @@ import {
   filesystemAutoResumeMaxRuns,
   uuidRegex,
 } from './schemas';
+
+// Re-export for convenience — route files import as AgentContext
+export type AgentContext = AgentAuthContext;
 
 // ============================================
 // Generic Utilities

@@ -14,6 +14,9 @@ import { getRedisConnection } from '../services/redis';
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
+  if (typeof withSystem !== 'function') {
+    console.error('[AgentLogRetention] withSystemDbAccessContext is not available — running without access context');
+  }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
@@ -41,17 +44,25 @@ export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const startTime = Date.now();
-        const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
+        const retentionDays = Math.max(1, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS);
         const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
         const result = await db
           .delete(agentLogs)
           .where(lt(agentLogs.timestamp, cutoff));
 
-        const durationMs = Date.now() - startTime;
-        console.log(`[AgentLogRetention] Pruned agent logs older than ${retentionDays} days in ${durationMs}ms`);
+        // Drizzle returns different shapes per driver; try common patterns.
+        const raw = result as unknown as Record<string, unknown>;
+        const deletedCount = typeof raw?.rowCount === 'number'
+          ? raw.rowCount
+          : typeof raw?.count === 'number'
+            ? raw.count
+            : Array.isArray(result) ? (result as unknown[]).length : 'unknown';
 
-        return { durationMs };
+        const durationMs = Date.now() - startTime;
+        console.log(`[AgentLogRetention] Pruned ${deletedCount} agent logs older than ${retentionDays} days in ${durationMs}ms`);
+
+        return { durationMs, deletedCount };
       });
     },
     {
@@ -79,7 +90,7 @@ export async function initializeAgentLogRetention(): Promise<void> {
       await queue.removeRepeatableByKey(job.key);
     }
 
-    // Schedule daily cleanup at 2 AM
+    // Schedule cleanup every 24 hours (runs at interval from worker start, not at a fixed time)
     await queue.add(
       'cleanup',
       { retentionDays: DEFAULT_RETENTION_DAYS },

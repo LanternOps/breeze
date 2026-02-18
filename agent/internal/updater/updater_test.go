@@ -241,6 +241,52 @@ func TestDownloadBinary(t *testing.T) {
 	}
 }
 
+func TestDownloadBinaryRedirectResponse(t *testing.T) {
+	binaryContent := []byte("fake binary from redirect")
+	hasher := sha256.New()
+	hasher.Write(binaryContent)
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			if r.Header.Get("Authorization") != "Bearer test-token" {
+				t.Errorf("missing or wrong auth: %s", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("X-Checksum", checksum)
+			w.Header().Set("Location", "/binary/breeze-agent")
+			w.WriteHeader(http.StatusFound)
+		case r.URL.Path == "/binary/breeze-agent":
+			w.Write(binaryContent)
+		default:
+			t.Errorf("unexpected request path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	u := New(&Config{
+		ServerURL: server.URL,
+		AuthToken: "test-token",
+	})
+	u.client = server.Client()
+
+	tempPath, gotChecksum, err := u.downloadBinary("1.0.0")
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	defer os.Remove(tempPath)
+
+	if gotChecksum != checksum {
+		t.Fatalf("checksum mismatch: got %s, want %s", gotChecksum, checksum)
+	}
+
+	downloaded, _ := os.ReadFile(tempPath)
+	if string(downloaded) != string(binaryContent) {
+		t.Fatalf("downloaded content mismatch")
+	}
+}
+
 func TestDownloadBinaryMissingChecksum(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// JSON response missing checksum
@@ -314,7 +360,7 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 	u.client = server.Client()
 
 	// We can't test the full UpdateTo because Restart() would fail,
-	// but we can test the download → verify → backup → replace pipeline manually
+	// but we can test the download -> verify -> backup -> replace pipeline manually
 	tempPath, dlChecksum, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("download: %v", err)

@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
-import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { agentLogs } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck, getPagination } from './helpers';
+import { escapeLike } from '../../utils/sql';
 
 export const diagnosticLogsRoutes = new Hono();
 
@@ -44,15 +45,23 @@ diagnosticLogsRoutes.get(
 
     // Time range: ?since=ISO&until=ISO
     if (query.since) {
-      conditions.push(gte(agentLogs.timestamp, new Date(query.since)));
+      const d = new Date(query.since);
+      if (isNaN(d.getTime())) {
+        return c.json({ error: 'Invalid since date' }, 400);
+      }
+      conditions.push(gte(agentLogs.timestamp, d));
     }
     if (query.until) {
-      conditions.push(lte(agentLogs.timestamp, new Date(query.until)));
+      const d = new Date(query.until);
+      if (isNaN(d.getTime())) {
+        return c.json({ error: 'Invalid until date' }, 400);
+      }
+      conditions.push(lte(agentLogs.timestamp, d));
     }
 
     // Message text search: ?search=keyword
     if (query.search) {
-      conditions.push(sql`${agentLogs.message} ILIKE ${'%' + query.search + '%'}`);
+      conditions.push(ilike(agentLogs.message, `%${escapeLike(query.search)}%`));
     }
 
     const { limit, offset } = getPagination(
@@ -60,21 +69,29 @@ diagnosticLogsRoutes.get(
       1000
     );
 
-    const [rows, countRows] = await Promise.all([
-      db
-        .select()
-        .from(agentLogs)
-        .where(and(...conditions))
-        .orderBy(desc(agentLogs.timestamp))
-        .limit(limit)
-        .offset(offset),
-      db
-        .select({ total: sql<number>`count(*)::int` })
-        .from(agentLogs)
-        .where(and(...conditions)),
-    ]);
+    let rows: typeof agentLogs.$inferSelect[];
+    let total: number;
 
-    const total = countRows[0]?.total ?? 0;
+    try {
+      const [rowsResult, countRows] = await Promise.all([
+        db
+          .select()
+          .from(agentLogs)
+          .where(and(...conditions))
+          .orderBy(desc(agentLogs.timestamp))
+          .limit(limit)
+          .offset(offset),
+        db
+          .select({ total: sql<number>`count(*)::int` })
+          .from(agentLogs)
+          .where(and(...conditions)),
+      ]);
+      rows = rowsResult;
+      total = countRows[0]?.total ?? 0;
+    } catch (err) {
+      console.error(`[DiagnosticLogs] Query failed for device ${deviceId}:`, err);
+      return c.json({ error: 'Failed to query diagnostic logs' }, 500);
+    }
 
     return c.json({ logs: rows, total, limit, offset });
   }

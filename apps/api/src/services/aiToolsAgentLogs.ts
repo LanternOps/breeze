@@ -7,8 +7,9 @@
  */
 
 import { db } from '../db';
-import { agentLogs } from '../db/schema';
-import { and, eq, gte, lte, like, inArray, desc } from 'drizzle-orm';
+import { agentLogs, devices } from '../db/schema';
+import { and, eq, gte, lte, ilike, inArray, desc } from 'drizzle-orm';
+import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
@@ -95,7 +96,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           filters.push(lte(agentLogs.timestamp, new Date(input.endTime as string)));
         }
         if (input.message && typeof input.message === 'string') {
-          filters.push(like(agentLogs.message, `%${input.message}%`));
+          filters.push(ilike(agentLogs.message, `%${escapeLike(input.message)}%`));
         }
 
         const maxLimit = Math.min(Number(input.limit) || 100, 500);
@@ -171,6 +172,17 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
         if (!deviceId || !level) {
           return JSON.stringify({ error: 'deviceId and level are required' });
+        }
+
+        // Verify device belongs to the caller's organization
+        const [device] = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+          .limit(1);
+
+        if (!device) {
+          return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
         const { queueCommandForExecution } = await import('./commandQueue');

@@ -83,6 +83,7 @@ mtlsRoutes.post('/renew-cert', async (c) => {
     return c.json({ error: 'Device quarantined', quarantined: true }, 403);
   }
 
+  // Revoke old cert (best-effort)
   if (device.mtlsCertCfId) {
     try {
       await cfService.revokeCertificate(device.mtlsCertCfId);
