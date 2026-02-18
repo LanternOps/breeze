@@ -1404,7 +1404,9 @@ registerTool({
 
     if (bootRecords.length === 0) {
       return JSON.stringify({
-        error: 'No boot performance data available. Try triggerCollection: true if device is online.'
+        error: collectionFailed
+          ? 'Boot performance data collection failed and no cached data exists. The device may not support this feature or may be experiencing issues.'
+          : 'No boot performance data available. Try triggerCollection: true if device is online.'
       });
     }
 

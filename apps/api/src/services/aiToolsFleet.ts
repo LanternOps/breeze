@@ -73,7 +73,7 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
       console.error(`[fleet:${toolName}]`, input.action, message, err);
-      return JSON.stringify({ error: `Operation failed: ${message}` });
+      return JSON.stringify({ error: `Operation failed. Check server logs for details.` });
     }
   };
 }
@@ -1061,33 +1061,27 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'create') {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-        try {
-          const [win] = await db.insert(maintenanceWindows).values({
-            orgId,
-            name: input.name as string,
-            description: (input.description as string) ?? null,
-            startTime: new Date(input.startTime as string),
-            endTime: new Date(input.endTime as string),
-            timezone: (input.timezone as string) ?? 'UTC',
-            recurrence: (input.recurrence as 'once' | 'daily' | 'weekly' | 'monthly' | 'custom') ?? 'once',
-            recurrenceRule: (input.recurrenceRule as Record<string, unknown>) ?? null,
-            targetType: input.targetType as string,
-            siteIds: (input.siteIds as string[]) ?? null,
-            groupIds: (input.groupIds as string[]) ?? null,
-            deviceIds: (input.deviceIds as string[]) ?? null,
-            suppressAlerts: (input.suppressAlerts as boolean) ?? false,
-            suppressPatching: (input.suppressPatching as boolean) ?? false,
-            suppressAutomations: (input.suppressAutomations as boolean) ?? false,
-            status: 'scheduled',
-            createdBy: auth.user.id,
-          }).returning();
+        const [win] = await db.insert(maintenanceWindows).values({
+          orgId,
+          name: input.name as string,
+          description: (input.description as string) ?? null,
+          startTime: new Date(input.startTime as string),
+          endTime: new Date(input.endTime as string),
+          timezone: (input.timezone as string) ?? 'UTC',
+          recurrence: (input.recurrence as 'once' | 'daily' | 'weekly' | 'monthly' | 'custom') ?? 'once',
+          recurrenceRule: (input.recurrenceRule as Record<string, unknown>) ?? null,
+          targetType: input.targetType as string,
+          siteIds: (input.siteIds as string[]) ?? null,
+          groupIds: (input.groupIds as string[]) ?? null,
+          deviceIds: (input.deviceIds as string[]) ?? null,
+          suppressAlerts: (input.suppressAlerts as boolean) ?? false,
+          suppressPatching: (input.suppressPatching as boolean) ?? false,
+          suppressAutomations: (input.suppressAutomations as boolean) ?? false,
+          status: 'scheduled',
+          createdBy: auth.user.id,
+        }).returning();
 
-          return JSON.stringify({ success: true, windowId: win?.id, name: win?.name });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Unknown error';
-          console.error(`[fleet:manage_maintenance_windows] create failed for org ${orgId}:`, msg, err);
-          return JSON.stringify({ error: `Failed to create maintenance window: ${msg}` });
-        }
+        return JSON.stringify({ success: true, windowId: win?.id, name: win?.name });
       }
 
       if (action === 'update') {
@@ -1100,25 +1094,19 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
 
-        try {
-          const updates: Record<string, unknown> = { updatedAt: new Date() };
-          if (typeof input.name === 'string') updates.name = input.name;
-          if (typeof input.description === 'string') updates.description = input.description;
-          if (typeof input.startTime === 'string') updates.startTime = new Date(input.startTime as string);
-          if (typeof input.endTime === 'string') updates.endTime = new Date(input.endTime as string);
-          if (typeof input.timezone === 'string') updates.timezone = input.timezone;
-          if (typeof input.recurrence === 'string') updates.recurrence = input.recurrence;
-          if (typeof input.suppressAlerts === 'boolean') updates.suppressAlerts = input.suppressAlerts;
-          if (typeof input.suppressPatching === 'boolean') updates.suppressPatching = input.suppressPatching;
-          if (typeof input.suppressAutomations === 'boolean') updates.suppressAutomations = input.suppressAutomations;
+        const updates: Record<string, unknown> = { updatedAt: new Date() };
+        if (typeof input.name === 'string') updates.name = input.name;
+        if (typeof input.description === 'string') updates.description = input.description;
+        if (typeof input.startTime === 'string') updates.startTime = new Date(input.startTime as string);
+        if (typeof input.endTime === 'string') updates.endTime = new Date(input.endTime as string);
+        if (typeof input.timezone === 'string') updates.timezone = input.timezone;
+        if (typeof input.recurrence === 'string') updates.recurrence = input.recurrence;
+        if (typeof input.suppressAlerts === 'boolean') updates.suppressAlerts = input.suppressAlerts;
+        if (typeof input.suppressPatching === 'boolean') updates.suppressPatching = input.suppressPatching;
+        if (typeof input.suppressAutomations === 'boolean') updates.suppressAutomations = input.suppressAutomations;
 
-          await db.update(maintenanceWindows).set(updates).where(eq(maintenanceWindows.id, existing.id));
-          return JSON.stringify({ success: true, message: `Maintenance window "${existing.name}" updated` });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Unknown error';
-          console.error(`[fleet:manage_maintenance_windows] update failed for windowId ${windowId}:`, msg, err);
-          return JSON.stringify({ error: `Failed to update maintenance window: ${msg}` });
-        }
+        await db.update(maintenanceWindows).set(updates).where(eq(maintenanceWindows.id, existing.id));
+        return JSON.stringify({ success: true, message: `Maintenance window "${existing.name}" updated` });
       }
 
       if (action === 'delete') {
@@ -1131,17 +1119,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
 
-        try {
-          await db.transaction(async (tx) => {
-            await tx.delete(maintenanceOccurrences).where(eq(maintenanceOccurrences.windowId, existing.id));
-            await tx.delete(maintenanceWindows).where(eq(maintenanceWindows.id, existing.id));
-          });
-          return JSON.stringify({ success: true, message: `Maintenance window "${existing.name}" deleted` });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Unknown error';
-          console.error(`[fleet:manage_maintenance_windows] delete failed for windowId ${windowId}:`, msg, err);
-          return JSON.stringify({ error: `Failed to delete maintenance window: ${msg}` });
-        }
+        await db.transaction(async (tx) => {
+          await tx.delete(maintenanceOccurrences).where(eq(maintenanceOccurrences.windowId, existing.id));
+          await tx.delete(maintenanceWindows).where(eq(maintenanceWindows.id, existing.id));
+        });
+        return JSON.stringify({ success: true, message: `Maintenance window "${existing.name}" deleted` });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

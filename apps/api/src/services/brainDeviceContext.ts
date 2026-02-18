@@ -34,6 +34,7 @@ export async function getActiveDeviceContext(
   const conditions: SQL[] = [
     eq(brainDeviceContext.deviceId, deviceId),
     isNull(brainDeviceContext.resolvedAt),
+    // or() returns undefined only when all args are undefined; isNull() always returns defined SQL
     or(isNull(brainDeviceContext.expiresAt), gt(brainDeviceContext.expiresAt, now))!,
   ];
 
