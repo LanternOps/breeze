@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -56,6 +57,7 @@ type HeartbeatPayload struct {
 	LastUser         string                    `json:"lastUser,omitempty"`
 	UptimeSeconds    int64                     `json:"uptime,omitempty"`
 	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
+	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -1187,7 +1189,10 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		log.Warn("boot performance upload returned non-success", "status", resp.StatusCode)
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		log.Warn("boot performance upload returned non-success",
+			"status", resp.StatusCode,
+			"body", string(errBody))
 	} else {
 		log.Info("boot performance uploaded successfully")
 	}
@@ -1232,6 +1237,11 @@ func (h *Heartbeat) sendHeartbeat() {
 		log.Warn("failed to read boot time for uptime calculation", "error", err)
 	} else if bootTime > 0 {
 		payload.UptimeSeconds = time.Now().Unix() - int64(bootTime)
+	}
+
+	// Include dropped log count if any logs were lost
+	if dropped := logging.DroppedLogCount(); dropped > 0 {
+		payload.DroppedLogs = dropped
 	}
 
 	// Include user helper session info in heartbeat
@@ -1285,6 +1295,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
+
+	// Heartbeat succeeded — commit (clear) the dropped log counter so it is
+	// not re-reported. If the POST had failed, the count would be preserved
+	// for the next attempt.
+	logging.CommitDroppedLogCount()
 
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
