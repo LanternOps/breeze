@@ -152,6 +152,32 @@ async fn ensure_http_state() -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Window helpers (tray integration)
+// ---------------------------------------------------------------------------
+
+/// Show the main window and bring it to focus.
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.show() {
+            eprintln!("[helper] Failed to show window: {}", e);
+        }
+        if let Err(e) = window.set_focus() {
+            eprintln!("[helper] Failed to focus window: {}", e);
+        }
+    }
+}
+
+/// Hide the main window (back to tray-only mode).
+#[tauri::command]
+fn hide_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.hide() {
+            eprintln!("[helper] Failed to hide window: {}", e);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -214,12 +240,21 @@ async fn helper_fetch(
 ) -> Result<HelperFetchResponse, String> {
     ensure_http_state().await?;
 
-    let (client, token) = {
+    let (client, token, api_url) = {
         let lock = get_http_state_lock();
         let guard = lock.lock().await;
         let state = guard.as_ref().unwrap();
-        (state.client.clone(), state.config.token.clone())
+        (state.client.clone(), state.config.token.clone(), state.config.api_url.clone())
     };
+
+    // Validate that the request URL targets the configured API server.
+    // This prevents SSRF and token leakage to arbitrary hosts.
+    if !request.url.starts_with(&api_url) {
+        return Err(format!(
+            "Request URL must start with the configured API URL ({})",
+            api_url
+        ));
+    }
 
     // Build the request
     let method: Method = request
@@ -231,13 +266,14 @@ async fn helper_fetch(
 
     let mut req_builder = client.request(method, &request.url);
 
-    // Default Authorization header (can be overridden by caller)
-    req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
-
-    // Apply caller-specified headers
+    // Apply caller-specified headers (excluding Authorization which is always set by us)
     if let Some(hdrs) = &request.headers {
         let mut header_map = HeaderMap::new();
         for (k, v) in hdrs {
+            // Prevent overriding the Authorization header
+            if k.eq_ignore_ascii_case("authorization") {
+                continue;
+            }
             let name = k
                 .parse::<reqwest::header::HeaderName>()
                 .map_err(|e| format!("Invalid header name '{}': {}", k, e))?;
@@ -248,6 +284,9 @@ async fn helper_fetch(
         }
         req_builder = req_builder.headers(header_map);
     }
+
+    // Set Authorization header last so it cannot be overridden
+    req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
 
     if let Some(body) = &request.body {
         req_builder = req_builder.body(body.clone());
@@ -295,7 +334,9 @@ async fn helper_fetch(
                             done: false,
                             error: None,
                         };
-                        let _ = app_clone.emit("helper-fetch-stream", &event);
+                        if let Err(e) = app_clone.emit("helper-fetch-stream", &event) {
+                            eprintln!("[helper] Failed to emit stream chunk: {}", e);
+                        }
                     }
                     Err(e) => {
                         let event = StreamChunkEvent {
@@ -304,7 +345,9 @@ async fn helper_fetch(
                             done: true,
                             error: Some(format!("Stream read error: {}", e)),
                         };
-                        let _ = app_clone.emit("helper-fetch-stream", &event);
+                        if let Err(e) = app_clone.emit("helper-fetch-stream", &event) {
+                            eprintln!("[helper] Failed to emit stream error event: {}", e);
+                        }
                         return;
                     }
                 }
@@ -317,7 +360,9 @@ async fn helper_fetch(
                 done: true,
                 error: None,
             };
-            let _ = app_clone.emit("helper-fetch-stream", &event);
+            if let Err(e) = app_clone.emit("helper-fetch-stream", &event) {
+                eprintln!("[helper] Failed to emit stream done event: {}", e);
+            }
         });
 
         Ok(HelperFetchResponse {

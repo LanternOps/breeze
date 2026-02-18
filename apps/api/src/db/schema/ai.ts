@@ -130,9 +130,9 @@ export const aiBudgets = pgTable('ai_budgets', {
 
 export const aiScreenshots = pgTable('ai_screenshots', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  sessionId: uuid('session_id'),
+  sessionId: uuid('session_id').references(() => aiSessions.id),
   storageKey: varchar('storage_key', { length: 500 }).notNull(),
   width: integer('width').notNull(),
   height: integer('height').notNull(),

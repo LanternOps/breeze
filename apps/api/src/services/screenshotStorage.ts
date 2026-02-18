@@ -73,8 +73,10 @@ export async function storeScreenshot(params: StoreScreenshotParams): Promise<St
     expiresAt,
   }).returning();
 
+  if (!record) throw new Error('Failed to store screenshot record in database');
+
   return {
-    id: record!.id,
+    id: record.id,
     storageKey,
     width,
     height,
@@ -97,7 +99,11 @@ export async function getScreenshot(id: string, orgId: string): Promise<{ data: 
   try {
     const data = await readFile(fullPath);
     return { data, record };
-  } catch {
+  } catch (err: unknown) {
+    const code = err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+    if (code !== 'ENOENT') {
+      console.error(`[ScreenshotStorage] Failed to read screenshot file at ${fullPath}:`, err);
+    }
     return null;
   }
 }
@@ -109,13 +115,18 @@ export async function deleteExpiredScreenshots(): Promise<number> {
 
   let deleted = 0;
   for (const record of expired) {
+    const parts = record.storageKey.split('/');
+    const filename = parts[parts.length - 1];
+    const fullPath = join(SCREENSHOT_DIR, record.orgId, record.deviceId, filename!);
+
     try {
-      const parts = record.storageKey.split('/');
-      const filename = parts[parts.length - 1];
-      const fullPath = join(SCREENSHOT_DIR, record.orgId, record.deviceId, filename!);
       await unlink(fullPath);
-    } catch {
-      // File may already be gone
+    } catch (err: unknown) {
+      const code = err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+      if (code !== 'ENOENT') {
+        console.error(`[ScreenshotStorage] Failed to delete expired screenshot file ${fullPath}:`, err);
+        continue; // Skip DB record deletion to avoid orphaning
+      }
     }
 
     await db.delete(aiScreenshots).where(eq(aiScreenshots.id, record.id));

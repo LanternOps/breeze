@@ -629,6 +629,7 @@ registerTool({
         })
         .where(eq(alerts.id, input.alertId as string));
 
+      let eventWarning: string | undefined;
       try {
         await publishEvent(
           'alert.acknowledged',
@@ -644,9 +645,10 @@ registerTool({
         );
       } catch (error) {
         console.error('[AiTools] Failed to publish alert.acknowledged event:', error);
+        eventWarning = 'Alert was acknowledged but event notification may be delayed';
       }
 
-      return JSON.stringify({ success: true, message: `Alert "${alert.title}" acknowledged` });
+      return JSON.stringify({ success: true, message: `Alert "${alert.title}" acknowledged`, warning: eventWarning });
     }
 
     if (action === 'resolve') {
@@ -665,6 +667,7 @@ registerTool({
         })
         .where(eq(alerts.id, input.alertId as string));
 
+      let resolveEventWarning: string | undefined;
       try {
         await publishEvent(
           'alert.resolved',
@@ -681,9 +684,10 @@ registerTool({
         );
       } catch (error) {
         console.error('[AiTools] Failed to publish alert.resolved event:', error);
+        resolveEventWarning = 'Alert was resolved but event notification may be delayed';
       }
 
-      return JSON.stringify({ success: true, message: `Alert "${alert.title}" resolved` });
+      return JSON.stringify({ success: true, message: `Alert "${alert.title}" resolved`, warning: resolveEventWarning });
     }
 
     return JSON.stringify({ error: `Unknown action: ${action}` });
@@ -1611,6 +1615,10 @@ registerTool({
 
     try {
       const screenshotData = JSON.parse(result.stdout ?? '{}');
+      if (!screenshotData.imageBase64) {
+        console.error(`[AiTools] take_screenshot returned no imageBase64 data for device ${deviceId}`);
+        return JSON.stringify({ error: 'Screenshot captured but no image data returned by agent' });
+      }
       return JSON.stringify({
         imageBase64: screenshotData.imageBase64,
         width: screenshotData.width,
@@ -1620,18 +1628,20 @@ registerTool({
         monitor: screenshotData.monitor,
         capturedAt: screenshotData.capturedAt
       });
-    } catch {
+    } catch (err) {
+      const rawPreview = (result.stdout ?? '').slice(0, 200);
+      console.error(`[AiTools] Failed to parse take_screenshot response:`, err, 'Raw stdout preview:', rawPreview);
       return JSON.stringify({ error: 'Failed to parse screenshot response' });
     }
   }
 });
 
 // ============================================
-// analyze_screen - Tier 1 (auto-execute)
+// analyze_screen - Tier 2 (auto-execute + audit)
 // ============================================
 
 registerTool({
-  tier: 1,
+  tier: 2,
   definition: {
     name: 'analyze_screen',
     description: 'Take a screenshot and analyze what is visible on the device screen. Combines screenshot capture with device context for AI visual analysis. Use this for troubleshooting what the user sees.',
@@ -1662,6 +1672,10 @@ registerTool({
 
     try {
       const screenshotData = JSON.parse(result.stdout ?? '{}');
+      if (!screenshotData.imageBase64) {
+        console.error(`[AiTools] analyze_screen returned no imageBase64 data for device ${deviceId}`);
+        return JSON.stringify({ error: 'Screenshot captured but no image data returned by agent' });
+      }
       return JSON.stringify({
         imageBase64: screenshotData.imageBase64,
         width: screenshotData.width,
@@ -1678,7 +1692,9 @@ registerTool({
           status: access.device.status
         }
       });
-    } catch {
+    } catch (err) {
+      const rawPreview = (result.stdout ?? '').slice(0, 200);
+      console.error(`[AiTools] Failed to parse analyze_screen response:`, err, 'Raw stdout preview:', rawPreview);
       return JSON.stringify({ error: 'Failed to parse screenshot response' });
     }
   }
@@ -1692,7 +1708,7 @@ registerTool({
   tier: 3,
   definition: {
     name: 'computer_control',
-    description: 'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action. Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
+    description: 'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action by default (configurable via captureAfter). Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -1750,9 +1766,11 @@ registerTool({
         sizeBytes: data.screenshot?.sizeBytes,
         monitor: data.screenshot?.monitor,
         capturedAt: data.screenshot?.capturedAt,
-        error: data.error,
+        screenshotError: data.screenshotError || undefined,
       });
-    } catch {
+    } catch (err) {
+      const rawPreview = (result.stdout ?? '').slice(0, 200);
+      console.error(`[AiTools] Failed to parse computer_control response:`, err, 'Raw stdout preview:', rawPreview);
       return JSON.stringify({ error: 'Failed to parse computer action response' });
     }
   }

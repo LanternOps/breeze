@@ -71,6 +71,12 @@ export const CommandTypes = {
 
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
+
+  // Screenshot (AI Vision)
+  TAKE_SCREENSHOT: 'take_screenshot',
+
+  // Computer control (AI Computer Use)
+  COMPUTER_ACTION: 'computer_action',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -107,7 +113,7 @@ export interface QueueCommandForExecutionResult {
   error?: string;
 }
 
-// Commands that modify system state and should always be audit-logged
+// Commands that modify system state or access sensitive data (e.g., screen capture) and should always be audit-logged
 const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.KILL_PROCESS,
   CommandTypes.START_SERVICE,
@@ -133,6 +139,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.SECURITY_THREAT_QUARANTINE,
   CommandTypes.SECURITY_THREAT_REMOVE,
   CommandTypes.SECURITY_THREAT_RESTORE,
+  CommandTypes.TAKE_SCREENSHOT,
+  CommandTypes.COMPUTER_ACTION,
 ]);
 
 /**

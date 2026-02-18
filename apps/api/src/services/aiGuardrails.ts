@@ -90,6 +90,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   network_discovery: { resource: 'devices', action: 'execute' },
   analyze_boot_performance: { resource: 'devices', action: 'read' },
   manage_startup_items: { resource: 'devices', action: 'execute' },
+  take_screenshot: { resource: 'devices', action: 'execute' },
+  analyze_screen: { resource: 'devices', action: 'execute' },
+  computer_control: { resource: 'devices', action: 'execute' },
   // Fleet tools — RBAC mappings
   manage_policies: {
     list: { resource: 'policies', action: 'read' },
@@ -178,6 +181,15 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_device_context: { resource: 'devices', action: 'read' },
   set_device_context: { resource: 'devices', action: 'write' },
   resolve_device_context: { resource: 'devices', action: 'write' },
+  // Agent log tools
+  search_agent_logs: { resource: 'devices', action: 'read' },
+  set_agent_log_level: { resource: 'devices', action: 'execute' },
+  // Configuration policy tools
+  list_configuration_policies: { resource: 'policies', action: 'read' },
+  get_effective_configuration: { resource: 'devices', action: 'read' },
+  preview_configuration_change: { resource: 'devices', action: 'read' },
+  apply_configuration_policy: { resource: 'policies', action: 'write' },
+  remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -191,6 +203,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
   manage_startup_items: { limit: 5, windowSeconds: 600 },
+  take_screenshot: { limit: 10, windowSeconds: 300 },
+  analyze_screen: { limit: 10, windowSeconds: 300 },
+  computer_control: { limit: 20, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
   manage_policies: { limit: 20, windowSeconds: 300 },
   manage_deployments: { limit: 10, windowSeconds: 600 },
@@ -203,6 +218,11 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Brain device context tools
   set_device_context: { limit: 20, windowSeconds: 300 },
   resolve_device_context: { limit: 20, windowSeconds: 300 },
+  // Agent log tools
+  set_agent_log_level: { limit: 5, windowSeconds: 600 },
+  // Configuration policy tools
+  apply_configuration_policy: { limit: 10, windowSeconds: 300 },
+  remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {
@@ -383,6 +403,19 @@ function buildApprovalDescription(
       if (input.subnet) parts.push(`on ${input.subnet}`);
       break;
 
+    case 'take_screenshot':
+      parts.push('Capture screenshot');
+      if (input.deviceId) parts.push(`from device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'computer_control':
+      parts.push(`Send input action: ${input.action}`);
+      if (input.x !== undefined && input.y !== undefined) parts.push(`at (${input.x}, ${input.y})`);
+      if (input.text) parts.push(`text: "${(input.text as string).slice(0, 30)}${(input.text as string).length > 30 ? '...' : ''}"`);
+      if (input.key) parts.push(`key: ${input.key}`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
     // Fleet tools
     case 'manage_policies':
       if (action === 'create') parts.push(`Create compliance policy "${input.name}"${input.enforcement ? ` (${input.enforcement} mode)` : ''}`);
@@ -426,6 +459,27 @@ function buildApprovalDescription(
     case 'manage_alert_rules':
       if (action === 'delete_rule') parts.push(`Delete alert rule ${(input.ruleId as string)?.slice(0, 8)}...`);
       else parts.push(`Alert rule ${action}: ${(input.ruleId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_startup_items':
+      parts.push(`${action?.toUpperCase()} startup item "${input.itemName}"`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      if (input.reason) parts.push(`(${(input.reason as string).slice(0, 50)})`);
+      break;
+
+    case 'set_agent_log_level':
+      parts.push(`Set log level to ${input.level}`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      if (input.durationMinutes) parts.push(`for ${input.durationMinutes} minutes`);
+      break;
+
+    case 'apply_configuration_policy':
+      parts.push(`Assign config policy ${(input.configPolicyId as string)?.slice(0, 8)}...`);
+      parts.push(`to ${input.level} ${(input.targetId as string)?.slice(0, 8)}...`);
+      break;
+
+    case 'remove_configuration_policy_assignment':
+      parts.push(`Remove config policy assignment ${(input.assignmentId as string)?.slice(0, 8)}...`);
       break;
 
     default:

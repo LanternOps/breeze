@@ -14,8 +14,12 @@ import { filesystemRoutes } from './filesystem';
 import { sessionsRoutes } from './sessions';
 import { diagnosticLogsRoutes } from './diagnosticLogs';
 import { bootMetricsRoutes } from './bootMetrics';
+import { diagnoseRoutes } from './diagnose';
 
 export const deviceRoutes = new Hono();
+
+// Mount diagnose routes (POST /:id/diagnose)
+deviceRoutes.route('/', diagnoseRoutes);
 
 // Mount groups routes first (they have /groups prefix that could conflict with /:id)
 deviceRoutes.route('/', groupsRoutes);

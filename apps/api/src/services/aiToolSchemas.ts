@@ -39,6 +39,7 @@ export function normalizePath(path: string): string {
 }
 
 export function isBlockedPath(path: string): boolean {
+  if (path.includes('..')) return true;
   const normalized = normalizePath(path);
   return BLOCKED_PATH_PREFIXES.some(prefix => {
     const normalizedPrefix = normalizePath(prefix);
@@ -231,6 +232,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
 
+  take_screenshot: deviceId.extend({
+    monitor: z.number().int().min(0).max(10).optional(),
+  }),
+
+  analyze_screen: deviceId.extend({
+    context: z.string().max(500).optional(),
+    monitor: z.number().int().min(0).max(10).optional(),
+  }),
+
   // Brain device context tools
   get_device_context: z.object({
     deviceId: uuid,
@@ -259,7 +269,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     x: z.number().int().min(0).max(10000).optional(),
     y: z.number().int().min(0).max(10000).optional(),
     text: z.string().max(1000).optional(),
-    key: z.string().max(50).optional(),
+    key: z.string().max(50).regex(/^[a-zA-Z0-9_]+$/, 'Invalid key name').optional(),
     modifiers: z.array(z.enum(['ctrl', 'alt', 'shift', 'meta'])).max(4).optional(),
     scrollDelta: z.number().int().min(-100).max(100).optional(),
     monitor: z.number().int().min(0).max(10).optional(),
@@ -290,6 +300,69 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
         path: ['text'],
       });
     }
+  }),
+
+  // Boot performance & startup tools
+  analyze_boot_performance: z.object({
+    deviceId: uuid,
+    bootsBack: z.number().int().min(1).max(30).optional(),
+    triggerCollection: z.boolean().optional(),
+  }),
+
+  manage_startup_items: z.object({
+    deviceId: uuid,
+    itemName: z.string().min(1).max(255),
+    action: z.enum(['disable', 'enable']),
+    reason: z.string().max(500).optional(),
+  }),
+
+  // Agent log tools
+  search_agent_logs: z.object({
+    deviceIds: z.array(uuid).max(50).optional(),
+    level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
+    component: z.string().max(100).optional(),
+    startTime: z.string().datetime({ offset: true }).optional(),
+    endTime: z.string().datetime({ offset: true }).optional(),
+    message: z.string().max(500).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }),
+
+  set_agent_log_level: z.object({
+    deviceId: uuid,
+    level: z.enum(['debug', 'info', 'warn', 'error']),
+    durationMinutes: z.number().int().min(1).max(1440).optional(),
+  }),
+
+  // Configuration policy tools
+  list_configuration_policies: z.object({
+    status: z.enum(['active', 'inactive', 'archived']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_effective_configuration: z.object({
+    deviceId: uuid,
+  }),
+
+  preview_configuration_change: z.object({
+    deviceId: uuid,
+    add: z.array(z.object({
+      configPolicyId: uuid,
+      level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
+      targetId: uuid,
+      priority: z.number().int().optional(),
+    })).optional(),
+    remove: z.array(uuid).optional(),
+  }),
+
+  apply_configuration_policy: z.object({
+    configPolicyId: uuid,
+    level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
+    targetId: uuid,
+    priority: z.number().int().min(0).max(1000).optional(),
+  }),
+
+  remove_configuration_policy_assignment: z.object({
+    assignmentId: uuid,
   }),
 
   // Fleet orchestration tools
