@@ -36,15 +36,16 @@ Breeze detects tools across 11 categories:
 
 ### Detection status
 
-Each detected tool is reported with one of two statuses:
+Each detected tool is reported with one of three statuses:
 
 | Status | Meaning |
 |---|---|
 | `active` | The tool's service or process was found running at scan time |
 | `installed` | Supporting files or registry keys are present but the service or process is not currently running |
+| `unknown` | The tool was detected but its operational state could not be determined |
 
 <Aside>
-  A tool that is neither installed nor running produces no entry — it is simply absent from the results. Undetected tools do not appear as `unknown`; they are omitted entirely.
+  A tool that is neither installed nor running produces no entry — it is simply absent from the results. In practice, only `active` and `installed` are currently emitted by the agent; `unknown` is reserved for future use.
 </Aside>
 
 ### Identity and directory detection
@@ -54,9 +55,13 @@ In addition to management tool detection, Breeze reports the device's directory 
 | Field | Description |
 |---|---|
 | **Join type** | `hybrid_azure_ad`, `azure_ad`, `on_prem_ad`, `workplace`, or `none` |
+| **Azure AD joined** | Boolean — whether the device is Azure AD / Entra ID joined |
+| **Domain joined** | Boolean — whether the device is joined to an on-premises Active Directory domain |
+| **Workplace joined** | Boolean — whether the device has a workplace (BYOD) registration |
 | **Domain name** | The Active Directory or Entra ID domain the device is joined to |
 | **Azure tenant ID** | The Azure AD / Entra ID tenant identifier (where applicable) |
 | **MDM enrollment URL** | The MDM enrollment endpoint reported by the device |
+| **Source** | Detection method used (e.g., `dsregcmd`, `dsconfigad`, `unsupported`) |
 
 On Windows, directory join status is gathered using `dsregcmd`. On macOS, it is gathered using `dsconfigad` for Active Directory binding and `profiles status -type enrollment` for MDM enrollment state.
 
@@ -67,8 +72,8 @@ On Windows, directory join status is gathered using `dsregcmd`. On macOS, it is 
 | Platform | Detection methods |
 |---|---|
 | **Windows** | Service queries (SCM), registry keys, file existence, `dsregcmd` (Azure AD / Entra ID and on-premises AD join status), GPO enumeration |
-| **macOS** | Process checks, launchd/launchctl status, `profiles status -type enrollment` (MDM enrollment state), `dsconfigad` (Active Directory binding) |
-| **Linux** | Basic process checks (expanding in future releases) |
+| **macOS** | Process checks, launch daemon plist file detection, `profiles status -type enrollment` (MDM enrollment state), `dsconfigad` (Active Directory binding) |
+| **Linux** | Process and file existence checks are supported, but no tool signatures currently target Linux. Linux detection coverage is planned for a future release. |
 
 Detection on Windows and macOS is signature-based: the agent evaluates each known tool's service name, process name, installation paths, and registry keys in order.
 
@@ -147,6 +152,6 @@ MDM enrollment detection uses `profiles status -type enrollment`. This command m
 
 Check that the device is online and that the agent service is running. Posture updates every 15 minutes; missed heartbeats delay the update by one cycle. If the device has been offline for an extended period, the Management tab timestamp will reflect the age of the last known state.
 
-**Linux shows fewer results than Windows or macOS**
+**Linux shows no results**
 
-Linux detection is currently limited to process checks. The service query, registry, and launchd-based detection methods used on Windows and macOS are not applicable on Linux. Broader Linux detection is planned for a future release.
+No tool signatures currently target Linux. While the agent supports process and file checks on Linux, no detection signatures have been defined for the platform yet. Linux detection coverage is planned for a future release.

@@ -37,8 +37,8 @@ A policy can bundle up to 8 feature types:
 
 Each feature can be configured in one of two modes:
 
-- **Linked** — points to an existing policy object by ID (e.g., an existing alert rule). Changes to the linked object propagate automatically.
-- **Inline** — settings are stored directly in the policy. Useful for simple configurations that don't need to be shared.
+- **Linked** — points to an existing policy object by ID (e.g., an existing alert rule). Changes to the linked object propagate automatically. Not available for `monitoring` — use inline instead.
+- **Inline** — settings are stored directly in the policy. Useful for simple configurations that don't need to be shared. Required for `monitoring`, `backup`, and `security` feature types.
 
 ## Enforcement modes
 
@@ -127,7 +127,7 @@ Configure schedule and retention for **Backup**; security policy settings for **
 
 3. Select the specific target from the dropdown.
 
-4. Set a **Priority** number. When two policies at the same level both define the same feature, the higher priority number wins.
+4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`).
 
 5. Click **Assign**.
 
@@ -149,7 +149,16 @@ To see the merged settings a specific device will receive:
 GET /configuration-policies/effective/:deviceId
 ```
 
-Use `POST /configuration-policies/effective/:deviceId/diff` to preview how a policy change would affect a device's effective configuration before saving.
+Use `POST /configuration-policies/effective/:deviceId/diff` to preview how a policy change would affect a device's effective configuration before saving. The request body accepts:
+
+```json
+{
+  "add": [{ "configPolicyId": "uuid", "level": "site", "targetId": "uuid", "priority": 1 }],
+  "remove": ["assignment-uuid"]
+}
+```
+
+The response returns both `current` and `proposed` effective configurations for comparison.
 
 ## Patch jobs
 
@@ -164,7 +173,8 @@ Request body:
 ```json
 {
   "deviceIds": ["uuid-1", "uuid-2"],
-  "name": "Optional job name"
+  "name": "Optional job name",
+  "scheduledAt": "2026-03-01T02:00:00Z"
 }
 ```
 
@@ -223,4 +233,4 @@ Enforcement mode must be set to `enforce` and a remediation script must be linke
 
 **Feature type conflict between policies at the same level**
 
-When two policies at the same hierarchy level both define the same feature type, the one with the higher **Priority** number wins. If priorities are equal, results are non-deterministic — assign distinct priorities to resolve the conflict.
+When two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If priorities are equal, results are non-deterministic — assign distinct priorities to resolve the conflict.

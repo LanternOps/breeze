@@ -8,7 +8,11 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-Breeze ships with a complete observability stack included in the production Docker Compose deployment.
+Breeze includes an optional observability stack as a separate Docker Compose overlay (`docker-compose.monitoring.yml`). Enable it alongside the core stack to get full metrics, dashboards, and log aggregation.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+```
 
 ## Components
 

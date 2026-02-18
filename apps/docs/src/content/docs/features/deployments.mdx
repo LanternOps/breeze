@@ -37,17 +37,17 @@ Staggered rollouts let you validate each batch before proceeding to the next. If
 ### Lifecycle States
 
 ```
-draft → pending → running → downloading/installing → completed
-                ↓                                  → failed
-              paused                               → cancelled
-              (resume → running)                   → rollback
+draft → pending → downloading → installing → completed
+                ↓                          → failed
+              paused                       → cancelled
+              (resume → downloading)       → rollback
 ```
 
 | State | Description |
 |-------|-------------|
 | `draft` | Deployment has been created but not initialized. Targets and rollout config can still be edited. |
 | `pending` | Targets have been resolved and device records created. Deployment is waiting for `start` to be called. |
-| `running` | Execution is active; devices in the current batch are being dispatched. |
+| `running` | Set by the deployment worker when actively processing batches. |
 | `paused` | Operator paused the deployment; no new batches will start until resumed. |
 | `downloading` | Payload is being transferred to target devices. |
 | `installing` | Payload has been received and is being applied on target devices. |
@@ -78,13 +78,13 @@ When a deployment auto-pauses, it enters a `paused` sub-state between batches. A
 
 <Steps>
 
-1. Navigate to **Fleet → Deployments** in the sidebar.
+1. Navigate to **Fleet** in the sidebar (deployments are managed within the Fleet page).
 
 2. Click **New Deployment** in the top-right corner.
 
 3. Enter a descriptive **Name** (e.g., "Monthly Cleanup — Windows Fleet").
 
-4. Select the **Type**: Script, Patch, or Config Update.
+4. Select the **Type**: Script, Patch, Software, or Policy (config update).
 
 5. Configure the **Payload** for the selected type (choose a script, select patches, or pick a configuration policy).
 
@@ -157,9 +157,7 @@ A deployment in `pending` state can still be cancelled, but target and rollout c
 
 **POST** `/deployments/:id/start`
 
-Begins execution. For an immediate deployment, all device commands are dispatched at once. For a staggered deployment, the first batch is dispatched and the engine waits for batch completion (or the `batchDelayMinutes` timer) before starting the next batch.
-
-The deployment status moves from `pending` to `downloading` or `installing` as devices begin processing.
+Begins execution. The deployment status moves from `pending` to `downloading`. For an immediate deployment, all device commands are dispatched at once. For a staggered deployment, the first batch is dispatched and the engine waits for batch completion (or the `batchDelayMinutes` timer) before starting the next batch.
 
 ---
 
@@ -206,7 +204,7 @@ Pauses the deployment immediately by setting the status to `paused`. Devices alr
 Resumes a paused deployment (whether paused manually or auto-paused by a failure threshold). The next batch starts according to the configured `batchDelayMinutes`. Any failed devices that have remaining retry attempts will be retried automatically when their batch window comes around.
 
 <Aside type="caution">
-  **Known issue:** The resume endpoint currently checks for `status: 'pending'` internally, but `POST /:id/pause` sets the status to `'paused'`. This means resume will return a 400 error for deployments paused via the API. As a workaround, confirm the deployment status using `GET /deployments/:id` and contact support if resume consistently returns 400.
+  **Known issue:** The resume endpoint currently checks for `status: 'pending'` internally, but `POST /deployments/:id/pause` sets the status to `'paused'`. This means resume will return a 400 error for deployments paused via the API. As a workaround, confirm the deployment status using `GET /deployments/:id` and contact support if resume consistently returns 400.
 </Aside>
 
 ### Cancel
@@ -242,7 +240,7 @@ Use per-device retry when:
 | `DELETE` | `/deployments/:id` | Delete a deployment. Only allowed when status is `draft`. |
 | `POST` | `/deployments/:id/initialize` | Resolve targets, calculate batches, move `draft` → `pending`. |
 | `POST` | `/deployments/:id/start` | Begin execution, move `pending` → `downloading`/`installing`. |
-| `POST` | `/deployments/:id/pause` | Pause between batches (staggered deployments only). |
+| `POST` | `/deployments/:id/pause` | Pause the deployment (allowed when status is `downloading` or `installing`). |
 | `POST` | `/deployments/:id/resume` | Resume a paused deployment. |
 | `POST` | `/deployments/:id/cancel` | Cancel all pending devices and terminate the deployment. |
 | `GET` | `/deployments/:id/devices` | List per-device records. Supports `?status=`, `?batchNumber=`, `?limit=`, `?offset=`. |

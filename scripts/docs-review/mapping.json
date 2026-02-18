@@ -1,0 +1,182 @@
+{
+  "mappings": [
+    {
+      "pattern": "agent/cmd/breeze-agent/**",
+      "docs": [
+        "agents/installation.mdx",
+        "agents/enrollment.mdx",
+        "agents/commands.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/config/**",
+      "docs": [
+        "agents/installation.mdx",
+        "agents/enrollment.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/heartbeat/**",
+      "docs": [
+        "agents/commands.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/updater/**",
+      "docs": [
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/discovery/**",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/patching/**",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/mtls/**",
+      "docs": [
+        "security/mtls.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/terminal/**",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/**",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/**",
+      "docs": [
+        "agents/enrollment.mdx",
+        "agents/commands.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/**",
+      "docs": [
+        "reference/api.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agentVersions.ts",
+      "docs": [
+        "deploy/upgrades.mdx",
+        "deploy/binaries.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/agentAuth.ts",
+      "docs": [
+        "security/hardening.mdx",
+        "agents/enrollment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/cloudflareMtls.ts",
+      "docs": [
+        "security/mtls.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/binarySync.ts",
+      "docs": [
+        "deploy/binaries.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/**",
+      "docs": [
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "docker-compose*.yml",
+      "docs": [
+        "deploy/production.mdx"
+      ]
+    },
+    {
+      "pattern": ".env.example",
+      "docs": [
+        "deploy/environment.mdx",
+        "deploy/production.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/ai.ts",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/mcpServer.ts",
+      "docs": [
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/scripts.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/automations.ts",
+      "docs": [
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/deployments.ts",
+      "docs": [
+        "features/deployments.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/notifications.ts",
+      "docs": [
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/users.ts",
+      "docs": [
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgs.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auditLogs.ts",
+      "docs": [
+        "reference/audit-logs.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/apiKeys.ts",
+      "docs": [
+        "reference/api-keys.mdx"
+      ]
+    }
+  ]
+}

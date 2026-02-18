@@ -61,6 +61,10 @@ Additional components log events from subsystems such as `terminal`, `executor`,
 The agent buffers logs internally and ships them in gzip-compressed batches every 60 seconds (or when the buffer reaches 500 entries) via `POST /agents/:id/logs`.
 
 <Aside type="note">
+  The Go agent normalizes log levels to lowercase (e.g., `"info"`, `"warn"`) before shipping via the `strings.ToLower` call in the log handler. The API ingestion endpoint expects lowercase values.
+</Aside>
+
+<Aside type="note">
   A dedicated Diagnostic Logs UI is not yet available in the web app. Logs are accessible via the API.
 </Aside>
 
@@ -80,7 +84,7 @@ All filters are additive — a log entry must match all active filters to appear
 
 ### Log retention
 
-Diagnostic logs are retained for **7 days** by default. A cleanup job runs daily and removes entries older than the retention window.
+Diagnostic logs are retained for **7 days** by default. A cleanup job runs every 24 hours (starting from server startup) and removes entries older than the retention window.
 
 To change the retention period, set the `AGENT_LOG_RETENTION_DAYS` environment variable on the API server:
 

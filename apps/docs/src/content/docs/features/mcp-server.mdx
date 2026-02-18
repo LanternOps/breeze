@@ -1,0 +1,592 @@
+---
+title: MCP Server
+description: Connect Claude Desktop, Cursor, and other MCP-compatible AI clients to your Breeze fleet via the Model Context Protocol.
+sidebar:
+  order: 21
+  label: MCP Server
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze exposes a built-in **Model Context Protocol (MCP)** server that lets external AI clients -- Claude Desktop, Cursor, and any other MCP-compatible application -- interact directly with your fleet. Instead of copying data between dashboards and chat windows, you can ask an AI assistant to query devices, triage alerts, run scripts, and manage patches, all within the client you already use.
+
+The MCP server reuses the same tools, guardrails, and audit infrastructure as the built-in Breeze AI assistant, so every operation is scoped to your organization and governed by the same tiered permission model.
+
+---
+
+## How MCP works
+
+The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standard that defines how AI applications discover and invoke tools and resources hosted by external servers. A single MCP connection gives the AI client a live catalogue of everything it can do inside Breeze -- no custom plugin code required.
+
+Breeze implements the **2024-11-05** protocol version with two capabilities:
+
+| Capability | Description |
+|---|---|
+| **Tools** | 25+ callable operations (query devices, manage alerts, execute commands, etc.) |
+| **Resources** | Read-only data endpoints (`breeze://devices`, `breeze://alerts`, etc.) |
+
+---
+
+## Transport
+
+The Breeze MCP server uses the **SSE + HTTP POST** transport, which is the standard remote MCP transport for server-deployed instances.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/mcp/sse` | `GET` | Opens a long-lived Server-Sent Events stream. The server sends an `endpoint` event containing the URL the client should POST messages to, then streams responses and keepalive pings. |
+| `/mcp/message` | `POST` | Receives JSON-RPC 2.0 requests from the client. If a `sessionId` query parameter is present and matches an active SSE session, the response is delivered over SSE (HTTP 202). Otherwise the response is returned inline. |
+
+The SSE stream sends keepalive pings every 30 seconds to prevent proxy timeouts. The client can also call `/mcp/message` without an SSE session for stateless, request-response usage.
+
+---
+
+## Authentication
+
+All MCP endpoints require an API key with `ai:*` scopes. Authentication is performed via the `X-API-Key` header.
+
+### Creating an API key
+
+<Steps>
+
+1. Navigate to **Settings > API Keys** in the Breeze dashboard.
+
+2. Click **Create API Key**.
+
+3. Enter a descriptive name (e.g., "Claude Desktop MCP").
+
+4. Select the scopes you need (see [Scope-based access control](#scope-based-access-control) below).
+
+5. Copy the generated key (it starts with `brz_`). You will not be able to see it again.
+
+</Steps>
+
+<Aside type="caution">
+  Store your API key securely. It grants programmatic access to your organization's fleet data and, depending on scopes, the ability to execute commands on devices. Never commit API keys to version control.
+</Aside>
+
+### Key format
+
+API keys follow the format `brz_<random>`. The server stores only a SHA-256 hash of the key; the plaintext is never persisted.
+
+---
+
+## Connecting Claude Desktop
+
+<Steps>
+
+1. Open Claude Desktop and go to **Settings > Developer > Edit Config** (or directly edit `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS).
+
+2. Add the Breeze MCP server to the `mcpServers` section:
+
+3. Restart Claude Desktop. You should see the Breeze tools appear in the tool picker.
+
+</Steps>
+
+<Tabs>
+<TabItem label="macOS / Linux">
+```json
+{
+  "mcpServers": {
+    "breeze": {
+      "url": "https://your-breeze-instance.example.com/mcp/sse",
+      "headers": {
+        "X-API-Key": "brz_your_api_key_here"
+      }
+    }
+  }
+}
+```
+</TabItem>
+<TabItem label="Windows">
+```json
+{
+  "mcpServers": {
+    "breeze": {
+      "url": "https://your-breeze-instance.example.com/mcp/sse",
+      "headers": {
+        "X-API-Key": "brz_your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config.json`.
+</TabItem>
+</Tabs>
+
+<Aside>
+  Replace `your-breeze-instance.example.com` with your actual Breeze API hostname and `brz_your_api_key_here` with the API key you created.
+</Aside>
+
+---
+
+## Connecting Cursor
+
+<Steps>
+
+1. Open Cursor and go to **Settings > MCP**.
+
+2. Click **+ Add new global MCP server**.
+
+3. Enter the following configuration:
+
+4. Save and reload the window. Breeze tools will appear in Cursor's agent mode.
+
+</Steps>
+
+```json
+{
+  "mcpServers": {
+    "breeze": {
+      "url": "https://your-breeze-instance.example.com/mcp/sse",
+      "headers": {
+        "X-API-Key": "brz_your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Available tools
+
+Tools are the primary way AI clients interact with Breeze. Each tool maps to one or more fleet operations and is classified into a tier that determines how it executes. The MCP server filters the tool list based on the scopes attached to your API key -- you only see tools you are authorized to use.
+
+### Device tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `query_devices` | 1 | Search and filter devices by status, OS, site, tags, or hostname. Returns summary list with totals. |
+| `get_device_details` | 1 | Comprehensive device detail including hardware specs, network interfaces, disks, and recent metrics. |
+| `analyze_metrics` | 1 | Query CPU, RAM, disk, and network time-series data with aggregation (raw, hourly, daily). Up to 168 hours back. |
+| `get_active_users` | 1 | Active user sessions per device or fleet-wide, with reboot safety signals based on idle thresholds. |
+| `get_user_experience_metrics` | 1 | Login performance and session behavior trends per device or user over time. |
+| `get_device_context` | 1 | Retrieve AI memory about a device -- known issues, quirks, follow-ups, and preferences from past interactions. |
+| `set_device_context` | 2 | Record new context/memory about a device for future conversations. |
+| `resolve_device_context` | 2 | Mark a context entry as resolved. Hidden from active context but preserved in history. |
+
+### Alert tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `manage_alerts` | 1/2 | List, get, acknowledge, or resolve alerts. List/get are Tier 1; acknowledge/resolve are Tier 2. |
+| `manage_alert_rules` | 1/2/3 | Full alert rule lifecycle: list, get, create, update, delete rules; test rules; list notification channels; alert summary. Create/update are Tier 2; delete is Tier 3. |
+
+### Command and script execution
+
+| Tool | Tier | Description |
+|---|---|---|
+| `execute_command` | 3 | Execute system commands (list processes, manage services, file operations, event log queries) on a device. |
+| `run_script` | 3 | Execute a script by ID on up to 10 devices. |
+| `manage_services` | 3 | List, start, stop, or restart system services on a device. List is Tier 2; start/stop/restart are Tier 3. |
+
+### File and disk tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `file_operations` | 1/3 | List and read files (Tier 1). Write, delete, mkdir, rename (Tier 3). |
+| `analyze_disk_usage` | 1 | Filesystem analysis with cleanup candidate detection. Can trigger fresh scans on online devices. |
+| `disk_cleanup` | 1/3 | Preview cleanup candidates (Tier 1). Execute cleanup by deleting selected paths (Tier 3). |
+
+### Security tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `security_scan` | 3 | Run security scans, check status, quarantine/remove/restore threats. |
+| `get_security_posture` | 1 | Fleet-wide or device-level security posture scores with factor breakdowns and recommendations. |
+
+### Fleet orchestration tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `manage_policies` | 1/2/3 | Compliance policy lifecycle: list, get, compliance status/summary, evaluate, create, update, activate/deactivate, delete, remediate. |
+| `manage_deployments` | 1/2/3 | Staged software deployments: list, get, device status, create, start, pause, resume, cancel. |
+| `manage_patches` | 1/2/3 | Patch management: list, compliance, scan, approve/decline/defer, bulk approve, install, rollback. |
+| `manage_groups` | 1/2/3 | Device group lifecycle: list, get, preview dynamic filters, membership log, create, update, delete, add/remove devices. |
+| `manage_maintenance_windows` | 1/2/3 | Maintenance windows: list, get, check active, create, update, delete. |
+| `manage_automations` | 1/2/3 | Automation lifecycle: list, get, history, create, update, delete, enable, disable, manual run. |
+| `generate_report` | 1/2 | Reports: list, generate, get report data, create/update/delete definitions, view history. |
+
+### Network tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `network_discovery` | 3 | Initiate a network discovery scan from a device (ping, ARP, or full). |
+
+### Diagnostic tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `search_agent_logs` | 1 | Search agent diagnostic logs with filters for device, level, component, time range, and message text. |
+| `set_agent_log_level` | 2 | Temporarily increase agent log shipping verbosity for debugging. Auto-reverts after a set duration. |
+| `query_audit_log` | 1 | Search the audit log for recent actions, filterable by action, resource, actor type, and time range. |
+
+### Configuration policy tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `list_configuration_policies` | 1 | List configuration policies with linked feature types. |
+| `get_effective_configuration` | 1 | Resolve the effective configuration for a device through the full hierarchy (device > group > site > org > partner). |
+| `preview_configuration_change` | 1 | Preview how adding or removing policy assignments would change effective configuration. |
+| `apply_configuration_policy` | 2 | Assign a configuration policy to a target in the hierarchy. |
+| `remove_configuration_policy_assignment` | 2 | Remove a configuration policy assignment. |
+
+<Aside>
+  Tier classification is **action-level**, not tool-level. For example, `manage_alerts` is Tier 1 for list/get, but Tier 2 for acknowledge/resolve. The MCP server resolves the effective tier at runtime for each specific action.
+</Aside>
+
+---
+
+## Available resources
+
+Resources provide read-only access to fleet data via the `resources/read` JSON-RPC method. The AI client can read these to get context before invoking tools.
+
+| URI | Name | Description | Limit |
+|---|---|---|---|
+| `breeze://devices` | Device Inventory | All managed devices with hostname, status, OS, agent version, and last seen time. | 500 |
+| `breeze://alerts` | Active Alerts | Currently active alerts with title, severity, status, and device ID. | 200 |
+| `breeze://scripts` | Script Library | Available scripts with name, description, language, and category. | 200 |
+| `breeze://automations` | Automation Rules | Configured automation rules with name, description, enabled state, and trigger. | 200 |
+| `breeze://devices/{id}` | Device Detail | Full detail for a specific device by UUID. | 1 |
+
+All resource reads are org-scoped -- the API key's organization determines which records are visible.
+
+---
+
+## Scope-based access control
+
+The tools visible and callable through MCP are determined by the scopes on your API key. Breeze uses a four-scope model for AI operations:
+
+| Scope | Access level | Tools exposed |
+|---|---|---|
+| `ai:read` | Read-only fleet data | All Tier 1 tools (query devices, analyze metrics, list alerts, etc.) and all resources. Required for SSE connection. |
+| `ai:write` | Low-risk mutations | All Tier 1 + Tier 2 tools (acknowledge alerts, set device context, apply configuration policies, etc.) |
+| `ai:execute` | Destructive operations | All Tier 1 + 2 + 3 tools (execute commands, run scripts, security scans, etc.) |
+| `ai:execute_admin` | Production-hardened execute | Same as `ai:execute`, but required when the `MCP_REQUIRE_EXECUTE_ADMIN` flag is enabled in production. |
+
+A wildcard scope (`*`) grants access to all tools.
+
+### How scope filtering works
+
+When a client calls `tools/list`, the server filters the full tool catalogue:
+
+1. **Tier 1** tools (read-only) are always included if the key has `ai:read`.
+2. **Tier 2** tools are included if the key has `ai:write` (or `ai:execute`, which implies write).
+3. **Tier 3+** tools are included if the key has `ai:execute`.
+4. In production with `MCP_REQUIRE_EXECUTE_ADMIN=true`, Tier 3+ tools additionally require `ai:execute_admin`.
+
+When a client calls `tools/call`, the server re-checks scopes before execution. Attempting to call a tool your key lacks permission for returns a JSON-RPC error:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32603,
+    "message": "Tool \"execute_command\" requires ai:execute scope"
+  }
+}
+```
+
+### RBAC permission checks
+
+In addition to API key scopes, every tool call passes through the Breeze RBAC system. The user who created the API key must have the appropriate role-based permissions for the resource and action. For example, calling `run_script` requires the `scripts.execute` permission on the creator's role.
+
+---
+
+## Rate limiting
+
+Rate limiting is enforced at multiple levels to protect your fleet and the Breeze API.
+
+### Transport-level limits
+
+These apply in production (`NODE_ENV=production`) and are backed by Redis sliding-window counters:
+
+| Endpoint | Default limit | Window | Env override |
+|---|---|---|---|
+| `GET /mcp/sse` | 30 connections | 60 seconds | `MCP_SSE_RATE_LIMIT_PER_MINUTE` |
+| `POST /mcp/message` | 120 requests | 60 seconds | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` |
+
+When a rate limit is exceeded, the server returns HTTP 429 with a `Retry-After` header.
+
+### Per-tool rate limits
+
+Each tool has its own sliding-window rate limit, enforced per user:
+
+| Tool | Limit | Window |
+|---|---|---|
+| `execute_command` | 10 | 5 min |
+| `run_script` | 5 | 5 min |
+| `security_scan` | 3 | 10 min |
+| `network_discovery` | 2 | 10 min |
+| `file_operations` | 20 | 5 min |
+| `manage_services` | 10 | 5 min |
+| `analyze_disk_usage` | 10 | 5 min |
+| `disk_cleanup` | 3 | 10 min |
+| `manage_policies` | 20 | 5 min |
+| `manage_deployments` | 10 | 10 min |
+| `manage_patches` | 15 | 5 min |
+| `manage_groups` | 20 | 5 min |
+| `manage_maintenance_windows` | 15 | 5 min |
+| `manage_automations` | 10 | 10 min |
+| `manage_alert_rules` | 15 | 5 min |
+| `generate_report` | 10 | 5 min |
+| `set_device_context` | 20 | 5 min |
+| `resolve_device_context` | 20 | 5 min |
+
+Tools without an entry in this table (e.g., `query_devices`, `get_device_details`) have no per-tool rate limit.
+
+---
+
+## Session management
+
+The MCP server supports concurrent SSE sessions with the following constraints:
+
+| Parameter | Default | Env override |
+|---|---|---|
+| Max total SSE sessions (server-wide) | 100 | -- |
+| Max SSE sessions per API key | 5 | `MCP_MAX_SSE_SESSIONS_PER_KEY` |
+| Session TTL | 30 minutes | -- |
+
+Stale sessions are cleaned up automatically when they exceed the 30-minute TTL. Each SSE session is owned by the API key that created it; the server verifies ownership before delivering responses to prevent cross-key session hijacking.
+
+When the session limit is reached, the server returns HTTP 503 ("Too many active MCP sessions") for server-wide limits, or HTTP 429 ("Too many active MCP sessions for this API key") for per-key limits.
+
+---
+
+## Security considerations
+
+### Organization isolation
+
+API keys are always scoped to a single organization. The MCP server constructs an `AuthContext` from the API key that enforces org-level data isolation on every query and mutation. There is no way to access data from another organization through MCP, even with a wildcard scope.
+
+### Guardrails
+
+Every `tools/call` request passes through the guardrail system before execution:
+
+1. **Scope check** -- verifies the API key has the required scope for the tool's effective tier.
+2. **Guardrail check** -- evaluates action-level tier escalation (e.g., `file_operations` with `action: "delete"` escalates from Tier 1 to Tier 3).
+3. **RBAC permission check** -- verifies the API key creator has the required role-based permission.
+4. **Per-tool rate limit** -- enforces the sliding-window rate limit for the specific tool.
+5. **Production allowlist** -- for Tier 3+ tools in production, the tool must appear in the `MCP_EXECUTE_TOOL_ALLOWLIST` environment variable.
+
+If any check fails, the request is rejected with an appropriate error before the tool handler executes.
+
+### Production allowlist for destructive tools
+
+In production, Tier 3+ (destructive) tools are blocked by default unless explicitly listed in the `MCP_EXECUTE_TOOL_ALLOWLIST` environment variable. This is a comma-separated list of tool names:
+
+```bash
+# Allow specific tools
+MCP_EXECUTE_TOOL_ALLOWLIST=execute_command,run_script,manage_services
+
+# Allow all (not recommended)
+MCP_EXECUTE_TOOL_ALLOWLIST=*
+```
+
+If the environment variable is unset or empty, all Tier 3+ tools are blocked in production.
+
+### Audit logging
+
+Every JSON-RPC request is recorded in the Breeze audit log with:
+
+- The API key ID as the actor
+- The JSON-RPC method (e.g., `mcp.tools.call`)
+- Whether a session was active
+- Success or failure result
+- Error message (if any)
+
+You can query MCP audit events using the `query_audit_log` tool or the Audit Log page in the dashboard.
+
+### Input validation
+
+All tool inputs are validated against Zod schemas before execution. Invalid inputs are rejected with a descriptive error before reaching the tool handler.
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_EXECUTE_TOOL_ALLOWLIST` | (empty) | Comma-separated list of Tier 3+ tool names allowed in production. Set to `*` to allow all. |
+| `MCP_REQUIRE_EXECUTE_ADMIN` | `false` | When `true` in production, Tier 3+ tools require the `ai:execute_admin` scope. |
+| `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Maximum concurrent SSE sessions per API key. |
+| `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | Maximum SSE connections per API key per minute. |
+| `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Maximum JSON-RPC messages per API key per minute. |
+
+---
+
+## API reference
+
+The MCP server implements the following JSON-RPC 2.0 methods:
+
+### `initialize`
+
+Returns server capabilities and metadata.
+
+```json
+// Request
+{ "jsonrpc": "2.0", "id": 1, "method": "initialize" }
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "tools": { "listChanged": false },
+      "resources": { "subscribe": false, "listChanged": false }
+    },
+    "serverInfo": {
+      "name": "breeze-rmm",
+      "version": "1.0.0"
+    }
+  }
+}
+```
+
+### `tools/list`
+
+Returns the filtered list of available tools based on API key scopes.
+
+```json
+// Request
+{ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "query_devices",
+        "description": "Search and filter devices in the organization...",
+        "inputSchema": { "type": "object", "properties": { "..." } }
+      }
+    ]
+  }
+}
+```
+
+### `tools/call`
+
+Invokes a tool with the given arguments.
+
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "query_devices",
+    "arguments": { "status": "offline", "limit": 10 }
+  }
+}
+
+// Response (success)
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [{ "type": "text", "text": "{\"devices\":[...],\"total\":42,\"showing\":10}" }]
+  }
+}
+
+// Response (error)
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [{ "type": "text", "text": "{\"error\":\"Device not found or access denied\"}" }],
+    "isError": true
+  }
+}
+```
+
+### `resources/list`
+
+Returns the catalogue of available resources.
+
+```json
+// Request
+{ "jsonrpc": "2.0", "id": 4, "method": "resources/list" }
+```
+
+### `resources/read`
+
+Reads a specific resource by URI.
+
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "resources/read",
+  "params": { "uri": "breeze://devices" }
+}
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "contents": [{
+      "uri": "breeze://devices",
+      "mimeType": "application/json",
+      "text": "[{\"id\":\"...\",\"hostname\":\"...\",\"status\":\"online\",...}]"
+    }]
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+### "Missing X-API-Key header" (401)
+
+The request does not include an `X-API-Key` header. Ensure your MCP client configuration includes the header. In Claude Desktop and Cursor, this goes in the `headers` block of the server config.
+
+### "Invalid API key format" (401)
+
+The key does not start with `brz_`. Verify you copied the full key from the API Keys page.
+
+### "Rate limit exceeded" (429)
+
+You have exceeded the per-minute transport rate limit. The response includes a `Retry-After` header with the number of seconds to wait. If this happens frequently, increase the limit via `MCP_SSE_RATE_LIMIT_PER_MINUTE` or `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE`.
+
+### "Too many active MCP sessions" (503 or 429)
+
+Either the server-wide limit (100 sessions) or the per-key limit (default 5) has been reached. Close unused MCP clients, or increase the per-key limit via `MCP_MAX_SSE_SESSIONS_PER_KEY`.
+
+### "Service temporarily unavailable" (503)
+
+Redis is not available. The MCP server requires Redis for rate limiting in production. Check that your Redis instance is running and the `REDIS_URL` environment variable is set.
+
+### Tool returns "requires ai:execute scope"
+
+The API key does not have the `ai:execute` scope. Regenerate the key with the required scope, or use a key that already has it.
+
+### Tool returns "not in MCP_EXECUTE_TOOL_ALLOWLIST"
+
+In production, Tier 3+ tools must be explicitly allowlisted. Add the tool name to the `MCP_EXECUTE_TOOL_ALLOWLIST` environment variable.
+
+### Tools not appearing in Claude Desktop
+
+1. Verify the SSE endpoint URL is correct and reachable from your machine.
+2. Check that the API key has at least the `ai:read` scope.
+3. Restart Claude Desktop after editing the config file.
+4. Open the Claude Desktop developer console to check for connection errors.
+
+### "Unknown tool" errors
+
+The tool name in `tools/call` does not match any registered tool. Use `tools/list` to see the current catalogue. Tool names are case-sensitive.
+
+### Stale SSE session
+
+SSE sessions expire after 30 minutes. If you see errors about missing sessions, the client should reconnect to `/mcp/sse` to obtain a new session.

@@ -1,0 +1,539 @@
+---
+title: Organizations & Sites
+description: Manage the multi-tenant hierarchy of partners, organisations, and sites that structures your Breeze deployment.
+sidebar:
+  order: 9
+  label: Organizations & Sites
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze organises managed infrastructure into a strict multi-tenant hierarchy. Every device belongs to a **Site**, every site belongs to an **Organisation**, and every organisation belongs to a **Partner**. All API queries automatically scope data to the caller's position in this hierarchy, ensuring tenant isolation by default.
+
+---
+
+## Overview
+
+The hierarchy serves two purposes:
+
+1. **Logical grouping** -- partners (MSPs) manage multiple customer organisations, each of which can have several physical or logical sites.
+2. **Access control** -- the authenticated user's scope (`system`, `partner`, or `organization`) determines which records are visible and mutable. No cross-tenant data leakage is possible without explicit system-level access.
+
+```
+Partner (MSP)
+  └── Organisation (Customer)
+        └── Site (Location)
+              └── Device Group
+                    └── Device
+```
+
+Every entity in the hierarchy uses a UUID primary key and carries `createdAt` / `updatedAt` timestamps. Partners and organisations support soft deletes via a `deletedAt` column; sites are hard-deleted.
+
+---
+
+## Partners
+
+A **Partner** represents a top-level tenant -- typically a Managed Service Provider (MSP), an enterprise IT department, or an internal team.
+
+### Partner Types
+
+| Type | Description |
+|---|---|
+| `msp` | Managed Service Provider managing multiple customer organisations. Default. |
+| `enterprise` | A single enterprise managing its own infrastructure. |
+| `internal` | Internal IT team or development environment. |
+
+### Plan Tiers
+
+| Plan | Description |
+|---|---|
+| `free` | Free tier. Default. |
+| `pro` | Professional tier with expanded limits. |
+| `enterprise` | Enterprise tier with advanced features. |
+| `unlimited` | No enforced limits. |
+
+### Partner Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Auto-generated primary key. |
+| `name` | `varchar(255)` | Display name. Required. |
+| `slug` | `varchar(100)` | URL-safe unique identifier. Required. |
+| `type` | `enum` | One of `msp`, `enterprise`, `internal`. Defaults to `msp`. |
+| `plan` | `enum` | One of `free`, `pro`, `enterprise`, `unlimited`. Defaults to `free`. |
+| `maxOrganizations` | `integer` | Optional cap on the number of organisations. |
+| `maxDevices` | `integer` | Optional cap on total devices across all organisations. |
+| `settings` | `jsonb` | Arbitrary partner-level settings (see below). |
+| `ssoConfig` | `jsonb` | SSO configuration blob. |
+| `billingEmail` | `varchar(255)` | Billing contact email address. |
+| `createdAt` | `timestamp` | Record creation time. |
+| `updatedAt` | `timestamp` | Last modification time. |
+| `deletedAt` | `timestamp` | Soft-delete marker. Null when active. |
+
+### Partner Settings
+
+Partner-scoped users can update their own partner's settings via the `/partners/me` endpoint. The `settings` JSONB column supports the following structure:
+
+| Setting | Type | Description |
+|---|---|---|
+| `timezone` | `string` | Default timezone for the partner (e.g. `America/New_York`). |
+| `dateFormat` | `enum` | `MM/DD/YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`. |
+| `timeFormat` | `enum` | `12h` or `24h`. |
+| `language` | `string` | Language code. Currently only `en` is supported. |
+| `businessHours.preset` | `enum` | `24/7`, `business`, `extended`, or `custom`. |
+| `businessHours.custom` | `object` | Per-day schedule when preset is `custom`. Each day has `start`, `end` (time strings), and optional `closed` boolean. |
+| `contact.name` | `string` | Primary contact name. |
+| `contact.email` | `string` | Primary contact email. |
+| `contact.phone` | `string` | Primary contact phone. |
+| `contact.website` | `string` | Partner website URL. |
+
+Settings are merged on update -- you do not need to send the entire object. Only the keys you include are overwritten.
+
+### Creating a Partner
+
+Only **system-scoped** users can create partners.
+
+```json
+POST /api/v1/orgs/partners
+
+{
+  "name": "Acme MSP",
+  "slug": "acme-msp",
+  "type": "msp",
+  "plan": "pro",
+  "maxOrganizations": 50,
+  "maxDevices": 5000,
+  "billingEmail": "billing@acme-msp.com"
+}
+```
+
+Returns the created partner object with a `201` status.
+
+### Soft Deletes for Partners
+
+When a partner is deleted via `DELETE /partners/:id`, the record is not removed from the database. Instead, the `deletedAt` timestamp is set. All list and detail queries filter out records where `deletedAt` is not null. This preserves referential integrity and allows potential restoration.
+
+<Aside type="caution">
+  Soft-deleting a partner does **not** cascade to its organisations or sites. Organisations under a deleted partner remain in the database and should be cleaned up separately.
+</Aside>
+
+---
+
+## Organisations
+
+An **Organisation** represents a customer or internal team managed by a partner. Every organisation belongs to exactly one partner.
+
+### Organisation Types
+
+| Type | Description |
+|---|---|
+| `customer` | An external customer managed by the partner. Default. |
+| `internal` | An internal team or testing environment within the partner. |
+
+### Organisation Status
+
+| Status | Description |
+|---|---|
+| `active` | Fully operational. Default. |
+| `suspended` | Access is restricted. Devices may still report but management actions are limited. |
+| `trial` | Evaluation period. |
+| `churned` | Customer has left. Retained for historical data. |
+
+### Organisation Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Auto-generated primary key. |
+| `partnerId` | `uuid` | FK to the parent partner. Required. |
+| `name` | `varchar(255)` | Display name. Required. |
+| `slug` | `varchar(100)` | URL-safe identifier. Required. |
+| `type` | `enum` | One of `customer`, `internal`. Defaults to `customer`. |
+| `status` | `enum` | One of `active`, `suspended`, `trial`, `churned`. Defaults to `active`. |
+| `maxDevices` | `integer` | Optional device cap for this organisation. |
+| `settings` | `jsonb` | Organisation-level settings. |
+| `ssoConfig` | `jsonb` | Organisation-specific SSO configuration. |
+| `contractStart` | `timestamp` | Contract start date. |
+| `contractEnd` | `timestamp` | Contract end date. |
+| `billingContact` | `jsonb` | Billing contact information. |
+| `createdAt` | `timestamp` | Record creation time. |
+| `updatedAt` | `timestamp` | Last modification time. |
+| `deletedAt` | `timestamp` | Soft-delete marker. Null when active. |
+
+### Creating an Organisation
+
+Partner-scoped and system-scoped users can create organisations.
+
+<Tabs>
+  <TabItem label="Partner Scope">
+    When creating from a partner context, the `partnerId` is automatically set to the caller's partner. You can omit it or provide it explicitly (it must match your own partner ID).
+
+    ```json
+    POST /api/v1/orgs/organizations
+
+    {
+      "name": "Contoso Ltd",
+      "slug": "contoso",
+      "type": "customer",
+      "status": "trial",
+      "maxDevices": 500,
+      "contractStart": "2026-03-01T00:00:00Z",
+      "contractEnd": "2027-03-01T00:00:00Z"
+    }
+    ```
+  </TabItem>
+  <TabItem label="System Scope">
+    System-scoped users must provide `partnerId` explicitly.
+
+    ```json
+    POST /api/v1/orgs/organizations
+
+    {
+      "partnerId": "<partner-uuid>",
+      "name": "Contoso Ltd",
+      "slug": "contoso",
+      "type": "customer",
+      "status": "active"
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Returns the created organisation object with a `201` status.
+
+### Soft Deletes for Organisations
+
+Like partners, organisations use soft deletes. Deleting an organisation sets the `deletedAt` timestamp. All queries exclude soft-deleted records.
+
+---
+
+## Sites
+
+A **Site** represents a physical or logical location within an organisation -- for example, a branch office, data centre, or remote office.
+
+### Site Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Auto-generated primary key. |
+| `orgId` | `uuid` | FK to the parent organisation. Required. |
+| `name` | `varchar(255)` | Display name. Required. |
+| `address` | `jsonb` | Structured address information (free-form JSON). |
+| `timezone` | `varchar(50)` | IANA timezone identifier. Defaults to `UTC`. |
+| `contact` | `jsonb` | Site contact information (free-form JSON). |
+| `settings` | `jsonb` | Site-level settings. |
+| `createdAt` | `timestamp` | Record creation time. |
+| `updatedAt` | `timestamp` | Last modification time. |
+
+<Aside type="note">
+  Sites do **not** have a `deletedAt` column. Deleting a site permanently removes the record from the database (hard delete).
+</Aside>
+
+### Creating a Site
+
+Organisation-scoped, partner-scoped, and system-scoped users can create sites. The caller must have access to the target organisation.
+
+```json
+POST /api/v1/orgs/sites
+
+{
+  "orgId": "<organization-uuid>",
+  "name": "Denver HQ",
+  "timezone": "America/Denver",
+  "address": {
+    "street": "123 Main St",
+    "city": "Denver",
+    "state": "CO",
+    "zip": "80202"
+  },
+  "contact": {
+    "name": "Site Manager",
+    "phone": "+13035551234"
+  }
+}
+```
+
+Returns the created site object with a `201` status. If `timezone` is omitted, it defaults to `UTC`.
+
+---
+
+## Multi-Tenant Access Control
+
+All routes under `/api/v1/orgs` require JWT authentication. Access is governed by the caller's **scope**, which is one of three levels:
+
+| Scope | Description |
+|---|---|
+| `system` | Full access to all partners, organisations, and sites. No filtering. |
+| `partner` | Access is restricted to organisations the user has been granted access to (via `partner_users.org_access` and `partner_users.org_ids`). |
+| `organization` | Access is restricted to the user's own organisation and its sites. |
+
+### How Scoping Works
+
+Every request passes through `authMiddleware`, which extracts the JWT payload and pre-computes:
+
+- **`accessibleOrgIds`** -- a list of organisation UUIDs the caller can access (`null` for system scope, meaning no restriction).
+- **`canAccessOrg(orgId)`** -- a helper function that checks whether a given org ID is in the accessible set.
+
+Route handlers use these values to filter database queries. For example, listing organisations as a partner-scoped user returns only organisations whose IDs are in `accessibleOrgIds`. If the list is empty, an empty result set is returned immediately.
+
+### Scope Requirements by Resource
+
+| Resource | List | Create | Read | Update | Delete |
+|---|---|---|---|---|---|
+| Partners | `system` | `system` | `system` | `system` | `system` |
+| Partner Self-Service (`/me`) | -- | -- | `partner` | `partner` | -- |
+| Organisations | `partner`, `system` | `partner`, `system` | `partner`, `system` | `partner`, `system` | `partner`, `system` |
+| Sites | `organization`, `partner`, `system` | `organization`, `partner`, `system` | `organization`, `partner`, `system` | `organization`, `partner`, `system` | `organization`, `partner`, `system` |
+
+### Organisation Access Enforcement
+
+For sites, the API performs an explicit access check via `ensureOrgAccess()` before any read or write operation:
+
+- **Organisation scope** -- the site's `orgId` must match the caller's `orgId`.
+- **Partner scope** -- the site's `orgId` must be in the caller's `canAccessOrg` set.
+- **System scope** -- always allowed.
+
+If access is denied, the API returns `403 Access to this organization denied` or `403 Access to this site denied`.
+
+<Aside type="tip">
+  Partner-scoped users who attempt to create an organisation under a different partner receive a `403 Access denied to this partner` response. The API enforces that `partnerId` must match the caller's own partner.
+</Aside>
+
+---
+
+## Enrollment Keys
+
+Enrollment keys are used to register new devices (agents) into an organisation and optionally a specific site.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Auto-generated primary key. |
+| `orgId` | `uuid` | FK to the parent organisation. Required. |
+| `siteId` | `uuid` | FK to a site. Optional -- if set, enrolled devices are assigned to this site. |
+| `name` | `varchar(255)` | Human-readable label for the key. |
+| `key` | `varchar(64)` | The unique enrollment key value. |
+| `usageCount` | `integer` | Number of times this key has been used. Defaults to `0`. |
+| `maxUsage` | `integer` | Optional limit on the number of times the key can be used. |
+| `expiresAt` | `timestamp` | Optional expiry date for the key. |
+| `createdBy` | `uuid` | The user who created the key. |
+| `createdAt` | `timestamp` | Record creation time. |
+
+Enrollment keys tie device registration to the organisational hierarchy. A key scoped to a site ensures that any device enrolling with that key is automatically placed in the correct site.
+
+---
+
+## API Reference
+
+All endpoints are mounted under `/api/v1/orgs` and require JWT authentication.
+
+### Partner Endpoints (System Scope)
+
+These endpoints are restricted to **system-scoped** users.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/orgs/partners` | List all partners. Supports `page` and `limit` query params (default 50, max 100). Returns paginated results. |
+| `POST` | `/orgs/partners` | Create a new partner. |
+| `GET` | `/orgs/partners/:id` | Get a partner by ID. Returns `404` if not found or soft-deleted. |
+| `PATCH` | `/orgs/partners/:id` | Update a partner. All fields are optional. Returns `400` if no fields provided. |
+| `DELETE` | `/orgs/partners/:id` | Soft-delete a partner. Sets `deletedAt`. Returns `{ success: true }`. |
+
+### Partner Self-Service Endpoints (Partner Scope)
+
+These endpoints allow partner-scoped users to view and update their own partner record.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/orgs/partners/me` | Get the current user's partner details. Requires `partner` scope and valid `partnerId`. |
+| `PATCH` | `/orgs/partners/me` | Update the current user's partner. Supports `name`, `billingEmail`, and `settings` (merged, not replaced). |
+
+### Organisation Endpoints
+
+| Method | Path | Scope | Description |
+|---|---|---|---|
+| `GET` | `/orgs/` | `organization`, `partner`, `system` | List organisations accessible to the caller. No pagination; returns all matching records ordered by name. |
+| `GET` | `/orgs/organizations` | `partner`, `system` | List organisations with pagination. Supports `partnerId`, `page`, and `limit` query params. |
+| `POST` | `/orgs/organizations` | `partner`, `system` | Create a new organisation. Partner-scoped users do not need to specify `partnerId`. |
+| `GET` | `/orgs/organizations/:id` | `partner`, `system` | Get an organisation by ID. Partner-scoped users can only access their own organisations. |
+| `PATCH` | `/orgs/organizations/:id` | `partner`, `system` | Update an organisation. The `partnerId` cannot be changed. Returns `400` if no fields provided. |
+| `DELETE` | `/orgs/organizations/:id` | `partner`, `system` | Soft-delete an organisation. Sets `deletedAt`. Returns `{ success: true }`. |
+
+<Aside type="note">
+  There are two list endpoints for organisations. `GET /orgs/` is the simpler variant used by organisation-scoped users to retrieve their own organisation. `GET /orgs/organizations` is the paginated variant for partner and system users.
+</Aside>
+
+### Site Endpoints
+
+| Method | Path | Scope | Description |
+|---|---|---|---|
+| `GET` | `/orgs/sites` | `organization`, `partner`, `system` | List sites. Supports `orgId` (or `organizationId`) filter plus `page` and `limit` query params. Without a filter, returns sites from all accessible organisations. |
+| `POST` | `/orgs/sites` | `organization`, `partner`, `system` | Create a new site. `orgId` is required. `timezone` defaults to `UTC` if omitted. |
+| `GET` | `/orgs/sites/:id` | `organization`, `partner`, `system` | Get a site by ID. Access is checked against the site's parent organisation. |
+| `PATCH` | `/orgs/sites/:id` | `organization`, `partner`, `system` | Update a site. `orgId` cannot be changed. Returns `400` if no fields provided. |
+| `DELETE` | `/orgs/sites/:id` | `organization`, `partner`, `system` | **Hard-delete** a site. The record is permanently removed. Returns `{ success: true }`. |
+
+### Pagination
+
+Paginated endpoints (`GET /partners`, `GET /organizations`, `GET /sites`) accept these query parameters:
+
+| Parameter | Type | Default | Max | Description |
+|---|---|---|---|---|
+| `page` | `string` | `1` | -- | Page number (1-based). Values below 1 are clamped to 1. |
+| `limit` | `string` | `50` | `100` | Number of records per page. Values outside 1--100 are clamped. |
+
+Paginated responses include a `pagination` object:
+
+```json
+{
+  "data": [ ... ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "total": 127
+  }
+}
+```
+
+### Request and Response Examples
+
+#### Create a Partner
+
+```bash
+curl -X POST https://breeze.example.com/api/v1/orgs/partners \
+  -H "Authorization: Bearer <system-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Acme MSP",
+    "slug": "acme-msp",
+    "type": "msp",
+    "plan": "pro",
+    "billingEmail": "billing@acme-msp.com"
+  }'
+```
+
+#### Update Partner Settings (Self-Service)
+
+```bash
+curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
+  -H "Authorization: Bearer <partner-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "settings": {
+      "timezone": "America/Chicago",
+      "businessHours": {
+        "preset": "business"
+      }
+    }
+  }'
+```
+
+#### Create an Organisation
+
+```bash
+curl -X POST https://breeze.example.com/api/v1/orgs/organizations \
+  -H "Authorization: Bearer <partner-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Contoso Ltd",
+    "slug": "contoso",
+    "type": "customer",
+    "status": "active",
+    "maxDevices": 500,
+    "contractStart": "2026-03-01T00:00:00Z",
+    "contractEnd": "2027-03-01T00:00:00Z"
+  }'
+```
+
+#### Create a Site
+
+```bash
+curl -X POST https://breeze.example.com/api/v1/orgs/sites \
+  -H "Authorization: Bearer <org-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "<organization-uuid>",
+    "name": "Denver HQ",
+    "timezone": "America/Denver",
+    "address": {
+      "street": "123 Main St",
+      "city": "Denver",
+      "state": "CO",
+      "zip": "80202"
+    }
+  }'
+```
+
+#### List Sites with Organisation Filter
+
+```bash
+curl "https://breeze.example.com/api/v1/orgs/sites?orgId=<org-uuid>&page=1&limit=25" \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Audit Logging
+
+All create, update, and delete operations on partners, organisations, and sites are recorded in the audit log. The following actions are tracked:
+
+| Action | Trigger |
+|---|---|
+| `partner.create` | A new partner is created. |
+| `partner.update` | A partner's fields are modified. Logged with `changedFields`. |
+| `partner.delete` | A partner is soft-deleted. |
+| `partner.settings.update` | A partner updates its own settings via `/partners/me`. Logged with `changedFields`. |
+| `organization.create` | A new organisation is created. Includes `partnerId`, `status`, and `type` in details. |
+| `organization.update` | An organisation's fields are modified. Logged with `changedFields`. |
+| `organization.delete` | An organisation is soft-deleted. |
+| `site.create` | A new site is created. |
+| `site.update` | A site's fields are modified. Logged with `changedFields`. |
+| `site.delete` | A site is deleted. |
+
+---
+
+## Troubleshooting
+
+### "Partner not found" (404)
+
+The partner ID does not exist or the partner has been soft-deleted. Verify the UUID is correct. Soft-deleted partners are excluded from all queries and cannot be updated or deleted again.
+
+### "Organization not found" (404)
+
+The organisation ID does not exist, has been soft-deleted, or the caller does not have access to it. Partner-scoped users receive a `404` (rather than `403`) when attempting to access an organisation outside their scope, to avoid leaking information about the existence of other organisations.
+
+### "Access to this organization denied" (403)
+
+The caller attempted to create or access a site in an organisation they do not have access to. Ensure the target `orgId` is in the user's accessible organisation list. For partner-scoped users, check the `orgAccess` and `orgIds` fields on the `partner_users` record.
+
+### "Access to this site denied" (403)
+
+The caller attempted to read, update, or delete a site that belongs to an organisation they cannot access. The access check is performed against the site's parent `orgId`.
+
+### "Access denied to this partner" (403)
+
+A partner-scoped user attempted to create an organisation under a different partner by providing a `partnerId` that does not match their own. Partner-scoped users can only create organisations under their own partner.
+
+### "Partner context required to create organizations" (400)
+
+A partner-scoped user is missing their `partnerId` in the authentication context. This typically indicates a misconfigured user association. Verify the user has a valid `partner_users` record.
+
+### "partnerId is required for system scope" (400)
+
+System-scoped users must explicitly provide `partnerId` when creating an organisation because they are not implicitly associated with any partner.
+
+### "No updates provided" (400)
+
+A `PATCH` request was sent with an empty body or no recognised fields. Include at least one field to update.
+
+### Empty results when listing organisations or sites
+
+- **Partner scope** -- the user's `accessibleOrgIds` may be empty. Check the `partner_users` record for `org_access` set to `none` or `selected` with an empty `org_ids` array.
+- **Organisation scope** -- the user may not have an `orgId` in their token. Verify the `organization_users` record exists.
+- **Filtering** -- if a `partnerId` or `orgId` query parameter is specified, ensure it matches an existing, non-deleted record.
+
+### Site timezone not applied
+
+The `timezone` field on a site is stored as a string (e.g. `America/Denver`) and must be a valid IANA timezone identifier. If omitted during creation, it defaults to `UTC`. To update the timezone, send a `PATCH` request with the `timezone` field.
+
+### Sites not deleted after organisation deletion
+
+Soft-deleting an organisation does not cascade to its sites. Sites remain in the database. To clean up, list sites for the organisation and delete them individually before or after deleting the organisation. Note that sites are hard-deleted (permanently removed).

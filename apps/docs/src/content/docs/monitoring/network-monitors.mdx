@@ -1,0 +1,426 @@
+---
+title: Network Monitors
+description: Create custom ping, port, and endpoint monitors to track availability, response times, and trigger alerts on failure.
+sidebar:
+  order: 4
+  label: Network Monitors
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Overview
+
+Network Monitors let you define recurring checks against IP addresses, hostnames, ports, HTTP endpoints, and DNS records. Breeze dispatches each check through a connected agent in the same organization via WebSocket, records the result, and updates the monitor's status. Monitors can optionally be linked to a discovered asset so that availability data appears alongside the asset's SNMP and discovery information.
+
+All monitor operations require authentication and one of the `organization`, `partner`, or `system` scopes. Organization-scoped users are automatically restricted to monitors within their own organization.
+
+## Monitor Types
+
+Breeze supports four monitor types, stored in the `monitor_type` PostgreSQL enum:
+
+| Type | DB Value | What It Checks |
+|---|---|---|
+| ICMP Ping | `icmp_ping` | Sends ICMP echo requests to a target host. Measures round-trip time. |
+| TCP Port | `tcp_port` | Opens a TCP connection to a specific port. Optionally checks for a banner string. |
+| HTTP/Endpoint | `http_check` | Makes an HTTP request to a URL. Validates status code, response body, SSL, and redirects. |
+| DNS | `dns_check` | Resolves a hostname via DNS. Optionally checks record type, expected value, and nameserver. |
+
+### ICMP Ping Configuration
+
+| Field | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `count` | integer | 1 -- 20 | _none_ | Number of echo requests to send. |
+| `packetSize` | integer | 16 -- 65,535 | _none_ | ICMP packet payload size in bytes. |
+
+### TCP Port Configuration
+
+| Field | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `port` | integer | 1 -- 65,535 | **required** | TCP port number to connect to. |
+| `expectBanner` | string | optional | _none_ | String the server banner must contain for a successful check. |
+
+### HTTP/Endpoint Configuration
+
+| Field | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `url` | string | valid URL | _none_ | Full URL to request. If omitted, the monitor's `target` field is used. |
+| `method` | enum | `GET`, `HEAD`, `POST`, `PUT`, `OPTIONS` | _none_ | HTTP method. |
+| `expectedStatus` | integer | 100 -- 599 | _none_ | Required HTTP status code for a passing check. |
+| `expectedBody` | string | optional | _none_ | Substring that must appear in the response body. |
+| `headers` | object | key-value pairs | _none_ | Custom HTTP headers to include in the request. |
+| `followRedirects` | boolean | optional | _none_ | Whether to follow HTTP redirects. |
+| `verifySsl` | boolean | optional | _none_ | Whether to verify the TLS certificate. |
+
+### DNS Check Configuration
+
+| Field | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `hostname` | string | min 1 char | _none_ | Hostname to resolve. If omitted, the monitor's `target` field is used. |
+| `recordType` | enum | `A`, `AAAA`, `MX`, `CNAME`, `TXT`, `NS` | _none_ | DNS record type to query. |
+| `expectedValue` | string | optional | _none_ | Expected value in the DNS response. |
+| `nameserver` | string | optional | _none_ | Custom DNS nameserver to query. |
+
+## Creating a Monitor
+
+<Steps>
+
+1. **Choose a target.** Identify the IP address, hostname, or URL you want to monitor. Optionally associate the monitor with a discovered asset by providing its `assetId`.
+
+2. **Select a monitor type.** Pick one of `icmp_ping`, `tcp_port`, `http_check`, or `dns_check`.
+
+3. **Send a POST request.**
+
+   ```bash
+   curl -X POST /api/v1/monitors \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Web Server HTTPS",
+       "monitorType": "http_check",
+       "target": "https://app.example.com",
+       "config": {
+         "method": "GET",
+         "expectedStatus": 200,
+         "verifySsl": true
+       },
+       "pollingInterval": 120,
+       "timeout": 10
+     }'
+   ```
+
+4. **Verify the response.** A `201` status with the full monitor object confirms creation. The monitor begins in `unknown` status and `isActive: true`.
+
+</Steps>
+
+<Aside type="tip">
+  When you provide an `assetId`, the API validates that the asset exists and belongs to the same organization. If you also supply an explicit `orgId`, it must match the asset's organization.
+</Aside>
+
+## Polling Intervals and Timeouts
+
+| Parameter | Column | Min | Max | Default | Unit |
+|---|---|---|---|---|---|
+| `pollingInterval` | `polling_interval` | 10 | 86,400 | 60 | seconds |
+| `timeout` | `timeout` | 1 | 300 | 5 | seconds |
+
+The **polling interval** controls how frequently the BullMQ scheduler enqueues a check job for the monitor. The **timeout** is passed to the agent as the maximum time allowed for the check to complete before it is considered failed.
+
+<Aside type="note">
+  The scheduler runs every 30 seconds. A monitor becomes due for a check when `last_checked + polling_interval <= now`, or when `last_checked` is `NULL` (never checked). Setting a polling interval below 30 seconds means the monitor will be checked on every scheduler cycle.
+</Aside>
+
+## Monitor Status Lifecycle
+
+Each monitor tracks a `last_status` field with one of four values:
+
+| Status | Meaning |
+|---|---|
+| `unknown` | Initial state. No check has completed yet. |
+| `online` | The most recent check succeeded. |
+| `degraded` | The check succeeded but with concerning metrics (e.g., high response time). |
+| `offline` | The most recent check failed. |
+
+### Consecutive Failures
+
+The `consecutive_failures` counter increments by 1 each time a check result has status `offline`. It resets to `0` on any non-offline result (`online` or `degraded`). This counter is used by alert rules with the `consecutive_failures_gt` condition.
+
+### State Update Transaction
+
+When a check result is processed, the worker updates both the `network_monitor_results` row and the parent `network_monitors` row inside a single database transaction. The fields updated on the monitor are:
+
+- `last_checked` -- timestamp of the check
+- `last_status` -- the result status
+- `last_response_ms` -- response time in milliseconds
+- `last_error` -- error message (or `NULL` on success)
+- `consecutive_failures` -- incremented or reset
+- `updated_at` -- current timestamp
+
+## Results and Response Times
+
+Every completed check writes a row to the `network_monitor_results` table:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | UUID | Primary key. |
+| `monitor_id` | UUID | Foreign key to `network_monitors`. Cascades on delete. |
+| `status` | enum | `online`, `offline`, `degraded`, or `unknown`. |
+| `response_ms` | real | Response time in milliseconds. |
+| `status_code` | integer | HTTP status code (HTTP checks only). |
+| `error` | text | Error message if the check failed. |
+| `details` | JSONB | Additional check-specific data returned by the agent. |
+| `timestamp` | timestamp | When the check was performed. |
+
+### Querying Results
+
+Fetch historical results with optional time-range filtering:
+
+```bash
+curl "/api/v1/monitors/<monitorId>/results?start=2026-02-01T00:00:00Z&end=2026-02-18T00:00:00Z&limit=500" \
+  -H "Authorization: Bearer <token>"
+```
+
+| Query Parameter | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `start` | string | ISO 8601 datetime | _none_ | Include results on or after this timestamp. |
+| `end` | string | ISO 8601 datetime | _none_ | Include results on or before this timestamp. |
+| `limit` | integer | 1 -- 1,000 | 100 | Maximum number of results to return. |
+
+Results are returned in descending order by timestamp (newest first).
+
+## Dashboard Stats
+
+The `GET /api/v1/monitors/dashboard` endpoint returns aggregate counts for the authenticated organization:
+
+```json
+{
+  "data": {
+    "total": 12,
+    "status": {
+      "online": 8,
+      "offline": 2,
+      "degraded": 1,
+      "unknown": 1
+    },
+    "types": {
+      "icmp_ping": 4,
+      "tcp_port": 3,
+      "http_check": 4,
+      "dns_check": 1
+    }
+  }
+}
+```
+
+The response includes:
+
+- **total** -- total number of monitors in the organization.
+- **status** -- count of monitors grouped by their current `last_status`.
+- **types** -- count of monitors grouped by `monitor_type`.
+
+## Alert Rules on Monitors
+
+Each monitor can have one or more alert rules. Alert rules are evaluated against check results to trigger alerts at the configured severity level.
+
+### Alert Rule Conditions
+
+| Condition | Description | Threshold |
+|---|---|---|
+| `offline` | Fires when the monitor status is `offline`. | Not used. |
+| `degraded` | Fires when the monitor status is `degraded`. | Not used. |
+| `response_time_gt` | Fires when response time exceeds the threshold. | Milliseconds (string). |
+| `consecutive_failures_gt` | Fires when consecutive failures exceed the threshold. | Failure count (string). |
+
+### Alert Rule Severities
+
+Rules use the shared `alert_severity` enum: `critical`, `high`, `medium`, `low`, `info`.
+
+### Creating an Alert Rule
+
+```bash
+curl -X POST /api/v1/monitors/alerts \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "monitorId": "<monitorId>",
+    "condition": "consecutive_failures_gt",
+    "threshold": "3",
+    "severity": "critical",
+    "message": "Web server has failed 3+ consecutive checks"
+  }'
+```
+
+### Alert Rule Schema
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `monitorId` | UUID | Yes | -- | The monitor this rule applies to. |
+| `condition` | enum | Yes | -- | One of `offline`, `degraded`, `response_time_gt`, `consecutive_failures_gt`. |
+| `threshold` | string | No | `null` | Threshold value for `response_time_gt` and `consecutive_failures_gt`. |
+| `severity` | enum | Yes | -- | Alert severity: `critical`, `high`, `medium`, `low`, `info`. |
+| `message` | string | No | `null` | Custom message included in the alert. |
+| `isActive` | boolean | No | `true` | Whether this rule is currently active. |
+
+<Aside type="caution">
+  Alert rules cascade-delete when their parent monitor is deleted. Deleting a monitor removes all associated rules and historical results.
+</Aside>
+
+## Testing Monitors
+
+The **test** endpoint sends a one-off check command to a connected agent without going through the BullMQ queue. It finds an online agent in the monitor's organization and dispatches the command directly via WebSocket.
+
+```bash
+curl -X POST /api/v1/monitors/<monitorId>/test \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (success):**
+```json
+{
+  "data": {
+    "monitorId": "<monitorId>",
+    "status": "queued",
+    "testedAt": "2026-02-18T12:00:00.000Z"
+  }
+}
+```
+
+**Response (no agent available):**
+```json
+{
+  "data": {
+    "monitorId": "<monitorId>",
+    "status": "failed",
+    "error": "No online agent available",
+    "testedAt": "2026-02-18T12:00:00.000Z"
+  }
+}
+```
+
+<Aside type="note">
+  The test endpoint requires at least one online, WebSocket-connected agent in the monitor's organization. If no agent is connected, the test returns immediately with a `failed` status rather than an HTTP error.
+</Aside>
+
+## On-Demand Checks via BullMQ
+
+The **check** endpoint enqueues a monitor check job through BullMQ rather than dispatching directly. This is the same mechanism the scheduler uses for recurring checks, but triggered manually.
+
+```bash
+curl -X POST /api/v1/monitors/<monitorId>/check \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+```json
+{
+  "data": {
+    "monitorId": "<monitorId>",
+    "status": "queued",
+    "message": "Check request queued"
+  }
+}
+```
+
+### How the Job Queue Works
+
+The monitor system uses a BullMQ queue named `monitors` with three job types:
+
+| Job Type | Name | Description |
+|---|---|---|
+| `check-monitor` | Check Monitor | Looks up the monitor, finds an online agent in the org, and dispatches the check command via WebSocket. |
+| `process-check-result` | Process Check Result | Writes the result to `network_monitor_results` and updates the monitor's state in a transaction. |
+| `monitor-scheduler` | Monitor Scheduler | Repeatable job (every 30 seconds) that finds all active monitors due for a check and enqueues `check-monitor` jobs. |
+
+The worker processes jobs with a concurrency of **10**. Completed jobs are retained (100 for success, 200 for failures) for debugging.
+
+<Aside type="caution">
+  The check endpoint requires Redis. If Redis is unavailable, the endpoint returns `503 Service Unavailable` with the message "Check service unavailable. Redis is required for job queuing."
+</Aside>
+
+### Agent Command Mapping
+
+Each monitor type maps to a specific agent command type:
+
+| Monitor Type | Agent Command |
+|---|---|
+| `icmp_ping` | `network_ping` |
+| `tcp_port` | `network_tcp_check` |
+| `http_check` | `network_http_check` |
+| `dns_check` | `network_dns_check` |
+
+The command payload includes the monitor's `target`, `timeout`, and all fields from the monitor's `config` object. Command IDs follow the pattern `mon-<monitorId>-<timestamp>`.
+
+## API Reference
+
+All endpoints are mounted at `/api/v1/monitors` and require authentication.
+
+### Monitors
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/monitors` | List monitors with optional filters. |
+| `POST` | `/api/v1/monitors` | Create a new monitor. |
+| `GET` | `/api/v1/monitors/dashboard` | Aggregate status and type counts. |
+| `GET` | `/api/v1/monitors/:id` | Get a single monitor with recent results and alert rules. |
+| `PATCH` | `/api/v1/monitors/:id` | Update monitor fields. |
+| `DELETE` | `/api/v1/monitors/:id` | Delete a monitor and all associated results/rules. |
+| `POST` | `/api/v1/monitors/:id/check` | Enqueue an on-demand check via BullMQ. |
+| `POST` | `/api/v1/monitors/:id/test` | Send a direct test check to an online agent. |
+| `GET` | `/api/v1/monitors/:id/results` | Query historical check results. |
+
+### Alert Rules
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/monitors/alerts` | Create an alert rule for a monitor. |
+| `GET` | `/api/v1/monitors/:monitorId/alerts` | List alert rules for a monitor. |
+| `PATCH` | `/api/v1/monitors/alerts/:id` | Update an alert rule. |
+| `DELETE` | `/api/v1/monitors/alerts/:id` | Delete an alert rule. |
+
+### List Monitors Query Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `orgId` | UUID | Filter by organization. Required for `partner` and `system` scopes. |
+| `assetId` | UUID | Filter by discovered asset. Also infers `orgId` from the asset. |
+| `monitorType` | enum | Filter by type: `icmp_ping`, `tcp_port`, `http_check`, `dns_check`. |
+| `status` | enum | Filter by current status: `online`, `offline`, `degraded`, `unknown`. |
+| `search` | string | Search by monitor name or target (substring match). |
+
+### Monitoring Assets Integration
+
+Network monitors also surface through the `/api/v1/monitoring/assets` endpoint, which returns discovered assets enriched with their monitoring configuration. Each asset includes a `network` object showing:
+
+```json
+{
+  "network": {
+    "configured": true,
+    "totalCount": 3,
+    "activeCount": 2
+  }
+}
+```
+
+The `DELETE /api/v1/monitoring/assets/:id` endpoint disables all active network monitors (and SNMP devices) for a given asset by setting `isActive` to `false`.
+
+## Troubleshooting
+
+### Monitor stuck in "unknown" status
+
+The monitor has never been checked. Verify that:
+
+1. The monitor has `isActive: true`.
+2. At least one agent in the same organization is online and connected via WebSocket.
+3. Redis is running and the monitor worker has been initialized (look for `[MonitorWorker] Monitor worker initialized` in API logs).
+4. The scheduler repeatable job is registered (look for `[MonitorWorker] Scheduled repeatable monitor scheduler (every 30s)` in logs).
+
+### Check dispatched but no result recorded
+
+The agent received the command but did not return a result. Check:
+
+1. Agent logs for errors processing the `network_ping`, `network_tcp_check`, `network_http_check`, or `network_dns_check` command.
+2. WebSocket connectivity between the agent and the API.
+3. That the `process-check-result` job type is being processed (check BullMQ failed jobs for errors).
+
+### "Check service unavailable" (503)
+
+The `/check` endpoint requires Redis for BullMQ job queuing. Ensure Redis is running and the `REDIS_URL` environment variable is correctly configured.
+
+### "No online agent available" on test
+
+The `/test` endpoint looks for a device with `status: 'online'` in the monitor's organization and verifies it has an active WebSocket connection. Ensure at least one agent is enrolled, heartbeating, and connected.
+
+### Monitors not running on schedule
+
+The scheduler is a BullMQ repeatable job that runs every 30 seconds. If monitors are not being checked:
+
+1. Verify the worker is running -- check for `[MonitorWorker]` log lines.
+2. Inspect the `monitors` queue in Redis for stuck or failed jobs.
+3. Confirm the monitor's `polling_interval` has elapsed since `last_checked`.
+
+### Alert rules not firing
+
+Alert rules are stored in the `network_monitor_alert_rules` table. Verify:
+
+1. The rule has `isActive: true`.
+2. The `condition` and `threshold` match the current monitor state (e.g., `consecutive_failures_gt` with threshold `"3"` requires `consecutive_failures > 3`).
+3. The monitor's check results are being recorded -- query the `/results` endpoint to confirm.

@@ -1,0 +1,473 @@
+---
+title: Network Discovery
+description: Scan your network to discover devices, hosts, and services using ARP, ICMP, and port scanning.
+sidebar:
+  order: 9
+  label: Network Discovery
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Network Discovery lets you scan subnets across your managed sites to find devices, identify their type and manufacturer, map open services, and build a topology of how hosts connect through routers and switches. Scans are executed by the Breeze agent running on a device within the target network. The agent performs ARP resolution, ICMP ping sweeps, TCP port scans, and SNMP queries, then reports results back to the API via WebSocket. Discovered assets are stored per-organization and automatically linked to enrolled devices when a MAC or IP address match is found.
+
+Discovery profiles define what to scan and how. A profile is scoped to a single site and contains target subnets, scan methods, port ranges, SNMP communities, and a schedule. When a scan is triggered, a discovery job is created and dispatched through BullMQ to an online agent at the profile's site. Results are processed asynchronously — assets are upserted, topology edges are enriched, and the job record is updated with summary statistics.
+
+---
+
+## Key Concepts
+
+### Scan Types
+
+| Method | Description | Privilege Required |
+|--------|-------------|--------------------|
+| `arp` | Sends ARP requests on the local subnet to resolve IP-to-MAC mappings using raw packet capture (pcap) | Root / Administrator |
+| `ping` | ICMP echo request sweep to identify live hosts and measure round-trip time | Root / Administrator |
+| `port_scan` | TCP connect scan against configured port ranges to identify open services | None |
+| `snmp` | Queries SNMP system OIDs (sysDescr, sysObjectID, sysName) to identify device type and manufacturer | None |
+
+### Discovery Profiles
+
+A profile defines the complete configuration for a scan: which subnets to target, which methods to use, port ranges, SNMP credentials, and when scans should run. Profiles are scoped to an organization and site. Multiple profiles can exist per site to cover different network segments or scan strategies.
+
+### Discovered Assets
+
+Each unique IP address found during a scan is stored as a discovered asset within the organization. Assets are classified by type (workstation, server, printer, router, switch, etc.) and track their status through a lifecycle:
+
+| Status | Meaning |
+|--------|---------|
+| `new` | Recently discovered, not yet reviewed |
+| `identified` | Reviewed and classified but not linked to an enrolled device |
+| `managed` | Linked to an enrolled Breeze agent device |
+| `ignored` | Explicitly excluded from monitoring and reports |
+| `offline` | Previously seen but not found in the most recent scan |
+
+### Asset Types
+
+| Type | Classification Criteria |
+|------|------------------------|
+| `printer` | SNMP sysDescr contains "printer", or ports 9100/631 are open |
+| `router` | SNMP indicates router, or gateway IP (.1/.254) with HTTP but no SSH/RDP |
+| `switch` | SNMP sysDescr or sysObjectID contains "switch" |
+| `firewall` | SNMP sysDescr or sysObjectID contains "firewall" |
+| `nas` | SNMP indicates NAS/Synology/QNAP, or ports 5000+5001 open |
+| `access_point` | SNMP indicates wireless or access point |
+| `server` | SSH open with database or service ports (3306, 5432, 1433, 6379, etc.) |
+| `workstation` | RDP (3389), SMB (445), SSH (22), or VNC (5900) open |
+| `unknown` | Insufficient data to classify |
+
+### Network Topology
+
+Discovery automatically builds topology edges between gateway devices (routers, switches, firewalls, access points) and the endpoint hosts they connect. Topology data is stored in the `network_topology` table and returned as a graph of nodes and edges by the topology endpoint.
+
+---
+
+## Scan Types
+
+### ARP Scan
+
+ARP scanning sends broadcast ARP requests on each matching network interface to resolve IP-to-MAC address mappings for all targets in the subnet. This is the most reliable method for discovering devices on the local L2 network segment.
+
+<Aside type="caution">
+  ARP scanning requires root (Linux/macOS) or Administrator (Windows) privileges because it uses raw packet capture via libpcap. When the agent is built without CGO or lacks permissions, ARP scan falls back to reading the OS ARP cache, which only contains entries for hosts the agent has recently communicated with.
+</Aside>
+
+The agent iterates over local network interfaces, matches them against the requested subnets, and sends ARP requests for each target IP. Replies are collected within the configured timeout window.
+
+### ICMP Ping Sweep
+
+The ping sweep sends ICMP Echo Request packets to every target IP in parallel using a configurable worker pool (default: 128 concurrent workers). Each responding host is recorded with its round-trip time.
+
+<Aside type="caution">
+  ICMP ping requires root or elevated privileges to open raw sockets. The agent performs a pre-flight check before spawning workers — if the ICMP socket cannot be opened, the entire ping sweep is skipped gracefully with a warning log.
+</Aside>
+
+When both ping and port scan are enabled, the port scanner targets only the hosts that responded to ping, reducing scan time on large subnets.
+
+### TCP Port Scan
+
+Port scanning uses TCP connect probes to check whether specific ports are open on each target. The scanner identifies well-known services by port number:
+
+| Port | Service | Port | Service |
+|------|---------|------|---------|
+| 22 | SSH | 445 | SMB |
+| 23 | Telnet | 1433 | MSSQL |
+| 25 | SMTP | 3306 | MySQL |
+| 53 | DNS | 3389 | RDP |
+| 80 | HTTP | 5432 | PostgreSQL |
+| 135 | RPC | 5672 | AMQP |
+| 139 | NetBIOS | 5985/5986 | WinRM |
+| 161 | SNMP | 6379 | Redis |
+| 443 | HTTPS | 9100 | Printer |
+
+Port scanning does not require elevated privileges and works on all platforms.
+
+**Default ports** (when no `portRanges` are specified): `22, 80, 443, 445, 3389, 161, 139, 135, 5985, 5986, 9100`
+
+### SNMP Discovery
+
+SNMP discovery queries each target on UDP port 161 using the configured community strings (default: `public`). It fetches three system OIDs:
+
+| OID | Field | Usage |
+|-----|-------|-------|
+| `1.3.6.1.2.1.1.1.0` | sysDescr | OS and device identification, manufacturer detection |
+| `1.3.6.1.2.1.1.2.0` | sysObjectID | Device model and type classification |
+| `1.3.6.1.2.1.1.5.0` | sysName | Hostname / device name |
+
+Both SNMPv2c and SNMPv3 (NoAuthNoPriv) are supported. To use SNMPv3, prefix the username with `v3:` in the `snmpCommunities` array:
+
+```json
+{
+  "snmpCommunities": ["public", "private", "v3:admin-user"]
+}
+```
+
+SNMP data is used by the asset classifier to determine manufacturer (Cisco, HP, Dell, Juniper, MikroTik, Synology, QNAP, Ubiquiti, Fortinet) and device type.
+
+---
+
+## Discovery Profiles
+
+### Creating a Profile
+
+Profiles define the full scan configuration and are scoped to an organization and site.
+
+```bash
+POST /discovery/profiles
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "siteId": "uuid",
+  "name": "Office LAN Scan",
+  "description": "Weekly scan of main office subnet",
+  "subnets": ["192.168.1.0/24", "192.168.2.0/24"],
+  "excludeIps": ["192.168.1.1"],
+  "methods": ["arp", "ping", "port_scan", "snmp"],
+  "portRanges": ["22,80,443,445,3389"],
+  "snmpCommunities": ["public"],
+  "schedule": {
+    "type": "cron",
+    "cron": "0 2 * * 0"
+  },
+  "deepScan": false,
+  "identifyOS": true,
+  "resolveHostnames": true,
+  "timeout": 3,
+  "concurrency": 128
+}
+```
+
+### Profile Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | Yes* | Organization ID. Auto-resolved for org-scoped tokens |
+| `siteId` | UUID | Yes | Site the profile belongs to |
+| `name` | string | Yes | Human-readable name (max 255 chars) |
+| `description` | string | No | Optional description |
+| `subnets` | string[] | Yes | CIDR subnets or individual IPs to scan |
+| `excludeIps` | string[] | No | IPs to skip during scanning |
+| `methods` | string[] | Yes | Scan methods: `arp`, `ping`, `port_scan`, `snmp` |
+| `portRanges` | any | No | Port ranges for port scan (e.g., `["22,80,443", "1000-2000"]`) |
+| `snmpCommunities` | string[] | No | SNMP community strings. Prefix `v3:` for SNMPv3 usernames |
+| `schedule` | object | Yes | Schedule configuration (see below) |
+| `deepScan` | boolean | No | Allow subnets larger than /16 (65,536+ hosts). Default `false` |
+| `identifyOS` | boolean | No | Attempt OS fingerprinting from SNMP and port data. Default `false` |
+| `resolveHostnames` | boolean | No | Perform reverse DNS lookups. Default `false` |
+| `timeout` | integer | No | Per-probe timeout in seconds. Default `2` |
+| `concurrency` | integer | No | Number of concurrent workers. Default `128` |
+
+### Schedule Types
+
+| Type | Required Fields | Description |
+|------|-----------------|-------------|
+| `manual` | None | Only runs when triggered via `POST /discovery/scan` |
+| `cron` | `cron` | Standard cron expression for recurring scans |
+| `interval` | `intervalMinutes` | Run every N minutes |
+
+<Aside>
+  Subnets larger than a /16 (65,536 hosts) are skipped unless `deepScan` is set to `true`. This prevents accidental full-class-B scans that could take a long time and generate significant network traffic.
+</Aside>
+
+### Updating a Profile
+
+```bash
+PATCH /discovery/profiles/:id
+Content-Type: application/json
+
+{
+  "subnets": ["10.0.0.0/24"],
+  "enabled": false
+}
+```
+
+Only the fields you include are updated. Omitted fields retain their current values.
+
+### Deleting a Profile
+
+```bash
+DELETE /discovery/profiles/:id
+```
+
+Deleting a profile also removes all associated discovery jobs in a single transaction.
+
+---
+
+## Running Scans
+
+### Triggering a Scan
+
+To run a scan immediately, POST to the scan endpoint with the profile ID and an optional agent ID:
+
+```bash
+POST /discovery/scan
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "profileId": "uuid",
+  "agentId": "optional-agent-id"
+}
+```
+
+If `agentId` is omitted, the system automatically selects an online agent from the profile's site. The scan is dispatched through BullMQ to the discovery worker, which sends a `network_discovery` command to the agent via WebSocket.
+
+<Aside type="tip">
+  The response returns a discovery job object with status `scheduled`. The scan transitions to `running` once the agent receives the command, and to `completed` when results have been processed.
+</Aside>
+
+### Scan Execution Flow
+
+<Steps>
+1. **API creates a discovery job** with status `scheduled` and enqueues a `dispatch-scan` task in BullMQ.
+
+2. **Discovery worker picks up the task**, loads the profile, finds an online agent at the site, and sends a `network_discovery` command via WebSocket.
+
+3. **Agent receives the command** and runs the configured scan methods (ARP, ping, port scan, SNMP) against the target subnets.
+
+4. **Agent returns results** via WebSocket as a `command_result` message containing the list of discovered hosts.
+
+5. **API enqueues a `process-results` task** in BullMQ. The worker upserts discovered assets, auto-links matches to enrolled devices by MAC/IP, enriches the network topology, and marks the job as `completed`.
+</Steps>
+
+### Monitoring Job Status
+
+**List all jobs:**
+
+```
+GET /discovery/jobs?orgId=uuid
+```
+
+**Get job detail with discovered assets:**
+
+```
+GET /discovery/jobs/:id
+```
+
+The detail endpoint returns the job record plus all discovered assets associated with the job.
+
+### Cancelling a Job
+
+Jobs with status `scheduled` or `running` can be cancelled:
+
+```bash
+POST /discovery/jobs/:id/cancel
+```
+
+The job status is set to `cancelled` and the system attempts to remove it from the BullMQ queue. If the scan is already in progress on the agent, cancellation takes effect when results arrive — cancelled jobs skip result processing.
+
+### Job Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `scheduled` | Job created, waiting to be dispatched to an agent |
+| `running` | Command sent to agent, scan in progress |
+| `completed` | Results processed, assets upserted |
+| `failed` | No online agent available, profile not found, or dispatch error |
+| `cancelled` | Cancelled by an administrator before completion |
+
+---
+
+## Discovered Assets
+
+### Viewing Assets
+
+List all discovered assets with optional filters:
+
+```
+GET /discovery/assets?orgId=uuid&status=new&assetType=router
+```
+
+**Filter parameters:**
+
+| Parameter | Values |
+|-----------|--------|
+| `orgId` | UUID of the organization |
+| `status` | `new`, `identified`, `managed`, `ignored`, `offline` |
+| `assetType` | `workstation`, `server`, `printer`, `router`, `switch`, `firewall`, `access_point`, `phone`, `iot`, `camera`, `nas`, `unknown` |
+
+Each asset in the response includes monitoring status flags:
+
+| Field | Description |
+|-------|-------------|
+| `snmpMonitoringEnabled` | Whether an active SNMP monitor is attached to this asset |
+| `networkMonitoringEnabled` | Whether an active network monitor (ping, TCP, HTTP, DNS) is attached |
+| `monitoringEnabled` | `true` if either SNMP or network monitoring is active |
+| `linkedDeviceName` | Display name or hostname of the linked enrolled device, if any |
+
+### Linking an Asset to a Device
+
+Manually link a discovered asset to an enrolled device. This sets the asset status to `managed`:
+
+```bash
+POST /discovery/assets/:id/link
+Content-Type: application/json
+
+{
+  "deviceId": "uuid"
+}
+```
+
+<Aside>
+  Auto-linking happens automatically during scan result processing. The worker matches assets to enrolled devices by MAC address or IP address within the same organization. Manual linking is only needed when auto-linking does not find a match.
+</Aside>
+
+### Ignoring an Asset
+
+Mark an asset as ignored to exclude it from dashboards and reports:
+
+```bash
+POST /discovery/assets/:id/ignore
+Content-Type: application/json
+
+{
+  "reason": "Test device, not production"
+}
+```
+
+The `reason` field is optional (max 1,000 characters). The asset records who ignored it and when.
+
+### Deleting an Asset
+
+```bash
+DELETE /discovery/assets/:id
+```
+
+Deleting an asset also removes all associated SNMP devices (and their metrics and alert thresholds) and network monitors in a single transaction.
+
+---
+
+## Network Topology
+
+The topology endpoint returns a graph representation of discovered assets and their connections:
+
+```
+GET /discovery/topology?orgId=uuid
+```
+
+**Response structure:**
+
+```json
+{
+  "nodes": [
+    {
+      "id": "uuid",
+      "type": "router",
+      "label": "gateway.local",
+      "status": "managed",
+      "ipAddress": "192.168.1.1",
+      "macAddress": "aa:bb:cc:dd:ee:ff"
+    }
+  ],
+  "edges": [
+    {
+      "id": "uuid",
+      "sourceId": "uuid",
+      "targetId": "uuid",
+      "sourceType": "discovered_asset",
+      "targetType": "discovered_asset",
+      "connectionType": "routed",
+      "bandwidth": null,
+      "latency": 1.2
+    }
+  ]
+}
+```
+
+Topology edges are automatically created during result processing. The system links gateway devices (routers, switches, firewalls, access points) to all endpoint hosts discovered in the same scan. Connection type is `ethernet` for switches and `routed` for all other gateway types. Existing edges are updated with a new `lastVerifiedAt` timestamp on each scan.
+
+---
+
+## Network Monitors
+
+Discovered assets can be attached to network monitors for ongoing health checking. Monitors are managed through the dedicated `/monitoring` routes and support four check types:
+
+| Monitor Type | Description |
+|--------------|-------------|
+| `icmp_ping` | Periodic ICMP ping to check availability and measure latency |
+| `tcp_port` | TCP connect check against a specific port |
+| `http_check` | HTTP/HTTPS request with status code and response time validation |
+| `dns_check` | DNS resolution check for a target hostname |
+
+Each monitor tracks its current status (`online`, `offline`, `degraded`, `unknown`), last response time, consecutive failure count, and stores a history of check results. Alert rules can be configured per monitor to trigger notifications on failure thresholds.
+
+The asset list endpoint (`GET /discovery/assets`) includes `snmpMonitoringEnabled` and `networkMonitoringEnabled` flags so you can see at a glance which assets have active monitoring.
+
+---
+
+## API Reference
+
+### Discovery Profiles
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/discovery/profiles` | List profiles (`?orgId=`) |
+| POST | `/discovery/profiles` | Create a new profile |
+| GET | `/discovery/profiles/:id` | Get profile by ID |
+| PATCH | `/discovery/profiles/:id` | Update profile fields |
+| DELETE | `/discovery/profiles/:id` | Delete profile and associated jobs |
+
+### Scan Jobs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/discovery/scan` | Trigger a scan (`profileId`, optional `agentId`) |
+| GET | `/discovery/jobs` | List all jobs (`?orgId=`) |
+| GET | `/discovery/jobs/:id` | Get job detail with discovered assets |
+| POST | `/discovery/jobs/:id/cancel` | Cancel a scheduled or running job |
+
+### Discovered Assets
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/discovery/assets` | List assets (`?orgId=&status=&assetType=`) |
+| POST | `/discovery/assets/:id/link` | Link asset to enrolled device |
+| POST | `/discovery/assets/:id/ignore` | Mark asset as ignored |
+| DELETE | `/discovery/assets/:id` | Delete asset and associated monitors |
+
+### Network Topology
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/discovery/topology` | Get topology graph (`?orgId=`) |
+
+<Aside>
+  All discovery endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**ARP and ping scans return no results.**
+ARP scanning requires root/Administrator privileges and the libpcap library. ICMP ping also requires raw socket access. If the agent runs as a non-privileged user, both methods are skipped. Check agent logs for messages like "ARP scan unavailable (built without CGO/pcap)" or "ICMP ping unavailable (requires root/elevated privileges)". Port scanning works without elevated privileges and can be used as an alternative.
+
+**Scan job stays in `scheduled` status.**
+The discovery worker requires Redis and BullMQ to dispatch scan commands. Verify Redis is running and accessible. If Redis is unavailable, the job is immediately marked as `failed` with the message "Background job service unavailable." Also confirm at least one agent at the profile's site is online — the worker selects an online agent from the same site to execute the scan.
+
+**Large subnets are skipped.**
+Subnets larger than /16 (65,536+ hosts) are skipped by default to prevent excessive scan times and network traffic. Set `deepScan: true` on the profile to allow scanning of large subnets. Monitor the agent's resource usage when scanning large address ranges.
+
+**Discovered assets are not auto-linking to enrolled devices.**
+Auto-linking matches assets to enrolled devices by MAC address or IP address within the same organization using the `device_network` table. If the enrolled device has a different IP than what discovery sees (e.g., the device is behind NAT or uses a VPN), auto-linking will not find a match. Use `POST /discovery/assets/:id/link` to manually link the asset to the correct device.

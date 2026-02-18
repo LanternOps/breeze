@@ -14,6 +14,7 @@ export default defineConfig({
       social: {
         github: 'https://github.com/LanternOps/breeze',
       },
+      lastUpdated: true,
       editLink: {
         baseUrl: 'https://github.com/LanternOps/breeze/edit/main/apps/docs/',
       },
@@ -21,10 +22,6 @@ export default defineConfig({
         {
           label: 'Getting Started',
           autogenerate: { directory: 'getting-started' },
-        },
-        {
-          label: 'Features',
-          autogenerate: { directory: 'features' },
         },
         {
           label: 'Deployment',
@@ -37,6 +34,10 @@ export default defineConfig({
         {
           label: 'Security',
           autogenerate: { directory: 'security' },
+        },
+        {
+          label: 'Features',
+          autogenerate: { directory: 'features' },
         },
         {
           label: 'Monitoring',

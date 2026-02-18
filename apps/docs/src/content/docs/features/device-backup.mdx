@@ -1,0 +1,835 @@
+---
+title: Device Backup
+description: Configure, schedule, and manage backups of managed devices with snapshot retention, restore operations, and compliance dashboards.
+sidebar:
+  order: 26
+  label: Device Backup
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Device Backup provides centralized backup management for devices enrolled in Breeze. You define storage configurations (where backups go), policies (what gets backed up, on what schedule, and how long to keep it), then monitor everything through the backup dashboard. Backups produce snapshots that can be browsed file-by-file and restored to the original device or a different target. All backup operations are scoped to an organization and enforced through the standard authentication middleware.
+
+<Aside type="caution" title="Implementation Status">
+  The backup API surface is fully implemented, but the current backend uses an **in-memory mock store** for configurations, policies, jobs, snapshots, and restore operations. Data does not persist across API restarts. The database schema tables documented below (`backup_configs`, `backup_policies`, `backup_jobs`, `backup_snapshots`, `restore_jobs`) are defined in Drizzle but are not yet wired to the route handlers. Production use requires completing the migration from in-memory storage to the database layer.
+</Aside>
+
+The backup system is organized around five core concepts: configurations, policies, jobs, snapshots, and restore operations. Configurations define the storage target. Policies bind a configuration to devices with a schedule and retention rules. Jobs represent individual backup or restore executions. Snapshots are the point-in-time archives produced by completed backup jobs. Restore operations recover data from a snapshot back to a device.
+
+---
+
+## Key Concepts
+
+### Storage Providers
+
+Backup configurations support two storage provider types:
+
+| Provider | Description |
+|----------|-------------|
+| `s3` | Amazon S3 or S3-compatible object storage. Configuration details include bucket, region, prefix, storage class, and encryption settings. |
+| `local` | Local filesystem or network-attached storage. Configuration details include the mount path, retention days, and compression algorithm. |
+
+The database schema defines additional provider types (`azure_blob`, `google_cloud`, `backblaze`) for future use, but the current API validates against `s3` and `local`.
+
+### Backup Types (Schema)
+
+The database schema defines four backup type classifications:
+
+| Type | Description |
+|------|-------------|
+| `file` | File-level backup of selected directories and files |
+| `system_image` | Full system image capture |
+| `database` | Database dump or snapshot |
+| `application` | Application-specific backup (e.g., email, configuration) |
+
+### Job Status Lifecycle
+
+Backup and restore jobs move through the following statuses:
+
+| Status | Meaning |
+|--------|---------|
+| `queued` | Job created and waiting to be dispatched to the agent |
+| `running` | Backup or restore is actively in progress on the device |
+| `completed` | Job finished successfully; a snapshot was created (for backups) |
+| `failed` | Job encountered an error; check the `error` field for details |
+| `canceled` | Job was explicitly canceled by a user before completion |
+
+<Aside type="caution">
+  Only jobs in the `running` or `queued` status can be canceled. Attempting to cancel a job in any other status returns a `409 Conflict` error.
+</Aside>
+
+### Job Triggers
+
+Each backup job records how it was initiated:
+
+| Trigger | Description |
+|---------|-------------|
+| `scheduled` | Triggered automatically by a backup policy schedule |
+| `manual` | Triggered on-demand via `POST /backup/jobs/run/:deviceId` |
+| `restore` | Created as a side-effect of initiating a restore operation |
+
+### Retention Rules
+
+Policies define a retention strategy with three tiers:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `keepDaily` | 7 | Number of daily snapshots to retain |
+| `keepWeekly` | 4 | Number of weekly snapshots to retain |
+| `keepMonthly` | 3 | Number of monthly snapshots to retain |
+
+Snapshots that fall outside the retention window are eligible for cleanup.
+
+---
+
+## Backup Configurations
+
+Backup configurations define the storage target where backup data is written. Each configuration is scoped to an organization and includes a provider type, a name, enable/disable state, and a freeform `details` object for provider-specific settings.
+
+### Creating a Configuration
+
+```bash
+POST /backup/configs
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "name": "Primary S3",
+  "provider": "s3",
+  "enabled": true,
+  "details": {
+    "bucket": "breeze-backups",
+    "region": "us-east-1",
+    "prefix": "org-001",
+    "storageClass": "STANDARD_IA",
+    "encryption": "AES256"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Human-readable name (minimum 1 character) |
+| `provider` | string | Yes | Storage provider: `s3` or `local` |
+| `enabled` | boolean | No | Whether the config is active. Defaults to `true` |
+| `details` | object | No | Provider-specific settings (bucket, path, encryption, etc.) |
+
+The response returns the full configuration object with a generated `id`, `createdAt`, and `updatedAt` timestamp.
+
+### Updating a Configuration
+
+```bash
+PATCH /backup/configs/:id
+Content-Type: application/json
+
+{
+  "name": "Primary S3 - Updated",
+  "details": {
+    "storageClass": "GLACIER"
+  }
+}
+```
+
+Only the fields you include are updated. The `details` object is shallow-merged with the existing details rather than replaced entirely, so you can update individual keys without losing others.
+
+### Testing Connectivity
+
+Validate that the storage target is reachable:
+
+```bash
+POST /backup/configs/:id/test
+```
+
+The response includes the provider, a `status` field (returns `"success"` on a successful test), and a `checkedAt` timestamp. The configuration's `lastTestedAt` field is also updated.
+
+```json
+{
+  "id": "cfg-s3-primary",
+  "provider": "s3",
+  "status": "success",
+  "checkedAt": "2026-02-18T12:00:00.000Z"
+}
+```
+
+<Aside type="tip">
+  Test connectivity after creating or updating a configuration to verify credentials and network access before assigning it to a policy.
+</Aside>
+
+### Deleting a Configuration
+
+```bash
+DELETE /backup/configs/:id
+```
+
+Returns `{ "deleted": true }` on success.
+
+### Database Schema
+
+The `backup_configs` table stores the persistent configuration records with these columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key, auto-generated |
+| `org_id` | UUID | Foreign key to `organizations` |
+| `name` | varchar(200) | Configuration name |
+| `type` | enum | Backup type: `file`, `system_image`, `database`, `application` |
+| `provider` | enum | Storage provider: `local`, `s3`, `azure_blob`, `google_cloud`, `backblaze` |
+| `provider_config` | JSONB | Provider-specific configuration |
+| `schedule` | JSONB | Optional schedule data |
+| `retention` | JSONB | Optional retention rules |
+| `compression` | boolean | Compression enabled (default `true`) |
+| `encryption` | boolean | Encryption enabled (default `true`) |
+| `encryption_key` | text | Encryption key (when encryption is enabled) |
+| `is_active` | boolean | Whether the configuration is active (default `true`) |
+| `created_at` | timestamp | Creation timestamp |
+
+Indexes exist on `org_id`, `type`, `provider`, and `is_active` for efficient filtering.
+
+---
+
+## Backup Policies
+
+Backup policies are templates that bind a backup configuration to a set of target devices, sites, or groups with a defined schedule and retention strategy.
+
+### Creating a Policy
+
+```bash
+POST /backup/policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "name": "Daily Endpoints",
+  "configId": "cfg-s3-primary",
+  "enabled": true,
+  "targets": {
+    "deviceIds": ["dev-001", "dev-002", "dev-003"],
+    "siteIds": ["site-nyc"],
+    "groupIds": []
+  },
+  "schedule": {
+    "frequency": "daily",
+    "time": "02:00",
+    "timezone": "UTC"
+  },
+  "retention": {
+    "keepDaily": 7,
+    "keepWeekly": 4,
+    "keepMonthly": 3
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Policy name (minimum 1 character) |
+| `configId` | string | Yes | ID of the backup configuration to use. Must belong to the same organization |
+| `enabled` | boolean | No | Whether the policy is active. Defaults to `true` |
+| `targets` | object | No | Target assignments (see below) |
+| `schedule` | object | Yes | Schedule definition (see below) |
+| `retention` | object | No | Retention rules. Defaults: 7 daily, 4 weekly, 3 monthly |
+
+#### Target Assignment
+
+Policies can target devices at three levels of granularity:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `deviceIds` | string[] | Specific device UUIDs to back up |
+| `siteIds` | string[] | All devices at these sites |
+| `groupIds` | string[] | All devices in these device groups |
+
+#### Schedule Configuration
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `frequency` | string | Yes | `daily`, `weekly`, or `monthly` |
+| `time` | string | Yes | Time of day in `HH:MM` format (24-hour) |
+| `timezone` | string | No | IANA timezone. Defaults to `UTC` |
+| `dayOfWeek` | integer | No | Day of week for weekly schedules (0 = Sunday through 6 = Saturday) |
+| `dayOfMonth` | integer | No | Day of month for monthly schedules (1-28) |
+
+<Aside>
+  The `dayOfMonth` field accepts values from 1 to 28 to avoid edge cases with months that have fewer than 31 days.
+</Aside>
+
+### Updating a Policy
+
+```bash
+PATCH /backup/policies/:id
+Content-Type: application/json
+
+{
+  "schedule": {
+    "frequency": "weekly",
+    "dayOfWeek": 0
+  },
+  "retention": {
+    "keepWeekly": 8
+  }
+}
+```
+
+All fields are optional. Nested objects (`targets`, `schedule`, `retention`) are partially merged -- only the sub-fields you include are updated; others retain their current values. When changing `configId`, the new configuration must exist within the same organization.
+
+### Deleting a Policy
+
+```bash
+DELETE /backup/policies/:id
+```
+
+Returns `{ "deleted": true }` on success.
+
+### Database Schema
+
+The `backup_policies` table links configurations to targets:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key, auto-generated |
+| `config_id` | UUID | Foreign key to `backup_configs` |
+| `target_type` | varchar(50) | Type of target (e.g., device, site, group) |
+| `target_id` | UUID | ID of the target entity |
+| `includes` | JSONB | Paths or items to include in the backup |
+| `excludes` | JSONB | Paths or items to exclude from the backup |
+| `priority` | integer | Execution priority (default 50) |
+
+Indexes exist on `config_id` and the composite `(target_type, target_id)`.
+
+---
+
+## Backup Jobs
+
+Jobs represent individual backup or restore executions. They are created automatically by scheduled policies or manually via the API.
+
+### Running a Manual Backup
+
+Trigger an immediate backup for a specific device:
+
+```bash
+POST /backup/jobs/run/:deviceId
+Authorization: Bearer <token>
+```
+
+The system resolves the backup configuration by:
+
+<Steps>
+1. Finding a policy that targets the given `deviceId` within the same organization.
+
+2. If a matching policy exists, using that policy's `configId`.
+
+3. If no matching policy exists, falling back to any backup configuration within the organization.
+</Steps>
+
+If no configuration is available, the endpoint returns `400` with `"No backup config available"`.
+
+The created job has:
+- `type`: `"backup"`
+- `trigger`: `"manual"`
+- `status`: `"running"`
+- `policyId`: the matched policy ID, or `null` if resolved via fallback
+
+### Listing Jobs
+
+```bash
+GET /backup/jobs
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `queued`, `running`, `completed`, `failed`, `canceled` |
+| `deviceId` or `device` | string | Filter by device UUID |
+| `date` | string | Filter by date prefix (e.g., `2026-02-18`) |
+| `from` | string | Start of date range (ISO 8601) |
+| `to` | string | End of date range (ISO 8601) |
+
+Results are sorted by start time (or creation time) in descending order (most recent first).
+
+### Getting Job Details
+
+```bash
+GET /backup/jobs/:id
+```
+
+Returns the full job object including `sizeBytes`, `error`, `snapshotId` (if completed), and all timestamps.
+
+### Canceling a Job
+
+```bash
+POST /backup/jobs/:id/cancel
+```
+
+Only jobs with status `running` or `queued` can be canceled. The job's status is set to `canceled`, `completedAt` is set to the current time, and the `error` field is set to `"Canceled by user"`.
+
+<Aside type="caution">
+  Canceling a running job signals the system to stop the operation, but data already transferred to the storage target may remain. The canceled job does not produce a snapshot.
+</Aside>
+
+### Database Schema
+
+The `backup_jobs` table tracks all backup and restore executions:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key, auto-generated |
+| `config_id` | UUID | Foreign key to `backup_configs` |
+| `device_id` | UUID | Foreign key to `devices` |
+| `status` | enum | `pending`, `running`, `completed`, `failed`, `cancelled`, `partial` |
+| `type` | enum | `scheduled`, `manual`, `incremental` |
+| `started_at` | timestamp | When execution began |
+| `completed_at` | timestamp | When execution finished |
+| `total_size` | bigint | Total data size in bytes |
+| `transferred_size` | bigint | Bytes actually transferred |
+| `file_count` | integer | Number of files processed |
+| `error_count` | integer | Number of errors encountered |
+| `error_log` | text | Detailed error messages |
+| `snapshot_id` | varchar(200) | Reference to the resulting snapshot |
+
+Indexes exist on `config_id`, `device_id`, `status`, and `started_at`.
+
+---
+
+## Snapshots
+
+Snapshots are point-in-time archives created by completed backup jobs. Each snapshot records the device it came from, the configuration used, the total size, file count, a human-readable label, and the storage location.
+
+### Listing Snapshots
+
+```bash
+GET /backup/snapshots
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string | Filter snapshots by device UUID |
+| `configId` | string | Filter snapshots by backup configuration UUID |
+
+Results are sorted by creation time in descending order (newest first).
+
+### Getting Snapshot Details
+
+```bash
+GET /backup/snapshots/:id
+```
+
+Returns the full snapshot object:
+
+```json
+{
+  "id": "snap-001",
+  "deviceId": "dev-001",
+  "configId": "cfg-s3-primary",
+  "jobId": "job-001",
+  "createdAt": "2026-02-18T00:10:00.000Z",
+  "sizeBytes": 321987654,
+  "fileCount": 45678,
+  "label": "Daily 2025-02-14",
+  "location": "s3://breeze-backups/org-001/dev-001/2025-02-14"
+}
+```
+
+### Browsing Snapshot Contents
+
+View the file and directory tree stored within a snapshot:
+
+```bash
+GET /backup/snapshots/:id/browse
+```
+
+The response returns a hierarchical tree structure:
+
+```json
+{
+  "snapshotId": "snap-001",
+  "data": [
+    {
+      "name": "/",
+      "path": "/",
+      "type": "directory",
+      "children": [
+        {
+          "name": "Users",
+          "path": "/Users",
+          "type": "directory",
+          "children": [
+            {
+              "name": "alice",
+              "path": "/Users/alice",
+              "type": "directory",
+              "children": [
+                {
+                  "name": "Documents",
+                  "path": "/Users/alice/Documents",
+                  "type": "directory",
+                  "children": [
+                    {
+                      "name": "report.pdf",
+                      "path": "/Users/alice/Documents/report.pdf",
+                      "type": "file",
+                      "sizeBytes": 245760,
+                      "modifiedAt": "2026-02-16T00:00:00.000Z"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each item in the tree has a `type` of either `file` or `directory`. Files include `sizeBytes` and `modifiedAt`. Directories contain a `children` array with nested items.
+
+<Aside type="tip">
+  Use the browse endpoint to inspect what a snapshot contains before initiating a restore. This is especially useful for verifying that the files you need are present in the selected snapshot.
+</Aside>
+
+### Database Schema
+
+The `backup_snapshots` table stores metadata for each snapshot:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key, auto-generated |
+| `job_id` | UUID | Foreign key to `backup_jobs` |
+| `device_id` | UUID | Foreign key to `devices` |
+| `snapshot_id` | varchar(200) | External snapshot identifier |
+| `timestamp` | timestamp | When the snapshot was taken |
+| `size` | bigint | Total snapshot size in bytes |
+| `file_count` | integer | Number of files in the snapshot |
+| `is_incremental` | boolean | Whether this is an incremental snapshot (default `false`) |
+| `parent_snapshot_id` | UUID | Self-referencing foreign key for incremental chain |
+| `expires_at` | timestamp | When the snapshot is eligible for deletion |
+| `metadata` | JSONB | Additional snapshot metadata |
+
+Indexes exist on `job_id`, `device_id`, `snapshot_id`, and `parent_snapshot_id`.
+
+---
+
+## Restore Operations
+
+Restore operations recover data from a snapshot back to a device. The restore can target the original device or a different device within the same organization.
+
+### Initiating a Restore
+
+```bash
+POST /backup/restore
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "snapshotId": "snap-001",
+  "deviceId": "dev-001",
+  "targetPath": "/var/restore"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `snapshotId` | string | Yes | ID of the snapshot to restore from |
+| `deviceId` | string | No | Target device for the restore. Defaults to the snapshot's original device |
+| `targetPath` | string | No | Filesystem path on the target device where data should be restored |
+
+The restore operation creates two records:
+1. A **restore job** (tracked in the restore jobs collection) with a `progress` field (0-100).
+2. A **backup job** entry with `type: "restore"` and `trigger: "restore"`, so restore operations appear in the unified job list alongside regular backups.
+
+The restore job is created with status `queued` and `progress: 0`.
+
+### Checking Restore Status
+
+```bash
+GET /backup/restore/:id
+```
+
+Returns the restore job with current progress:
+
+```json
+{
+  "id": "restore-001",
+  "snapshotId": "snap-002",
+  "deviceId": "dev-002",
+  "status": "running",
+  "targetPath": "/var/restore",
+  "createdAt": "2026-02-18T00:00:00.000Z",
+  "startedAt": "2026-02-18T00:10:00.000Z",
+  "completedAt": null,
+  "updatedAt": "2026-02-18T00:25:00.000Z",
+  "progress": 45
+}
+```
+
+### Database Schema
+
+The `restore_jobs` table tracks restore operations:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key, auto-generated |
+| `snapshot_id` | UUID | Foreign key to `backup_snapshots` |
+| `device_id` | UUID | Foreign key to `devices` (target device) |
+| `restore_type` | enum | `full`, `selective`, or `bare_metal` |
+| `target_path` | text | Filesystem path for the restored data |
+| `selected_paths` | JSONB | Array of specific paths for selective restore |
+| `status` | enum | Uses the same `backup_status` enum as jobs |
+| `started_at` | timestamp | When the restore began |
+| `completed_at` | timestamp | When the restore finished |
+| `restored_size` | bigint | Bytes restored so far |
+| `restored_files` | integer | Number of files restored |
+| `initiated_by` | UUID | Foreign key to `users` who started the restore |
+
+Indexes exist on `snapshot_id`, `device_id`, and `status`.
+
+---
+
+## Backup Dashboard
+
+The dashboard endpoints provide aggregated metrics, compliance data, per-device backup status, and storage usage history.
+
+### Organization Dashboard
+
+```bash
+GET /backup/dashboard
+Authorization: Bearer <token>
+```
+
+Returns a summary of the organization's backup health:
+
+```json
+{
+  "data": {
+    "totals": {
+      "configs": 2,
+      "policies": 2,
+      "jobs": 7,
+      "snapshots": 3
+    },
+    "jobsLast24h": {
+      "completed": 1,
+      "failed": 0,
+      "running": 1,
+      "queued": 0
+    },
+    "storage": {
+      "totalBytes": 1568375087,
+      "snapshots": 3
+    },
+    "coverage": {
+      "protectedDevices": 4
+    },
+    "latestJobs": [ ... ]
+  }
+}
+```
+
+| Section | Fields | Description |
+|---------|--------|-------------|
+| `totals` | `configs`, `policies`, `jobs`, `snapshots` | Total count of each resource type |
+| `jobsLast24h` | `completed`, `failed`, `running`, `queued` | Job status breakdown for the last 24 hours |
+| `storage` | `totalBytes`, `snapshots` | Cumulative storage used across all snapshots |
+| `coverage` | `protectedDevices` | Number of unique devices assigned to at least one backup policy |
+| `latestJobs` | (array) | The 5 most recent jobs, sorted by start time descending |
+
+### Per-Device Backup Status
+
+Check the backup status for a specific device:
+
+```bash
+GET /backup/status/:deviceId
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "data": {
+    "deviceId": "dev-001",
+    "protected": true,
+    "policyId": "pol-daily-endpoints",
+    "lastJob": { ... },
+    "lastSuccessAt": "2026-02-18T00:10:00.000Z",
+    "lastFailureAt": null,
+    "nextScheduledAt": "2026-02-19T02:00:00.000Z"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `protected` | Whether the device is assigned to any backup policy |
+| `policyId` | ID of the matching policy, or `null` if unprotected |
+| `lastJob` | The most recent job for this device (any status) |
+| `lastSuccessAt` | Timestamp of the last completed backup |
+| `lastFailureAt` | Timestamp of the last failed backup |
+| `nextScheduledAt` | Computed next run time based on the policy schedule. `null` if the device has no policy |
+
+The `nextScheduledAt` calculation accounts for the policy's `frequency`, `time`, `dayOfWeek` (for weekly), and `dayOfMonth` (for monthly). If the next scheduled time has already passed today, it advances to the next applicable day.
+
+### Storage Usage History
+
+Track storage growth over time with the usage history endpoint:
+
+```bash
+GET /backup/usage-history?days=14
+Authorization: Bearer <token>
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `days` | integer | 14 | Number of days to include (3-90) |
+
+The response provides a time series of cumulative storage by provider:
+
+```json
+{
+  "data": {
+    "days": 14,
+    "start": "2026-02-04T00:00:00.000Z",
+    "end": "2026-02-18T00:00:00.000Z",
+    "providers": ["s3", "local"],
+    "points": [
+      {
+        "timestamp": "2026-02-04T00:00:00.000Z",
+        "totalBytes": 0,
+        "providers": [
+          { "provider": "s3", "bytes": 0 },
+          { "provider": "local", "bytes": 0 }
+        ]
+      },
+      {
+        "timestamp": "2026-02-05T00:00:00.000Z",
+        "totalBytes": 321987654,
+        "providers": [
+          { "provider": "s3", "bytes": 321987654 },
+          { "provider": "local", "bytes": 0 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Each point in the `points` array represents one day and includes the cumulative total bytes and a breakdown by storage provider. The running totals accumulate day over day, so the final point reflects the total storage used across all snapshots within the time window.
+
+---
+
+## Audit Logging
+
+All mutating backup operations generate audit log entries. The following actions are recorded:
+
+| Action | Trigger |
+|--------|---------|
+| `backup.config.create` | New backup configuration created |
+| `backup.config.update` | Configuration updated (logs changed fields) |
+| `backup.config.delete` | Configuration deleted |
+| `backup.config.test` | Connectivity test executed |
+| `backup.policy.create` | New backup policy created |
+| `backup.policy.update` | Policy updated (logs changed fields) |
+| `backup.policy.delete` | Policy deleted |
+| `backup.job.run` | Manual backup triggered |
+| `backup.job.cancel` | Job canceled |
+| `backup.restore.create` | Restore operation initiated |
+
+Each audit entry includes the `orgId`, `resourceType`, `resourceId`, and contextual `details` such as the provider, device ID, or list of changed fields.
+
+---
+
+## Multi-Tenant Scoping
+
+All backup endpoints are protected by the `authMiddleware` and scoped to the caller's organization. The `resolveScopedOrgId` helper resolves the organization ID from the authentication context:
+
+- **Organization-scoped tokens**: The `orgId` is taken directly from the token.
+- **Partner-scoped tokens**: If the partner has access to exactly one organization, that organization is used. Otherwise the request returns `400` with `"orgId is required for this scope"`.
+- **System-scoped tokens**: Must include an `orgId` in the token payload.
+
+Every read and write operation verifies that the requested resource belongs to the resolved organization before returning data or making changes. Resources from other organizations are not visible and return `404`.
+
+---
+
+## API Reference
+
+### Backup Configurations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/configs` | List all configurations for the organization |
+| POST | `/backup/configs` | Create a new backup configuration |
+| GET | `/backup/configs/:id` | Get a configuration by ID |
+| PATCH | `/backup/configs/:id` | Update configuration fields |
+| DELETE | `/backup/configs/:id` | Delete a configuration |
+| POST | `/backup/configs/:id/test` | Test storage connectivity |
+
+### Backup Policies
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/policies` | List all policies for the organization |
+| POST | `/backup/policies` | Create a new backup policy |
+| PATCH | `/backup/policies/:id` | Update policy fields |
+| DELETE | `/backup/policies/:id` | Delete a policy |
+
+### Backup Jobs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/jobs` | List jobs with optional filters (`status`, `deviceId`, `date`, `from`, `to`) |
+| GET | `/backup/jobs/:id` | Get job details by ID |
+| POST | `/backup/jobs/run/:deviceId` | Trigger a manual backup for a device |
+| POST | `/backup/jobs/:id/cancel` | Cancel a running or queued job |
+
+### Snapshots
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/snapshots` | List snapshots (`?deviceId=`, `?configId=`) |
+| GET | `/backup/snapshots/:id` | Get snapshot metadata |
+| GET | `/backup/snapshots/:id/browse` | Browse the snapshot's file tree |
+
+### Restore Operations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/backup/restore` | Initiate a restore from a snapshot |
+| GET | `/backup/restore/:id` | Check restore job status and progress |
+
+### Dashboard
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/dashboard` | Organization backup summary and metrics |
+| GET | `/backup/status/:deviceId` | Per-device backup status and next scheduled run |
+| GET | `/backup/usage-history` | Storage usage time series (`?days=14`) |
+
+<Aside>
+  All backup endpoints require authentication. Organization-scoped tokens are automatically restricted to their own organization's data. Partner-scoped tokens work when the partner has access to exactly one organization.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Manual backup returns "No backup config available".**
+This means no backup configuration exists for your organization, or no policy targets the specified device and there are no fallback configurations. Create a backup configuration first, then either create a policy targeting the device or ensure at least one configuration exists in the organization.
+
+**Job stays in `queued` status indefinitely.**
+The backup job was created but has not been picked up by an agent. Verify that the target device is online and that the Breeze agent is running. Check that Redis and BullMQ are operational if your deployment uses background job processing.
+
+**Cancel request returns `409 Conflict`.**
+Only jobs with status `running` or `queued` can be canceled. If the job has already completed, failed, or been canceled, it cannot be canceled again. Check the current job status with `GET /backup/jobs/:id`.
+
+**Snapshot browse returns an empty `data` array.**
+The snapshot exists but its file tree contents are not available. This can happen if the backup agent did not report file-level metadata, or if the snapshot data has been pruned from the browsing index while the snapshot record remains.
+
+**Restore targets the wrong device.**
+When calling `POST /backup/restore`, the `deviceId` field is optional. If omitted, the restore targets the snapshot's original device. To restore to a different device, explicitly set `deviceId` to the target device's UUID. Both devices must belong to the same organization.
+
+**Dashboard shows 0 protected devices.**
+The `protectedDevices` count is derived from the `deviceIds` arrays in your backup policies. Devices targeted only via `siteIds` or `groupIds` are resolved at policy execution time and may not be reflected in this count. Ensure your policies explicitly list device IDs for accurate coverage reporting.
+
+**Usage history shows unexpected storage totals.**
+The usage history endpoint calculates cumulative storage from snapshot `sizeBytes` values, broken down by the provider of each snapshot's associated backup configuration. If snapshots were deleted or retention cleanup removed old snapshots, the historical totals may decrease. The `days` parameter (3-90, default 14) controls how far back the time series extends.
+
+**Partner-scoped token returns "orgId is required for this scope".**
+Partner tokens that have access to multiple organizations cannot automatically resolve which organization to use. The partner must have access to exactly one organization, or the request must include the `orgId` in the authentication context.

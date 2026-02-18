@@ -1,0 +1,245 @@
+---
+title: Tags
+description: Organise devices with free-form tags for filtering, grouping, and targeting operations across your fleet.
+sidebar:
+  order: 27
+  label: Tags
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Tags are free-form string labels you attach to devices. They provide a lightweight way to categorise your fleet without the overhead of creating device groups. Common uses include marking environment (`production`, `staging`), function (`print-server`, `kiosk`), location shorthand (`floor-3`), or compliance status (`pci-scope`).
+
+---
+
+## How it works
+
+Tags are stored as a PostgreSQL `text[]` (text array) column on the `devices` table. Each device can hold zero or more tags. There is no separate tag definition table -- any string you assign becomes a tag automatically, and tags that are no longer assigned to any device simply stop appearing in listings.
+
+Because tags are plain strings stored directly on the device record, reading and writing them is fast and does not require joins or secondary tables.
+
+---
+
+## Setting tags on a device
+
+Tags are set by patching a device with the `tags` field. The value is an array of strings that **replaces** the entire tag list on the device (unlike custom fields, which are merged).
+
+<Tabs>
+  <TabItem label="cURL">
+```bash
+curl -X PATCH /api/v1/devices/<device-id> \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tags": ["production", "web-server", "pci-scope"]
+  }'
+```
+  </TabItem>
+  <TabItem label="Response">
+```json
+{
+  "id": "d1e2f3a4-...",
+  "hostname": "web-prod-01",
+  "tags": ["production", "web-server", "pci-scope"],
+  "updatedAt": "2026-02-18T14:30:00.000Z"
+}
+```
+  </TabItem>
+</Tabs>
+
+<Aside type="caution">
+  Sending `"tags": []` removes all tags from the device. The array you provide fully replaces the existing tags -- it does not append to them. To add a tag without removing existing ones, include the current tags in the array alongside the new tag.
+</Aside>
+
+The update is validated with the Zod schema `z.array(z.string()).optional()`, so each tag must be a string. The API accepts any string value, giving you full flexibility over your tagging convention.
+
+---
+
+## Listing tags with device counts
+
+The `GET /api/v1/tags` endpoint returns every unique tag across all devices visible to your auth scope, along with the number of devices carrying each tag.
+
+<Tabs>
+  <TabItem label="cURL">
+```bash
+curl "/api/v1/tags" \
+  -H "Authorization: Bearer <token>"
+```
+  </TabItem>
+  <TabItem label="Response">
+```json
+{
+  "data": [
+    { "id": "production", "name": "production", "tag": "production", "deviceCount": 48 },
+    { "id": "web-server", "name": "web-server", "tag": "web-server", "deviceCount": 12 },
+    { "id": "pci-scope", "name": "pci-scope", "tag": "pci-scope", "deviceCount": 7 }
+  ],
+  "total": 3
+}
+```
+  </TabItem>
+</Tabs>
+
+Results are sorted by device count (descending), then alphabetically by tag name. The `id`, `name`, and `tag` fields all contain the same tag string for consistency with other list endpoints.
+
+### Searching tags
+
+Pass a `search` query parameter to filter the tag list. The search is case-insensitive and matches any substring of the tag:
+
+```bash
+curl "/api/v1/tags?search=prod" \
+  -H "Authorization: Bearer <token>"
+```
+
+This returns only tags that contain `prod` (e.g. `production`, `non-prod`).
+
+---
+
+## Filtering devices by tag
+
+Use the `GET /api/v1/tags/devices` endpoint to retrieve all devices that carry a specific tag:
+
+<Tabs>
+  <TabItem label="cURL">
+```bash
+curl "/api/v1/tags/devices?tag=production" \
+  -H "Authorization: Bearer <token>"
+```
+  </TabItem>
+  <TabItem label="Response">
+```json
+{
+  "data": [
+    {
+      "id": "d1e2f3a4-...",
+      "hostname": "web-prod-01",
+      "displayName": "Web Production 1",
+      "status": "online",
+      "osType": "linux",
+      "tags": ["production", "web-server", "pci-scope"]
+    }
+  ],
+  "total": 1
+}
+```
+  </TabItem>
+</Tabs>
+
+The `tag` query parameter is required and must be a non-empty string. The endpoint uses the PostgreSQL `ANY()` array operator to match devices efficiently.
+
+---
+
+## Multi-tenant access control
+
+Tag endpoints respect the same multi-tenant hierarchy as the rest of Breeze:
+
+| Auth scope | Visibility |
+|---|---|
+| **Organisation** | Tags on devices belonging to the authenticated user's organisation |
+| **Partner** | Tags on devices across all organisations the partner can access |
+| **System** | Tags on all devices in the platform |
+
+Both the tag listing and device-by-tag endpoints enforce these access rules. An organisation user will never see tags from devices in another organisation.
+
+---
+
+## Using tags with policies
+
+Configuration policies and compliance policies support `tags` as a target type. When you create or update a policy, set `targetType` to `"tags"` and provide the tag strings in `targetIds`:
+
+```json
+{
+  "name": "PCI Compliance Check",
+  "targetType": "tags",
+  "targetIds": ["pci-scope"],
+  "rules": [
+    { "type": "required_software", "softwareName": "CrowdStrike Falcon" }
+  ],
+  "enforcement": "enforce"
+}
+```
+
+The policy engine matches devices whose `tags` array includes any of the specified tag strings. This means you can control which devices a policy applies to by simply adding or removing a tag -- no need to restructure groups or site assignments.
+
+<Aside>
+  When using the `targets` object format instead of the flat `targetType`/`targetIds` fields, supply tags in `targets.tags` as an array of strings. See the [Policy Management](/features/policy-management) documentation for full details.
+</Aside>
+
+---
+
+## API reference
+
+All endpoints require authentication. Scopes: `organization`, `partner`, or `system`.
+
+### Tag endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/tags` | List all unique tags with device counts |
+| `GET` | `/api/v1/tags/devices` | List devices matching a specific tag |
+
+### Tag-related device endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `PATCH` | `/api/v1/devices/:id` | Set tags on a device (include `tags` in request body) |
+| `GET` | `/api/v1/devices/:id` | Returns the device including its `tags` array |
+| `GET` | `/api/v1/devices` | Lists devices; each includes its `tags` array |
+
+### Query parameters
+
+**`GET /api/v1/tags`**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `search` | string | No | Case-insensitive substring filter on tag names |
+
+**`GET /api/v1/tags/devices`**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `tag` | string | Yes | Exact tag to match (minimum 1 character) |
+
+### Device update body (tags)
+
+```typescript
+{
+  tags?: string[];  // Replaces the full tag array on the device
+}
+```
+
+---
+
+## Database schema
+
+Tags are stored directly on the `devices` table:
+
+| Column | Type | Default | Description |
+|---|---|---|---|
+| `tags` | `text[]` | `[]` | Array of tag strings |
+
+There is no separate tags table. Tag aggregation (listing unique tags and counts) is computed at query time by scanning the `tags` column across all accessible devices.
+
+---
+
+## Troubleshooting
+
+### Tags disappeared from the listing
+
+The `GET /api/v1/tags` endpoint derives its list from the current state of devices. If no device carries a particular tag, that tag will not appear in the response. Tags are not stored independently -- they exist only as values in device records.
+
+### "No updates provided" when patching tags
+
+Ensure the request body includes the `tags` key. Sending an empty object `{}` returns a `400` error. To clear all tags, send `{"tags": []}`.
+
+### Tag search returns no results
+
+The `search` parameter on `GET /api/v1/tags` performs a case-insensitive substring match. Verify the search term is part of an existing tag. If you are an organisation-scoped user, you will only see tags from devices in your own organisation.
+
+### Tags not matching policy targets
+
+When a policy uses `targetType: "tags"`, the `targetIds` array must contain the exact tag strings (case-sensitive). A policy targeting `["Production"]` will not match devices tagged `"production"`. Use a consistent casing convention across your fleet to avoid mismatches.
+
+### Updating tags removes existing ones
+
+The `tags` field on device PATCH is a full replacement, not a merge. To add a new tag while preserving existing ones, first read the device to get its current tags, then send the combined array.

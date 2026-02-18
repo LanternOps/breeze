@@ -1,0 +1,489 @@
+---
+title: API Keys & Enrollment Keys
+description: Generate and manage API keys for programmatic access and enrollment keys for agent onboarding.
+sidebar:
+  order: 5
+  label: API Keys
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze RMM provides two distinct key types for different purposes:
+
+- **API Keys** grant programmatic access to the REST API for automation, integrations, and scripting.
+- **Enrollment Keys** are short-lived tokens used to onboard new agents into a specific organization and (optionally) site.
+
+Both key types are organization-scoped and require appropriate permissions to manage.
+
+---
+
+## API Keys
+
+API keys allow external systems to authenticate against the Breeze API without a user session. Each key is tied to a single organization and can be scoped to restrict which operations it may perform.
+
+### Key Format
+
+API keys use the `brz_` prefix followed by 32 characters of base64url-encoded randomness:
+
+```
+brz_aBcDeFgHiJkLmNoPqRsTuVwXyZ012
+```
+
+Only the first 12 characters (the **key prefix**, e.g. `brz_aBcDeFgH`) are stored in plaintext for identification. The full key is SHA-256 hashed before storage and is only returned once at creation time.
+
+<Aside type="caution">
+  The full API key is shown exactly once when it is created (and again if rotated). Store it in a secure vault immediately. It cannot be retrieved later.
+</Aside>
+
+### Creating an API Key
+
+<Steps>
+1. Authenticate with a user session that has the `organizations:write` permission.
+2. Send a `POST` request to `/api/v1/api-keys` with the key configuration.
+3. Copy the `key` field from the response and store it securely.
+</Steps>
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "ORG_UUID",
+    "name": "CI/CD Pipeline Key",
+    "scopes": ["devices:read", "scripts:execute"],
+    "expiresAt": "2026-12-31T23:59:59Z",
+    "rateLimit": 5000
+  }'
+```
+
+**Request body fields:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `orgId` | `string (uuid)` | Yes | -- | Organization the key belongs to. |
+| `name` | `string` | Yes | -- | Human-readable label (1-255 characters). |
+| `scopes` | `string[]` | No | `[]` | Permissions granted to this key. |
+| `expiresAt` | `string (datetime)` | No | `null` (never) | ISO 8601 expiration timestamp. |
+| `rateLimit` | `integer` | No | `1000` | Maximum requests per hour (1-100,000). |
+
+<Aside>
+  MFA verification is required to create, update, rotate, or revoke API keys. The requesting session must have completed MFA.
+</Aside>
+
+### Scopes
+
+Scopes restrict which API operations a key can perform. When a route is protected by `requireApiKeyScope()`, the key must include at least one of the required scopes.
+
+- A key with an **empty scopes array** (`[]`) can access unsecured endpoints but will be denied by any scope-protected route.
+- The **wildcard scope** `"*"` grants access to all scope-protected endpoints.
+
+```json
+{
+  "scopes": ["devices:read", "devices:write", "scripts:execute"]
+}
+```
+
+Scopes can be updated after creation via the `PATCH` endpoint without rotating the key material.
+
+### Authentication Flow
+
+To authenticate with an API key, include it in the `X-API-Key` header:
+
+```bash
+curl -H "X-API-Key: brz_aBcDeFgHiJkLmNoPqRsTuVwXyZ012" \
+  https://breeze.yourdomain.com/api/v1/devices
+```
+
+The middleware performs these steps in order:
+
+<Steps>
+1. Extract the key from the `X-API-Key` header.
+2. Validate the `brz_` prefix format.
+3. Compute the SHA-256 hash and look up the matching record.
+4. Verify the key status is `active` (not `revoked` or `expired`).
+5. Check the `expiresAt` timestamp; if expired, mark the key as `expired` in the database and reject the request.
+6. Enforce rate limiting via Redis sliding window (per key, 1-hour window).
+7. Update `lastUsedAt` and `usageCount` asynchronously.
+8. Set the organization context for row-level access control.
+</Steps>
+
+**Rate limit headers** are returned on every authenticated response:
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Maximum requests allowed per hour. |
+| `X-RateLimit-Remaining` | Requests remaining in the current window. |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets. |
+| `Retry-After` | Seconds until the rate limit resets (only on 429 responses). |
+
+### Dual Authentication
+
+Some endpoints accept either a JWT bearer token or an API key. When both headers are present, the API key takes precedence. The `eitherAuthMiddleware` enables this by checking for `X-API-Key` first, then falling back to the `Authorization` bearer token.
+
+### Key Rotation
+
+Rotation generates new key material for an existing key record. The old key is immediately invalidated. Usage statistics (`usageCount`, `lastUsedAt`) are reset.
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/api-keys/KEY_UUID/rotate \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The response contains the new full key in the `key` field. All other attributes (name, scopes, rate limit, expiration) are preserved.
+
+### Revocation
+
+Revoking an API key performs a **soft delete** -- the record remains in the database with `status: "revoked"` but the key can no longer authenticate. Revoked keys cannot be rotated or updated.
+
+```bash
+curl -X DELETE https://breeze.yourdomain.com/api/v1/api-keys/KEY_UUID \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Key Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `active` | Key can authenticate requests. |
+| `expired` | The `expiresAt` timestamp has passed. Set automatically on the next authentication attempt. |
+| `revoked` | Manually disabled via the `DELETE` endpoint. Permanent. |
+
+---
+
+## Enrollment Keys
+
+Enrollment keys are purpose-built tokens for agent onboarding. They are tied to an organization (and optionally a site) and enforce both a time-to-live (TTL) and a maximum usage count to limit exposure.
+
+### Key Format
+
+Enrollment keys are 64-character hex strings generated from 32 random bytes. Before storage, the key is hashed with SHA-256 using a server-side pepper (configured via `ENROLLMENT_KEY_PEPPER`, `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET` environment variable).
+
+<Aside type="danger">
+  In production, at least one pepper environment variable must be set. The server will refuse to start without it.
+</Aside>
+
+### Creating an Enrollment Key
+
+<Steps>
+1. Authenticate with a user session that has the `organizations:write` permission.
+2. Send a `POST` request to `/api/v1/enrollment-keys`.
+3. Copy the `key` field from the response and embed it in the agent installer or provisioning script.
+</Steps>
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "ORG_UUID",
+    "siteId": "SITE_UUID",
+    "name": "NYC Office Deployment",
+    "maxUsage": 50,
+    "expiresAt": "2026-03-01T00:00:00Z"
+  }'
+```
+
+**Request body fields:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `orgId` | `string (uuid)` | Depends on scope | Inferred for org-scoped users | Target organization. Required for partner and system scopes. |
+| `siteId` | `string (uuid)` | No | `null` | Pin enrolled agents to a specific site. |
+| `name` | `string` | Yes | -- | Human-readable label (1-255 characters). |
+| `maxUsage` | `integer` | No | `1` | Maximum number of agents that can enroll with this key (1-100,000). |
+| `expiresAt` | `string (datetime)` | No | Now + TTL | ISO 8601 expiration. Defaults to the current time plus `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default: 60 minutes). |
+
+<Aside>
+  The default TTL can be changed by setting the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If not set, enrollment keys expire 60 minutes after creation.
+</Aside>
+
+### TTL and Max Usage
+
+Enrollment keys have two expiration mechanisms:
+
+- **TTL (`expiresAt`)**: After this timestamp, the key cannot be used regardless of remaining usage. The default is 60 minutes from creation.
+- **Max usage (`maxUsage`)**: Limits the number of agents that can enroll with this key. Each successful enrollment increments `usageCount`. Once `usageCount >= maxUsage`, the key is exhausted.
+
+These constraints work together. A key with `maxUsage: 50` and a 24-hour TTL will stop accepting enrollments when either 50 agents have used it or 24 hours have passed, whichever comes first.
+
+### Key Rotation
+
+Enrollment key rotation generates new key material in-place. The usage counter is reset to zero. You can optionally update `maxUsage` and `expiresAt` during rotation.
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/rotate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "maxUsage": 100,
+    "expiresAt": "2026-04-01T00:00:00Z"
+  }'
+```
+
+If `maxUsage` or `expiresAt` are omitted from the rotation request, the existing values are preserved.
+
+### Deletion
+
+Unlike API keys (which are soft-deleted), enrollment keys are **hard deleted** from the database:
+
+```bash
+curl -X DELETE https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Multi-Tenant Access Control
+
+Both key types enforce the Breeze multi-tenant hierarchy:
+
+| Scope | API Keys | Enrollment Keys |
+|-------|----------|-----------------|
+| **Organization** | Can only manage keys for their own org. | Can only manage keys for their own org. `orgId` is inferred if omitted. |
+| **Partner** | Can manage keys for any org they have access to. | Must provide `orgId`. Limited to accessible orgs. |
+| **System** | Can manage keys for any org. | Must provide `orgId`. Unrestricted. |
+
+All management endpoints require the `organizations:read` permission for listing/viewing and `organizations:write` for creating, updating, rotating, and deleting.
+
+---
+
+## API Reference
+
+### API Key Endpoints
+
+All routes are prefixed with `/api/v1/api-keys`. All routes require JWT authentication and the noted permissions.
+
+#### `GET /api-keys`
+
+List API keys for accessible organizations. The `keyHash` is never returned.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | `string` | Page number (default: `1`). |
+| `limit` | `string` | Results per page (default: `50`, max: `100`). |
+| `orgId` | `string (uuid)` | Filter by organization. |
+| `status` | `active \| revoked \| expired` | Filter by key status. |
+
+**Required permission:** `organizations:read`
+
+---
+
+#### `POST /api-keys`
+
+Create a new API key. Returns the full key exactly once.
+
+**Required permission:** `organizations:write` + MFA
+
+**Response (201):**
+```json
+{
+  "id": "uuid",
+  "orgId": "uuid",
+  "name": "My Key",
+  "key": "brz_...",
+  "keyPrefix": "brz_aBcDeFgH",
+  "scopes": ["devices:read"],
+  "expiresAt": "2026-12-31T23:59:59.000Z",
+  "rateLimit": 1000,
+  "createdBy": "uuid",
+  "createdAt": "2026-02-18T...",
+  "status": "active",
+  "warning": "Store this API key securely. It will not be shown again."
+}
+```
+
+---
+
+#### `GET /api-keys/:id`
+
+Retrieve metadata for a single API key. The `keyHash` is not included.
+
+**Required permission:** `organizations:read`
+
+---
+
+#### `PATCH /api-keys/:id`
+
+Update an active API key's name, scopes, or rate limit. Cannot update revoked or expired keys.
+
+**Required permission:** `organizations:write` + MFA
+
+**Request body (all fields optional):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | New display name (1-255 characters). |
+| `scopes` | `string[]` | Replace the scopes array. |
+| `rateLimit` | `integer` | New rate limit (1-100,000 requests/hour). |
+
+---
+
+#### `DELETE /api-keys/:id`
+
+Revoke an API key (soft delete). Sets status to `revoked`.
+
+**Required permission:** `organizations:write` + MFA
+
+---
+
+#### `POST /api-keys/:id/rotate`
+
+Generate new key material. The old key is immediately invalidated. Usage stats are reset. Returns the new full key once.
+
+**Required permission:** `organizations:write` + MFA
+
+---
+
+### Enrollment Key Endpoints
+
+All routes are prefixed with `/api/v1/enrollment-keys`. All routes require JWT authentication and the noted permissions.
+
+#### `GET /enrollment-keys`
+
+List enrollment keys for accessible organizations. The raw key value is never returned in list responses.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | `string` | Page number (default: `1`). |
+| `limit` | `string` | Results per page (default: `50`, max: `100`). |
+| `orgId` | `string (uuid)` | Filter by organization. |
+| `expired` | `true \| false` | Filter by expiration status. |
+
+**Required permission:** `organizations:read`
+
+---
+
+#### `POST /enrollment-keys`
+
+Create a new enrollment key. Returns the raw key exactly once.
+
+**Required permission:** `organizations:write` + MFA
+
+**Response (201):**
+```json
+{
+  "id": "uuid",
+  "orgId": "uuid",
+  "siteId": "uuid or null",
+  "name": "NYC Office Deployment",
+  "usageCount": 0,
+  "maxUsage": 50,
+  "expiresAt": "2026-03-01T00:00:00.000Z",
+  "createdBy": "uuid",
+  "createdAt": "2026-02-18T...",
+  "key": "a1b2c3d4e5f6..."
+}
+```
+
+---
+
+#### `GET /enrollment-keys/:id`
+
+Retrieve metadata for a single enrollment key. The raw key is not included.
+
+**Required permission:** `organizations:read`
+
+---
+
+#### `POST /enrollment-keys/:id/rotate`
+
+Generate new key material in-place. Resets `usageCount` to zero. Optionally update `maxUsage` and `expiresAt`.
+
+**Required permission:** `organizations:write` + MFA
+
+**Request body (all fields optional):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `maxUsage` | `integer \| null` | New max usage (1-100,000), or `null` for unlimited. |
+| `expiresAt` | `string (datetime)` | New expiration timestamp. |
+
+---
+
+#### `DELETE /enrollment-keys/:id`
+
+Permanently delete an enrollment key (hard delete).
+
+**Required permission:** `organizations:write` + MFA
+
+---
+
+## Audit Logging
+
+Every mutating operation on both key types is recorded in the audit log with:
+
+- **Actor**: The user ID and email of the person performing the action.
+- **Action**: `api_key.create`, `api_key.update`, `api_key.rotate`, `api_key.revoke`, `enrollment_key.create`, `enrollment_key.rotate`, `enrollment_key.delete`.
+- **Resource**: The key ID and name.
+- **Details**: Changed fields, scope updates, usage counts, and expiration changes.
+- **Request metadata**: IP address (from `X-Forwarded-For` or `X-Real-IP`) and user agent.
+
+---
+
+## Security Best Practices
+
+<Steps>
+1. **Use scoped keys.** Assign the minimum set of scopes needed for each integration. Avoid the wildcard `"*"` scope in production.
+2. **Set expiration dates.** Always set `expiresAt` on API keys to limit the blast radius of a leaked credential.
+3. **Rotate keys regularly.** Use the `/rotate` endpoint to generate new key material without changing the key ID or configuration.
+4. **Keep enrollment keys short-lived.** The default 60-minute TTL is intentional. Only extend it if your deployment workflow requires it.
+5. **Set tight `maxUsage` limits.** If you are deploying 10 agents, set `maxUsage: 10` rather than leaving it open.
+6. **Pin enrollment keys to a site.** Use `siteId` to ensure agents enroll into the correct location.
+7. **Store keys in a secrets manager.** Never commit API keys to version control or embed them in client-side code.
+8. **Monitor usage.** Review `lastUsedAt`, `usageCount`, and audit logs to detect anomalous key usage.
+9. **Revoke unused keys.** Periodically review active keys and revoke any that are no longer needed.
+10. **Require MFA.** Key management endpoints enforce MFA verification. Ensure all administrators have MFA enabled.
+</Steps>
+
+---
+
+## Troubleshooting
+
+### "Missing X-API-Key header" (401)
+
+The request did not include the `X-API-Key` header. Ensure the header name is exactly `X-API-Key` (case-sensitive in some HTTP clients).
+
+### "Invalid API key format" (401)
+
+The provided key does not start with `brz_`. Check that the full key is being sent, not the key prefix or key ID.
+
+### "Invalid API key" (401)
+
+The SHA-256 hash of the provided key does not match any record in the database. Possible causes:
+- The key was rotated and the old value is being used.
+- The key was copy-pasted incorrectly (trailing whitespace, truncation).
+
+### "API key is revoked" / "API key is expired" (401)
+
+The key exists but is no longer active. Create a new key or rotate an existing active key.
+
+### "Rate limit exceeded" (429)
+
+The key has exceeded its configured `rateLimit` within the current 1-hour window. Check the `Retry-After` response header for how long to wait. To increase the limit, update the key via `PATCH /api-keys/:id` with a higher `rateLimit` value.
+
+### "API key does not have required permissions" (403)
+
+The key's `scopes` array does not include any of the scopes required by the endpoint. Update the key's scopes or use a key with broader permissions.
+
+### "Organization context required" (403)
+
+An organization-scoped user attempted an operation without a valid `orgId` in their authentication context. This typically indicates a misconfigured user account.
+
+### "Cannot update revoked API key" (400)
+
+Only `active` keys can be updated or rotated. If you need to restore access, create a new key.
+
+### Enrollment key not working during agent enrollment
+
+- **Key expired**: Check `expiresAt`. The default TTL is 60 minutes. Create a new key or rotate the existing one.
+- **Usage exhausted**: Check `usageCount` against `maxUsage`. Rotate the key to reset the counter, or create a new key with a higher `maxUsage`.
+- **Wrong organization**: Verify the `orgId` on the enrollment key matches the target organization.
+- **Pepper mismatch**: If the server's pepper environment variable changed since the key was created, existing keys will fail validation. Rotate or recreate affected keys.
+
+### "No enrollment key pepper configured" (server startup error)
+
+In production, one of these environment variables must be set: `ENROLLMENT_KEY_PEPPER`, `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET`. This protects enrollment key hashes from rainbow table attacks.

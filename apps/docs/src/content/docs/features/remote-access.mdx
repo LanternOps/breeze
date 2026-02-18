@@ -10,7 +10,9 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Breeze provides three distinct real-time access capabilities for managed devices: **Remote Desktop** (interactive screen viewing and control), **Remote Terminal** (browser-based interactive shell), and **File Transfer** (bi-directional file movement between the technician and the device). Each is a separate session type created through the same `/remote/sessions` API.
 
-All remote access runs over WebRTC. The Breeze server acts as a signaling relay during connection setup — it brokers the initial SDP offer/answer exchange and ICE candidate negotiation between the browser and the device agent. Once the peer-to-peer connection is established, device data flows directly between the browser and the agent and does not transit the Breeze server. Terminal output, screen pixels, and file contents are never stored or buffered server-side.
+Remote desktop sessions use WebRTC as the primary transport. The Breeze server acts as a signaling relay during connection setup — it brokers the initial SDP offer/answer exchange and ICE candidate negotiation between the native viewer app and the device agent. Once the peer-to-peer connection is established, video, audio, and input data flow directly between the viewer and the agent and do not transit the Breeze server.
+
+If WebRTC negotiation fails (e.g., both endpoints are behind symmetric NAT with no TURN server), the viewer automatically falls back to a WebSocket transport that relays JPEG frames through the Breeze server. The WebSocket fallback has reduced capabilities compared to WebRTC — no audio, no clipboard sync, no multi-monitor switching, and no low-latency cursor streaming.
 
 <Aside>
   Multi-factor authentication (MFA) is required for all remote access sessions. Your role must also include the `remote:access` permission — see **Settings → Roles** if session creation returns "Access denied."
@@ -153,7 +155,7 @@ Accepted only while the transfer is in `pending` or `transferring` state. A canc
 
 ### Size limit
 
-The maximum file size per transfer is **5 GB**. Transfers exceeding this limit are rejected at creation time.
+The default maximum file size per transfer is **500 MB** (configurable via `MAX_TRANSFER_SIZE_MB`). Transfers exceeding this limit are rejected when chunk data pushes the total past the threshold.
 
 ---
 
@@ -173,7 +175,7 @@ pending → connecting → active → disconnected / failed
 | `disconnected` | Session ended normally — user closed it or the agent reported a clean disconnect |
 | `failed` | Connection could not be established, or an active connection dropped unexpectedly |
 
-When a session ends (`disconnected` or `failed`), the platform records `durationSeconds` (total wall-clock time active) and `bytesTransferred` (total data exchanged) for audit purposes.
+When a session ends (`disconnected` or `failed`), the platform records `durationSeconds` (calculated from start time). The `bytesTransferred` field is available but must be supplied by the caller when ending the session via `POST /remote/sessions/:id/end`.
 
 ---
 
@@ -185,7 +187,7 @@ Breeze enforces per-organisation and per-user limits on concurrent remote access
 |----------|---------|----------|
 | Active sessions | 10 | 5 |
 | Active file transfers | 20 | 10 |
-| Max transfer size | 5 GB | 5 GB |
+| Max transfer size | 500 MB | 500 MB |
 
 These defaults are configurable via environment variables on the API server:
 
@@ -195,6 +197,7 @@ These defaults are configurable via environment variables on the API server:
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | 5 |
 | `MAX_ACTIVE_TRANSFERS_PER_ORG` | 20 |
 | `MAX_ACTIVE_TRANSFERS_PER_USER` | 10 |
+| `MAX_TRANSFER_SIZE_MB` | 500 |
 
 To free session capacity, close active sessions from the Active Sessions list on the device detail page, or call `DELETE /remote/sessions/stale` — this marks `pending`, `connecting`, and `active` sessions as `disconnected`. Be aware this terminates any currently active sessions, not just stale ones.
 
@@ -204,7 +207,7 @@ To free session capacity, close active sessions from the Active Sessions list on
 
 **MFA required for all remote access.** Every session creation request is gated by MFA verification at the route level. A valid MFA check must be present before a remote session can be created.
 
-**Server is a signaling relay only.** The Breeze server brokers WebRTC negotiation (SDP offer/answer and ICE candidates) but does not proxy or store device data after the peer-to-peer connection is established.
+**Server is a signaling relay for WebRTC.** The Breeze server brokers WebRTC negotiation (SDP offer/answer and ICE candidates). Once the P2P connection is established, device data does not transit the server. If the WebSocket fallback is active, frame data is relayed through the server but is not persisted.
 
 **All sessions are audit logged.** Every session creation, state transition, and termination is recorded with the actor identity, device identifier, start time, end time, duration in seconds, and bytes transferred. Audit records are immutable.
 
@@ -221,7 +224,7 @@ To free session capacity, close active sessions from the Active Sessions list on
 | POST | `/remote/sessions` | Create a session (body: `deviceId`, `type`) |
 | GET | `/remote/sessions` | List sessions (`?deviceId=&status=&type=&includeEnded=`) |
 | GET | `/remote/sessions/:id` | Get session details |
-| GET | `/remote/sessions/history` | Session statistics (total, avg/min/max duration, peak concurrent) |
+| GET | `/remote/sessions/history` | Session statistics (total sessions, total duration, average duration) |
 | DELETE | `/remote/sessions/stale` | Terminate all pending, connecting, and active sessions |
 | GET | `/remote/ice-servers` | Get ICE/TURN server configuration for WebRTC |
 | POST | `/remote/sessions/:id/offer` | Send SDP offer from browser to device |
@@ -246,7 +249,7 @@ To free session capacity, close active sessions from the Active Sessions list on
 ## Troubleshooting
 
 **Session stuck in `connecting`.**
-WebRTC negotiation failed. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). ICE negotiation fails when both endpoints are behind symmetric NAT and no TURN server is configured — contact your administrator to verify TURN configuration.
+WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). ICE negotiation fails when both endpoints are behind symmetric NAT and no TURN server is configured — contact your administrator to verify TURN configuration. The viewer should automatically fall back to the WebSocket transport after a timeout.
 
 **Session limit hit (429).**
 The organisation or user limit on concurrent sessions has been reached. Call `DELETE /remote/sessions/stale` to free capacity, or navigate to the Active Sessions list and close sessions that are no longer needed.

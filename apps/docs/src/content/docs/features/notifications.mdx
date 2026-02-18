@@ -1,0 +1,562 @@
+---
+title: Notifications
+description: Configure notification channels and deliver alerts via email, Slack, Teams, Discord, PagerDuty, SMS, webhook, and in-app notifications.
+sidebar:
+  order: 24
+  label: Notifications
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze RMM delivers notifications through multiple channels whenever alerts trigger, automations execute, or other platform events occur. Notification channels are configured per organization and dispatched asynchronously through a BullMQ queue backed by Redis. Every alert automatically generates in-app notifications for all active users in the affected organization; additional channels (email, webhook, Slack, Teams, PagerDuty, SMS) are routed based on alert rule configuration or organization defaults.
+
+---
+
+## Architecture Overview
+
+Notification delivery follows a two-stage pipeline:
+
+1. **Event Bus** -- When an alert is triggered, acknowledged, or resolved, the internal event bus emits an event (`alert.triggered`, `alert.acknowledged`, `alert.resolved`).
+2. **Notification Dispatcher** -- A BullMQ worker picks up the event, sends in-app notifications immediately, then queues individual send jobs for each configured notification channel.
+
+The dispatcher runs with a concurrency of 5 workers and tracks delivery status (`pending`, `sent`, `failed`) in the `alert_notifications` table. Escalation policies can schedule delayed follow-up notifications that are automatically cancelled when an alert is acknowledged or resolved.
+
+<Aside type="tip">
+  In-app notifications are always sent as a baseline, regardless of channel configuration. They do not need to be explicitly configured.
+</Aside>
+
+---
+
+## Notification Channels
+
+Channels define where notifications are delivered. Each channel belongs to an organization, has a type, a JSON configuration object, and an enabled/disabled flag.
+
+### Supported channel types
+
+| Type | Description | Config key(s) |
+|------|-------------|---------------|
+| `email` | Sends alert emails via the configured EmailService | `recipients` or `to` |
+| `slack` | Posts to a Slack channel via incoming webhook | `webhookUrl` |
+| `teams` | Posts to a Microsoft Teams channel via incoming webhook | `webhookUrl` |
+| `webhook` | Sends an HTTP request to any HTTPS endpoint | `url`, `method`, `headers`, `authType`, ... |
+| `pagerduty` | Creates an incident via PagerDuty Events API v2 | `routingKey` or `integrationKey` |
+| `sms` | Sends text messages via Twilio Programmable Messaging | `phoneNumbers`, `from`, `messagingServiceSid` |
+
+### Channel database schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `orgId` | UUID | Owning organization (required) |
+| `name` | varchar(255) | Human-readable channel name |
+| `type` | enum | One of: `email`, `slack`, `teams`, `webhook`, `pagerduty`, `sms` |
+| `config` | JSONB | Type-specific configuration object |
+| `enabled` | boolean | Whether the channel is active (default `true`) |
+| `createdAt` | timestamp | Creation timestamp |
+| `updatedAt` | timestamp | Last modification timestamp |
+
+---
+
+## Sender Details
+
+### Email
+
+The email sender uses the platform EmailService to deliver formatted alert notification emails.
+
+**Configuration fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `recipients` or `to` | string or string[] | Yes | One or more email addresses |
+
+**Payload includes:** alert name, severity, summary, device name, occurrence time, dashboard URL, and organization name.
+
+The sender validates email addresses against the pattern `^[^\s@]+@[^\s@]+\.[^\s@]+$`. If the EmailService is not configured (no SMTP settings), the sender returns a failure with the error "Email service not configured".
+
+### Webhook
+
+The webhook sender delivers alert data as structured JSON to any HTTPS endpoint. It includes SSRF protection that blocks requests to private/loopback IP ranges, localhost, and `.local` hostnames. DNS resolution is also checked to prevent rebinding attacks.
+
+**Configuration fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | Yes | HTTPS webhook URL |
+| `method` | string | No | HTTP method: `POST`, `PUT`, or `PATCH` (default `POST`) |
+| `headers` | object | No | Custom HTTP headers |
+| `authType` | string | No | `none`, `bearer`, `basic`, or `api_key` |
+| `authToken` | string | If bearer | Bearer token value |
+| `authUsername` | string | If basic | Basic auth username |
+| `authPassword` | string | If basic | Basic auth password |
+| `apiKeyHeader` | string | If api_key | Header name for the API key |
+| `apiKeyValue` | string | If api_key | API key value |
+| `timeout` | number | No | Request timeout in ms (1000--60000, default 30000) |
+| `retryCount` | number | No | Number of retries on failure (default 0) |
+| `payloadTemplate` | string | No | Custom JSON template with `{{variable}}` placeholders |
+
+**Default payload structure:**
+
+```json
+{
+  "event": "alert.triggered",
+  "timestamp": "2026-02-18T12:00:00.000Z",
+  "alert": {
+    "id": "uuid",
+    "name": "CPU High",
+    "severity": "high",
+    "summary": "CPU usage exceeded 95%",
+    "triggeredAt": "2026-02-18T11:59:00.000Z",
+    "ruleId": "uuid",
+    "ruleName": "High CPU Rule"
+  },
+  "device": {
+    "id": "uuid",
+    "name": "web-server-01"
+  },
+  "organization": {
+    "id": "uuid",
+    "name": "Acme Corp"
+  },
+  "context": {}
+}
+```
+
+**Payload templates** support `{{variable}}` syntax with dot-notation paths. Available variables: `alertId`, `alertName`, `severity`, `summary`, `deviceId`, `deviceName`, `orgId`, `orgName`, `triggeredAt`, `ruleId`, `ruleName`, `timestamp`, plus any keys from the alert context object.
+
+**Retry behavior:** Failed requests are retried with exponential backoff (2^attempt seconds). Client errors (4xx) are not retried.
+
+<Aside type="caution">
+  Webhook URLs must use HTTPS. HTTP URLs, localhost, private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x), and link-local addresses are blocked to prevent SSRF.
+</Aside>
+
+### Slack and Teams
+
+Slack and Teams channels use incoming webhook URLs and deliver notifications through the webhook sender with a text-based payload template.
+
+**Configuration:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `webhookUrl` | string | Yes | Incoming webhook URL from Slack or Teams |
+
+**Message format:** `[SEVERITY] Alert Name: Summary message`
+
+Both channel types reuse the webhook sender internally with a hardcoded payload template: `{"text":"[{{severity}}] {{alertName}}: {{summary}}{{dashboardUrl}}"}`. The dashboard URL is appended when the `DASHBOARD_URL` environment variable is set.
+
+### PagerDuty
+
+The PagerDuty sender creates incidents via the [PagerDuty Events API v2](https://developer.pagerduty.com/docs/events-api-v2/overview/) at `https://events.pagerduty.com/v2/enqueue`.
+
+**Configuration fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `routingKey` or `integrationKey` | string | Yes | PagerDuty service integration key |
+| `severity` | string | No | Override severity: `critical`, `error`, `warning`, `info` |
+| `source` | string | No | Source field (defaults to device name or `breeze-rmm`) |
+| `component` | string | No | Component field (defaults to device name) |
+| `group` | string | No | Group field (defaults to organization name) |
+| `class` | string | No | Class field (defaults to rule name) |
+| `dedupKey` | string | No | Deduplication key (defaults to alert ID) |
+| `customDetails` | object | No | Additional key-value pairs merged into `custom_details` |
+| `timeout` | number | No | Request timeout in ms (1000--60000, default 15000) |
+
+**Severity mapping** (when no override is configured):
+
+| Alert Severity | PagerDuty Severity |
+|----------------|--------------------|
+| `critical` | `critical` |
+| `high` | `error` |
+| `medium` | `warning` |
+| `low` / `info` | `info` |
+
+The sender sends a `trigger` event action. The dedup key defaults to the alert ID, enabling PagerDuty to group repeated alerts into a single incident.
+
+### SMS
+
+The SMS sender delivers text messages via Twilio Programmable Messaging.
+
+**Configuration fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `phoneNumbers` | string[] | Yes | Array of recipient phone numbers in E.164 format |
+| `from` | string | No | Sender phone number in E.164 format |
+| `messagingServiceSid` | string | No | Twilio Messaging Service SID |
+
+**Message format:** `[SEVERITY] Alert Name on Device (Org): Summary message`
+
+Messages are truncated to 1400 characters. Phone numbers must be in E.164 format (e.g., `+15551234567`). The SMS service must be configured via the Twilio integration; if not, the sender returns "SMS service not configured".
+
+The send result includes `sentCount` and `failedCount` for multi-recipient deliveries, along with per-recipient error details.
+
+### In-App
+
+In-app notifications are created directly in the `user_notifications` database table and appear in each user's notification center within the Breeze dashboard.
+
+**Delivery scope:** When an alert triggers, in-app notifications are sent to:
+- All **active users** directly assigned to the alert's organization
+- All **active partner users** with access to the organization (either `all` org access or `selected` access that includes the org)
+
+User IDs are deduplicated before notification records are created.
+
+**No configuration required.** In-app notifications are always sent as the baseline delivery mechanism for every alert. They do not need a notification channel record.
+
+**Notification fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Notification ID |
+| `userId` | UUID | Target user |
+| `orgId` | UUID | Organization context |
+| `type` | enum | `alert`, `device`, `script`, `automation`, `system`, `user`, `security` |
+| `priority` | enum | `low`, `normal`, `high`, `urgent` (mapped from alert severity) |
+| `title` | varchar(255) | Notification title (alert name) |
+| `message` | text | Notification body |
+| `link` | varchar(500) | Deep link (e.g., `/alerts/{alertId}`) |
+| `metadata` | JSONB | Additional context (alert ID, severity, device info) |
+| `read` | boolean | Read status (default `false`) |
+| `readAt` | timestamp | When marked as read |
+| `createdAt` | timestamp | Creation timestamp |
+
+**Priority mapping from alert severity:**
+
+| Alert Severity | Notification Priority |
+|----------------|-----------------------|
+| `critical` | `urgent` |
+| `high` | `high` |
+| `medium` | `normal` |
+| `low` / `info` | `low` |
+
+---
+
+## In-App Notification Management
+
+The `/notifications` API endpoints allow authenticated users to manage their in-app notifications.
+
+### Listing notifications
+
+```
+GET /notifications?limit=50&offset=0&unreadOnly=true&type=alert
+```
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | number | 50 | Max notifications to return |
+| `offset` | number | 0 | Pagination offset |
+| `unreadOnly` | boolean | false | Filter to unread notifications only |
+| `type` | string | -- | Filter by type: `alert`, `device`, `script`, `automation`, `system`, `user`, `security` |
+
+**Response:**
+
+```json
+{
+  "notifications": [...],
+  "total": 142,
+  "unreadCount": 7,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+Notifications are returned in reverse chronological order (newest first). The `unreadCount` is always returned regardless of filters, showing the user's total unread count.
+
+### Getting the unread count
+
+```
+GET /notifications/unread-count
+```
+
+Returns `{ "count": 7 }` -- the number of unread notifications for the current user.
+
+### Marking notifications as read or unread
+
+```
+PATCH /notifications/read
+Content-Type: application/json
+
+{
+  "ids": ["uuid1", "uuid2"],
+  "read": true
+}
+```
+
+**Request body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ids` | string[] | Specific notification IDs to update |
+| `all` | boolean | Set to `true` to update all notifications |
+| `read` | boolean | Target read state (default `true`) |
+
+Use `"all": true` to mark all notifications as read in a single operation. Use `"read": false` to mark notifications as unread.
+
+### Deleting notifications
+
+**Delete a single notification:**
+
+```
+DELETE /notifications/:id
+```
+
+Returns 404 if the notification does not exist or belongs to another user.
+
+**Delete all notifications:**
+
+```
+DELETE /notifications
+```
+
+Removes all notifications for the current user.
+
+<Aside>
+  All notification mutation operations (mark read, delete) are audit-logged with the action, resource type, and details.
+</Aside>
+
+---
+
+## Mobile Push Notifications
+
+Breeze also supports push notifications to registered mobile devices via Firebase Cloud Messaging (FCM) for Android and Apple Push Notification Service (APNS) for iOS.
+
+**Key features:**
+- **Severity filtering** -- Mobile devices can specify which alert severities they want to receive via the `alertSeverities` array
+- **Quiet hours** -- Each mobile device can configure quiet hours (start/end time with timezone) during which push notifications are suppressed
+- **Per-device delivery** -- Push notifications are sent individually to each registered mobile device for a user
+
+Push notifications subscribe to the same `alert.triggered` event bus and run in parallel with the notification dispatcher. Delivery status is tracked in the `push_notifications` table with states: `pending`, `sent`, `stubbed`, `failed`.
+
+<Aside type="note">
+  APNS (iOS) push delivery is currently stubbed and not yet fully implemented. Android push via FCM is functional when `FIREBASE_SERVICE_ACCOUNT` is configured.
+</Aside>
+
+---
+
+## Notification Routing
+
+### From alerts
+
+When an alert triggers, the notification dispatcher determines which channels to notify:
+
+<Steps>
+1. **In-app notifications** are sent immediately to all active users in the organization (always).
+2. If the alert was created by an **alert rule** with `notificationChannelIds` in its override settings, those specific channels are used.
+3. If no rule-level channel overrides exist (or the alert has no associated rule), **all enabled channels** for the organization are used.
+4. Each channel receives a queued send job via BullMQ.
+</Steps>
+
+### From automations
+
+Automations can send notifications as an action step using the `send_notification` action type, which targets a specific notification channel by ID.
+
+### Escalation policies
+
+Alert rules can reference an escalation policy via `escalationPolicyId` in their override settings. Escalation policies define timed steps that send additional notifications if an alert remains unacknowledged.
+
+**Escalation policy structure:**
+
+```json
+{
+  "name": "Critical Alert Escalation",
+  "steps": [
+    {
+      "delayMinutes": 15,
+      "channelIds": ["channel-uuid-1"]
+    },
+    {
+      "delayMinutes": 60,
+      "channelIds": ["channel-uuid-1", "channel-uuid-2"]
+    }
+  ]
+}
+```
+
+Each step schedules delayed notification jobs. When an alert is acknowledged or resolved, all pending escalation jobs for that alert are automatically cancelled.
+
+---
+
+## API Reference
+
+### In-App Notification Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/notifications` | List notifications for the current user |
+| GET | `/notifications/unread-count` | Get unread notification count |
+| PATCH | `/notifications/read` | Mark notifications as read/unread (by IDs or all) |
+| DELETE | `/notifications/:id` | Delete a single notification |
+| DELETE | `/notifications` | Delete all notifications for the current user |
+
+All endpoints require authentication via `authMiddleware`.
+
+### Notification Channel Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/alerts/channels` | List notification channels (`?orgId=&type=&enabled=`) |
+| POST | `/alerts/channels` | Create a notification channel |
+| PUT | `/alerts/channels/:id` | Update a notification channel |
+| DELETE | `/alerts/channels/:id` | Delete a notification channel |
+| POST | `/alerts/channels/:id/test` | Send a test notification through the channel |
+
+Channel endpoints require `organization`, `partner`, or `system` scope.
+
+### Creating a channel
+
+<Tabs>
+  <TabItem label="Email">
+    ```bash
+    curl -X POST /alerts/channels \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "Ops Team Email",
+        "type": "email",
+        "config": {
+          "recipients": ["ops@example.com", "oncall@example.com"]
+        },
+        "enabled": true
+      }'
+    ```
+  </TabItem>
+  <TabItem label="Webhook">
+    ```bash
+    curl -X POST /alerts/channels \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "Incident Webhook",
+        "type": "webhook",
+        "config": {
+          "url": "https://hooks.example.com/breeze",
+          "method": "POST",
+          "authType": "bearer",
+          "authToken": "secret-token",
+          "timeout": 10000,
+          "retryCount": 2
+        },
+        "enabled": true
+      }'
+    ```
+  </TabItem>
+  <TabItem label="Slack">
+    ```bash
+    curl -X POST /alerts/channels \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "Slack #alerts",
+        "type": "slack",
+        "config": {
+          "webhookUrl": "https://hooks.slack.com/services/T.../B.../xxx"
+        },
+        "enabled": true
+      }'
+    ```
+  </TabItem>
+  <TabItem label="PagerDuty">
+    ```bash
+    curl -X POST /alerts/channels \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "PagerDuty On-Call",
+        "type": "pagerduty",
+        "config": {
+          "routingKey": "your-pagerduty-integration-key",
+          "source": "breeze-production"
+        },
+        "enabled": true
+      }'
+    ```
+  </TabItem>
+  <TabItem label="SMS">
+    ```bash
+    curl -X POST /alerts/channels \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "On-Call SMS",
+        "type": "sms",
+        "config": {
+          "phoneNumbers": ["+15551234567", "+15559876543"],
+          "from": "+15550001111"
+        },
+        "enabled": true
+      }'
+    ```
+  </TabItem>
+  <TabItem label="Teams">
+    ```bash
+    curl -X POST /alerts/channels \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "Teams IT Channel",
+        "type": "teams",
+        "config": {
+          "webhookUrl": "https://outlook.office.com/webhook/..."
+        },
+        "enabled": true
+      }'
+    ```
+  </TabItem>
+</Tabs>
+
+### Testing a channel
+
+Send a test notification to verify the channel is configured correctly:
+
+```
+POST /alerts/channels/:id/test
+```
+
+The test endpoint sends a real notification with a test payload through the selected channel type and returns the result:
+
+```json
+{
+  "channelId": "uuid",
+  "channelName": "Ops Team Email",
+  "channelType": "email",
+  "testMessage": {
+    "title": "Test Alert from Breeze RMM",
+    "message": "This is a test notification sent to channel \"Ops Team Email\" at 2026-02-18T...",
+    "severity": "info",
+    "source": "manual_test"
+  },
+  "testResult": {
+    "success": true,
+    "message": "Test email sent successfully",
+    "details": { "recipients": ["ops@example.com"] }
+  },
+  "testedAt": "2026-02-18T12:00:00.000Z",
+  "testedBy": "user-uuid"
+}
+```
+
+---
+
+## Troubleshooting
+
+**No notifications being sent for alerts.**
+Verify that notification channels exist and are enabled for the organization. Check whether the alert rule has `notificationChannelIds` in its override settings -- if empty, the dispatcher falls back to all enabled org channels. If no channels are configured at all, only in-app notifications will be delivered. Confirm the notification dispatcher was initialized at application startup.
+
+**Email notifications not arriving.**
+Ensure the EmailService is configured with valid SMTP settings. Check that the channel config has a `recipients` or `to` field with valid email addresses. The sender validates addresses against a basic pattern; typos in email addresses will cause validation failures.
+
+**Webhook returning errors.**
+Check that the URL uses HTTPS -- HTTP URLs are rejected. Verify the endpoint is publicly reachable; private IP ranges, localhost, and `.local` hostnames are blocked. If the webhook requires authentication, confirm the `authType`, `authToken`, or credential fields are correctly configured. Review the `statusCode` in the error response for HTTP-level failures. 4xx errors are not retried.
+
+**Slack or Teams messages not appearing.**
+Confirm the `webhookUrl` is correctly copied from the Slack/Teams incoming webhook configuration. The URL must be a valid HTTPS URL. Test the channel using `POST /alerts/channels/:id/test` to get a detailed error response.
+
+**PagerDuty incidents not created.**
+Verify the `routingKey` or `integrationKey` is valid and belongs to an active PagerDuty service integration. Check that the Events API v2 integration is enabled on the PagerDuty service. The default timeout is 15 seconds.
+
+**SMS not delivered.**
+Confirm the Twilio integration is configured (Twilio credentials are set). All phone numbers must be in E.164 format (e.g., `+15551234567`). Check the send result for per-recipient error details. The SMS body is truncated at 1400 characters.
+
+**Escalation notifications still firing after alert was acknowledged.**
+Escalation cancellation listens for `alert.acknowledged` and `alert.resolved` events on the event bus. If the event bus is not running or the events are not emitted, delayed escalation jobs will continue to fire. Verify that alert acknowledge/resolve operations emit the correct events.
+
+**In-app notifications not appearing for partner users.**
+Partner users only receive in-app notifications if they have `orgAccess: 'all'` or `orgAccess: 'selected'` with the specific organization included in their `orgIds` array. Verify the partner user's access configuration.
+
+**Notification queue backed up.**
+Use `getNotificationQueueStatus()` to check queue metrics (waiting, active, completed, failed, delayed counts). The worker runs with concurrency 5. A large number of failed jobs may indicate a downstream service outage. Check Redis connectivity and the BullMQ worker health.

@@ -1,0 +1,371 @@
+---
+title: Custom Fields
+description: Define custom metadata fields for devices to track organisation-specific information beyond built-in attributes.
+sidebar:
+  order: 18
+  label: Custom Fields
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Custom Fields let you attach structured metadata to devices that goes beyond the built-in attributes (hostname, OS type, tags, etc.). You define field definitions at the organisation or partner level, then set values on individual devices. This is useful for tracking asset numbers, purchase dates, warranty expiry, department assignments, compliance status, and any other data specific to your environment.
+
+---
+
+## How it works
+
+Custom Fields has two layers:
+
+1. **Field definitions** -- created via the `/api/v1/custom-fields` endpoints. A definition declares the field's name, key, data type, validation options, and which device types it applies to. Definitions are scoped to either an organisation or a partner.
+2. **Field values** -- stored as a JSONB object on each device record (`custom_fields` column). Values are set by patching the device via `PATCH /api/v1/devices/:id` with a `customFields` key-value map. Values are merged with any existing custom fields on the device rather than replacing them.
+
+---
+
+## Field types
+
+Every field definition has a `type` that controls what values are accepted:
+
+| Type | Description | Example value |
+|---|---|---|
+| `text` | Free-form string up to 10,000 characters | `"Rack A, Shelf 3"` |
+| `number` | Numeric value (integer or decimal) | `42` |
+| `boolean` | True or false | `true` |
+| `dropdown` | One of a predefined list of choices | `"Finance"` |
+| `date` | Date string | `"2026-06-15"` |
+
+---
+
+## Validation options
+
+When creating a field definition you can supply an `options` object to constrain accepted values:
+
+| Option | Applies to | Description |
+|---|---|---|
+| `choices` | `dropdown` | Array of allowed string values. Example: `["Finance", "Engineering", "Sales"]` |
+| `min` | `number` | Minimum numeric value |
+| `max` | `number` | Maximum numeric value |
+| `pattern` | `text` | Regular expression that text values must match |
+| `placeholder` | `text`, `number`, `date` | Placeholder hint displayed in the UI |
+
+You can also set a `defaultValue` on the definition. If a device does not have an explicit value for the field, the default is used. Setting `required: true` indicates that the field should always be populated for applicable devices.
+
+<Aside>
+  Validation options are stored on the definition for use by the UI and any future server-side enforcement. The current device PATCH endpoint accepts any value that matches the Zod schema (`string`, `number`, `boolean`, or `null`) without cross-referencing the definition's options at write time.
+</Aside>
+
+---
+
+## Device type targeting
+
+A definition can optionally include a `deviceTypes` array to limit which operating systems it applies to. Accepted values are `windows`, `macos`, and `linux`.
+
+When `deviceTypes` is omitted or set to `null`, the field applies to all device types.
+
+```json
+{
+  "name": "BitLocker Recovery Key",
+  "fieldKey": "bitlocker_recovery_key",
+  "type": "text",
+  "deviceTypes": ["windows"]
+}
+```
+
+---
+
+## Scoping and multi-tenancy
+
+Field definitions are scoped to one of:
+
+| Scope | Who can create | Visibility |
+|---|---|---|
+| **Organisation** | Organisation-scoped users or partner users with access to the organisation | Visible only within that organisation |
+| **Partner** | Partner-scoped users | Visible to the partner and all organisations the partner can access |
+
+<Aside type="caution">
+  You must provide either `orgId` or `partnerId` when creating a field -- not both. The API returns a `400` error if both are supplied. For organisation-scoped users the `orgId` is automatically inferred from the authentication context.
+</Aside>
+
+### Access rules
+
+- **Organisation users** see definitions scoped to their own organisation plus any definitions scoped to their parent partner.
+- **Partner users** see definitions scoped to their partner plus definitions scoped to any organisation they can access.
+- **System-scoped users** see all definitions.
+
+Editing and deleting a definition requires ownership: organisation users can only modify definitions belonging to their organisation, and partner users can only modify definitions belonging to their partner.
+
+---
+
+## Creating a field definition
+
+<Steps>
+
+1. Choose a human-readable `name` (1--100 characters) and a machine-readable `fieldKey`. The key must start with a lowercase letter and contain only lowercase letters, digits, and underscores (regex: `^[a-z][a-z0-9_]*$`).
+
+2. Pick a `type` from the supported list: `text`, `number`, `boolean`, `dropdown`, or `date`.
+
+3. Optionally set `options`, `required`, `defaultValue`, and `deviceTypes`.
+
+4. Send the request:
+
+</Steps>
+
+<Tabs>
+  <TabItem label="cURL">
+```bash
+curl -X POST /api/v1/custom-fields \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Department",
+    "fieldKey": "department",
+    "type": "dropdown",
+    "options": {
+      "choices": ["Finance", "Engineering", "Sales", "Support"]
+    },
+    "required": true
+  }'
+```
+  </TabItem>
+  <TabItem label="Response">
+```json
+{
+  "data": {
+    "id": "a1b2c3d4-...",
+    "orgId": "org-uuid-...",
+    "partnerId": null,
+    "name": "Department",
+    "fieldKey": "department",
+    "type": "dropdown",
+    "options": {
+      "choices": ["Finance", "Engineering", "Sales", "Support"]
+    },
+    "required": true,
+    "defaultValue": null,
+    "deviceTypes": null,
+    "createdAt": "2026-02-18T12:00:00.000Z",
+    "updatedAt": "2026-02-18T12:00:00.000Z"
+  }
+}
+```
+  </TabItem>
+</Tabs>
+
+---
+
+## Setting values on devices
+
+Custom field values live in the `custom_fields` JSONB column on the `devices` table. To set or update values, send a `PATCH` request to the device endpoint with a `customFields` object whose keys correspond to field keys:
+
+```bash
+curl -X PATCH /api/v1/devices/<device-id> \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customFields": {
+      "department": "Engineering",
+      "asset_number": "AST-2026-0042",
+      "purchase_date": "2025-11-01"
+    }
+  }'
+```
+
+<Aside>
+  Values are **merged** with existing custom fields. If a device already has `{"location": "HQ"}` and you patch with `{"department": "Engineering"}`, the result is `{"location": "HQ", "department": "Engineering"}`. To remove a field, set its value to `null`.
+</Aside>
+
+### Accepted value types
+
+The device update endpoint validates each custom field value against this schema:
+
+| Allowed type | Notes |
+|---|---|
+| `string` | Maximum 10,000 characters |
+| `number` | Integer or decimal |
+| `boolean` | `true` or `false` |
+| `null` | Removes the field from the device |
+
+---
+
+## Querying and filtering
+
+### Listing field definitions
+
+`GET /api/v1/custom-fields` returns all field definitions visible to the authenticated user. Query parameters:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `type` | string | Filter by field type (`text`, `number`, `boolean`, `dropdown`, `date`) |
+| `orgId` | UUID | Filter to a specific organisation (must be accessible) |
+| `deviceType` | string | Filter definitions applicable to a device type (`windows`, `macos`, `linux`) |
+| `search` | string | Case-insensitive search across field `name` and `fieldKey` |
+| `page` | number | Page number (default: 1) |
+| `limit` | number | Results per page (default: 50, max: 100) |
+
+```bash
+curl "/api/v1/custom-fields?type=dropdown&search=department" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Filtering devices by custom field values
+
+Custom field values are stored as JSONB on each device. In the current implementation, device list queries (`GET /api/v1/devices`) do not directly filter by custom field values in query parameters. To find devices with specific custom field values, retrieve the device list and filter client-side, or use PostgreSQL JSONB queries if you have direct database access.
+
+---
+
+## Updating a field definition
+
+Use `PATCH /api/v1/custom-fields/:id` to update a definition. You can change `name`, `options`, `required`, `defaultValue`, and `deviceTypes`. The `fieldKey` and `type` are immutable after creation.
+
+```bash
+curl -X PATCH /api/v1/custom-fields/<field-id> \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "options": {
+      "choices": ["Finance", "Engineering", "Sales", "Support", "Operations"]
+    }
+  }'
+```
+
+<Aside type="caution">
+  Changing `options.choices` on a dropdown field does not retroactively validate existing device values. Devices that already have a value not in the updated choices list will retain that value until manually corrected.
+</Aside>
+
+---
+
+## Deleting a field definition
+
+`DELETE /api/v1/custom-fields/:id` removes the definition. This does not automatically remove corresponding values from the `custom_fields` JSONB on existing devices -- those values become orphaned but remain on the device record until explicitly cleared.
+
+```bash
+curl -X DELETE /api/v1/custom-fields/<field-id> \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Audit logging
+
+All mutating operations on custom field definitions are recorded in the audit log:
+
+| Action | Trigger |
+|---|---|
+| `custom_field.create` | A new field definition is created |
+| `custom_field.update` | A field definition is modified (logs which fields changed) |
+| `custom_field.delete` | A field definition is deleted |
+
+Device-level custom field value changes are logged under the `device.update` audit action when the device is patched.
+
+---
+
+## API reference
+
+All endpoints require authentication and an appropriate scope (`organization`, `partner`, or `system`).
+
+### Field definitions
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/custom-fields` | List field definitions (paginated, filterable) |
+| `GET` | `/api/v1/custom-fields/:id` | Get a single field definition |
+| `POST` | `/api/v1/custom-fields` | Create a new field definition |
+| `PATCH` | `/api/v1/custom-fields/:id` | Update a field definition |
+| `DELETE` | `/api/v1/custom-fields/:id` | Delete a field definition |
+
+### Device values
+
+| Method | Path | Description |
+|---|---|---|
+| `PATCH` | `/api/v1/devices/:id` | Set custom field values (include `customFields` in request body) |
+| `GET` | `/api/v1/devices/:id` | Returns the device with `customFields` in the response |
+| `GET` | `/api/v1/devices` | Lists devices; each includes its `customFields` object |
+
+### Create field definition request body
+
+```typescript
+{
+  name: string;          // 1-100 characters
+  fieldKey: string;      // 1-100 chars, regex: /^[a-z][a-z0-9_]*$/
+  type: "text" | "number" | "boolean" | "dropdown" | "date";
+  options?: {
+    choices?: string[];  // For dropdown type
+    min?: number;        // For number type
+    max?: number;        // For number type
+    pattern?: string;    // Regex for text type
+    placeholder?: string;
+  };
+  required?: boolean;    // Default: false
+  defaultValue?: unknown;
+  deviceTypes?: ("windows" | "macos" | "linux")[];
+  orgId?: string;        // UUID - omit for org-scoped users
+  partnerId?: string;    // UUID - omit for partner-scoped users
+}
+```
+
+### Update field definition request body
+
+```typescript
+{
+  name?: string;         // 1-100 characters
+  options?: {
+    choices?: string[];
+    min?: number;
+    max?: number;
+    pattern?: string;
+    placeholder?: string;
+  };
+  required?: boolean;
+  defaultValue?: unknown;
+  deviceTypes?: ("windows" | "macos" | "linux")[] | null;
+}
+```
+
+---
+
+## Database schema
+
+Field definitions are stored in the `custom_field_definitions` table:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | UUID | Primary key (auto-generated) |
+| `org_id` | UUID | References `organizations.id` (nullable) |
+| `partner_id` | UUID | References `partners.id` (nullable) |
+| `name` | VARCHAR(100) | Human-readable field name |
+| `field_key` | VARCHAR(100) | Machine-readable key |
+| `type` | ENUM | One of `text`, `number`, `boolean`, `dropdown`, `date` |
+| `options` | JSONB | Validation options (choices, min, max, pattern, placeholder) |
+| `required` | BOOLEAN | Whether the field is required (default: false) |
+| `default_value` | JSONB | Default value for the field |
+| `device_types` | TEXT[] | Array of applicable OS types |
+| `created_at` | TIMESTAMP | Creation timestamp |
+| `updated_at` | TIMESTAMP | Last modification timestamp |
+
+Device values are stored in the `custom_fields` JSONB column on the `devices` table as a flat key-value object.
+
+---
+
+## Troubleshooting
+
+### Field key rejected
+
+The `fieldKey` must match the pattern `^[a-z][a-z0-9_]*$`. It must start with a lowercase letter and contain only lowercase letters, digits, and underscores. Uppercase letters, hyphens, spaces, and leading digits are not allowed.
+
+**Invalid:** `Asset-Number`, `3rd_floor`, `Department Name`
+**Valid:** `asset_number`, `third_floor`, `department_name`
+
+### "Provide either orgId or partnerId, not both"
+
+When creating a field definition, supply at most one of `orgId` or `partnerId`. A field is scoped to a single tenant level. If you are authenticated as an organisation user, you do not need to supply either -- the API infers your organisation from the auth context.
+
+### Custom field values not appearing on device
+
+Verify that the `PATCH /api/v1/devices/:id` request includes a `customFields` key in the JSON body, not `custom_fields`. The API expects camelCase property names. Also confirm that each value is a `string`, `number`, `boolean`, or `null` -- objects and arrays are not accepted as values.
+
+### Deleted definition but values remain on devices
+
+Deleting a field definition does not cascade to device values. The values in the `custom_fields` JSONB column on each device persist after the definition is removed. To clean up orphaned values, patch each affected device with the field key set to `null`.
+
+### "Custom field not found" on GET/PATCH/DELETE
+
+The field ID must be a valid UUID for a definition that exists and is accessible to your auth scope. Organisation users cannot see or modify partner-scoped definitions. Partner users cannot see or modify definitions belonging to organisations outside their access.

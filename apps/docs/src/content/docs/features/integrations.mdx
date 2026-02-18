@@ -1,0 +1,539 @@
+---
+title: Integrations
+description: Connect Breeze to PSA platforms, communication tools, and external services for seamless workflow automation.
+sidebar:
+  order: 12
+  label: Integrations
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Integrations connect Breeze to the tools your team already uses -- PSA platforms for ticketing, communication channels for alerting, and monitoring endpoints for telemetry forwarding. Each integration is scoped to an organization and configured independently, so MSPs can tailor connections per customer without cross-tenant interference. PSA credentials are encrypted at rest using AES-256-GCM, and every configuration change is recorded in the audit log.
+
+<Aside type="caution" title="Implementation Status">
+  **PSA integrations** are fully database-backed with encrypted credential storage. **Communication, monitoring, and ticketing integrations** currently use in-memory storage and do not persist across API restarts. A migration to database-backed persistence for non-PSA integrations is planned.
+</Aside>
+
+---
+
+## Integration Types
+
+Breeze supports three categories of integrations, each served by a dedicated set of API routes.
+
+| Category | Providers | Purpose |
+|----------|-----------|---------|
+| **Communication** | Slack, Microsoft Teams, Discord | Alert notifications, status updates, and on-call messaging |
+| **PSA / Ticketing** | Jira, ServiceNow, ConnectWise, Autotask, Freshservice, Zendesk | Ticket creation, bi-directional sync, and workflow automation |
+| **Monitoring** | External monitoring endpoints | Forward device telemetry and health data to third-party observability platforms |
+
+<Aside>
+  Communication and monitoring integrations are configured through the `/integrations` routes. PSA connections use the dedicated `/psa` routes, which provide full CRUD, credential encryption, ticket mapping, and sync management.
+</Aside>
+
+---
+
+## Communication Integrations
+
+Communication integrations push notifications from Breeze into your team's messaging platform. Each provider is configured with a POST request containing the webhook URL and any provider-specific settings.
+
+### Setting Up a Provider
+
+<Tabs>
+  <TabItem label="Slack">
+    ```bash
+    POST /integrations/slack
+    Content-Type: application/json
+
+    {
+      "webhookUrl": "https://hooks.slack.com/services/T00/B00/xxxx",
+      "channel": "#breeze-alerts",
+      "username": "Breeze RMM",
+      "notifyOn": ["alert.critical", "alert.warning", "device.offline"]
+    }
+    ```
+  </TabItem>
+  <TabItem label="Microsoft Teams">
+    ```bash
+    POST /integrations/teams
+    Content-Type: application/json
+
+    {
+      "webhookUrl": "https://outlook.office.com/webhook/...",
+      "notifyOn": ["alert.critical", "device.offline"]
+    }
+    ```
+  </TabItem>
+  <TabItem label="Discord">
+    ```bash
+    POST /integrations/discord
+    Content-Type: application/json
+
+    {
+      "webhookUrl": "https://discord.com/api/webhooks/...",
+      "notifyOn": ["alert.critical", "alert.warning"]
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Each provider endpoint accepts an optional `"test": true` flag in the request body. When present, the API queues a test notification to the configured webhook. Note that the configuration is saved to the in-memory store before the test is executed, so sending `"test": true` does persist the settings for the lifetime of the current API process.
+
+```bash
+POST /integrations/slack
+{
+  "webhookUrl": "https://hooks.slack.com/services/T00/B00/xxxx",
+  "test": true
+}
+```
+
+Response:
+
+```json
+{ "success": true, "message": "slack test notification queued." }
+```
+
+### Retrieving Communication Settings
+
+Fetch the current communication configuration for an organization:
+
+```bash
+GET /integrations/communication?orgId=<uuid>
+```
+
+The response contains all configured providers in a single object:
+
+```json
+{
+  "data": {
+    "slack": { "webhookUrl": "...", "channel": "#breeze-alerts" },
+    "teams": { "webhookUrl": "..." }
+  }
+}
+```
+
+If no communication settings exist for the organization, the endpoint returns `404`.
+
+---
+
+## Monitoring Integration
+
+The monitoring integration forwards device telemetry to an external observability platform. Configuration is stored as a freeform JSON object, so you can include whatever fields your monitoring endpoint requires.
+
+### Saving Monitoring Settings
+
+```bash
+PUT /integrations/monitoring
+Content-Type: application/json
+
+{
+  "orgId": "<uuid>",
+  "endpoint": "https://monitoring.example.com/ingest",
+  "apiKey": "mon_xxxxxxxxxxxx",
+  "metricsEnabled": true,
+  "forwardEvents": ["cpu", "memory", "disk", "network"]
+}
+```
+
+### Retrieving Monitoring Settings
+
+```bash
+GET /integrations/monitoring?orgId=<uuid>
+```
+
+Returns the stored configuration object, or an empty object `{}` if nothing has been configured.
+
+### Testing Monitoring Connectivity
+
+```bash
+POST /integrations/monitoring/test
+```
+
+Returns `{ "success": true, "message": "Connection successful." }` when the monitoring endpoint is reachable.
+
+---
+
+## Ticketing Integration
+
+The ticketing integration provides a lightweight configuration store for generic ticketing systems that are not covered by the dedicated PSA routes.
+
+### Saving Ticketing Settings
+
+```bash
+POST /integrations/ticketing
+Content-Type: application/json
+
+{
+  "orgId": "<uuid>",
+  "provider": "custom",
+  "apiUrl": "https://tickets.example.com/api",
+  "apiKey": "tk_xxxxxxxxxxxx",
+  "projectKey": "BREEZE",
+  "autoCreate": true
+}
+```
+
+### Retrieving Ticketing Settings
+
+```bash
+GET /integrations/ticketing?orgId=<uuid>
+```
+
+### Testing Ticketing Connectivity
+
+```bash
+POST /integrations/ticketing/test
+```
+
+Returns `{ "success": true, "message": "Connection successful. Credentials validated." }`.
+
+---
+
+## PSA Integrations
+
+PSA (Professional Services Automation) integrations are the most fully featured integration type. They are backed by a dedicated database table (`psa_connections`) with encrypted credential storage, sync tracking, and ticket mapping. Use the `/psa` routes for all PSA operations.
+
+### Supported PSA Providers
+
+| Provider | Enum Value | Typical Credentials |
+|----------|------------|---------------------|
+| **ConnectWise Manage** | `connectwise` | Company ID, public key, private key, site URL |
+| **Datto Autotask** | `autotask` | Username, secret, integration code |
+| **Jira** | `jira` | Email, API token, site URL, project key |
+| **ServiceNow** | `servicenow` | Instance URL, username, password or OAuth token |
+| **Freshservice** | `freshservice` | Domain, API key |
+| **Zendesk** | `zendesk` | Subdomain, email, API token |
+
+<Aside type="caution">
+  Credentials are encrypted using AES-256-GCM before being stored in the database. The encryption key is derived from the `APP_ENCRYPTION_KEY` environment variable. In production, this variable must be set -- the API will refuse to start without it.
+</Aside>
+
+### Creating a PSA Connection
+
+<Steps>
+1. Choose a provider from the supported list above.
+
+2. Send a POST request with the connection name, provider, and credentials:
+
+   ```bash
+   POST /psa/connections
+   Content-Type: application/json
+
+   {
+     "orgId": "<uuid>",
+     "provider": "connectwise",
+     "name": "ConnectWise — Contoso",
+     "credentials": {
+       "companyId": "contoso",
+       "publicKey": "pk_xxxx",
+       "privateKey": "sk_xxxx",
+       "siteUrl": "https://na.myconnectwise.net"
+     },
+     "settings": {
+       "defaultBoard": "Service Board",
+       "defaultStatus": "New"
+     }
+   }
+   ```
+
+3. The API encrypts the credentials and returns the new connection (without credentials in the response):
+
+   ```json
+   {
+     "id": "uuid",
+     "orgId": "uuid",
+     "provider": "connectwise",
+     "name": "ConnectWise — Contoso",
+     "settings": { "defaultBoard": "Service Board", "defaultStatus": "New" },
+     "createdAt": "2026-02-18T...",
+     "updatedAt": "2026-02-18T...",
+     "lastTestedAt": null,
+     "lastSyncedAt": null,
+     "hasCredentials": true
+   }
+   ```
+
+4. Test the connection to verify credentials are valid (see [Testing Connections](#testing-connections) below).
+</Steps>
+
+### Updating a PSA Connection
+
+Update the name, credentials, or settings of an existing connection. Only the fields you include will be changed.
+
+```bash
+PATCH /psa/connections/:id
+Content-Type: application/json
+
+{
+  "name": "ConnectWise — Contoso (Production)",
+  "settings": {
+    "defaultBoard": "MSP Board",
+    "defaultStatus": "New",
+    "autoSync": true
+  }
+}
+```
+
+<Aside>
+  When you update credentials, the new values are encrypted before storage. The previous credentials are replaced entirely -- partial credential updates are not supported.
+</Aside>
+
+### Credential Handling
+
+PSA credentials follow a strict security model:
+
+| Behavior | Detail |
+|----------|--------|
+| **Encryption** | All credentials are encrypted with AES-256-GCM using the `APP_ENCRYPTION_KEY` before being written to the database |
+| **Response redaction** | List and detail endpoints never return raw credentials. The `hasCredentials` boolean indicates whether credentials are stored |
+| **Rotation** | Update credentials via `PATCH /psa/connections/:id` with a new `credentials` object. The old encrypted value is replaced atomically |
+| **Deletion** | Deleting a connection removes the encrypted credentials and all associated ticket mappings from the database |
+
+---
+
+## Testing Connections
+
+Every integration type provides a test endpoint. Testing verifies that the configured credentials and endpoint are reachable.
+
+### Communication Test
+
+Pass `"test": true` in the provider configuration body:
+
+```bash
+POST /integrations/slack
+{ "webhookUrl": "https://hooks.slack.com/...", "test": true }
+```
+
+### Monitoring Test
+
+```bash
+POST /integrations/monitoring/test
+```
+
+### Ticketing Test
+
+```bash
+POST /integrations/ticketing/test
+```
+
+### PSA Connection Test
+
+Test a specific saved PSA connection by ID:
+
+```bash
+POST /psa/connections/:id/test
+```
+
+On success, the API updates the connection's `syncSettings` with a `lastTestedAt` timestamp and sets the status to `verified`. The response confirms the result:
+
+```json
+{ "success": true, "message": "Credentials verified" }
+```
+
+This endpoint also writes an audit log entry with action `psa.connection.test`.
+
+---
+
+## Managing Integrations
+
+### Listing PSA Connections
+
+```bash
+GET /psa/connections?orgId=<uuid>&provider=connectwise&page=1&limit=50
+```
+
+All query parameters are optional. Results are paginated and ordered by most recently updated.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `orgId` | UUID | Filter to a specific organization |
+| `provider` | string | Filter by PSA provider (`jira`, `connectwise`, etc.) |
+| `page` | integer | Page number (default: 1) |
+| `limit` | integer | Results per page (default: 50, max: 100) |
+
+### Viewing a Single Connection
+
+```bash
+GET /psa/connections/:id
+```
+
+Returns the connection detail including settings, sync timestamps, and `hasCredentials` flag. Credentials themselves are not included.
+
+### Deleting a PSA Connection
+
+```bash
+DELETE /psa/connections/:id
+```
+
+<Aside type="caution">
+  Deleting a connection also removes all associated ticket mappings. This action cannot be undone.
+</Aside>
+
+### Triggering a Sync
+
+Manually trigger a data sync for a PSA connection:
+
+```bash
+POST /psa/connections/:id/sync
+```
+
+Response:
+
+```json
+{
+  "id": "uuid",
+  "provider": "connectwise",
+  "syncedAt": "2026-02-18T...",
+  "status": "queued"
+}
+```
+
+The sync runs asynchronously. The connection's `lastSyncAt` and `lastSyncStatus` fields are updated as the sync progresses.
+
+### Updating Connection Status
+
+Set a custom status on a connection (e.g., `active`, `paused`, `error`):
+
+```bash
+POST /psa/connections/:id/status
+Content-Type: application/json
+
+{ "status": "paused" }
+```
+
+---
+
+## Ticket Mappings
+
+PSA connections can map Breeze alerts and devices to external tickets. Ticket mappings track the relationship between internal entities and their corresponding tickets in the PSA platform.
+
+### Listing All Tickets
+
+```bash
+GET /psa/tickets?page=1&limit=50
+```
+
+Returns all ticket mappings across connections accessible to the authenticated user. Results include:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Internal mapping ID |
+| `psaId` | The PSA connection this ticket belongs to |
+| `title` | Display title derived from the external ticket ID |
+| `status` | Current ticket status |
+| `syncedAt` | Last sync timestamp |
+| `raw.externalTicketId` | The ticket ID in the external PSA system |
+| `raw.externalTicketUrl` | Direct URL to the ticket in the PSA platform |
+| `raw.alertId` | Associated Breeze alert ID (if any) |
+| `raw.deviceId` | Associated Breeze device ID (if any) |
+
+### Listing Tickets for a Connection
+
+```bash
+GET /psa/connections/:id/tickets?page=1&limit=50
+```
+
+Returns only ticket mappings associated with the specified PSA connection.
+
+---
+
+## API Reference
+
+### Integration Routes (`/integrations`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| **GET** | `/integrations/communication` | Retrieve communication integration settings for an organization |
+| **POST** | `/integrations/slack` | Configure or test Slack integration |
+| **POST** | `/integrations/teams` | Configure or test Microsoft Teams integration |
+| **POST** | `/integrations/discord` | Configure or test Discord integration |
+| **GET** | `/integrations/monitoring` | Retrieve monitoring integration settings |
+| **PUT** | `/integrations/monitoring` | Save monitoring integration settings |
+| **POST** | `/integrations/monitoring/test` | Test monitoring endpoint connectivity |
+| **GET** | `/integrations/ticketing` | Retrieve ticketing integration settings |
+| **POST** | `/integrations/ticketing` | Save ticketing integration settings |
+| **POST** | `/integrations/ticketing/test` | Test ticketing endpoint connectivity |
+| **GET** | `/integrations/psa` | Retrieve legacy PSA settings (use `/psa` routes instead) |
+| **POST** | `/integrations/psa` | Save legacy PSA settings |
+| **PUT** | `/integrations/psa` | Update legacy PSA settings |
+| **POST** | `/integrations/psa/test` | Test legacy PSA connection |
+
+### PSA Routes (`/psa`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| **GET** | `/psa/connections` | List PSA connections (filterable by `orgId`, `provider`) |
+| **POST** | `/psa/connections` | Create a new PSA connection with encrypted credentials |
+| **GET** | `/psa/connections/:id` | Get a single PSA connection detail |
+| **PATCH** | `/psa/connections/:id` | Update connection name, credentials, or settings |
+| **DELETE** | `/psa/connections/:id` | Delete a connection and its ticket mappings |
+| **POST** | `/psa/connections/:id/test` | Test connection credentials |
+| **POST** | `/psa/connections/:id/sync` | Trigger a manual data sync |
+| **POST** | `/psa/connections/:id/status` | Update connection status |
+| **GET** | `/psa/connections/:id/tickets` | List ticket mappings for a connection |
+| **GET** | `/psa/tickets` | List all ticket mappings across accessible connections |
+
+<Aside>
+  All integration and PSA routes require authentication. PSA routes additionally require the `orgs:read` permission for GET endpoints and `orgs:write` for mutating endpoints.
+</Aside>
+
+---
+
+## Database Schema
+
+PSA connections and ticket mappings are stored in two tables defined in the integrations schema.
+
+### `psa_connections`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `org_id` | UUID | Organization this connection belongs to |
+| `provider` | enum | PSA provider (`connectwise`, `autotask`, `jira`, `servicenow`, `freshservice`, `zendesk`) |
+| `name` | varchar(255) | Display name for the connection |
+| `credentials` | JSONB | Encrypted credential payload (AES-256-GCM) |
+| `settings` | JSONB | Provider-specific configuration (board, project, defaults) |
+| `sync_settings` | JSONB | Internal sync metadata including `lastTestedAt` and status |
+| `enabled` | boolean | Whether the connection is active (default: `true`) |
+| `last_sync_at` | timestamp | Last successful sync time |
+| `last_sync_status` | varchar(50) | Status of the most recent sync (`queued`, `running`, `completed`, `failed`) |
+| `last_sync_error` | text | Error message from the last failed sync |
+| `created_by` | UUID | User who created the connection |
+| `created_at` | timestamp | Creation timestamp |
+| `updated_at` | timestamp | Last modification timestamp |
+
+### `psa_ticket_mappings`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `connection_id` | UUID | Foreign key to `psa_connections` |
+| `alert_id` | UUID | Associated Breeze alert (nullable) |
+| `device_id` | UUID | Associated Breeze device (nullable) |
+| `external_ticket_id` | varchar(100) | Ticket ID in the external PSA system |
+| `external_ticket_url` | text | Direct URL to the external ticket |
+| `status` | varchar(50) | Current ticket status |
+| `last_sync_at` | timestamp | Last sync timestamp for this mapping |
+| `created_at` | timestamp | Creation timestamp |
+| `updated_at` | timestamp | Last modification timestamp |
+
+---
+
+## Troubleshooting
+
+**Communication webhook not receiving notifications.**
+Verify the webhook URL is correct and publicly reachable. Use the `"test": true` flag to send a test notification. Check that your messaging platform has not revoked or rotated the webhook token.
+
+**PSA connection test fails.**
+Confirm that the credentials are correct and the PSA platform's API is accessible from your Breeze API server. Some providers require IP allowlisting or VPN access. Check the `lastTestedAt` and sync status fields on the connection for additional context.
+
+**"Failed to encrypt credentials" error on PSA connection creation.**
+The `APP_ENCRYPTION_KEY` environment variable is not set or is invalid. In production, this variable is required. In development, the API falls back to `JWT_SECRET` or `SESSION_SECRET`, but these must also be present.
+
+**Ticket mappings not appearing.**
+Ticket mappings are created during PSA sync operations. Ensure the connection has been synced at least once via `POST /psa/connections/:id/sync`. Also verify that the connection's `enabled` flag is `true`.
+
+**"Organization context required" error.**
+Integration routes require an organization scope. If you are authenticated with a partner or system scope, pass the `orgId` query parameter or include it in the request body to specify which organization's integrations you are managing.
+
+**Deleted connection -- can I recover ticket mappings?**
+No. Deleting a PSA connection removes all associated ticket mappings from the database. This action is irreversible. Export or back up ticket data before deleting a connection if you need to retain it.

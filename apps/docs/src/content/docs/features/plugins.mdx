@@ -1,0 +1,350 @@
+---
+title: Plugins
+description: Extend Breeze with installable plugins for integrations, automations, reporting, collectors, notifications, and UI customisation.
+sidebar:
+  order: 20
+  label: Plugins
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Plugins extend Breeze with additional capabilities without modifying the core platform. Each plugin is published to a central catalog, installed per-organization, and managed through a dedicated set of API endpoints mounted at `/plugins`.
+
+All plugin routes require authentication. Catalog browsing is available to any authenticated user; installation and management endpoints require the `organization`, `partner`, or `system` scope.
+
+---
+
+## Plugin Types
+
+Every plugin in the catalog has a `type` that describes its purpose:
+
+| Type | Description |
+|------|-------------|
+| `integration` | Connects Breeze to external services (PSA tools, CRMs, cloud providers) |
+| `automation` | Adds new automation actions or workflow logic |
+| `reporting` | Provides custom reports, dashboards, or data export formats |
+| `collector` | Gathers additional telemetry from devices beyond built-in collectors |
+| `notification` | Adds notification delivery channels (chat platforms, pagers, SMS) |
+| `ui` | Extends the Breeze web interface with custom views or widgets |
+
+---
+
+## Plugin Catalog
+
+The catalog is the registry of all available plugins. Deprecated plugins are automatically excluded from catalog listings.
+
+### Browsing the catalog
+
+```
+GET /plugins/catalog
+```
+
+Query parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `type` | string | -- | Filter by plugin type (`integration`, `automation`, `reporting`, `collector`, `notification`, `ui`) |
+| `category` | string | -- | Filter by category (e.g., `crm`, `monitoring`) |
+| `search` | string | -- | Case-insensitive substring match against the plugin name and description |
+| `verified` | boolean | -- | Filter to verified (`true`) or unverified (`false`) plugins |
+| `page` | integer | `1` | Page number for pagination |
+| `limit` | integer | `20` | Results per page (max 100) |
+
+Results are sorted by featured status first, then by install count descending.
+
+**Response shape:**
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "slug": "connectwise-psa",
+      "name": "ConnectWise PSA",
+      "version": "2.1.0",
+      "description": "Sync tickets and billing with ConnectWise PSA",
+      "type": "integration",
+      "author": "Breeze",
+      "category": "psa",
+      "tags": ["psa", "ticketing", "billing"],
+      "iconUrl": "https://...",
+      "installCount": 142,
+      "rating": 4.7,
+      "isVerified": true,
+      "isFeatured": true
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 38,
+    "totalPages": 2
+  }
+}
+```
+
+### Viewing plugin details
+
+```
+GET /plugins/catalog/:slug
+```
+
+Returns the full catalog record for a single plugin, including fields not present in the list view:
+
+| Field | Description |
+|-------|-------------|
+| `authorUrl` | Link to the plugin author's website |
+| `homepage` | Plugin homepage or documentation URL |
+| `repository` | Source code repository URL |
+| `license` | License identifier (e.g., `MIT`, `Apache-2.0`) |
+| `manifestUrl` | URL to the plugin's manifest file |
+| `downloadUrl` | URL to the plugin package |
+| `checksum` | SHA checksum of the plugin package |
+| `minAgentVersion` | Minimum Breeze agent version required |
+| `minApiVersion` | Minimum Breeze API version required |
+| `dependencies` | JSON object describing required dependencies |
+| `permissions` | JSON object listing permissions the plugin requires |
+| `hooks` | JSON object defining lifecycle hooks the plugin registers |
+| `screenshotUrls` | Array of screenshot image URLs |
+| `isDeprecated` | Whether the plugin has been deprecated |
+
+---
+
+## Installing Plugins
+
+<Steps>
+
+1. **Find the plugin** by browsing the catalog or searching by name, type, or category.
+
+2. **Install the plugin** by sending a POST request with the catalog ID and any required configuration.
+
+3. **Verify the installation** by checking the installations list or fetching the installation detail.
+
+</Steps>
+
+### Install request
+
+```bash
+POST /plugins/installations
+Content-Type: application/json
+
+{
+  "catalogId": "uuid-from-catalog",
+  "config": {
+    "apiKey": "your-service-api-key",
+    "syncInterval": 300
+  },
+  "orgId": "uuid"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `catalogId` | UUID | Yes | The `id` of the plugin from the catalog |
+| `config` | object | No | Plugin-specific configuration. Defaults to `{}` |
+| `orgId` | UUID | Conditional | Required for `partner` and `system` scopes. Organization-scoped users install into their own org automatically |
+
+<Aside type="caution">
+  A plugin can only be installed once per organization. Attempting to install an already-installed plugin returns `409 Conflict`. Deprecated plugins cannot be installed and return `400 Bad Request`.
+</Aside>
+
+The installation is created with `status: "installed"` and `enabled: true`. The plugin's `permissions` from the catalog are copied to the installation record. A log entry is written and an audit event is emitted.
+
+---
+
+## Configuring Plugins
+
+Update an installed plugin's configuration or enabled state with a PATCH request:
+
+```bash
+PATCH /plugins/installations/:id
+Content-Type: application/json
+
+{
+  "config": {
+    "apiKey": "new-key",
+    "syncInterval": 600
+  },
+  "enabled": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `config` | object | Replacement configuration object |
+| `enabled` | boolean | Enable or disable the plugin |
+
+Both fields are optional, but the request must include at least one. An empty update body returns `400 Bad Request`.
+
+Each configuration change is recorded in the plugin logs with the list of changed fields and the user who made the change.
+
+---
+
+## Plugin Lifecycle
+
+Plugins move through a set of statuses tracked in the `plugin_installations` table:
+
+| Status | Description |
+|--------|-------------|
+| `installed` | The plugin is installed and ready to run |
+| `installing` | Installation is in progress |
+| `updating` | A version update is in progress |
+| `uninstalling` | Uninstallation is in progress |
+| `error` | The plugin encountered an error; check `errorMessage` for details |
+
+### Enabling and disabling
+
+Toggle a plugin without removing it:
+
+<Tabs>
+  <TabItem label="Enable">
+    ```
+    POST /plugins/installations/:id/enable
+    ```
+    Returns `400` if the plugin is already enabled.
+  </TabItem>
+  <TabItem label="Disable">
+    ```
+    POST /plugins/installations/:id/disable
+    ```
+    Returns `400` if the plugin is already disabled.
+  </TabItem>
+</Tabs>
+
+Enable and disable actions are logged and produce audit events.
+
+### Uninstalling
+
+```
+DELETE /plugins/installations/:id
+```
+
+Uninstallation performs the following steps in order:
+
+1. A log entry is written recording the uninstall event and the user who initiated it.
+2. All plugin log records for the installation are deleted.
+3. The installation record is deleted.
+4. The catalog's `installCount` is decremented (floor of zero).
+
+An audit event is emitted with the plugin name and catalog ID.
+
+### Sandboxing and resource limits
+
+Each installation has a `sandboxEnabled` flag (defaults to `true`) and an optional `resourceLimits` JSON field. These fields are stored on the installation record and returned in the detail endpoint.
+
+---
+
+## Plugin Logging
+
+Every significant plugin action produces a log entry in the `plugin_logs` table. Logs are scoped to a specific installation and include structured context.
+
+### Log levels
+
+| Level | Usage |
+|-------|-------|
+| `info` | Normal operations: install, uninstall, enable, disable, config updates |
+| `warn` | Non-fatal issues that may require attention |
+| `error` | Failures that prevent the plugin from operating correctly |
+| `debug` | Verbose diagnostic information |
+
+### Querying logs
+
+```
+GET /plugins/installations/:id/logs?level=error&page=1&limit=50
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `level` | string | -- | Filter by log level (`error`, `warn`, `info`, `debug`) |
+| `page` | integer | `1` | Page number |
+| `limit` | integer | `50` | Results per page (max 100) |
+
+Logs are returned newest-first. Each log entry contains:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique log entry ID |
+| `installationId` | The installation this log belongs to |
+| `level` | Log level |
+| `message` | Human-readable log message |
+| `context` | JSON object with structured context (action type, user ID, version, etc.) |
+| `timestamp` | ISO 8601 timestamp |
+
+---
+
+## API Reference
+
+All endpoints are mounted under `/plugins`. Authentication is required for every route.
+
+### Catalog
+
+| Method | Path | Auth Scope | Description |
+|--------|------|------------|-------------|
+| GET | `/plugins/catalog` | Any authenticated | List catalog with filters and pagination |
+| GET | `/plugins/catalog/:slug` | Any authenticated | Get full plugin details by slug |
+
+### Installations
+
+| Method | Path | Auth Scope | Description |
+|--------|------|------------|-------------|
+| GET | `/plugins/installations` | `organization`, `partner`, `system` | List installed plugins for an org |
+| POST | `/plugins/installations` | `organization`, `partner`, `system` | Install a plugin |
+| GET | `/plugins/installations/:id` | `organization`, `partner`, `system` | Get installation detail |
+| PATCH | `/plugins/installations/:id` | `organization`, `partner`, `system` | Update config or enabled state |
+| DELETE | `/plugins/installations/:id` | `organization`, `partner`, `system` | Uninstall a plugin |
+| POST | `/plugins/installations/:id/enable` | `organization`, `partner`, `system` | Enable a disabled plugin |
+| POST | `/plugins/installations/:id/disable` | `organization`, `partner`, `system` | Disable an enabled plugin |
+
+### Logs
+
+| Method | Path | Auth Scope | Description |
+|--------|------|------------|-------------|
+| GET | `/plugins/installations/:id/logs` | `organization`, `partner`, `system` | Query plugin logs with level filter |
+
+### Installation list filters
+
+The `GET /plugins/installations` endpoint accepts these query parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `orgId` | UUID | -- | Required for `partner` and `system` scopes |
+| `status` | string | -- | Filter by status (`installed`, `error`, `installing`, `updating`, `uninstalling`) |
+| `page` | integer | `1` | Page number |
+| `limit` | integer | `20` | Results per page (max 100) |
+
+---
+
+## Database Schema
+
+The plugins feature uses three tables:
+
+**`plugin_catalog`** -- the registry of all available plugins. Key columns: `slug` (unique), `name`, `version`, `type`, `author`, `permissions`, `hooks`, `dependencies`, `installCount`, `rating`, `isVerified`, `isFeatured`, `isDeprecated`.
+
+**`plugin_installations`** -- per-organization installs. Has a unique index on `(orgId, catalogId)` preventing duplicate installs. Key columns: `orgId`, `catalogId`, `version`, `status`, `enabled`, `config`, `permissions`, `sandboxEnabled`, `resourceLimits`, `installedBy`, `lastActiveAt`, `errorMessage`.
+
+**`plugin_logs`** -- execution and lifecycle logs. Each row references an `installationId` with a foreign key. Key columns: `level`, `message`, `context`, `timestamp`.
+
+---
+
+## Troubleshooting
+
+**Plugin not appearing in catalog.**
+Only non-deprecated plugins are returned by `GET /plugins/catalog`. If the plugin exists but `isDeprecated` is `true`, it will be excluded from all catalog listings. Query the plugin directly by slug with `GET /plugins/catalog/:slug` to check its deprecation status.
+
+**409 Conflict when installing.**
+Each plugin can only be installed once per organization. The `plugin_installations` table enforces a unique index on `(orgId, catalogId)`. If you need to reinstall, uninstall the existing installation first with `DELETE /plugins/installations/:id`.
+
+**400 when installing a deprecated plugin.**
+Deprecated plugins cannot be installed. Contact the plugin author or look for a replacement in the catalog.
+
+**Configuration update returning 400.**
+The PATCH endpoint requires at least one of `config` or `enabled` in the request body. An empty JSON object `{}` is rejected.
+
+**Enable/disable returning 400.**
+The enable endpoint returns `400` if the plugin is already enabled; the disable endpoint returns `400` if the plugin is already disabled. Check the current `enabled` state with `GET /plugins/installations/:id`.
+
+**Access denied (403) on installation endpoints.**
+Installation management requires the `organization`, `partner`, or `system` scope. Organization-scoped users can only manage plugins for their own organization. Partner and system scoped users must provide the `orgId` parameter and have access to the specified organization.
+
+**Plugin logs missing after uninstall.**
+When a plugin is uninstalled, all associated log records are deleted as part of the uninstall process. Export any logs you need before uninstalling.

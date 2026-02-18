@@ -25,12 +25,12 @@ The AI Risk Engine categorises every AI tool into one of four tiers that control
 | Tier | Execution | Examples |
 |---|---|---|
 | **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview) |
-| **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `set_device_context`, `resolve_device_context` |
+| **Tier 2** | Auto-execute + audit logged | `manage_alerts` acknowledge/resolve actions, `manage_services` list action, `set_device_context`, `resolve_device_context` |
 | **Tier 3** | Requires human approval before execution | `execute_command`, `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (write/delete/mkdir/rename) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 <Aside>
-  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. The AI resolves the tier for each specific action at runtime.
+  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. The AI resolves the tier for each specific action at runtime.
 </Aside>
 
 ### Approval workflow

@@ -44,7 +44,7 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 |-------|---------|
 | **`pending`** | Not yet reviewed; patch will not be deployed until approved |
 | **`approved`** | Cleared for deployment; eligible for inclusion in patch jobs |
-| **`rejected`** | Explicitly declined — will not be installed. Non-destructive; can be reversed by approving the patch at any time. |
+| **`rejected`** | Explicitly declined via `POST /patches/:id/decline` — will not be installed. Non-destructive; can be reversed by approving the patch at any time. |
 | **`deferred`** | Postponed until the `deferUntil` date; returns to `pending` automatically when that date is reached |
 
 ### Device Patch Status
@@ -107,7 +107,7 @@ POST /patches/:id/decline
 }
 ```
 
-Rejection creates an audit record but is not a permanent block. A rejected patch can be approved at any time by calling the approve endpoint. No data is deleted when a patch is rejected.
+Rejection creates an audit record but is not a permanent block. The stored approval status is `rejected`. A rejected patch can be approved at any time by calling the approve endpoint. No data is deleted when a patch is rejected.
 
 ### Deferring
 
@@ -191,15 +191,9 @@ POST /patches/:id/rollback
   Omit `deviceIds` to target all devices with `status: installed` for this patch.
 </Aside>
 
-If `scheduleType` is `"scheduled"`, also provide a `scheduledTime` in ISO 8601 format:
-
-```json
-{
-  "reason": "Causing boot failures on Intel systems",
-  "scheduleType": "scheduled",
-  "scheduledTime": "2026-02-20T02:00:00Z"
-}
-```
+<Aside type="caution">
+  Scheduled rollback (`scheduleType: "scheduled"`) is not yet implemented. Only `"immediate"` is currently supported.
+</Aside>
 
 The response includes:
 
@@ -225,6 +219,10 @@ Compliance reports are generated asynchronously. Call the report endpoint with y
 GET /patches/compliance/report?orgId=uuid&source=microsoft&severity=critical&format=csv
 ```
 
+<Aside type="caution">
+  Only CSV format is currently supported. PDF report generation is not yet implemented.
+</Aside>
+
 Response:
 
 ```json
@@ -233,7 +231,7 @@ Response:
 
 The initial status is `pending`. Note: the creation response may show `queued` as a display hint, but polling via `GET /patches/compliance/report/:id` will return `pending` until the worker picks up the job.
 
-Available query parameters: `orgId`, `source`, `severity`, `format` (`csv` or `pdf`).
+Available query parameters: `orgId`, `source`, `severity`, `format` (`csv` only — PDF is not yet supported).
 
 ### Checking Report Status
 
@@ -262,7 +260,7 @@ Once the report status is `completed`, download the file:
 GET /patches/compliance/report/:id/download
 ```
 
-This returns a file stream in the format requested (CSV or PDF). Attempting to download before the report is `completed` will return an error.
+This returns a file stream in CSV format. Attempting to download before the report is `completed` will return an error.
 
 ### Real-Time Compliance Summary
 
