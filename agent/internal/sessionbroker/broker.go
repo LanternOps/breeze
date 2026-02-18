@@ -209,7 +209,7 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	defer b.mu.RUnlock()
 
 	for _, s := range b.sessions {
-		if targetWinSession != "" && s.WinSessionID != targetWinSession {
+		if targetWinSession != "" && targetWinSession != "0" && s.WinSessionID != targetWinSession {
 			continue
 		}
 		if s.Capabilities == nil {

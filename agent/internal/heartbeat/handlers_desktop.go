@@ -209,21 +209,31 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return *errResult
 	}
 
-	// Route through IPC helper when running as a Windows service
+	// Service mode: relay stop to user helper
 	if h.isService && h.sessionBroker != nil {
-		session := h.sessionBroker.FindCapableSession("capture", "")
+		targetSession := ""
+		if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts > 0 {
+			targetSession = fmt.Sprintf("%d", int(ts))
+		}
+		session := h.sessionBroker.FindCapableSession("capture", targetSession)
 		if session != nil {
 			req := ipc.DesktopStopRequest{SessionID: sessionID}
 			_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
 			if err != nil {
-				return tools.NewErrorResult(fmt.Errorf("IPC desktop stop failed: %w", err), time.Since(start).Milliseconds())
+				return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())
 			}
-			return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
+		} else {
+			// No helper available, can't stop
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      "no user helper available to stop desktop session",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
 		}
-		// Fall through to direct stop if no helper found
+	} else {
+		h.desktopMgr.StopSession(sessionID)
 	}
 
-	h.desktopMgr.StopSession(sessionID)
 	return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 }
 

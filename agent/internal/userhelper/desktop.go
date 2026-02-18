@@ -3,7 +3,6 @@ package userhelper
 import (
 	"encoding/json"
 	"fmt"
-	"sync"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -13,7 +12,6 @@ import (
 // It wraps desktop.SessionManager and handles IPC-driven lifecycle.
 type helperDesktopManager struct {
 	mgr *desktop.SessionManager
-	mu  sync.Mutex
 }
 
 func newHelperDesktopManager() *helperDesktopManager {
@@ -25,9 +23,6 @@ func newHelperDesktopManager() *helperDesktopManager {
 // startSession parses the IPC request, creates the WebRTC session, and returns
 // the SDP answer.
 func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.DesktopStartResponse, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	// Parse ICE servers from raw JSON
 	var iceServers []desktop.ICEServerConfig
 	if len(req.ICEServers) > 0 {
@@ -49,14 +44,10 @@ func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.
 
 // stopSession tears down the desktop session.
 func (h *helperDesktopManager) stopSession(sessionID string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.mgr.StopSession(sessionID)
 }
 
 // stopAll tears down all active sessions (for shutdown).
 func (h *helperDesktopManager) stopAll() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.mgr.StopAllSessions()
 }

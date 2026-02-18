@@ -363,6 +363,11 @@ func (c *Client) handleDesktopStop(env *ipc.Envelope) {
 
 	log.Info("stopping desktop session via IPC", "sessionId", req.SessionID)
 	c.desktopMgr.stopSession(req.SessionID)
+
+	// Reply to unblock SendCommand on the broker side
+	if err := c.conn.SendTyped(env.ID, ipc.TypeDesktopStop, map[string]any{"stopped": true}); err != nil {
+		log.Warn("failed to send desktop_stop response", "error", err)
+	}
 }
 
 func (c *Client) handleDesktopInput(env *ipc.Envelope) {
