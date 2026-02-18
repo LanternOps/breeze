@@ -29,6 +29,7 @@ const (
 	wtsCurrentServerHandle = 0
 	wtsUserName            = 5
 	wtsDomainName          = 7
+	wtsClientProtocolType  = 16
 )
 
 type wtsSessionInfo struct {
@@ -59,19 +60,23 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 	for i := uint32(0); i < count; i++ {
 		info := (*wtsSessionInfo)(unsafe.Pointer(sessionInfo + uintptr(i)*size))
 
-		// Skip services session (0) and listener sessions
-		if info.SessionID == 0 || info.State == 6 { // WTSListen = 6
+		// Skip listener sessions only
+		if info.State == 6 { // WTSListen
 			continue
 		}
 
-		// Only include active/disconnected sessions
-		if info.State != 0 && info.State != 4 { // WTSActive = 0, WTSDisconnected = 4
+		// Only include active/disconnected sessions (and session 0)
+		if info.State != 0 && info.State != 4 && info.SessionID != 0 {
 			continue
 		}
 
 		username := d.querySessionString(info.SessionID, wtsUserName)
-		if username == "" {
-			continue
+
+		sessionType := "console"
+		if info.SessionID == 0 {
+			sessionType = "services"
+		} else if proto, ok := d.querySessionUint32(info.SessionID, wtsClientProtocolType); ok && proto == 2 {
+			sessionType = "rdp"
 		}
 
 		sessions = append(sessions, DetectedSession{
@@ -79,6 +84,7 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 			Session:  fmt.Sprintf("%d", info.SessionID),
 			State:    wtsStateString(info.State),
 			Display:  "windows",
+			Type:     sessionType,
 		})
 	}
 
@@ -162,6 +168,26 @@ func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32)
 	defer procWTSFreeMemory.Call(buf)
 
 	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(buf)))
+}
+
+func (d *windowsDetector) querySessionUint32(sessionID uint32, infoClass uint32) (uint32, bool) {
+	var buf uintptr
+	var bytesReturned uint32
+
+	r1, _, _ := procWTSQuerySessionInfo.Call(
+		wtsCurrentServerHandle,
+		uintptr(sessionID),
+		uintptr(infoClass),
+		uintptr(unsafe.Pointer(&buf)),
+		uintptr(unsafe.Pointer(&bytesReturned)),
+	)
+	if r1 == 0 || buf == 0 {
+		return 0, false
+	}
+	defer procWTSFreeMemory.Call(buf)
+
+	val := *(*uint32)(unsafe.Pointer(buf))
+	return val, true
 }
 
 func wtsStateString(state uint32) string {
