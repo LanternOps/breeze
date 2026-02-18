@@ -128,11 +128,12 @@ func initLogging(cfg *config.Config) {
 	}
 }
 
-// agentComponents holds the running components created by runAgent so that
+// agentComponents holds the running components created by startAgent so that
 // service wrappers (Windows SCM, etc.) can shut them down gracefully.
 type agentComponents struct {
-	hb       *heartbeat.Heartbeat
-	wsClient *websocket.Client
+	hb          *heartbeat.Heartbeat
+	wsClient    *websocket.Client
+	secureToken *secmem.SecureString
 }
 
 // shutdownAgent gracefully stops all agent components.
@@ -146,22 +147,22 @@ func shutdownAgent(comps *agentComponents) {
 	comps.hb.DrainAndWait(ctx)
 	comps.wsClient.Stop()
 	comps.hb.Stop()
+	if comps.secureToken != nil {
+		comps.secureToken.Zero()
+	}
 }
 
-// runAgent starts the main agent run loop. The heartbeat module handles:
-// - Periodic heartbeat calls to the API endpoint
-// - Receiving pending commands from the server via heartbeat response
-// - Executing commands and reporting results back to the server
-func runAgent() {
+// startAgent performs all agent initialisation and returns the running
+// components. It is used by both the console-mode runAgent and the Windows
+// SCM service wrapper so the startup logic lives in one place.
+func startAgent() (*agentComponents, error) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	if cfg.AgentID == "" {
-		fmt.Fprintln(os.Stderr, "Agent not enrolled. Run 'breeze-agent enroll <key>' first.")
-		os.Exit(1)
+		return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
 	}
 
 	initLogging(cfg)
@@ -169,7 +170,6 @@ func runAgent() {
 	// Wrap auth token in SecureString for defense-in-depth
 	secureToken := secmem.NewSecureString(cfg.AuthToken)
 	cfg.AuthToken = "" // Clear plaintext from config struct
-	defer secureToken.Zero()
 
 	// Initialize log shipper for centralized diagnostics
 	if cfg.AgentID != "" && cfg.ServerURL != "" {
@@ -181,7 +181,6 @@ func runAgent() {
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
 		})
-		defer logging.StopShipper()
 	}
 
 	log.Info("starting agent",
@@ -260,6 +259,36 @@ func runAgent() {
 
 	log.Info("agent is running")
 
+	return &agentComponents{
+		hb:          hb,
+		wsClient:    wsClient,
+		secureToken: secureToken,
+	}, nil
+}
+
+// runAgent starts the main agent run loop. The heartbeat module handles:
+// - Periodic heartbeat calls to the API endpoint
+// - Receiving pending commands from the server via heartbeat response
+// - Executing commands and reporting results back to the server
+func runAgent() {
+	// On Windows, if launched by the SCM, run under the service framework
+	// so we report Running/Stopped status back to the SCM correctly.
+	if isWindowsService() {
+		if err := runAsService(startAgent); err != nil {
+			log.Error("service failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Console mode — start components and wait for OS signal.
+	comps, err := startAgent()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start agent: %v\n", err)
+		os.Exit(1)
+	}
+	defer logging.StopShipper()
+
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -267,15 +296,7 @@ func runAgent() {
 	<-sigChan
 	log.Info("shutting down agent")
 
-	// Graceful shutdown: stop accepting, drain in-flight commands, then stop
-	hb.StopAcceptingCommands()
-
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer drainCancel()
-	hb.DrainAndWait(drainCtx)
-
-	wsClient.Stop()
-	hb.Stop()
+	shutdownAgent(comps)
 	log.Info("agent stopped")
 }
 
