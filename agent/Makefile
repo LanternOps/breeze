@@ -1,6 +1,6 @@
 .PHONY: build build-all build-winres build-windows-msi clean test install install-service uninstall-service dev-push
 
-VERSION ?= 0.1.0
+VERSION ?= 0.5.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
 # Default build for current platform
@@ -114,25 +114,30 @@ lint:
 	golangci-lint run
 
 # Dev push: build + upload to API + trigger agent update
-# Usage: make dev-push DEVICE=<deviceId> [API_URL=http://localhost:3001] [AUTH_TOKEN=...]
-API_URL ?= http://localhost:3001
+# Usage: make dev-push [DEVICE=<deviceId>] [API_URL=...] [AUTH_TOKEN=...]
+# Reads defaults from ../.env.dev if present. AUTH_TOKEN accepts JWT or API key (brz_...).
+-include ../.env.dev
+DEVICE ?= $(BREEZE_DEV_DEVICE)
+AUTH_TOKEN ?= $(BREEZE_API_KEY)
+API_URL ?= $(or $(BREEZE_API_URL),http://localhost:3001)
 dev-push:
 ifndef DEVICE
-	$(error DEVICE is required. Usage: make dev-push DEVICE=<deviceId> AUTH_TOKEN=<jwt>)
+	$(error DEVICE is required. Set BREEZE_DEV_DEVICE in ../.env.dev or pass DEVICE=<id>)
 endif
 ifndef AUTH_TOKEN
-	$(error AUTH_TOKEN is required. Usage: make dev-push DEVICE=<deviceId> AUTH_TOKEN=<jwt>)
+	$(error AUTH_TOKEN is required. Set BREEZE_API_KEY in ../.env.dev or pass AUTH_TOKEN=<key>)
 endif
 	$(eval DEV_VERSION := dev-$(shell date +%s))
+	$(eval AUTH_HEADER := $(if $(filter brz_%,$(AUTH_TOKEN)),X-API-Key: $(AUTH_TOKEN),Authorization: Bearer $(AUTH_TOKEN)))
 	@echo "Querying device platform..."
-	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "Authorization: Bearer $(AUTH_TOKEN)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','linux').lower()+'/'+d.get('arch','amd64'))" 2>/dev/null || echo "darwin/arm64"))
+	$(eval PLATFORM := $(shell curl -sf "$(API_URL)/api/v1/devices/$(DEVICE)" -H "$(AUTH_HEADER)" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('os','linux').lower()+'/'+d.get('arch','amd64'))" 2>/dev/null || echo "windows/amd64"))
 	$(eval TARGET_GOOS := $(word 1,$(subst /, ,$(PLATFORM))))
 	$(eval TARGET_GOARCH := $(word 2,$(subst /, ,$(PLATFORM))))
 	@echo "Building for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION)..."
 	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) CGO_ENABLED=0 go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-agent-dev ./cmd/breeze-agent
 	@echo "Uploading binary to API..."
 	@curl -sf -X POST "$(API_URL)/api/v1/dev/push" \
-		-H "Authorization: Bearer $(AUTH_TOKEN)" \
+		-H "$(AUTH_HEADER)" \
 		-F "agentId=$(DEVICE)" \
 		-F "version=$(DEV_VERSION)" \
 		-F "binary=@bin/breeze-agent-dev" | python3 -m json.tool

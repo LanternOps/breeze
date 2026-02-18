@@ -7,7 +7,8 @@ import { tmpdir } from 'os';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { apiKeyAuthMiddleware } from '../middleware/apiKeyAuth';
 import { getDeviceWithOrgCheck } from './devices/helpers';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 
@@ -54,9 +55,29 @@ devPushRoutes.use('*', async (c, next) => {
 
 const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB
 
+// Auth middleware that accepts JWT (Authorization: Bearer) or API key (X-API-Key)
+async function devPushAuth(c: any, next: any) {
+  const apiKeyHeader = c.req.header('X-API-Key');
+  if (apiKeyHeader) {
+    return apiKeyAuthMiddleware(c, next);
+  }
+  return authMiddleware(c, async () => {
+    await requireScope('organization', 'partner', 'system')(c, next);
+  });
+}
+
 // POST /dev/push — upload binary + trigger agent update
-devPushRoutes.post('/push', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
-  const auth = c.get('auth');
+devPushRoutes.post('/push', devPushAuth, async (c) => {
+  // Build auth context from either JWT or API key
+  const jwtAuth = c.get('auth') as AuthContext | undefined;
+  const apiKey = c.get('apiKey') as { orgId: string; scopes: string[] } | undefined;
+
+  const auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'> = jwtAuth ?? {
+    scope: 'organization' as const,
+    orgId: apiKey!.orgId,
+    accessibleOrgIds: [apiKey!.orgId],
+    canAccessOrg: (orgId: string) => orgId === apiKey!.orgId,
+  };
 
   const body = await c.req.parseBody({ all: true });
   const agentId = typeof body.agentId === 'string' ? body.agentId : '';

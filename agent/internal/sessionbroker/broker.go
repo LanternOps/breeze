@@ -201,6 +201,38 @@ func (b *Broker) SessionCount() int {
 	return len(b.sessions)
 }
 
+// FindCapableSession returns the first connected session whose helper reports
+// the given capability (e.g., "capture"). If targetWinSession is non-empty,
+// only sessions in that Windows session are considered.
+func (b *Broker) FindCapableSession(capability string, targetWinSession string) *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for _, s := range b.sessions {
+		if targetWinSession != "" && targetWinSession != "0" && s.WinSessionID != targetWinSession {
+			continue
+		}
+		if s.Capabilities == nil {
+			continue
+		}
+		switch capability {
+		case "capture":
+			if s.Capabilities.CanCapture {
+				return s
+			}
+		case "clipboard":
+			if s.Capabilities.CanClipboard {
+				return s
+			}
+		case "notify":
+			if s.Capabilities.CanNotify {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
 // SendCommandAndWait forwards a command to a session and waits for the response.
 func (b *Broker) SendCommandAndWait(session *Session, id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
 	return session.SendCommand(id, cmdType, payload, timeout)
@@ -372,6 +404,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 
 	// Create session
 	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, defaultScopes)
+	session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
 
 	// Register session
 	b.mu.Lock()

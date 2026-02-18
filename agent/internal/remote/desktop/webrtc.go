@@ -498,6 +498,21 @@ func (m *SessionManager) StopSession(sessionID string) {
 	}
 }
 
+// StopAllSessions tears down all active desktop sessions.
+func (m *SessionManager) StopAllSessions() {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.sessions = make(map[string]*Session)
+	m.mu.Unlock()
+
+	for _, s := range sessions {
+		s.Stop()
+	}
+}
+
 // Stop stops the session
 func (s *Session) Stop() {
 	s.stopOnce.Do(func() {

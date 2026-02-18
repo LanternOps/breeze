@@ -26,6 +26,18 @@ export async function isUserTokenRevoked(userId: string, tokenIssuedAt?: number)
   try {
     const revoked = await redis.get(getRevokedAccessKey(userId));
     if (revoked) {
+      // Blanket revocation is active (set during logout).  However, if the
+      // token was issued AFTER the revocation timestamp it belongs to a new
+      // login session and must be allowed through.
+      if (typeof tokenIssuedAt === 'number' && Number.isFinite(tokenIssuedAt)) {
+        const revokedAfterRaw = await redis.get(getRevokedAfterKey(userId));
+        if (revokedAfterRaw) {
+          const revokedAfter = Number.parseInt(revokedAfterRaw, 10);
+          if (Number.isFinite(revokedAfter) && tokenIssuedAt > revokedAfter) {
+            return false; // token from a new session — valid
+          }
+        }
+      }
       return true;
     }
 

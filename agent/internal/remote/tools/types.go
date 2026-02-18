@@ -137,6 +137,9 @@ const (
 
 	// Computer control (AI Computer Use)
 	CmdComputerAction = "computer_action"
+
+	// Session management
+	CmdListSessions = "list_sessions"
 )
 
 // CommandResult represents the result of a command execution

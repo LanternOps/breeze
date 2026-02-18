@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -25,7 +26,7 @@ import (
 )
 
 var (
-	version          = "0.1.0"
+	version          = "0.5.0"
 	cfgFile          string
 	serverURL        string
 	enrollmentSecret string
@@ -113,6 +114,11 @@ func initLogging(cfg *config.Config) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v (logging to stdout)\n", cfg.LogFile, err)
 			logFileFallback = true
+		} else if isWindowsService() {
+			// Windows services have no console — stdout is an invalid handle.
+			// io.MultiWriter stops on first error, so writing stdout first would
+			// silently prevent log file writes. Use the file writer only.
+			output = rw
 		} else {
 			output = logging.TeeWriter(os.Stdout, rw)
 		}
@@ -128,11 +134,12 @@ func initLogging(cfg *config.Config) {
 	}
 }
 
-// agentComponents holds the running components created by runAgent so that
+// agentComponents holds the running components created by startAgent so that
 // service wrappers (Windows SCM, etc.) can shut them down gracefully.
 type agentComponents struct {
-	hb       *heartbeat.Heartbeat
-	wsClient *websocket.Client
+	hb          *heartbeat.Heartbeat
+	wsClient    *websocket.Client
+	secureToken *secmem.SecureString
 }
 
 // shutdownAgent gracefully stops all agent components.
@@ -146,22 +153,22 @@ func shutdownAgent(comps *agentComponents) {
 	comps.hb.DrainAndWait(ctx)
 	comps.wsClient.Stop()
 	comps.hb.Stop()
+	if comps.secureToken != nil {
+		comps.secureToken.Zero()
+	}
 }
 
-// runAgent starts the main agent run loop. The heartbeat module handles:
-// - Periodic heartbeat calls to the API endpoint
-// - Receiving pending commands from the server via heartbeat response
-// - Executing commands and reporting results back to the server
-func runAgent() {
+// startAgent performs all agent initialisation and returns the running
+// components. It is used by both the console-mode runAgent and the Windows
+// SCM service wrapper so the startup logic lives in one place.
+func startAgent() (*agentComponents, error) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	if cfg.AgentID == "" {
-		fmt.Fprintln(os.Stderr, "Agent not enrolled. Run 'breeze-agent enroll <key>' first.")
-		os.Exit(1)
+		return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
 	}
 
 	initLogging(cfg)
@@ -169,7 +176,6 @@ func runAgent() {
 	// Wrap auth token in SecureString for defense-in-depth
 	secureToken := secmem.NewSecureString(cfg.AuthToken)
 	cfg.AuthToken = "" // Clear plaintext from config struct
-	defer secureToken.Zero()
 
 	// Initialize log shipper for centralized diagnostics
 	if cfg.AgentID != "" && cfg.ServerURL != "" {
@@ -181,7 +187,6 @@ func runAgent() {
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
 		})
-		defer logging.StopShipper()
 	}
 
 	log.Info("starting agent",
@@ -236,6 +241,10 @@ func runAgent() {
 		}
 	}
 
+	// Propagate service mode flag so the heartbeat can route desktop
+	// sessions through the IPC user helper instead of capturing directly.
+	cfg.IsService = isWindowsService()
+
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 
@@ -260,6 +269,36 @@ func runAgent() {
 
 	log.Info("agent is running")
 
+	return &agentComponents{
+		hb:          hb,
+		wsClient:    wsClient,
+		secureToken: secureToken,
+	}, nil
+}
+
+// runAgent starts the main agent run loop. The heartbeat module handles:
+// - Periodic heartbeat calls to the API endpoint
+// - Receiving pending commands from the server via heartbeat response
+// - Executing commands and reporting results back to the server
+func runAgent() {
+	// On Windows, if launched by the SCM, run under the service framework
+	// so we report Running/Stopped status back to the SCM correctly.
+	if isWindowsService() {
+		if err := runAsService(startAgent); err != nil {
+			log.Error("service failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Console mode — start components and wait for OS signal.
+	comps, err := startAgent()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start agent: %v\n", err)
+		os.Exit(1)
+	}
+	defer logging.StopShipper()
+
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -267,15 +306,7 @@ func runAgent() {
 	<-sigChan
 	log.Info("shutting down agent")
 
-	// Graceful shutdown: stop accepting, drain in-flight commands, then stop
-	hb.StopAcceptingCommands()
-
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer drainCancel()
-	hb.DrainAndWait(drainCtx)
-
-	wsClient.Stop()
-	hb.Stop()
+	shutdownAgent(comps)
 	log.Info("agent stopped")
 }
 
@@ -416,15 +447,44 @@ func checkStatus() {
 // runUserHelper starts the per-user session helper process.
 // It connects to the root daemon via IPC and handles user-context operations.
 func runUserHelper() {
-	// Minimal logging for user helper (no config file needed)
-	logging.Init("text", "info", os.Stdout)
+	// Log to file in the same logs folder as the main agent
+	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
+	os.MkdirAll(logDir, 0700)
+	logPath := filepath.Join(logDir, "user-helper.log")
+	var output io.Writer = os.Stdout
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
+		// Use file-only to avoid io.MultiWriter aborting on stdout write errors.
+		if hasConsole() {
+			output = io.MultiWriter(os.Stdout, f)
+		} else {
+			output = f
+		}
+	}
+	logging.Init("text", "info", output)
+
+	// Load agent config for IPC socket path and log shipping credentials.
+	// The helper runs as SYSTEM so it can read agent.yaml.
+	cfg, _ := config.Load(cfgFile)
+	if cfg == nil {
+		cfg = config.Default()
+	}
 
 	socketPath := ipc.DefaultSocketPath()
-	if cfgFile != "" {
-		// Try to load config for custom socket path
-		if cfg, err := config.Load(cfgFile); err == nil && cfg.IPCSocketPath != "" {
-			socketPath = cfg.IPCSocketPath
-		}
+	if cfg.IPCSocketPath != "" {
+		socketPath = cfg.IPCSocketPath
+	}
+
+	// Ship helper logs to the API under the same agent identity
+	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
+		logging.InitShipper(logging.ShipperConfig{
+			ServerURL:    cfg.ServerURL,
+			AgentID:      cfg.AgentID,
+			AuthToken:    cfg.AuthToken,
+			AgentVersion: version + "-helper",
+			MinLevel:     cfg.LogShippingLevel,
+		})
+		defer logging.StopShipper()
 	}
 
 	log.Info("starting user helper",

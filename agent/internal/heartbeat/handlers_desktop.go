@@ -1,12 +1,19 @@
 package heartbeat
 
 import (
+	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
+
+// spawnGuard prevents concurrent helper spawns for the same target session.
+var spawnGuard sync.Mutex
 
 func init() {
 	handlerRegistry[tools.CmdFileTransfer] = handleFileTransfer
@@ -17,6 +24,7 @@ func init() {
 	handlerRegistry[tools.CmdDesktopStreamStop] = handleDesktopStreamStop
 	handlerRegistry[tools.CmdDesktopInput] = handleDesktopInput
 	handlerRegistry[tools.CmdDesktopConfig] = handleDesktopConfig
+	handlerRegistry[tools.CmdListSessions] = handleListSessions
 }
 
 func handleFileTransfer(h *Heartbeat, cmd Command) tools.CommandResult {
@@ -85,6 +93,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		displayIndex = int(di)
 	}
 
+	// Route through IPC helper when running as a Windows service
+	if h.isService && h.sessionBroker != nil {
+		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, cmd.Payload)
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result
+	}
+
+	// Direct mode (console or non-Windows)
 	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
@@ -95,6 +111,107 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
+// startDesktopViaHelper routes a desktop start request through the IPC user helper.
+func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, payload map[string]any) tools.CommandResult {
+	// Read optional target Windows session ID from payload
+	targetSession := ""
+	if ts, ok := payload["targetSessionId"].(float64); ok {
+		targetSession = fmt.Sprintf("%d", int(ts))
+	}
+
+	session := h.sessionBroker.FindCapableSession("capture", targetSession)
+	if session == nil {
+		// Serialize spawns to prevent duplicate helpers for the same session
+		spawnGuard.Lock()
+		// Re-check after acquiring lock — another goroutine may have spawned it
+		session = h.sessionBroker.FindCapableSession("capture", targetSession)
+		if session == nil {
+			if err := h.spawnHelperForDesktop(targetSession); err != nil {
+				spawnGuard.Unlock()
+				return tools.NewErrorResult(fmt.Errorf("no capable helper session and spawn failed: %w", err), 0)
+			}
+			// Poll for the helper to connect (up to 5s, every 500ms)
+			for i := 0; i < 10; i++ {
+				time.Sleep(500 * time.Millisecond)
+				session = h.sessionBroker.FindCapableSession("capture", targetSession)
+				if session != nil {
+					break
+				}
+			}
+		}
+		spawnGuard.Unlock()
+		if session == nil {
+			return tools.NewErrorResult(fmt.Errorf("helper spawned but did not connect within 5s"), 0)
+		}
+	}
+
+	// Marshal ICE servers to json.RawMessage
+	var iceRaw json.RawMessage
+	if len(iceServers) > 0 {
+		data, err := json.Marshal(iceServers)
+		if err != nil {
+			return tools.NewErrorResult(fmt.Errorf("failed to marshal ICE servers: %w", err), 0)
+		}
+		iceRaw = data
+	}
+
+	req := ipc.DesktopStartRequest{
+		SessionID:    sessionID,
+		Offer:        offer,
+		ICEServers:   iceRaw,
+		DisplayIndex: displayIndex,
+	}
+
+	resp, err := session.SendCommand("desk-"+sessionID, ipc.TypeDesktopStart, req, 30*time.Second)
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("IPC desktop start failed: %w", err), 0)
+	}
+	if resp.Error != "" {
+		return tools.CommandResult{
+			Status: "failed",
+			Error:  resp.Error,
+		}
+	}
+
+	var dResp ipc.DesktopStartResponse
+	if err := json.Unmarshal(resp.Payload, &dResp); err != nil {
+		return tools.NewErrorResult(fmt.Errorf("failed to unmarshal desktop start response: %w", err), 0)
+	}
+
+	return tools.NewSuccessResult(map[string]any{
+		"sessionId": sessionID,
+		"answer":    dResp.Answer,
+	}, 0)
+}
+
+// spawnHelperForDesktop spawns a user helper in the target session.
+// If targetSession is empty, it auto-detects the first active non-services session.
+func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
+	if targetSession == "" {
+		detector := sessionbroker.NewSessionDetector()
+		detected, err := detector.ListSessions()
+		if err != nil {
+			return fmt.Errorf("failed to list sessions: %w", err)
+		}
+		for _, ds := range detected {
+			if ds.Type != "services" && ds.State == "active" {
+				targetSession = ds.Session
+				break
+			}
+		}
+		if targetSession == "" {
+			return fmt.Errorf("no active non-services session found")
+		}
+	}
+
+	var sessionNum uint32
+	if _, err := fmt.Sscanf(targetSession, "%d", &sessionNum); err != nil {
+		return fmt.Errorf("invalid session ID %q: %w", targetSession, err)
+	}
+
+	return sessionbroker.SpawnHelperInSession(sessionNum)
+}
+
 func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
@@ -102,12 +219,88 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
-	h.desktopMgr.StopSession(sessionID)
+
+	// Service mode: relay stop to user helper
+	if h.isService && h.sessionBroker != nil {
+		targetSession := ""
+		if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts > 0 {
+			targetSession = fmt.Sprintf("%d", int(ts))
+		}
+		session := h.sessionBroker.FindCapableSession("capture", targetSession)
+		if session != nil {
+			req := ipc.DesktopStopRequest{SessionID: sessionID}
+			_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
+			if err != nil {
+				return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())
+			}
+		} else {
+			// No helper available, can't stop
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      "no user helper available to stop desktop session",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
+	} else {
+		h.desktopMgr.StopSession(sessionID)
+	}
+
 	return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
+}
+
+func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+
+	detector := sessionbroker.NewSessionDetector()
+	detected, err := detector.ListSessions()
+	if err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	// Merge with broker state to show which sessions have connected helpers
+	var helperSessions []sessionbroker.SessionInfo
+	if h.sessionBroker != nil {
+		helperSessions = h.sessionBroker.AllSessions()
+	}
+
+	helperByWinSession := make(map[string]bool)
+	for _, hs := range helperSessions {
+		if hs.WinSessionID != "" {
+			helperByWinSession[hs.WinSessionID] = true
+		}
+	}
+
+	items := make([]ipc.SessionInfoItem, 0, len(detected))
+	for _, ds := range detected {
+		var sessionNum uint32
+		fmt.Sscanf(ds.Session, "%d", &sessionNum)
+		items = append(items, ipc.SessionInfoItem{
+			SessionID:       sessionNum,
+			Username:        ds.Username,
+			State:           ds.State,
+			Type:            ds.Type,
+			HelperConnected: helperByWinSession[ds.Session],
+		})
+	}
+
+	return tools.NewSuccessResult(map[string]any{
+		"sessions": items,
+	}, time.Since(start).Milliseconds())
 }
 
 func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+
+	// WS-based desktop streaming cannot work from Session 0 (no display).
+	// The viewer should use WebRTC (start_desktop) when connecting to a service agent.
+	if h.isService {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "desktop_stream_start unavailable in service mode; use start_desktop (WebRTC) instead",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
@@ -143,6 +336,9 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	if h.isService {
+		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
+	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
@@ -154,6 +350,17 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+
+	// Input injection cannot work from Session 0 (SetCursorPos, SendInput fail).
+	// WebRTC sessions handle input via the data channel in the user helper.
+	if h.isService {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "desktop_input unavailable in service mode; use WebRTC data channel",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
@@ -203,6 +410,13 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopConfig(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	if h.isService {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "desktop_config unavailable in service mode; use WebRTC",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()

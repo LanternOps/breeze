@@ -9,7 +9,7 @@ export const logsRoutes = new Hono();
 
 // Agent Diagnostic Log Shipping
 const agentLogEntrySchema = z.object({
-  timestamp: z.string().datetime(),
+  timestamp: z.string().datetime({ offset: true }),
   level: z.enum(['debug', 'info', 'warn', 'error']),
   component: z.string().max(100),
   message: z.string().max(10000),

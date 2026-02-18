@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
@@ -35,13 +34,12 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 		"downloadUrl", downloadURL,
 	)
 
-	// Disable auto-update to prevent heartbeat from overwriting the dev binary
+	// Disable auto-update in memory to prevent heartbeat from overwriting
+	// the dev binary during this run. We intentionally do NOT call
+	// config.Save here — SaveTo would need the auth token which is cleared
+	// from the config struct at startup, and writing the file risks wiping it.
 	h.config.AutoUpdate = false
-	if err := config.Save(h.config); err != nil {
-		log.Warn("failed to persist auto_update=false to config", "error", err)
-		// Continue anyway — the in-memory flag is already set
-	}
-	log.Info("auto_update disabled for dev push, set auto_update: true in config to re-enable")
+	log.Info("auto_update disabled in memory for dev push")
 
 	// Resolve current binary path
 	binaryPath, err := os.Executable()

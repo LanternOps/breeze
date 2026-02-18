@@ -32,6 +32,7 @@ type DetectedSession struct {
 	Display  string `json:"display,omitempty"`
 	Seat     string `json:"seat,omitempty"`
 	State    string `json:"state,omitempty"` // "active", "online", "closing"
+	Type     string `json:"type,omitempty"`     // "console", "rdp", "services"
 }
 
 // SessionDetector detects user sessions and monitors login/logout events.

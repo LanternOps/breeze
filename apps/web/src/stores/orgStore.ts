@@ -121,14 +121,11 @@ export const useOrgStore = create<OrgState>()(
 
       fetchOrganizations: async () => {
         const { currentPartnerId } = get();
-        if (!currentPartnerId) {
-          set({ organizations: [] });
-          return;
-        }
 
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth(`/orgs/organizations?partnerId=${currentPartnerId}`);
+          const params = currentPartnerId ? `?partnerId=${currentPartnerId}` : '';
+          const response = await fetchWithAuth(`/orgs/organizations${params}`);
           if (!response.ok) {
             throw new Error('Failed to fetch organizations');
           }

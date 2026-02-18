@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import ApiKeyList, { type ApiKey } from './ApiKeyList';
 import ApiKeyForm, { CreatedKeyModal, type ApiKeyFormValues } from './ApiKeyForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 type ModalMode = 'closed' | 'create' | 'view' | 'rotate' | 'revoke';
 
@@ -30,9 +31,12 @@ export default function ApiKeysPage() {
         throw new Error('Failed to fetch API keys');
       }
       const data = await response.json();
-      setApiKeys(data.apiKeys ?? data ?? []);
-      setTotalPages(data.totalPages ?? 1);
-      setCurrentPage(data.currentPage ?? page);
+      setApiKeys(data.data ?? data.apiKeys ?? []);
+      const pagination = data.pagination;
+      if (pagination) {
+        setTotalPages(Math.ceil(pagination.total / pagination.limit) || 1);
+        setCurrentPage(pagination.page ?? page);
+      }
       setIsAdmin(data.isAdmin ?? false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -81,17 +85,22 @@ export default function ApiKeysPage() {
   const handleCreateSubmit = async (values: ApiKeyFormValues) => {
     setSubmitting(true);
     try {
+      const { currentOrgId } = useOrgStore.getState();
+      if (!currentOrgId) {
+        throw new Error('No organization selected');
+      }
       const response = await fetchWithAuth('/api-keys', {
         method: 'POST',
-        body: JSON.stringify(values)
+        body: JSON.stringify({ ...values, orgId: currentOrgId })
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create API key');
+        const err = await response.json().catch(() => null);
+        throw new Error(err?.error || 'Failed to create API key');
       }
 
       const data = await response.json();
-      setCreatedKey(data.apiKey);
+      setCreatedKey(data.key);
       await fetchApiKeys(currentPage);
       handleCloseModal();
     } catch (err) {
@@ -115,7 +124,7 @@ export default function ApiKeysPage() {
       }
 
       const data = await response.json();
-      setCreatedKey(data.apiKey);
+      setCreatedKey(data.key);
       await fetchApiKeys(currentPage);
       handleCloseModal();
     } catch (err) {
@@ -130,8 +139,8 @@ export default function ApiKeysPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/api-keys/${selectedKey.id}/revoke`, {
-        method: 'POST'
+      const response = await fetchWithAuth(`/api-keys/${selectedKey.id}`, {
+        method: 'DELETE'
       });
 
       if (!response.ok) {

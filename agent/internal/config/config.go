@@ -80,6 +80,10 @@ type Config struct {
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
+
+	// IsService is a runtime flag set when the agent is running as a Windows SCM service.
+	// It is not persisted to config.
+	IsService bool `mapstructure:"-"`
 }
 
 // defaultLogFile returns the platform-specific default log file path.
@@ -169,7 +173,12 @@ func Save(cfg *Config) error {
 func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("agent_id", cfg.AgentID)
 	viper.Set("server_url", cfg.ServerURL)
-	viper.Set("auth_token", cfg.AuthToken)
+	// Only overwrite auth_token if non-empty. At runtime the token is cleared
+	// from the config struct for security; writing "" would wipe the persisted
+	// token from disk and break the agent on next startup.
+	if cfg.AuthToken != "" {
+		viper.Set("auth_token", cfg.AuthToken)
+	}
 	viper.Set("org_id", cfg.OrgID)
 	viper.Set("site_id", cfg.SiteID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
@@ -177,6 +186,8 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
 	viper.Set("policy_registry_state_probes", cfg.PolicyRegistryStateProbes)
 	viper.Set("policy_config_state_probes", cfg.PolicyConfigStateProbes)
+	viper.Set("log_level", cfg.LogLevel)
+	viper.Set("log_shipping_level", cfg.LogShippingLevel)
 	viper.Set("auto_update", cfg.AutoUpdate)
 	viper.Set("mtls_cert_pem", cfg.MtlsCertPEM)
 	viper.Set("mtls_key_pem", cfg.MtlsKeyPEM)

@@ -58,6 +58,7 @@ type AuthRequest struct {
 	DisplayEnv      string `json:"displayEnv"`
 	PID             int    `json:"pid"`
 	BinaryHash      string `json:"binaryHash"`
+	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -125,4 +126,36 @@ type MenuItem struct {
 // TrayAction is sent by the user helper when a tray menu item is clicked.
 type TrayAction struct {
 	MenuItemID string `json:"menuItemId"`
+}
+
+// DesktopStartRequest is sent from the service to the user helper to start a
+// remote desktop session. The helper creates the full WebRTC pipeline and
+// returns an SDP answer.
+type DesktopStartRequest struct {
+	SessionID    string          `json:"sessionId"`
+	Offer        string          `json:"offer"`
+	ICEServers   json.RawMessage `json:"iceServers,omitempty"`
+	DisplayIndex int             `json:"displayIndex"`
+}
+
+// DesktopStartResponse is returned by the user helper after creating the
+// WebRTC peer connection.
+type DesktopStartResponse struct {
+	SessionID string `json:"sessionId"`
+	Answer    string `json:"answer"`
+}
+
+// DesktopStopRequest tells the user helper to tear down a desktop session.
+type DesktopStopRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// SessionInfoItem describes one interactive Windows session for the
+// list_sessions command response.
+type SessionInfoItem struct {
+	SessionID       uint32 `json:"sessionId"`
+	Username        string `json:"username"`
+	State           string `json:"state"`
+	Type            string `json:"type"`
+	HelperConnected bool   `json:"helperConnected"`
 }

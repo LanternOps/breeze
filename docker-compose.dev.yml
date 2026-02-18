@@ -82,6 +82,7 @@ services:
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY is required - set in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?MFA_ENCRYPTION_KEY is required - set in .env}
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-REDACTED_DEV_TOKEN}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:3001}
     ports:
       - "3001:3001"
     volumes:

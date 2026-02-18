@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db';
 import {
@@ -187,7 +187,7 @@ export function computeSecurityScore(statuses: ReturnType<typeof toStatusRespons
 // ── DB queries ──────────────────────────────────────────────────────────────
 
 export async function listStatusRows(auth: AuthContext, orgId?: string): Promise<StatusRow[]> {
-  const conditions = [];
+  const conditions: SQL[] = [ne(devices.status, 'decommissioned')];
   const orgCondition = auth.orgCondition(devices.orgId);
   if (orgCondition) conditions.push(orgCondition);
 
@@ -198,7 +198,7 @@ export async function listStatusRows(auth: AuthContext, orgId?: string): Promise
     conditions.push(eq(devices.orgId, orgId));
   }
 
-  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+  const whereClause = and(...conditions);
 
   const rows = await db
     .select({
@@ -250,7 +250,7 @@ export async function listStatusRows(auth: AuthContext, orgId?: string): Promise
 }
 
 export async function listThreatRows(auth: AuthContext, deviceId?: string, orgId?: string): Promise<ThreatRow[]> {
-  const conditions = [];
+  const conditions: SQL[] = [ne(devices.status, 'decommissioned')];
   const orgCondition = auth.orgCondition(devices.orgId);
   if (orgCondition) conditions.push(orgCondition);
 
@@ -265,7 +265,7 @@ export async function listThreatRows(auth: AuthContext, deviceId?: string, orgId
     conditions.push(eq(devices.orgId, orgId));
   }
 
-  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+  const whereClause = and(...conditions);
 
   const rows = await db
     .select({
