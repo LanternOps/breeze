@@ -137,14 +137,8 @@ describe('isBlockedPath', () => {
       expect(isBlockedPath('/Proc/CpuInfo')).toBe(true);
     });
 
-    // NOTE: The normalizePath regex does a single-pass replace of /\./ sequences,
-    // so chained dot components like /etc/./././shadow are NOT fully normalized in
-    // a single pass. This test documents the current behavior. A more robust
-    // implementation could apply the regex iteratively or use path.normalize().
-    it('does not fully normalize chained dot components (known limitation)', () => {
-      // After one pass: /etc/./././shadow -> /etc/././shadow -> /etc/./shadow
-      // This remains as /etc/./shadow which does NOT match /etc/shadow prefix
-      expect(isBlockedPath('/etc/./././shadow')).toBe(false);
+    it('blocks chained dot components: /etc/./././shadow', () => {
+      expect(isBlockedPath('/etc/./././shadow')).toBe(true);
     });
   });
 
@@ -270,6 +264,26 @@ describe('validateToolInput with file_operations (safePath integration)', () => 
       action: 'read',
       path: '/tmp/myfile.txt',
     });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects file_operations with blocked newPath on rename', () => {
+    const result = validateToolInput('file_operations', {
+      deviceId: TEST_UUID,
+      action: 'rename',
+      path: '/tmp/safe.txt',
+      newPath: '/etc/shadow',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('blocked');
+    }
+  });
+});
+
+describe('validateToolInput with unknown tools', () => {
+  it('returns success for unknown tool names (no schema registered)', () => {
+    const result = validateToolInput('nonexistent_tool', { anything: 'goes' });
     expect(result.success).toBe(true);
   });
 });

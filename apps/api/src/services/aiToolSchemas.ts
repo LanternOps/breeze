@@ -25,12 +25,17 @@ const BLOCKED_PATH_PREFIXES = [
 ];
 
 export function normalizePath(path: string): string {
-  return path
+  let result = path
     .replace(/\\/g, '/')      // Normalize backslashes
     .replace(/\/+/g, '/')     // Collapse redundant separators (/etc///shadow → /etc/shadow)
-    .replace(/\/\.\//g, '/')  // Remove dot components (/etc/./shadow → /etc/shadow)
-    .replace(/\/\.$/, '/')    // Trailing dot component
     .toLowerCase();
+  // Iteratively remove dot components until stable
+  let prev: string;
+  do {
+    prev = result;
+    result = result.replace(/\/\.\//g, '/').replace(/\/\.$/, '/');
+  } while (result !== prev);
+  return result;
 }
 
 export function isBlockedPath(path: string): boolean {
@@ -293,7 +298,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
 /**
  * Validate tool input against the registered schema.
- * Returns null on success, or an error message on failure.
+ * Returns { success: true } if valid, or { success: false, error } with details.
  */
 export function validateToolInput(
   toolName: string,
