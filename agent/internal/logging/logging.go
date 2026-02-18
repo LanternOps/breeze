@@ -176,6 +176,19 @@ func SetShipperLevel(level string) bool {
 	return false
 }
 
+// DroppedLogCount returns the number of log entries dropped since the last
+// call and resets the counter to zero. Returns 0 if the shipper is not
+// initialized.
+func DroppedLogCount() int64 {
+	shipperMu.RLock()
+	defer shipperMu.RUnlock()
+
+	if globalShipper != nil {
+		return globalShipper.DroppedLogCount()
+	}
+	return 0
+}
+
 // shippingHandler wraps a base slog.Handler to also ship logs remotely.
 type shippingHandler struct {
 	base   slog.Handler
