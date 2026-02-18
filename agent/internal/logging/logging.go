@@ -176,6 +176,31 @@ func SetShipperLevel(level string) bool {
 	return false
 }
 
+// DroppedLogCount returns the number of log entries dropped since the last
+// commit. The counter is NOT reset; call CommitDroppedLogCount after a
+// successful heartbeat to clear it.
+func DroppedLogCount() int64 {
+	shipperMu.RLock()
+	defer shipperMu.RUnlock()
+
+	if globalShipper != nil {
+		return globalShipper.DroppedLogCount()
+	}
+	return 0
+}
+
+// CommitDroppedLogCount resets the dropped log counter to zero. Call this
+// after the heartbeat POST succeeds so that the count is preserved for retry
+// if the heartbeat fails. No-op if the shipper is not initialized.
+func CommitDroppedLogCount() {
+	shipperMu.RLock()
+	defer shipperMu.RUnlock()
+
+	if globalShipper != nil {
+		globalShipper.CommitDroppedLogCount()
+	}
+}
+
 // shippingHandler wraps a base slog.Handler to also ship logs remotely.
 type shippingHandler struct {
 	base   slog.Handler

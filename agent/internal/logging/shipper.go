@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync"
@@ -162,52 +163,115 @@ func (s *Shipper) shipLoop() {
 	}
 }
 
-func (s *Shipper) shipBatch(entries []LogEntry) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+const (
+	shipRetryCount   = 2
+	shipRetryBackoff = 1 * time.Second
+)
 
+func (s *Shipper) shipBatch(entries []LogEntry) {
 	payload, err := json.Marshal(map[string]any{
 		"logs": entries,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] marshal error: %v\n", err)
+		s.droppedCount.Add(int64(len(entries)))
 		return
 	}
 
 	// Compress payload with gzip
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
+	var compressed bytes.Buffer
+	gw := gzip.NewWriter(&compressed)
 	if _, err := gw.Write(payload); err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] gzip write error: %v\n", err)
+		s.droppedCount.Add(int64(len(entries)))
 		return
 	}
 	if err := gw.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] gzip close error: %v\n", err)
+		s.droppedCount.Add(int64(len(entries)))
 		return
 	}
+	compressedBytes := compressed.Bytes()
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", s.serverURL, s.agentID)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[log-shipper] request build error: %v\n", err)
+
+	for attempt := 0; attempt <= shipRetryCount; attempt++ {
+		if attempt > 0 {
+			jitter := time.Duration(rand.Intn(int(shipRetryBackoff / 2)))
+			time.Sleep(shipRetryBackoff + jitter)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(compressedBytes))
+		if err != nil {
+			cancel()
+			fmt.Fprintf(os.Stderr, "[log-shipper] request build error: %v\n", err)
+			s.droppedCount.Add(int64(len(entries)))
+			return
+		}
+
+		req.Header.Set("Authorization", "Bearer "+s.authToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			cancel()
+			// Network error: retry if we have attempts left
+			if attempt < shipRetryCount {
+				fmt.Fprintf(os.Stderr, "[log-shipper] HTTP error (attempt %d/%d): %v\n", attempt+1, shipRetryCount+1, err)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[log-shipper] HTTP error (giving up after %d attempts): %v\n", shipRetryCount+1, err)
+			s.droppedCount.Add(int64(len(entries)))
+			return
+		}
+
+		if resp.StatusCode >= 500 {
+			// Server error: retry if we have attempts left
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			resp.Body.Close()
+			cancel()
+			if attempt < shipRetryCount {
+				fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (attempt %d/%d): %s\n",
+					resp.StatusCode, attempt+1, shipRetryCount+1, string(body))
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (giving up after %d attempts): %s\n",
+				resp.StatusCode, shipRetryCount+1, string(body))
+			s.droppedCount.Add(int64(len(entries)))
+			return
+		}
+
+		if resp.StatusCode >= 400 {
+			// Client error (4xx): do not retry
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			resp.Body.Close()
+			cancel()
+			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries: %s\n",
+				resp.StatusCode, len(entries), string(body))
+			s.droppedCount.Add(int64(len(entries)))
+			return
+		}
+
+		// Success
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		cancel()
 		return
 	}
+}
 
-	req.Header.Set("Authorization", "Bearer "+s.authToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
+// DroppedLogCount returns the current count of dropped log entries without
+// resetting the counter. Use CommitDroppedLogCount to clear it after the
+// heartbeat has been successfully sent.
+func (s *Shipper) DroppedLogCount() int64 {
+	return s.droppedCount.Load()
+}
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[log-shipper] HTTP error: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries: %s\n", resp.StatusCode, len(entries), string(body))
-		return
-	}
-	io.Copy(io.Discard, resp.Body)
+// CommitDroppedLogCount resets the dropped log counter to zero. Call this
+// after the heartbeat POST succeeds so that the count is preserved for retry
+// if the heartbeat fails.
+func (s *Shipper) CommitDroppedLogCount() {
+	s.droppedCount.Store(0)
 }
