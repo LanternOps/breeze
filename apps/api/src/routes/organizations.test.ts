@@ -367,8 +367,7 @@ describe('organization routes', () => {
   });
 
   describe('sites', () => {
-    it.skip('should list sites for an accessible organization', async () => {
-      // Skipped: Complex mock chain - better for e2e testing
+    it('should list sites for an accessible organization', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
@@ -411,8 +410,7 @@ describe('organization routes', () => {
       expect(body.data).toHaveLength(1);
     });
 
-    it.skip('should create a site for an accessible organization', async () => {
-      // Skipped: Requires org validation mock
+    it('should create a site for an accessible organization', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
@@ -444,8 +442,7 @@ describe('organization routes', () => {
       expect(body.id).toBe('site-1');
     });
 
-    it.skip('should fetch a site by id', async () => {
-      // Skipped: Complex mock chain
+    it('should fetch a site by id', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
@@ -478,8 +475,7 @@ describe('organization routes', () => {
       expect(body.name).toBe('HQ');
     });
 
-    it.skip('should update a site', async () => {
-      // Skipped: Complex mock chain
+    it('should update a site', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
@@ -606,8 +602,7 @@ describe('organization routes', () => {
       expect(body.pagination.total).toBe(0);
     });
 
-    it.skip('should forbid site access to other organizations', async () => {
-      // Skipped: Requires org validation mock
+    it('should forbid site access to other organizations', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
       const otherOrgId = '22222222-2222-2222-2222-222222222222';
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
