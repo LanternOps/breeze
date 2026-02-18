@@ -443,9 +443,10 @@ type ScreenshotResponse struct {
 
 // ComputerActionResponse represents the result of a computer action
 type ComputerActionResponse struct {
-	ActionExecuted string              `json:"actionExecuted"`
-	Screenshot     *ScreenshotResponse `json:"screenshot,omitempty"`
-	Error          string              `json:"error,omitempty"`
+	ActionExecuted  string              `json:"actionExecuted"`
+	Screenshot      *ScreenshotResponse `json:"screenshot,omitempty"`
+	ScreenshotError string              `json:"screenshotError,omitempty"`
+	Error           string              `json:"error,omitempty"`
 }
 
 // RequirePayloadString extracts a required string field from the payload.
