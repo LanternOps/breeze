@@ -111,6 +111,7 @@ func (c *Client) authenticate() error {
 		DisplayEnv:      displayEnv,
 		PID:             os.Getpid(),
 		BinaryHash:      binaryHash,
+		WinSessionID:    currentWinSessionID(),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -358,6 +359,9 @@ func computeSelfHash() (string, error) {
 }
 
 func detectDisplayEnv() string {
+	if runtime.GOOS == "windows" {
+		return "windows"
+	}
 	if runtime.GOOS == "darwin" {
 		return "quartz"
 	}
