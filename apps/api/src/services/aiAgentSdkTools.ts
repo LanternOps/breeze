@@ -184,7 +184,10 @@ function makeHandler(
           }
         } catch (err) {
           console.error(`[AI-SDK] Failed to parse vision content blocks for ${toolName}:`, err);
-          // Fall through to normal text response
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Screenshot captured but response format was invalid. Please try again.' }) }],
+            isError: true,
+          };
         }
       }
 

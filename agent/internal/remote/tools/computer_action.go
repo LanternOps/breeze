@@ -57,7 +57,7 @@ func ComputerAction(payload map[string]any) CommandResult {
 	if captureAfter {
 		screenshot, err := captureScreenshot(monitor)
 		if err != nil {
-			resp.Error = fmt.Sprintf("action succeeded but screenshot failed: %v", err)
+			resp.ScreenshotError = fmt.Sprintf("action succeeded but screenshot failed: %v", err)
 		} else {
 			resp.Screenshot = screenshot
 		}

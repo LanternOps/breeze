@@ -629,6 +629,7 @@ registerTool({
         })
         .where(eq(alerts.id, input.alertId as string));
 
+      let eventWarning: string | undefined;
       try {
         await publishEvent(
           'alert.acknowledged',
@@ -644,9 +645,10 @@ registerTool({
         );
       } catch (error) {
         console.error('[AiTools] Failed to publish alert.acknowledged event:', error);
+        eventWarning = 'Alert was acknowledged but event notification may be delayed';
       }
 
-      return JSON.stringify({ success: true, message: `Alert "${alert.title}" acknowledged` });
+      return JSON.stringify({ success: true, message: `Alert "${alert.title}" acknowledged`, warning: eventWarning });
     }
 
     if (action === 'resolve') {
@@ -665,6 +667,7 @@ registerTool({
         })
         .where(eq(alerts.id, input.alertId as string));
 
+      let resolveEventWarning: string | undefined;
       try {
         await publishEvent(
           'alert.resolved',
@@ -681,9 +684,10 @@ registerTool({
         );
       } catch (error) {
         console.error('[AiTools] Failed to publish alert.resolved event:', error);
+        resolveEventWarning = 'Alert was resolved but event notification may be delayed';
       }
 
-      return JSON.stringify({ success: true, message: `Alert "${alert.title}" resolved` });
+      return JSON.stringify({ success: true, message: `Alert "${alert.title}" resolved`, warning: resolveEventWarning });
     }
 
     return JSON.stringify({ error: `Unknown action: ${action}` });
