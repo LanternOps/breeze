@@ -58,6 +58,7 @@ type AuthRequest struct {
 	DisplayEnv      string `json:"displayEnv"`
 	PID             int    `json:"pid"`
 	BinaryHash      string `json:"binaryHash"`
+	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
