@@ -1,0 +1,530 @@
+---
+title: Device Groups
+description: Organize devices into static and dynamic groups for targeted policy assignment, bulk operations, and fleet segmentation.
+sidebar:
+  order: 16
+  label: Device Groups
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Device Groups let you organize managed devices into logical collections for targeted policy assignment, bulk operations, and fleet segmentation. Groups are scoped to an organization and optionally to a site, and they support a parent-child hierarchy for nested grouping.
+
+Breeze supports two group types:
+
+| Type | Membership | Best for |
+|---|---|---|
+| **Static** | Devices are added and removed manually. | Fixed collections such as "Executive Laptops" or "Lobby Kiosks". |
+| **Dynamic** | Membership is computed automatically from filter rules. Devices enter and leave the group as their attributes change. | Attribute-driven segments such as "Windows Servers with >90% disk" or "Devices offline >7 days". |
+
+## Static vs dynamic groups
+
+### Static groups
+
+Static groups have a fixed membership list. You add or remove devices explicitly through the API or UI. This is the default group type.
+
+- Devices are added with `addedBy: 'manual'`.
+- Devices can be removed individually.
+- No filter conditions are evaluated.
+
+### Dynamic groups
+
+Dynamic groups use a `filterConditions` object to define membership rules. When a dynamic group is created or its filter is updated, the system evaluates the filter against all devices in the organization and automatically adds or removes members.
+
+- Devices that match the filter are added with `addedBy: 'dynamic_rule'`.
+- Devices that stop matching are removed automatically -- unless they are **pinned**.
+- You cannot manually add or remove devices from a dynamic group. Use pinning instead.
+
+<Aside type="tip">
+Dynamic group membership is also re-evaluated when individual device attributes change, but only for groups whose `filterFieldsUsed` overlap with the changed fields. This avoids unnecessary re-evaluation across the entire group set.
+</Aside>
+
+## Creating a group
+
+<Steps>
+
+1. Choose a **name** (1--255 characters) and a **type** (`static` or `dynamic`).
+
+2. Specify the **organization** the group belongs to. Optionally scope it to a **site**.
+
+3. For dynamic groups, define **filter conditions** (see [Dynamic group rules](#dynamic-group-rules) below).
+
+4. Optionally set a **parent group** to create a hierarchy. The parent must belong to the same organization.
+
+5. Submit the request. For dynamic groups, membership evaluation runs asynchronously after creation.
+
+</Steps>
+
+<Tabs>
+<TabItem label="Static group">
+```bash
+curl -X POST /api/v1/groups \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "ORG_UUID",
+    "name": "Executive Laptops",
+    "type": "static"
+  }'
+```
+</TabItem>
+<TabItem label="Dynamic group">
+```bash
+curl -X POST /api/v1/groups \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "ORG_UUID",
+    "name": "High Disk Usage Servers",
+    "type": "dynamic",
+    "filterConditions": {
+      "operator": "AND",
+      "conditions": [
+        { "field": "osType", "operator": "equals", "value": "linux" },
+        { "field": "metrics.diskPercent", "operator": "greaterThan", "value": 90 }
+      ]
+    }
+  }'
+```
+</TabItem>
+</Tabs>
+
+## Membership management
+
+### Adding devices to a static group
+
+Send an array of device UUIDs. The API verifies that each device exists and belongs to the same organization as the group. Duplicate memberships are silently skipped.
+
+```bash
+curl -X POST /api/v1/groups/:id/devices \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "deviceIds": ["DEVICE_UUID_1", "DEVICE_UUID_2"] }'
+```
+
+The response reports how many devices were added and how many were skipped (already members):
+
+```json
+{
+  "data": {
+    "added": 2,
+    "skipped": 0,
+    "total": 5
+  }
+}
+```
+
+<Aside type="caution">
+You cannot manually add devices to a dynamic group. The API returns a `400` error: *"Cannot manually add devices to a dynamic group"*.
+</Aside>
+
+### Removing devices from a static group
+
+Remove a single device by its ID:
+
+```bash
+curl -X DELETE /api/v1/groups/:id/devices/:deviceId \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+You can also remove devices in bulk through the alternate endpoint:
+
+```bash
+curl -X DELETE /api/v1/devices/groups/:id/members \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "deviceIds": ["DEVICE_UUID_1", "DEVICE_UUID_2"] }'
+```
+
+### Listing group members
+
+```bash
+curl /api/v1/groups/:id/devices \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Each member record includes:
+
+| Field | Description |
+|---|---|
+| `deviceId` | UUID of the device |
+| `hostname` | Device hostname |
+| `displayName` | Optional display name |
+| `status` | Current device status (`online`, `offline`, etc.) |
+| `osType` | Operating system type |
+| `isPinned` | Whether the device is pinned (dynamic groups only) |
+| `addedAt` | Timestamp when the device joined the group |
+| `addedBy` | How the device was added: `manual`, `dynamic_rule`, or `policy` |
+
+## Dynamic group rules
+
+Dynamic groups use a `filterConditions` object that follows a recursive AND/OR structure. Each condition targets a specific device field with an operator and value.
+
+### Filter condition structure
+
+```json
+{
+  "operator": "AND",
+  "conditions": [
+    { "field": "osType", "operator": "equals", "value": "windows" },
+    {
+      "operator": "OR",
+      "conditions": [
+        { "field": "status", "operator": "equals", "value": "offline" },
+        { "field": "daysSinceLastSeen", "operator": "greaterThan", "value": 7 }
+      ]
+    }
+  ]
+}
+```
+
+### Available filter fields
+
+Fields are organized by category. Each field supports a specific set of operators based on its data type.
+
+<Tabs>
+<TabItem label="Core">
+| Field | Label | Type | Example operators |
+|---|---|---|---|
+| `hostname` | Hostname | string | `equals`, `contains`, `startsWith`, `matches` |
+| `displayName` | Display Name | string | `equals`, `contains`, `isNull` |
+| `status` | Status | enum | `equals`, `in` (values: `online`, `offline`, `maintenance`, `decommissioned`) |
+| `agentVersion` | Agent Version | string | `equals`, `contains`, `startsWith` |
+| `enrolledAt` | Enrolled At | datetime | `before`, `after`, `withinLast` |
+| `lastSeenAt` | Last Seen At | datetime | `before`, `after`, `withinLast` |
+| `tags` | Tags | array | `hasAny`, `hasAll`, `isEmpty` |
+</TabItem>
+<TabItem label="OS">
+| Field | Label | Type | Example operators |
+|---|---|---|---|
+| `osType` | OS Type | enum | `equals`, `in` (values: `windows`, `macos`, `linux`) |
+| `osVersion` | OS Version | string | `equals`, `contains` |
+| `osBuild` | OS Build | string | `equals`, `contains` |
+| `architecture` | Architecture | enum | `equals`, `in` (values: `x64`, `x86`, `arm64`) |
+</TabItem>
+<TabItem label="Hardware">
+| Field | Label | Type | Example operators |
+|---|---|---|---|
+| `hardware.manufacturer` | Manufacturer | string | `equals`, `contains` |
+| `hardware.model` | Model | string | `equals`, `contains` |
+| `hardware.serialNumber` | Serial Number | string | `equals` |
+| `hardware.cpuModel` | CPU Model | string | `contains` |
+| `hardware.cpuCores` | CPU Cores | number | `greaterThan`, `lessThan`, `between` |
+| `hardware.ramTotalMb` | RAM (MB) | number | `greaterThan`, `lessThan`, `between` |
+| `hardware.diskTotalGb` | Disk Size (GB) | number | `greaterThan`, `lessThan`, `between` |
+| `hardware.gpuModel` | GPU Model | string | `contains` |
+</TabItem>
+<TabItem label="Network & Metrics">
+| Field | Label | Type | Example operators |
+|---|---|---|---|
+| `network.ipAddress` | IP Address | string | `equals`, `startsWith`, `contains` |
+| `network.publicIp` | Public IP | string | `equals`, `startsWith` |
+| `network.macAddress` | MAC Address | string | `equals` |
+| `metrics.cpuPercent` | CPU % | number | `greaterThan`, `lessThan`, `between` |
+| `metrics.ramPercent` | RAM % | number | `greaterThan`, `lessThan`, `between` |
+| `metrics.diskPercent` | Disk % | number | `greaterThan`, `lessThan`, `between` |
+</TabItem>
+<TabItem label="Software & Computed">
+| Field | Label | Type | Example operators |
+|---|---|---|---|
+| `software.installed` | Has Software Installed | string | `contains`, `notContains` |
+| `software.notInstalled` | Missing Software | string | `contains` |
+| `daysSinceLastSeen` | Days Since Last Seen | number | `greaterThan`, `lessThan` |
+| `daysSinceEnrolled` | Days Since Enrolled | number | `greaterThan`, `lessThan` |
+</TabItem>
+<TabItem label="Hierarchy & Custom">
+| Field | Label | Type | Example operators |
+|---|---|---|---|
+| `orgId` | Organization | string | `equals`, `in` |
+| `siteId` | Site | string | `equals`, `in` |
+| `groupId` | Device Group | string | `equals`, `in` |
+| `custom.*` | Custom Fields | string | `equals`, `contains`, `startsWith` |
+
+Custom fields use the prefix `custom.` followed by the field key (e.g., `custom.department`).
+</TabItem>
+</Tabs>
+
+### Operator reference
+
+| Operator | Applies to | Description |
+|---|---|---|
+| `equals` / `notEquals` | All types | Exact match or negation |
+| `greaterThan` / `greaterThanOrEquals` | number, date | Numeric or date comparison |
+| `lessThan` / `lessThanOrEquals` | number, date | Numeric or date comparison |
+| `contains` / `notContains` | string, array | Case-insensitive substring match (ILIKE) |
+| `startsWith` / `endsWith` | string | Prefix or suffix match |
+| `matches` | string | PostgreSQL regex match (`~`) |
+| `in` / `notIn` | string, enum | Value in or not in an array |
+| `hasAny` / `hasAll` | array | Array overlap or superset check |
+| `isEmpty` / `isNotEmpty` | array | Array emptiness check |
+| `isNull` / `isNotNull` | All types | Null check |
+| `before` / `after` | date, datetime | Date comparison |
+| `between` | number, date | Range check (value: `{ "from": ..., "to": ... }`) |
+| `withinLast` / `notWithinLast` | date, datetime | Relative time (value: `{ "amount": 7, "unit": "days" }`) |
+
+### Previewing dynamic membership
+
+Before saving filter changes, you can preview which devices would match:
+
+```bash
+curl -X POST /api/v1/groups/:id/preview?limit=20 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The response includes a total count and a sample of matching devices:
+
+```json
+{
+  "data": {
+    "totalCount": 47,
+    "devices": [
+      {
+        "id": "...",
+        "hostname": "SRV-PROD-01",
+        "displayName": "Production Server 1",
+        "osType": "linux",
+        "status": "online",
+        "lastSeenAt": "2026-02-18T10:30:00.000Z"
+      }
+    ],
+    "evaluatedAt": "2026-02-18T10:32:00.000Z"
+  }
+}
+```
+
+The `limit` query parameter controls the number of sample devices returned (1--100, default 10).
+
+### Pinning devices in dynamic groups
+
+Pinning a device to a dynamic group prevents it from being removed when it no longer matches the filter rules. This is useful for devices that must always receive a group's policies regardless of attribute changes.
+
+```bash
+# Pin a device
+curl -X POST /api/v1/groups/:id/devices/:deviceId/pin \
+  -H "Authorization: Bearer $TOKEN"
+
+# Unpin a device
+curl -X DELETE /api/v1/groups/:id/devices/:deviceId/pin \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+When a device is unpinned, the system immediately re-evaluates the filter. If the device no longer matches, it is removed from the group.
+
+<Aside type="note">
+Pinning is only supported on dynamic groups. Attempting to pin a device in a static group returns a `400` error.
+</Aside>
+
+## Group hierarchy
+
+Groups support a parent-child relationship through the `parentId` field. This lets you organize groups into trees:
+
+```
+All Servers
+  ├── Windows Servers
+  │     ├── Domain Controllers
+  │     └── File Servers
+  └── Linux Servers
+        └── Web Servers
+```
+
+Rules for hierarchy:
+
+- A group cannot be its own parent.
+- The parent must belong to the same organization.
+- A group with child groups cannot be deleted. Remove or reassign children first.
+
+## Group-level policy assignment
+
+Device groups are a valid assignment target for [Configuration Policies](/features/configuration-policies). In the policy hierarchy, device group sits between site and device:
+
+```
+Partner          (lowest priority)
+  └── Organization
+        └── Site
+              └── Device Group
+                    └── Device  (highest priority)
+```
+
+To assign a configuration policy to a device group:
+
+```bash
+curl -X POST /api/v1/configuration-policies/:policyId/assignments \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "level": "device_group",
+    "targetId": "GROUP_UUID",
+    "priority": 10
+  }'
+```
+
+All devices in the group inherit the policy settings. More specific assignments (at the individual device level) override group-level settings.
+
+## Bulk operations on groups
+
+Groups integrate with the deployment system as a target type. When creating a deployment (script execution, patch rollout, software install, or policy push), you can target one or more groups instead of listing individual devices.
+
+The deployment target configuration accepts group IDs:
+
+```json
+{
+  "targetType": "groups",
+  "targetConfig": {
+    "type": "groups",
+    "groupIds": ["GROUP_UUID_1", "GROUP_UUID_2"]
+  }
+}
+```
+
+The deployment system resolves group membership at execution time, so dynamic group changes are reflected automatically.
+
+For quick bulk membership changes on static groups, use the batch endpoints:
+
+```bash
+# Add multiple devices at once
+curl -X POST /api/v1/devices/groups/:id/members \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "deviceIds": ["UUID1", "UUID2", "UUID3"] }'
+
+# Remove multiple devices at once
+curl -X DELETE /api/v1/devices/groups/:id/members \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "deviceIds": ["UUID1", "UUID2"] }'
+```
+
+## Membership audit log
+
+Every membership change is recorded in the `group_membership_log` table. You can query the log for a specific group:
+
+```bash
+curl "/api/v1/groups/:id/membership-log?limit=50&offset=0" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Optional filters:
+
+| Parameter | Description |
+|---|---|
+| `deviceId` | Filter to a specific device |
+| `action` | Filter by `added` or `removed` |
+| `limit` | Number of entries to return (1--500, default 50) |
+| `offset` | Pagination offset (default 0) |
+
+Each log entry includes:
+
+| Field | Description |
+|---|---|
+| `id` | Log entry UUID |
+| `groupId` | Group UUID |
+| `deviceId` | Device UUID |
+| `hostname` | Device hostname (joined from devices table) |
+| `displayName` | Device display name |
+| `action` | `added` or `removed` |
+| `reason` | Why the change occurred: `manual`, `filter_match`, `filter_unmatch`, `pinned`, or `unpinned` |
+| `createdAt` | Timestamp of the change |
+
+## API reference
+
+All group endpoints require authentication and one of the following scopes: `organization`, `partner`, or `system`.
+
+### Primary group endpoints (`/api/v1/groups` or `/api/v1/device-groups`)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | List groups. Query params: `siteId`, `type`, `parentId`, `search` |
+| `POST` | `/` | Create a group |
+| `GET` | `/:id` | Get a single group |
+| `PATCH` | `/:id` | Update a group |
+| `DELETE` | `/:id` | Delete a group (fails if it has child groups) |
+| `GET` | `/:id/devices` | List devices in a group |
+| `POST` | `/:id/devices` | Add devices to a static group |
+| `DELETE` | `/:id/devices/:deviceId` | Remove a device from a static group |
+| `POST` | `/:id/preview` | Preview dynamic group filter matches. Query: `limit` |
+| `POST` | `/:id/devices/:deviceId/pin` | Pin a device in a dynamic group |
+| `DELETE` | `/:id/devices/:deviceId/pin` | Unpin a device from a dynamic group |
+| `GET` | `/:id/membership-log` | Query the membership change audit log |
+
+### Device-scoped group endpoints (`/api/v1/devices/groups`)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/groups` | List groups for an org. Query: `orgId`, `page`, `limit` |
+| `POST` | `/groups` | Create a group |
+| `PATCH` | `/groups/:id` | Update a group |
+| `DELETE` | `/groups/:id` | Delete a group |
+| `POST` | `/groups/:id/members` | Batch add devices to a group |
+| `DELETE` | `/groups/:id/members` | Batch remove devices from a group |
+
+### Database schema
+
+The feature uses three tables:
+
+**`device_groups`**
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | uuid (PK) | Auto-generated group ID |
+| `org_id` | uuid (FK) | Organization the group belongs to |
+| `site_id` | uuid (FK, nullable) | Optional site scope |
+| `name` | varchar(255) | Group name |
+| `type` | enum | `static` or `dynamic` |
+| `rules` | jsonb | Legacy rules field |
+| `filter_conditions` | jsonb | Structured filter for dynamic groups |
+| `filter_fields_used` | text[] | Cached list of fields referenced by the filter |
+| `parent_id` | uuid (nullable) | Parent group for hierarchy |
+| `created_at` | timestamp | Creation timestamp |
+| `updated_at` | timestamp | Last update timestamp |
+
+**`device_group_memberships`**
+
+| Column | Type | Description |
+|---|---|---|
+| `device_id` | uuid (FK, PK) | Device ID |
+| `group_id` | uuid (FK, PK) | Group ID |
+| `is_pinned` | boolean | Whether the device is pinned (default `false`) |
+| `added_at` | timestamp | When the device was added |
+| `added_by` | enum | `manual`, `dynamic_rule`, or `policy` |
+
+**`group_membership_log`**
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | uuid (PK) | Log entry ID |
+| `group_id` | uuid (FK) | Group ID |
+| `device_id` | uuid (FK) | Device ID |
+| `action` | enum | `added` or `removed` |
+| `reason` | enum | `manual`, `filter_match`, `filter_unmatch`, `pinned`, or `unpinned` |
+| `created_at` | timestamp | Timestamp of the change |
+
+## Troubleshooting
+
+### Devices not appearing in a dynamic group
+
+1. **Check filter conditions** -- Use the `POST /api/v1/groups/:id/preview` endpoint to verify that the filter matches the expected devices.
+2. **Verify organization scope** -- Dynamic filters only evaluate devices within the group's `orgId`. Devices in other organizations are never matched.
+3. **Inspect `filterFieldsUsed`** -- The system caches which fields a filter references. If the cache is stale, the incremental re-evaluation (`updateDeviceMembership`) may skip the group because it sees no field overlap with the device change. Updating the group's filter conditions triggers a full re-evaluation and refreshes the cache.
+4. **Check the membership log** -- Query `GET /api/v1/groups/:id/membership-log` with the device ID to see if the device was added and then removed.
+
+### Cannot add devices to a group
+
+- **Dynamic groups** reject manual additions. You will receive: *"Cannot manually add devices to a dynamic group"*. Use pinning instead or switch the group type to `static`.
+- **Cross-org devices** are rejected. All devices must belong to the same organization as the group.
+
+### Cannot delete a group
+
+- Groups with **child groups** cannot be deleted. The API returns: *"Cannot delete group with child groups"*. Delete or reassign children first.
+- Deleting a group removes all its membership records automatically.
+
+### Pinned devices removed unexpectedly
+
+Pinned devices should never be removed by filter re-evaluation. If a pinned device was removed, check the membership log for a `reason` of `unpinned` -- someone may have unpinned the device before the filter re-evaluation ran. When a device is unpinned, the system immediately checks whether it still matches the filter and removes it if it does not.
+
+### Filter validation errors
+
+When creating or updating a dynamic group with filter conditions, the API validates the filter structure. Common errors:
+
+- **"Unknown field"** -- The field key does not match any known filter field. Check the [Available filter fields](#available-filter-fields) tables above. Custom fields must use the `custom.` prefix.
+- **"Operator not valid for field"** -- The operator is not supported for the field's data type. For example, `greaterThan` is not valid for enum fields.
+- **"Group must have at least one condition"** -- A filter condition group cannot be empty.

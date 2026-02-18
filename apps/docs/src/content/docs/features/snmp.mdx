@@ -1,0 +1,453 @@
+---
+title: SNMP Monitoring
+description: Monitor network infrastructure devices using SNMP templates, custom OIDs, and real-time metric dashboards.
+sidebar:
+  order: 10
+  label: SNMP Monitoring
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+SNMP Monitoring lets you poll network infrastructure devices — routers, switches, printers, UPS units, and anything else that speaks SNMP — directly through the Breeze agent. You define which OIDs to collect via reusable templates, assign those templates to monitored assets, and the platform handles scheduled polling, metric storage, and dashboard aggregation. All SNMP data flows through the same agent WebSocket channel used for other commands, so no additional firewall rules or sidecar processes are required.
+
+The system supports SNMP v1, v2c, and v3 (including SNMPv3 authentication and privacy protocols). Metrics are stored with a configurable retention window (default 7 days) and are automatically pruned by a background worker.
+
+---
+
+## Key Concepts
+
+### SNMP Versions
+
+| Version | Authentication | Notes |
+|---------|---------------|-------|
+| **v1** | Community string | Legacy; limited counter size (32-bit) |
+| **v2c** | Community string | Default. Supports 64-bit counters (`Counter64`) |
+| **v3** | Username + auth/priv protocols | Full encryption support. Requires username; auth and privacy protocols are optional depending on security level |
+
+### SNMPv3 Security Levels
+
+The agent automatically infers the security level from the credentials you provide:
+
+| Level | Meaning |
+|-------|---------|
+| **noAuthNoPriv** | Username only, no authentication or encryption |
+| **authNoPriv** | Authentication (MD5/SHA) but no encryption |
+| **authPriv** | Both authentication and encryption (DES/AES) |
+
+### Supported Auth Protocols
+
+| Authentication | Privacy |
+|---------------|---------|
+| MD5, SHA, SHA-224, SHA-256, SHA-384, SHA-512 | DES, AES-128, AES-192, AES-256, AES-192C, AES-256C |
+
+### Templates
+
+Templates are named collections of OIDs that define what to poll on a device. There are two types:
+
+| Type | Description |
+|------|-------------|
+| **Builtin** | Ship with the platform. Cannot be modified or deleted. Cover common device types. |
+| **Custom** | Created by users. Fully editable. Scoped globally (not per-org). |
+
+Each OID entry in a template includes:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `oid` | Yes | Dotted numeric OID (e.g. `1.3.6.1.2.1.1.3.0`) |
+| `name` | Yes | Human-readable name (e.g. `sysUpTime`) |
+| `label` | No | Display label for dashboards |
+| `unit` | No | Unit of measurement (e.g. `bytes`, `%`) |
+| `type` | No | Value type hint (e.g. `Counter64`, `Gauge`, `OctetString`) |
+| `description` | No | Explanation of what this OID measures |
+
+### Agent-Side Templates
+
+The Go agent also ships with built-in OID sets for common device types. These are used when the agent receives an `snmp_poll` command and include:
+
+| Device Type | Example OIDs |
+|-------------|-------------|
+| **Common** (all devices) | `sysUpTime`, `sysName`, `ifOperStatus`, `ifInOctets`, `ifOutOctets` |
+| **Router** | `ipForwarding`, `ipInReceives`, `ipOutRequests` |
+| **Switch** | `dot1dBaseBridgeAddress`, `dot1dBaseNumPorts`, `dot1dTpFdbTable` |
+| **Printer** | `hrDeviceStatus`, `prtGeneralPrinterStatus`, `prtMarkerLifeCount`, `prtMarkerSuppliesLevel` |
+
+### OID Catalog
+
+The API includes a built-in OID catalog with well-known OIDs for quick reference and validation:
+
+| OID | Name | Type | Description |
+|-----|------|------|-------------|
+| `1.3.6.1.2.1.1.1.0` | sysDescr | OctetString | System description |
+| `1.3.6.1.2.1.1.3.0` | sysUpTime | TimeTicks | Time since last initialization |
+| `1.3.6.1.2.1.1.5.0` | sysName | OctetString | Device hostname |
+| `1.3.6.1.2.1.2.2.1.10` | ifInOctets | Counter64 | Inbound octets per interface |
+| `1.3.6.1.2.1.2.2.1.16` | ifOutOctets | Counter64 | Outbound octets per interface |
+| `1.3.6.1.2.1.25.3.3.1.2` | hrProcessorLoad | Gauge | Host processor load |
+| `1.3.6.1.4.1.2021.4.6.0` | memAvailableReal | Gauge | Available physical memory |
+| `1.3.6.1.4.1.2021.9.1.9` | dskPercent | Gauge | Disk utilization percentage |
+
+---
+
+## SNMP Templates
+
+### Listing Templates
+
+Retrieve all templates, optionally filtering by source or searching by name, vendor, or device type:
+
+```bash
+GET /snmp/templates?source=builtin&search=cisco
+```
+
+Query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source` | `builtin` or `custom` | Filter by template origin |
+| `search` | string | Search across name, vendor, and device type fields |
+
+### Creating a Custom Template
+
+```bash
+POST /snmp/templates
+Content-Type: application/json
+
+{
+  "name": "Ubiquiti EdgeSwitch",
+  "description": "Standard OIDs for Ubiquiti EdgeSwitch series",
+  "vendor": "Ubiquiti",
+  "deviceType": "switch",
+  "oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "name": "sysUpTime",
+      "type": "TimeTicks",
+      "description": "System uptime"
+    },
+    {
+      "oid": "1.3.6.1.2.1.2.2.1.10",
+      "name": "ifInOctets",
+      "type": "Counter64",
+      "description": "Inbound octets per interface"
+    },
+    {
+      "oid": "1.3.6.1.2.1.2.2.1.16",
+      "name": "ifOutOctets",
+      "type": "Counter64",
+      "description": "Outbound octets per interface"
+    }
+  ]
+}
+```
+
+The response includes the created template with its generated `id` and a `source` of `"custom"`.
+
+### Updating a Template
+
+```bash
+PATCH /snmp/templates/:id
+Content-Type: application/json
+
+{
+  "name": "Ubiquiti EdgeSwitch v2",
+  "oids": [...]
+}
+```
+
+All fields are optional in the update payload. Only provided fields are changed.
+
+<Aside type="caution">
+  Built-in templates cannot be modified or deleted. Attempts to update or delete a built-in template will return a `400` error.
+</Aside>
+
+### Deleting a Template
+
+```bash
+DELETE /snmp/templates/:id
+```
+
+Returns the deleted template record on success.
+
+---
+
+## SNMP Devices (Monitoring Assets)
+
+SNMP device management has been consolidated into the unified Monitoring Assets API. To configure SNMP polling on a discovered asset, use the `/monitoring/assets/:id/snmp` endpoints.
+
+### Enabling SNMP on an Asset
+
+<Steps>
+
+1. **Discover the asset** using Network Discovery or add it manually through the monitoring assets list.
+
+2. **Configure SNMP credentials** by sending a PUT request:
+
+    ```bash
+    PUT /monitoring/assets/:assetId/snmp
+    Content-Type: application/json
+
+    {
+      "snmpVersion": "v2c",
+      "community": "my-community-string",
+      "templateId": "uuid-of-template",
+      "pollingInterval": 300,
+      "port": 161
+    }
+    ```
+
+3. **Verify the configuration** by checking the asset's monitoring status:
+
+    ```bash
+    GET /monitoring/assets/:assetId
+    ```
+
+</Steps>
+
+### SNMP Configuration Fields
+
+<Tabs>
+  <TabItem label="v1 / v2c">
+    | Field | Type | Required | Default | Description |
+    |-------|------|----------|---------|-------------|
+    | `snmpVersion` | `v1` or `v2c` | Yes | -- | SNMP protocol version |
+    | `community` | string | Yes | -- | Community string for authentication |
+    | `templateId` | UUID | No | `null` | Template defining which OIDs to poll |
+    | `pollingInterval` | integer | No | `300` | Seconds between polls (min: 30, max: 86400) |
+    | `port` | integer | No | `161` | SNMP port on the target device |
+  </TabItem>
+  <TabItem label="v3">
+    | Field | Type | Required | Default | Description |
+    |-------|------|----------|---------|-------------|
+    | `snmpVersion` | `v3` | Yes | -- | SNMP protocol version |
+    | `username` | string | Yes | -- | SNMPv3 security name |
+    | `authProtocol` | `md5`, `sha`, `sha256` | No | -- | Authentication protocol |
+    | `authPassword` | string | No | -- | Authentication passphrase |
+    | `privProtocol` | `des`, `aes`, `aes256` | No | -- | Privacy (encryption) protocol |
+    | `privPassword` | string | No | -- | Privacy passphrase |
+    | `templateId` | UUID | No | `null` | Template defining which OIDs to poll |
+    | `pollingInterval` | integer | No | `300` | Seconds between polls (min: 30, max: 86400) |
+    | `port` | integer | No | `161` | SNMP port on the target device |
+  </TabItem>
+</Tabs>
+
+### Updating SNMP Configuration
+
+Use PATCH to update individual fields without replacing the full configuration:
+
+```bash
+PATCH /monitoring/assets/:assetId/snmp
+Content-Type: application/json
+
+{
+  "pollingInterval": 60,
+  "isActive": false
+}
+```
+
+### Disabling Monitoring
+
+To disable all monitoring (SNMP and network monitors) on an asset:
+
+```bash
+DELETE /monitoring/assets/:assetId
+```
+
+This sets `isActive: false` on all SNMP device rows and network monitors for the asset. No data is deleted.
+
+---
+
+## Polling Architecture
+
+The SNMP polling system is built on BullMQ with Redis as the message broker. It operates as a three-stage pipeline:
+
+<Steps>
+
+1. **Scheduler** -- A repeatable BullMQ job runs every 60 seconds, scanning the `snmp_devices` table for active devices whose `pollingInterval` has elapsed since their `lastPolled` timestamp (or that have never been polled).
+
+2. **Poll dispatch** -- For each due device, the scheduler enqueues a `poll-device` job. The worker loads the device's template OIDs, finds an online Breeze agent in the same organization, and sends an `snmp_poll` command over the agent's WebSocket connection.
+
+3. **Result processing** -- When the agent returns SNMP metric results, a `process-poll-results` job writes each metric row to the `snmp_metrics` table and updates the device's `lastPolled` timestamp and `lastStatus`.
+
+</Steps>
+
+<Aside>
+  The SNMP poll command is dispatched to any online agent within the same organization -- not necessarily an agent running on the target device itself. The agent uses the `gosnmp` library to reach the target over the network via the configured IP address and port.
+</Aside>
+
+The worker runs with a concurrency of 10 to allow multiple device polls to be processed in parallel.
+
+### Metric Retention
+
+A separate `snmp-retention` worker runs every 6 hours and deletes all metric rows older than the retention period (default: 7 days). This keeps the `snmp_metrics` table from growing unbounded.
+
+---
+
+## Metrics & Dashboard
+
+### Viewing Metrics for an Asset
+
+The monitoring assets detail endpoint returns the 20 most recent SNMP metrics for a given asset:
+
+```bash
+GET /monitoring/assets/:assetId
+```
+
+The response includes a `recentMetrics` array with:
+
+| Field | Description |
+|-------|-------------|
+| `oid` | The polled OID |
+| `name` | Human-readable metric name |
+| `value` | The collected value (string-encoded) |
+| `valueType` | Data type: `number`, `string`, `null`, or `object` |
+| `timestamp` | ISO 8601 collection timestamp |
+
+### SNMP Dashboard
+
+The dashboard endpoint provides an aggregated overview of your SNMP monitoring estate:
+
+```bash
+GET /snmp/dashboard?orgId=uuid
+```
+
+The response contains:
+
+| Section | Description |
+|---------|-------------|
+| `totals.devices` | Total SNMP-monitored devices |
+| `totals.templates` | Total templates (builtin + custom) |
+| `totals.thresholds` | Total alert thresholds configured |
+| `status` | Device counts grouped by last poll status (e.g. `online`, `offline`, `unknown`) |
+| `templateUsage` | List of templates with the number of devices using each |
+| `recentPolls` | Last 5 polled devices with timestamps and status |
+| `topInterfaces` | Top 5 interfaces by traffic volume (last 30 minutes) |
+
+### Top Interfaces
+
+The `topInterfaces` section ranks network interfaces by total octet throughput (inbound + outbound) over a rolling 30-minute window. It works by aggregating `ifInOctets` and `ifOutOctets` metric readings and computing the delta between minimum and maximum values for each interface during the window.
+
+Each entry includes:
+
+| Field | Description |
+|-------|-------------|
+| `deviceId` | The SNMP device UUID |
+| `name` | Display name (device name / ifIndex) |
+| `inOctets` | Inbound byte delta over the window |
+| `outOctets` | Outbound byte delta over the window |
+| `totalOctets` | Combined in + out delta |
+
+---
+
+## OID Browser & Validation
+
+### Browsing OIDs
+
+Search the combined OID catalog (built-in catalog + OIDs from all existing templates):
+
+```bash
+GET /snmp/oids/browse?query=uptime&limit=10
+```
+
+Results include the source (`catalog` or `template`) and the template name if sourced from a template.
+
+### Validating OIDs
+
+Before creating or updating a template, validate OIDs for format correctness and catalog presence:
+
+```bash
+POST /snmp/oids/validate
+Content-Type: application/json
+
+{
+  "oids": [
+    { "oid": "1.3.6.1.2.1.1.3.0", "name": "sysUpTime" },
+    { "oid": "not.a.valid.oid" }
+  ]
+}
+```
+
+The response includes per-OID validation results:
+
+| Field | Description |
+|-------|-------------|
+| `valid` | `true` if the OID passes all checks |
+| `errors` | Array of error messages (e.g. invalid format, duplicate) |
+| `warnings` | Array of warnings (e.g. OID not found in catalog) |
+| `normalizedOid` | The OID with leading dots stripped |
+
+<Aside type="tip">
+  A warning that an OID is "not found in catalog/templates" does not mean it is invalid. It simply means the OID is not in the built-in catalog or any existing template. The OID may still be perfectly valid on your target device.
+</Aside>
+
+---
+
+## API Reference
+
+### SNMP Template Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| **GET** | `/snmp/templates` | List templates (`?source=builtin\|custom&search=`) |
+| **POST** | `/snmp/templates` | Create custom template |
+| **GET** | `/snmp/templates/:id` | Get template by ID |
+| **PATCH** | `/snmp/templates/:id` | Update custom template |
+| **DELETE** | `/snmp/templates/:id` | Delete custom template |
+
+### OID Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| **GET** | `/snmp/oids/browse` | Search OID catalog + template OIDs (`?query=&limit=`) |
+| **POST** | `/snmp/oids/validate` | Validate OID format and catalog presence |
+
+### Monitoring Asset Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| **GET** | `/monitoring/assets` | List monitored assets with SNMP status |
+| **GET** | `/monitoring/assets/:id` | Get asset detail with recent metrics |
+| **PUT** | `/monitoring/assets/:id/snmp` | Create or replace SNMP configuration for an asset |
+| **PATCH** | `/monitoring/assets/:id/snmp` | Partially update SNMP configuration |
+| **DELETE** | `/monitoring/assets/:id` | Disable all monitoring on an asset |
+
+### Dashboard Endpoint
+
+| Method | Path | Description |
+|--------|------|-------------|
+| **GET** | `/snmp/dashboard` | Aggregated SNMP monitoring overview (`?orgId=`) |
+
+### Deprecated Endpoints
+
+The following legacy endpoints return `410 Gone` with a migration message:
+
+| Path | Replacement |
+|------|-------------|
+| `/snmp/devices` (all methods) | `/monitoring/assets` and `/monitoring/assets/:id/snmp` |
+| `/snmp/metrics/:deviceId` | `/monitoring/assets/:id` (returns 20 most recent metrics) |
+| `/snmp/metrics/:deviceId/history` | Not yet available in new API |
+| `/snmp/metrics/:deviceId/:oid` | Not yet available in new API |
+| `/snmp/thresholds` (all methods) | Use alert rules on network monitors via `/monitors/alerts` |
+
+---
+
+## Troubleshooting
+
+**No metrics appearing after enabling SNMP on an asset.**
+The polling scheduler runs every 60 seconds. After enabling SNMP, wait at least one full polling interval (default 300 seconds) plus the 60-second scheduler cycle. Confirm the device has a template assigned with at least one OID -- the worker skips devices with no OIDs configured. Also verify that at least one Breeze agent in the same organization is online, since the poll command is dispatched over the agent WebSocket.
+
+**Poll status stuck on `offline` or `unknown`.**
+This means the SNMP poll command was sent to the agent but no results were returned. Common causes: the target IP is unreachable from the agent's network, the SNMP port is blocked by a firewall, or the community string / SNMPv3 credentials are incorrect. Test connectivity from the agent host using `snmpwalk` or `snmpget` directly.
+
+**"No online agent for org" in worker logs.**
+The SNMP worker dispatches poll commands to any online agent in the same organization as the SNMP device. If no agents are connected via WebSocket, polls cannot be dispatched. Ensure at least one agent in the organization is running and connected.
+
+**Template OIDs not being polled.**
+Verify the template is assigned to the SNMP device by checking the `templateId` field. If `templateId` is null, no OIDs will be loaded and the poll will be skipped. Create or assign a template, then wait for the next poll cycle.
+
+**Metrics disappearing after 7 days.**
+This is expected behavior. The SNMP retention worker prunes metrics older than the configured retention period (default: 7 days). The retention job runs every 6 hours. If you need longer retention, this must be configured at the worker level.
+
+**Built-in template cannot be modified.**
+Built-in templates are read-only. To customize a built-in template, create a new custom template with the desired OIDs. You can use the OID browser (`GET /snmp/oids/browse`) to find and copy OIDs from existing templates.
+
+**OID validation returns warnings but no errors.**
+A warning that an OID is "not found in catalog/templates" is informational, not a blocker. The OID format is valid (dotted numeric notation), but it is not recognized in the built-in catalog or any existing template. The OID may still work correctly on your target device. Only entries with `errors` indicate actual problems (invalid format, duplicates).

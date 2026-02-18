@@ -1,0 +1,266 @@
+---
+title: Deployments
+description: Roll out scripts, patches, and configuration updates to your fleet with staggered rollouts, failure thresholds, and per-device tracking.
+sidebar:
+  order: 6
+  label: Deployments
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Deployments are the mechanism for rolling out a change — a script execution, patch installation, or configuration update — to a large set of devices in a controlled, auditable way. Rather than dispatching commands ad-hoc to individual devices, a deployment tracks every target device through its full lifecycle, captures per-device results, and surfaces aggregate progress in real time.
+
+Deployments solve the coordination problem that arises when you need to push a change to hundreds or thousands of endpoints simultaneously. Ad-hoc command dispatch gives you no rollback point, no visibility into partial failures, and no way to slow down a rollout that is going wrong. A deployment is stateful — it can be paused, resumed, and inspected at any point — which means you retain control throughout the entire operation.
+
+Staggered rollouts let you validate each batch before proceeding to the next. If a script breaks something on the first 10% of devices, you catch it before it reaches the remaining 90%. Combined with configurable failure thresholds that automatically pause a deployment when too many devices fail, staggered deployments give MSPs and enterprise IT teams a safe path for broad fleet changes.
+
+---
+
+## Key Concepts
+
+### Rollout Modes
+
+| Mode | Behavior | Best For |
+|------|----------|----------|
+| **Immediate** | All target devices receive the command at once | Urgent patches, time-sensitive changes, small fleets |
+| **Staggered** | Devices are divided into batches; each batch waits for the previous to complete before starting, with a configurable delay between batches | Large fleets, high-risk changes, changes that need validation before full rollout |
+
+### Target Types
+
+| Type | Field | Description |
+|------|-------|-------------|
+| **devices** | `targetConfig.deviceIds` | Explicit list of device UUIDs. Use when you know exactly which endpoints to target. |
+| **groups** | `targetConfig.groupIds` | One or more device group IDs. All devices currently in those groups are included at initialize time. |
+| **filter** | `targetConfig.filter` | A filter expression (OS, tags, site, online status, etc.). Evaluated at initialize time. |
+| **all** | _(no additional config)_ | Every device in the organization. Use with caution on large fleets. |
+
+### Lifecycle States
+
+```
+draft → pending → downloading → installing → completed
+                ↓                          → failed
+              paused                       → cancelled
+              (resume → downloading)       → rollback
+```
+
+| State | Description |
+|-------|-------------|
+| `draft` | Deployment has been created but not initialized. Targets and rollout config can still be edited. |
+| `pending` | Targets have been resolved and device records created. Deployment is waiting for `start` to be called. |
+| `running` | Set by the deployment worker when actively processing batches. |
+| `paused` | Operator paused the deployment; no new batches will start until resumed. |
+| `downloading` | Payload is being transferred to target devices. |
+| `installing` | Payload has been received and is being applied on target devices. |
+| `completed` | All device records have reached a terminal state and the deployment finished within acceptable failure thresholds. |
+| `failed` | The deployment reached a terminal failure state — typically because failure thresholds were exceeded and the deployment was not resumed. |
+| `cancelled` | An operator explicitly cancelled the deployment; all pending device records are abandoned. |
+| `rollback` | The deployment is rolling back a previous change. |
+
+### Retry and Failure Handling
+
+**Retry configuration** controls how many times Breeze will automatically re-attempt a failed device and how long it waits between each attempt.
+
+- `retryConfig.maxRetries` — integer from 0 to 10. When a device fails and the retry count is below this value, Breeze schedules another attempt automatically.
+- `retryConfig.backoffMinutes` — array of wait times in minutes. The first retry uses index 0, the second retry uses index 1, and so on. If the retry count exceeds the array length, the last value in the array is reused. Example: `[5, 15, 60]` means wait 5 minutes before the first retry, 15 minutes before the second, and 60 minutes before any subsequent retries.
+
+**Auto-pause thresholds** stop a staggered deployment automatically if failures are accumulating at an unexpected rate.
+
+- `staggered.pauseOnFailureCount` — absolute number of device failures. When the total failed count across all batches reaches this value, the deployment pauses automatically.
+- `staggered.pauseOnFailurePercent` — percentage of total target devices. When the failure rate crosses this threshold, the deployment pauses automatically.
+
+When a deployment auto-pauses, it enters a `paused` sub-state between batches. An operator must inspect the failed devices, determine the root cause, and then explicitly resume or cancel the deployment.
+
+---
+
+## Creating a Deployment
+
+### UI Walkthrough
+
+<Steps>
+
+1. Navigate to **Fleet** in the sidebar (deployments are managed within the Fleet page).
+
+2. Click **New Deployment** in the top-right corner.
+
+3. Enter a descriptive **Name** (e.g., "Monthly Cleanup — Windows Fleet").
+
+4. Select the **Type**: Script, Patch, Software, or Policy (config update).
+
+5. Configure the **Payload** for the selected type (choose a script, select patches, or pick a configuration policy).
+
+6. Select the **Target Type** and specify target devices, groups, or a filter expression.
+
+7. Choose a **Rollout Mode**: Immediate or Staggered.
+
+8. If Staggered, configure batch size, batch delay, and optional failure thresholds.
+
+9. Enable **Respect Maintenance Windows** if devices should only receive the command during their configured maintenance window.
+
+10. Configure **Retry Settings** if automatic retries are desired.
+
+11. Click **Save as Draft** to create the deployment without starting it, or proceed directly to **Initialize**.
+
+</Steps>
+
+### API — Create Deployment
+
+**POST** `/deployments`
+
+```json
+{
+  "name": "Monthly Cleanup — Windows Fleet",
+  "type": "script",
+  "payload": {
+    "scriptId": "uuid",
+    "parameters": {}
+  },
+  "targetType": "groups",
+  "targetConfig": {
+    "type": "groups",
+    "groupIds": ["uuid-1", "uuid-2"]
+  },
+  "rolloutConfig": {
+    "type": "staggered",
+    "staggered": {
+      "batchSize": "10%",
+      "batchDelayMinutes": 30,
+      "pauseOnFailurePercent": 20
+    },
+    "respectMaintenanceWindows": true,
+    "retryConfig": {
+      "maxRetries": 3,
+      "backoffMinutes": [5, 15, 60]
+    }
+  }
+}
+```
+
+The `batchSize` field accepts either an absolute integer (e.g., `50`) or a percentage string (e.g., `"10%"`). Percentages are calculated against the total resolved device count at initialize time.
+
+---
+
+## Initializing and Starting
+
+Deployments move from `draft` to execution through two explicit steps. Keeping them separate gives operators a confirmation checkpoint before any commands are dispatched to devices.
+
+### Initialize
+
+**POST** `/deployments/:id/initialize`
+
+Resolves the target selection to a concrete list of device IDs, calculates batch assignments for staggered deployments, and creates per-device deployment records. The deployment moves from `draft` to `pending`.
+
+Use this step as a preview: the response includes the resolved device count, total batches, and a summary of how devices are distributed across batches. No commands are sent to devices during initialization.
+
+A deployment in `pending` state can still be cancelled, but target and rollout config can no longer be edited.
+
+### Start
+
+**POST** `/deployments/:id/start`
+
+Begins execution. The deployment status moves from `pending` to `downloading`. For an immediate deployment, all device commands are dispatched at once. For a staggered deployment, the first batch is dispatched and the engine waits for batch completion (or the `batchDelayMinutes` timer) before starting the next batch.
+
+---
+
+## Monitoring Progress
+
+**GET** `/deployments/:id`
+
+The deployment object includes a `progress` field updated in real time as device records reach terminal states.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total` | integer | Total number of target devices resolved at initialize time |
+| `pending` | integer | Devices that have not yet been dispatched |
+| `running` | integer | Devices currently downloading or installing |
+| `completed` | integer | Devices that finished successfully |
+| `failed` | integer | Devices that failed all attempts (including retries) |
+| `skipped` | integer | Devices skipped due to offline status or maintenance window restrictions |
+| `currentBatch` | integer | The batch number currently being processed (staggered only) |
+| `totalBatches` | integer | Total number of batches calculated at initialize time (staggered only) |
+| `percentComplete` | number | `(completed + failed) / total * 100`, rounded to the nearest integer. Skipped devices are not counted toward progress. |
+
+### Per-Device Drill-Down
+
+**GET** `/deployments/:id/devices?status=failed&batchNumber=2`
+
+Returns the per-device deployment records filtered by status and/or batch number. Useful for identifying which specific devices failed in a given batch and examining their error output before deciding whether to resume or cancel.
+
+Query parameters: `status`, `batchNumber`, `limit`, `offset`.
+
+---
+
+## Pausing, Resuming, and Cancelling
+
+### Pause
+
+**POST** `/deployments/:id/pause`
+
+Pauses the deployment immediately by setting the status to `paused`. Devices already dispatched in the current batch will continue executing on the device side, but no new devices are dispatched until the deployment is resumed.
+
+### Resume
+
+**POST** `/deployments/:id/resume`
+
+Resumes a paused deployment (whether paused manually or auto-paused by a failure threshold). The next batch starts according to the configured `batchDelayMinutes`. Any failed devices that have remaining retry attempts will be retried automatically when their batch window comes around.
+
+<Aside type="caution">
+  **Known issue:** The resume endpoint currently checks for `status: 'pending'` internally, but `POST /deployments/:id/pause` sets the status to `'paused'`. This means resume will return a 400 error for deployments paused via the API. As a workaround, confirm the deployment status using `GET /deployments/:id` and contact support if resume consistently returns 400.
+</Aside>
+
+### Cancel
+
+**POST** `/deployments/:id/cancel`
+
+Cancels the deployment. All device records still in `pending` state are marked `skipped` and will not receive commands. Device records already in `running`, `completed`, `failed`, or `skipped` states are not affected. Cancellation is irreversible — a cancelled deployment cannot be resumed.
+
+---
+
+## Retrying Failed Devices
+
+**POST** `/deployments/:id/devices/:deviceId/retry`
+
+Manually schedules a retry for a specific failed device. The retry attempt is counted against `retryConfig.maxRetries`. If the device has already exhausted its maximum retries, the API returns a `400 Bad Request` indicating no further automatic or manual retries are permitted.
+
+Use per-device retry when:
+
+- A device was offline during the original dispatch and has since come back online.
+- A transient error (network timeout, temporary resource lock) caused the failure and the root cause has been resolved.
+- You want to retry a small number of devices without resuming the entire deployment.
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/deployments` | List deployments. Supports `?status=`, `?type=`, `?limit=`, `?offset=`. |
+| `POST` | `/deployments` | Create a new deployment in `draft` status. |
+| `GET` | `/deployments/:id` | Get a deployment including real-time `progress` object. |
+| `PUT` | `/deployments/:id` | Update a deployment. Only allowed when status is `draft`. |
+| `DELETE` | `/deployments/:id` | Delete a deployment. Only allowed when status is `draft`. |
+| `POST` | `/deployments/:id/initialize` | Resolve targets, calculate batches, move `draft` → `pending`. |
+| `POST` | `/deployments/:id/start` | Begin execution, move `pending` → `downloading`/`installing`. |
+| `POST` | `/deployments/:id/pause` | Pause the deployment (allowed when status is `downloading` or `installing`). |
+| `POST` | `/deployments/:id/resume` | Resume a paused deployment. |
+| `POST` | `/deployments/:id/cancel` | Cancel all pending devices and terminate the deployment. |
+| `GET` | `/deployments/:id/devices` | List per-device records. Supports `?status=`, `?batchNumber=`, `?limit=`, `?offset=`. |
+| `POST` | `/deployments/:id/devices/:deviceId/retry` | Retry a specific failed device. |
+
+---
+
+## Troubleshooting
+
+**Deployment is stuck in `pending` and nothing is happening.**
+The deployment was initialized but `POST /deployments/:id/start` was never called. Call start to begin execution. Initialization does not automatically start the deployment.
+
+**Deployment auto-paused unexpectedly.**
+A `pauseOnFailureCount` or `pauseOnFailurePercent` threshold was exceeded. Navigate to the deployment's device list, filter by `status=failed`, and review the error output on the failed devices. Resolve the underlying issue before calling `POST /deployments/:id/resume`. If the failures are acceptable, resume with the understanding that the failure rate may continue.
+
+**A device was skipped but I expected it to receive the command.**
+Two common causes: (1) the device was offline at the time its batch was dispatched — skipped devices are not automatically retried, but you can use the per-device retry endpoint once the device comes back online; (2) `respectMaintenanceWindows` is enabled and the device was outside its maintenance window when the batch ran.
+
+**A device keeps failing even after retries.**
+Check device connectivity and agent status before assuming a software problem. If `retryConfig.maxRetries` has been exhausted, no further automatic retries will occur. Use the per-device retry endpoint to force one more attempt after verifying the device is healthy, but note that the retry count still applies.
+
+**Cannot edit or delete a deployment.**
+Only deployments in `draft` status can be modified or deleted. Once a deployment has been initialized (status `pending` or later), its configuration is locked. To start over, cancel the existing deployment and create a new one with the corrected configuration.

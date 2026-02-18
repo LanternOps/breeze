@@ -1,0 +1,566 @@
+---
+title: Software Inventory
+description: Track installed software across your fleet, manage a software catalog, deploy updates, and queue uninstalls.
+sidebar:
+  order: 25
+  label: Software Inventory
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Software Inventory gives you a centralized view of every application installed across your fleet. It combines three interconnected systems: a **software catalog** that defines the applications your organization manages, **software deployments** that push install, update, and uninstall actions to devices, and a **per-device inventory** that records what is actually installed on each endpoint.
+
+Together, these systems let you answer questions like "which devices are running an outdated version of Chrome?", "who installed Zoom on that Mac?", and "can I silently uninstall 7-Zip from every Windows endpoint in the Seattle site?" -- all from a single API surface.
+
+<Aside type="caution" title="Implementation Status">
+  The **software catalog**, **deployments**, and **inventory** endpoints under `/software/*` currently use an in-memory data store and do not persist across API restarts. The **device-specific endpoint** (`GET /devices/:id/software`) is the exception — it queries the `software_inventory` database table directly via Drizzle ORM and reflects persisted data. The database schema tables documented below are defined but not yet wired to the `/software/*` route handlers.
+</Aside>
+
+---
+
+## Software Catalog
+
+The software catalog is a registry of applications your organization tracks. Each catalog entry describes a piece of software with its vendor, category, platform support, license type, and versioning information. Catalog items are scoped to an organization.
+
+### Catalog Item Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique identifier (auto-generated). |
+| `name` | string | Application name. Max 200 characters. |
+| `vendor` | string | Software vendor or publisher. Max 200 characters. |
+| `category` | enum | One of: `browser`, `utility`, `compression`, `productivity`, `communication`, `developer`, `media`, `security`. |
+| `description` | string | Short description of the software. Max 1000 characters. |
+| `platforms` | array | Supported platforms: `windows`, `macos`, `linux`. At least one required. |
+| `latestVersion` | string | The most recent version string. Automatically updated when a new version is added. |
+| `homepage` | string | URL to the software's website. Must be a valid URL. |
+| `licenseType` | enum | One of: `free`, `commercial`, `open-source`. |
+| `tags` | array | Optional string tags for search and filtering. Each tag max 50 characters. |
+| `deprecated` | boolean | Whether the software is deprecated. Defaults to `false`. |
+| `createdAt` | timestamp | When the catalog entry was created. |
+| `updatedAt` | timestamp | When the catalog entry was last modified. |
+
+### Categories
+
+The category field uses a fixed set of values that determine how the software is classified in the UI and in search results:
+
+- **browser** -- Web browsers (Chrome, Firefox, Edge)
+- **utility** -- General-purpose utilities
+- **compression** -- Archive and compression tools (7-Zip, WinRAR)
+- **productivity** -- Office and productivity applications
+- **communication** -- Messaging, video, and collaboration tools (Slack, Zoom)
+- **developer** -- Development tools and editors (VS Code, JetBrains IDEs)
+- **media** -- Media players and editors (VLC)
+- **security** -- Antivirus, endpoint protection, and security tools
+
+### Creating a Catalog Item
+
+**POST** `/software/catalog`
+
+```json
+{
+  "name": "Google Chrome",
+  "vendor": "Google",
+  "category": "browser",
+  "description": "Enterprise-ready browser with centralized policy support.",
+  "platforms": ["windows", "macos", "linux"],
+  "latestVersion": "121.0.6167.161",
+  "homepage": "https://www.google.com/chrome/",
+  "licenseType": "free",
+  "tags": ["browser", "google", "chromium", "managed"],
+  "deprecated": false
+}
+```
+
+Returns the created item with a `201` status code. All create, update, and delete operations on the catalog are audit-logged with the `software.catalog.create`, `software.catalog.update`, and `software.catalog.delete` action types respectively.
+
+### Listing and Searching the Catalog
+
+**GET** `/software/catalog`
+
+Returns a paginated list of catalog items. Supports the following query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `search` or `q` | string | Full-text search across name, vendor, description, category, and tags. |
+| `category` | string | Filter by category (e.g., `browser`, `developer`). |
+| `platform` | string | Filter by platform support (`windows`, `macos`, `linux`). |
+| `page` | string | Page number (default: `1`). |
+| `limit` | string | Results per page (default: `50`, max: `100`). |
+
+The response includes pagination metadata:
+
+```json
+{
+  "data": [ ... ],
+  "pagination": { "page": 1, "limit": 50, "total": 7 }
+}
+```
+
+A dedicated search endpoint is also available:
+
+**GET** `/software/catalog/search?q=chrome&category=browser`
+
+Returns matching items with a `total` count. The `q` parameter is required and must be at least one character.
+
+### Retrieving a Catalog Item
+
+**GET** `/software/catalog/:id`
+
+Returns the catalog item along with a `versionCount` field indicating how many versions are registered for that software.
+
+### Updating a Catalog Item
+
+**PATCH** `/software/catalog/:id`
+
+Accepts a partial update payload. Only the fields you include will be modified. The `updatedAt` timestamp is set automatically. The audit log records which fields were changed.
+
+```json
+{
+  "latestVersion": "122.0.6261.57",
+  "description": "Updated description with new enterprise features."
+}
+```
+
+### Deleting a Catalog Item
+
+**DELETE** `/software/catalog/:id`
+
+Removes the catalog item and all of its associated versions. Returns `{ "success": true, "id": "..." }`.
+
+<Aside type="caution">
+  Deleting a catalog item also deletes all version records associated with it. This operation cannot be undone. Existing deployment records that reference the deleted software are not affected, but new deployments cannot be created for a deleted catalog item.
+</Aside>
+
+---
+
+## Software Versions
+
+Each catalog item can have multiple version records. Versions track release metadata, download URLs, checksums, and silent install/uninstall arguments that the agent uses for automated deployment.
+
+### Version Fields
+
+The database schema stores the following fields for each version:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier. |
+| `catalogId` | UUID | Reference to the parent catalog item. |
+| `version` | string | Version string (e.g., `121.0.6167.161`). Max 100 characters. |
+| `releaseDate` | timestamp | When this version was released. |
+| `releaseNotes` | text | Optional release notes or changelog. |
+| `downloadUrl` | string | URL to the installer package. Must be a valid URL. |
+| `checksum` | string | SHA-256 hash of the installer file. 64 hex characters. |
+| `fileSize` | bigint | File size in bytes. |
+| `supportedOs` | JSON | Array or object describing supported operating systems. |
+| `architecture` | string | Target architecture (e.g., `x64`, `arm64`). Max 20 characters. |
+| `silentInstallArgs` | text | Command-line arguments for silent/unattended installation. |
+| `silentUninstallArgs` | text | Command-line arguments for silent/unattended uninstallation. |
+| `preInstallScript` | text | Script to execute before installation begins. |
+| `postInstallScript` | text | Script to execute after installation completes. |
+| `isLatest` | boolean | Whether this is the latest version for its catalog item. |
+
+### Listing Versions
+
+**GET** `/software/catalog/:id/versions`
+
+Returns all versions for a catalog item, sorted by release date in descending order (newest first).
+
+### Adding a Version
+
+**POST** `/software/catalog/:id/versions`
+
+```json
+{
+  "version": "122.0.6261.57",
+  "releaseDate": "2024-03-15T00:00:00.000Z",
+  "notes": "Security fixes and performance improvements.",
+  "downloadUrl": "https://dl.google.com/chrome/install/enterprise/chrome_122.msi",
+  "sha256": "a1b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f70b",
+  "sizeMB": 110,
+  "supportedPlatforms": ["windows", "macos", "linux"]
+}
+```
+
+When a new version is added, the parent catalog item's `latestVersion` field is automatically updated to match the new version string, and its `updatedAt` timestamp is refreshed. The operation is audit-logged with the `software.catalog.version.create` action.
+
+<Aside>
+  The `sha256` field must be exactly 64 hexadecimal characters when provided. The agent can use this checksum to verify download integrity before proceeding with installation.
+</Aside>
+
+---
+
+## Software Deployments
+
+Deployments represent actions taken against devices: installing new software, updating existing software, or uninstalling software. Each deployment targets one or more devices and tracks its lifecycle from request through completion.
+
+### Deployment Actions
+
+| Action | Description |
+|--------|-------------|
+| `install` | Install the specified software version on the target devices. |
+| `update` | Update existing software to a new version on the target devices. |
+| `uninstall` | Remove the software from the target devices. |
+
+### Deployment Status Lifecycle
+
+The deployment status progresses through these states:
+
+| Status | Description |
+|--------|-------------|
+| `pending` | The deployment has been created and is waiting for execution (immediate deployments). |
+| `queued` | The deployment is scheduled for a future time (when `scheduleAt` is specified). |
+| `running` | The deployment is actively executing on one or more devices. |
+| `completed` | All target devices have finished processing. |
+| `failed` | The deployment failed on one or more devices. |
+| `cancelled` | The deployment was cancelled by an operator before completion. |
+
+The database-level `deployment_status` enum includes additional states used by the broader deployment system: `draft`, `paused`, `downloading`, `installing`, and `rollback`.
+
+### Scheduling and Maintenance Windows
+
+Deployments support two scheduling modes:
+
+- **Immediate**: When no `scheduleAt` field is provided, the deployment enters `pending` status and begins execution as soon as targeted devices check in.
+- **Scheduled**: When `scheduleAt` is set to an ISO 8601 datetime string, the deployment enters `queued` status and waits until the scheduled time.
+
+The database schema also supports associating a deployment with a **maintenance window** via the `maintenanceWindowId` field on the `softwareDeployments` table. This ties the deployment to an existing maintenance window so that commands are only dispatched during the approved time range.
+
+### Deployment Schema Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier. |
+| `orgId` | UUID | Organization that owns this deployment. |
+| `name` | string | Descriptive name for the deployment. Max 255 characters. |
+| `softwareVersionId` | UUID | The specific software version being deployed. |
+| `deploymentType` | string | The action type (install, uninstall, update). Max 20 characters. |
+| `targetType` | string | How targets are specified (e.g., device list, group, filter). Max 50 characters. |
+| `targetIds` | JSON | Array of target identifiers based on `targetType`. |
+| `scheduleType` | string | Scheduling mode (immediate, scheduled, maintenance_window). Max 30 characters. |
+| `scheduledAt` | timestamp | When the deployment should execute (for scheduled deployments). |
+| `maintenanceWindowId` | UUID | Optional reference to a maintenance window. |
+| `options` | JSON | Additional deployment options. |
+| `createdBy` | UUID | The user who created the deployment. |
+| `createdAt` | timestamp | When the deployment was created. |
+
+### Creating a Deployment
+
+**POST** `/software/deployments`
+
+```json
+{
+  "softwareId": "sw-001",
+  "action": "update",
+  "version": "121.0.6167.161",
+  "deviceIds": [
+    "a3f1c7d2-5b3c-4fa8-b7e9-1b2a3c4d5e6f",
+    "b4e2d8f3-6c4d-4b9e-9f10-2a3b4c5d6e7f"
+  ],
+  "requestedBy": "ops@breeze.local",
+  "reason": "Security update rollout",
+  "scheduleAt": "2024-03-10T02:00:00.000Z"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `softwareId` | Yes | ID of the catalog item to deploy. |
+| `action` | Yes | One of `install`, `uninstall`, `update`. |
+| `version` | No | Target version string. Defaults to the catalog item's `latestVersion` if omitted. |
+| `deviceIds` | Yes | Array of device UUIDs. At least one required. |
+| `requestedBy` | Yes | Identifier of the user requesting the deployment. Max 200 characters. |
+| `reason` | No | Optional reason for the deployment. Max 500 characters. |
+| `scheduleAt` | No | ISO 8601 datetime. If omitted, the deployment starts immediately. |
+
+When `scheduleAt` is provided, the deployment status is set to `queued`. Otherwise, it starts as `pending`. A deployment result record is automatically created for each target device.
+
+The operation is audit-logged with the `software.deployment.create` action, including the software ID, action type, and number of target devices.
+
+### Listing Deployments
+
+**GET** `/software/deployments`
+
+Returns a paginated list of deployments with the following filters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by deployment status (`pending`, `queued`, `running`, `completed`, `failed`, `cancelled`). |
+| `action` | string | Filter by action type (`install`, `uninstall`, `update`). |
+| `softwareId` | string | Filter by catalog item ID. |
+| `deviceId` | UUID | Filter to deployments that target a specific device. |
+| `requestedBy` | string | Filter by the requesting user. |
+| `page` | string | Page number (default: `1`). |
+| `limit` | string | Results per page (default: `50`, max: `100`). |
+
+### Getting Deployment Details
+
+**GET** `/software/deployments/:id`
+
+Returns the full deployment object including all fields.
+
+### Cancelling a Deployment
+
+**POST** `/software/deployments/:id/cancel`
+
+```json
+{
+  "reason": "Superseded by newer version rollout."
+}
+```
+
+Cancellation is only allowed when the deployment status is `pending` or `queued`. Attempting to cancel a deployment in any other state returns a `409 Conflict` response. When cancelled:
+
+- The deployment status changes to `cancelled`.
+- The `cancelReason` and `completedAt` fields are populated.
+- All associated deployment results that have not yet completed are also set to `cancelled`.
+
+The operation is audit-logged with the `software.deployment.cancel` action.
+
+---
+
+## Deployment Results
+
+Every deployment creates one result record per target device. Results track the execution lifecycle on each individual endpoint.
+
+### Result Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier. |
+| `deploymentId` | UUID | Parent deployment. |
+| `deviceId` | UUID | Target device. |
+| `status` | enum | Current status: `pending`, `running`, `completed`, `failed`, `cancelled`. |
+| `startedAt` | timestamp | When execution began on the device. |
+| `completedAt` | timestamp | When execution finished (success or failure). |
+| `exitCode` | integer | Process exit code from the installer/uninstaller. |
+| `output` | text | Stdout/stderr output captured during execution. |
+| `errorMessage` | text | Error description if the deployment failed on this device. |
+| `retryCount` | integer | Number of retry attempts. Defaults to `0`. |
+
+### Querying Results
+
+**GET** `/software/deployments/:id/results`
+
+Returns all per-device results for a given deployment. Use this to understand which devices succeeded, which are still running, and which failed.
+
+```json
+{
+  "data": [
+    {
+      "deploymentId": "dep-001",
+      "deviceId": "a3f1c7d2-5b3c-4fa8-b7e9-1b2a3c4d5e6f",
+      "status": "completed",
+      "message": "Updated successfully.",
+      "startedAt": "2024-03-01T09:02:00.000Z",
+      "completedAt": "2024-03-01T09:08:00.000Z"
+    },
+    {
+      "deploymentId": "dep-001",
+      "deviceId": "b4e2d8f3-6c4d-4b9e-9f10-2a3b4c5d6e7f",
+      "status": "completed",
+      "message": "Updated successfully.",
+      "startedAt": "2024-03-01T09:10:00.000Z",
+      "completedAt": "2024-03-01T09:40:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## Device Software Inventory
+
+The device software inventory records what is actually installed on each endpoint. This data is reported by the Breeze agent during periodic scans and is stored in the `software_inventory` database table.
+
+### Inventory Record Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier. |
+| `deviceId` | UUID | The device this record belongs to. |
+| `catalogId` | UUID | Optional reference to a catalog item (for managed software). |
+| `name` | string | Name of the installed software as reported by the OS. Max 500 characters. |
+| `version` | string | Installed version string. Max 100 characters. |
+| `vendor` | string | Publisher/vendor as reported by the OS. Max 200 characters. |
+| `installDate` | date | When the software was installed. |
+| `installLocation` | text | File system path where the software is installed. |
+| `uninstallString` | text | The uninstall command or registry key for removing the software. |
+| `isManaged` | boolean | Whether the software is managed through the Breeze catalog. Defaults to `false`. |
+| `lastSeen` | timestamp | When the agent last reported this software as installed. |
+
+### Inventory Source Types
+
+Each inventory item includes a `source` field indicating how the software was detected:
+
+| Source | Description |
+|--------|-------------|
+| `deployment` | Installed through a Breeze software deployment. |
+| `baseline` | Present on the device when it was first enrolled (discovered during initial scan). |
+| `user` | Installed manually by a user outside of Breeze management. |
+
+### Querying All Inventory
+
+**GET** `/software/inventory`
+
+Returns inventory records across all devices in the organization. Supports the following filters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | UUID | Filter to a specific device. |
+| `softwareId` | string | Filter to devices that have a specific catalog item installed. |
+| `search` | string | Search by device name or software name. |
+
+### Querying a Single Device
+
+**GET** `/software/inventory/:deviceId`
+
+Returns the full inventory for a single device, including the device name, OS, last scan timestamp, and a list of installed software items.
+
+```json
+{
+  "data": {
+    "deviceId": "a3f1c7d2-5b3c-4fa8-b7e9-1b2a3c4d5e6f",
+    "deviceName": "WIN-SEA-01",
+    "os": "windows",
+    "lastScannedAt": "2024-03-04T08:10:00.000Z",
+    "items": [
+      {
+        "softwareId": "sw-001",
+        "name": "Google Chrome",
+        "version": "121.0.6167.161",
+        "installedAt": "2024-03-01T09:08:00.000Z",
+        "source": "deployment"
+      },
+      {
+        "softwareId": "sw-003",
+        "name": "7-Zip",
+        "version": "23.01",
+        "installedAt": "2024-02-02T11:00:00.000Z",
+        "source": "baseline"
+      }
+    ]
+  }
+}
+```
+
+### Device-Specific Endpoint
+
+**GET** `/devices/:id/software`
+
+An alternative endpoint mounted under the devices route that queries the `software_inventory` database table directly. This endpoint supports pagination and search:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | string | Page number (default: `1`). |
+| `limit` | string | Results per page (default: `1000`). |
+| `search` | string | Filter by software name (partial match). |
+
+Results are sorted alphabetically by software name.
+
+---
+
+## Uninstall Queueing
+
+You can queue an uninstall directly from a device's inventory without needing to manually create a deployment. This is useful for one-off removals of unwanted software discovered during inventory scans.
+
+**POST** `/software/inventory/:deviceId/:softwareId/uninstall`
+
+```json
+{
+  "requestedBy": "it@breeze.local",
+  "reason": "Unauthorized application — not on approved list.",
+  "scheduleAt": "2024-03-10T02:00:00.000Z"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `requestedBy` | Yes | Identifier of the requesting user. Max 200 characters. |
+| `reason` | No | Explanation for the uninstall. Max 500 characters. |
+| `scheduleAt` | No | ISO 8601 datetime to schedule the uninstall. If omitted, queued immediately. |
+
+This endpoint performs the following steps:
+
+<Steps>
+
+1. Validates that the device inventory exists and the specified software is installed on the device.
+
+2. Verifies the software ID corresponds to a valid catalog item within the organization.
+
+3. Sets `pendingUninstall: true` on the inventory item, marking it as awaiting removal.
+
+4. Creates a new deployment record with `action: "uninstall"` targeting only the specified device.
+
+5. Creates a corresponding deployment result record for tracking.
+
+</Steps>
+
+The response returns the created deployment with a `202 Accepted` status code. The uninstall is audit-logged with the `software.uninstall.queue` action, recording both the device ID and software ID.
+
+<Aside>
+  The `pendingUninstall` flag on the inventory item indicates that a removal has been requested but not yet executed. The software will remain in the device inventory until the agent confirms the uninstall has completed.
+</Aside>
+
+---
+
+## API Reference
+
+All software endpoints require authentication and are scoped to `organization`, `partner`, or `system` access levels.
+
+### Catalog Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/software/catalog` | List catalog items with search, category, and platform filters. Paginated. |
+| `POST` | `/software/catalog` | Create a new catalog item. |
+| `GET` | `/software/catalog/search` | Search catalog items by keyword. Requires `q` parameter. |
+| `GET` | `/software/catalog/:id` | Get a single catalog item with version count. |
+| `PATCH` | `/software/catalog/:id` | Update a catalog item (partial update). |
+| `DELETE` | `/software/catalog/:id` | Delete a catalog item and all its versions. |
+| `GET` | `/software/catalog/:id/versions` | List all versions for a catalog item, newest first. |
+| `POST` | `/software/catalog/:id/versions` | Add a new version to a catalog item. |
+
+### Deployment Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/software/deployments` | List deployments with status, action, software, device, and requester filters. Paginated. |
+| `POST` | `/software/deployments` | Create a new deployment (install, uninstall, or update). |
+| `GET` | `/software/deployments/:id` | Get deployment details. |
+| `POST` | `/software/deployments/:id/cancel` | Cancel a pending or queued deployment. |
+| `GET` | `/software/deployments/:id/results` | Get per-device deployment results. |
+
+### Inventory Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/software/inventory` | List all device inventory records. Supports device, software, and search filters. |
+| `GET` | `/software/inventory/:deviceId` | Get full software inventory for a specific device. |
+| `POST` | `/software/inventory/:deviceId/:softwareId/uninstall` | Queue an uninstall for a specific software on a specific device. |
+| `GET` | `/devices/:id/software` | Get installed software list for a device (paginated, from database). |
+
+---
+
+## Troubleshooting
+
+**Catalog search returns no results even though the item exists.**
+The search matches against name, vendor, description, category, and tags. Verify that your search term appears in at least one of these fields. Search is case-insensitive. Also confirm that you are querying within the correct organization scope -- catalog items are org-scoped, so a partner-level token must resolve to the correct `orgId`.
+
+**"orgId is required for this scope" error on every request.**
+All software endpoints require an organization context. If you are authenticating with a partner-scoped token that has access to multiple organizations, the API cannot automatically determine which organization to query. Either use an organization-scoped token or ensure your partner token has access to exactly one organization.
+
+**Cannot cancel a deployment -- receiving 409 Conflict.**
+Only deployments with status `pending` or `queued` can be cancelled. If the deployment has already moved to `running`, `completed`, or `failed`, cancellation is not permitted. Check the deployment status with `GET /software/deployments/:id` first.
+
+**Device inventory shows software as installed but the uninstall deployment completed.**
+The inventory record remains until the agent performs its next scan and confirms the software is no longer present. The `pendingUninstall` flag will be set to `true` while the removal is in progress. If the flag persists after the deployment shows `completed`, the agent may not have performed a fresh scan yet.
+
+**Deployment result stuck in "pending" status.**
+The device has not yet checked in to receive the deployment command. Verify the device is online and the agent is running. For scheduled deployments, confirm the `scheduledAt` time has passed.
+
+**Version checksum validation fails during deployment.**
+Ensure the `sha256` value provided when creating the version matches the actual SHA-256 hash of the installer file at the `downloadUrl`. The hash must be exactly 64 hexadecimal characters. Re-download the file and compute the hash with `sha256sum` (Linux/macOS) or `Get-FileHash` (Windows PowerShell) to verify.
+
+**Device-specific software endpoint (`/devices/:id/software`) returns different data than `/software/inventory/:deviceId`.**
+The `/devices/:id/software` endpoint queries the `software_inventory` database table directly using Drizzle ORM, while `/software/inventory/:deviceId` is served from the in-memory software route layer. These are currently separate data sources — the database endpoint reflects persisted agent-reported data, while the `/software/*` endpoints use in-memory mock data that does not persist across restarts.

@@ -1,0 +1,341 @@
+---
+title: Scripts
+description: Create, manage, and execute scripts across your fleet in PowerShell, Bash, Python, and Cmd.
+sidebar:
+  order: 4
+  label: Scripts
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Scripts let you define reusable code that runs on managed devices across your fleet. Each script has a language, a set of compatible operating systems, optional parameters, and a configurable execution context. Scripts can be triggered manually, on a schedule via [Automations](/features/automations/), in response to alerts, or through configuration policies.
+
+The Breeze agent's executor writes the script to a temporary file on the target device, runs it through the appropriate shell, captures stdout and stderr (up to 1 MB each), and reports the result back to the API over WebSocket. Scripts are cleaned up from disk immediately after execution.
+
+---
+
+## Key Concepts
+
+### Supported Languages
+
+| Language | Extension | Windows Shell | macOS / Linux Shell |
+|----------|-----------|---------------|---------------------|
+| `powershell` | `.ps1` | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File` | `pwsh -NoProfile -ExecutionPolicy Bypass -File` |
+| `bash` | `.sh` | `bash.exe` (Git Bash / WSL) | `/bin/bash` |
+| `python` | `.py` | `python` | `python3` |
+| `cmd` | `.bat` | `cmd.exe /C` | Not available |
+
+<Aside>
+  `cmd` scripts are Windows-only. The agent rejects `cmd` execution on macOS and Linux. All other languages are available cross-platform provided the interpreter is installed.
+</Aside>
+
+### Privilege Levels
+
+| Run As | Behavior |
+|--------|----------|
+| `system` | Runs as the agent service account (default). No special configuration required. |
+| `user` | Runs in the context of a connected user session. Requires an active user helper session on the device. |
+| `elevated` | Runs with root/administrator privileges. On Unix, the agent uses `sudo -n`. On Windows, the agent service must already be running as administrator. |
+
+### Execution Status
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Execution record created, command not yet sent to the agent |
+| `queued` | Command queued for delivery to the agent |
+| `running` | Agent has acknowledged the command and execution is in progress |
+| `completed` | Script finished with exit code 0 |
+| `failed` | Script finished with a non-zero exit code |
+| `timeout` | Script exceeded its `timeoutSeconds` limit and was killed |
+| `cancelled` | Execution was cancelled by a user before completion |
+
+### Trigger Types
+
+| Type | When it fires |
+|------|---------------|
+| `manual` | A user explicitly executes the script via the UI or API |
+| `scheduled` | An automation with a schedule trigger runs the script |
+| `alert` | An alert-triggered automation runs the script as a remediation action |
+| `policy` | A configuration policy triggers the script as part of enforcement |
+
+---
+
+## Creating Scripts
+
+Scripts belong to an organization and are scoped by the multi-tenant hierarchy. System-scope users can create **system scripts** that are available to all organizations as a shared library.
+
+```bash
+POST /scripts
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "org-uuid",
+  "name": "Clear temp files",
+  "description": "Removes temporary files older than 7 days",
+  "category": "Maintenance",
+  "osTypes": ["windows", "linux"],
+  "language": "bash",
+  "content": "find /tmp -type f -mtime +{{days}} -delete",
+  "parameters": {
+    "days": {
+      "type": "number",
+      "default": 7,
+      "description": "Delete files older than this many days"
+    }
+  },
+  "timeoutSeconds": 120,
+  "runAs": "system"
+}
+```
+
+The response includes the full script object with an auto-generated `id` and `version: 1`.
+
+<Aside type="caution">
+  Creating and updating scripts requires MFA verification. The API returns `403` if the authenticated session has not completed MFA.
+</Aside>
+
+### Version tracking
+
+When you update a script's `content` field, the `version` number increments automatically. Metadata-only changes (name, description, category, timeout, etc.) do not increment the version. Previous versions are stored in the `script_versions` table for audit and rollback.
+
+### System script library
+
+System scripts are shared across all organizations. Organization-scope users can browse the system library and import scripts into their own org:
+
+<Steps>
+
+1. **Browse the library** -- `GET /scripts/system-library` returns all system scripts with their name, description, category, language, and compatible OS types.
+
+2. **Import a script** -- `POST /scripts/import/:id` clones the system script into your organization. The cloned copy is independent and can be modified without affecting the original.
+
+3. **Customize** -- Edit the imported script to fit your environment using `PUT /scripts/:id`.
+
+</Steps>
+
+<Aside>
+  Importing a system script with the same name as an existing org script returns `409 Conflict`. Rename the existing script first or choose a different system script.
+</Aside>
+
+---
+
+## Executing Scripts
+
+### Single device execution
+
+To execute a script on one device, pass a single-element `deviceIds` array:
+
+```bash
+POST /scripts/:scriptId/execute
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "deviceIds": ["device-uuid"],
+  "parameters": { "days": "7" },
+  "runAs": "system"
+}
+```
+
+The API validates that the device is online, not decommissioned, matches one of the script's `osTypes`, and is not suppressed by an active maintenance window. If the device's agent is connected via WebSocket, the command is pushed immediately and the execution status transitions to `running`.
+
+### Batch execution
+
+Pass multiple device UUIDs to execute across several devices at once:
+
+```bash
+POST /scripts/:scriptId/execute
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "deviceIds": [
+    "device-uuid-1",
+    "device-uuid-2",
+    "device-uuid-3"
+  ],
+  "parameters": { "days": "7" },
+  "triggerType": "manual"
+}
+```
+
+When targeting more than one device, the API creates a **batch** (`scriptExecutionBatches`) that groups individual execution records together. The response includes a `batchId` along with per-device execution and command IDs:
+
+```json
+{
+  "batchId": "batch-uuid",
+  "scriptId": "script-uuid",
+  "devicesTargeted": 3,
+  "executions": [
+    { "executionId": "exec-1", "deviceId": "device-1", "commandId": "cmd-1" },
+    { "executionId": "exec-2", "deviceId": "device-2", "commandId": "cmd-2" },
+    { "executionId": "exec-3", "deviceId": "device-3", "commandId": "cmd-3" }
+  ],
+  "status": "queued"
+}
+```
+
+<Aside type="tip">
+  Devices in an active maintenance window with script suppression enabled are automatically excluded from execution. The response includes a `maintenanceSuppressedDeviceIds` array listing any skipped devices.
+</Aside>
+
+### Pre-execution checks
+
+The execute endpoint validates the following before dispatching commands:
+
+1. The script exists and the caller has org-level access to it.
+2. Each device exists and belongs to an organization the caller can access.
+3. Each device's `osType` matches one of the script's `osTypes`.
+4. The device is not in `decommissioned` status.
+5. The device is not in a maintenance window with script suppression enabled.
+
+Devices that fail any check are silently excluded. If no devices remain after filtering, the API returns `400`.
+
+---
+
+## Script Parameters
+
+Parameters let you create reusable scripts with configurable values. Define parameters as a JSON object when creating the script, then pass runtime values at execution time.
+
+### Defining parameters
+
+```json
+{
+  "parameters": {
+    "threshold": {
+      "type": "number",
+      "default": 90,
+      "description": "CPU usage threshold percentage"
+    },
+    "service_name": {
+      "type": "string",
+      "description": "Name of the service to restart"
+    }
+  }
+}
+```
+
+### Using parameters in script content
+
+The agent substitutes parameter placeholders before execution. Two placeholder formats are supported:
+
+| Format | Example |
+|--------|---------|
+| `{{paramName}}` | `echo "Threshold is {{threshold}}"` |
+| `${{paramName}}` | `echo "Threshold is ${{threshold}}"` |
+
+Both formats are replaced with the parameter value. Parameters are also injected as environment variables with the prefix `BREEZE_PARAM_`:
+
+```bash
+# These are equivalent inside a script:
+echo "Threshold is {{threshold}}"
+echo "Threshold is $BREEZE_PARAM_THRESHOLD"
+```
+
+<Aside type="caution">
+  Parameter substitution happens **before** security validation. The agent's security validator scans the fully-resolved script content for dangerous patterns. A parameter value that injects a dangerous command will be caught and rejected.
+</Aside>
+
+---
+
+## Execution History
+
+### Listing executions for a script
+
+```
+GET /scripts/:scriptId/executions?status=completed&page=1&limit=25
+```
+
+Returns paginated execution records with device hostname and OS type joined from the devices table. Filter by `status` and `deviceId`.
+
+### Execution detail with output
+
+```
+GET /scripts/executions/:executionId
+```
+
+Returns the full execution record including `stdout`, `stderr`, `exitCode`, `errorMessage`, and timing fields (`startedAt`, `completedAt`). Also includes the script name, language, device hostname, and device OS type.
+
+<Aside>
+  The agent captures up to 1 MB of stdout and 1 MB of stderr. Output exceeding this limit is truncated. The `truncatedFields` array in the agent result indicates which fields were truncated.
+</Aside>
+
+### Cancelling an execution
+
+Pending, queued, or running executions can be cancelled:
+
+```bash
+POST /scripts/executions/:executionId/cancel
+Authorization: Bearer <token>
+```
+
+The API sets the execution status to `cancelled` and also cancels any pending device commands associated with the execution. On the agent side, the executor terminates the process and kills the entire process group to prevent orphaned child processes.
+
+---
+
+## Security
+
+The Go agent enforces strict security validation on all script content before execution.
+
+### Blocked patterns
+
+The agent's security validator operates at the **Strict** level by default, scanning for two categories of dangerous patterns:
+
+**Basic level** -- clearly destructive operations:
+- Recursive deletion of root or system directories (`rm -rf /`, `rd /s /q C:\Windows`)
+- Filesystem format commands (`mkfs`, `Format-Volume`, `Clear-Disk`)
+- Direct writes to block devices (`dd of=/dev/sda`)
+- Fork bomb patterns
+- Dangerous permission changes on system paths
+
+**Strict level** -- potentially risky operations:
+- Remote code execution patterns (`curl | bash`, `Invoke-WebRequest | IEX`)
+- Credential dumping tools and techniques
+- Scheduled task / persistence creation
+- Privilege escalation via setuid/setgid
+- HKLM registry modifications
+- Sudoers modifications
+
+### Output sanitization
+
+Script output is scanned for sensitive information before being stored. The agent redacts API keys, tokens, AWS credentials, private keys, connection strings, bearer tokens, and JWTs from stdout and stderr.
+
+---
+
+## API Reference
+
+All script endpoints require authentication and the appropriate permission scope.
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| GET | `/scripts` | `scripts:read` | List scripts with filters (`?orgId=&category=&osType=&language=&search=&includeSystem=true&page=&limit=`) |
+| GET | `/scripts/system-library` | `scripts:read` | List all system scripts available for import |
+| POST | `/scripts/import/:id` | `scripts:write` | Clone a system script into the caller's organization |
+| GET | `/scripts/:id` | `scripts:read` | Get a single script by ID |
+| POST | `/scripts` | `scripts:write` | Create a new script |
+| PUT | `/scripts/:id` | `scripts:write` | Update a script (increments version on content change) |
+| DELETE | `/scripts/:id` | `scripts:delete` | Delete a script (blocked if active executions exist) |
+| POST | `/scripts/:id/execute` | `scripts:execute` | Execute a script on one or more devices |
+| GET | `/scripts/:id/executions` | `scripts:read` | List executions for a script (`?status=&deviceId=&page=&limit=`) |
+| GET | `/scripts/executions/:id` | `scripts:read` | Get execution detail with stdout/stderr |
+| POST | `/scripts/executions/:id/cancel` | `scripts:execute` | Cancel a pending, queued, or running execution |
+
+<Aside>
+  All write and execute endpoints require MFA verification. The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Script fails with "unsupported script type".**
+The agent only supports `powershell`, `bash`, `python`, and `cmd`. Verify the `language` field matches one of these values. If using `cmd`, confirm the target device is running Windows -- `cmd` is not available on macOS or Linux.
+
+**Script times out unexpectedly.**
+The default timeout is 300 seconds (5 minutes). The maximum allowed timeout is 86,400 seconds (24 hours) at the API level, though the agent enforces a hard cap of 3,600 seconds (1 hour). Set `timeoutSeconds` when creating the script or override `runAs` at execution time. On timeout, the agent kills the entire process group to prevent orphaned children.
+
+**Execution stuck in `pending` status.**
+The device may be offline or its WebSocket connection to the API may have dropped. The command is persisted in the `deviceCommands` table and transitions to `sent` only when the API successfully pushes it over the WebSocket. Check the device's connection status and ensure the agent is running.
+
+**Script rejected by security validation.**
+The agent's strict security validator blocks patterns that match known destructive or suspicious operations. Review the `errorMessage` field in the execution detail for the specific pattern that was detected. If the script is legitimate, consider restructuring the command to avoid matching the blocked pattern. Security validation runs after parameter substitution, so a parameter value could trigger a block.

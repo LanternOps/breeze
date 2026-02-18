@@ -11,12 +11,14 @@ hero:
       link: /getting-started/quickstart/
       icon: right-arrow
       variant: primary
+    - text: Security
+      link: /security/overview/
     - text: View on GitHub
       link: https://github.com/LanternOps/breeze
       icon: external
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 ## Deploy in Minutes
 
@@ -33,4 +35,21 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Zero-Trust Ready" icon="shield">
     Optional Cloudflare mTLS client certificates, SHA-256 token hashing, RBAC, and audit logging.
   </Card>
+</CardGrid>
+
+## Features
+
+<CardGrid>
+  <LinkCard title="Remote Access" description="Terminal, file transfer, and WebRTC remote desktop." href="/features/remote-access/" />
+  <LinkCard title="Patch Management" description="Scan, approve, and deploy OS patches across your fleet." href="/features/patch-management/" />
+  <LinkCard title="Automations" description="Event-driven, scheduled, and webhook-triggered workflows." href="/features/automations/" />
+  <LinkCard title="Scripts" description="Execute PowerShell, Bash, and Python scripts on any device." href="/features/scripts/" />
+  <LinkCard title="AI Assistant" description="AI-powered diagnostics, remediation, and fleet intelligence." href="/features/ai/" />
+  <LinkCard title="Security Monitoring" description="Endpoint posture scoring, threat detection, and compliance." href="/features/security/" />
+  <LinkCard title="Deployments" description="Staggered rollouts with failure thresholds and per-device tracking." href="/features/deployments/" />
+  <LinkCard title="Reports & Analytics" description="Fleet reports, dashboards, SLA tracking, and capacity planning." href="/features/reports/" />
+  <LinkCard title="Discovery" description="Scan networks for unmanaged devices with port and service detection." href="/features/discovery/" />
+  <LinkCard title="Integrations" description="Connect to PSA platforms, Slack, Teams, and monitoring tools." href="/features/integrations/" />
+  <LinkCard title="Configuration Policies" description="Hierarchical policy management across your tenant structure." href="/features/configuration-policies/" />
+  <LinkCard title="SNMP Monitoring" description="Monitor network devices with SNMP v1/v2c/v3 polling and traps." href="/features/snmp/" />
 </CardGrid>

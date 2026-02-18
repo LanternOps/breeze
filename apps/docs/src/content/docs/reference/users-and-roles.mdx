@@ -1,0 +1,653 @@
+---
+title: Users & Roles
+description: Manage user accounts, role-based access control, permissions, MFA, and SSO for your Breeze organisation.
+sidebar:
+  order: 4
+  label: Users & Roles
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze provides a multi-tenant user management system with role-based access control (RBAC), multi-factor authentication (MFA), single sign-on (SSO), and granular permission assignment. Users are scoped to either a **Partner** (MSP) or an **Organisation**, and every action is governed by an assigned role.
+
+---
+
+## Overview
+
+The user and role system is built around Breeze's multi-tenant hierarchy:
+
+```
+Partner (MSP) --> Organisation (Customer) --> Site --> Device Group --> Device
+```
+
+- **Partner-scoped users** are linked via the `partner_users` table and can be granted access to all, selected, or no organisations.
+- **Organisation-scoped users** are linked via the `organization_users` table and can optionally be restricted to specific sites or device groups.
+- **Roles** are scoped to either `partner` or `organization` level and carry a set of permissions.
+- **Permissions** follow a `resource:action` model (e.g. `devices:read`, `scripts:execute`).
+
+---
+
+## User Management
+
+### User Status
+
+Every user account has one of three statuses:
+
+| Status | Description |
+|---|---|
+| `active` | The user can log in and access the platform. |
+| `invited` | The user has been invited but has not yet completed setup. |
+| `disabled` | The user account is suspended and cannot log in. |
+
+### Inviting Users
+
+Administrators invite users by providing an email address, display name, and role assignment. The invitation flow differs by scope.
+
+<Tabs>
+  <TabItem label="Organisation Scope">
+    When inviting into an organisation, you can optionally restrict the user to specific **sites** and **device groups**:
+
+    ```json
+    {
+      "email": "tech@example.com",
+      "name": "Jane Doe",
+      "roleId": "<role-uuid>",
+      "siteIds": ["<site-uuid>"],
+      "deviceGroupIds": ["<group-uuid>"]
+    }
+    ```
+
+    Omit `siteIds` and `deviceGroupIds` to grant access to all sites and device groups within the organisation.
+  </TabItem>
+  <TabItem label="Partner Scope">
+    When inviting into a partner (MSP), you specify the **organisation access level**:
+
+    | `orgAccess` | Meaning |
+    |---|---|
+    | `all` | Access to every organisation under the partner. |
+    | `selected` | Access only to the organisations listed in `orgIds`. |
+    | `none` | No organisation access (partner-level admin only). |
+
+    ```json
+    {
+      "email": "admin@msp.com",
+      "name": "John Smith",
+      "roleId": "<role-uuid>",
+      "orgAccess": "selected",
+      "orgIds": ["<org-uuid-1>", "<org-uuid-2>"]
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+If an email service is configured, the invitee receives an invitation email with a link to accept. You can resend the invitation for users who are still in `invited` status.
+
+<Aside type="tip">
+  Existing users (by email) can be added to additional partners or organisations without creating a duplicate account. However, a user cannot be added to the same scope twice -- doing so returns `409 Conflict`.
+</Aside>
+
+### Updating Users
+
+Administrators with `users:write` permission can update a user's **name** or **status**. For example, disabling a user:
+
+```json
+{
+  "status": "disabled"
+}
+```
+
+### Removing Users
+
+Removing a user from a scope (`DELETE /users/:id`) deletes the association record (`partner_users` or `organization_users`) but does **not** delete the underlying user account. This means the user can be re-invited later.
+
+### Self-Service Profile
+
+Authenticated users can view and update their own profile at `GET /users/me` and `PATCH /users/me` without any special permissions. Updatable fields are `name` and `avatarUrl`.
+
+---
+
+## Authentication
+
+### Login
+
+Users authenticate with email and password via `POST /auth/login`. The endpoint is rate-limited per IP + email combination using a Redis-backed sliding window. On success, the response includes a JWT access token and a refresh token set as an HTTP-only cookie.
+
+```bash
+curl -X POST https://breeze.example.com/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "..."}'
+```
+
+If the user has MFA enabled, the response includes `mfaRequired: true` and a `tempToken` instead of tokens. See the MFA section below.
+
+<Aside type="caution">
+  Accounts in `invited` or `disabled` status cannot log in. Inactive accounts receive a `403` response.
+</Aside>
+
+### Token Refresh
+
+Access tokens are short-lived. Use `POST /auth/refresh` to rotate the token pair. The refresh token is read from the `breeze_refresh_token` HTTP-only cookie. A CSRF header (`x-breeze-csrf`) is required when the token is supplied via cookie.
+
+Old refresh tokens are revoked on each rotation to prevent replay.
+
+### Logout
+
+`POST /auth/logout` revokes all active tokens for the user and clears the refresh cookie.
+
+### Registration
+
+When enabled (`ENABLE_REGISTRATION=true`), two registration endpoints are available:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /auth/register` | Create a standalone user account. |
+| `POST /auth/register-partner` | Self-service MSP signup: creates a partner, admin role, and user in a single transaction. |
+
+Registration is rate-limited to 5 attempts per IP per hour (3 for partner registration). Password strength requirements are enforced.
+
+---
+
+## Multi-Factor Authentication (MFA)
+
+MFA is enabled by default (controlled by the `ENABLE_2FA` environment variable). Two methods are supported:
+
+| Method | Description |
+|---|---|
+| **TOTP** | Time-based one-time passwords via authenticator apps (Google Authenticator, Authy, etc.). |
+| **SMS** | One-time codes sent to a verified phone number via Twilio. |
+
+<Aside type="note">
+  Organisation administrators can enforce MFA for all users via the organisation `settings.security.requireMfa` flag. When enforced, users cannot disable MFA.
+</Aside>
+
+### TOTP Setup Flow
+
+<Steps>
+1. Call `POST /auth/mfa/setup` (authenticated). The response includes a `secret`, `otpAuthUrl`, QR code data URL, and one-time recovery codes.
+2. Scan the QR code with an authenticator app.
+3. Confirm setup by calling `POST /auth/mfa/verify` with the 6-digit `code` from the app. MFA is now active.
+</Steps>
+
+Alternatively, use `POST /auth/mfa/enable` with `{ "code": "123456" }` after the setup step -- this endpoint is designed for the frontend settings flow and also returns recovery codes.
+
+### SMS MFA Setup Flow
+
+<Steps>
+1. Verify your phone number by calling `POST /auth/phone/verify` with `{ "phoneNumber": "+14155551234" }`.
+2. Confirm the verification code with `POST /auth/phone/confirm`.
+3. Enable SMS MFA with `POST /auth/mfa/sms/enable`. Recovery codes are returned.
+</Steps>
+
+<Aside type="caution">
+  SMS MFA can be disallowed at the organisation level via `settings.security.allowedMfaMethods.sms`. If disabled, users in that organisation cannot enable the SMS method.
+</Aside>
+
+### MFA During Login
+
+When MFA is enabled, login returns `mfaRequired: true` and a `tempToken` (valid for 5 minutes). The flow continues:
+
+<Steps>
+1. (If SMS) Call `POST /auth/mfa/sms/send` with the `tempToken` to trigger an SMS code.
+2. Call `POST /auth/mfa/verify` with `{ "code": "123456", "tempToken": "..." }`.
+3. On success, full JWT tokens are issued with the `mfa: true` claim.
+</Steps>
+
+MFA verification is rate-limited separately from login.
+
+### Disabling MFA
+
+Call `POST /auth/mfa/disable` with the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. If the organisation enforces MFA, the endpoint returns `403`.
+
+### Recovery Codes
+
+Recovery codes are generated during MFA setup and stored as hashed values. To regenerate codes for an active MFA configuration, call `POST /auth/mfa/recovery-codes` (authenticated). This replaces all existing codes.
+
+---
+
+## Password Management
+
+### Forgot Password
+
+`POST /auth/forgot-password` accepts an email address and sends a password reset link (valid for 1 hour) if the account exists. The response is always `200` regardless of whether the email was found, to prevent account enumeration.
+
+### Reset Password
+
+`POST /auth/reset-password` accepts the reset `token` and a new `password` (minimum 8 characters, strength-checked). On success, all existing sessions and tokens are invalidated.
+
+### Change Password
+
+Authenticated users can change their password via `POST /auth/change-password` by providing `currentPassword` and `newPassword`. All sessions and tokens are invalidated on success.
+
+<Aside type="tip">
+  SSO-provisioned users do not have a password. The change password endpoint returns `400` for these accounts.
+</Aside>
+
+---
+
+## Single Sign-On (SSO)
+
+Breeze supports organisation-level SSO via **OpenID Connect (OIDC)**. SAML schema support is defined but not yet implemented.
+
+### Provider Configuration
+
+SSO providers are configured per organisation. Built-in presets are available for common identity providers (retrieved via `GET /sso/presets`).
+
+Key provider settings:
+
+| Setting | Description |
+|---|---|
+| `issuer` | OIDC issuer URL. Endpoint discovery is attempted automatically. |
+| `clientId` / `clientSecret` | OAuth 2.0 credentials. The secret is stored encrypted. |
+| `autoProvision` | When `true`, users who authenticate via SSO but do not yet have a Breeze account are created automatically. |
+| `defaultRoleId` | The role assigned to auto-provisioned users. Required when `autoProvision` is enabled. |
+| `allowedDomains` | Comma-separated list of email domains permitted to log in via this provider. |
+| `enforceSSO` | When `true`, password-based login is disabled for the organisation. |
+
+Provider status can be `active`, `inactive`, or `testing`. Only `active` providers are available for user login.
+
+### SSO Login Flow
+
+<Steps>
+1. The browser navigates to `GET /sso/login/:orgId`. Breeze generates a PKCE challenge, state, and nonce, stores them in an `sso_sessions` record, and redirects to the identity provider's authorization URL.
+2. The user authenticates with the identity provider.
+3. The identity provider redirects back to `GET /sso/callback` with an authorization code.
+4. Breeze exchanges the code for tokens, verifies the ID token claims, retrieves user info, and maps attributes.
+5. If the user does not exist and `autoProvision` is enabled, a new user and organisation membership are created.
+6. A short-lived token exchange code is generated and the user is redirected to the application with `#ssoCode=...`.
+7. The frontend calls `POST /sso/exchange` with the code to receive the access and refresh tokens.
+</Steps>
+
+### SSO Check
+
+The frontend can check whether an organisation has SSO enabled by calling the public endpoint `GET /sso/check/:orgId`. This returns the provider name, type, and whether SSO is enforced.
+
+---
+
+## Role-Based Access Control
+
+### How Roles Work
+
+Every user-to-scope association includes a `roleId`. The role determines what the user can do. Roles are scoped:
+
+- **Partner roles** -- govern what MSP-level users can do across the partner and its organisations.
+- **Organisation roles** -- govern what organisation-level users can do within their organisation.
+
+Roles can be **system** (built-in, immutable) or **custom** (created by administrators).
+
+### Permission Model
+
+Permissions are stored as `resource:action` pairs in the `permissions` table. Roles are linked to permissions through the `role_permissions` join table.
+
+**Available resources:**
+
+| Resource | Description |
+|---|---|
+| `devices` | Manage and view endpoints |
+| `scripts` | Script library and execution |
+| `alerts` | Alert rules and acknowledgement |
+| `automations` | Automation workflows |
+| `reports` | Reporting and analytics |
+| `users` | User and role management |
+| `settings` | Organisation and system settings |
+| `organizations` | Organisation CRUD |
+| `sites` | Site management |
+| `remote` | Remote access sessions |
+
+**Available actions:**
+
+| Action | Description |
+|---|---|
+| `view` | Read-only access |
+| `create` | Create new resources |
+| `update` | Modify existing resources |
+| `delete` | Remove resources |
+| `execute` | Run scripts, commands, remote sessions |
+
+Additionally, the wildcard permission `*:*` grants full administrative access.
+
+<Aside type="note">
+  The `users:invite` permission is required to invite new users and is separate from `users:write`. The `users:read` permission is required to list users **and** roles.
+</Aside>
+
+### Built-in Permissions
+
+The following named permissions are referenced by route middleware:
+
+| Constant | Resource | Action |
+|---|---|---|
+| `DEVICES_READ` | `devices` | `read` |
+| `DEVICES_WRITE` | `devices` | `write` |
+| `DEVICES_DELETE` | `devices` | `delete` |
+| `DEVICES_EXECUTE` | `devices` | `execute` |
+| `SCRIPTS_READ` | `scripts` | `read` |
+| `SCRIPTS_WRITE` | `scripts` | `write` |
+| `SCRIPTS_DELETE` | `scripts` | `delete` |
+| `SCRIPTS_EXECUTE` | `scripts` | `execute` |
+| `ALERTS_READ` | `alerts` | `read` |
+| `ALERTS_WRITE` | `alerts` | `write` |
+| `ALERTS_ACKNOWLEDGE` | `alerts` | `acknowledge` |
+| `USERS_READ` | `users` | `read` |
+| `USERS_WRITE` | `users` | `write` |
+| `USERS_DELETE` | `users` | `delete` |
+| `USERS_INVITE` | `users` | `invite` |
+| `ORGS_READ` | `organizations` | `read` |
+| `ORGS_WRITE` | `organizations` | `write` |
+| `ORGS_DELETE` | `organizations` | `delete` |
+| `SITES_READ` | `sites` | `read` |
+| `SITES_WRITE` | `sites` | `write` |
+| `SITES_DELETE` | `sites` | `delete` |
+| `AUTOMATIONS_READ` | `automations` | `read` |
+| `AUTOMATIONS_WRITE` | `automations` | `write` |
+| `AUTOMATIONS_DELETE` | `automations` | `delete` |
+| `REMOTE_ACCESS` | `remote` | `access` |
+| `AUDIT_READ` | `audit` | `read` |
+| `AUDIT_EXPORT` | `audit` | `export` |
+| `ADMIN_ALL` | `*` | `*` |
+
+### Role Inheritance
+
+Roles support single-parent inheritance via the `parentRoleId` field. A child role inherits all permissions from its parent chain and can add additional permissions of its own. Circular inheritance is detected and rejected.
+
+Use `GET /roles/:id/effective-permissions` to view the full permission set including inherited permissions. The response distinguishes direct permissions from inherited ones and identifies the source role for each.
+
+### Creating Custom Roles
+
+Custom roles are created with `POST /roles` and must include a name. Permissions and an optional parent role can be specified:
+
+```json
+{
+  "name": "Helpdesk Tier 1",
+  "description": "View devices and acknowledge alerts",
+  "permissions": [
+    { "resource": "devices", "action": "view" },
+    { "resource": "alerts", "action": "view" },
+    { "resource": "alerts", "action": "acknowledge" }
+  ],
+  "parentRoleId": null
+}
+```
+
+Custom roles are automatically scoped to the current user's context (partner or organisation). System roles cannot be modified or deleted.
+
+### Cloning Roles
+
+Use `POST /roles/:id/clone` to duplicate an existing role (including system roles) as a starting point for a custom role. Provide a new `name` in the request body:
+
+```json
+{
+  "name": "Helpdesk Tier 2"
+}
+```
+
+The cloned role copies all permissions from the source and is created as a non-system role owned by your partner or organisation.
+
+### Deleting Roles
+
+Roles can only be deleted when:
+- The role is **not** a system role.
+- **No users** are currently assigned to the role.
+- **No child roles** inherit from the role.
+
+Attempting to delete a role with assigned users or child roles returns `400` with the count of blocking resources.
+
+---
+
+## API Reference
+
+### User Endpoints
+
+All user endpoints are mounted under `/api/v1/users` and require JWT authentication.
+
+| Method | Path | Permission | Description |
+|---|---|---|---|
+| `GET` | `/users/me` | _(authenticated)_ | Get the current user's profile. |
+| `PATCH` | `/users/me` | _(authenticated)_ | Update the current user's name or avatar. |
+| `GET` | `/users` | `users:read` | List all users in the current scope. |
+| `GET` | `/users/:id` | `users:read` | Get a specific user's details. |
+| `POST` | `/users/invite` | `users:invite` | Invite a new user to the current scope. |
+| `POST` | `/users/resend-invite` | `users:invite` | Resend an invitation email. |
+| `PATCH` | `/users/:id` | `users:write` | Update a user's name or status. |
+| `DELETE` | `/users/:id` | `users:delete` | Remove a user from the current scope. |
+| `POST` | `/users/:id/role` | `users:write` | Assign a different role to a user. |
+| `GET` | `/users/roles` | `users:read` | List available roles for the current scope. |
+
+### Role Endpoints
+
+All role endpoints are mounted under `/api/v1/roles` and require JWT authentication.
+
+| Method | Path | Permission | Description |
+|---|---|---|---|
+| `GET` | `/roles` | `users:read` | List all roles (system + custom) for the current scope. Includes user counts. |
+| `POST` | `/roles` | `users:write` | Create a custom role with permissions. |
+| `GET` | `/roles/permissions/available` | `users:read` | Get the list of available resources and actions. |
+| `GET` | `/roles/:id` | `users:read` | Get a role with its direct permissions and user count. |
+| `PATCH` | `/roles/:id` | `users:write` | Update a custom role's name, description, permissions, or parent. |
+| `DELETE` | `/roles/:id` | `users:delete` | Delete a custom role (must have no users or child roles). |
+| `POST` | `/roles/:id/clone` | `users:write` | Clone an existing role as a new custom role. |
+| `GET` | `/roles/:id/users` | `users:read` | List users assigned to a specific role. |
+| `GET` | `/roles/:id/effective-permissions` | `users:read` | Get all permissions including inherited ones. |
+
+### Auth Endpoints
+
+Auth endpoints are mounted under `/api/v1/auth`. Public endpoints do not require a token.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/auth/register` | Public | Register a new user account. |
+| `POST` | `/auth/register-partner` | Public | Self-service MSP/partner signup. |
+| `POST` | `/auth/login` | Public | Log in with email and password. |
+| `POST` | `/auth/logout` | Authenticated | Log out and revoke all tokens. |
+| `POST` | `/auth/refresh` | Cookie | Rotate the access/refresh token pair. |
+| `GET` | `/auth/me` | Authenticated | Get current user details (including MFA and phone status). |
+| `POST` | `/auth/forgot-password` | Public | Request a password reset email. |
+| `POST` | `/auth/reset-password` | Public | Reset password with a token. |
+| `POST` | `/auth/change-password` | Authenticated | Change password (requires current password). |
+| `POST` | `/auth/mfa/setup` | Authenticated | Begin TOTP MFA setup; returns QR code and recovery codes. |
+| `POST` | `/auth/mfa/verify` | Public/Auth | Verify an MFA code during login (with `tempToken`) or setup confirmation. |
+| `POST` | `/auth/mfa/enable` | Authenticated | Confirm MFA setup (frontend settings flow). |
+| `POST` | `/auth/mfa/disable` | Authenticated | Disable MFA (requires current code). |
+| `POST` | `/auth/mfa/recovery-codes` | Authenticated | Regenerate MFA recovery codes. |
+| `POST` | `/auth/phone/verify` | Authenticated | Send a phone verification SMS. |
+| `POST` | `/auth/phone/confirm` | Authenticated | Confirm phone verification code. |
+| `POST` | `/auth/mfa/sms/enable` | Authenticated | Enable SMS MFA (requires verified phone). |
+| `POST` | `/auth/mfa/sms/send` | Public | Send SMS code during MFA login (requires `tempToken`). |
+
+### SSO Endpoints
+
+SSO endpoints are mounted under `/api/v1/sso`.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/sso/presets` | Authenticated | List available SSO provider presets. |
+| `GET` | `/sso/providers` | Authenticated | List SSO providers for an organisation. |
+| `GET` | `/sso/providers/:id` | Authenticated | Get SSO provider details. |
+| `POST` | `/sso/providers` | Authenticated | Create an SSO provider. |
+| `PATCH` | `/sso/providers/:id` | Authenticated | Update an SSO provider. |
+| `DELETE` | `/sso/providers/:id` | Authenticated | Delete an SSO provider and all linked identities. |
+| `POST` | `/sso/providers/:id/status` | Authenticated | Set provider status (`active`, `inactive`, `testing`). |
+| `POST` | `/sso/providers/:id/test` | Authenticated | Test OIDC provider discovery. |
+| `GET` | `/sso/login/:orgId` | Public | Initiate SSO login (redirects to identity provider). |
+| `GET` | `/sso/callback` | Public | OIDC callback handler. |
+| `POST` | `/sso/exchange` | Public | Exchange SSO code for JWT tokens. |
+| `GET` | `/sso/check/:orgId` | Public | Check if an organisation has SSO enabled. |
+
+---
+
+## Database Schema
+
+### Users Table
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key. |
+| `email` | `varchar(255)` | Unique email address. |
+| `name` | `varchar(255)` | Display name. |
+| `password_hash` | `text` | Argon2 password hash (nullable for SSO users). |
+| `mfa_secret` | `text` | Encrypted TOTP secret. |
+| `mfa_enabled` | `boolean` | Whether MFA is active. |
+| `mfa_recovery_codes` | `jsonb` | Hashed recovery codes. |
+| `phone_number` | `text` | E.164 phone number for SMS MFA. |
+| `phone_verified` | `boolean` | Whether the phone number has been verified. |
+| `mfa_method` | `enum` | `totp` or `sms`. |
+| `status` | `enum` | `active`, `invited`, or `disabled`. |
+| `avatar_url` | `text` | Profile image URL. |
+| `last_login_at` | `timestamp` | Last successful login time. |
+| `password_changed_at` | `timestamp` | Last password change time. |
+| `created_at` | `timestamp` | Account creation time. |
+| `updated_at` | `timestamp` | Last modification time. |
+
+### Roles Table
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key. |
+| `partner_id` | `uuid` | Owning partner (nullable). |
+| `org_id` | `uuid` | Owning organisation (nullable). |
+| `parent_role_id` | `uuid` | Parent role for inheritance (nullable). |
+| `scope` | `enum` | `system`, `partner`, or `organization`. |
+| `name` | `varchar(100)` | Role display name. |
+| `description` | `text` | Optional description. |
+| `is_system` | `boolean` | Whether the role is a built-in system role. |
+
+### Permissions Table
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key. |
+| `resource` | `varchar(100)` | Resource name (e.g. `devices`). |
+| `action` | `varchar(50)` | Action name (e.g. `read`). |
+| `description` | `text` | Human-readable description. |
+
+### Role Permissions Table
+
+| Column | Type | Description |
+|---|---|---|
+| `role_id` | `uuid` | FK to `roles`. |
+| `permission_id` | `uuid` | FK to `permissions`. |
+| `constraints` | `jsonb` | Optional constraints (reserved for future use). |
+
+### Partner Users Table
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key. |
+| `partner_id` | `uuid` | FK to `partners`. |
+| `user_id` | `uuid` | FK to `users`. |
+| `role_id` | `uuid` | FK to `roles`. |
+| `org_access` | `enum` | `all`, `selected`, or `none`. |
+| `org_ids` | `uuid[]` | Array of accessible organisation IDs (when `org_access` is `selected`). |
+
+### Organisation Users Table
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key. |
+| `org_id` | `uuid` | FK to `organizations`. |
+| `user_id` | `uuid` | FK to `users`. |
+| `role_id` | `uuid` | FK to `roles`. |
+| `site_ids` | `uuid[]` | Optional site restrictions. |
+| `device_group_ids` | `uuid[]` | Optional device group restrictions. |
+
+### Sessions Table
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key. |
+| `user_id` | `uuid` | FK to `users`. |
+| `token_hash` | `text` | SHA-256 hash of the session token. |
+| `ip_address` | `varchar(45)` | Client IP at session creation. |
+| `user_agent` | `text` | Browser user agent string. |
+| `expires_at` | `timestamp` | Session expiry. |
+
+---
+
+## Audit Logging
+
+All user and role management actions are recorded in the audit log. Key audit events include:
+
+| Action | Trigger |
+|---|---|
+| `user.invite` | A user is invited to a scope. |
+| `user.invite.resend` | An invitation email is resent. |
+| `user.update` | A user's name or status is changed. |
+| `user.remove` | A user is removed from a scope. |
+| `user.role.assign` | A user's role is changed. |
+| `user.profile.update` | A user updates their own profile. |
+| `user.login` | Successful login. |
+| `user.logout` | Successful logout. |
+| `role.create` | A custom role is created. |
+| `role.update` | A custom role is updated. |
+| `role.delete` | A custom role is deleted. |
+| `role.clone` | A role is cloned. |
+| `auth.mfa.setup` | MFA is enabled for an account. |
+| `auth.mfa.disable` | MFA is disabled. |
+| `auth.mfa.recovery_codes.rotate` | Recovery codes are regenerated. |
+| `sso.provider.create` | An SSO provider is created. |
+| `sso.provider.update` | An SSO provider is updated. |
+| `sso.provider.delete` | An SSO provider is deleted. |
+
+---
+
+## Troubleshooting
+
+### "Partner or organization context required"
+
+This error means the authenticated user is not associated with any partner or organisation. Ensure the user has been added to a partner (via `partner_users`) or an organisation (via `organization_users`).
+
+### "Full partner organization access required"
+
+Partner-scoped users with `orgAccess: selected` must have access to **all** organisations under the partner to manage users and roles. Users with limited organisation access cannot administer other users.
+
+### "Cannot modify system roles" / "Cannot delete system roles"
+
+System roles (created with `isSystem: true`) are immutable. To customise permissions, clone the system role with `POST /roles/:id/clone` and modify the clone.
+
+### "Cannot delete role with assigned users"
+
+Re-assign all users from the role before deleting it. Use `GET /roles/:id/users` to find users assigned to the role, then `POST /users/:id/role` to move them.
+
+### "Cannot set parent role: would create circular inheritance"
+
+A role's parent cannot be one of its own descendants. Review the inheritance chain with `GET /roles/:id/effective-permissions` and choose a different parent.
+
+### "User already exists in this scope" (409)
+
+The user (by email) is already linked to this partner or organisation. Use `PATCH /users/:id` or `POST /users/:id/role` to modify their existing membership.
+
+### MFA setup expires
+
+The MFA setup data (TOTP secret and recovery codes) is stored in Redis with a 10-minute TTL. If the user does not confirm the setup within 10 minutes, they must restart with `POST /auth/mfa/setup`.
+
+### "Your organization requires MFA"
+
+The organisation has `settings.security.requireMfa` enabled. MFA cannot be disabled by individual users while this policy is active. Contact an organisation administrator to change the policy.
+
+### "Your organization does not allow SMS MFA"
+
+The organisation has restricted allowed MFA methods via `settings.security.allowedMfaMethods.sms`. Use TOTP instead, or ask an administrator to enable SMS MFA.
+
+### SSO login redirects to `/login?error=...`
+
+Common SSO callback errors:
+
+| Error | Cause |
+|---|---|
+| `session_expired` | The SSO session (state) expired. Login sessions are valid for 10 minutes. |
+| `provider_not_found` | The SSO provider was deleted or deactivated during the flow. |
+| `domain_not_allowed` | The user's email domain is not in the provider's `allowedDomains` list. |
+| `user_not_found` | The user does not exist and `autoProvision` is disabled on the provider. |
+| `default_role_required` | Auto-provisioning is enabled but no `defaultRoleId` is configured. |
+| `no_org_access` | The user exists but is not a member of the SSO provider's organisation. |
+
+### Rate Limiting
+
+| Endpoint | Limit |
+|---|---|
+| Login (`/auth/login`) | Per IP + email combination (configurable via `loginLimiter`). |
+| MFA verification | Per user ID (configurable via `mfaLimiter`). |
+| Forgot password | Per IP (configurable via `forgotPasswordLimiter`). |
+| Registration | 5 per IP per hour (3 for partner registration). |
+| Phone verification | Per phone number and per user. |
+| SMS send during login | Per `tempToken` and per phone number globally. |
+
+If you receive a `429 Too Many Requests` response, wait for the `retryAfter` period specified in the response body.

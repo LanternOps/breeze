@@ -1,0 +1,418 @@
+---
+title: Mobile App
+description: Monitor and manage your fleet on the go with the Breeze mobile app for iOS and Android.
+sidebar:
+  order: 23
+  label: Mobile App
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Breeze mobile app gives technicians and administrators on-the-go access to device monitoring, alert management, and remote actions from their iOS or Android device. Built with React Native and Expo, the app connects to the same Breeze API used by the web dashboard through a dedicated set of mobile-optimized endpoints mounted at `/api/v1/mobile`. Push notifications keep you informed of critical alerts in real time, and biometric authentication provides a secure, convenient login experience.
+
+---
+
+## Supported Platforms
+
+| Platform | Minimum Version | Bundle Identifier |
+|----------|----------------|-------------------|
+| iOS | iOS 13+ (with Expo SDK 50) | `com.breeze.rmm` |
+| Android | Android 5.0+ (API 21, with Expo SDK 50) | `com.breeze.rmm` |
+
+The app uses the Expo managed workflow (`expo@~50.0.0`, `react-native@0.73.0`) and supports automatic light/dark theming based on the system color scheme. The interface orientation is locked to portrait mode.
+
+---
+
+## Key Features
+
+### Dashboard Summary
+
+The `GET /summary` endpoint returns an at-a-glance overview of your fleet and alert status, scoped to the authenticated user's organization or partner context. The response contains two sections:
+
+- **Devices** -- total count plus breakdown by status (`online`, `offline`, `maintenance`).
+- **Alerts** -- total count plus breakdown by status (`active`, `acknowledged`, `resolved`) and a count of unresolved critical alerts.
+
+An optional `orgId` query parameter allows partner-scoped users to filter the summary to a specific organization.
+
+### Device Monitoring
+
+The Devices tab provides a searchable, paginated list of managed devices. Each device card displays:
+
+- Device name (display name or hostname)
+- Operating system with platform-specific icon (Windows, macOS, Linux)
+- Online/offline/warning status badge
+- Last seen timestamp
+- Live resource metrics (CPU, memory, disk usage) for online devices with progress bar indicators
+- Organization and site context
+
+The device list supports pull-to-refresh and client-side search filtering by name, hostname, or IP address. Decommissioned devices are excluded by default unless explicitly filtered.
+
+Tapping a device opens a detail screen showing full device information (hostname, IP address, OS, agent version, last seen, organization, site) along with live metrics retrieved from `GET /devices/:id/metrics`.
+
+### Alert Inbox
+
+The Alerts tab displays an inbox of alerts fetched from `GET /alerts/inbox`. Alerts are sorted by trigger time (newest first) and include:
+
+- Severity badge (critical, high, medium, low)
+- Alert title and message
+- Associated device hostname and OS type
+- Timestamps for triggered, acknowledged, and resolved events
+
+The alert list supports pull-to-refresh, severity filtering (`all`, `critical`, `high`, `medium`, `low`), and status filtering (`active`, `acknowledged`, `resolved`, `suppressed`) via query parameters.
+
+From the alert detail screen, technicians can:
+
+- **Acknowledge** an active alert with a single tap (`POST /alerts/:id/acknowledge`).
+- **Resolve** an alert with an optional resolution note (`POST /alerts/:id/resolve`).
+
+Both actions publish events (`alert.acknowledged`, `alert.resolved`) through the event bus and write audit log entries. Resolving an alert also sets the appropriate cooldown period based on the alert rule or configuration policy settings.
+
+### Remote Actions
+
+The device detail screen exposes quick-action buttons that dispatch commands to agents through the command queue:
+
+| Action | Description | Availability |
+|--------|-------------|-------------|
+| `reboot` | Sends a reboot command to the device agent | Online devices only |
+| `wake` | Sends a Wake-on-LAN packet | Available for all devices |
+| `run_script` | Executes a script on the device | Online devices only; requires `scriptId` |
+
+Actions are submitted via the mobile actions endpoint `POST /mobile/devices/:id/actions`, which supports `reboot`, `wake`, and `run_script`. For `run_script`, the API validates that the script exists, the user has organization access to it, and the script's supported OS types include the target device's OS. A `scriptExecution` record is created with `triggerType: 'manual'` and the script content, language, timeout, and `runAs` settings are included in the command payload.
+
+<Aside type="caution">
+  The `shutdown` and `lock` actions visible in the mobile UI are dispatched through the core commands endpoint (`POST /devices/:id/commands`) rather than the mobile actions endpoint, as the mobile actions schema does not currently accept those command types.
+</Aside>
+
+---
+
+## Push Notifications
+
+The app uses Expo Notifications (`expo-notifications`) with platform-specific push delivery:
+
+- **iOS**: Apple Push Notification Service (APNs) via `apnsToken`
+- **Android**: Firebase Cloud Messaging (FCM) via `fcmToken`
+
+### Registration Flow
+
+<Steps>
+1. On app startup, `registerForPushNotifications()` is called automatically.
+2. The service checks that the app is running on a physical device (push notifications are not supported on simulators).
+3. Notification permissions are requested from the OS if not already granted.
+4. An Expo push token is obtained and registered with the backend via `POST /notifications/register`.
+5. On Android, two notification channels are configured:
+   - **alerts** -- MAX importance, custom vibration pattern `[0, 250, 250, 250]`, sound enabled.
+   - **default** -- DEFAULT importance, vibration pattern `[0, 250]`.
+</Steps>
+
+### Notification Handling
+
+When a notification arrives while the app is in the foreground, it is displayed as a banner with sound and badge count update (configured via `setNotificationHandler`). The `parseAlertNotification` helper extracts `alertId` and `severity` from the notification data payload for deep-link navigation to the alert detail screen.
+
+The notification service exposes listeners for:
+
+- `addNotificationReceivedListener` -- fires when a notification is received while the app is foregrounded.
+- `addNotificationResponseReceivedListener` -- fires when the user taps a notification.
+- `getLastNotificationResponse` -- retrieves the notification that launched the app from a terminated state.
+
+### Notification Settings
+
+Users can configure notification preferences per mobile device through `PATCH /devices/:id/settings`:
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| `enabled` | `boolean` | Enable or disable push notifications for this device |
+| `severities` | `string[]` | Filter notifications by severity: `critical`, `high`, `medium`, `low`, `info` |
+| `quietHours` | `object \| null` | Suppress notifications during specified hours with `start`, `end`, and optional `timezone` |
+
+The Settings screen in the app also provides local toggles for "Push Notifications" and "Critical Alerts Only" that are persisted via AsyncStorage.
+
+---
+
+## Authentication
+
+### JWT-Based Login
+
+The mobile app authenticates through the core Breeze auth endpoints:
+
+<Steps>
+1. User enters email and password on the login screen.
+2. Credentials are submitted to `POST /api/v1/auth/login`.
+3. On success, the JWT access token and user object are stored securely using `expo-secure-store` with `WHEN_UNLOCKED_THIS_DEVICE_ONLY` keychain accessibility.
+4. The token is attached as a `Bearer` token in the `Authorization` header on all subsequent API requests.
+5. Non-GET requests include a CSRF header (`x-breeze-csrf: 1`).
+</Steps>
+
+If the login response indicates `mfaRequired: true`, the app surfaces an error prompting the user to complete MFA. Token refresh is handled via `POST /api/v1/auth/refresh`.
+
+### Biometric Authentication
+
+The app supports biometric unlock via `expo-local-authentication`:
+
+| Biometric Type | Platform |
+|---------------|----------|
+| Face ID | iOS |
+| Fingerprint (Touch ID) | iOS |
+| Fingerprint | Android |
+| Iris | Android |
+
+Biometric authentication is opt-in. When enabled in Settings, the user must authenticate with their biometric before the preference is stored. On subsequent app launches, `authenticateIfEnabled()` prompts the biometric check before granting access. The biometric prompt includes a "Use Passcode" fallback option.
+
+The app declares the following permissions for biometric support:
+
+- **iOS**: `NSFaceIDUsageDescription` in `Info.plist`
+- **Android**: `USE_BIOMETRIC` and `USE_FINGERPRINT` permissions
+
+### Secure Storage
+
+All sensitive data is stored using Expo SecureStore:
+
+| Key | Contents |
+|-----|----------|
+| `breeze_auth_token` | JWT access token |
+| `breeze_user` | Serialized user object (id, email, name, role) |
+| `breeze_biometric_enabled` | Biometric preference flag (`"true"` / `"false"`) |
+
+On logout, `clearAuthData()` removes both the token and user data from SecureStore. The logout flow also calls `POST /api/v1/auth/logout` to invalidate the server-side session, but local data is cleared regardless of whether that request succeeds.
+
+### Password Management
+
+Users can change their password from the Settings screen. The change-password modal enforces client-side validation rules:
+
+- Minimum 8 characters
+- At least one uppercase letter, one lowercase letter, and one number
+- New password must differ from the current password
+- Confirmation must match
+
+The request is submitted to `POST /api/v1/auth/change-password`.
+
+---
+
+## Mobile-Specific API Endpoints
+
+All mobile endpoints are mounted under `/api/v1/mobile` and require JWT authentication via `authMiddleware`. Access is controlled by scope: `organization`, `partner`, or `system`.
+
+### Push Token Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/notifications/register` | Register a push token (simplified: `token` + `platform`) |
+| `POST` | `/notifications/unregister` | Unregister a push token |
+
+### Mobile Device Registration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/devices` | Register a mobile device with full metadata |
+| `PATCH` | `/devices/:id/settings` | Update notification settings for a device |
+| `DELETE` | `/devices/:id` | Unregister a mobile device |
+
+The `POST /devices` endpoint accepts:
+
+```json
+{
+  "deviceId": "string (required)",
+  "platform": "ios | android (required)",
+  "fcmToken": "string (required for android)",
+  "apnsToken": "string (required for ios)",
+  "model": "string (optional)",
+  "osVersion": "string (optional)",
+  "appVersion": "string (optional)"
+}
+```
+
+Device registration uses upsert behavior -- if a device with the same `deviceId` already exists, its token and metadata are updated.
+
+### Alert Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/alerts/inbox` | Paginated alert inbox with optional status and org filters |
+| `POST` | `/alerts/:id/acknowledge` | Acknowledge an active alert |
+| `POST` | `/alerts/:id/resolve` | Resolve an alert with optional `note` |
+
+The inbox endpoint joins alerts with device data to return enriched records including `device.hostname`, `device.osType`, and `device.status`.
+
+### Device Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/devices` | Paginated device list with search, status, and org filters |
+| `POST` | `/devices/:id/actions` | Execute a remote action on a device |
+
+### Fleet Summary
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/summary` | Aggregated device and alert statistics |
+
+### Pagination
+
+List endpoints (`/alerts/inbox`, `/devices`) support pagination via query parameters:
+
+| Parameter | Default | Max | Description |
+|-----------|---------|-----|-------------|
+| `page` | `1` | -- | Page number (1-indexed) |
+| `limit` | `50` | `100` | Items per page |
+
+Responses include a `pagination` object with `page`, `limit`, and `total` fields.
+
+---
+
+## Multi-Tenant Access Control
+
+All mobile endpoints enforce the Breeze multi-tenant hierarchy:
+
+- **Organization scope**: Users see only data within their own organization.
+- **Partner scope**: Users can access data across all organizations they manage. An optional `orgId` query parameter narrows results to a specific organization.
+- **System scope**: Full access across all organizations.
+
+Device and alert operations include org-level access checks. The `getDeviceWithOrgCheck` and `getAlertWithOrgCheck` helpers verify that the authenticated user has access to the resource's organization before performing any mutations.
+
+---
+
+## Database Schema
+
+The mobile feature uses three dedicated tables:
+
+### `mobile_devices`
+
+Stores registered mobile devices and their push notification configuration.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `uuid` | Primary key |
+| `user_id` | `uuid` | References `users.id` |
+| `device_id` | `varchar(255)` | Unique device identifier |
+| `platform` | `enum('ios', 'android')` | Device platform |
+| `model` | `varchar(255)` | Device model name |
+| `os_version` | `varchar(100)` | OS version string |
+| `app_version` | `varchar(50)` | Breeze app version |
+| `fcm_token` | `text` | Firebase Cloud Messaging token (Android) |
+| `apns_token` | `text` | Apple Push Notification Service token (iOS) |
+| `notifications_enabled` | `boolean` | Whether push notifications are active |
+| `alert_severities` | `alert_severity[]` | Severity filter array |
+| `quiet_hours` | `jsonb` | Quiet hours configuration |
+| `last_active_at` | `timestamp` | Last activity timestamp |
+
+### `push_notifications`
+
+Tracks individual push notification delivery.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `uuid` | Primary key |
+| `mobile_device_id` | `uuid` | References `mobile_devices.id` |
+| `user_id` | `uuid` | Target user |
+| `title` | `varchar(255)` | Notification title |
+| `body` | `text` | Notification body |
+| `data` | `jsonb` | Structured payload data |
+| `platform` | `enum('ios', 'android')` | Delivery platform |
+| `message_id` | `varchar(255)` | Platform message ID |
+| `status` | `varchar(50)` | Delivery status |
+| `sent_at` | `timestamp` | When the notification was sent |
+| `delivered_at` | `timestamp` | When delivery was confirmed |
+| `read_at` | `timestamp` | When the user read the notification |
+| `alert_id` | `uuid` | Associated alert ID |
+| `event_type` | `varchar(100)` | Event that triggered the notification |
+
+### `mobile_sessions`
+
+Manages refresh tokens for mobile device sessions.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `uuid` | Primary key |
+| `user_id` | `uuid` | References `users.id` |
+| `mobile_device_id` | `uuid` | References `mobile_devices.id` |
+| `refresh_token` | `text` | Hashed refresh token |
+| `expires_at` | `timestamp` | Token expiration |
+| `last_used_at` | `timestamp` | Last refresh timestamp |
+| `ip_address` | `varchar(45)` | Client IP address |
+| `revoked_at` | `timestamp` | When the session was revoked |
+
+---
+
+## App Architecture
+
+The mobile app follows a standard React Native architecture with Redux state management:
+
+### State Management
+
+The app uses Redux Toolkit (`@reduxjs/toolkit`) with two slices:
+
+- **authSlice** -- manages `user`, `token`, `isLoading`, and `error` state. The `loginAsync` thunk calls the API, stores credentials in SecureStore, and updates the Redux store. The `logoutAsync` thunk clears both server and local session data.
+- **alertsSlice** -- manages the alerts list, loading state, severity filter, and last-fetched timestamp. Supports real-time updates via `addAlert`, `updateAlert`, `removeAlert`, and `markAlertAsAcknowledged` actions.
+
+Selectors are provided for filtered alerts (`selectFilteredAlerts`), unacknowledged count (`selectUnacknowledgedAlertsCount`), and critical count (`selectCriticalAlertsCount`).
+
+### Navigation
+
+The app uses React Navigation with the following structure:
+
+- **RootNavigator** -- checks stored credentials on startup and renders either the auth flow or the main app.
+- **AuthNavigator** -- single-screen stack containing the `LoginScreen`.
+- **MainNavigator** -- bottom tab navigator with three tabs:
+  - **Alerts** -- stack with `AlertListScreen` and `AlertDetailScreen`.
+  - **Devices** -- stack with `DeviceListScreen` and `DeviceDetailScreen`.
+  - **Settings** -- stack with `SettingsScreen`.
+
+### UI Framework
+
+The app uses React Native Paper (Material Design 3) with custom light and dark themes. The primary color is `#2563eb` (light) / `#60a5fa` (dark). Key shared components include:
+
+- **AlertCard** -- displays alert severity, title, message, associated device, and relative timestamp.
+- **DeviceCard** -- shows device name, OS icon, status badge, last-seen time, metrics progress bars, and organization context.
+- **StatusBadge** -- color-coded pill badge for both alert severities and device statuses.
+
+---
+
+## Audit Logging
+
+All mutating operations performed through the mobile API are recorded in the audit log. Each audit entry includes the action source (prefixed with `mobile.`), the affected resource type and ID, and contextual details.
+
+| Action | Resource Type | Description |
+|--------|--------------|-------------|
+| `mobile.push.register` | `mobile_device` | Push token registered |
+| `mobile.push.unregister` | `mobile_device` | Push token unregistered |
+| `mobile.device.register` | `mobile_device` | Mobile device registered |
+| `mobile.device.settings.update` | `mobile_device` | Notification settings changed |
+| `mobile.device.unregister` | `mobile_device` | Mobile device removed |
+| `mobile.alert.acknowledge` | `alert` | Alert acknowledged from mobile |
+| `mobile.alert.resolve` | `alert` | Alert resolved from mobile |
+| `mobile.device.action` | `device` | Remote action dispatched from mobile |
+
+---
+
+## Troubleshooting
+
+### Push notifications are not received
+
+<Steps>
+1. Verify the app is running on a physical device. Push notifications do not work on iOS simulators or Android emulators.
+2. Check that notification permissions are granted in the device's OS settings.
+3. Confirm that the push token was registered successfully by checking the `mobile_devices` table for a matching `fcm_token` (Android) or `apns_token` (iOS) entry.
+4. On Android, ensure the `alerts` notification channel has not been disabled by the user in system settings.
+5. If quiet hours are configured via `PATCH /devices/:id/settings`, verify the current time is outside the suppression window.
+</Steps>
+
+### Biometric authentication fails
+
+- Ensure biometrics are enrolled in the device's OS settings (Settings > Face ID / Touch ID on iOS, Settings > Biometrics on Android).
+- If biometric authentication is locked out due to too many failed attempts, the device passcode fallback will be offered.
+- On iOS, confirm the `NSFaceIDUsageDescription` permission is declared in the app's `Info.plist`.
+
+### Login fails with "MFA is required"
+
+The mobile app detects when the server returns `mfaRequired: true` in the login response and displays an error. MFA verification (TOTP) must currently be completed through the web dashboard. Once authenticated there, the resulting session can be used via token refresh.
+
+### Alerts or devices not loading
+
+- Pull down to refresh the list to trigger a new API request.
+- Verify network connectivity and confirm the API server URL is correct (set via `EXPO_PUBLIC_API_URL` environment variable, defaults to `http://localhost:3001`).
+- Check that the user's JWT token has not expired. The app will attempt a token refresh via `POST /api/v1/auth/refresh` automatically, but if the refresh token is also expired, the user must log in again.
+
+### Device actions fail
+
+- The `reboot` and `run_script` actions require the target device to be online. The action buttons are disabled when the device status is `offline`.
+- For `run_script`, the script must be compatible with the target device's OS type. The API validates `script.osTypes` against `device.osType` and returns a 400 error if they do not match.
+- Decommissioned devices cannot receive actions. The API returns `"Device is decommissioned"` with status 400.

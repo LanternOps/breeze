@@ -1,0 +1,463 @@
+---
+title: Policy Management
+description: Define and enforce organisational compliance policies with tracking, reporting, and remediation workflows.
+sidebar:
+  order: 22
+  label: Policy Management
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Policy Management provides a compliance-focused layer for defining organisational rules that devices must satisfy. Policies declare a set of rules (required software, prohibited software, disk space thresholds, OS version requirements, registry checks, or configuration file checks), target them at groups of devices, and track compliance status over time. When a device drifts out of compliance, the system can log the violation, warn operators, or automatically trigger a remediation automation.
+
+<Aside type="note">
+Policy Management focuses on **compliance evaluation** (desired-state rules). For bundling device settings such as patches, alert rules, and maintenance windows into reusable templates, see [Configuration Policies](/features/configuration-policies).
+</Aside>
+
+## Overview
+
+The policy management system is built on two tables:
+
+- **`automation_policies`** -- stores the policy definition (name, rules, targets, enforcement level, check interval, optional remediation script).
+- **`automation_policy_compliance`** -- stores per-device compliance results (status, rule evaluation details, remediation attempt count, last checked timestamp).
+
+Policies are scoped to an organisation. Multi-tenant access control enforces that organisation-scoped users see only their own policies, partner-scoped users see policies for accessible organisations, and system-scoped users have unrestricted access.
+
+The API routes are mounted at `/api/v1/policies` and require authentication via the `authMiddleware`.
+
+## Creating policies
+
+<Aside type="caution">
+Write operations (POST, PUT, PATCH, DELETE) on `/api/v1/policies` have been removed. New compliance policies should be created through the [Configuration Policies](/features/configuration-policies) system by adding a **compliance** feature link. The GET routes are preserved as read-only for backward compatibility.
+</Aside>
+
+Compliance rules are now managed as part of a Configuration Policy. To create a new compliance policy:
+
+<Steps>
+
+1. Create (or open) a Configuration Policy via `POST /api/v1/configuration-policies`.
+
+2. Add a **compliance** feature link to the policy via `POST /api/v1/configuration-policies/:id/features`.
+
+3. Within the compliance feature link, define one or more compliance rules. Each rule contains a `rules` JSON array (using the same rule schema described below), an `enforcementLevel`, a `checkIntervalMinutes`, and an optional `remediationScriptId`.
+
+4. Assign the Configuration Policy to a scope (partner, organisation, site, device group, or device) via the assignments endpoint.
+
+</Steps>
+
+Legacy `automation_policies` rows that already exist continue to be evaluated and appear in all compliance endpoints.
+
+## Policy rule types
+
+Every policy contains a `rules` array. Each entry is a discriminated union on the `type` field. At least one rule is required.
+
+### `required_software`
+
+Checks that a named software package is installed. Optionally enforces a version constraint.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"required_software"` | Yes | Rule discriminator |
+| `softwareName` | string | Yes | Name to match against the device's software inventory (case-insensitive substring match) |
+| `softwareVersion` | string | No | Version string to compare against |
+| `versionOperator` | `"any"` \| `"exact"` \| `"minimum"` \| `"maximum"` | No | How to compare the installed version. Defaults to `"any"`. When set to `exact`, `minimum`, or `maximum`, `softwareVersion` is required. |
+
+### `prohibited_software`
+
+Checks that a named software package is **not** installed.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"prohibited_software"` | Yes | Rule discriminator |
+| `softwareName` | string | Yes | Name to match against the device's software inventory |
+
+### `disk_space_minimum`
+
+Checks that free disk space meets a minimum threshold.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"disk_space_minimum"` | Yes | Rule discriminator |
+| `diskSpaceGB` | number | Yes | Minimum free space in gigabytes (must be positive) |
+| `diskPath` | string | No | Restrict the check to a specific mount point or device path. When omitted, all disks are checked. |
+
+### `os_version`
+
+Checks the device's operating system type and minimum version.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"os_version"` | Yes | Rule discriminator |
+| `osType` | `"windows"` \| `"macos"` \| `"linux"` \| `"any"` | No | Restrict to a specific OS. Defaults to `"any"`. |
+| `osMinVersion` | string | No | Minimum acceptable OS version string (semver-style comparison) |
+
+### `registry_check`
+
+Checks a Windows registry value. Automatically passes on non-Windows devices.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"registry_check"` | Yes | Rule discriminator |
+| `registryPath` | string | Yes | Full registry path (e.g. `HKLM\SOFTWARE\Policies\...`) |
+| `registryValueName` | string | Yes | Value name to read |
+| `registryExpectedValue` | string | No | Expected value. If omitted, only checks for existence. |
+
+### `config_check`
+
+Checks a key/value pair in a configuration file on the device.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"config_check"` | Yes | Rule discriminator |
+| `configFilePath` | string | Yes | Absolute path to the configuration file |
+| `configKey` | string | Yes | Key to look up |
+| `configExpectedValue` | string | No | Expected value. If omitted, only checks for existence. |
+
+## Enforcement levels
+
+Each policy (or compliance rule within a Configuration Policy) declares an enforcement level that controls what happens when a device is non-compliant.
+
+| Level | Behaviour |
+|---|---|
+| `monitor` | Record the compliance status. No action is taken. |
+| `warn` | Record the compliance status and publish a `policy.violation` event that downstream notification channels can consume. |
+| `enforce` | Same as `warn`, plus automatically trigger a remediation automation if one is configured. Falls back to `warn` behaviour if no remediation script or automation is linked. |
+
+Remediation is triggered only when enforcement is `enforce` **and** the device evaluates as `non_compliant`. The system resolves the remediation automation by:
+
+1. Checking rules for an explicit `remediationAutomationId`.
+2. Checking rules for a nested `remediation.automationId`.
+3. Looking up enabled automations whose actions reference the policy's `remediationScriptId`.
+
+## Policy targets
+
+Policies specify which devices to evaluate through the `targets` JSON object and `targetType` / `targetIds` fields.
+
+| Target type | Description |
+|---|---|
+| `all` | All devices in the organisation (default) |
+| `devices` | Specific device UUIDs |
+| `sites` | All devices at the specified site(s) |
+| `groups` | All devices in the specified device group(s) |
+| `tags` | All devices matching the specified tag(s) |
+
+The targets object also supports nested `deviceIds`, `siteIds`, `groupIds`, and `tags` arrays for fine-grained control. During evaluation, the system normalises these into a deduplicated list of target device IDs.
+
+## Compliance tracking
+
+Every time a policy is evaluated against a device, the result is stored in the `automation_policy_compliance` table:
+
+| Field | Description |
+|---|---|
+| `policyId` | References the legacy `automation_policies` row (null for Configuration Policy compliance) |
+| `configPolicyId` | References the `config_policy_feature_links` row (null for legacy policies) |
+| `configItemName` | Human-readable name of the compliance rule (for Configuration Policy compliance) |
+| `deviceId` | The evaluated device |
+| `status` | `compliant`, `non_compliant`, `pending`, or `error` |
+| `details` | JSON object containing `evaluatedAt`, `rules` list, `passed` boolean, `ruleResults` array, and `source` |
+| `lastCheckedAt` | Timestamp of the most recent evaluation |
+| `remediationAttempts` | Counter tracking how many times remediation has been attempted |
+
+### Compliance statuses
+
+| Status | Meaning |
+|---|---|
+| `compliant` | All rules passed |
+| `non_compliant` | One or more rules failed |
+| `pending` | Not yet evaluated |
+| `error` | Evaluation failed due to an internal error |
+
+## Policy actions
+
+### Activate / Deactivate
+
+Toggle a legacy policy's `enabled` flag without modifying any other fields.
+
+```
+POST /api/v1/policies/:id/activate
+POST /api/v1/policies/:id/deactivate
+```
+
+Both endpoints require `organization`, `partner`, or `system` scope.
+
+### Evaluate
+
+Trigger an on-demand evaluation of a policy against all its target devices.
+
+```
+POST /api/v1/policies/:id/evaluate
+```
+
+Returns the evaluation result immediately:
+
+```json
+{
+  "message": "Policy evaluation completed",
+  "policyId": "uuid",
+  "devicesEvaluated": 42,
+  "results": [
+    {
+      "deviceId": "uuid",
+      "hostname": "WORKSTATION-01",
+      "status": "compliant",
+      "previousStatus": "non_compliant",
+      "remediationRunId": null
+    }
+  ],
+  "summary": {
+    "compliant": 40,
+    "non_compliant": 2
+  },
+  "evaluatedAt": "2026-02-18T12:00:00.000Z"
+}
+```
+
+<Aside type="tip">
+Disabled policies cannot be evaluated. The endpoint returns a 400 error with `"Cannot evaluate disabled policy"`.
+</Aside>
+
+The evaluate action also writes an audit log entry with the `policy.evaluate` action type.
+
+### Remediate
+
+Trigger remediation without running a full evaluation cycle.
+
+```
+POST /api/v1/policies/:id/remediate
+```
+
+The endpoint resolves the remediation automation from the policy's rules or `remediationScriptId`, creates an `automation_runs` entry, increments the automation's `runCount`, and returns the run details. Returns a 400 error if no remediation automation is configured.
+
+## Policy state collection from agents
+
+Policy evaluation depends on device telemetry that the Breeze agent collects and reports. The evaluation service queries the following database tables to build the evaluation context for each device:
+
+| Table | Data collected | Used by rule types |
+|---|---|---|
+| `device_software` | Installed software name, version, publisher | `required_software`, `prohibited_software` |
+| `software_inventory` | Additional software inventory records | `required_software`, `prohibited_software` |
+| `device_disks` | Mount point, filesystem, total/used/free GB | `disk_space_minimum` |
+| `device_registry_state` | Windows registry path, value name, value data, value type | `registry_check` |
+| `device_config_state` | Config file path, key, value | `config_check` |
+| `devices` | OS type, OS version | `os_version` |
+
+The agent periodically reports this data during heartbeat cycles. The evaluation service loads the relevant context data for all target devices in a single batch query before evaluating rules.
+
+### Version comparison
+
+Version strings are split into tokens on non-alphanumeric separators and compared segment by segment. Numeric segments are compared numerically; non-numeric segments use locale-aware string comparison. This supports standard semver (e.g. `1.2.3`), build numbers (e.g. `10.0.19044`), and mixed formats.
+
+## Reporting
+
+### Compliance stats
+
+```
+GET /api/v1/policies/compliance/stats
+```
+
+Returns aggregate compliance metrics across all policies (both legacy and Configuration Policy compliance rules). Optionally filter by `orgId`.
+
+```json
+{
+  "data": {
+    "complianceRate": 87,
+    "complianceScore": 87,
+    "totalPolicies": 12,
+    "enabledPolicies": 10,
+    "complianceOverview": {
+      "compliant": 340,
+      "non_compliant": 50,
+      "pending": 10
+    }
+  }
+}
+```
+
+### Compliance summary
+
+```
+GET /api/v1/policies/compliance/summary
+```
+
+Returns a detailed breakdown by policy, including per-policy compliance counts, enforcement level distribution, and a list of non-compliant devices with their violations.
+
+```json
+{
+  "totalPolicies": 12,
+  "enabledPolicies": 10,
+  "byEnforcement": {
+    "monitor": 4,
+    "warn": 3,
+    "enforce": 5
+  },
+  "complianceOverview": {
+    "compliant": 340,
+    "non_compliant": 50,
+    "pending": 10,
+    "error": 0
+  },
+  "complianceRate": 87,
+  "overall": {
+    "total": 400,
+    "compliant": 340,
+    "nonCompliant": 50,
+    "unknown": 10
+  },
+  "policies": [
+    {
+      "policyId": "uuid",
+      "policyName": "Endpoint Security Baseline",
+      "enforcementLevel": "enforce",
+      "source": "legacy",
+      "compliance": {
+        "total": 100,
+        "compliant": 85,
+        "nonCompliant": 12,
+        "unknown": 3
+      }
+    }
+  ],
+  "nonCompliantDevices": [
+    {
+      "deviceId": "uuid",
+      "deviceName": "WORKSTATION-05",
+      "status": "non_compliant",
+      "violationCount": 2,
+      "violations": [
+        {
+          "policyId": "uuid",
+          "policyName": "Endpoint Security Baseline",
+          "ruleName": "required_software",
+          "message": "Required software \"CrowdStrike\" is not installed."
+        }
+      ],
+      "lastCheckedAt": "2026-02-18T11:30:00.000Z"
+    }
+  ]
+}
+```
+
+Each policy entry includes a `source` field indicating whether the compliance data comes from a `legacy` automation policy or a `config_policy` (Configuration Policy compliance rule).
+
+### Per-policy compliance
+
+```
+GET /api/v1/policies/:id/compliance
+```
+
+Returns detailed compliance rows for a single policy. Works for both legacy automation policies and Configuration Policies. Supports pagination and filtering by status.
+
+| Query parameter | Type | Description |
+|---|---|---|
+| `page` | string | Page number (default: 1) |
+| `limit` | string | Results per page (default: 50) |
+| `status` | `"compliant"` \| `"non_compliant"` \| `"pending"` \| `"error"` | Filter by compliance status |
+
+Each row includes the `deviceHostname`, `deviceStatus`, `deviceOsType`, full `details` object with `ruleResults`, and `remediationAttempts` count.
+
+## Event bus integration
+
+The policy evaluation service publishes events to the internal event bus for downstream consumption (notifications, webhooks, automations):
+
+| Event | When published |
+|---|---|
+| `policy.evaluated` | After every device evaluation (compliant or non-compliant) |
+| `policy.violation` | When a device evaluates as `non_compliant` |
+| `policy.compliant` | When a device evaluates as `compliant` |
+| `policy.remediation.triggered` | When enforcement is `enforce` and a remediation automation run is created |
+
+All events include the policy ID, device ID, hostname, compliance status, enforcement level, and evaluation timestamp.
+
+## API reference
+
+All endpoints require authentication and one of the `organization`, `partner`, or `system` scopes.
+
+### List policies
+
+```
+GET /api/v1/policies
+```
+
+| Query parameter | Type | Description |
+|---|---|---|
+| `page` | string | Page number |
+| `limit` | string | Results per page |
+| `orgId` | UUID | Filter by organisation (partner/system scope) |
+| `enforcement` | `"monitor"` \| `"warn"` \| `"enforce"` | Filter by enforcement level |
+| `enabled` | `"true"` \| `"false"` | Filter by enabled state |
+
+Returns paginated policy list with inline compliance summaries.
+
+### Get policy
+
+```
+GET /api/v1/policies/:id
+```
+
+Returns a single policy with compliance breakdown (compliant, non-compliant, pending, error counts) and the linked remediation script name if present.
+
+### Compliance endpoints
+
+```
+GET /api/v1/policies/compliance/stats
+GET /api/v1/policies/compliance/summary
+GET /api/v1/policies/:id/compliance
+```
+
+See the [Reporting](#reporting) section for details.
+
+### Action endpoints
+
+```
+POST /api/v1/policies/:id/activate
+POST /api/v1/policies/:id/deactivate
+POST /api/v1/policies/:id/evaluate
+POST /api/v1/policies/:id/remediate
+```
+
+See the [Policy actions](#policy-actions) section for details.
+
+## Background compliance scanning
+
+Configuration Policy compliance rules are evaluated on a scheduled basis by the background compliance scanner (`scanAndEvaluateConfigPolicyCompliance`). The scanner:
+
+1. Queries all active compliance rules with their assignment targets using `scanDueComplianceChecks()`.
+2. Resolves each assignment target (partner, organisation, site, device group, or device) to a set of device IDs.
+3. For each device, resolves the **winning** compliance rules from the Configuration Policy hierarchy (most specific assignment wins).
+4. Evaluates each compliance rule against the device's telemetry context.
+5. Upserts the result into `automation_policy_compliance` with `policyId: null` and `configPolicyId` set to the feature link ID.
+6. If enforcement is `enforce` and the device is non-compliant, triggers remediation via a linked automation.
+7. Publishes `policy.evaluated`, `policy.violation`, or `policy.compliant` events.
+
+## Troubleshooting
+
+### Policy shows zero compliance results
+
+- Verify the policy is **enabled** (legacy) or has **active** status (Configuration Policy).
+- Ensure target devices are online and have reported at least one heartbeat.
+- Check that the `rules` array contains at least one valid rule with a recognised `type`.
+
+### All devices showing as `non_compliant`
+
+- For `required_software` rules, verify the `softwareName` value matches what the agent reports. Matching is case-insensitive and uses substring comparison.
+- For `disk_space_minimum` rules, check that the `diskSpaceGB` threshold is not higher than the total disk capacity.
+- For `registry_check` rules, verify the device is running Windows. Registry rules automatically pass on non-Windows devices.
+- For `os_version` rules with a `osMinVersion` set, verify the version string format matches what the device reports (e.g. `10.0.19044` not `Windows 10`).
+
+### Remediation not triggering
+
+- Confirm the enforcement level is `enforce` (not `monitor` or `warn`).
+- Verify a remediation script or automation is linked. Check the policy's `remediationScriptId` or the rule's `remediationAutomationId`.
+- Ensure the linked automation is **enabled** and belongs to the same organisation as the policy.
+- Check the automation's `actions` array to confirm it references the correct `scriptId`.
+
+### Config policy compliance not being evaluated
+
+- Ensure the Configuration Policy has a **compliance** feature link.
+- Verify the policy has at least one assignment (the compliance scanner only processes rules with active assignments).
+- Check that the `checkIntervalMinutes` has elapsed since the last evaluation.
+
+### Version comparison giving unexpected results
+
+- Version strings are split on non-alphanumeric characters. Ensure both the installed version and required version use consistent formatting.
+- The `minimum` operator checks that the installed version is greater than or equal to the required version. Use `exact` for strict equality.

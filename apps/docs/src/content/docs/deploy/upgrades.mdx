@@ -1,6 +1,6 @@
 ---
 title: Upgrade Guide
-description: How to upgrade Breeze RMM to a new version.
+description: How to upgrade the Breeze server and agents to a new version.
 sidebar:
   order: 4
   label: Upgrade Guide
@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-## Standard Upgrade
+## Server Upgrade
 
 <Steps>
 
@@ -20,48 +20,48 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    See [Backup & Restore](/security/backup/) for details.
 
-2. **Pull the latest code**
+2. **Pull new images and restart**
 
    ```bash
    cd breeze
    git pull origin main
+   docker compose pull
+   docker compose up -d
    ```
 
-3. **Update dependencies**
-
-   ```bash
-   pnpm install
-   ```
-
-4. **Re-deploy**
-
-   ```bash
-   ./scripts/prod/deploy.sh .env.prod
-   ```
-
-   The deploy script handles:
-   - Running any pending database migrations
-   - Rebuilding Docker images with the latest code
-   - Rolling restart of services
-   - Health check verification
+   Database migrations run automatically on startup. The binaries init container updates agent downloads to the new version.
 
 </Steps>
 
-## Checking the Current Version
+To pin a specific release instead of `latest`:
+
+```bash
+# In .env
+BREEZE_VERSION=0.3.0
+
+# Then pull and restart
+docker compose pull && docker compose up -d
+```
+
+### Checking the Current Version
 
 ```bash
 # API version
 curl -s https://breeze.yourdomain.com/health | jq .version
 
-# Agent version
+# Agent version (on a device)
 breeze-agent version
 ```
 
-## Database Migrations
+### Database Migrations
 
-Migrations run automatically during deployment. To run them manually:
+Migrations run automatically on startup by default (`AUTO_MIGRATE=true`). To manage them manually:
 
 ```bash
+# Disable auto-migrate in .env
+AUTO_MIGRATE=false
+
+# Run migrations from host
 export DATABASE_URL="postgresql://breeze:password@localhost:5432/breeze"
 pnpm db:migrate
 ```
@@ -70,30 +70,88 @@ pnpm db:migrate
   Always backup your database before running migrations in production.
 </Aside>
 
-## Rolling Back
-
-If an upgrade causes issues:
+### Rolling Back the Server
 
 ```bash
-# Revert to the previous version
-git checkout <previous-tag>
-pnpm install
-./scripts/prod/deploy.sh .env.prod
+# Pin to the previous version
+BREEZE_VERSION=0.2.0  # in .env
+docker compose pull && docker compose up -d
 ```
 
 <Aside type="danger">
-  Database migrations are forward-only. If a migration has already run, reverting code may cause schema mismatches. Restore from backup if needed.
+  Database migrations are forward-only. If a migration has already run, reverting to an older image may cause schema mismatches. Restore from backup if needed.
 </Aside>
 
-## Agent Upgrades
+---
 
-Agents can be upgraded remotely from the dashboard or via command:
+## Agent Auto-Update
 
-```bash
-# From the API (sends upgrade command to agent via WebSocket)
-curl -X POST https://breeze.yourdomain.com/api/v1/devices/:id/commands \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"action": "upgrade_agent", "payload": {"version": "0.2.0"}}'
+Agents update themselves automatically when the server has a newer version available. No manual intervention is required for routine upgrades.
+
+### How It Works
+
+```
+Server upgrade → binaries init container registers new version in DB
+                                    ↓
+Agent heartbeat → API compares agent version vs latest in `agent_versions` table
+                                    ↓
+Heartbeat response includes `upgradeTo: "0.3.0"` if newer version exists
+                                    ↓
+Agent downloads new binary → verifies SHA-256 checksum → backs up current binary
+                                    ↓
+Replaces binary → restarts service (systemd/launchd/SCM)
 ```
 
-The agent downloads the new binary, verifies its signature, and performs a self-upgrade with automatic rollback on failure.
+On each heartbeat (~60s), the API checks the `agent_versions` table for the latest version matching the agent's platform and architecture. If a newer version exists, the heartbeat response includes an `upgradeTo` field. The agent then:
+
+1. Downloads the new binary from `GET /api/v1/agent-versions/{version}/download?platform={os}&arch={arch}`
+2. Verifies the SHA-256 checksum matches the registered checksum
+3. Backs up the current binary (e.g., `/usr/local/bin/breeze-agent.backup`)
+4. Replaces the running binary
+5. Restarts the service — `systemctl restart` on Linux, `launchctl kickstart -k` on macOS, or a detached PowerShell helper script on Windows (to avoid the process killing itself mid-swap)
+6. On failure at any step, automatically rolls back to the backup binary
+
+### Disabling Auto-Update
+
+Set `auto_update: false` in the agent config file to prevent automatic upgrades:
+
+```yaml
+# /etc/breeze/agent.yaml (Linux)
+# /Library/Application Support/Breeze/agent.yaml (macOS)
+# C:\ProgramData\Breeze\agent.yaml (Windows)
+auto_update: false
+```
+
+When auto-update is disabled, the agent logs a message on each heartbeat when a newer version is available but does not act on it.
+
+### Version Registration
+
+New agent versions are registered in the `agent_versions` table through one of three mechanisms:
+
+| Method | When | How |
+|---|---|---|
+| **Binary sync (local mode)** | API startup | Scans `AGENT_BINARY_DIR`, computes SHA-256 checksums, registers each binary as the latest version |
+| **GitHub sync** | Admin-triggered | `POST /api/v1/agent-versions/sync-github` fetches the latest GitHub release, downloads `checksums.txt`, and upserts all platform/arch combos |
+| **Manual** | Admin-triggered | `POST /api/v1/agent-versions` with version, platform, architecture, download URL, and checksum |
+
+In a standard Docker Compose deployment, binary sync happens automatically on every server startup — the binaries init container bundles the agent builds, and the API registers them on boot. Agents pick up the new version on their next heartbeat.
+
+### Windows Update Behavior
+
+On Windows, the agent cannot replace its own running binary. Instead, it spawns a detached PowerShell helper script that:
+
+1. Waits for the agent process to exit
+2. Stops the `BreezeAgent` Windows service
+3. Copies the new binary over the old one
+4. Starts the service
+5. Cleans up temp files
+
+This avoids the race condition where the agent tries to stop itself before it can start the new version.
+
+### Dev Push (Development Only)
+
+During development, you can push a binary directly to an agent without going through the version table:
+
+The `dev_update` command sends a download URL and checksum directly to the agent via WebSocket. This automatically disables `auto_update` on that agent to prevent the heartbeat from overwriting the dev binary with the latest release.
+
+To re-enable auto-update after dev testing, set `auto_update: true` in the agent's config file.

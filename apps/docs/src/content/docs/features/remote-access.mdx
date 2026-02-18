@@ -1,0 +1,264 @@
+---
+title: Remote Access
+description: Remote Desktop, Remote Terminal, and File Transfer for managed devices over WebRTC.
+sidebar:
+  order: 7
+  label: Remote Access
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze provides three distinct real-time access capabilities for managed devices: **Remote Desktop** (interactive screen viewing and control), **Remote Terminal** (browser-based interactive shell), and **File Transfer** (bi-directional file movement between the technician and the device). Each is a separate session type created through the same `/remote/sessions` API.
+
+Remote desktop sessions use WebRTC as the primary transport. The Breeze server acts as a signaling relay during connection setup — it brokers the initial SDP offer/answer exchange and ICE candidate negotiation between the native viewer app and the device agent. Once the peer-to-peer connection is established, video, audio, and input data flow directly between the viewer and the agent and do not transit the Breeze server.
+
+If WebRTC negotiation fails (e.g., both endpoints are behind symmetric NAT with no TURN server), the viewer automatically falls back to a WebSocket transport that relays JPEG frames through the Breeze server. The WebSocket fallback has reduced capabilities compared to WebRTC — no audio, no clipboard sync, no multi-monitor switching, and no low-latency cursor streaming.
+
+<Aside>
+  Multi-factor authentication (MFA) is required for all remote access sessions. Your role must also include the `remote:access` permission — see **Settings → Roles** if session creation returns "Access denied."
+</Aside>
+
+---
+
+## Remote Desktop
+
+Remote Desktop streams the device's screen to your browser and forwards your mouse and keyboard input back to the device in real time, giving you full interactive control as if you were physically present at the machine.
+
+### Starting a desktop session
+
+<Steps>
+
+1. Navigate to **Devices**, locate the target device, and open its detail page.
+
+2. Click **Connect** and select **Desktop**.
+
+3. A fullscreen viewer opens once the WebRTC connection is active.
+
+4. Mouse movement and clicks are captured and relayed to the device in real time.
+
+5. Keyboard input is forwarded directly — use the **Release Input** button or press **Escape** (if configured) to return control to your browser.
+
+</Steps>
+
+### Connection flow
+
+The browser and device negotiate a WebRTC peer-to-peer connection through the Breeze server:
+
+1. `POST /remote/sessions` with `type: "desktop"` — creates the session record.
+2. `GET /remote/ice-servers` — retrieve STUN/TURN server configuration.
+3. `POST /remote/sessions/:id/offer` — send the SDP offer from the browser.
+4. `POST /remote/sessions/:id/answer` — relay the device's SDP answer back.
+5. `POST /remote/sessions/:id/ice` — exchange ICE candidates.
+6. `POST /remote/sessions/:id/ws-ticket` — mint a one-time WebSocket ticket.
+7. Connect via WebSocket using the ticket.
+
+Once the P2P connection is active, screen data flows directly between the browser and the agent.
+
+---
+
+## Remote Terminal
+
+Remote Terminal opens an interactive shell session rendered in the browser using xterm.js. It is a PTY session on the device — keystrokes are sent to the device's shell and output is streamed back in real time, with full terminal emulation including colour, cursor control, and resizing.
+
+### Starting a terminal session
+
+<Steps>
+
+1. Navigate to **Devices**, locate the target device, and open its detail page.
+
+2. Click **Connect** and select **Terminal**.
+
+3. A browser terminal window opens. Wait for the **connected** indicator in the toolbar before typing — the terminal is ready only after the WebRTC P2P connection is fully established and the agent confirms the PTY is open.
+
+4. Resizing the browser window (or the terminal pane) automatically adjusts the PTY dimensions on the device.
+
+</Steps>
+
+### Connection flow
+
+The connection flow is identical to Remote Desktop:
+
+1. `POST /remote/sessions` with `type: "terminal"` — creates the session record.
+2. `GET /remote/ice-servers` — retrieve STUN/TURN configuration.
+3. `POST /remote/sessions/:id/offer` — send the SDP offer.
+4. `POST /remote/sessions/:id/ws-ticket` — mint the WebSocket ticket.
+5. Connect via WebSocket using the ticket.
+
+---
+
+## File Transfer
+
+File Transfer moves files between the technician's browser and the device. It is bi-directional: you can pull files off a device (for example, log files or crash dumps) or push files to a device (for example, scripts or configuration files).
+
+### Direction convention
+
+Direction is expressed from the **device's perspective**:
+
+- `upload` — the device sends a file to you. Use this to **pull** a file from the device.
+- `download` — you send a file to the device. Use this to **push** a file to the device.
+
+When in doubt: to retrieve `/var/log/app.log` from a device, use `"direction": "upload"`.
+
+### Initiating a transfer
+
+```bash
+POST /remote/transfers
+Content-Type: application/json
+
+{
+  "deviceId": "uuid",
+  "direction": "upload",
+  "remotePath": "/var/log/app.log",
+  "localFilename": "app.log",
+  "sizeBytes": 1048576
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `deviceId` | UUID of the target device |
+| `direction` | `"upload"` (device → you) or `"download"` (you → device) |
+| `remotePath` | Full path of the file on the device |
+| `localFilename` | Filename used when the file is delivered to the browser |
+| `sizeBytes` | Size in bytes (required for progress tracking) |
+
+### Tracking progress
+
+Poll `GET /remote/transfers/:id`:
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Transfer created, waiting for the device agent to begin |
+| `transferring` | Data is actively moving |
+| `completed` | Transfer finished successfully |
+| `failed` | Transfer encountered an unrecoverable error (check `errorMessage`) |
+
+The response also includes `progressPercent` (0–100).
+
+### Downloading a completed file
+
+For `upload` direction transfers (device → you), once `status` is `completed`:
+
+```
+GET /remote/transfers/:id/download
+```
+
+Returns the file as a binary response. Only available for `upload` direction transfers.
+
+### Cancelling a transfer
+
+```
+POST /remote/transfers/:id/cancel
+```
+
+Accepted only while the transfer is in `pending` or `transferring` state. A cancelled transfer lands in `failed` status with `errorMessage: "Cancelled by user"` — check `errorMessage` to distinguish user cancellation from a genuine error.
+
+### Size limit
+
+The default maximum file size per transfer is **500 MB** (configurable via `MAX_TRANSFER_SIZE_MB`). Transfers exceeding this limit are rejected when chunk data pushes the total past the threshold.
+
+---
+
+## Session Lifecycle
+
+All session types follow the same state machine:
+
+```
+pending → connecting → active → disconnected / failed
+```
+
+| State | Description |
+|-------|-------------|
+| `pending` | Session record created; device agent has not yet acknowledged the request |
+| `connecting` | Device acknowledged; SDP offer/answer exchange and ICE negotiation in progress |
+| `active` | WebRTC P2P connection established; data flowing between browser and device |
+| `disconnected` | Session ended normally — user closed it or the agent reported a clean disconnect |
+| `failed` | Connection could not be established, or an active connection dropped unexpectedly |
+
+When a session ends (`disconnected` or `failed`), the platform records `durationSeconds` (calculated from start time). The `bytesTransferred` field is available but must be supplied by the caller when ending the session via `POST /remote/sessions/:id/end`.
+
+---
+
+## Rate Limits
+
+Breeze enforces per-organisation and per-user limits on concurrent remote access resources. When a limit is reached, the creation request returns `429 Too Many Requests`.
+
+| Resource | Per-org | Per-user |
+|----------|---------|----------|
+| Active sessions | 10 | 5 |
+| Active file transfers | 20 | 10 |
+| Max transfer size | 500 MB | 500 MB |
+
+These defaults are configurable via environment variables on the API server:
+
+| Variable | Default |
+|----------|---------|
+| `MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG` | 10 |
+| `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | 5 |
+| `MAX_ACTIVE_TRANSFERS_PER_ORG` | 20 |
+| `MAX_ACTIVE_TRANSFERS_PER_USER` | 10 |
+| `MAX_TRANSFER_SIZE_MB` | 500 |
+
+To free session capacity, close active sessions from the Active Sessions list on the device detail page, or call `DELETE /remote/sessions/stale` — this marks `pending`, `connecting`, and `active` sessions as `disconnected`. Be aware this terminates any currently active sessions, not just stale ones.
+
+---
+
+## Security
+
+**MFA required for all remote access.** Every session creation request is gated by MFA verification at the route level. A valid MFA check must be present before a remote session can be created.
+
+**Server is a signaling relay for WebRTC.** The Breeze server brokers WebRTC negotiation (SDP offer/answer and ICE candidates). Once the P2P connection is established, device data does not transit the server. If the WebSocket fallback is active, frame data is relayed through the server but is not persisted.
+
+**All sessions are audit logged.** Every session creation, state transition, and termination is recorded with the actor identity, device identifier, start time, end time, duration in seconds, and bytes transferred. Audit records are immutable.
+
+**Remote access requires the `remote:access` permission.** This permission is not granted by default on all roles. Navigate to **Settings → Roles** if a user receives "Access denied" when creating a session.
+
+---
+
+## API Reference
+
+### Sessions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/remote/sessions` | Create a session (body: `deviceId`, `type`) |
+| GET | `/remote/sessions` | List sessions (`?deviceId=&status=&type=&includeEnded=`) |
+| GET | `/remote/sessions/:id` | Get session details |
+| GET | `/remote/sessions/history` | Session statistics (total sessions, total duration, average duration) |
+| DELETE | `/remote/sessions/stale` | Terminate all pending, connecting, and active sessions |
+| GET | `/remote/ice-servers` | Get ICE/TURN server configuration for WebRTC |
+| POST | `/remote/sessions/:id/offer` | Send SDP offer from browser to device |
+| POST | `/remote/sessions/:id/answer` | Relay device's SDP answer back to browser |
+| POST | `/remote/sessions/:id/ice` | Exchange ICE candidates between browser and device |
+| POST | `/remote/sessions/:id/ws-ticket` | Mint a one-time WebSocket ticket (required for terminal and desktop) |
+| POST | `/remote/sessions/:id/end` | End a session |
+
+### File Transfers
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/remote/transfers` | Initiate a transfer |
+| GET | `/remote/transfers` | List transfers (`?deviceId=&status=&direction=`) |
+| GET | `/remote/transfers/:id` | Get transfer details and current progress |
+| POST | `/remote/transfers/:id/cancel` | Cancel a pending or active transfer |
+| POST | `/remote/transfers/:id/chunks` | Upload a chunk (multipart: `chunkIndex`, `data`) |
+| GET | `/remote/transfers/:id/download` | Download a completed file (`upload` direction only) |
+
+---
+
+## Troubleshooting
+
+**Session stuck in `connecting`.**
+WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). ICE negotiation fails when both endpoints are behind symmetric NAT and no TURN server is configured — contact your administrator to verify TURN configuration. The viewer should automatically fall back to the WebSocket transport after a timeout.
+
+**Session limit hit (429).**
+The organisation or user limit on concurrent sessions has been reached. Call `DELETE /remote/sessions/stale` to free capacity, or navigate to the Active Sessions list and close sessions that are no longer needed.
+
+**Terminal garbled after resize.**
+This was a race condition in older builds where the browser sent a PTY resize message before the server `connected` acknowledgement was received. Current builds wait for the `connected` message before sending any data, including resize events. Update the agent to a current release.
+
+**File transfer stuck at 0%.**
+The device must be online with an active WebSocket connection for the transfer to begin. If the device disconnected after the transfer was created, cancel it (`POST /remote/transfers/:id/cancel`) and retry once the device reconnects.
+
+**"Access denied" when creating a session.**
+The user account does not have the `remote:access` permission. Navigate to **Settings → Roles**, locate the role assigned to the user, and enable `remote:access`. Changes take effect immediately without requiring re-login.

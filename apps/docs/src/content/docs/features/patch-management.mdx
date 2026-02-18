@@ -1,0 +1,378 @@
+---
+title: Patch Management
+description: Discover, approve, deploy, and roll back patches across your fleet with full audit trails and compliance reporting.
+sidebar:
+  order: 3
+  label: Patch Management
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Patch Management gives you full control over the complete update lifecycle for every device in your fleet: discover available patches, review and approve them, deploy to targets, and roll back if something goes wrong. The system is designed to make large-scale patching auditable and safe — every action is recorded, partial failures are surfaced immediately, and no patch reaches a device without an explicit approval step.
+
+Every patch goes through an approval workflow before it can be deployed. Approvals are scoped per organization, which means MSPs can manage each customer's patch posture independently. A patch approved for one customer is not automatically approved for another, and rejections or deferrals in one organization do not affect any other.
+
+Compliance reports give you a point-in-time snapshot of your fleet's patch status, suitable for internal audit reviews and customer-facing reporting. Reports are generated asynchronously and can be exported as CSV or PDF.
+
+---
+
+## Key Concepts
+
+### Patch Sources
+
+| Source | Description |
+|--------|-------------|
+| **`microsoft`** | Windows Update patches sourced from Microsoft, including cumulative updates, security fixes, and optional feature updates |
+| **`apple`** | macOS and iOS system updates distributed through Apple Software Update |
+| **`linux`** | Distribution packages managed via the native package manager (apt, yum, dnf, zypper, etc.) |
+| **`third_party`** | Software updates for non-OS applications such as browsers, runtimes, and productivity tools |
+| **`custom`** | Internally published updates distributed through Breeze's custom patch channel |
+
+### Severity Levels
+
+| Severity | Meaning |
+|----------|---------|
+| **`critical`** | Security-critical vulnerability; immediate patching strongly recommended |
+| **`important`** | High-priority fix addressing a significant security or stability issue |
+| **`moderate`** | Standard update improving security or reliability without urgent exposure |
+| **`low`** | Minor improvement or non-security fix with minimal operational impact |
+| **`unknown`** | Severity not yet classified by the patch source |
+
+### Approval States
+
+| State | Meaning |
+|-------|---------|
+| **`pending`** | Not yet reviewed; patch will not be deployed until approved |
+| **`approved`** | Cleared for deployment; eligible for inclusion in patch jobs |
+| **`rejected`** | Explicitly declined via `POST /patches/:id/decline` — will not be installed. Non-destructive; can be reversed by approving the patch at any time. |
+| **`deferred`** | Postponed until the `deferUntil` date; returns to `pending` automatically when that date is reached |
+
+### Device Patch Status
+
+| Status | Meaning |
+|--------|---------|
+| **`pending`** | Patch detected on the device but not yet installed |
+| **`installed`** | Patch successfully applied |
+| **`failed`** | Installation attempted but returned an error |
+| **`skipped`** | Patch was not applied during a job run (e.g., device was rebooting or a dependency was missing) |
+| **`missing`** | Patch is approved and should be present but is not detected on the device |
+
+---
+
+## Scanning for Patches
+
+Trigger an on-demand patch scan by posting to `/patches/scan` with a list of device IDs. The `source` field is optional — omit it to scan all sources.
+
+```bash
+POST /patches/scan
+{
+  "deviceIds": ["uuid-1", "uuid-2"],
+  "source": "microsoft"
+}
+```
+
+The response includes:
+
+- **`deviceCount`** — number of accessible devices queued
+- **`queuedCommandIds`** — all successfully queued command IDs
+- **`dispatchedCommandIds`** — subset dispatched via active WebSocket connections
+- **`pendingCommandIds`** — subset queued but not yet dispatched (device offline)
+- **`failedDeviceIds`** — devices that could not be queued
+- **`skipped.missingDeviceIds`** — device IDs not found
+- **`skipped.inaccessibleDeviceIds`** — devices outside org access scope
+
+Scanning is asynchronous. The scan command is sent to the agent on each target device, which then reports its results back to the API. New patches appear in `GET /patches` after the devices have processed and returned their results — this typically takes a few minutes depending on fleet size and network conditions.
+
+---
+
+## Reviewing and Approving Patches
+
+### Approving
+
+```bash
+POST /patches/:id/approve
+{
+  "orgId": "uuid",
+  "note": "Reviewed — approved for production fleet"
+}
+```
+
+### Rejecting
+
+```bash
+POST /patches/:id/decline
+{
+  "orgId": "uuid",
+  "note": "Known conflict with legacy app"
+}
+```
+
+Rejection creates an audit record but is not a permanent block. The stored approval status is `rejected`. A rejected patch can be approved at any time by calling the approve endpoint. No data is deleted when a patch is rejected.
+
+### Deferring
+
+```bash
+POST /patches/:id/defer
+{
+  "orgId": "uuid",
+  "deferUntil": "2026-03-01T00:00:00Z",
+  "note": "Wait for Q1 change window"
+}
+```
+
+A deferred patch returns to `pending` status automatically when the `deferUntil` date is reached. No manual action is required to reactivate it.
+
+### Bulk Approval
+
+```bash
+POST /patches/bulk-approve
+{
+  "orgId": "uuid",
+  "patchIds": ["uuid-1", "uuid-2"],
+  "note": "March cycle approval"
+}
+```
+
+The response contains two arrays:
+
+```json
+{ "approved": [...], "failed": [...] }
+```
+
+Partial success is possible. Patches that could not be approved (e.g., already in a terminal state for this org) are returned in `failed` with a reason. Successfully approved patches are returned in `approved`.
+
+---
+
+## Deploying Patches
+
+### Patch Jobs
+
+A patch job is the unit of work that delivers approved patches to a set of devices. Jobs can be created automatically from a Configuration Policy patch schedule or manually via the UI or API. Each job targets a specific set of devices; when a job runs, the platform sends an `install_patches` command to each target device via its active WebSocket connection.
+
+Devices must be online (WebSocket connected) to receive the install command. If a device is offline when a job runs, it will be marked as pending within the job and will not receive the command until it reconnects, depending on how the job is configured.
+
+### Monitoring Jobs
+
+```bash
+GET /patches/jobs?status=running
+```
+
+Each job record includes the following progress fields:
+
+| Field | Description |
+|-------|-------------|
+| **`devicesTotal`** | Total number of target devices in the job |
+| **`devicesCompleted`** | Devices that have finished (success or failure) |
+| **`devicesFailed`** | Devices that reported a patch installation failure |
+| **`devicesPending`** | Devices that have not yet received or responded to the command |
+
+Job status follows this lifecycle:
+
+```
+scheduled → running → completed / failed / cancelled
+```
+
+---
+
+## Rollback
+
+To roll back an installed patch, post to the rollback endpoint:
+
+```bash
+POST /patches/:id/rollback
+{
+  "reason": "Causing boot failures on Intel systems",
+  "scheduleType": "immediate",
+  "deviceIds": ["uuid-1"]
+}
+```
+
+<Aside>
+  Omit `deviceIds` to target all devices with `status: installed` for this patch.
+</Aside>
+
+<Aside type="caution">
+  Scheduled rollback (`scheduleType: "scheduled"`) is not yet implemented. Only `"immediate"` is currently supported.
+</Aside>
+
+The response includes:
+
+- **`queuedCommandIds`** — list of `rollback_patches` commands dispatched to target devices
+- **`deviceCount`** — number of devices targeted
+- **`failedDeviceIds`** — devices that could not be reached or queued
+
+Rollback status follows this lifecycle:
+
+```
+pending → running → completed / failed / cancelled
+```
+
+---
+
+## Compliance Reporting
+
+### Generating a Report
+
+Compliance reports are generated asynchronously. Call the report endpoint with your desired filters — the response is immediate and contains a `reportId` to track progress:
+
+```bash
+GET /patches/compliance/report?orgId=uuid&source=microsoft&severity=critical&format=csv
+```
+
+<Aside type="caution">
+  Only CSV format is currently supported. PDF report generation is not yet implemented.
+</Aside>
+
+Response:
+
+```json
+{ "reportId": "uuid", "status": "pending" }
+```
+
+The initial status is `pending`. Note: the creation response may show `queued` as a display hint, but polling via `GET /patches/compliance/report/:id` will return `pending` until the worker picks up the job.
+
+Available query parameters: `orgId`, `source`, `severity`, `format` (`csv` only — PDF is not yet supported).
+
+### Checking Report Status
+
+Poll the status endpoint using the `reportId` returned above:
+
+```bash
+GET /patches/compliance/report/:id
+```
+
+Response fields:
+
+| Field | Description |
+|-------|-------------|
+| **`status`** | Current state: `pending`, `running`, `completed`, or `failed` |
+| **`rowCount`** | Number of rows in the report (available once completed) |
+| **`summary`** | High-level counts by status (available once completed) |
+| **`startedAt`** | ISO 8601 timestamp when processing began |
+| **`completedAt`** | ISO 8601 timestamp when processing finished |
+| **`errorMessage`** | Populated only if `status` is `failed` |
+
+### Downloading the Report
+
+Once the report status is `completed`, download the file:
+
+```bash
+GET /patches/compliance/report/:id/download
+```
+
+This returns a file stream in CSV format. Attempting to download before the report is `completed` will return an error.
+
+### Real-Time Compliance Summary
+
+For a live overview without generating a file, use the compliance summary endpoint:
+
+```bash
+GET /patches/compliance
+```
+
+This returns `compliancePercent` (a value from 0 to 100) and aggregated counts broken down by device patch status. Results are computed in real time from the current state of the fleet and are not cached.
+
+---
+
+## Patch Scheduling via Configuration Policies
+
+Patch *scheduling and settings* — when to scan, which severities to auto-approve, and what reboot policy to apply — are managed through [Configuration Policies](/features/configuration-policies/). This is the primary way to automate patching at scale. The legacy `PATCH /patch-policies` and `DELETE /patch-policies` routes have been removed; `GET /patch-policies` remains for backwards compatibility only.
+
+### Adding a patch feature to a policy
+
+```bash
+POST /configuration-policies/:policyId/features
+Content-Type: application/json
+
+{
+  "featureType": "patch",
+  "inlineSettings": {
+    "sources": ["microsoft", "third_party"],
+    "autoApprove": true,
+    "autoApproveSeverities": ["critical", "important"],
+    "scheduleFrequency": "weekly",
+    "scheduleTime": "02:00",
+    "scheduleDayOfWeek": "sun",
+    "rebootPolicy": "if_required"
+  }
+}
+```
+
+### Patch settings fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sources` | string[] | Patch sources to include: `microsoft`, `apple`, `linux`, `third_party`, `custom` |
+| `autoApprove` | boolean | Automatically approve patches matching the configured severities |
+| `autoApproveSeverities` | string[] | Severities eligible for auto-approval: `critical`, `important`, `moderate`, `low` |
+| `scheduleFrequency` | string | How often to run patching: `daily`, `weekly`, or `monthly` |
+| `scheduleTime` | string | Time of day in `HH:MM` format (24-hour, UTC unless timezone configured at site level) |
+| `scheduleDayOfWeek` | string | For weekly schedules: `sun`, `mon`, `tue`, `wed`, `thu`, `fri`, `sat` |
+| `scheduleDayOfMonth` | integer | For monthly schedules: day 1–31 |
+| `rebootPolicy` | string | Post-patch reboot behavior: `never`, `if_required`, or `always` |
+
+Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
+
+### Creating a patch deployment job from a policy
+
+Once a policy has patch settings configured, deploy patches to a set of devices:
+
+```bash
+POST /configuration-policies/:id/patch-job
+Content-Type: application/json
+
+{
+  "deviceIds": ["uuid-1", "uuid-2", "uuid-3"],
+  "name": "March Critical Patches — Contoso HQ",
+  "scheduledAt": "2026-03-01T02:00:00Z"
+}
+```
+
+- `deviceIds` — required; up to 500 per job
+- `name` — optional; defaults to `"Config Policy Patch Job — {policy name}"`
+- `scheduledAt` — optional ISO 8601 datetime; defaults to immediately
+
+Devices currently inside an active Maintenance Window with patching suppression enabled are excluded and returned in `skipped.maintenanceSuppressedDeviceIds`. Devices that don't exist or are outside your org scope are returned in `skipped.missingDeviceIds` and `skipped.inaccessibleDeviceIds`.
+
+The response includes the IDs of all created jobs, total device counts, and skipped device lists.
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| **GET** | `/patches` | List patches with approval status (`?source=&severity=&os=&orgId=`) |
+| **GET** | `/patches/sources` | List available patch sources (`?os=`) |
+| **GET** | `/patches/:id` | Get full patch details |
+| **POST** | `/patches/scan` | Trigger patch scan on devices |
+| **GET** | `/patches/approvals` | List approval records (`?status=&patchId=&orgId=`) |
+| **POST** | `/patches/:id/approve` | Approve patch |
+| **POST** | `/patches/:id/decline` | Reject patch |
+| **POST** | `/patches/:id/defer` | Defer patch to date |
+| **POST** | `/patches/bulk-approve` | Approve multiple patches |
+| **GET** | `/patches/jobs` | List patch deployment jobs (`?status=`) |
+| **POST** | `/patches/:id/rollback` | Roll back installed patch |
+| **GET** | `/patches/compliance` | Real-time compliance summary |
+| **GET** | `/patches/compliance/report` | Request compliance report (async) |
+| **GET** | `/patches/compliance/report/:id` | Check report status |
+| **GET** | `/patches/compliance/report/:id/download` | Download completed report |
+
+---
+
+## Troubleshooting
+
+**Scan results not appearing.**
+Scanning is asynchronous — allow a few minutes for devices to report back. Confirm the device was online at scan time. If a device was offline when the scan was dispatched, the scan will run on its next connection to the platform.
+
+**Patch approved but not deploying.**
+Approval does not automatically trigger a deployment. Once a patch is approved, it becomes eligible for installation, but a patch job must still be scheduled — either via a Configuration Policy schedule or by creating a job manually through the UI or API.
+
+**Rollback failed.**
+The patch's `uninstallCommand` returned a non-zero exit code on the target device. Check the `errorMessage` field on the rollback record for the specific error output. Note that some patches, particularly certain cumulative OS updates, do not support programmatic uninstall and cannot be rolled back through this mechanism.
+
+**Compliance percentage lower than expected.**
+Check for devices with `failed` or `missing` patch status — these reduce the compliance score. Also verify that the relevant patches are in `approved` state for the organization in question. Unapproved patches are not deployed and show as `pending`, which counts against compliance.
+
+**Compliance report stuck in `running`.**
+Check the BullMQ worker status in your infrastructure. The compliance report worker is a separate worker process from the main API worker. If that worker is down or backlogged, reports will remain in `running` or `pending` indefinitely. Restarting the compliance worker will resume processing.

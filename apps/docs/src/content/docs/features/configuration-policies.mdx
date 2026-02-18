@@ -1,0 +1,236 @@
+---
+title: Configuration Policies
+description: Bundle and enforce device settings across your fleet using hierarchical configuration policies.
+sidebar:
+  order: 1
+  label: Configuration Policies
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Configuration Policies let you bundle device settings — patches, alerts, maintenance windows, compliance rules, and more — into reusable templates and apply them to any scope of your fleet. Policies evaluate automatically on a schedule and can auto-remediate drift without manual intervention.
+
+Policies are **hierarchical**: settings cascade from the broadest scope down to the most specific, and more specific assignments always win.
+
+```
+Partner          (lowest priority)
+  └── Organization
+        └── Site
+              └── Device Group
+                    └── Device  (highest priority — always wins)
+```
+
+## Feature types
+
+A policy can bundle up to 8 feature types:
+
+| Feature | What it controls |
+|---|---|
+| **Patch Management** | Auto-approval, schedule, reboot policy |
+| **Alert Rules** | Conditions, severity, cooldown, notification templates |
+| **Maintenance Windows** | Recurrence, duration, alert/patch/automation suppression |
+| **Compliance Rules** | Desired-state rules, enforcement level, remediation script |
+| **Backup** | Schedule and retention |
+| **Security** | Security policy settings |
+| **Monitoring** | Check configuration |
+| **Automation** | Event triggers, cron schedules, bulk actions |
+
+Each feature can be configured in one of two modes:
+
+- **Linked** — points to an existing policy object by ID (e.g., an existing alert rule). Changes to the linked object propagate automatically. Not available for `monitoring` — use inline instead.
+- **Inline** — settings are stored directly in the policy. Useful for simple configurations that don't need to be shared. Required for `monitoring`, `backup`, and `security` feature types.
+
+## Enforcement modes
+
+Compliance rules support three enforcement levels:
+
+| Mode | Behaviour |
+|---|---|
+| `monitor` | Report non-compliance only. No action taken. |
+| `warn` | Log a warning and send notifications. |
+| `enforce` | Auto-remediate using the linked remediation script. Falls back to `warn` if no script is set. |
+
+## Creating a policy
+
+<Steps>
+
+1. Navigate to **Configuration → Policies**.
+
+2. Click **New Policy**.
+
+3. Enter a **Name** and optional **Description**.
+
+4. Set **Status** to **Active**. Inactive and archived policies are not evaluated by the scheduler.
+
+5. Click **Save** to open the policy detail editor.
+
+</Steps>
+
+## Adding features to a policy
+
+Open the policy detail editor and click the tab for the feature you want to configure.
+
+### Patch Management
+
+| Field | Description |
+|---|---|
+| **Auto-approve** | Automatically approve patches matching the configured criteria |
+| **Schedule** | Frequency (daily/weekly/monthly) and time of day for patch runs |
+| **Reboot policy** | How to handle required reboots after patching |
+
+### Alert Rules
+
+Add one or more alert conditions. Each condition requires:
+
+- **Metric** — what to measure (e.g., `cpu_percent`, `disk_percent`)
+- **Operator** — comparison (`gt`, `lt`, `eq`)
+- **Value** — the threshold
+- **Severity** — `critical`, `high`, `medium`, `low`, or `info`
+- **Cooldown minutes** — minimum time between repeated alerts for the same device
+- **Auto-resolve** — automatically resolve the alert when the condition clears
+
+Optionally link a title and message template to control notification formatting.
+
+### Maintenance Windows
+
+| Field | Description |
+|---|---|
+| **Recurrence** | Day of week or month when the window applies |
+| **Start time** | Local time the window begins |
+| **Duration** | Length of the window in **hours** |
+| **Suppress Alerts** | Silence alert notifications during the window |
+| **Suppress Patching** | Skip scheduled patch jobs during the window |
+| **Suppress Automations** | Skip automation triggers during the window |
+| **Suppress Scripts** | Skip scheduled script execution during the window |
+
+### Compliance Rules
+
+| Field | Description |
+|---|---|
+| **Name** | A label for this rule |
+| **Rule definition** | The desired-state condition to evaluate |
+| **Enforcement level** | `monitor`, `warn`, or `enforce` |
+| **Check interval** | How often to re-evaluate (minutes) |
+| **Remediation script** | Script to run when `enforce` mode detects non-compliance |
+
+### Backup, Security, Monitoring, Automation
+
+Configure schedule and retention for **Backup**; security policy settings for **Security**; check intervals and targets for **Monitoring**; and event triggers, cron schedules, and action chains for **Automation**.
+
+## Assigning a policy
+
+<Steps>
+
+1. Open the policy detail editor → **Assignments** tab.
+
+2. Choose a **Target type**: Partner, Organization, Site, Device Group, or Device.
+
+3. Select the specific target from the dropdown.
+
+4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`).
+
+5. Click **Assign**.
+
+</Steps>
+
+<Aside>
+  A device-level assignment always takes precedence over all group, site, organization, and partner assignments — regardless of priority number.
+</Aside>
+
+## Viewing effective configuration
+
+To see the merged settings a specific device will receive:
+
+1. Navigate to the device's detail page.
+2. Open the **Effective Configuration** tab.
+3. The page shows the resolved settings for each feature type and which policy in the inheritance chain provided each value.
+
+```
+GET /configuration-policies/effective/:deviceId
+```
+
+Use `POST /configuration-policies/effective/:deviceId/diff` to preview how a policy change would affect a device's effective configuration before saving. The request body accepts:
+
+```json
+{
+  "add": [{ "configPolicyId": "uuid", "level": "site", "targetId": "uuid", "priority": 1 }],
+  "remove": ["assignment-uuid"]
+}
+```
+
+The response returns both `current` and `proposed` effective configurations for comparison.
+
+## Patch jobs
+
+Policies with a Patch Management feature can trigger deployment jobs:
+
+```
+POST /configuration-policies/:id/patch-job
+```
+
+Request body:
+
+```json
+{
+  "deviceIds": ["uuid-1", "uuid-2"],
+  "name": "Optional job name",
+  "scheduledAt": "2026-03-01T02:00:00Z"
+}
+```
+
+For each device, Breeze checks:
+
+- Whether the device exists and is accessible — inaccessible devices are listed in `skipped.inaccessibleDeviceIds`
+- Whether the device is inside an active maintenance window with patching suppression — suppressed devices are listed in `skipped.maintenanceSuppressedDeviceIds`
+- Whether the device ID is valid — invalid IDs are listed in `skipped.missingDeviceIds`
+
+The job is created with the schedule defined in the policy's patch settings (e.g., weekly on Sunday at 2 AM).
+
+## API reference
+
+All paths are relative to `/api/v1`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/configuration-policies` | List policies |
+| POST | `/configuration-policies` | Create policy |
+| GET | `/configuration-policies/:id` | Get policy |
+| PATCH | `/configuration-policies/:id` | Update metadata |
+| DELETE | `/configuration-policies/:id` | Delete (cascades to features and assignments) |
+| GET | `/configuration-policies/:id/features` | List feature links |
+| POST | `/configuration-policies/:id/features` | Add feature |
+| PATCH | `/configuration-policies/:id/features/:linkId` | Update feature settings |
+| DELETE | `/configuration-policies/:id/features/:linkId` | Remove feature |
+| GET | `/configuration-policies/:id/assignments` | List assignments |
+| POST | `/configuration-policies/:id/assignments` | Assign policy to a target |
+| DELETE | `/configuration-policies/:id/assignments/:aid` | Unassign |
+| GET | `/configuration-policies/effective/:deviceId` | Resolve effective config for a device |
+| POST | `/configuration-policies/effective/:deviceId/diff` | Preview change diff |
+| GET | `/configuration-policies/assignments/target` | List assignments for a target |
+| POST | `/configuration-policies/:id/patch-job` | Create patch deployment job |
+| GET | `/configuration-policies/:id/patch-settings` | Get patch settings for a policy |
+| GET | `/configuration-policies/:id/resolve-patch-config/:deviceId` | Resolve patch config for a specific device |
+
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`.
+
+## Troubleshooting
+
+**Policy not applying to a device**
+
+Check that the policy is assigned at some level in the hierarchy. Open the device's Effective Configuration tab — if the policy is not listed in the inheritance chain, it has not been assigned to any scope the device belongs to.
+
+**Compliance check not running**
+
+Ensure the policy status is **Active** and `checkIntervalMinutes` is set. The evaluation worker scans for due policies every 60 seconds; setting `checkIntervalMinutes` to 1 means a rule will be checked within 60 seconds of becoming due.
+
+**Patch job skipping devices**
+
+Check all three skipped lists in the response: `missingDeviceIds`, `inaccessibleDeviceIds`, and `maintenanceSuppressedDeviceIds`. A device in an active maintenance window with **Suppress Patching** enabled will be skipped automatically.
+
+**Enforcement not remediating**
+
+Enforcement mode must be set to `enforce` and a remediation script must be linked. Without a script, `enforce` falls back to `warn` behaviour.
+
+**Feature type conflict between policies at the same level**
+
+When two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If priorities are equal, results are non-deterministic — assign distinct priorities to resolve the conflict.

@@ -1,0 +1,497 @@
+---
+title: Alert Templates
+description: Use built-in and custom alert templates with configurable rules and correlation logic to standardise alerting across your fleet.
+sidebar:
+  order: 5
+  label: Alert Templates
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Alert Templates provide a reusable library of alert definitions that can be instantiated as rules across your organization. Breeze ships with a set of built-in templates covering common performance, capacity, availability, and network scenarios. You can also create custom templates tailored to your environment. Templates define the conditions, severity, target scope, and cooldown behaviour for an alert. Rules are concrete instances of a template, bound to an organization and optionally customised with different thresholds, targets, or severity levels.
+
+The correlation engine groups related alerts that fire within a time window, surfaces confidence-scored links between them, and provides root-cause hints to help you identify the underlying issue faster.
+
+All alert template endpoints are mounted at `/alert-templates` and require authentication with one of these scopes: `organization`, `partner`, or `system`.
+
+---
+
+## Overview
+
+The alert templates system has three layers:
+
+1. **Templates** -- reusable alert definitions (built-in or custom) that describe what to monitor and when to fire.
+2. **Rules** -- organization-scoped instances of a template with optional overrides for severity, conditions, targets, and cooldown.
+3. **Correlations** -- links and groups that connect related alerts to help identify root causes.
+
+Templates and rules follow the multi-tenant hierarchy. Built-in templates are available to every organization. Custom templates and all rules are scoped to a single organization, resolved from the authenticated user's token.
+
+---
+
+## Built-in Templates
+
+Breeze includes five built-in templates that cover common monitoring scenarios:
+
+| Template | Category | Severity | Condition | Default Cooldown |
+|----------|----------|----------|-----------|-----------------|
+| CPU High | Performance | high | `cpu.usage` > 90% for 5 min | 15 min |
+| Disk Space Low | Capacity | high | `disk.freePercent` < 10% for 10 min | 30 min |
+| Service Stopped | Availability | critical | `service.status` equals `stopped` for 1 min | 5 min |
+| Memory Pressure | Performance | medium | `memory.availablePercent` < 15% for 5 min | 15 min |
+| Network Latency High | Network | medium | `network.latencyMs` > 200 for 3 min | 10 min |
+
+Built-in templates cannot be modified or deleted. Any attempt to update or delete a built-in template returns a `403 Forbidden` error.
+
+<Aside type="caution">
+  Built-in templates are read-only. To customise a built-in alert definition, create a rule from the template and override the fields you need (severity, conditions, targets, or cooldown).
+</Aside>
+
+### Listing Built-in Templates
+
+Use the dedicated built-in endpoint to retrieve only the shipped templates:
+
+```bash
+GET /alert-templates/templates/built-in
+Authorization: Bearer <token>
+```
+
+The response supports `severity` and `search` query parameters for filtering, plus `page` and `limit` for pagination.
+
+---
+
+## Custom Templates
+
+Custom templates let you define alert definitions specific to your environment. They are scoped to the creating organization and follow the same structure as built-in templates, but with `builtIn` set to `false`.
+
+### Creating a Custom Template
+
+<Steps>
+1. Choose a descriptive name and category for the template.
+
+2. Define the conditions object with the metric, operator, threshold, and duration.
+
+3. Set the target scope to control which devices, sites, or tags the template applies to.
+
+4. POST the template to the API.
+</Steps>
+
+```bash
+POST /alert-templates/templates
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "name": "DB Connections Spike",
+  "description": "Connections exceed expected concurrency",
+  "category": "Database",
+  "severity": "high",
+  "conditions": {
+    "metric": "db.connections",
+    "operator": ">",
+    "threshold": 800,
+    "durationMinutes": 5
+  },
+  "targets": {
+    "scope": "tag",
+    "tags": ["database", "production"]
+  },
+  "defaultCooldownMinutes": 20
+}
+```
+
+### Template Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Template name (1--255 characters). Trimmed on save |
+| `description` | string | No | Optional description |
+| `category` | string | No | Grouping label (1--100 characters). Defaults to `Custom` |
+| `severity` | enum | Yes | One of `critical`, `high`, `medium`, `low`, `info` |
+| `conditions` | object | No | Metric, operator, threshold, and duration. Defaults to `{}` |
+| `targets` | object | No | Target scope. Defaults to `{ scope: "organization" }` |
+| `defaultCooldownMinutes` | integer | No | Minutes between repeated alerts (0--10,080). Defaults to `15` |
+
+### Condition Object
+
+The `conditions` object is a free-form record. The built-in templates use these fields as a convention:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `metric` | string | The metric identifier (e.g., `cpu.usage`, `disk.freePercent`, `service.status`) |
+| `operator` | string | Comparison operator: `>`, `<`, `>=`, `<=`, `equals` |
+| `threshold` | number or string | The value to compare against |
+| `durationMinutes` | number | How long the condition must persist before the alert fires |
+| `serviceName` | string | Service name for service-status checks (e.g., `nginx`) |
+
+### Target Scope
+
+Targets control which devices, sites, or tagged groups the template (or rule) applies to:
+
+| Scope | Additional Fields | Description |
+|-------|-------------------|-------------|
+| `organization` | `orgId` (optional) | Applies to all devices in the organization |
+| `site` | `siteIds` | Applies to devices at the specified sites |
+| `device` | `deviceIds` | Applies to specific devices by ID |
+| `tag` | `tags` | Applies to devices matching any of the specified tags |
+
+### Updating a Custom Template
+
+```bash
+PATCH /alert-templates/templates/:id
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "severity": "critical",
+  "conditions": {
+    "metric": "db.connections",
+    "operator": ">",
+    "threshold": 1000,
+    "durationMinutes": 3
+  }
+}
+```
+
+Only the fields you include are updated. Omitted fields retain their current values. The request must contain at least one field to update; an empty body returns `400 Bad Request`.
+
+### Deleting a Custom Template
+
+```bash
+DELETE /alert-templates/templates/:id
+Authorization: Bearer <token>
+```
+
+Returns `{ "id": "...", "deleted": true }` on success.
+
+---
+
+## Template Rules
+
+Rules are organization-scoped instances of a template. When you create a rule, you reference an existing template (built-in or custom) and can optionally override its severity, conditions, targets, and cooldown. This lets multiple teams use the same base template with thresholds tuned to their specific environment.
+
+### Creating a Rule
+
+```bash
+POST /alert-templates/rules
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "templateId": "<template-uuid>",
+  "name": "DB Cluster CPU Spike",
+  "description": "Detect sustained CPU spikes on production DB nodes",
+  "severity": "high",
+  "enabled": true,
+  "targets": {
+    "scope": "tag",
+    "tags": ["database", "production"]
+  },
+  "conditions": {
+    "metric": "cpu.usage",
+    "operator": ">",
+    "threshold": 92,
+    "durationMinutes": 5
+  },
+  "cooldownMinutes": 20
+}
+```
+
+### Rule Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `templateId` | UUID | Yes | The template this rule is based on |
+| `name` | string | Yes | Rule name (1--255 characters). Trimmed on save |
+| `description` | string | No | Optional description |
+| `severity` | enum | No | Override the template severity. Inherits from template if omitted |
+| `enabled` | boolean | No | Whether the rule is active. Defaults to `true` |
+| `targets` | object | No | Override the template targets. Inherits from template if omitted |
+| `conditions` | object | No | Override the template conditions. Inherits from template if omitted |
+| `cooldownMinutes` | integer | No | Override the template cooldown (0--10,080). Inherits from template `defaultCooldownMinutes` if omitted |
+
+<Aside type="tip">
+  Rules inherit severity, targets, conditions, and cooldown from their template when those fields are not provided. This means you can create a rule with just `templateId` and `name` to use all template defaults.
+</Aside>
+
+### Rule Inheritance
+
+When a rule is created, the API resolves values from the referenced template for any fields not explicitly set:
+
+| Rule Field | Falls Back To |
+|------------|---------------|
+| `severity` | `template.severity` |
+| `targets` | `template.targets` |
+| `conditions` | `template.conditions` |
+| `cooldownMinutes` | `template.defaultCooldownMinutes` |
+
+The resolved `templateName` is stored on the rule for display purposes.
+
+### Listing Rules
+
+```bash
+GET /alert-templates/rules?enabled=true&severity=high
+Authorization: Bearer <token>
+```
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | string | Page number for pagination |
+| `limit` | string | Items per page |
+| `enabled` | `true` or `false` | Filter by enabled state |
+| `severity` | enum | Filter by severity level |
+| `templateId` | UUID | Filter by source template |
+| `targetType` | enum | Filter by target scope: `device`, `site`, `organization`, `tag` |
+| `targetValue` | string | Combined with `targetType` to match specific device IDs, site IDs, or tag values |
+| `search` | string | Search name and description |
+
+### Toggling a Rule
+
+Enable or disable a rule without changing any other fields:
+
+```bash
+POST /alert-templates/rules/:id/toggle
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "enabled": false
+}
+```
+
+### Updating a Rule
+
+```bash
+PATCH /alert-templates/rules/:id
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "cooldownMinutes": 45,
+  "conditions": {
+    "metric": "disk.freePercent",
+    "operator": "<",
+    "threshold": 12,
+    "durationMinutes": 15
+  }
+}
+```
+
+### Deleting a Rule
+
+```bash
+DELETE /alert-templates/rules/:id
+Authorization: Bearer <token>
+```
+
+---
+
+## Correlation Rules
+
+The correlation engine connects related alerts to help identify root causes and reduce alert fatigue. It works with three concepts:
+
+- **Correlation Links** -- pairwise connections between two alerts with a reason and confidence score (0.0--1.0).
+- **Correlation Groups** -- clusters of related alerts with a title, summary, overall correlation score, and an optional root-cause hint.
+- **Correlation Alerts** -- alert instances that participate in correlation, each referencing a rule, template, device, and occurrence time.
+
+### Viewing Correlations
+
+List correlation links scoped to your organization:
+
+```bash
+GET /alert-templates/correlations?minConfidence=0.7
+Authorization: Bearer <token>
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | string | Page number |
+| `limit` | string | Items per page |
+| `alertId` | UUID | Filter links involving a specific alert |
+| `minConfidence` | string | Minimum confidence score (e.g., `0.7`) |
+
+### Correlation Groups
+
+Retrieve all correlation groups visible to your organization:
+
+```bash
+GET /alert-templates/correlations/groups
+Authorization: Bearer <token>
+```
+
+Groups are filtered so that only alerts belonging to the authenticated organization are included. Groups with no visible alerts are excluded from the response.
+
+**Example group:**
+
+```json
+{
+  "id": "uuid",
+  "title": "Database Host Saturation",
+  "summary": "CPU, memory, and disk alerts clustered around db-01 performance.",
+  "correlationScore": 0.84,
+  "rootCauseHint": "Burst workload on db-01 during reporting window",
+  "alerts": [
+    {
+      "id": "uuid",
+      "ruleId": "uuid",
+      "templateId": "uuid",
+      "severity": "high",
+      "message": "CPU usage 94% on db-01",
+      "deviceId": "uuid",
+      "occurredAt": "2026-02-18T12:00:00Z"
+    }
+  ],
+  "createdAt": "2026-02-18T12:00:00Z"
+}
+```
+
+### Analyzing Correlations
+
+Run a correlation analysis for specific alerts or across all alerts in a time window:
+
+```bash
+POST /alert-templates/correlations/analyze
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "alertIds": ["uuid-1", "uuid-2"],
+  "windowMinutes": 60
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `alertIds` | UUID[] | No | Specific alerts to analyze. Omit to analyze all visible alerts |
+| `windowMinutes` | integer | No | Time window in minutes (5--1,440). Defaults to `60` |
+
+The response includes matching correlation groups, links, and a summary message.
+
+### Alert-Specific Correlations
+
+Get all correlations for a single alert, including related alerts and the groups it belongs to:
+
+```bash
+GET /alert-templates/correlations/:alertId
+Authorization: Bearer <token>
+```
+
+**Response structure:**
+
+```json
+{
+  "data": {
+    "alert": { ... },
+    "correlations": [ ... ],
+    "relatedAlerts": [ ... ],
+    "groups": [ ... ]
+  }
+}
+```
+
+### Correlation Link Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique link identifier |
+| `alertId` | UUID | First alert in the correlation pair |
+| `relatedAlertId` | UUID | Second alert in the correlation pair |
+| `reason` | string | Human-readable explanation of why these alerts are linked |
+| `confidence` | number | Confidence score from 0.0 to 1.0 |
+| `createdAt` | Date | When the correlation was detected |
+
+---
+
+## Protecting Built-in Templates
+
+The API enforces immutability of built-in templates at the route level:
+
+- **PATCH /alert-templates/templates/:id** -- returns `403` with `"Built-in templates cannot be modified"` when the target is a built-in template.
+- **DELETE /alert-templates/templates/:id** -- returns `403` with `"Built-in templates cannot be deleted"` when the target is a built-in template.
+
+The `isBuiltInTemplate` helper checks whether a template ID exists in the built-in set. Custom templates are stored separately in an organization-scoped map and can be freely modified or deleted by users within that organization.
+
+<Aside>
+  All mutating operations (create, update, delete, toggle) are recorded in the audit log with the action, resource type, resource ID, and resource name. Review audit entries at the audit log endpoint to track who changed what.
+</Aside>
+
+---
+
+## Audit Trail
+
+Every mutating operation on templates, rules, and correlations writes an audit event. The following actions are recorded:
+
+| Action | Trigger |
+|--------|---------|
+| `alert_template.create` | A custom template is created |
+| `alert_template.update` | A custom template is updated |
+| `alert_template.delete` | A custom template is deleted |
+| `alert_rule.create` | A rule is created |
+| `alert_rule.update` | A rule is updated |
+| `alert_rule.delete` | A rule is deleted |
+| `alert_rule.toggle` | A rule is enabled or disabled |
+| `alert_correlation.analyze` | A correlation analysis is triggered |
+
+Each audit entry includes the `orgId`, `resourceType`, `resourceId`, and `resourceName` where applicable, plus a `details` object with context such as updated field names, severity, or enabled state.
+
+---
+
+## API Reference
+
+### Templates
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/alert-templates/templates` | List all templates (built-in + custom for your org) |
+| GET | `/alert-templates/templates/built-in` | List only built-in templates |
+| POST | `/alert-templates/templates` | Create a custom template |
+| GET | `/alert-templates/templates/:id` | Get a single template by ID |
+| PATCH | `/alert-templates/templates/:id` | Update a custom template |
+| DELETE | `/alert-templates/templates/:id` | Delete a custom template |
+
+### Rules
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/alert-templates/rules` | List rules for your organization |
+| POST | `/alert-templates/rules` | Create a rule from a template |
+| GET | `/alert-templates/rules/:id` | Get a single rule by ID |
+| PATCH | `/alert-templates/rules/:id` | Update a rule |
+| DELETE | `/alert-templates/rules/:id` | Delete a rule |
+| POST | `/alert-templates/rules/:id/toggle` | Enable or disable a rule |
+
+### Correlations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/alert-templates/correlations` | List correlation links |
+| GET | `/alert-templates/correlations/groups` | List correlation groups |
+| POST | `/alert-templates/correlations/analyze` | Run correlation analysis |
+| GET | `/alert-templates/correlations/:alertId` | Get correlations for a specific alert |
+
+<Aside>
+  All endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Template creation returns `400 Bad Request`.**
+The `name` field is required and must be between 1 and 255 characters. The `severity` field is required and must be one of `critical`, `high`, `medium`, `low`, or `info`. If you provide `defaultCooldownMinutes`, it must be an integer between 0 and 10,080 (7 days). If you provide `category`, it must be between 1 and 100 characters.
+
+**Rule creation returns `404 Template not found`.**
+The `templateId` must reference either a built-in template or a custom template owned by your organization. Verify the template ID is correct and that you are authenticated as a user in the owning organization. Custom templates from other organizations are not accessible.
+
+**Cannot modify or delete a template.**
+Built-in templates are immutable. The API returns `403 Forbidden` with a message indicating that built-in templates cannot be modified or deleted. Create a rule from the template instead and override the fields you need.
+
+**Rule update returns `400 No updates provided`.**
+The PATCH body must include at least one field to change. Sending an empty JSON object `{}` is rejected.
+
+**Correlation links return empty results.**
+Correlation data is scoped to your organization. The API filters correlation links so that both the source and related alerts belong to your organization. If you see no links, verify that the alerts referenced exist and are associated with rules in your organization.
+
+**`orgId is required for this scope` error.**
+All alert template endpoints require an organization context. For `organization`-scoped tokens, the `orgId` is resolved automatically. For `partner`-scoped tokens, the `orgId` is resolved only when the partner has access to exactly one organization. If your partner token covers multiple organizations, the API cannot determine which one to use and returns this error.

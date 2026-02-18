@@ -17,12 +17,18 @@
     "test:yaml:linux": "tsx run.ts --mode live --nodes linux",
     "test:yaml:linux:simulate": "tsx run.ts --mode simulate --nodes linux",
     "test:yaml:macos": "tsx run.ts --mode live --nodes macos",
-    "test:yaml:macos:simulate": "tsx run.ts --mode simulate --nodes macos"
+    "test:yaml:macos:simulate": "tsx run.ts --mode simulate --nodes macos",
+    "doc-verify": "tsx doc-verify/cli.ts",
+    "doc-verify:extract": "tsx doc-verify/cli.ts extract",
+    "doc-verify:run": "tsx doc-verify/cli.ts run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "yaml": "^2.6.0"
   },
   "devDependencies": {
+    "pg": "^8.13.0",
+    "@types/pg": "^8.11.0",
     "@playwright/test": "^1.58.2",
     "@types/node": "^22.0.0",
     "playwright": "^1.49.1",

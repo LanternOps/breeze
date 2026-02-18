@@ -1,0 +1,203 @@
+---
+title: AI Features
+description: AI Risk Engine, Fleet Orchestration Brain, and AI Device Context Memory.
+sidebar:
+  order: 2
+  label: AI Features
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze includes a built-in AI assistant that can query your fleet, diagnose device issues, and take action on your behalf. Three features extend and govern this capability:
+
+- **AI Risk Engine** — governance dashboard for controlling and auditing AI-assisted operations
+- **Fleet Orchestration Brain** — command center for fleet-scale AI-driven management
+- **AI Device Context Memory** — persistent per-device memory that the AI carries across conversations
+
+---
+
+## AI Risk Engine
+
+The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Monitoring → AI Risk Engine** in the sidebar.
+
+### Tool tiers
+
+| Tier | Execution | Examples |
+|---|---|---|
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview) |
+| **Tier 2** | Auto-execute + audit logged | `manage_alerts` acknowledge/resolve actions, `manage_services` list action, `set_device_context`, `resolve_device_context` |
+| **Tier 3** | Requires human approval before execution | `execute_command`, `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (write/delete/mkdir/rename) |
+| **Tier 4** | Blocked — never executed | Cross-org operations |
+
+<Aside>
+  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. The AI resolves the tier for each specific action at runtime.
+</Aside>
+
+### Approval workflow
+
+When the AI proposes a Tier 3 action, it enters a **pending** state and waits for human approval.
+
+<Steps>
+
+1. Open **Monitoring → AI Risk Engine**.
+
+2. Click **Approval History**.
+
+3. Find the pending request and review the action details.
+
+4. Click **Approve** to allow execution, or **Reject** to cancel it.
+
+</Steps>
+
+Approved actions execute immediately. Rejected actions are logged and the AI is notified.
+
+### Rate limits
+
+Each tool has a per-tool sliding window rate limit. Requests that exceed the limit are rejected and logged in the **Rejection & Denial Log**.
+
+| Tool | Limit | Window |
+|---|---|---|
+| `execute_command` | 10 requests | 5 min |
+| `run_script` | 5 requests | 5 min |
+| `disk_cleanup` | 3 requests | 10 min |
+| `network_discovery` | 2 requests | 10 min |
+| `security_scan` | 3 requests | 10 min |
+| `file_operations` | 20 requests | 5 min |
+| `manage_services` | 10 requests | 5 min |
+| `analyze_disk_usage` | 10 requests | 5 min |
+| `get_user_experience_metrics` | 20 requests | 5 min |
+
+### Dashboard sections
+
+The Risk Engine dashboard provides five views, each filterable by time range (24 h / 7 d / 30 d):
+
+| Section | What it shows |
+|---|---|
+| **Tier Overview Matrix** | Tool counts per tier with colour-coded risk levels |
+| **Tool Execution Analytics** | Execution status breakdown, top tools, average duration |
+| **Approval History** | Pending, approved, and rejected Tier 3 requests |
+| **Rate Limit Status** | Per-tool limit cards with current usage |
+| **Rejection & Denial Log** | Failed, rejected, and security-denied operations |
+
+### API reference
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/ai/admin/tool-executions` | Tool execution analytics (`?since=ISO&limit=1–200, default 100`) |
+| GET | `/ai/admin/security-events` | Guardrail audit trail (`?since=ISO&limit=1–100&action=filter`) |
+
+---
+
+## Fleet Orchestration Brain
+
+The Fleet Orchestration Brain is an AI command centre for fleet-scale operations. Open it via **Fleet** in the main navigation sidebar.
+
+### Dashboard metrics
+
+The page shows eight stat cards that aggregate live fleet data:
+
+| Card | What it shows |
+|---|---|
+| **Policies** | Total policies, enforcing count, compliance %, non-compliant devices |
+| **Deployments** | Active, pending, completed, and failed deployment counts |
+| **Patches** | Pending approval, approved, installed; critical pending count |
+| **Alerts** | Critical, high, medium, and low alert counts |
+| **Device Groups** | Count of static and dynamic groups |
+| **Automations** | Configured automations with recent run history |
+| **Maintenance Windows** | Active windows with suppression flags |
+| **Reports** | Available report templates and schedules |
+
+### AI tools
+
+When you are on the Fleet Orchestration page, the AI assistant gains access to eight fleet-level tools:
+
+| Tool | What it does |
+|---|---|
+| `manage_policies` | List, evaluate, create, activate/deactivate, and remediate policies |
+| `manage_deployments` | Create, start, pause, resume, and cancel deployments |
+| `manage_patches` | Scan, approve, decline, defer, bulk approve, and rollback patches |
+| `manage_groups` | Create static/dynamic groups and manage membership |
+| `manage_maintenance_windows` | Schedule maintenance windows with timezone support |
+| `manage_automations` | Create and update automation rules and event triggers |
+| `manage_alert_rules` | Configure alerting templates per device or site |
+| `generate_report` | Generate inventory, compliance, performance, and executive summary reports |
+
+### Quick actions
+
+The page includes pre-populated AI chat buttons that open the AI sidebar with a domain-specific prompt:
+
+| Button | Pre-filled prompt |
+|---|---|
+| Check compliance | Show me a compliance summary for all policies |
+| Active deployments | List all active deployments and their progress |
+| Critical patches | What critical patches are pending approval? |
+| Alert overview | Give me a summary of active alerts by severity |
+| Maintenance windows | What maintenance windows are active right now? |
+| Run automations | List all enabled automations and their recent run history |
+| Device groups | Show me all device groups and their member counts |
+| Generate report | Generate an executive summary report for the fleet |
+
+---
+
+## AI Device Context Memory
+
+The AI can remember device-specific facts across conversations. When you ask the AI about a device, it automatically loads that device's context entries and incorporates them into its analysis — so it won't re-alert on known quirks or forget about open follow-ups.
+
+### Context types
+
+| Type | Purpose | Example |
+|---|---|---|
+| `issue` | Known problems to track | "Recurring BSOD on boot since Jan 2026" |
+| `quirk` | Normal but unusual behaviour | "Slow startup is expected due to a legacy driver" |
+| `followup` | Pending actions | "Check disk health after replacement on 2026-03-01" |
+| `preference` | User or device preferences | "Maintenance window: Sundays 2 AM–4 AM only" |
+
+### Managing context
+
+Context is managed through the AI assistant — there is no separate UI. Ask naturally:
+
+- _"Remember that this device has a recurring BSOD issue."_
+- _"Mark the disk check follow-up as resolved."_
+- _"What do you know about HOSTNAME?"_
+
+Context entries can have an **expiry date**, which is useful for time-bound follow-ups. Expired entries are excluded from future queries but are not deleted.
+
+The AI uses three tools internally to manage context:
+
+| Tool | Tier | Description |
+|---|---|---|
+| `get_device_context` | Tier 1 | Load context entries for a device |
+| `set_device_context` | Tier 2 | Create a new context entry |
+| `resolve_device_context` | Tier 2 | Mark an existing entry as resolved |
+
+<Aside>
+  Context is scoped to your organisation. Entries created by one user are visible to all users in the same organisation when they ask the AI about the same device.
+</Aside>
+
+<Aside type="note">
+  Direct REST endpoints for device context are not yet available. Context is currently managed exclusively through the AI assistant.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Tier 3 action pending but never executing**
+
+Tier 3 actions require manual approval. Open **Monitoring → AI Risk Engine → Approval History** and approve or reject the pending request.
+
+**AI Risk Engine dashboard shows no data**
+
+The dashboard requires at least one AI tool execution to have occurred. Ask the AI assistant a question about your fleet to generate initial data.
+
+**Fleet Orchestration stat cards showing zeros**
+
+Some endpoints (deployments, reports) return empty results if no data exists yet. Cards populate independently — a zero on one card does not indicate a general problem. Partial endpoint failures are shown as warnings in the UI.
+
+**Context entries not appearing for a device**
+
+The AI loads context only for the specific device you ask about. Try: _"What do you know about [hostname]?"_ to trigger explicit context loading.
+
+**`set_device_context` not working**
+
+`set_device_context` is Tier 2 (auto-execute + audit logged) and requires `devices:write` permission. Confirm your role includes write access to devices.

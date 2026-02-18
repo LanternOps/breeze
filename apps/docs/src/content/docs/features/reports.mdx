@@ -1,0 +1,428 @@
+---
+title: Reports & Analytics
+description: Generate, schedule, and export fleet reports covering inventory, compliance, performance, and executive summaries.
+sidebar:
+  order: 14
+  label: Reports & Analytics
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze provides a full reporting and analytics subsystem for generating on-demand or scheduled fleet reports and querying real-time analytics data. Reports are scoped to organizations and enforce multi-tenant access at every layer -- organization-scoped users see only their own data, partner-scoped users can access reports for any organization they manage, and system-scoped users have unrestricted access.
+
+The system is split into two complementary route groups:
+
+- **`/reports`** -- Saved report definitions, ad-hoc generation, run history, and raw data endpoints for device inventory, software, alerts, compliance, and performance metrics.
+- **`/analytics`** -- Time-series queries, custom dashboards with widgets, capacity planning, SLA tracking, executive summaries, and OS distribution breakdowns.
+
+---
+
+## Report Types
+
+Every report has a `type` that determines which data is queried and how the output is structured.
+
+| Type | Description | Key columns / metrics |
+|------|-------------|----------------------|
+| `device_inventory` | Full hardware and software asset listing per device | hostname, OS, agent version, CPU model, RAM, disk, serial number |
+| `software_inventory` | All installed software across targeted devices | software name, version, publisher, install date, device hostname |
+| `alert_summary` | Alert history with severity breakdown | title, severity, status, triggered/acknowledged/resolved timestamps, rule name |
+| `compliance` | Device health and compliance posture | hostname, OS, status, last seen, compliance flag, identified issues |
+| `performance` | Aggregated CPU, RAM, and disk metrics per device | avg/max CPU %, avg/max RAM %, avg/max disk % |
+| `executive_summary` | High-level fleet overview with device counts, alert stats, OS distribution, and site breakdown | online/offline totals, health %, critical/high alert counts, resolution rate |
+
+---
+
+## Report Configuration
+
+When creating a saved report, you provide a `config` object that controls date ranges, filters, column selection, and sorting.
+
+### Date Range Presets
+
+The `config.dateRange` object supports preset shortcuts or custom boundaries:
+
+| Preset | Meaning |
+|--------|---------|
+| `last_7_days` | Data from the past 7 days |
+| `last_30_days` | Data from the past 30 days |
+| `last_90_days` | Data from the past 90 days |
+| `custom` | Use the explicit `start` and `end` ISO date strings |
+
+### Filters
+
+The `config.filters` object narrows the data:
+
+| Filter | Applies to | Accepts |
+|--------|-----------|---------|
+| `siteIds` | device_inventory, compliance | Array of site UUIDs |
+| `deviceIds` | software_inventory | Array of device UUIDs |
+| `osTypes` | device_inventory | `windows`, `macos`, `linux` |
+| `status` | alert_summary | Array of status strings |
+| `severity` | alert_summary | Array of severity strings |
+
+### Output Formats
+
+| Format | Description |
+|--------|-------------|
+| `csv` | Comma-separated values (default) |
+| `pdf` | Formatted PDF document |
+| `excel` | Excel spreadsheet (.xlsx) |
+
+---
+
+## Generating Reports
+
+Breeze supports two generation flows: ad-hoc (stateless) and saved (tracked with run history).
+
+### Ad-hoc Generation
+
+Use `POST /reports/generate` to produce report data immediately without creating a saved report definition. The response contains the generated data inline.
+
+```bash
+curl -X POST /api/v1/reports/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "device_inventory",
+    "format": "csv",
+    "orgId": "ORG_UUID",
+    "config": {
+      "dateRange": { "preset": "last_30_days" },
+      "filters": {
+        "osTypes": ["windows", "linux"]
+      }
+    }
+  }'
+```
+
+The response includes:
+
+```json
+{
+  "type": "device_inventory",
+  "format": "csv",
+  "generatedAt": "2026-02-18T12:00:00.000Z",
+  "data": {
+    "rows": [...],
+    "rowCount": 42
+  }
+}
+```
+
+<Aside type="tip">
+  Ad-hoc generation returns the data directly in the response body. For large datasets, consider creating a saved report and using the run-based flow, which processes the report asynchronously and provides a download URL.
+</Aside>
+
+### Saved Report Generation
+
+For saved reports, trigger generation with `POST /reports/:id/generate`. This creates a **report run** that is processed asynchronously.
+
+<Steps>
+1. Create a saved report definition with `POST /reports` (see the API reference below).
+2. Trigger generation with `POST /reports/:id/generate`.
+3. Poll the run status with `GET /reports/runs/:runId`.
+4. When the run status is `completed`, use the `outputUrl` field to download the file.
+</Steps>
+
+```bash
+# Trigger generation for a saved report
+curl -X POST /api/v1/reports/REPORT_UUID/generate \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response:
+
+```json
+{
+  "message": "Report generation started",
+  "runId": "a1b2c3d4-...",
+  "status": "pending"
+}
+```
+
+---
+
+## Scheduling
+
+Saved reports support recurring schedules. When you set the `schedule` field, the report will be generated automatically on the configured cadence.
+
+| Schedule | Behavior |
+|----------|----------|
+| `one_time` | No recurring generation (default). Must be triggered manually. |
+| `daily` | Generated once per day |
+| `weekly` | Generated once per week |
+| `monthly` | Generated once per month |
+
+Set the schedule when creating or updating a report:
+
+```bash
+curl -X POST /api/v1/reports \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Weekly Compliance Report",
+    "type": "compliance",
+    "orgId": "ORG_UUID",
+    "schedule": "weekly",
+    "format": "pdf",
+    "config": {
+      "filters": { "siteIds": ["SITE_UUID"] }
+    }
+  }'
+```
+
+<Aside>
+  The `lastGeneratedAt` timestamp on the report record is updated each time a generation run is triggered, regardless of whether the run ultimately succeeds or fails.
+</Aside>
+
+---
+
+## Report Run Status Lifecycle
+
+Each time a saved report is generated, a **report run** record tracks the process through a status lifecycle.
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | The run has been created and is queued for processing |
+| `running` | The report is actively being generated |
+| `completed` | Generation succeeded; `outputUrl` contains the download path |
+| `failed` | Generation failed; `errorMessage` contains the reason |
+
+The run record stores:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique run identifier (UUID) |
+| `reportId` | The parent saved report definition |
+| `status` | Current lifecycle status |
+| `startedAt` | Timestamp when processing began |
+| `completedAt` | Timestamp when processing finished (success or failure) |
+| `outputUrl` | Download path for the generated file (set on `completed`) |
+| `errorMessage` | Error description (set on `failed`) |
+| `rowCount` | Number of data rows in the output |
+
+---
+
+## Downloading and Exporting
+
+When a report run reaches the `completed` status, the `outputUrl` field contains the download path. The format of the file matches the `format` field of the parent report definition (`csv`, `pdf`, or `excel`).
+
+```bash
+# Check run status
+curl /api/v1/reports/runs/RUN_UUID \
+  -H "Authorization: Bearer $TOKEN"
+
+# Response includes outputUrl when completed:
+# "outputUrl": "/api/v1/reports/runs/RUN_UUID/download"
+```
+
+When retrieving a single report via `GET /reports/:id`, the response includes the five most recent runs, making it easy to find the latest completed download.
+
+---
+
+## Analytics Endpoints
+
+The `/analytics` route group provides real-time operational intelligence beyond static reports.
+
+### Time-Series Queries
+
+`POST /analytics/query` executes a flexible time-series query across device metrics.
+
+```bash
+curl -X POST /api/v1/analytics/query \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "deviceIds": ["DEVICE_UUID_1", "DEVICE_UUID_2"],
+    "metricTypes": ["cpu", "ram"],
+    "startTime": "2026-02-01T00:00:00Z",
+    "endTime": "2026-02-18T00:00:00Z",
+    "aggregation": "avg",
+    "interval": "hour"
+  }'
+```
+
+Supported aggregations: `avg`, `min`, `max`, `sum`, `count`, `p95`, `p99`.
+
+Supported intervals: `minute`, `hour`, `day`, `week`, `month`.
+
+An optional `groupBy` array lets you split the series by additional dimensions.
+
+### Custom Dashboards and Widgets
+
+Dashboards are per-organization containers for widgets. Each widget has a `type` and a `config` object that determines what data it renders.
+
+<Tabs>
+  <TabItem label="Create Dashboard">
+```bash
+curl -X POST /api/v1/analytics/dashboards \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orgId": "ORG_UUID",
+    "name": "NOC Overview",
+    "description": "Primary network operations dashboard",
+    "layout": {}
+  }'
+```
+  </TabItem>
+  <TabItem label="Add Widget">
+```bash
+curl -X POST /api/v1/analytics/dashboards/DASHBOARD_UUID/widgets \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "CPU Heatmap",
+    "type": "heatmap",
+    "config": {
+      "metricType": "cpu",
+      "interval": "hour"
+    },
+    "layout": { "x": 0, "y": 0, "w": 6, "h": 4 }
+  }'
+```
+  </TabItem>
+</Tabs>
+
+### Executive Summary
+
+`GET /analytics/executive-summary` returns a high-level organizational overview including device totals (online/offline), a 12-week enrollment trend, and configurable period types.
+
+| Query parameter | Values | Default |
+|-----------------|--------|---------|
+| `periodType` | `daily`, `weekly`, `monthly` | `monthly` |
+| `range` | Freeform string | -- |
+| `startDate` | ISO date string | -- |
+| `endDate` | ISO date string | -- |
+
+### OS Distribution
+
+`GET /analytics/os-distribution` returns the count of active devices grouped by `osType` and `osVersion`, excluding decommissioned devices.
+
+### Capacity Planning
+
+`GET /analytics/capacity` returns capacity predictions based on current metric trends. Accepts optional `deviceId` and `metricType` query parameters to narrow scope.
+
+### SLA Tracking
+
+SLA definitions set uptime or performance targets that are evaluated over a window.
+
+| Field | Description |
+|-------|-------------|
+| `name` | Human-readable SLA name |
+| `targetPercentage` | Target compliance percentage (0--100) |
+| `evaluationWindow` | `daily`, `weekly`, or `monthly` |
+| `scope` | `device`, `site`, or `organization` |
+| `filters` | Additional scoping filters (JSON) |
+
+Compliance history for an SLA is retrieved via `GET /analytics/sla/:id/compliance`, which returns period-by-period entries with a status of `met`, `breached`, or `warning`.
+
+---
+
+## Report Data Endpoints
+
+The `/reports/data/*` endpoints provide raw, paginated data used to power report views and dashboards. These are read-only query endpoints that accept common filters.
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /reports/data/device-inventory` | Device list with hardware details (CPU, RAM, disk, serial number, manufacturer, model) |
+| `GET /reports/data/software-inventory` | Installed software list with per-title device counts in a `summary` array |
+| `GET /reports/data/alerts-summary` | Alert statistics: counts by severity, by status, daily trend (last 30 days), and top 10 alerting rules |
+| `GET /reports/data/compliance` | Compliance overview with device status breakdown, OS distribution, agent version spread, and identified issues (stale devices, outdated agents) |
+| `GET /reports/data/metrics` | Performance metrics: fleet-wide averages for CPU/RAM/disk plus the top 10 consumers for each metric |
+
+All data endpoints accept these common query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `orgId` | Filter to a specific organization (required for partner scope) |
+| `siteId` | Filter to a specific site |
+| `startDate` | Start of date range (ISO string) |
+| `endDate` | End of date range (ISO string) |
+| `limit` | Page size (default 100, max 1000) |
+| `offset` | Pagination offset |
+
+<Aside type="caution">
+  The `limit` parameter is capped at 1000 rows per request for data endpoints. Use `offset` for pagination when querying large datasets.
+</Aside>
+
+---
+
+## API Reference
+
+### Reports CRUD
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/reports` | List saved reports. Filter by `type`, `schedule`, `orgId`. Paginated. |
+| `POST` | `/reports` | Create a saved report definition with name, type, config, schedule, and format. |
+| `GET` | `/reports/:id` | Get a single report with its 5 most recent runs. |
+| `PUT` | `/reports/:id` | Update report name, config, schedule, or format. |
+| `DELETE` | `/reports/:id` | Delete a report and all associated runs. |
+
+### Report Generation
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/reports/generate` | Ad-hoc generation. Returns data inline. |
+| `POST` | `/reports/:id/generate` | Trigger async generation for a saved report. Returns a `runId`. |
+
+### Report Runs
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/reports/runs` | List runs. Filter by `reportId`, `status`. Paginated. |
+| `GET` | `/reports/runs/:id` | Get a single run with parent report metadata and download URL. |
+
+### Report Data
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/reports/data/device-inventory` | Raw device inventory with hardware join. |
+| `GET` | `/reports/data/software-inventory` | Raw software inventory with per-title summary. |
+| `GET` | `/reports/data/alerts-summary` | Alert breakdown by severity, status, daily trend, top rules. |
+| `GET` | `/reports/data/compliance` | Compliance overview, stale device detection, agent version audit. |
+| `GET` | `/reports/data/metrics` | Fleet performance averages and top-10 resource consumers. |
+
+### Analytics
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/analytics/query` | Execute a time-series metrics query with aggregation and interval. |
+| `GET` | `/analytics/dashboards` | List dashboards. Filter by `orgId`. Paginated. |
+| `POST` | `/analytics/dashboards` | Create a dashboard. |
+| `GET` | `/analytics/dashboards/:id` | Get dashboard with all widgets. |
+| `PATCH` | `/analytics/dashboards/:id` | Update dashboard name, description, or layout. |
+| `DELETE` | `/analytics/dashboards/:id` | Delete dashboard and all its widgets. |
+| `POST` | `/analytics/dashboards/:id/widgets` | Add a widget to a dashboard. |
+| `PATCH` | `/analytics/widgets/:id` | Update widget name, type, config, or layout. |
+| `DELETE` | `/analytics/widgets/:id` | Remove a widget from its dashboard. |
+| `GET` | `/analytics/capacity` | Capacity planning predictions. |
+| `GET` | `/analytics/sla` | List SLA definitions. Filter by `orgId`. Paginated. |
+| `POST` | `/analytics/sla` | Create an SLA definition. |
+| `GET` | `/analytics/sla/:id/compliance` | Get compliance history for an SLA. |
+| `GET` | `/analytics/executive-summary` | Executive fleet summary with enrollment trends. |
+| `GET` | `/analytics/os-distribution` | OS type/version distribution for active devices. |
+
+<Aside>
+  All report and analytics endpoints require authentication and are scoped to `organization`, `partner`, or `system`. Every mutating operation is recorded in the audit log.
+</Aside>
+
+---
+
+## Troubleshooting
+
+### Report run stuck in `pending` status
+
+Report generation is processed asynchronously after `POST /reports/:id/generate`. If a run remains in `pending` for an extended period, check that the background job processor is running and connected to the database. Query `GET /reports/runs/:id` to inspect the run record -- if `startedAt` is `null`, the job was never picked up.
+
+### "Organization context required" (403) on report endpoints
+
+This error occurs when an `organization`-scoped token is used but the token lacks an `orgId` claim. Verify that the JWT includes the `orgId` field. Partner-scoped users must pass `orgId` explicitly as a query parameter or in the request body.
+
+### Data endpoint returns empty results despite existing devices
+
+The `/reports/data/*` endpoints join against related tables (`deviceHardware`, `deviceSoftware`, `deviceMetrics`). If devices exist but related data has not been collected yet (e.g., hardware inventory has not been reported by the agent), joins may exclude those devices or return null fields. Check that agents are running and have submitted at least one heartbeat with hardware and software data.
+
+### Compliance score unexpectedly low
+
+The compliance report flags a device as non-compliant if its status is `decommissioned` or if it has not been seen in the last 7 days. Devices that are powered off or in maintenance for extended periods will lower the compliance score. The compliance data endpoint also identifies `stale_devices` (not seen in 7+ days) and `outdated_agents` (running a version other than the most common version) as separate issues. Review the `issues` array in the response to understand which factors are contributing to the score.

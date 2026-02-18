@@ -1,0 +1,398 @@
+---
+title: Automations
+description: Define event-driven, scheduled, and webhook-triggered automations that execute actions across your fleet.
+sidebar:
+  order: 5
+  label: Automations
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Automations let you define rules that execute automatically when something happens across your managed environment. A trigger — a scheduled time, a platform event, an inbound webhook from an external system, or an explicit manual request — causes the automation to run one or more actions against a set of target devices or platform services.
+
+Automation *configurations* — which triggers fire, which actions run, and how failures are handled — are managed through [Configuration Policies](/features/configuration-policies/). Each automation is defined as an `automation` feature linked to a configuration policy and inherits the policy's scope across the management hierarchy. Standalone CRUD routes exist for backwards compatibility but Configuration Policies is the recommended approach for all new integrations.
+
+The standalone `/automations` endpoints remain the primary interface for **viewing automations, querying run history, triggering runs, and receiving inbound webhooks**.
+
+---
+
+## Key Concepts
+
+### Trigger Types
+
+| Type | Fires when |
+|------|------------|
+| `schedule` | A cron expression matches in the specified timezone |
+| `event` | A platform event occurs (e.g., `alert.created`, `device.offline`) |
+| `webhook` | An HTTP POST is received at the automation's generated URL |
+| `manual` | An admin explicitly triggers a run via UI or API |
+
+### Action Types
+
+| Type | What it does |
+|------|--------------|
+| `run_script` | Executes a script from the library on target devices |
+| `send_notification` | Sends a message to a notification channel |
+| `create_alert` | Creates a Breeze alert with configured severity and message |
+| `execute_command` | Runs a shell command on target devices |
+
+### Run Status
+
+| Status | Meaning |
+|--------|---------|
+| `running` | The run is actively executing; not all actions have completed |
+| `success` | All target devices executed their actions successfully |
+| `failed` | All actions failed, or the automation could not start |
+| `partial` | Some device targets succeeded and some failed; at least one of each |
+
+<Aside>
+  The internal database status `completed` is returned as `success` in all API responses. When filtering runs via `GET /automations/:id/runs?status=`, use the database value `completed` — not `success`.
+</Aside>
+
+### onFailure Policy
+
+| Policy | Behavior |
+|--------|----------|
+| `stop` | Abort the run immediately; remaining actions are not executed |
+| `continue` | Execute all remaining actions regardless of failures |
+| `notify` | Same as `continue`, but also send a failure notification after the run completes |
+
+---
+
+## Configuring Automations via Configuration Policies
+
+Automation configurations are defined as `automation` features on a Configuration Policy. They inherit the policy's scope — a single automation definition can apply across all devices in an organization, site, or device group without creating separate automations per target.
+
+### Adding an automation feature to a policy
+
+```bash
+POST /configuration-policies/:policyId/features
+Content-Type: application/json
+
+{
+  "featureType": "automation",
+  "inlineSettings": {
+    "automations": [
+      {
+        "name": "Restart nginx on critical alert",
+        "enabled": true,
+        "triggerType": "event",
+        "eventType": "alert.triggered",
+        "actions": [
+          {
+            "type": "execute_command",
+            "command": "systemctl restart nginx",
+            "shell": "bash"
+          },
+          {
+            "type": "send_notification",
+            "notificationChannelId": "uuid",
+            "title": "nginx restarted",
+            "message": "Auto-restarted nginx after alert",
+            "severity": "medium"
+          }
+        ],
+        "onFailure": "notify"
+      }
+    ]
+  }
+}
+```
+
+You can define multiple automations per feature link by adding additional items to the `automations` array. Each item is stored as a row in `configPolicyAutomations`, linked to the feature link by ID.
+
+### Automation configuration fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Human-readable name |
+| `enabled` | boolean | No | Whether the automation fires automatically. Defaults to `true` |
+| `triggerType` | string | Yes | `schedule`, `event`, `webhook`, or `manual` |
+| `cronExpression` | string | If schedule | Cron expression (5-field format) |
+| `timezone` | string | If schedule | IANA timezone name (e.g., `America/Denver`) |
+| `eventType` | string | If event | Platform event type string (e.g., `alert.created`) |
+| `actions` | array | Yes | Ordered list of action objects |
+| `onFailure` | string | No | `stop`, `continue`, or `notify`. Defaults to `stop` |
+| `sortOrder` | integer | No | Ordering when multiple automations share a feature link |
+
+### Viewing policy-managed automations
+
+Automations created through Configuration Policies appear in `GET /automations` alongside legacy standalone automations. Policy-managed automations include a `configPolicyId` field in the response. Their runs include both `configPolicyId` and `configItemName`; the `automationId` field is `null` for policy-managed runs.
+
+---
+
+## Trigger Configuration
+
+### Schedule
+
+Runs on a recurring schedule using a standard 5-field cron expression. The timezone is required and must be a valid IANA timezone name (e.g., `America/Denver`, `Europe/London`, `UTC`).
+
+```json
+{
+  "triggerType": "schedule",
+  "cronExpression": "0 2 * * 0",
+  "timezone": "America/Denver"
+}
+```
+
+The example above runs every Sunday at 2:00 AM Mountain Time. Cron fields are: minute, hour, day-of-month, month, day-of-week.
+
+### Event
+
+Fires when a matching platform event is emitted. The `eventType` field is case-sensitive.
+
+```json
+{
+  "triggerType": "event",
+  "eventType": "alert.triggered"
+}
+```
+
+**Common event types:**
+
+| Event type | Fires when |
+|------------|------------|
+| `alert.triggered` | A new alert is triggered |
+| `alert.resolved` | An alert is resolved |
+| `device.offline` | A device stops sending heartbeats |
+| `device.enrolled` | A new device completes enrollment |
+| `patch.failed` | A patch deployment fails on a device |
+
+### Webhook
+
+Exposes a unique HTTP endpoint that external systems can POST to. See [Inbound Webhooks](#inbound-webhooks) for the integration flow.
+
+```json
+{
+  "triggerType": "webhook"
+}
+```
+
+The webhook endpoint uses the automation's ID:
+
+```
+POST /automations/webhooks/:automationId
+```
+
+### Manual
+
+No additional configuration required. The automation only runs when explicitly triggered via `POST /automations/:id/trigger`.
+
+```json
+{
+  "triggerType": "manual"
+}
+```
+
+Manual automations are useful for runbooks, one-off remediation scripts, or any workflow where human confirmation is required before execution.
+
+---
+
+## Action Configuration
+
+Actions run in the order they are defined. Each action has a `type` and type-specific fields.
+
+### run_script
+
+Executes a script from the Breeze script library on each target device.
+
+```json
+{
+  "type": "run_script",
+  "scriptId": "uuid",
+  "parameters": { "param1": "value" },
+  "runAs": "system"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `scriptId` | Yes | UUID of the script in the library |
+| `parameters` | No | Key-value pairs passed to the script at runtime |
+| `runAs` | No | Execution context: `system`, `user`, or `elevated`. Defaults to `system` |
+
+### send_notification
+
+Sends a message to a configured notification channel. The channel must be configured in **Settings → Notifications**.
+
+```json
+{
+  "type": "send_notification",
+  "notificationChannelId": "uuid",
+  "title": "Automation fired",
+  "message": "Device triggered the automation",
+  "severity": "high"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `notificationChannelId` | Yes | UUID of the target notification channel |
+| `title` | Yes | Notification title or subject |
+| `message` | Yes | Notification body text |
+| `severity` | No | Severity hint: `low`, `medium`, `high`, or `critical` |
+
+### create_alert
+
+Creates a Breeze alert record directly from the automation, without requiring a monitoring rule to fire first.
+
+```json
+{
+  "type": "create_alert",
+  "alertSeverity": "critical",
+  "alertTitle": "Disk space critical",
+  "alertMessage": "Device has less than 5GB free"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `alertSeverity` | Yes | Alert severity: `info`, `low`, `medium`, `high`, or `critical` |
+| `alertTitle` | Yes | Alert title displayed in the Alerts view |
+| `alertMessage` | Yes | Detailed message body for the alert |
+
+### execute_command
+
+Runs a raw shell command on each target device.
+
+```json
+{
+  "type": "execute_command",
+  "command": "systemctl restart nginx",
+  "shell": "bash"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `command` | Yes | The shell command to execute |
+| `shell` | No | Shell to use: `bash`, `powershell`, or `cmd`. Defaults based on device OS |
+
+---
+
+## Viewing Runs
+
+All run history is queryable through the API. Runs are returned newest-first.
+
+**List all runs for an automation:**
+
+```
+GET /automations/:id/runs?status=&page=&limit=
+```
+
+**Get full detail for a single run:**
+
+```
+GET /automations/runs/:runId
+```
+
+### Run fields
+
+| Field | Description |
+|-------|-------------|
+| `status` | `running`, `success`, `failed`, or `partial` |
+| `triggeredBy` | How the run was triggered: `schedule`, `event`, `webhook`, or `manual` |
+| `devicesTargeted` | Total number of devices the run was dispatched to |
+| `devicesSucceeded` | Number of devices where all actions completed successfully |
+| `devicesFailed` | Number of devices where at least one action failed |
+| `startedAt` | ISO 8601 timestamp when the run began |
+| `completedAt` | ISO 8601 timestamp when the run finished, or `null` if still running |
+
+### Run logs
+
+Each run includes a `logs` array. Logs are returned as formatted strings in the format `[level] message` (e.g., `"[info] Command dispatched to device"`). The structured fields (action type, device ID, command ID, etc.) are stored internally but are serialized to this plain-text format in API responses.
+
+---
+
+## Triggering Manually
+
+Any enabled automation can be triggered immediately regardless of its configured trigger type:
+
+```
+POST /automations/:id/trigger
+```
+
+The endpoint returns the `runId` immediately; the run itself is asynchronous. Poll `GET /automations/runs/:runId` to check status.
+
+The automation must be enabled. Triggering a disabled automation returns `400 Bad Request`.
+
+---
+
+## Inbound Webhooks
+
+Automations with a `webhook` trigger expose a unique HTTP endpoint that external systems — ticketing platforms, monitoring tools, CI/CD pipelines — can POST to.
+
+**Endpoint:**
+
+```
+POST /automations/webhooks/:automationId
+```
+
+**Request body:** Any valid JSON. The body is passed to the automation as event context.
+
+If the automation has a secret configured, pass it as the `x-automation-secret` header (also accepted: `x-webhook-secret` header, or `?secret=` query parameter):
+
+```bash
+curl -X POST https://your-breeze-host/automations/webhooks/:id \
+  -H "Content-Type: application/json" \
+  -H "x-automation-secret: your-secret-here" \
+  -d '{"any":"payload"}'
+```
+
+The secret is compared directly — there is no HMAC computation required. If the secret is missing or does not match, the request is rejected with `401 Unauthorized` and no run is created.
+
+---
+
+## API Reference
+
+### Active endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/automations` | List automations (`?enabled=true/false&orgId=`) |
+| GET | `/automations/:id` | Get automation with recent runs and statistics |
+| GET | `/automations/:id/runs` | List runs (`?status=&page=&limit=`) |
+| GET | `/automations/runs/:runId` | Get run detail with logs |
+| POST | `/automations/:id/trigger` | Manually trigger a run |
+| POST | `/automations/:id/run` | Alias for trigger |
+| POST | `/automations/webhooks/:id` | (Public) Inbound webhook trigger |
+
+### Configuration Policy endpoints
+
+Automation configurations are managed through Configuration Policies:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/configuration-policies/:id/features` | Add automation feature (`featureType: "automation"`) |
+| PATCH | `/configuration-policies/:id/features/:linkId` | Update automation settings |
+| DELETE | `/configuration-policies/:id/features/:linkId` | Remove automation feature |
+
+### Legacy endpoints (backwards compatibility)
+
+These routes remain active for existing integrations but are deprecated. New integrations should use Configuration Policies.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/automations` | Create standalone automation |
+| PUT | `/automations/:id` | Replace automation (full update) |
+| PATCH | `/automations/:id` | Partial update |
+| DELETE | `/automations/:id` | Delete automation |
+
+---
+
+## Troubleshooting
+
+**Schedule not firing.**
+Verify the cron expression is valid and the timezone is a recognized IANA timezone name. Confirm the automation is enabled — disabled automations do not fire on schedule. Use `POST /automations/:id/trigger` to confirm the actions work correctly independently of the schedule mechanism.
+
+**Event automation not firing.**
+The `eventType` field is case-sensitive — `alert.triggered` and `Alert.Triggered` are different values. Confirm the automation is enabled and that its policy assignment covers the device generating the event. Use `POST /automations/:id/trigger` to verify the action configuration is valid separately from the event matching.
+
+**Webhook not received.**
+Verify the URL is `/automations/webhooks/:id` where `:id` is the automation's UUID. If a secret is configured, ensure it is passed as the `x-automation-secret` header with the exact value.
+
+**Run status is `partial`.**
+Retrieve the full run detail via `GET /automations/runs/:runId` and examine the `logs` array for entries with `level: "error"`. If `onFailure` was `continue` or `notify`, later actions may have still executed on devices that had earlier failures — review logs per `actionIndex` separately.
+
+**Script action failing.**
+The script referenced by `scriptId` must exist in the library and be accessible to the automation's organization. Target devices must be online when the run executes — offline devices produce a failure entry in the run logs.

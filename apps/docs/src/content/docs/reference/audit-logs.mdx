@@ -1,0 +1,792 @@
+---
+title: Audit Logs
+description: Track every action across your Breeze environment with comprehensive audit trails, agent diagnostics, and event logs.
+sidebar:
+  order: 6
+  label: Audit Logs
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze RMM provides three distinct logging systems that together give you full visibility into platform activity, agent health, and device-level events. Each system serves a different purpose and is stored in its own database table with dedicated API endpoints.
+
+## Log Types Overview
+
+| Log Type | Purpose | Source | Database Table |
+|---|---|---|---|
+| **Platform Audit Logs** | Track user, API key, agent, and system actions across the platform | API server | `audit_logs` |
+| **Agent Diagnostic Logs** | Capture internal agent runtime diagnostics (debug, info, warn, error) | Breeze agent | `agent_logs` |
+| **Device Event Logs** | Collect OS-level event logs from managed devices (security, hardware, application, system) | Managed devices | `device_event_logs` |
+
+---
+
+## Platform Audit Logs
+
+Platform audit logs record every significant action taken within your Breeze environment. They are the primary compliance and security trail.
+
+### Audit Log Fields
+
+Each audit log entry contains the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier for the log entry |
+| `orgId` | UUID | Organization the action belongs to (multi-tenant scoping) |
+| `timestamp` | Timestamp | When the action occurred (defaults to current time) |
+| `actorType` | Enum | Who performed the action: `user`, `api_key`, `agent`, or `system` |
+| `actorId` | UUID | Identifier of the actor (user ID, agent ID, etc.) |
+| `actorEmail` | String (255) | Email address of the actor (when available) |
+| `action` | String (100) | The action performed (e.g., `user.login`, `device.create`, `script.execute`) |
+| `resourceType` | String (50) | Type of resource acted upon (e.g., `device`, `policy`, `organization`) |
+| `resourceId` | UUID | Identifier of the affected resource |
+| `resourceName` | String (255) | Human-readable name of the affected resource |
+| `details` | JSONB | Additional context about the action (before/after values, parameters, etc.) |
+| `ipAddress` | String (45) | Client IP address (supports IPv4 and IPv6) |
+| `userAgent` | Text | Client user-agent string |
+| `result` | Enum | Outcome of the action: `success`, `failure`, or `denied` |
+| `errorMessage` | Text | Error details when the result is `failure` or `denied` |
+| `checksum` | String (128) | Integrity checksum for tamper detection |
+
+### Actor Types
+
+Breeze tracks four types of actors:
+
+| Actor Type | Description | Example Actions |
+|---|---|---|
+| `user` | A human user authenticated via JWT | Logging in, updating a device, exporting data |
+| `api_key` | An API key (prefix `brz_`) used for programmatic access | Automated script execution, integrations |
+| `agent` | A Breeze agent running on a managed device | Submitting event logs, heartbeat updates |
+| `system` | Internal platform operations with no human actor | Scheduled cleanups, automated policy evaluations |
+
+When a non-UUID actor ID is provided (e.g., an agent string identifier), the system stores a zero UUID as the `actorId` and preserves the original value in the `details` JSONB field under the key `rawActorId`. The same treatment applies to non-UUID `resourceId` values, stored as `rawResourceId` in details.
+
+### Action Categories
+
+Actions are classified into categories based on their prefix. This categorization drives the reporting endpoints:
+
+| Category | Action Prefixes | Examples |
+|---|---|---|
+| `authentication` | `user.login`, `user.logout`, `user.permission` | `user.login`, `user.login.failed`, `user.permission.change` |
+| `device` | `device.` | `device.create`, `device.update`, `device.delete` |
+| `automation` | `script.` | `script.execute` |
+| `policy` | `policy.`, `automation.policy.` | `policy.create`, `policy.update`, `policy.evaluate`, `automation.policy.evaluate` |
+| `alert` | `alert.` | `alert.create`, `alert.acknowledge` |
+| `compliance` | `data.` | `data.access`, `data.export` |
+| `organization` | `organization.` | `organization.update` |
+| `system` | Everything else | System-generated events |
+
+### Security Actions
+
+The following actions are flagged as security events and appear in the security events report:
+
+- `user.login`
+- `user.login.failed`
+- `user.permission.change`
+- `policy.update`
+- `policy.create`
+- `policy.evaluate`
+- `automation.policy.evaluate`
+
+### Compliance Actions
+
+The following actions are tracked for compliance reporting:
+
+- `data.access`
+- `data.export`
+- `device.create`, `device.delete`
+- `policy.update`, `policy.evaluate`, `automation.policy.evaluate`
+- `script.execute`
+- `organization.update`
+
+### Writing Audit Events
+
+Audit events are written asynchronously via `createAuditLogAsync`, which inserts into the database without blocking the request. If the insert fails, the error is logged to the console (suppressed in test environments).
+
+Two helper functions are available in application code:
+
+- **`writeAuditEvent(c, event)`** -- Low-level function that accepts a request-like context and an `AuditEventInput` object. Extracts the client IP from `X-Forwarded-For` and the user-agent from request headers. Events with no `orgId` are silently dropped (with a console warning in non-test environments).
+- **`writeRouteAudit(c, event)`** -- Convenience wrapper for route handlers that automatically extracts `actorId` and `actorEmail` from the Hono auth context.
+
+### Filtering and Searching
+
+The audit log list endpoints support the following query parameters for filtering:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `page` | String (number) | Page number (default: `1`) |
+| `limit` | String (number) | Results per page (default: `50`, max: `100`) |
+| `user` | String | Filter by actor email or user name (ILIKE match) |
+| `action` | String | Filter by action name (ILIKE match) |
+| `resource` | String | Filter by resource type or resource name (ILIKE match) |
+| `from` | ISO 8601 datetime | Start of date range |
+| `to` | ISO 8601 datetime | End of date range |
+
+The search endpoint (`GET /search`) adds a `q` parameter that performs a full-text ILIKE search across action, actor email, resource type, resource name, and the JSON-cast details field. Search conditions are combined with any active filters using AND logic.
+
+### Retention Policies
+
+Audit log retention is configured per organization in the `audit_retention_policies` table:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `retentionDays` | Integer | `365` | Number of days to retain audit logs |
+| `archiveToS3` | Boolean | `false` | Whether to archive logs to S3 before deletion |
+| `lastCleanupAt` | Timestamp | null | When the last cleanup ran |
+
+---
+
+## Agent Diagnostic Logs
+
+Agent diagnostic logs capture internal runtime information from the Breeze agent running on managed devices. These are useful for troubleshooting agent connectivity, update failures, and component-level issues.
+
+### Agent Log Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier |
+| `deviceId` | UUID | The device this agent runs on |
+| `orgId` | UUID | Organization scope |
+| `timestamp` | Timestamp | When the log entry was generated on the agent |
+| `level` | Enum | Severity: `debug`, `info`, `warn`, or `error` |
+| `component` | String (100) | Agent subsystem that generated the log (e.g., `updater`, `heartbeat`, `ws`) |
+| `message` | Text | The log message |
+| `fields` | JSONB | Structured key-value metadata attached to the log entry |
+| `agentVersion` | String (50) | Version of the agent that generated the entry |
+| `createdAt` | Timestamp | When the record was inserted into the database |
+
+### Database Indexes
+
+The `agent_logs` table has the following indexes for efficient querying:
+
+- `agent_logs_device_idx` -- By device ID
+- `agent_logs_org_ts_idx` -- By organization ID and timestamp (composite)
+- `agent_logs_level_component_idx` -- By level and component (composite)
+- `agent_logs_timestamp_idx` -- By timestamp
+
+### Log Ingestion
+
+Agents submit diagnostic logs via `POST /agents/:id/logs` with a JSON body containing a `logs` array (maximum 500 entries per request). Each entry must include:
+
+- `timestamp` (ISO 8601 datetime)
+- `level` (`debug`, `info`, `warn`, `error`)
+- `component` (string, max 100 characters)
+- `message` (string)
+- `fields` (optional object with arbitrary key-value pairs)
+- `agentVersion` (optional string, max 50 characters)
+
+Logs are batch-inserted in groups of 100 rows. The endpoint returns the number of successfully inserted records.
+
+### Querying Diagnostic Logs
+
+Diagnostic logs are queried via `GET /devices/:id/diagnostic-logs` with the following optional parameters:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `level` | String | Filter by level(s), comma-separated (e.g., `warn,error`) |
+| `component` | String | Filter by component name (exact match) |
+| `since` | ISO 8601 datetime | Start of time range |
+| `until` | ISO 8601 datetime | End of time range |
+| `search` | String | ILIKE search on the message field |
+| `page` | String (number) | Page number |
+| `limit` | String (number) | Results per page (default max: `1000`) |
+
+Results are ordered by timestamp descending and include the total count for pagination.
+
+<Aside type="note">
+  Diagnostic log queries require authentication and one of the following scopes: `organization`, `partner`, or `system`. The device must belong to the caller's organization.
+</Aside>
+
+---
+
+## Device Event Logs
+
+Device event logs represent OS-level events collected from managed devices. There are two mechanisms for working with device event logs: **stored event logs** (persisted in the database) and **live event log queries** (real-time queries sent to the agent).
+
+### Stored Event Logs
+
+Agents periodically submit event logs that are stored in the `device_event_logs` table for historical querying.
+
+#### Stored Event Log Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Unique identifier |
+| `deviceId` | UUID | The device the event came from |
+| `orgId` | UUID | Organization scope |
+| `timestamp` | Timestamp | When the event occurred on the device |
+| `level` | Enum | Severity: `info`, `warning`, `error`, or `critical` |
+| `category` | Enum | Event category: `security`, `hardware`, `application`, or `system` |
+| `source` | String (255) | The source application or component |
+| `eventId` | String (100) | OS-specific event identifier |
+| `message` | Text | The event message |
+| `details` | JSONB | Additional structured event data |
+| `createdAt` | Timestamp | When the record was inserted |
+
+#### Deduplication
+
+The `device_event_logs` table has a unique index on `(deviceId, source, eventId)` to prevent duplicate events. When an agent submits events that conflict with existing records, the duplicates are silently ignored (`ON CONFLICT DO NOTHING`).
+
+#### Database Indexes
+
+- `device_event_logs_device_idx` -- By device ID
+- `device_event_logs_org_ts_idx` -- By organization ID and timestamp (composite)
+- `device_event_logs_cat_level_idx` -- By category and level (composite)
+- `device_event_logs_dedup_idx` -- Unique index on (device ID, source, event ID)
+
+#### Event Submission
+
+Agents submit event logs via `PUT /agents/:id/eventlogs` with a JSON body containing an `events` array. Each event must include:
+
+- `timestamp` (string, required)
+- `level` (`info`, `warning`, `error`, `critical`)
+- `category` (`security`, `hardware`, `application`, `system`)
+- `source` (string, required)
+- `eventId` (string, optional)
+- `message` (string, required)
+- `details` (optional object)
+
+Events are batch-inserted in groups of 100. The submission is also recorded as an audit event with action `agent.eventlogs.submit`.
+
+#### Querying Stored Event Logs
+
+Query stored event logs for a device via `GET /devices/:id/eventlogs`:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `category` | Enum | Filter by category: `security`, `hardware`, `application`, `system` |
+| `level` | Enum | Filter by level: `info`, `warning`, `error`, `critical` |
+| `source` | String | Filter by source (exact match) |
+| `startDate` | ISO 8601 datetime | Start of time range |
+| `endDate` | ISO 8601 datetime | End of time range |
+| `page` | String (number) | Page number |
+| `limit` | String (number) | Results per page (default max: `500`) |
+
+### Live Event Log Queries
+
+For real-time inspection, Breeze can query the Windows Event Log (or equivalent) directly on a device by sending commands through the agent. These are available under both the `/system-tools/` and `/devices/` route namespaces.
+
+#### List Available Event Logs
+
+```
+GET /system-tools/devices/:deviceId/eventlogs
+```
+
+Returns the list of event logs available on the device (e.g., Application, Security, System). Each log includes:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | String | Internal log name |
+| `displayName` | String | Human-readable display name |
+| `recordCount` | Number | Number of records in the log |
+| `maxSize` | Number | Maximum log size in bytes |
+| `retentionDays` | Number | Configured retention period |
+| `lastWriteTime` | String | Timestamp of the most recent entry |
+
+#### Get Event Log Info
+
+```
+GET /system-tools/devices/:deviceId/eventlogs/:name
+```
+
+Returns metadata for a specific event log by name (case-insensitive match).
+
+#### Query Event Log Entries
+
+```
+GET /system-tools/devices/:deviceId/eventlogs/:name/events
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `page` | String (number) | Page number |
+| `limit` | String (number) | Results per page |
+| `level` | Enum | Filter by level: `information`, `warning`, `error`, `critical`, `verbose` |
+| `source` | String | Filter by source |
+| `startTime` | ISO 8601 datetime | Start of time range |
+| `endTime` | ISO 8601 datetime | End of time range |
+| `eventId` | String (number) | Filter by OS event ID |
+
+Each returned event entry contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `recordId` | Number | Record identifier within the log |
+| `timeCreated` | String | When the event was generated |
+| `level` | Enum | `information`, `warning`, `error`, `critical`, or `verbose` |
+| `source` | String | Source application or component |
+| `eventId` | Number | OS-specific event ID |
+| `message` | String | Event message text |
+| `category` | String | Event category |
+| `user` | String or null | User associated with the event |
+| `computer` | String | Computer name |
+| `rawXml` | String | Raw XML representation (when available) |
+
+#### Get Single Event Record
+
+```
+GET /system-tools/devices/:deviceId/eventlogs/:name/events/:recordId
+```
+
+Returns a single event log entry by its record ID.
+
+<Aside type="caution">
+  Live event log queries send a command to the agent and wait for a response (30-second timeout). The device must be online and connected for these queries to succeed.
+</Aside>
+
+---
+
+## API Reference
+
+### Platform Audit Log Endpoints
+
+All audit log endpoints are mounted at `/api/v1/audit-logs` and require JWT authentication.
+
+<Tabs>
+  <TabItem label="List & Search">
+
+#### List Audit Logs (Flat Format)
+
+```
+GET /audit-logs
+```
+
+Returns entries in a flattened format used by the AuditLogViewer UI component. Supports `page`, `limit`, `user`, `action`, `resource`, `from`, and `to` query parameters.
+
+**Response shape:**
+```json
+{
+  "entries": [
+    {
+      "id": "uuid",
+      "timestamp": "2026-02-18T12:00:00.000Z",
+      "action": "device.create",
+      "resource": "My Workstation",
+      "resourceType": "device",
+      "details": "{}",
+      "ipAddress": "192.168.1.10",
+      "userAgent": "Mozilla/5.0...",
+      "sessionId": null,
+      "user": {
+        "name": "Jane Admin",
+        "email": "jane@example.com",
+        "role": "user",
+        "department": ""
+      },
+      "changes": {
+        "before": {},
+        "after": {}
+      }
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "total": 142,
+    "totalPages": 3
+  }
+}
+```
+
+#### List Audit Logs (Full Format)
+
+```
+GET /audit-logs/logs
+```
+
+Returns entries in a detailed format used by RecentActivity and UserActivityReport components. Same query parameters as above.
+
+**Response shape:**
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "timestamp": "2026-02-18T12:00:00.000Z",
+      "user": {
+        "id": "uuid",
+        "name": "Jane Admin",
+        "email": "jane@example.com",
+        "role": "user"
+      },
+      "action": "device.create",
+      "resource": {
+        "type": "device",
+        "id": "uuid",
+        "name": "My Workstation"
+      },
+      "category": "device",
+      "result": "success",
+      "ipAddress": "192.168.1.10",
+      "userAgent": "Mozilla/5.0...",
+      "details": {}
+    }
+  ],
+  "pagination": { "page": 1, "limit": 50, "total": 142, "totalPages": 3 }
+}
+```
+
+#### Get Single Audit Log
+
+```
+GET /audit-logs/logs/:id
+```
+
+Returns a single audit log entry in full format. Returns `404` if the entry does not exist or belongs to a different organization.
+
+#### Search Audit Logs
+
+```
+GET /audit-logs/search?q=login
+```
+
+Full-text search across action, actor email, resource type, resource name, and details. The `q` parameter is required (minimum 1 character). All standard filter parameters (`user`, `action`, `resource`, `from`, `to`) can be combined with the search query.
+
+  </TabItem>
+  <TabItem label="Export">
+
+#### Export Audit Logs (POST)
+
+```
+POST /audit-logs/export
+```
+
+**Request body:**
+```json
+{
+  "format": "csv",
+  "filters": {
+    "user": "jane",
+    "action": "device",
+    "resource": "workstation"
+  },
+  "dateRange": {
+    "from": "2026-01-01T00:00:00Z",
+    "to": "2026-02-18T23:59:59Z"
+  }
+}
+```
+
+- `format`: `"csv"` or `"json"` (default: `"json"`)
+- `filters`: Optional object with `user`, `action`, and `resource` fields
+- `dateRange`: Optional object with `from` and `to` ISO 8601 timestamps
+- Maximum 10,000 rows per export
+
+When `format` is `"csv"`, the response is returned with `Content-Type: text/csv` and a `Content-Disposition` header for file download. The CSV columns are: `id`, `timestamp`, `actorId`, `actorName`, `actorEmail`, `action`, `resourceType`, `resourceId`, `resourceName`, `category`, `result`, `ipAddress`, `userAgent`, `details`.
+
+The export action itself is recorded as an audit event with action `audit_logs.export`.
+
+#### Export Audit Logs (GET)
+
+```
+GET /audit-logs/export?userId=<uuid>
+```
+
+CSV-only export endpoint used by the AuditLogViewer export button. Optionally filter by a specific user's `actorId`. Maximum 10,000 rows.
+
+  </TabItem>
+  <TabItem label="Reports">
+
+#### User Activity Report
+
+```
+GET /audit-logs/reports/user-activity?from=...&to=...
+```
+
+**Response:**
+```json
+{
+  "totalUsers": 12,
+  "totalEvents": 1547,
+  "actionsPerUser": [
+    {
+      "userId": "uuid",
+      "userName": "Jane Admin",
+      "userEmail": "jane@example.com",
+      "actionCount": 342,
+      "lastActiveAt": "2026-02-18T15:30:00Z"
+    }
+  ],
+  "topUsers": [],
+  "recentActivity": []
+}
+```
+
+Returns a summary of all users sorted by action count (descending), plus the top 5 most active users and the 10 most recent activity entries.
+
+#### Security Events Report
+
+```
+GET /audit-logs/reports/security-events?from=...&to=...
+```
+
+**Response:**
+```json
+{
+  "totalEvents": 89,
+  "loginAttempts": 64,
+  "failedLogins": 3,
+  "permissionChanges": 2,
+  "byAction": [
+    { "action": "user.login", "count": 61 }
+  ],
+  "recentEvents": []
+}
+```
+
+Filters audit logs to security-related actions only and provides aggregate metrics on login attempts, failures, and permission changes.
+
+#### Compliance Report
+
+```
+GET /audit-logs/reports/compliance?from=...&to=...
+```
+
+**Response:**
+```json
+{
+  "totalEvents": 234,
+  "dataAccess": 5,
+  "dataChanges": 189,
+  "exports": 3,
+  "byAction": [
+    { "action": "device.create", "count": 87 }
+  ],
+  "recentEvents": []
+}
+```
+
+Summarizes compliance-relevant actions including data access, data changes, and exports.
+
+#### Stats
+
+```
+GET /audit-logs/stats?from=...&to=...
+```
+
+**Response:**
+```json
+{
+  "totalEvents": 1547,
+  "byCategory": [
+    { "category": "device", "count": 892 },
+    { "category": "authentication", "count": 234 }
+  ],
+  "byUser": [
+    { "userId": "uuid", "userName": "Jane Admin", "actionCount": 342 }
+  ],
+  "range": { "from": null, "to": null }
+}
+```
+
+Returns high-level statistics grouped by category and by user. All report endpoints accept optional `from` and `to` query parameters (ISO 8601 datetime) and are scoped to the caller's organization. Reports fetch up to 5,000 rows.
+
+  </TabItem>
+</Tabs>
+
+### Agent Diagnostic Log Endpoints
+
+<Tabs>
+  <TabItem label="Ingestion">
+
+#### Submit Agent Logs
+
+```
+POST /agents/:id/logs
+```
+
+Requires agent bearer token authentication. Accepts a JSON body:
+
+```json
+{
+  "logs": [
+    {
+      "timestamp": "2026-02-18T12:00:00Z",
+      "level": "warn",
+      "component": "updater",
+      "message": "Update check failed: connection timeout",
+      "fields": { "retryCount": 3, "endpoint": "https://updates.example.com" },
+      "agentVersion": "1.4.2"
+    }
+  ]
+}
+```
+
+Maximum 500 log entries per request. Returns `{ "received": <count> }` with status `201`.
+
+  </TabItem>
+  <TabItem label="Querying">
+
+#### Query Diagnostic Logs
+
+```
+GET /devices/:id/diagnostic-logs
+```
+
+Requires JWT authentication with `organization`, `partner`, or `system` scope.
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://breeze.example.com/api/v1/devices/<device-id>/diagnostic-logs?level=warn,error&component=updater&since=2026-02-17T00:00:00Z&search=timeout&limit=100"
+```
+
+**Response:**
+```json
+{
+  "logs": [
+    {
+      "id": "uuid",
+      "deviceId": "uuid",
+      "orgId": "uuid",
+      "timestamp": "2026-02-18T12:00:00Z",
+      "level": "warn",
+      "component": "updater",
+      "message": "Update check failed: connection timeout",
+      "fields": { "retryCount": 3 },
+      "agentVersion": "1.4.2",
+      "createdAt": "2026-02-18T12:00:01Z"
+    }
+  ],
+  "total": 47,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+  </TabItem>
+</Tabs>
+
+### Device Event Log Endpoints
+
+<Tabs>
+  <TabItem label="Stored Events">
+
+#### Submit Device Event Logs
+
+```
+PUT /agents/:id/eventlogs
+```
+
+Requires agent bearer token authentication.
+
+```json
+{
+  "events": [
+    {
+      "timestamp": "2026-02-18T11:45:00Z",
+      "level": "error",
+      "category": "application",
+      "source": "Application Error",
+      "eventId": "1000",
+      "message": "Faulting application name: app.exe",
+      "details": { "faultModule": "ntdll.dll" }
+    }
+  ]
+}
+```
+
+Returns `{ "success": true, "count": <inserted> }`.
+
+#### Query Stored Event Logs
+
+```
+GET /devices/:id/eventlogs?category=security&level=error&startDate=2026-02-01T00:00:00Z
+```
+
+Requires JWT authentication. Returns paginated results from the `device_event_logs` table.
+
+  </TabItem>
+  <TabItem label="Live Queries">
+
+#### List Available Event Logs
+
+```
+GET /system-tools/devices/:deviceId/eventlogs
+```
+
+Sends a command to the agent and returns the list of Windows Event Log channels (or equivalent) on the device.
+
+#### Get Event Log Metadata
+
+```
+GET /system-tools/devices/:deviceId/eventlogs/:name
+```
+
+Returns metadata for a specific log (e.g., `Application`, `Security`, `System`).
+
+#### Query Live Event Entries
+
+```
+GET /system-tools/devices/:deviceId/eventlogs/:name/events?level=error&limit=50
+```
+
+Queries event entries directly from the device in real time.
+
+#### Get Single Event Entry
+
+```
+GET /system-tools/devices/:deviceId/eventlogs/:name/events/:recordId
+```
+
+Returns a single event record by its record ID.
+
+<Aside type="tip">
+  Live query endpoints are also available under the `/devices/` route prefix with the same path structure: `GET /devices/:id/eventlogs`, etc. These stored-event endpoints filter from the database, while the `/system-tools/` endpoints query the device in real time via agent commands.
+</Aside>
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Multi-Tenant Scoping
+
+All audit log queries are automatically scoped to the caller's organization. The `orgCondition` from the authenticated user's context is applied to every database query, ensuring that users can only see audit logs for their own organization. Partner-scoped users may see logs across their managed organizations.
+
+---
+
+## Troubleshooting
+
+### Audit events are not being recorded
+
+<Steps>
+1. Verify that the action handler calls `writeAuditEvent()` or `writeRouteAudit()`. Events are written asynchronously, so failures do not block request handling.
+2. Check the API server console for `[audit] Failed to write audit log:` messages, which indicate database insert failures.
+3. Confirm the `orgId` is being passed. Events with a null or undefined `orgId` are silently dropped. Look for `[audit] Dropped event (no orgId):` warnings in the console.
+4. Ensure the `actorType` value is one of the four valid enum values: `user`, `api_key`, `agent`, or `system`.
+</Steps>
+
+### Agent diagnostic logs are not appearing
+
+<Steps>
+1. Confirm the agent is shipping logs by checking the response from `POST /agents/:id/logs`. A `201` with `{ "received": N }` indicates the API accepted the batch.
+2. Verify the agent ID maps to a valid device. The endpoint looks up the device by `agentId` and returns `404` if no match is found.
+3. Check batch insert errors in the API console: `[AgentLogs] Error batch inserting logs for device <id>`.
+4. Ensure each log entry has valid `level`, `component`, and `timestamp` fields matching the expected schema.
+</Steps>
+
+### Device event logs return empty results
+
+<Steps>
+1. For stored events, confirm the agent has submitted events via `PUT /agents/:id/eventlogs`. Check the `count` in the response.
+2. For live queries, verify the device is online and connected to the WebSocket. Live queries have a 30-second timeout.
+3. Check that your query filters (category, level, source, date range) are not too restrictive. Try removing filters to get unfiltered results first.
+4. For deduplication issues, note that the `device_event_logs` table has a unique index on `(deviceId, source, eventId)`. If the same event is submitted again, it is silently skipped.
+</Steps>
+
+### Export returns no data
+
+<Steps>
+1. Verify your filters and date range are correct. The export endpoints apply the same filtering logic as the list endpoints.
+2. Check that the organization has audit log entries in the specified time range.
+3. Note that exports are capped at 10,000 rows. If you need more, narrow the date range or filter criteria and export in batches.
+</Steps>
+
+### Live event log queries time out
+
+<Steps>
+1. Confirm the target device is online and the agent is connected.
+2. The command timeout is 30 seconds. Large event logs on the device may exceed this timeout.
+3. Use the `level`, `source`, and `eventId` filters to narrow the query and reduce response size.
+4. Check the API console for `Failed to parse agent response for event` messages, which may indicate the agent returned an unexpected format.
+</Steps>

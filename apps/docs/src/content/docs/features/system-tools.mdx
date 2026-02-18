@@ -1,0 +1,560 @@
+---
+title: System Tools
+description: Browse files, manage processes and services, edit the Windows registry, and view event logs on managed devices.
+sidebar:
+  order: 13
+  label: System Tools
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+System Tools provide a suite of remote administration capabilities that let technicians inspect and manage managed devices directly from the Breeze dashboard. Every operation is dispatched to the Breeze agent running on the target device via the command queue -- the API sends a typed command, the agent executes it locally, and the result is returned as structured JSON. All mutating actions (killing processes, starting/stopping services, editing the registry, uploading files, running/enabling/disabling scheduled tasks) are recorded in the audit log.
+
+<Aside>
+  System Tools require authentication with MFA and a role that includes the `devices.read` permission for read operations or `devices.execute` for mutating operations. The RBAC check is enforced globally across all System Tools endpoints.
+</Aside>
+
+---
+
+## File Browser
+
+The File Browser lets you list directory contents, download files from a device, and upload files to a device. It works on all platforms (Windows, macOS, Linux).
+
+### Listing a directory
+
+Send a `GET` request with the absolute path you want to browse. The agent returns an array of entries, each describing a file or directory at that path.
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/files?path=/var/log
+```
+
+Each entry in the response includes:
+
+| Field         | Type     | Description                          |
+|---------------|----------|--------------------------------------|
+| `name`        | string   | File or directory name               |
+| `path`        | string   | Full path on the device              |
+| `type`        | string   | `"file"` or `"directory"`            |
+| `size`        | number   | Size in bytes (files only)           |
+| `modified`    | string   | ISO 8601 last-modified timestamp     |
+| `permissions` | string   | POSIX permission string (e.g. `rwxr-xr-x`) |
+
+### Downloading a file
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/files/download?path=/tmp/example.txt
+```
+
+The agent reads the file, base64-encodes it, and returns it to the API. The API decodes it and streams the raw bytes back to the caller with `Content-Disposition: attachment` and `Content-Type: application/octet-stream` headers. The filename is derived from the remote path.
+
+### Uploading a file
+
+```bash
+POST /api/v1/system-tools/devices/:deviceId/files/upload
+Content-Type: application/json
+
+{
+  "path": "/tmp/config.yaml",
+  "content": "server:\n  port: 8080\n",
+  "encoding": "text"
+}
+```
+
+| Body Field | Type   | Required | Description                              |
+|------------|--------|----------|------------------------------------------|
+| `path`     | string | Yes      | Absolute destination path on the device  |
+| `content`  | string | Yes      | File content (plain text or base64)      |
+| `encoding` | string | No       | `"text"` (default) or `"base64"`         |
+
+File uploads are audit-logged with the destination path, encoding, and size.
+
+---
+
+## Process Manager
+
+The Process Manager lists running processes, retrieves details for a specific process by PID, and can terminate processes. It works on all platforms using the `gopsutil` library on the agent side.
+
+### Listing processes
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/processes?page=1&limit=50&search=node
+```
+
+| Query Parameter | Type   | Default | Description                                |
+|-----------------|--------|---------|--------------------------------------------|
+| `page`          | number | 1       | Page number                                |
+| `limit`         | number | 50      | Results per page (max 500)                 |
+| `search`        | string | --      | Filter by name, user, command line, or PID |
+
+The agent sorts results by CPU usage (descending) by default and supports sorting by `pid`, `name`, `user`, `memory`, or `cpu`.
+
+Each process entry includes:
+
+| Field         | Type   | Description                        |
+|---------------|--------|------------------------------------|
+| `pid`         | number | Process ID                         |
+| `name`        | string | Process name                       |
+| `cpuPercent`  | number | Current CPU usage percentage       |
+| `memoryMb`    | number | Resident memory in MB              |
+| `user`        | string | Owning user                        |
+| `status`      | string | `running`, `sleeping`, `stopped`, or `zombie` |
+| `commandLine` | string | Full command line                  |
+| `parentPid`   | number | Parent process ID                  |
+| `threads`     | number | Thread count                       |
+
+### Getting process details
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/processes/2048
+```
+
+Returns the same fields as the list, but for a single process identified by PID.
+
+### Killing a process
+
+```bash
+POST /api/v1/system-tools/devices/:deviceId/processes/3456/kill?force=true
+```
+
+| Query Parameter | Type    | Default | Description                                            |
+|-----------------|---------|---------|--------------------------------------------------------|
+| `force`         | boolean | false   | When `true`, sends SIGKILL instead of SIGTERM (or the Windows equivalent) |
+
+This action is audit-logged with the PID, force flag, and result.
+
+---
+
+## Service Manager
+
+The Service Manager lists, inspects, starts, stops, and restarts system services. It has platform-specific implementations:
+
+- **Windows**: Uses the Windows Service Control Manager API
+- **Linux**: Uses `systemctl` (systemd)
+- **macOS**: Uses `launchctl` (launchd)
+
+### Listing services
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/services?page=1&limit=50&search=WinRM&status=running
+```
+
+| Query Parameter | Type   | Default | Description                          |
+|-----------------|--------|---------|--------------------------------------|
+| `page`          | number | 1       | Page number                          |
+| `limit`         | number | 50      | Results per page (max 500)           |
+| `search`        | string | --      | Filter by service name               |
+| `status`        | string | --      | Filter by status (e.g. `running`, `stopped`) |
+
+The API normalizes service data from each platform into a consistent shape:
+
+| Field          | Type     | Description                                      |
+|----------------|----------|--------------------------------------------------|
+| `name`         | string   | Service identifier (e.g. `WinRM`, `sshd`)        |
+| `displayName`  | string   | Human-readable name                              |
+| `status`       | string   | `running`, `stopped`, `paused`, `starting`, or `stopping` |
+| `startType`    | string   | `auto`, `manual`, `disabled`, or `auto_delayed`  |
+| `account`      | string   | Service account (e.g. `LocalSystem`)             |
+| `description`  | string   | Service description text                         |
+| `path`         | string   | Executable path                                  |
+| `dependencies` | string[] | Names of services this service depends on        |
+
+### Getting service details
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/services/WinRM
+```
+
+### Starting, stopping, and restarting a service
+
+```bash
+POST /api/v1/system-tools/devices/:deviceId/services/WinRM/start
+POST /api/v1/system-tools/devices/:deviceId/services/WinRM/stop
+POST /api/v1/system-tools/devices/:deviceId/services/WinRM/restart
+```
+
+All three actions are audit-logged with the service name and result.
+
+---
+
+## Registry Editor
+
+<Aside type="caution">
+  The Registry Editor is **Windows-only**. Calling registry endpoints on a macOS or Linux device returns an error: `"registry is only supported on Windows"`.
+</Aside>
+
+The Registry Editor provides full read and write access to the Windows registry. You can browse keys, read/write/delete values, and create/delete keys.
+
+### Supported hives
+
+The following registry hives are accepted by all registry endpoints:
+
+- `HKEY_LOCAL_MACHINE`
+- `HKEY_CURRENT_USER`
+- `HKEY_CLASSES_ROOT`
+- `HKEY_USERS`
+- `HKEY_CURRENT_CONFIG`
+
+### Listing subkeys
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/registry/keys?hive=HKEY_LOCAL_MACHINE&path=SOFTWARE
+```
+
+Each key entry includes:
+
+| Field         | Type   | Description                  |
+|---------------|--------|------------------------------|
+| `name`        | string | Key name                     |
+| `path`        | string | Full registry path           |
+| `subKeyCount` | number | Number of child keys         |
+| `valueCount`  | number | Number of values in this key |
+| `lastModified`| string | Last modification timestamp  |
+
+### Listing values at a key
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/registry/values?hive=HKEY_LOCAL_MACHINE&path=SOFTWARE
+```
+
+Each value entry includes:
+
+| Field  | Type                               | Description              |
+|--------|------------------------------------|--------------------------|
+| `name` | string                             | Value name (`(Default)` for the default value) |
+| `type` | string                             | One of the supported types (see below)         |
+| `data` | string, number, string[], number[] | Parsed value data                              |
+
+### Supported value types
+
+| Type            | API data format          |
+|-----------------|--------------------------|
+| `REG_SZ`        | string                   |
+| `REG_EXPAND_SZ` | string                   |
+| `REG_DWORD`     | number                   |
+| `REG_QWORD`     | number                   |
+| `REG_MULTI_SZ`  | string[]                 |
+| `REG_BINARY`    | number[] (byte values 0-255) |
+
+The API normalizes raw agent responses automatically. For example, `REG_DWORD` values returned as strings are parsed to numbers, and `REG_BINARY` hex strings (e.g. `"00 01 0A FF"`) are converted to byte arrays (e.g. `[0, 1, 10, 255]`).
+
+### Reading a specific value
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/registry/value?hive=HKEY_LOCAL_MACHINE&path=SOFTWARE&name=ProductName
+```
+
+The response includes a `fullPath` field combining the hive, path, and value name.
+
+### Setting a value
+
+```bash
+PUT /api/v1/system-tools/devices/:deviceId/registry/value
+Content-Type: application/json
+
+{
+  "hive": "HKEY_LOCAL_MACHINE",
+  "path": "SOFTWARE\\Breeze",
+  "name": "Version",
+  "type": "REG_SZ",
+  "data": "1.0.0"
+}
+```
+
+### Deleting a value
+
+```bash
+DELETE /api/v1/system-tools/devices/:deviceId/registry/value?hive=HKEY_LOCAL_MACHINE&path=SOFTWARE&name=TestValue
+```
+
+### Creating a key
+
+```bash
+POST /api/v1/system-tools/devices/:deviceId/registry/key
+Content-Type: application/json
+
+{
+  "hive": "HKEY_LOCAL_MACHINE",
+  "path": "SOFTWARE\\Breeze"
+}
+```
+
+### Deleting a key
+
+```bash
+DELETE /api/v1/system-tools/devices/:deviceId/registry/key?hive=HKEY_LOCAL_MACHINE&path=SOFTWARE\\Breeze
+```
+
+<Aside type="danger">
+  Registry modifications can make a Windows system unbootable. All registry write and delete operations are audit-logged, including the hive, path, value name, type, and data (truncated to 200 characters).
+</Aside>
+
+---
+
+## Event Logs
+
+<Aside type="caution">
+  Event Logs are **Windows-only**. Calling event log endpoints on a macOS or Linux device returns an error: `"event logs are only supported on Windows"`.
+</Aside>
+
+The Event Logs tool queries the Windows Event Log system. You can list available logs, query events with filters, and retrieve individual event details.
+
+### Listing available logs
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/eventlogs
+```
+
+Each log entry includes:
+
+| Field           | Type   | Description                     |
+|-----------------|--------|---------------------------------|
+| `name`          | string | Log name (e.g. `System`)       |
+| `displayName`   | string | Human-readable name             |
+| `recordCount`   | number | Total number of records         |
+| `maxSize`       | number | Maximum log size in bytes       |
+| `retentionDays` | number | Retention policy in days        |
+| `lastWriteTime` | string | ISO 8601 timestamp of last write |
+
+### Getting log info
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/eventlogs/System
+```
+
+Returns the metadata for a single log by name.
+
+### Querying events
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/eventlogs/System/events?level=error&source=Service+Control+Manager&page=1&limit=50
+```
+
+| Query Parameter | Type   | Default | Description                                       |
+|-----------------|--------|---------|---------------------------------------------------|
+| `page`          | number | 1       | Page number                                       |
+| `limit`         | number | 50      | Results per page (max 500)                        |
+| `level`         | string | --      | `information`, `warning`, `error`, `critical`, or `verbose` |
+| `source`        | string | --      | Filter by event source                            |
+| `eventId`       | number | --      | Filter by Windows event ID                        |
+| `startTime`     | string | --      | ISO 8601 start time                               |
+| `endTime`       | string | --      | ISO 8601 end time                                 |
+
+Each event entry includes:
+
+| Field         | Type        | Description                           |
+|---------------|-------------|---------------------------------------|
+| `recordId`    | number      | Unique record identifier              |
+| `timeCreated` | string      | ISO 8601 timestamp                    |
+| `level`       | string      | Normalized: `information`, `warning`, `error`, `critical`, or `verbose` |
+| `source`      | string      | Event source (e.g. `Kernel-General`)  |
+| `eventId`     | number      | Windows event ID                      |
+| `message`     | string      | Event message text                    |
+| `category`    | string      | Event category                        |
+| `user`        | string/null | SID of the user (e.g. `S-1-5-18`)    |
+| `computer`    | string      | Computer name                         |
+
+### Getting a specific event
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/eventlogs/System/events/15234
+```
+
+Returns full details for a single event by record ID, including the optional `rawXml` field with the original Windows event XML.
+
+---
+
+## Scheduled Tasks
+
+<Aside type="caution">
+  Scheduled Tasks are **Windows-only**. Calling task endpoints on a macOS or Linux device returns an error: `"scheduled tasks are only supported on Windows"`.
+</Aside>
+
+The Scheduled Tasks tool lets you view, run, enable, and disable Windows Task Scheduler tasks, and inspect their execution history.
+
+### Listing tasks
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/tasks?page=1&limit=50&folder=\Microsoft\Windows&search=Defender
+```
+
+| Query Parameter | Type   | Default | Description                       |
+|-----------------|--------|---------|-----------------------------------|
+| `page`          | number | 1       | Page number                       |
+| `limit`         | number | 50      | Results per page (max 500)        |
+| `folder`        | string | `\`     | Task scheduler folder to browse   |
+| `search`        | string | --      | Filter by task name               |
+
+Each task entry includes:
+
+| Field           | Type        | Description                                     |
+|-----------------|-------------|-------------------------------------------------|
+| `path`          | string      | Full task path (e.g. `\Microsoft\Windows\...`)  |
+| `name`          | string      | Task name                                       |
+| `state`         | string      | `ready`, `running`, `disabled`, `queued`, or `unknown` |
+| `lastRunTime`   | string/null | ISO 8601 timestamp of last execution            |
+| `lastRunResult` | number/null | Exit code from last run                         |
+| `nextRunTime`   | string/null | ISO 8601 timestamp of next scheduled execution  |
+| `author`        | string      | Task author                                     |
+| `description`   | string      | Task description                                |
+| `triggers`      | array       | Trigger definitions with `type`, `enabled`, and optional `schedule` |
+| `actions`       | array       | Action definitions with `type`, optional `path` and `arguments` |
+
+### Getting task details
+
+The task path must be URL-encoded in the path parameter:
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/tasks/%5CMicrosoft%5CWindows%5CWindows%20Defender%5CWindows%20Defender%20Scheduled%20Scan
+```
+
+### Running a task
+
+```bash
+POST /api/v1/system-tools/devices/:deviceId/tasks/:encodedPath/run
+```
+
+Triggers an immediate execution of the task. Audit-logged.
+
+### Enabling a task
+
+```bash
+POST /api/v1/system-tools/devices/:deviceId/tasks/:encodedPath/enable
+```
+
+Enables a previously disabled task. Audit-logged.
+
+### Disabling a task
+
+```bash
+POST /api/v1/system-tools/devices/:deviceId/tasks/:encodedPath/disable
+```
+
+Disables a task so it no longer runs on schedule. Audit-logged.
+
+### Viewing task history
+
+```bash
+GET /api/v1/system-tools/devices/:deviceId/tasks/:encodedPath/history?limit=10
+```
+
+| Query Parameter | Type   | Default | Description                    |
+|-----------------|--------|---------|--------------------------------|
+| `limit`         | number | 50      | Number of history entries (max 200) |
+
+Each history entry includes:
+
+| Field        | Type   | Description                              |
+|--------------|--------|------------------------------------------|
+| `id`         | string | History entry ID                         |
+| `eventId`    | number | Task Scheduler event ID                  |
+| `timestamp`  | string | ISO 8601 timestamp                       |
+| `level`      | string | `info`, `warning`, or `error`            |
+| `message`    | string | Descriptive message                      |
+| `resultCode` | number | Exit code (present when available)       |
+
+---
+
+## API Reference
+
+All endpoints are prefixed with `/api/v1/system-tools/devices/:deviceId`. Replace `:deviceId` with a valid device UUID.
+
+### File Browser
+
+| Method | Path                    | Description       | Permission        |
+|--------|-------------------------|-------------------|-------------------|
+| GET    | `/files?path=...`       | List directory    | `devices.read`    |
+| GET    | `/files/download?path=...` | Download file  | `devices.read`    |
+| POST   | `/files/upload`         | Upload file       | `devices.execute` |
+
+### Process Manager
+
+| Method | Path                          | Description           | Permission        |
+|--------|-------------------------------|-----------------------|-------------------|
+| GET    | `/processes`                  | List processes        | `devices.read`    |
+| GET    | `/processes/:pid`             | Get process details   | `devices.read`    |
+| POST   | `/processes/:pid/kill`        | Kill process          | `devices.execute` |
+
+### Service Manager
+
+| Method | Path                          | Description           | Permission        |
+|--------|-------------------------------|-----------------------|-------------------|
+| GET    | `/services`                   | List services         | `devices.read`    |
+| GET    | `/services/:name`             | Get service details   | `devices.read`    |
+| POST   | `/services/:name/start`       | Start service         | `devices.execute` |
+| POST   | `/services/:name/stop`        | Stop service          | `devices.execute` |
+| POST   | `/services/:name/restart`     | Restart service       | `devices.execute` |
+
+### Registry Editor (Windows only)
+
+| Method | Path                          | Description              | Permission        |
+|--------|-------------------------------|--------------------------|--------------------|
+| GET    | `/registry/keys?hive=...&path=...`   | List subkeys      | `devices.read`    |
+| GET    | `/registry/values?hive=...&path=...` | List values        | `devices.read`    |
+| GET    | `/registry/value?hive=...&path=...&name=...` | Get value  | `devices.read`    |
+| PUT    | `/registry/value`             | Set value                | `devices.execute` |
+| DELETE | `/registry/value?hive=...&path=...&name=...` | Delete value | `devices.execute` |
+| POST   | `/registry/key`               | Create key               | `devices.execute` |
+| DELETE | `/registry/key?hive=...&path=...` | Delete key           | `devices.execute` |
+
+### Event Logs (Windows only)
+
+| Method | Path                                        | Description         | Permission        |
+|--------|---------------------------------------------|---------------------|-------------------|
+| GET    | `/eventlogs`                                | List logs           | `devices.read`    |
+| GET    | `/eventlogs/:name`                          | Get log info        | `devices.read`    |
+| GET    | `/eventlogs/:name/events`                   | Query events        | `devices.read`    |
+| GET    | `/eventlogs/:name/events/:recordId`         | Get event detail    | `devices.read`    |
+
+### Scheduled Tasks (Windows only)
+
+| Method | Path                                  | Description          | Permission        |
+|--------|---------------------------------------|----------------------|-------------------|
+| GET    | `/tasks`                              | List tasks           | `devices.read`    |
+| GET    | `/tasks/:path`                        | Get task details     | `devices.read`    |
+| GET    | `/tasks/:path/history`                | Get task history     | `devices.read`    |
+| POST   | `/tasks/:path/run`                    | Run task             | `devices.execute` |
+| POST   | `/tasks/:path/enable`                 | Enable task          | `devices.execute` |
+| POST   | `/tasks/:path/disable`                | Disable task         | `devices.execute` |
+
+---
+
+## Troubleshooting
+
+### Device not found or access denied (404)
+
+Every System Tools request verifies that the device exists and that the authenticated user's organization has access to it. If you receive a 404, confirm that:
+
+- The device UUID is correct.
+- Your user account has access to the organization that owns the device.
+- The device has been enrolled (not deleted).
+
+### Agent failed / device may be offline (502)
+
+System Tools commands are dispatched to the agent via the command queue with a 30-second timeout (15 seconds for process kill). A 502 or 500 response with a message like "Failed to get processes" or "Agent failed to list files" indicates:
+
+- The device agent is offline or unreachable.
+- The agent did not respond within the timeout window.
+- The agent encountered an internal error executing the command.
+
+Check the device's online status on its detail page before retrying.
+
+### "Failed to parse agent response" (502)
+
+This means the agent returned a response that the API could not parse as valid JSON. This can happen if:
+
+- The agent version is outdated and returns a different payload format.
+- The command produced unexpected output (e.g., a system error message instead of JSON).
+
+Update the agent to the latest version and retry.
+
+### "Registry is only supported on Windows" / "Event logs are only supported on Windows" / "Scheduled tasks are only supported on Windows"
+
+These tools require a Windows device. The agent returns a platform-not-supported error on macOS and Linux. Process management, service management, and the file browser work on all platforms.
+
+### Permission denied on service start/stop
+
+On Linux, the agent must be running with sufficient privileges (typically root) to manage systemd services. On macOS, managing system-level `launchd` services similarly requires elevated privileges. On Windows, the agent service account must have permission to control the target service.
+
+### Registry write operations failing
+
+Ensure the agent is running with sufficient privileges to write to the target registry hive. Writing to `HKEY_LOCAL_MACHINE` typically requires the agent to run as `SYSTEM` or an administrator. The path must not exceed 1024 characters and the value name must not exceed 256 characters (enforced by input validation).

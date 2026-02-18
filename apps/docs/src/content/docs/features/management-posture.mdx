@@ -1,0 +1,157 @@
+---
+title: Management Posture Detection
+description: Visibility into what tools are actively managing each endpoint — MDM, RMM, endpoint security, backup agents, identity providers, and more.
+sidebar:
+  order: 3
+  label: Management Posture
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Management Posture Detection gives visibility into what tools are actively managing an endpoint — MDM, RMM, endpoint security, backup agents, identity providers, and more. The Breeze agent scans each device on a regular schedule and reports back a structured snapshot of every detected management tool along with its operational status.
+
+This feature is useful for auditing management overlap, identifying unmanaged devices, confirming security tooling is active, and conducting onboarding assessments.
+
+---
+
+## What is detected
+
+### Tool categories
+
+Breeze detects tools across 11 categories:
+
+| Category | Example tools |
+|---|---|
+| **MDM** | Microsoft Intune, JAMF Pro, Mosyle, Kandji |
+| **RMM** | ConnectWise Automate, NinjaOne, Datto RMM, ScreenConnect |
+| **Endpoint Security** | CrowdStrike Falcon, SentinelOne, Sophos Endpoint, Bitdefender |
+| **Remote Access** | TeamViewer, AnyDesk, Splashtop, LogMeIn |
+| **Policy Engine** | SCCM/MECM, Group Policy, Chef, Puppet, Salt |
+| **Backup** | Veeam Agent, Acronis Cyber Protect, Datto BCDR |
+| **Identity/MFA** | Okta Verify, Duo Desktop, JumpCloud |
+| **Zero Trust/VPN** | Zscaler, Cloudflare WARP, Tailscale |
+| **SIEM** | Splunk Universal Forwarder, Elastic Agent, Wazuh |
+| **DNS Filtering** | Cisco Umbrella, DNSFilter, Netskope |
+| **Patch Management** | Automox, Windows Update |
+
+### Detection status
+
+Each detected tool is reported with one of three statuses:
+
+| Status | Meaning |
+|---|---|
+| `active` | The tool's service or process was found running at scan time |
+| `installed` | Supporting files or registry keys are present but the service or process is not currently running |
+| `unknown` | The tool was detected but its operational state could not be determined |
+
+<Aside>
+  A tool that is neither installed nor running produces no entry — it is simply absent from the results. In practice, only `active` and `installed` are currently emitted by the agent; `unknown` is reserved for future use.
+</Aside>
+
+### Identity and directory detection
+
+In addition to management tool detection, Breeze reports the device's directory join status. This data is collected in the same scan and displayed alongside tool results.
+
+| Field | Description |
+|---|---|
+| **Join type** | `hybrid_azure_ad`, `azure_ad`, `on_prem_ad`, `workplace`, or `none` |
+| **Azure AD joined** | Boolean — whether the device is Azure AD / Entra ID joined |
+| **Domain joined** | Boolean — whether the device is joined to an on-premises Active Directory domain |
+| **Workplace joined** | Boolean — whether the device has a workplace (BYOD) registration |
+| **Domain name** | The Active Directory or Entra ID domain the device is joined to |
+| **Azure tenant ID** | The Azure AD / Entra ID tenant identifier (where applicable) |
+| **MDM enrollment URL** | The MDM enrollment endpoint reported by the device |
+| **Source** | Detection method used (e.g., `dsregcmd`, `dsconfigad`, `unsupported`) |
+
+On Windows, directory join status is gathered using `dsregcmd`. On macOS, it is gathered using `dsconfigad` for Active Directory binding and `profiles status -type enrollment` for MDM enrollment state.
+
+---
+
+## Platform support
+
+| Platform | Detection methods |
+|---|---|
+| **Windows** | Service queries (SCM), registry keys, file existence, `dsregcmd` (Azure AD / Entra ID and on-premises AD join status), GPO enumeration |
+| **macOS** | Process checks, launch daemon plist file detection, `profiles status -type enrollment` (MDM enrollment state), `dsconfigad` (Active Directory binding) |
+| **Linux** | Process and file existence checks are supported, but no tool signatures currently target Linux. Linux detection coverage is planned for a future release. |
+
+Detection on Windows and macOS is signature-based: the agent evaluates each known tool's service name, process name, installation paths, and registry keys in order.
+
+---
+
+## Viewing posture in the UI
+
+<Steps>
+
+1. Navigate to a device's detail page.
+
+2. Click the **Management** tab.
+
+3. Detected tools are grouped by category. Each tool shows its name, optional version, and a status badge (`active` or `installed`).
+
+4. Identity and directory information appears in a separate **Identity & Directory Status** card at the top of the tab.
+
+5. The collection timestamp and scan duration are shown in the footer.
+
+</Steps>
+
+If posture data has not yet been collected for a device, the Management tab displays a placeholder message. Data is collected automatically during the agent's heartbeat cycle — no manual trigger is required.
+
+---
+
+## Data freshness
+
+- Posture is collected every **15 minutes** as part of the agent heartbeat cycle.
+- The exact collection timestamp and scan duration (in milliseconds) are shown in the UI.
+- If a device goes offline, the Management tab continues to show the last known posture. The timestamp makes the age of the data visible.
+
+---
+
+## API reference
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/devices/:id/management-posture` | Get the management posture snapshot for a device |
+| PUT | `/api/v1/agents/:id/management/posture` | (Agent only) Submit a posture scan result |
+
+### Response fields — `GET /api/v1/devices/:id/management-posture`
+
+| Field | Type | Description |
+|---|---|---|
+| `deviceId` | string | Device UUID |
+| `hostname` | string | Device hostname |
+| `collected` | boolean | Whether posture data has been collected at least once |
+| `posture` | object \| null | Posture snapshot, or `null` if not yet collected |
+| `posture.collectedAt` | string (ISO 8601) | Timestamp when the scan ran |
+| `posture.scanDurationMs` | number | How long the scan took, in milliseconds |
+| `posture.categories` | object | Map of category key to array of detections |
+| `posture.identity` | object | Directory and identity join status |
+| `posture.errors` | string[] | Any non-fatal errors encountered during the scan |
+
+<Aside type="note">
+  The agent-facing `PUT` endpoint requires Bearer token authentication using the device's enrollment token. It is called automatically during each heartbeat cycle and is not intended for direct use.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Some tools not detected**
+
+Detection is signature-based. A tool may not appear if it was installed in a non-standard location or if its executable or service name differs from the expected value. Verify that the agent version is current, as new tool signatures are added in each release.
+
+**Most or all tools absent from results**
+
+The agent may lack the permissions needed to query services or registry keys. On Windows, the agent service account requires read access to the Service Control Manager (SCM). If the agent is running under a restricted account, elevate its privileges or run it as Local System.
+
+**macOS MDM not detected**
+
+MDM enrollment detection uses `profiles status -type enrollment`. This command may require elevated permissions on some macOS versions. If the Breeze agent is not running with administrator privileges, the enrollment state may not be readable and the MDM category may be absent or incomplete.
+
+**Posture not updating**
+
+Check that the device is online and that the agent service is running. Posture updates every 15 minutes; missed heartbeats delay the update by one cycle. If the device has been offline for an extended period, the Management tab timestamp will reflect the age of the last known state.
+
+**Linux shows no results**
+
+No tool signatures currently target Linux. While the agent supports process and file checks on Linux, no detection signatures have been defined for the platform yet. Linux detection coverage is planned for a future release.

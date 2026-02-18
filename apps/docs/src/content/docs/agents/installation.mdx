@@ -30,13 +30,15 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       https://breeze.yourdomain.com/api/v1/agents/download/linux/amd64
     chmod +x breeze-agent
 
-    # Enroll and install as a service
-    sudo ./breeze-agent enroll \
+    # Enroll with your enrollment key
+    sudo ./breeze-agent enroll YOUR_ENROLLMENT_KEY \
       --server https://breeze.yourdomain.com \
-      --enrollment-secret YOUR_ENROLLMENT_SECRET \
-      --site-id YOUR_SITE_ID
+      --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    sudo ./breeze-agent install-service
+    # Install as a systemd service
+    sudo cp breeze-agent /usr/local/bin/breeze-agent
+    sudo systemctl enable breeze-agent
+    sudo systemctl start breeze-agent
     ```
   </TabItem>
   <TabItem label="macOS">
@@ -46,13 +48,14 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       https://breeze.yourdomain.com/api/v1/agents/download/darwin/arm64
     chmod +x breeze-agent
 
-    # Enroll and install as a LaunchDaemon
-    sudo ./breeze-agent enroll \
+    # Enroll with your enrollment key
+    sudo ./breeze-agent enroll YOUR_ENROLLMENT_KEY \
       --server https://breeze.yourdomain.com \
-      --enrollment-secret YOUR_ENROLLMENT_SECRET \
-      --site-id YOUR_SITE_ID
+      --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    sudo ./breeze-agent install-service
+    # Copy to system path and start via launchd
+    sudo cp breeze-agent /usr/local/bin/breeze-agent
+    sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist
     ```
   </TabItem>
   <TabItem label="Windows">
@@ -62,53 +65,49 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       -OutFile "breeze-agent.exe"
 
     # Enroll (run as Administrator)
-    .\breeze-agent.exe enroll `
+    .\breeze-agent.exe enroll YOUR_ENROLLMENT_KEY `
       --server https://breeze.yourdomain.com `
-      --enrollment-secret YOUR_ENROLLMENT_SECRET `
-      --site-id YOUR_SITE_ID
+      --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    # Install as a Windows Service
-    .\breeze-agent.exe install-service
-    ```
-
-    Alternatively, use the MSI installer for silent deployment:
-    ```powershell
-    msiexec /i breeze-agent.msi /qn `
-      SERVER=https://breeze.yourdomain.com `
-      ENROLLMENT_SECRET=YOUR_ENROLLMENT_SECRET `
-      SITE_ID=YOUR_SITE_ID
+    # Install and start as a Windows Service
+    .\breeze-agent.exe service install
+    .\breeze-agent.exe service start
     ```
   </TabItem>
 </Tabs>
+
+<Aside>
+  The enrollment key is generated in the Breeze dashboard when adding a new device. The enrollment secret (`AGENT_ENROLLMENT_SECRET`) is a server-side shared secret — it can also be passed via the `BREEZE_AGENT_ENROLLMENT_SECRET` environment variable instead of the `--enrollment-secret` flag.
+</Aside>
 
 ## What Enrollment Does
 
 During enrollment, the agent:
 
-1. Sends system information (hostname, OS, architecture) to the API
-2. Validates the enrollment secret
-3. Receives a unique `brz_` bearer token
-4. Stores configuration in `/etc/breeze/config.json` (Linux/macOS) or `C:\ProgramData\Breeze\config.json` (Windows)
-5. Sets file permissions: `0700` for directory, `0600` for config file
-
-<Aside>
-  The enrollment secret (`AGENT_ENROLLMENT_SECRET`) is different from the agent's bearer token. The enrollment secret is a shared secret used once during registration. The bearer token is unique per device and used for all subsequent communication.
-</Aside>
+1. Collects system information (hostname, OS, architecture, hardware details)
+2. Sends an enrollment request with the enrollment key and secret
+3. Receives a unique `brz_` bearer token, device ID, org ID, and site ID
+4. Stores configuration in a YAML file with `0600` permissions (owner-only)
+5. Creates the config directory with `0700` permissions
 
 ## Verifying Installation
 
 ```bash
 # Check service status
-sudo systemctl status breeze-agent  # Linux
-sudo launchctl list | grep breeze   # macOS
-Get-Service breeze-agent             # Windows
+sudo systemctl status breeze-agent   # Linux
+sudo launchctl list | grep breeze    # macOS
+Get-Service BreezeAgent              # Windows (PowerShell)
 
 # Check agent version
 breeze-agent version
 
+# Check enrollment status
+breeze-agent status
+
 # View agent logs
-sudo journalctl -u breeze-agent -f  # Linux
-sudo log show --predicate 'process == "breeze-agent"' --last 1h  # macOS
+sudo journalctl -u breeze-agent -f                    # Linux
+sudo tail -f /Library/Logs/Breeze/agent.log            # macOS
+Get-Content "$env:ProgramData\Breeze\logs\agent.log"   # Windows
 ```
 
 The device should appear in your Breeze dashboard within 60 seconds of enrollment.
@@ -119,20 +118,52 @@ After enrollment, the agent stores its configuration at:
 
 | OS | Path |
 |---|---|
-| Linux | `/etc/breeze/config.json` |
-| macOS | `/etc/breeze/config.json` |
-| Windows | `C:\ProgramData\Breeze\config.json` |
+| Linux | `/etc/breeze/agent.yaml` |
+| macOS | `/Library/Application Support/Breeze/agent.yaml` |
+| Windows | `C:\ProgramData\Breeze\agent.yaml` |
 
-```json
-{
-  "server": "https://breeze.yourdomain.com",
-  "token": "brz_...",
-  "deviceId": "uuid-...",
-  "orgId": "uuid-...",
-  "siteId": "uuid-..."
-}
+```yaml
+agent_id: "uuid-..."
+server_url: "https://breeze.yourdomain.com"
+auth_token: "brz_..."
+org_id: "uuid-..."
+site_id: "uuid-..."
+heartbeat_interval_seconds: 60
+metrics_interval_seconds: 30
+enabled_collectors:
+  - hardware
+  - software
+  - metrics
+  - network
 ```
 
 <Aside type="danger">
   The config file contains the agent's bearer token. Its permissions are set to `0600` (owner-only read/write). Do not change this.
 </Aside>
+
+## Service Management
+
+<Tabs>
+  <TabItem label="Linux">
+    ```bash
+    sudo systemctl start breeze-agent    # Start
+    sudo systemctl stop breeze-agent     # Stop
+    sudo systemctl restart breeze-agent  # Restart
+    sudo systemctl enable breeze-agent   # Enable on boot
+    sudo systemctl disable breeze-agent  # Disable on boot
+    ```
+  </TabItem>
+  <TabItem label="macOS">
+    ```bash
+    sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist     # Start
+    sudo launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist   # Stop
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    breeze-agent.exe service start       # Start
+    breeze-agent.exe service stop        # Stop
+    breeze-agent.exe service uninstall   # Remove service
+    ```
+  </TabItem>
+</Tabs>

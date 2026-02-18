@@ -1,0 +1,388 @@
+---
+title: Access Reviews
+description: Conduct periodic audits of user access, role assignments, and permission levels across your organisation.
+sidebar:
+  order: 8
+  label: Access Reviews
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Access Reviews let administrators periodically audit every user's role assignment within a partner or organisation scope. When a review is created, the system automatically snapshots all current user-role mappings into individual review items. A designated reviewer works through each item, deciding whether to **approve** or **revoke** the assignment. Completing the review applies all revocation decisions in a single atomic transaction, removing the affected users from the scope.
+
+All access review operations are recorded in the audit log under the `access_review.*` action namespace.
+
+---
+
+## Scope and Permissions
+
+Access reviews are scoped to either a **partner** (MSP) or an **organisation** (customer). The scope is determined automatically from the authenticated user's context.
+
+| Scope | Users included in the review |
+|-------|------------------------------|
+| **Partner** | All users in the `partner_users` table for that partner |
+| **Organisation** | All users in the `organization_users` table for that organisation |
+
+<Aside type="caution">
+  Partner-scoped reviews require the caller to have full access to every organisation belonging to the partner. If the caller's `accessibleOrgIds` does not cover all partner organisations, the request is rejected with a `403 Full partner organization access required` error.
+</Aside>
+
+### Required Permissions
+
+| Operation | Permission |
+|-----------|------------|
+| List reviews, view review details | `users:read` |
+| Create reviews, update item decisions, complete reviews | `users:write` |
+
+---
+
+## Database Schema
+
+Access reviews are stored across two tables.
+
+### `access_reviews`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `uuid` | Primary key (auto-generated) |
+| `partner_id` | `uuid` | References `partners.id` (null for org-scoped reviews) |
+| `org_id` | `uuid` | References `organizations.id` (null for partner-scoped reviews) |
+| `name` | `varchar(255)` | Human-readable review name |
+| `description` | `text` | Optional longer description |
+| `status` | `access_review_status` | One of `pending`, `in_progress`, `completed` |
+| `reviewer_id` | `uuid` | References `users.id` -- the assigned reviewer |
+| `due_date` | `timestamp` | Optional deadline |
+| `created_at` | `timestamp` | Row creation time |
+| `updated_at` | `timestamp` | Last modification time |
+| `completed_at` | `timestamp` | Set when the review is completed |
+
+### `access_review_items`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `uuid` | Primary key (auto-generated) |
+| `review_id` | `uuid` | References `access_reviews.id` (cascade delete) |
+| `user_id` | `uuid` | References `users.id` -- the user under review |
+| `role_id` | `uuid` | References `roles.id` -- the role assigned to the user |
+| `decision` | `access_review_decision` | One of `pending`, `approved`, `revoked` |
+| `notes` | `text` | Optional reviewer notes |
+| `reviewed_at` | `timestamp` | When the decision was made |
+| `reviewed_by` | `uuid` | References `users.id` -- who made the decision |
+| `created_at` | `timestamp` | Row creation time |
+
+### Status Enums
+
+```sql
+-- Review-level status
+CREATE TYPE access_review_status AS ENUM ('pending', 'in_progress', 'completed');
+
+-- Item-level decision
+CREATE TYPE access_review_decision AS ENUM ('pending', 'approved', 'revoked');
+```
+
+---
+
+## Creating an Access Review
+
+When you create a review, the API automatically enumerates every user-role mapping in scope and inserts one `access_review_items` row for each. All items start with a `pending` decision.
+
+<Steps>
+1. Send a `POST /access-reviews` request with a name (required), optional description, optional due date, and optional reviewer ID.
+2. The API looks up all users in the caller's scope (`partner_users` or `organization_users`).
+3. One review item is created per user-role mapping.
+4. The response includes the review ID, name, status (`pending`), and the number of items generated.
+</Steps>
+
+### Request Body
+
+```json
+{
+  "name": "Q1 2026 Quarterly Review",
+  "description": "Audit all technician access before renewal",
+  "dueDate": "2026-03-31T23:59:59Z",
+  "reviewerId": "d4f5a6b7-c8d9-4e0f-a1b2-c3d4e5f6a7b8"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | 1--255 characters |
+| `description` | `string` | No | Free-text description |
+| `dueDate` | `string` (ISO 8601) | No | Review deadline |
+| `reviewerId` | `string` (UUID) | No | Defaults to the authenticated user |
+
+### Response (201)
+
+```json
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "name": "Q1 2026 Quarterly Review",
+  "status": "pending",
+  "itemCount": 12
+}
+```
+
+<Aside type="note">
+  If there are no users in scope, the review is still created with `itemCount: 0`. You can complete it immediately since there are no pending items.
+</Aside>
+
+---
+
+## Review Workflow
+
+A review moves through three statuses during its lifecycle:
+
+```
+pending  -->  in_progress  -->  completed
+```
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | The review has been created but no decisions have been recorded yet. |
+| `in_progress` | At least one item decision has been updated. Automatically set when the first item is reviewed. |
+| `completed` | All items have been decided and the review has been finalised. Revocations have been applied. |
+
+<Aside type="caution">
+  The transition from `pending` to `in_progress` happens automatically when the first item decision is recorded. There is no manual way to set the status to `in_progress`.
+</Aside>
+
+---
+
+## Reviewing Role Assignments
+
+### Listing Reviews
+
+Retrieve all reviews in the current scope:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/access-reviews
+```
+
+**Response (200)**
+
+```json
+{
+  "data": [
+    {
+      "id": "a1b2c3d4-...",
+      "name": "Q1 2026 Quarterly Review",
+      "description": null,
+      "status": "in_progress",
+      "reviewerId": "d4f5a6b7-...",
+      "reviewerName": "Jane Admin",
+      "dueDate": "2026-03-31T23:59:59.000Z",
+      "createdAt": "2026-01-15T10:00:00.000Z",
+      "completedAt": null
+    }
+  ]
+}
+```
+
+Reviews are ordered by `createdAt` ascending.
+
+### Viewing a Review with Items
+
+Fetch a single review along with all of its items, including user details, role names, and the permissions granted by each role:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/access-reviews/:id
+```
+
+**Response (200)**
+
+```json
+{
+  "id": "a1b2c3d4-...",
+  "name": "Q1 2026 Quarterly Review",
+  "description": null,
+  "status": "in_progress",
+  "reviewerId": "d4f5a6b7-...",
+  "dueDate": "2026-03-31T23:59:59.000Z",
+  "createdAt": "2026-01-15T10:00:00.000Z",
+  "completedAt": null,
+  "items": [
+    {
+      "id": "item-uuid-...",
+      "userId": "user-uuid-...",
+      "userName": "Bob Technician",
+      "userEmail": "bob@example.com",
+      "lastActiveAt": "2026-02-10T14:30:00.000Z",
+      "roleId": "role-uuid-...",
+      "roleName": "Technician",
+      "decision": "pending",
+      "notes": null,
+      "reviewedAt": null,
+      "permissions": [
+        "devices:read",
+        "devices:write",
+        "scripts:read"
+      ]
+    }
+  ]
+}
+```
+
+Each item includes:
+
+| Field | Description |
+|-------|-------------|
+| `userName` / `userEmail` | Identity of the user under review |
+| `lastActiveAt` | The user's last login timestamp -- useful for identifying stale accounts |
+| `roleName` | The display name of the assigned role |
+| `permissions` | Array of `resource:action` strings granted by the role |
+| `decision` | Current decision: `pending`, `approved`, or `revoked` |
+| `notes` | Reviewer comments (if any) |
+| `reviewedAt` | Timestamp when the decision was recorded |
+
+### Updating an Item Decision
+
+Record an approve or revoke decision on a single review item:
+
+```bash
+curl -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "approved", "notes": "Access confirmed for project work"}' \
+  https://breeze.yourdomain.com/api/v1/access-reviews/:id/items/:itemId
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `decision` | `string` | Yes | One of `approved`, `revoked`, or `pending` |
+| `notes` | `string` | No | Free-text reviewer notes |
+
+**Response (200)**
+
+```json
+{
+  "id": "item-uuid-...",
+  "decision": "approved",
+  "notes": "Access confirmed for project work",
+  "reviewedAt": "2026-02-18T09:15:00.000Z"
+}
+```
+
+The API records the authenticated user as `reviewedBy` and sets `reviewedAt` to the current time. If the parent review was in `pending` status, it is automatically transitioned to `in_progress`.
+
+<Aside type="caution">
+  Items belonging to a `completed` review cannot be modified. The API returns `400 Cannot modify completed review`.
+</Aside>
+
+---
+
+## Completing a Review
+
+Once every item has been decided (no items remain in `pending`), the review can be completed.
+
+<Steps>
+1. Ensure all items have a decision of `approved` or `revoked`.
+2. Send a `POST /access-reviews/:id/complete` request.
+3. The API verifies there are no pending items.
+4. All `revoked` users are removed from the scope (`partner_users` or `organization_users`) in a single database transaction.
+5. The review status is set to `completed` and `completedAt` is recorded.
+</Steps>
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/access-reviews/:id/complete
+```
+
+**Response (200)**
+
+```json
+{
+  "id": "a1b2c3d4-...",
+  "status": "completed",
+  "completedAt": "2026-02-18T12:00:00.000Z",
+  "revokedCount": 3
+}
+```
+
+<Aside type="danger">
+  Revocation is **immediate and permanent** within the current scope. When a user's access is revoked at the partner level, they are removed from the `partner_users` table. At the organisation level, they are removed from `organization_users`. This does not delete the user account itself -- they can be re-added later.
+</Aside>
+
+### Completion Guards
+
+The API enforces the following rules before allowing completion:
+
+| Condition | HTTP Status | Error Message |
+|-----------|-------------|---------------|
+| Review not found | `404` | `Access review not found` |
+| Review already completed | `400` | `Review is already completed` |
+| Pending items remain | `400` | `Cannot complete review with pending items` |
+
+---
+
+## Review History
+
+Completed reviews and their items remain in the database indefinitely, providing a full audit trail. List all reviews to see their status and completion timestamps:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  https://breeze.yourdomain.com/api/v1/access-reviews
+```
+
+Filter completed reviews by checking the `status` field in the response. Each completed review retains the full set of items with their recorded decisions, notes, reviewer identity (`reviewedBy`), and timestamps.
+
+### Audit Log Events
+
+All mutating operations generate audit log entries:
+
+| Action | Trigger |
+|--------|---------|
+| `access_review.create` | A new review is created. Details include `itemCount`. |
+| `access_review.item.update` | A decision is recorded on an item. Details include `reviewId` and `decision`. |
+| `access_review.complete` | A review is finalised. Details include `revokedCount`. |
+
+---
+
+## API Reference
+
+All endpoints are mounted under `/api/v1/access-reviews`. Authentication via JWT bearer token or API key is required.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/access-reviews` | List all reviews in scope |
+| `POST` | `/access-reviews` | Create a new review (auto-generates items) |
+| `GET` | `/access-reviews/:id` | Get a review with all items, roles, and permissions |
+| `PATCH` | `/access-reviews/:id/items/:itemId` | Update the decision on a single item |
+| `POST` | `/access-reviews/:id/complete` | Finalise the review and apply revocations |
+
+### Error Responses
+
+All endpoints may return the following common errors:
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Validation error, cannot modify completed review, or pending items remain |
+| `403` | Missing partner/organisation context or insufficient organisation access |
+| `404` | Review or review item not found |
+| `500` | Internal server error (e.g. transaction failure) |
+
+---
+
+## Troubleshooting
+
+### "Partner or organization context required" (403)
+
+The authenticated user's JWT does not contain a `partnerId` or `orgId`. Access reviews require a partner-scoped or organisation-scoped session. System-scoped tokens cannot create or view reviews.
+
+### "Full partner organization access required" (403)
+
+The user is authenticated at the partner level but their `accessibleOrgIds` list does not cover every organisation belonging to the partner. Ensure the user has been granted access to all partner organisations before initiating a review.
+
+### "Cannot complete review with pending items" (400)
+
+At least one review item still has a `pending` decision. Fetch the review detail (`GET /access-reviews/:id`) and look for items where `decision` is `pending`. Update each pending item to either `approved` or `revoked` before retrying completion.
+
+### "Cannot modify completed review" (400)
+
+The review has already been finalised. Completed reviews are immutable. If access needs to be changed after completion, manage user-role assignments directly or create a new access review.
+
+### Review was created with zero items
+
+This occurs when there are no user-role mappings in the current scope (i.e. no rows in `partner_users` or `organization_users`). The review can still be completed immediately since there are no pending items. Verify that users have been added to the partner or organisation before creating the review.

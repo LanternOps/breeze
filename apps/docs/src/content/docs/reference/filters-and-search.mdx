@@ -1,0 +1,583 @@
+---
+title: Filters & Search
+description: Save reusable device filters and search across your fleet with full-text queries and advanced filtering.
+sidebar:
+  order: 7
+  label: Filters & Search
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Overview
+
+Breeze RMM provides two complementary systems for locating and segmenting devices:
+
+- **Saved Filters** -- Persistent, reusable rule sets that match devices based on field conditions. Filters are scoped to an organization and support nested AND/OR logic across dozens of device fields (core attributes, hardware, network, metrics, software, hierarchy, custom fields, and computed values). Saved filters are also used as targeting criteria by the Deployment engine and Dynamic Device Groups.
+- **Global Search** -- A fast, multi-category search endpoint that queries devices, scripts, alerts, and settings pages simultaneously using case-insensitive substring matching.
+
+Both systems enforce multi-tenant access control. Organization-scoped users see only their own resources; partner-scoped users see resources across their accessible organizations.
+
+---
+
+## Saved Filters
+
+Saved filters let you define a set of conditions that dynamically match devices in your fleet. Once created, a filter can be previewed (to see which devices currently match), shared with other users in the same organization, and referenced by deployments and dynamic groups.
+
+### Creating a Saved Filter
+
+<Steps>
+
+1. **Choose a name and optional description.** The name can be up to 200 characters; the description up to 1,000 characters.
+
+2. **Define filter conditions.** Build a condition group using the `AND`/`OR` operator and one or more individual conditions or nested groups. See [Filter Rule Syntax](#filter-rule-syntax) below for the full specification.
+
+3. **POST the filter to the API.**
+
+   ```bash
+   curl -X POST https://breeze.yourdomain.com/api/v1/filters \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Stale Windows Devices",
+       "description": "Windows devices not seen in 7+ days",
+       "conditions": {
+         "operator": "AND",
+         "conditions": [
+           { "field": "osType", "operator": "equals", "value": "windows" },
+           { "field": "daysSinceLastSeen", "operator": "greaterThan", "value": 7 }
+         ]
+       }
+     }'
+   ```
+
+4. **Receive the saved filter response.** The API returns the full saved filter object, including the generated `id`, `createdBy`, and timestamps.
+
+</Steps>
+
+<Aside type="note">
+  Organization-scoped users do not need to supply `orgId` -- it is inferred from authentication context. Partner-scoped and system-scoped users must include `orgId` in the request body.
+</Aside>
+
+### Sharing Filters
+
+Saved filters are scoped to the organization they belong to. Any authenticated user with access to that organization can list, view, and preview the filter. There is no separate sharing or visibility toggle -- all filters within an organization are visible to all users who have access to that organization.
+
+Partner-scoped users can list filters across all of their accessible organizations in a single request. The `GET /filters` endpoint returns filters from every organization the caller can access, sorted by creation date (newest first).
+
+### Filter Rules
+
+Each saved filter stores its conditions as a JSON structure in the `conditions` column. The top-level object must be a **condition group** with an `operator` (`AND` or `OR`) and an array of `conditions`. Each element in the array is either:
+
+- A **single condition** -- an object with `field`, `operator`, and optionally `value`.
+- A **nested condition group** -- another group with its own `operator` and `conditions`, allowing arbitrarily deep nesting.
+
+Example: devices that are Windows **and** either have high CPU **or** are low on disk:
+
+```json
+{
+  "operator": "AND",
+  "conditions": [
+    { "field": "osType", "operator": "equals", "value": "windows" },
+    {
+      "operator": "OR",
+      "conditions": [
+        { "field": "metrics.cpuPercent", "operator": "greaterThan", "value": 90 },
+        { "field": "metrics.diskPercent", "operator": "greaterThan", "value": 95 }
+      ]
+    }
+  ]
+}
+```
+
+### Previewing Filter Results
+
+You can preview which devices currently match a filter -- either an ad-hoc set of conditions or a saved filter.
+
+**Ad-hoc preview** (no saved filter required):
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/filters/preview \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conditions": {
+      "operator": "AND",
+      "conditions": [
+        { "field": "status", "operator": "equals", "value": "offline" }
+      ]
+    },
+    "limit": 5
+  }'
+```
+
+**Saved filter preview**:
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/filters/<filter-id>/preview?limit=10 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Both return the same response shape:
+
+```json
+{
+  "data": {
+    "totalCount": 42,
+    "devices": [
+      {
+        "id": "uuid",
+        "hostname": "ws-01",
+        "displayName": "Workstation 01",
+        "osType": "windows",
+        "status": "offline",
+        "lastSeenAt": "2026-02-10T08:00:00.000Z"
+      }
+    ],
+    "evaluatedAt": "2026-02-18T12:00:00.000Z"
+  }
+}
+```
+
+The `totalCount` reflects the total number of matching devices across all accessible organizations. The `devices` array is capped by the `limit` parameter (maximum 100, default 10).
+
+---
+
+## Search
+
+The global search endpoint (`GET /search`) performs a case-insensitive substring match across multiple resource categories in a single request.
+
+### Full-Text Search
+
+Search queries are matched using SQL `ILIKE` against the following fields:
+
+| Category | Fields searched |
+|---|---|
+| **Devices** | `hostname`, `displayName` |
+| **Scripts** | `name`, `description` |
+| **Alerts** | `title`, `message` |
+| **Settings** | `title`, `description` (static entries) |
+
+Results are returned in a flat array, each item tagged with its `type` (`devices`, `scripts`, `alerts`, or `settings`).
+
+```bash
+curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "results": [
+    {
+      "id": "dev-uuid",
+      "type": "devices",
+      "title": "Workstation 01",
+      "description": "online"
+    },
+    {
+      "id": "script-uuid",
+      "type": "scripts",
+      "title": "Workstation Setup",
+      "description": "Initial workstation provisioning script"
+    },
+    {
+      "id": "settings-users",
+      "type": "settings",
+      "title": "User management",
+      "description": "Manage users and roles",
+      "href": "/settings/users"
+    }
+  ]
+}
+```
+
+<Aside type="tip">
+  The total result limit (controlled by the `limit` query parameter, default 20, max 50) is distributed across categories. Each category receives roughly `limit / 4` results, ensuring a balanced mix when the query matches broadly.
+</Aside>
+
+### Advanced Filtering
+
+For advanced device filtering beyond simple substring search, use the Saved Filters system described above. Saved filters support structured conditions with typed operators, nested logic, and field-specific matching across hardware specs, metrics, software inventory, network details, and more.
+
+The two systems complement each other:
+
+| Capability | Search (`/search`) | Filters (`/filters`) |
+|---|---|---|
+| Multi-category results | Yes (devices, scripts, alerts, settings) | No (devices only) |
+| Substring matching | Yes | Yes (via `contains` operator) |
+| Typed field operators | No | Yes (30+ operators) |
+| Nested AND/OR logic | No | Yes |
+| Hardware/metrics/network fields | No | Yes |
+| Saveable and reusable | No | Yes |
+| Deployment targeting | No | Yes |
+
+### Search Parameters
+
+| Parameter | Type | Required | Default | Constraints |
+|---|---|---|---|---|
+| `q` | `string` | Yes | -- | 1-100 characters, trimmed |
+| `limit` | `number` | No | `20` | 1-50 |
+
+---
+
+## Filter Rule Syntax
+
+### Condition Group
+
+The root of every filter must be a condition group:
+
+```typescript
+{
+  operator: "AND" | "OR",
+  conditions: Array<Condition | ConditionGroup>  // minimum 1 element
+}
+```
+
+Groups can be nested to any depth, allowing expressions like `(A AND B) OR (C AND D)`.
+
+### Single Condition
+
+```typescript
+{
+  field: string,     // field key (see table below)
+  operator: string,  // one of the supported operators for this field type
+  value?: any        // optional for null-check operators (isNull, isNotNull, isEmpty, isNotEmpty)
+}
+```
+
+### Filterable Fields
+
+<Tabs>
+  <TabItem label="Core">
+
+| Field Key | Label | Type | Supported Operators |
+|---|---|---|---|
+| `hostname` | Hostname | `string` | `equals`, `notEquals`, `contains`, `notContains`, `startsWith`, `endsWith`, `matches`, `in`, `notIn`, `isNull`, `isNotNull` |
+| `displayName` | Display Name | `string` | same as `hostname` |
+| `status` | Status | `enum` | `equals`, `notEquals`, `in`, `notIn` |
+| `agentVersion` | Agent Version | `string` | same as `hostname` |
+| `enrolledAt` | Enrolled At | `datetime` | `equals`, `notEquals`, `before`, `after`, `between`, `withinLast`, `notWithinLast`, `isNull`, `isNotNull` |
+| `lastSeenAt` | Last Seen At | `datetime` | same as `enrolledAt` |
+| `tags` | Tags | `array` | `hasAny`, `hasAll`, `isEmpty`, `isNotEmpty`, `contains` |
+
+  </TabItem>
+  <TabItem label="OS">
+
+| Field Key | Label | Type | Enum Values |
+|---|---|---|---|
+| `osType` | OS Type | `enum` | `windows`, `macos`, `linux` |
+| `osVersion` | OS Version | `string` | -- |
+| `osBuild` | OS Build | `string` | -- |
+| `architecture` | Architecture | `enum` | `x64`, `x86`, `arm64` |
+
+  </TabItem>
+  <TabItem label="Hardware">
+
+| Field Key | Label | Type |
+|---|---|---|
+| `hardware.manufacturer` | Manufacturer | `string` |
+| `hardware.model` | Model | `string` |
+| `hardware.serialNumber` | Serial Number | `string` |
+| `hardware.cpuModel` | CPU Model | `string` |
+| `hardware.cpuCores` | CPU Cores | `number` |
+| `hardware.ramTotalMb` | RAM (MB) | `number` |
+| `hardware.diskTotalGb` | Disk Size (GB) | `number` |
+| `hardware.gpuModel` | GPU Model | `string` |
+
+  </TabItem>
+  <TabItem label="Network">
+
+| Field Key | Label | Type |
+|---|---|---|
+| `network.ipAddress` | IP Address | `string` |
+| `network.publicIp` | Public IP | `string` |
+| `network.macAddress` | MAC Address | `string` |
+
+  </TabItem>
+  <TabItem label="Metrics">
+
+| Field Key | Label | Type |
+|---|---|---|
+| `metrics.cpuPercent` | CPU % | `number` |
+| `metrics.ramPercent` | RAM % | `number` |
+| `metrics.diskPercent` | Disk % | `number` |
+
+  </TabItem>
+  <TabItem label="Software">
+
+| Field Key | Label | Description |
+|---|---|---|
+| `software.installed` | Has Software Installed | Check if software name contains value (`contains`, `notContains`) |
+| `software.notInstalled` | Missing Software | Check if software is not installed (`contains`) |
+
+  </TabItem>
+  <TabItem label="Hierarchy">
+
+| Field Key | Label | Operators |
+|---|---|---|
+| `orgId` | Organization | `equals`, `in` |
+| `siteId` | Site | `equals`, `in` |
+| `groupId` | Device Group | `equals`, `in` |
+
+  </TabItem>
+  <TabItem label="Computed">
+
+| Field Key | Label | Type | Description |
+|---|---|---|---|
+| `daysSinceLastSeen` | Days Since Last Seen | `number` | Calculated as `(NOW() - lastSeenAt) / 86400` |
+| `daysSinceEnrolled` | Days Since Enrolled | `number` | Calculated as `(NOW() - enrolledAt) / 86400` |
+
+  </TabItem>
+  <TabItem label="Custom Fields">
+
+Custom fields use the `custom.` prefix followed by the field key. For example, if you defined a custom field with key `department`, filter on it using `custom.department`.
+
+Custom fields default to `string` type operators. The actual field type is resolved at runtime based on the custom field definition.
+
+```json
+{
+  "field": "custom.department",
+  "operator": "equals",
+  "value": "Engineering"
+}
+```
+
+  </TabItem>
+</Tabs>
+
+### Operators Reference
+
+| Operator | Applies To | Value Type | Description |
+|---|---|---|---|
+| `equals` | string, number, boolean, date, enum | scalar | Exact match |
+| `notEquals` | string, number, boolean, date, enum | scalar | Not equal |
+| `greaterThan` | number, date | scalar | Greater than |
+| `greaterThanOrEquals` | number, date | scalar | Greater than or equal |
+| `lessThan` | number, date | scalar | Less than |
+| `lessThanOrEquals` | number, date | scalar | Less than or equal |
+| `contains` | string, array | string | Case-insensitive substring match (SQL `ILIKE`) |
+| `notContains` | string | string | Negated case-insensitive substring match |
+| `startsWith` | string | string | Case-insensitive prefix match |
+| `endsWith` | string | string | Case-insensitive suffix match |
+| `matches` | string | string | PostgreSQL regex match (`~` operator) |
+| `in` | string, enum | string[] | Value is in the provided array |
+| `notIn` | string, enum | string[] | Value is not in the provided array |
+| `hasAny` | array | string[] | Array field overlaps with provided values (`&&`) |
+| `hasAll` | array | string[] | Array field contains all provided values (`@>`) |
+| `isEmpty` | array | -- | Array field is empty |
+| `isNotEmpty` | array | -- | Array field is not empty |
+| `isNull` | any | -- | Field is NULL |
+| `isNotNull` | any | -- | Field is not NULL |
+| `before` | date, datetime | date string | Date is before value |
+| `after` | date, datetime | date string | Date is after value |
+| `between` | number, date, datetime | `{ from, to }` | Value is between `from` and `to` (inclusive) |
+| `withinLast` | date, datetime | `{ amount, unit }` | Date is within the last N units. Units: `minutes`, `hours`, `days`, `weeks`, `months` |
+| `notWithinLast` | date, datetime | `{ amount, unit }` | Date is **not** within the last N units |
+
+### Value Types
+
+Depending on the operator, the `value` field accepts different shapes:
+
+```json
+// Scalar string
+{ "field": "hostname", "operator": "contains", "value": "srv" }
+
+// Scalar number
+{ "field": "hardware.cpuCores", "operator": "greaterThan", "value": 4 }
+
+// Boolean
+{ "field": "someBoolField", "operator": "equals", "value": true }
+
+// Array of strings (for in/notIn/hasAny/hasAll)
+{ "field": "status", "operator": "in", "value": ["online", "maintenance"] }
+
+// Date range (for between)
+{ "field": "enrolledAt", "operator": "between", "value": { "from": "2026-01-01", "to": "2026-02-01" } }
+
+// Relative time (for withinLast/notWithinLast)
+{ "field": "lastSeenAt", "operator": "withinLast", "value": { "amount": 7, "unit": "days" } }
+
+// No value (for isNull/isNotNull/isEmpty/isNotEmpty)
+{ "field": "displayName", "operator": "isNull" }
+```
+
+---
+
+## API Reference
+
+All endpoints require authentication via JWT bearer token or API key. Routes are mounted under `/api/v1`.
+
+### Filters
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/filters` | List saved filters for accessible organizations |
+| `POST` | `/filters` | Create a new saved filter |
+| `GET` | `/filters/:id` | Get a single saved filter by ID |
+| `PATCH` | `/filters/:id` | Update a saved filter (name, description, conditions) |
+| `DELETE` | `/filters/:id` | Delete a saved filter |
+| `POST` | `/filters/preview` | Preview matching devices for ad-hoc conditions |
+| `POST` | `/filters/:id/preview` | Preview matching devices for a saved filter |
+
+#### `GET /filters`
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `search` | `string` (optional) | Filter the list by name or description substring match (case-insensitive, applied in-memory) |
+
+**Response:**
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "orgId": "uuid",
+      "name": "My Filter",
+      "description": "Optional description",
+      "conditions": { "operator": "AND", "conditions": [...] },
+      "createdBy": "user-uuid",
+      "createdAt": "2026-02-18T12:00:00.000Z",
+      "updatedAt": "2026-02-18T12:00:00.000Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+#### `POST /filters`
+
+**Request body:**
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `name` | `string` | Yes | 1-200 characters |
+| `description` | `string` | No | Up to 1,000 characters |
+| `conditions` | `ConditionGroup` | Yes | Must contain at least one condition |
+| `orgId` | `string` (UUID) | Conditional | Required for partner and system scope; ignored for organization scope |
+
+**Response:** `201 Created` with the saved filter object.
+
+#### `PATCH /filters/:id`
+
+**Request body** (all fields optional):
+
+| Field | Type | Constraints |
+|---|---|---|
+| `name` | `string` | 1-200 characters |
+| `description` | `string \| null` | Up to 1,000 characters, or `null` to clear |
+| `conditions` | `ConditionGroup` | Must contain at least one condition |
+
+**Response:** `200 OK` with the updated saved filter object.
+
+#### `DELETE /filters/:id`
+
+**Response:** `200 OK` with the deleted saved filter object.
+
+#### `POST /filters/preview`
+
+**Request body:**
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `conditions` | `ConditionGroup` | Yes | Must contain at least one condition |
+| `limit` | `number` | No | 1-100 (default 10) |
+
+**Response:** `200 OK` with preview result (see [Previewing Filter Results](#previewing-filter-results)).
+
+#### `POST /filters/:id/preview`
+
+**Query parameters:**
+
+| Parameter | Type | Constraints |
+|---|---|---|
+| `limit` | `number` (optional) | 1-100 |
+
+**Response:** `200 OK` with preview result.
+
+### Search
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/search` | Search across devices, scripts, alerts, and settings |
+
+#### `GET /search`
+
+**Query parameters:**
+
+| Parameter | Type | Required | Constraints |
+|---|---|---|---|
+| `q` | `string` | Yes | 1-100 characters (trimmed) |
+| `limit` | `number` | No | 1-50 (default 20) |
+
+**Response:**
+
+```json
+{
+  "results": [
+    {
+      "id": "string",
+      "type": "devices | scripts | alerts | settings",
+      "title": "string",
+      "description": "string (optional)",
+      "href": "string (settings only)"
+    }
+  ]
+}
+```
+
+### Authorization Scopes
+
+Both the filter and search endpoints require authentication. Filter endpoints additionally enforce scope-based access:
+
+| Scope | Behavior |
+|---|---|
+| `organization` | Sees filters and devices within their own organization only. `orgId` is inferred from auth context. |
+| `partner` | Sees filters and devices across all organizations they manage. Must provide `orgId` when creating filters. |
+| `system` | Full access to all filters and devices across the platform. Must provide `orgId` when creating filters. |
+
+### Audit Events
+
+All mutating filter operations generate audit log entries with the following action names:
+
+| Action | Trigger |
+|---|---|
+| `filter.create` | A new saved filter is created |
+| `filter.update` | A saved filter is updated (logged fields: changed field names) |
+| `filter.delete` | A saved filter is deleted |
+| `filter.preview` | An ad-hoc filter preview is executed |
+| `filter.saved.preview` | A saved filter preview is executed |
+
+---
+
+## Troubleshooting
+
+### Filter returns zero results unexpectedly
+
+- **Check the field key.** Field keys are case-sensitive. Use `osType`, not `ostype` or `OsType`. Refer to the [Filterable Fields](#filterable-fields) tables for exact keys.
+- **Check the operator.** Each field type only supports specific operators. For example, `enum` fields (like `status`) do not support `contains` -- use `equals` or `in` instead.
+- **Check the value type.** The `in` and `notIn` operators require an array value, not a single string. The `between` operator requires an object with `from` and `to` keys.
+- **Preview first.** Use `POST /filters/preview` with your conditions before saving. This lets you iterate on the rule set without creating saved filters.
+
+### "Unknown field" error
+
+The filter engine validates field keys against its known field definitions. If you receive this error:
+
+- Verify the field key matches one of the entries in the [Filterable Fields](#filterable-fields) tables.
+- For hardware, network, metrics, and software fields, ensure you include the prefix (e.g., `hardware.cpuCores`, not just `cpuCores`).
+- For custom fields, use the `custom.` prefix followed by the field key (e.g., `custom.department`).
+
+### Search returns no results for a known device
+
+- The search endpoint only matches against `hostname` and `displayName` for devices. It does not search by IP address, serial number, OS version, or other fields. For those, use the filter system.
+- The query string must be at least 1 character and at most 100 characters. Leading and trailing whitespace is trimmed automatically.
+- Search is case-insensitive, so casing is not the issue.
+
+### Partner user cannot create a filter
+
+Partner-scoped users must include `orgId` in the request body when creating a filter. The API will return `400 Bad Request` with `"orgId is required for partner scope"` if it is missing. The specified `orgId` must be an organization the partner has access to.
+
+### Preview limit behavior
+
+The ad-hoc preview endpoint (`POST /filters/preview`) evaluates the filter across all organizations the caller has access to. Results are aggregated and then trimmed to the requested `limit`. The `totalCount` in the response reflects the total across all organizations before trimming. The maximum preview limit is 100 devices.

@@ -1,0 +1,213 @@
+---
+title: Agent Diagnostics & Service Commands
+description: Query structured internal logs shipped by the agent, and manage the Breeze agent as a Windows system service.
+sidebar:
+  order: 4
+  label: Agent Diagnostics
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Two features help you manage and diagnose the Breeze agent itself:
+
+- **Agent Diagnostic Logs** — structured internal logs emitted by the agent process and shipped to the server on a schedule
+- **Agent Service Commands** — CLI commands for registering and managing the Breeze agent as a Windows system service
+
+---
+
+## Agent Diagnostic Logs
+
+Agent Diagnostic Logs are structured internal logs emitted by the Breeze agent process and shipped to the Breeze server on a regular schedule. They give you visibility into what the agent is doing, warn you about issues before they become failures, and let you diagnose connectivity or update problems without needing shell access to the device.
+
+<Aside>
+  These are agent-internal operational logs. They are **not** OS event logs, Windows Event Viewer entries, or syslog output — those are available separately under the **Event Log** tab on the device detail page.
+</Aside>
+
+### What is logged
+
+The agent emits structured log entries with the following fields:
+
+| Field | Description |
+|---|---|
+| **timestamp** | When the event occurred (UTC) |
+| **level** | Severity: `debug`, `info`, `warn`, `error` |
+| **component** | Which part of the agent produced the log: `heartbeat`, `websocket`, `main`, `updater` |
+| **message** | Human-readable description of the event |
+| **fields** | Additional structured context as a JSON object (e.g., error details, counts, durations) |
+| **agent_version** | The agent version that produced the entry |
+
+**Log levels:**
+
+| Level | When to expect it |
+|---|---|
+| `debug` | Verbose trace information, only emitted in debug mode |
+| `info` | Normal operation milestones (heartbeat sent, WS connected, update completed) |
+| `warn` | Recoverable issues the agent handled (reconnection, config reload, missed window) |
+| `error` | Failures requiring attention (WS dropped, update failed, command execution error) |
+
+**Components:**
+
+The primary components are:
+
+| Component | What it covers |
+|---|---|
+| `heartbeat` | Periodic check-in messages, metric collection timing |
+| `websocket` | WebSocket connection lifecycle, reconnection events |
+| `main` | Agent startup, shutdown, configuration loading |
+| `updater` | Agent self-update process, version checks, download status |
+
+Additional components log events from subsystems such as `terminal`, `executor`, `patching`, `filetransfer`, `mgmtdetect`, `mtls`, `config`, `health`, and others. Use the `component` query parameter to filter for any specific subsystem.
+
+The agent buffers logs internally and ships them in gzip-compressed batches every 60 seconds (or when the buffer reaches 500 entries) via `POST /agents/:id/logs`.
+
+<Aside type="note">
+  The Go agent normalizes log levels to lowercase (e.g., `"info"`, `"warn"`) before shipping via the `strings.ToLower` call in the log handler. The API ingestion endpoint expects lowercase values.
+</Aside>
+
+<Aside type="note">
+  A dedicated Diagnostic Logs UI is not yet available in the web app. Logs are accessible via the API.
+</Aside>
+
+### Filtering and searching
+
+The `GET /devices/:id/diagnostic-logs` endpoint supports several filters you can combine:
+
+| Parameter | Description |
+|---|---|
+| `level` | Comma-separated levels to include (e.g. `warn,error`) |
+| `component` | Filter to a single component (e.g. `heartbeat`) |
+| `since` / `until` | ISO 8601 timestamps to restrict to a time range |
+| `search` | Full-text keyword match across the message field |
+| `page` / `limit` | Pagination (max 1,000 per page) |
+
+All filters are additive — a log entry must match all active filters to appear.
+
+### Log retention
+
+Diagnostic logs are retained for **7 days** by default. A cleanup job runs every 24 hours (starting from server startup) and removes entries older than the retention window.
+
+To change the retention period, set the `AGENT_LOG_RETENTION_DAYS` environment variable on the API server:
+
+```bash
+AGENT_LOG_RETENTION_DAYS=30
+```
+
+### API reference
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/devices/:id/diagnostic-logs` | Query shipped agent logs for a device |
+| POST | `/agents/:id/logs` | (Agent only) Submit a gzip-compressed log batch |
+
+**Query parameters for `GET /devices/:id/diagnostic-logs`:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `level` | string | Comma-separated levels: `debug`, `info`, `warn`, `error` |
+| `component` | string | Filter to a single component: `heartbeat`, `websocket`, `main`, `updater` |
+| `since` | ISO 8601 | Include only logs at or after this datetime |
+| `until` | ISO 8601 | Include only logs at or before this datetime |
+| `search` | string | Full-text search on the message field (case-insensitive) |
+| `page` | number | Page number (1-based) |
+| `limit` | number | Results per page (max 1,000) |
+
+**Example — get the last 100 error logs from the websocket component:**
+
+```bash
+GET /api/v1/devices/DEVICE_ID/diagnostic-logs?level=error&component=websocket&limit=100
+```
+
+---
+
+## Agent Service Commands
+
+The Breeze agent binary includes a `service` subcommand for managing itself as a Windows system service. These commands are run directly on the endpoint, not via the Breeze API.
+
+<Aside>
+  **Windows only.** The `service` subcommand is not available on macOS or Linux. On those platforms, manage the agent process using your system's normal service manager (launchd on macOS, systemd on Linux).
+</Aside>
+
+All `service` commands require the terminal to be running as **Administrator** because they interact with the Windows Service Control Manager (SCM).
+
+### Commands
+
+<Tabs>
+  <TabItem label="Install">
+    ```cmd
+    breeze-agent.exe service install
+    ```
+
+    Registers the agent as a Windows service named `BreezeAgent` with the display name "Breeze RMM Agent". The service is configured to:
+
+    - Start automatically when Windows boots
+    - Restart automatically on failure (after 5 s on the first failure, 10 s on the second, 30 s on the third)
+    - Reset the failure count after 24 hours of stable operation
+  </TabItem>
+  <TabItem label="Uninstall">
+    ```cmd
+    breeze-agent.exe service uninstall
+    ```
+
+    Stops the service if it is running (waits up to 15 seconds), then removes it from the SCM. The agent binary itself is not deleted.
+  </TabItem>
+  <TabItem label="Start">
+    ```cmd
+    breeze-agent.exe service start
+    ```
+
+    Starts the `BreezeAgent` service via the SCM. Equivalent to `sc start BreezeAgent` or `Start-Service BreezeAgent`.
+  </TabItem>
+  <TabItem label="Stop">
+    ```cmd
+    breeze-agent.exe service stop
+    ```
+
+    Sends a stop signal to the `BreezeAgent` service via the SCM. Equivalent to `sc stop BreezeAgent` or `Stop-Service BreezeAgent`.
+  </TabItem>
+</Tabs>
+
+### Typical workflows
+
+**Install and start:**
+
+```cmd
+# Run as Administrator
+breeze-agent.exe service install
+breeze-agent.exe service start
+```
+
+**Stop and uninstall:**
+
+```cmd
+# Run as Administrator
+breeze-agent.exe service stop
+breeze-agent.exe service uninstall
+```
+
+---
+
+## Troubleshooting
+
+**No diagnostic logs appearing**
+
+The agent must be running a version that supports log shipping. Check the agent version shown on the device detail page. If the agent is outdated, update it via **Devices → Select Device → Update Agent**.
+
+**Log level missing (e.g., no `info` or `debug` logs)**
+
+The agent's `log_shipping_level` controls what gets shipped. The default level is `warn`, so `info` and `debug` logs are not shipped unless the level is explicitly lowered. Use the `set_log_level` WebSocket command to temporarily lower the level — the change auto-reverts to `warn` after 60 minutes by default.
+
+**Logs stop appearing after a certain date**
+
+Confirm the agent is still online and check `AGENT_LOG_RETENTION_DAYS`. If the retention window was recently shortened, older logs may have already been removed by the daily cleanup job.
+
+**`service install` fails with "Access is denied"**
+
+The command must be run from an **Administrator** command prompt or PowerShell session. Right-click the terminal and choose "Run as administrator", then re-run the command.
+
+**`service install` fails with "service already exists"**
+
+The `BreezeAgent` service is already registered. Run `breeze-agent.exe service uninstall` first if you need to re-install, or use `breeze-agent.exe service start` if the service is simply stopped.
+
+**`service start` fails after install**
+
+Ensure the agent binary path has not moved since installation. The SCM stores the absolute path at install time. If the binary was relocated, uninstall and reinstall the service.

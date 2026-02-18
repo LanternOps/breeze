@@ -1,0 +1,475 @@
+---
+title: Security Architecture
+description: Authentication, authorization, encryption, and defense-in-depth controls that protect the Breeze platform and every device it manages.
+sidebar:
+  order: 0
+  label: Architecture Overview
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze is an RMM platform — it has privileged access to every device it manages. Security is not a feature bolted on after the fact; it is foundational to every layer of the architecture. This document describes the security controls, practices, and design decisions in Breeze. It is intended for MSPs evaluating Breeze, security teams conducting assessments, and contributors building on the platform.
+
+---
+
+## Defense-in-Depth
+
+Every request passes through multiple security layers before reaching application logic. No single layer is relied upon in isolation.
+
+| Layer | Control |
+|-------|---------|
+| Transport | TLS 1.2+ with HSTS preload |
+| Origin | CORS strict allowlist (no wildcards in production) |
+| Content | Content Security Policy (CSP) |
+| CSRF | Header-based validation on state-changing requests |
+| Rate Limiting | Redis sliding window (fail-closed) |
+| Authentication | JWT + MFA + session tokens |
+| Authorization | RBAC with permission middleware |
+| Tenant Isolation | PostgreSQL row-level scoping |
+| Audit | Structured event logging on all security-relevant actions |
+| Encryption at Rest | AES-256-GCM for secrets, Argon2id for passwords |
+
+---
+
+## Authentication
+
+### User Authentication
+
+Breeze implements multi-factor authentication with defense-in-depth:
+
+| Control | Implementation |
+|---------|----------------|
+| **Password hashing** | Argon2id — 64 MB memory, 3 iterations, 4 threads |
+| **Password policy** | 8–128 chars, mixed case, numeric required |
+| **Access tokens** | JWT (HS256), 15-minute lifetime, audience/issuer-scoped |
+| **Refresh tokens** | JWT, 7-day lifetime, unique JTI, revocable |
+| **Session tokens** | Cryptographically random (nanoid 48), SHA-256 hashed in DB |
+| **MFA** | TOTP (RFC 6238), 10 recovery codes (XXXX-XXXX format) |
+| **SMS MFA** | Optional Twilio integration for SMS-based codes |
+| **Token revocation** | Explicit session invalidation, bulk logout per user |
+
+Plaintext tokens are never stored. All token storage uses SHA-256 hashes.
+
+### API Key Authentication
+
+API keys follow the same security model as agent tokens:
+
+- **Format**: `brz_` prefix for identification
+- **Storage**: SHA-256 hash only — the plaintext key is shown once at creation, never again
+- **Scoping**: JSONB scope array with wildcard support (`*` for full access)
+- **Lifecycle**: Configurable expiration, revocable, status tracking (active/revoked/expired)
+- **Rate limiting**: Per-key configurable request limits
+- **Audit trail**: `lastUsedAt` timestamp and `usageCount` updated on every use
+
+### Agent Authentication
+
+Agents authenticate using `brz_`-prefixed tokens issued during enrollment. The token is SHA-256 hashed and stored in `devices.agentTokenHash` — the plaintext is never persisted server-side. Every REST request and WebSocket connection validates the bearer token against the stored hash. Decommissioned and quarantined devices are rejected with 403.
+
+For organizations requiring proof-of-possession at the TLS layer, optional [Cloudflare mTLS](/security/mtls/) adds certificate-based mutual authentication.
+
+---
+
+## Authorization and Multi-Tenancy
+
+### Tenant Hierarchy
+
+```
+Partner (MSP) → Organization (Customer) → Site (Location) → Device Group → Device
+```
+
+Every entity is scoped to this hierarchy. A user at one organization can never access another organization's data — this is enforced at the database layer, not just the application layer.
+
+### Database-Level Tenant Isolation
+
+Breeze sets PostgreSQL session variables on every request:
+
+```
+breeze.scope             = 'system' | 'partner' | 'organization'
+breeze.org_id            = UUID of current organization
+breeze.accessible_org_ids = comma-separated list or '*'
+```
+
+These variables are set via `set_config()` within the request transaction context using Node.js `AsyncLocalStorage`. Queries that don't have proper context set will fail — there is no default permissive state.
+
+### Role-Based Access Control
+
+| Component | Description |
+|-----------|-------------|
+| **Roles** | Named definitions scoped to system, partner, or organization level |
+| **Permissions** | Atomic `resource:action` pairs (e.g., `devices:read`, `scripts:execute`) |
+| **Wildcards** | `*:*` grants all permissions (system admin only) |
+| **Middleware** | `requirePermission(resource, action)` enforced on every protected route |
+| **Caching** | 5-minute in-memory permission cache to reduce DB lookups |
+
+### Scope Enforcement
+
+Three scope levels control data visibility:
+
+- **System**: Full access to all organizations (super-admin only)
+- **Partner**: MSP access to their portfolio, configurable per-org (`all`, `selected`, `none`)
+- **Organization**: Single-tenant access, no cross-org visibility
+
+Scope is computed once per request via `resolveOrgAccess()` and applied to all downstream queries.
+
+---
+
+## Agent Security
+
+The agent runs on customer endpoints with elevated privileges. Its security is paramount.
+
+### Token and Config Security
+
+| Control | Detail |
+|---------|--------|
+| **Token format** | `brz_` prefix tokens generated during enrollment |
+| **Token storage** | SHA-256 hash in `devices.agentTokenHash` — plaintext never persisted |
+| **Request validation** | Every REST and WebSocket request validates bearer token against stored hash |
+| **Config directory** | `0700` (rwx------) — no access for other users or groups |
+| **Config file** | `0600` (rw-------) — read/write only by the agent process |
+| **Message validation** | All incoming WebSocket messages validated against Zod discriminated union schema |
+
+### Mutual TLS (Optional)
+
+For zero-trust authentication where both server and agent verify each other's identity, Breeze integrates with Cloudflare Client Certificates API. Certificates are issued during enrollment, renewed automatically at 2/3 lifetime, and expired certificates trigger device quarantine pending admin review.
+
+See [Cloudflare mTLS](/security/mtls/) for the full setup guide.
+
+### Command Execution Auditing
+
+Mutating commands sent to agents are logged to the audit trail:
+
+- Registry modifications (`REGISTRY_DELETE`, `REGISTRY_KEY_DELETE`)
+- File operations (`FILE_DELETE`)
+- Patch operations (`PATCH_SCAN`, `INSTALL_PATCHES`, `ROLLBACK_PATCHES`)
+
+Each audit entry captures: command type, target device, exit code, stderr output, and the actor who initiated the command.
+
+---
+
+## Encryption
+
+### In Transit
+
+| Control | Implementation |
+|---------|----------------|
+| **TLS termination** | Caddy reverse proxy with automatic Let's Encrypt certificates |
+| **HSTS** | `max-age=31536000; includeSubDomains; preload` |
+| **HTTP redirect** | Optional `FORCE_HTTPS` environment variable |
+| **WebSocket** | WSS (encrypted WebSocket) for all agent communication |
+| **Internal traffic** | API listens on localhost only — no unencrypted external exposure |
+
+### At Rest
+
+| Data | Algorithm | Details |
+|------|-----------|---------|
+| **Passwords** | Argon2id | 64 MB memory, 3 iterations, 4 threads, 32-byte hash |
+| **Auth tokens** | SHA-256 | One-way hash — tokens, API keys, session tokens, enrollment keys |
+| **Secrets** | AES-256-GCM | Authenticated encryption with per-operation random IV |
+| **MFA secrets** | AES-256-GCM | Encrypted before storage, decrypted only during verification |
+
+Secrets encrypted at rest use the format: `enc:v1:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}` — 12-byte random IV generated per encryption (never reused), GCM authentication tag prevents tampering, and `isEncryptedSecret()` prevents double-encryption.
+
+---
+
+## Rate Limiting and Abuse Prevention
+
+Breeze uses Redis-backed sliding window rate limiting. The implementation is **fail-closed** — if Redis is unavailable, requests are denied.
+
+| Endpoint | Limit | Window | Key |
+|----------|-------|--------|-----|
+| Login attempts | 5 | 5 minutes | Per email |
+| Password reset | 3 | 1 hour | Per email |
+| MFA verification | 5 | 5 minutes | Per user |
+| SMS verification | 3 | 1 hour | Per phone |
+| SMS login | 3 | 5 minutes | Per email |
+| Agent requests | 120 | 60 seconds | Per device |
+| API key requests | Configurable | 1 hour | Per key |
+
+The implementation uses Redis sorted set (ZSET) sliding windows with `MULTI` pipelines for race-condition-free counting. Standard `X-RateLimit-*` headers and `429 Too Many Requests` with `Retry-After` are returned when limits are exceeded.
+
+---
+
+## Input Validation
+
+All external input is validated using Zod schemas before processing:
+
+| Input Type | Validation |
+|------------|------------|
+| **Email** | `z.string().email()` |
+| **UUIDs** | `z.string().uuid()` |
+| **Phone numbers** | E.164 regex (`^\+[1-9]\d{6,14}$`) |
+| **MFA codes** | Exact 6-character length |
+| **Passwords** | 8–128 chars with complexity requirements |
+| **Pagination** | `min: 1, max: 100` limit enforcement |
+| **Agent messages** | Zod discriminated union for WebSocket payloads |
+| **API request bodies** | `@hono/zod-validator` middleware on every route |
+
+Validation errors return structured error objects with field paths. Sensitive values are never echoed in error responses.
+
+---
+
+## HTTP Security Headers
+
+Every response includes the following security headers:
+
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+X-Content-Type-Options:    nosniff
+X-Frame-Options:           DENY
+Referrer-Policy:           strict-origin-when-cross-origin
+Permissions-Policy:        camera=(), microphone=(), geolocation=()
+Content-Security-Policy:
+    default-src 'self';
+    script-src 'self' 'unsafe-inline';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' data: blob:;
+    font-src 'self';
+    connect-src 'self' ws: wss:;
+    frame-ancestors 'none';
+    base-uri 'self';
+    form-action 'self'
+```
+
+### CORS
+
+- **Production**: Only explicitly configured origins allowed via `CORS_ALLOWED_ORIGINS`
+- **No wildcards**: Wildcard (`*`) origin is explicitly rejected in production
+- **Development**: localhost origins only, excluded from production builds unless opted in
+
+### CSRF Protection
+
+State-changing operations (POST, PUT, DELETE) on sensitive endpoints require a `x-breeze-csrf` header. Requests without the header return `403`.
+
+---
+
+## Audit Logging
+
+Every security-relevant operation is recorded in the `audit_logs` table:
+
+| Field | Description |
+|-------|-------------|
+| `actorType` | `user`, `api_key`, `agent`, or `system` |
+| `actorId` | UUID of the actor |
+| `action` | Specific operation (e.g., `device.command.execute`) |
+| `resourceType` | Target entity type |
+| `resourceId` | Target entity UUID |
+| `result` | `success`, `failure`, or `denied` |
+| `ipAddress` | Source IP (IPv4/IPv6) |
+| `userAgent` | Client identifier |
+| `details` | JSONB metadata (command type, exit codes, etc.) |
+| `errorMessage` | Failure reason (if applicable) |
+
+### Retention
+
+- **Default**: 365 days per organization
+- **Configurable**: Per-org retention policies via `audit_retention_policies`
+- **Archival**: Optional S3 archival before deletion
+
+### Logging Modes
+
+- **Synchronous**: `createAuditLog()` — blocks until written (critical operations)
+- **Asynchronous**: `createAuditLogAsync()` — fire-and-forget (non-critical operations)
+
+---
+
+## AI Risk Classification
+
+The AI system has access to powerful tools. Every AI-initiated action passes through a risk classification engine **enforced by the RMM, not the AI**.
+
+| Risk Level | Behavior | Examples |
+|------------|----------|----------|
+| **Low** | Auto-execute, logged | Query devices, read logs, generate reports |
+| **Medium** | Execute + notify technician | Read-only scripts, pre-approved patch deployments |
+| **High** | Requires human approval | State-changing scripts, patches outside maintenance windows |
+| **Critical** | Blocked entirely | Device wipe, bulk destructive operations |
+
+- Risk policies are configurable per partner, organization, site, or device group
+- The AI cannot bypass the risk engine — it is enforced at the tool execution layer
+- BYOK mode: your API key, your data, your infrastructure — nothing sent to LanternOps unless you opt in
+
+---
+
+## Infrastructure Security
+
+### Docker Hardening
+
+| Control | Implementation |
+|---------|----------------|
+| **Base image** | `node:20-alpine` (minimal attack surface) |
+| **Multi-stage build** | `deps → builder → runner` (no build tools in production) |
+| **Non-root execution** | Dedicated `hono` user (UID 1001), `nodejs` group (GID 1001) |
+| **File ownership** | `--chown=hono:nodejs` on all copied assets |
+| **Minimal exposure** | Single port (3001) exposed |
+
+### TLS Termination
+
+Caddy reverse proxy handles TLS termination with automatic Let's Encrypt certificate provisioning (ACME), HSTS with preload, zstd and gzip compression, and separate routing for `/api/*`, `/metrics/*`, and frontend assets.
+
+### Environment Isolation
+
+- API server listens on localhost — never directly exposed
+- Database and Redis accessible only within the Docker network
+- Metrics endpoint (`/metrics/*`) separated from public routes
+
+---
+
+## Supply Chain Security
+
+### Automated Scanning
+
+| Scanner | What It Checks | Trigger |
+|---------|----------------|---------|
+| **CodeQL** | Static analysis (SAST) for JS/TS vulnerabilities | Every push and PR to main |
+| **Gitleaks** | Hardcoded secrets in source code | Every push and PR to main |
+| **npm audit** | Node.js dependency vulnerabilities (high+) | Every push and PR to main + weekly |
+| **govulncheck** | Go dependency vulnerabilities | Every push and PR to main + weekly |
+| **Trivy** | Filesystem CVE scan (high + critical) | Every push and PR to main + weekly |
+
+All scanners run in CI and **block merges** on failure.
+
+### Dependency Management
+
+- **Lock file**: `pnpm-lock.yaml` committed for reproducible builds
+- **Package manager**: pnpm with strict dependency resolution
+- **Version pinning**: All dependencies pinned to exact versions via lock file
+
+---
+
+## Secret Management
+
+### Required Secrets
+
+| Secret | Purpose | Minimum Strength |
+|--------|---------|------------------|
+| `JWT_SECRET` | Token signing | 32+ characters |
+| `APP_ENCRYPTION_KEY` | AES-256-GCM encryption | 32-byte hex |
+| `MFA_ENCRYPTION_KEY` | MFA secret encryption | 32-byte hex |
+| `AGENT_ENROLLMENT_SECRET` | Agent enrollment | 32-byte hex |
+
+### Production Enforcement
+
+Breeze validates environment configuration on startup:
+
+- Rejects 24 known placeholder/default values
+- Requires explicit `CORS_ALLOWED_ORIGINS` (no wildcards)
+- Enforces minimum secret strength
+- Logs warnings for non-critical misconfigurations
+
+### Secrets Never Stored in Plaintext
+
+| Secret | Protection |
+|--------|------------|
+| User passwords | Argon2id |
+| Session tokens | SHA-256 |
+| API keys | SHA-256 |
+| Agent auth tokens | SHA-256 |
+| Enrollment keys | SHA-256 with pepper |
+| MFA secrets | AES-256-GCM |
+
+For rotation procedures and schedules, see [Secret Rotation](/security/secrets/).
+
+---
+
+## Operational Security
+
+### Backup and Recovery
+
+- **RTO**: < 1 hour
+- **RPO**: < 15 minutes (with WAL archiving) or last backup interval
+- **Components**: PostgreSQL, object storage (MinIO/S3), encrypted configuration
+
+For full procedures, see [Backup and Restore](/security/backup/).
+
+### Error Handling
+
+- Generic error messages returned to clients — internal details never exposed
+- No stack traces in production responses
+- Structured JSON logging (`LOG_JSON=true`) for log aggregation
+- Optional Sentry integration for error tracking (`SENTRY_DSN`)
+- Sensitive data (tokens, passwords) never logged
+
+---
+
+## SOC 2 Alignment
+
+Breeze's security controls align with SOC 2 Trust Service Criteria.
+
+### CC6 — Logical and Physical Access Controls
+
+| Criteria | Implementation |
+|----------|----------------|
+| CC6.1 — Logical access security | JWT + MFA + RBAC + API key scoping |
+| CC6.2 — Credentials management | Argon2id passwords, SHA-256 token hashing, AES-256-GCM secrets |
+| CC6.3 — Access authorization | Role-based permissions, scope enforcement, `requirePermission()` middleware |
+| CC6.6 — External access restrictions | CORS allowlist, CSP, rate limiting, CSRF protection |
+| CC6.7 — Data transmission security | TLS 1.2+, HSTS preload, WSS for agent communication |
+| CC6.8 — Unauthorized access prevention | Fail-closed rate limiting, device quarantine, session invalidation |
+
+### CC7 — System Operations
+
+| Criteria | Implementation |
+|----------|----------------|
+| CC7.1 — Infrastructure monitoring | Agent health checks, heartbeat monitoring, configurable alerting |
+| CC7.2 — Anomaly detection | Rate limit violation tracking, audit log analysis |
+| CC7.3 — Vulnerability management | CodeQL SAST, Trivy CVE scanning, npm audit, govulncheck |
+| CC7.4 — Incident response | Disaster recovery runbook, security incident procedures |
+
+### CC8 — Change Management
+
+| Criteria | Implementation |
+|----------|----------------|
+| CC8.1 — Change authorization | PR-based workflow, CI gate enforcement, code review requirements |
+
+### CC9 — Risk Mitigation
+
+| Criteria | Implementation |
+|----------|----------------|
+| CC9.1 — Risk identification | Automated security scanning (5 scanners), AI risk classification engine |
+| CC9.2 — Vendor risk management | Dependency lock files, supply chain scanning, known vulnerability databases |
+
+### A1 — Availability
+
+| Criteria | Implementation |
+|----------|----------------|
+| A1.1 — Processing capacity | Redis-backed rate limiting, BullMQ queue management |
+| A1.2 — Recovery objectives | RTO < 1 hour, RPO < 15 minutes |
+| A1.3 — Recovery testing | Documented procedures for 5 failure scenarios |
+
+### C1 — Confidentiality
+
+| Criteria | Implementation |
+|----------|----------------|
+| C1.1 — Confidential data identification | Multi-tenant isolation, encryption key hierarchy |
+| C1.2 — Confidential data disposal | Audit log retention policies, S3 archival, configurable retention |
+
+---
+
+## Vulnerability Disclosure
+
+We follow coordinated disclosure:
+
+- **Response timelines**: 48-hour acknowledgment, severity-based fix targets
+- **Email**: [security@lanternops.io](mailto:security@lanternops.io)
+
+---
+
+## Security Controls Summary
+
+| Domain | Controls | Status |
+|--------|----------|--------|
+| Authentication | JWT + MFA + Sessions + API Keys | Implemented |
+| Authorization | RBAC + Scope-based multi-tenancy | Implemented |
+| Encryption (at rest) | AES-256-GCM, Argon2id, SHA-256 | Implemented |
+| Encryption (in transit) | TLS 1.2+ / HSTS / WSS | Implemented |
+| Rate limiting | Redis sliding window (fail-closed) | Implemented |
+| Audit logging | Structured, org-scoped, async-capable | Implemented |
+| Input validation | Zod schemas on all external input | Implemented |
+| Security headers | CSP, HSTS, X-Frame-Options, Permissions-Policy | Implemented |
+| CORS | Strict allowlist, no production wildcards | Implemented |
+| CSRF protection | Header-based validation on state changes | Implemented |
+| Agent security | Token hashing + optional mTLS + file permissions | Implemented |
+| AI safety | Risk classification engine with human approval gates | Implemented |
+| Supply chain | 5 automated scanners blocking on failure | Implemented |
+| Docker hardening | Multi-stage, non-root, Alpine base | Implemented |
+| Secret management | Rotation procedures, production validation, no plaintext | Implemented |
+| Disaster recovery | Documented runbooks, defined RTO/RPO | Implemented |

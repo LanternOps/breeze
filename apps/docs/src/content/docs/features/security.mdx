@@ -1,0 +1,483 @@
+---
+title: Security
+description: Monitor endpoint security posture, detect threats, enforce compliance, and get AI-powered security recommendations.
+sidebar:
+  order: 11
+  label: Security
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Security module provides continuous visibility into the security posture of every managed device. The Breeze agent collects antivirus status, firewall state, disk encryption details, local administrator accounts, and password policy configuration from each endpoint. That data flows into the API where it is scored, trended, and surfaced through a unified dashboard. When the agent detects threats during a scan, those threats can be quarantined or removed directly from the console. A built-in recommendations engine analyzes posture data across the fleet and produces prioritized, actionable guidance to reduce risk.
+
+---
+
+## Security Status
+
+The agent reports a `SecurityStatus` payload on each heartbeat. The payload includes the detected AV provider, real-time protection state, definition freshness, firewall status, disk encryption status, local admin accounts, and password policy configuration.
+
+### Collected Fields
+
+| Field | Description |
+|-------|-------------|
+| **`provider`** | Normalized security provider identifier (e.g. `windows_defender`, `bitdefender`) |
+| **`providerVersion`** | Version string of the installed AV product |
+| **`definitionsVersion`** | Virus definition / signature version |
+| **`definitionsDate`** | Timestamp of the most recent definitions update |
+| **`realTimeProtection`** | Whether real-time scanning is active |
+| **`lastScan`** | Timestamp of the most recent completed scan |
+| **`lastScanType`** | Type of last scan: `quick`, `full`, or `custom` |
+| **`threatCount`** | Number of active threats on the device |
+| **`firewallEnabled`** | Whether the host firewall is active |
+| **`encryptionStatus`** | Disk encryption state: `encrypted`, `partial`, or `unencrypted` |
+| **`encryptionDetails`** | Per-volume encryption breakdown (method, mount point, protection status) |
+| **`localAdminSummary`** | Local administrator account inventory with issue flags |
+| **`passwordPolicySummary`** | Password policy settings (min length, complexity, lockout, history) |
+| **`gatekeeperEnabled`** | macOS Gatekeeper status (macOS only) |
+
+### Detection Methods by Platform
+
+<Tabs>
+  <TabItem label="Windows">
+    - **AV detection**: Windows Security Center (`root/SecurityCenter2`) via CIM, with fallback to `Get-MpComputerStatus` for Windows Server
+    - **Firewall**: `Get-NetFirewallProfile` queries all three profiles (Domain, Private, Public)
+    - **Encryption**: `Get-BitLockerVolume` reads BitLocker protection status and encryption percentage per volume
+    - **Local admins**: `Get-LocalGroupMember -Group 'Administrators'` enumerates the local Administrators group
+    - **Password policy**: `Win32_AccountPolicy` CIM class reads min length, max age, lockout threshold, and history count
+  </TabItem>
+  <TabItem label="macOS">
+    - **AV detection**: Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback
+    - **Gatekeeper**: `spctl --status` checks Gatekeeper enforcement state
+    - **Firewall**: `socketfilterfw --getglobalstate` or `defaults read com.apple.alf globalstate`
+    - **Encryption**: `fdesetup status` detects FileVault state
+    - **Local admins**: `dscl . -read /Groups/admin GroupMembership` lists admin group members
+    - **Password policy**: `pwpolicy -getglobalpolicy` parses min chars, complexity, lockout, and history
+  </TabItem>
+  <TabItem label="Linux">
+    - **Firewall**: Checks `ufw status`, `firewall-cmd --state`, and `systemctl is-active firewalld` in order
+    - **Encryption**: `lsblk -J` walks the block device tree looking for `crypt` type entries (LUKS)
+    - **Local admins**: `getent group sudo` or `getent group wheel` enumerates privileged group members
+    - **Password policy**: Parses `/etc/login.defs` for min length and max age, checks PAM modules for complexity, and reads `/etc/security/faillock.conf` for lockout threshold
+  </TabItem>
+</Tabs>
+
+---
+
+## Supported Providers
+
+The agent normalizes detected AV products to one of the following provider identifiers. On Windows, multiple AV products may be registered simultaneously through the Security Center.
+
+| Provider ID | Display Name | Vendor |
+|-------------|-------------|--------|
+| `windows_defender` | Microsoft Defender | Microsoft |
+| `bitdefender` | Bitdefender | Bitdefender |
+| `sophos` | Sophos | Sophos |
+| `sentinelone` | SentinelOne Singularity | SentinelOne |
+| `crowdstrike` | CrowdStrike Falcon | CrowdStrike |
+| `malwarebytes` | Malwarebytes | Malwarebytes |
+| `eset` | ESET | ESET |
+| `kaspersky` | Kaspersky | Kaspersky |
+| `other` | Other | Other |
+
+<Aside type="tip">
+  On Windows workstations, the agent queries `root/SecurityCenter2` which returns all registered AV products. The product with active real-time protection is selected as the primary provider. On Windows Server (where Security Center is unavailable), the agent falls back to querying Microsoft Defender directly via `Get-MpComputerStatus`.
+</Aside>
+
+---
+
+## Threat Detection
+
+### Threat Types and Severity
+
+The agent scans for known threat signatures using both filename pattern matching and file content analysis. Detected threats are classified by type and severity:
+
+| Threat Type | Description |
+|-------------|-------------|
+| **`malware`** | General malicious software (e.g. Mimikatz, EICAR test file) |
+| **`trojan`** | Trojan horse programs (e.g. Emotet, Trickbot) |
+| **`ransomware`** | Ransomware indicators (e.g. ransom notes, decryption instructions) |
+| **`spyware`** | Spyware and surveillance tools |
+| **`pup`** | Potentially unwanted programs |
+
+| Severity | Meaning |
+|----------|---------|
+| **`low`** | Minimal risk; informational detection |
+| **`medium`** | Moderate risk; should be reviewed |
+| **`high`** | Significant risk; prompt action recommended (e.g. Mimikatz, EICAR, ransomware notes) |
+| **`critical`** | Severe risk; immediate action required (e.g. CobaltStrike beacons, Emotet) |
+
+### Threat Status Lifecycle
+
+Each threat progresses through a status lifecycle:
+
+| Status | DB Status | Description |
+|--------|-----------|-------------|
+| **Active** | `detected`, `failed` | Threat is present and unresolved |
+| **Quarantined** | `quarantined` | Threat file moved to an isolated quarantine directory |
+| **Removed** | `removed`, `allowed` | Threat file deleted or explicitly allowed |
+
+### Threat Actions
+
+You can take action on detected threats directly from the API:
+
+```bash
+# Quarantine a threat (moves file to quarantine directory)
+POST /security/threats/{threatId}/quarantine
+
+# Permanently remove a threat
+POST /security/threats/{threatId}/remove
+
+# Restore a quarantined threat (mark as allowed)
+POST /security/threats/{threatId}/restore
+```
+
+Each action queues a command to the agent and updates the threat status in the database. The quarantine directory defaults to:
+
+| Platform | Path |
+|----------|------|
+| Windows | `%ProgramData%\Breeze\quarantine` |
+| macOS | `/Library/Application Support/Breeze/quarantine` |
+| Linux | `/var/lib/breeze/quarantine` |
+
+<Aside type="caution">
+  The agent's built-in threat scanner uses signature-based detection for known malware families. It is not a replacement for a full endpoint protection platform. Use it as a supplementary layer alongside your primary AV provider.
+</Aside>
+
+---
+
+## Security Scans
+
+### Triggering a Scan
+
+Initiate an on-demand security scan on a specific device by posting to the scan endpoint:
+
+```bash
+POST /security/scan/{deviceId}
+{
+  "scanType": "quick",
+  "paths": []
+}
+```
+
+| Scan Type | Description |
+|-----------|-------------|
+| **`quick`** | Scans high-risk locations: temp directories, Downloads folder, startup/launch directories |
+| **`full`** | Comprehensive scan of all major system locations (entire drives on Windows, `/Applications`, `/Library`, `/Users` on macOS, `/` tree on Linux) |
+| **`custom`** | Scans only the paths specified in the `paths` array |
+
+The scan is queued as a `SECURITY_SCAN` command to the agent. The response returns a scan record with status `queued` and a `202 Accepted` status code.
+
+### Scan Lifecycle
+
+| Status | Description |
+|--------|-------------|
+| **`queued`** | Scan command sent to the agent, waiting for execution |
+| **`running`** | Agent is actively scanning |
+| **`completed`** | Scan finished; results include `threatsFound` count and `durationSeconds` |
+| **`failed`** | Scan encountered an error |
+
+### Viewing Scan History
+
+```bash
+GET /security/scans/{deviceId}?scanType=quick&status=completed&startDate=2026-02-01
+```
+
+Returns paginated scan history for the device, filterable by `scanType`, `status`, and date range.
+
+<Aside>
+  On Windows, the scan also triggers a Microsoft Defender scan (`Start-MpScan`) alongside the Breeze agent's own signature scan, giving you dual-layer detection.
+</Aside>
+
+---
+
+## Compliance and Posture
+
+### Security Posture Scoring
+
+The security posture system computes a 0-100 score for each device based on eight weighted factors:
+
+| Factor | Label | Weight | Description |
+|--------|-------|--------|-------------|
+| `patch_compliance` | Patch Compliance | 25% | Are critical and important patches up to date? |
+| `encryption` | Disk Encryption | 15% | Is full-disk encryption active on all volumes? |
+| `av_health` | AV Health | 15% | Is AV installed, real-time protection on, and definitions fresh? |
+| `firewall` | Firewall Status | 10% | Is the host firewall enabled? |
+| `open_ports` | Open Ports Exposure | 10% | Are unnecessary listening services exposed? |
+| `password_policy` | Password Policy | 10% | Does the local password policy meet baseline requirements? |
+| `os_currency` | OS Currency | 10% | Is the operating system version current and supported? |
+| `admin_exposure` | Admin Exposure | 5% | Are local admin accounts minimized and hardened? |
+
+The overall score is graded on a letter scale:
+
+| Grade | Score Range |
+|-------|-------------|
+| **A** | 90 - 100 |
+| **B** | 80 - 89 |
+| **C** | 70 - 79 |
+| **D** | 60 - 69 |
+| **F** | 0 - 59 |
+
+### Risk Levels
+
+Each device is assigned a risk level based on its posture:
+
+| Risk Level | Meaning |
+|------------|---------|
+| **`low`** | Device is fully protected (score high, no active issues) |
+| **`medium`** | Minor gaps detected (e.g. firewall off or encryption missing) |
+| **`high`** | Multiple protection gaps or elevated threat count |
+| **`critical`** | Severe exposure: unprotected with active threats |
+
+### Organization-Level Posture
+
+The posture worker runs hourly via BullMQ, computing scores for every device across all organizations. Organization-level snapshots aggregate:
+
+- **`devicesAudited`** -- total devices scored
+- **`lowRiskDevices`**, **`mediumRiskDevices`**, **`highRiskDevices`**, **`criticalRiskDevices`** -- risk distribution
+- Per-factor average scores
+- **`topIssues`** -- most common compliance gaps
+
+### Password Policy Compliance
+
+The API evaluates each device's local password policy against baseline requirements:
+
+| Rule | Requirement |
+|------|-------------|
+| Minimum length | 12+ characters |
+| Complexity required | Enabled |
+| Maximum password age | 90 days or fewer |
+| Account lockout threshold | 1-5 failed attempts |
+| Password history | 5+ remembered passwords |
+
+A device is **compliant** only if all five checks pass.
+
+### Admin Account Audit
+
+The admin audit identifies three categories of risk in local administrator accounts:
+
+| Issue Type | Description |
+|------------|-------------|
+| **`default_account`** | Built-in administrator accounts that are still enabled |
+| **`weak_password`** | Admin accounts with passwords older than 180 days |
+| **`stale_account`** | Admin accounts with no login activity in 90+ days |
+
+### Compliance Trend Tracking
+
+```bash
+GET /security/trends?period=30d
+```
+
+Returns time-series data points showing how the overall posture score has changed over the requested period (`7d`, `30d`, or `90d`). The response includes a summary with `current` score, `previous` score, absolute `change`, and directional `trend` (`improving`, `declining`, or `stable`).
+
+---
+
+## Security Recommendations
+
+The recommendations engine analyzes posture data across the fleet and generates prioritized, actionable guidance. Recommendations are computed dynamically based on how many devices fall below threshold scores for each security factor.
+
+### How Recommendations Are Generated
+
+<Steps>
+1. The engine loads the latest posture snapshots for all devices in the organization.
+2. For each security factor, it counts devices scoring below the target threshold (e.g. AV health below 80, firewall below 90).
+3. If any devices are affected, a recommendation is generated with priority scaled to the percentage of the fleet impacted.
+4. Recommendations are sorted by priority (critical first), then by affected device count.
+</Steps>
+
+### Recommendation Categories
+
+| Category | Trigger Threshold | Baseline Priority |
+|----------|-------------------|-------------------|
+| `antivirus` | AV health score below 80 | High |
+| `vulnerability_management` | Active threats + open ports/OS currency below 70 | Critical |
+| `firewall` | Firewall score below 90 | High |
+| `encryption` | Encryption score below 90 | High |
+| `password_policy` | Password policy score below 85 | Medium |
+| `admin_accounts` | Admin exposure score below 85 | Medium |
+| `patch_compliance` | Patch compliance score below 90 | High |
+
+### Priority Escalation
+
+Priority is dynamically escalated based on what percentage of the fleet is affected:
+
+| Fleet % Affected | Dynamic Priority |
+|------------------|-----------------|
+| 45%+ | Critical |
+| 25-44% | High |
+| 10-24% | Medium |
+| Under 10% | Low |
+
+The final priority is the higher of the baseline priority and the dynamic priority.
+
+### Recommendation Lifecycle
+
+Each recommendation can be in one of three states:
+
+| Status | Description |
+|--------|-------------|
+| **`open`** | Active recommendation requiring attention |
+| **`completed`** | Marked as resolved by an administrator |
+| **`dismissed`** | Acknowledged but not acted upon |
+
+Completing or dismissing a recommendation creates an audit log entry. To mark a recommendation:
+
+```bash
+# Mark as completed
+POST /security/recommendations/{id}/complete
+
+# Dismiss
+POST /security/recommendations/{id}/dismiss
+```
+
+<Aside type="tip">
+  Recommendations include a `steps` array with concrete remediation instructions. Each recommendation also carries `impact` (high/medium/low) and `effort` (low/medium/high) ratings to help you prioritize effectively.
+</Aside>
+
+---
+
+## Security Dashboard
+
+The dashboard endpoint aggregates all security data into a single response for rendering the security overview UI.
+
+```bash
+GET /security/dashboard?orgId={orgId}
+```
+
+### Dashboard Response Fields
+
+| Field | Description |
+|-------|-------------|
+| `totalDevices` | Total number of devices with posture data |
+| `protectedDevices` | Devices with low risk and online status |
+| `atRiskDevices` | Devices with medium or high risk |
+| `unprotectedDevices` | Devices with critical risk level |
+| `offlineDevices` | Devices not currently reporting |
+| `totalThreatsDetected` | Total threat count across all devices |
+| `activeThreats` | Threats in `active` status |
+| `quarantinedThreats` | Threats currently quarantined |
+| `removedThreats` | Threats that have been removed |
+| `securityScore` | Fleet-wide average posture score (0-100) |
+| `providers` | AV provider distribution with device counts and coverage percentages |
+| `firewallEnabled` / `firewallDisabled` | Firewall state counts |
+| `encryption` | BitLocker and FileVault enabled counts |
+| `passwordPolicyCompliance` | Average password policy factor score |
+| `adminAudit` | Summary of default/weak/stale admin account issues with top affected devices |
+| `recommendations` | Top security recommendations with priority and category |
+| `trend` | 30-day score trend as timestamp/score data points |
+
+### Score Breakdown
+
+For a detailed per-factor breakdown, use the score breakdown endpoint:
+
+```bash
+GET /security/score-breakdown
+```
+
+Returns each posture component with its score, weight, status (`good`/`warning`/`critical`), and the count of affected devices below the threshold.
+
+---
+
+## Security Policies
+
+Security policies define the expected security configuration for devices within an organization.
+
+```bash
+# Create a policy
+POST /security/policies
+{
+  "name": "Standard Endpoint Policy",
+  "description": "Baseline security policy for all workstations",
+  "providerId": "windows_defender",
+  "scanSchedule": "weekly",
+  "realTimeProtection": true,
+  "autoQuarantine": true,
+  "severityThreshold": "medium",
+  "exclusions": ["C:\\Temp\\build"]
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `scanSchedule` | `weekly` | Scheduled scan frequency: `daily`, `weekly`, `monthly`, or `manual` |
+| `realTimeProtection` | `true` | Whether real-time protection should be enforced |
+| `autoQuarantine` | `true` | Automatically quarantine threats at or above the severity threshold |
+| `severityThreshold` | `medium` | Minimum severity to trigger auto-quarantine: `low`, `medium`, `high`, `critical` |
+| `exclusions` | `[]` | File paths to exclude from scanning |
+
+---
+
+## API Reference
+
+All security endpoints require authentication and are scoped to `organization`, `partner`, or `system` roles.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/security/status` | List security status for all devices (filterable by provider, status, risk level, OS) |
+| `GET` | `/security/status/:deviceId` | Get security status for a specific device |
+| `GET` | `/security/threats` | List all detected threats (filterable by severity, status, category, provider, date range) |
+| `GET` | `/security/threats/:deviceId` | List threats for a specific device |
+| `POST` | `/security/threats/:id/quarantine` | Quarantine a detected threat |
+| `POST` | `/security/threats/:id/remove` | Remove a detected threat |
+| `POST` | `/security/threats/:id/restore` | Restore a quarantined threat |
+| `POST` | `/security/scan/:deviceId` | Trigger an on-demand security scan |
+| `GET` | `/security/scans/:deviceId` | List scan history for a device |
+| `GET` | `/security/posture` | List security posture for all devices (filterable by score range, risk level) |
+| `GET` | `/security/posture/:deviceId` | Get detailed posture for a specific device |
+| `GET` | `/security/dashboard` | Get aggregated security dashboard data |
+| `GET` | `/security/score-breakdown` | Get per-factor score breakdown |
+| `GET` | `/security/trends` | Get posture score trend over time (7d, 30d, 90d) |
+| `GET` | `/security/firewall` | List firewall status per device with profile details |
+| `GET` | `/security/encryption` | List encryption status per device with volume details |
+| `GET` | `/security/password-policy` | List password policy compliance per device |
+| `GET` | `/security/admin-audit` | Audit local admin accounts across the fleet |
+| `GET` | `/security/recommendations` | Get prioritized security recommendations |
+| `POST` | `/security/recommendations/:id/complete` | Mark a recommendation as completed |
+| `POST` | `/security/recommendations/:id/dismiss` | Dismiss a recommendation |
+| `GET` | `/security/policies` | List security policies for the organization |
+| `POST` | `/security/policies` | Create a new security policy |
+| `PUT` | `/security/policies/:id` | Update an existing security policy |
+
+---
+
+## Troubleshooting
+
+### Agent reports `provider: "other"`
+
+The agent could not detect a known AV provider. Common causes:
+
+- **Windows**: The AV product is not registered with Windows Security Center. This can happen with server-only installations or EDR tools that do not register as AV. The agent will still attempt to query Defender directly as a fallback.
+- **macOS**: Microsoft Defender for Endpoint is not installed, or the `mdatp` CLI is not in `PATH`. Verify installation with `which mdatp` and check the app bundle exists at `/Applications/Microsoft Defender.app`.
+- **Linux**: The agent does not currently detect Linux AV providers. The provider will always be `other` on Linux endpoints.
+
+### Encryption status shows `unknown`
+
+The agent failed to query the encryption subsystem. Check:
+
+- **Windows**: Ensure the device has BitLocker support and the `Get-BitLockerVolume` cmdlet is available. Requires admin privileges.
+- **macOS**: Ensure `fdesetup` is accessible. The agent runs `fdesetup status` which requires appropriate permissions.
+- **Linux**: Ensure `lsblk` is installed. LUKS detection looks for `crypt` type entries in the block device tree.
+
+### Firewall status not detected
+
+- **Windows**: The agent queries `Get-NetFirewallProfile`. If all three profiles (Domain, Private, Public) return `False`, the firewall is reported as disabled.
+- **macOS**: The agent checks `socketfilterfw --getglobalstate` first, then falls back to reading `com.apple.alf` preferences.
+- **Linux**: The agent checks `ufw`, `firewall-cmd`, and `systemctl is-active firewalld` in order. If none are available, firewall status cannot be determined.
+
+### Posture score is 0 or not available
+
+The posture worker runs on an hourly schedule via BullMQ. If no posture data is available:
+
+1. Confirm the security posture worker is running (check logs for `[SecurityPostureWorker] Security posture worker initialized`).
+2. Verify the device has reported at least one `SecurityStatus` payload via heartbeat.
+3. Check that Redis is connected and the `security-posture` queue is processing jobs.
+
+<Aside type="note">
+  You can trigger an immediate posture recomputation for a specific organization by calling `triggerSecurityPostureRecompute(orgId)` from the API. This enqueues a `compute-org` job that runs outside the normal hourly schedule.
+</Aside>
+
+### Threats not appearing after scan
+
+- Verify the scan status is `completed` by checking `GET /security/scans/:deviceId`.
+- The agent's built-in scanner uses a limited set of known signatures (EICAR, Mimikatz, CobaltStrike, Emotet, ransomware notes). It does not perform heuristic or behavioral analysis.
+- Files larger than 25 MB are skipped during scanning. Content pattern matching reads only the first 1 MB of each file.
+- Quarantine directories and system paths (e.g. `/proc`, `/sys`, `WinSxS`, `$Recycle.Bin`) are excluded by default.

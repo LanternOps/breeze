@@ -1,0 +1,98 @@
+# docker-compose.doc-verify.yml
+# Full stack for documentation verification tests
+# Usage: docker compose -f docker-compose.doc-verify.yml up -d --wait
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: breeze-dv-postgres
+    environment:
+      POSTGRES_USER: breeze_test
+      POSTGRES_PASSWORD: breeze_test
+      POSTGRES_DB: breeze_test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks:
+      - dv-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U breeze_test -d breeze_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 2s
+
+  redis-test:
+    image: redis:7-alpine
+    container_name: breeze-dv-redis
+    command: redis-server --appendonly no --save ""
+    ports:
+      - "6380:6379"
+    networks:
+      - dv-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: breeze-dv-api
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://breeze_test:breeze_test@postgres-test:5432/breeze_test
+      REDIS_URL: redis://redis-test:6379
+      AGENT_ENROLLMENT_SECRET: test-enrollment-secret
+      JWT_SECRET: test-jwt-secret-must-be-at-least-32-characters-long
+      APP_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      MFA_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      ENROLLMENT_KEY_PEPPER: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      API_PORT: "3001"
+      ENABLE_REGISTRATION: "true"
+      CORS_ORIGINS: "http://localhost:4321"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    networks:
+      - dv-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: breeze-dv-web
+    environment:
+      PUBLIC_API_URL: http://localhost:3001/api/v1
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "4321:4321"
+    networks:
+      - dv-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4321"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+networks:
+  dv-network:
+    driver: bridge
+    name: breeze-dv-network
