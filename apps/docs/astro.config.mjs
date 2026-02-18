@@ -23,6 +23,10 @@ export default defineConfig({
           autogenerate: { directory: 'getting-started' },
         },
         {
+          label: 'Features',
+          autogenerate: { directory: 'features' },
+        },
+        {
           label: 'Deployment',
           autogenerate: { directory: 'deploy' },
         },
