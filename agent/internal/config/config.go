@@ -80,6 +80,10 @@ type Config struct {
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
+
+	// IsService is a runtime flag set when the agent is running as a Windows SCM service.
+	// It is not persisted to config.
+	IsService bool `mapstructure:"-"`
 }
 
 // defaultLogFile returns the platform-specific default log file path.

@@ -109,6 +109,7 @@ type Heartbeat struct {
 
 	// User session helper (IPC)
 	sessionBroker *sessionbroker.Broker
+	isService     bool
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -183,6 +184,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		seenCommands:    make(map[string]time.Time),
 	}
 	h.accepting.Store(true)
+	h.isService = cfg.IsService
 
 	// Trigger wallpaper crash recovery (restores wallpaper if agent crashed mid-session)
 	_ = desktop.GetWallpaperManager()
@@ -1158,6 +1160,9 @@ func (h *Heartbeat) sendSessionInventory() {
 		return
 	}
 	events := h.sessionCol.DrainEvents(256)
+	if events == nil {
+		events = []collectors.UserSessionEvent{}
+	}
 
 	payload := map[string]any{
 		"sessions":    sessions,
