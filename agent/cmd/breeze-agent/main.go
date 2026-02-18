@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -446,15 +447,44 @@ func checkStatus() {
 // runUserHelper starts the per-user session helper process.
 // It connects to the root daemon via IPC and handles user-context operations.
 func runUserHelper() {
-	// Minimal logging for user helper (no config file needed)
-	logging.Init("text", "info", os.Stdout)
+	// Log to file in the same logs folder as the main agent
+	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
+	os.MkdirAll(logDir, 0700)
+	logPath := filepath.Join(logDir, "user-helper.log")
+	var output io.Writer = os.Stdout
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
+		// Use file-only to avoid io.MultiWriter aborting on stdout write errors.
+		if hasConsole() {
+			output = io.MultiWriter(os.Stdout, f)
+		} else {
+			output = f
+		}
+	}
+	logging.Init("text", "info", output)
+
+	// Load agent config for IPC socket path and log shipping credentials.
+	// The helper runs as SYSTEM so it can read agent.yaml.
+	cfg, _ := config.Load(cfgFile)
+	if cfg == nil {
+		cfg = config.Default()
+	}
 
 	socketPath := ipc.DefaultSocketPath()
-	if cfgFile != "" {
-		// Try to load config for custom socket path
-		if cfg, err := config.Load(cfgFile); err == nil && cfg.IPCSocketPath != "" {
-			socketPath = cfg.IPCSocketPath
-		}
+	if cfg.IPCSocketPath != "" {
+		socketPath = cfg.IPCSocketPath
+	}
+
+	// Ship helper logs to the API under the same agent identity
+	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
+		logging.InitShipper(logging.ShipperConfig{
+			ServerURL:    cfg.ServerURL,
+			AgentID:      cfg.AgentID,
+			AuthToken:    cfg.AuthToken,
+			AgentVersion: version + "-helper",
+			MinLevel:     cfg.LogShippingLevel,
+		})
+		defer logging.StopShipper()
 	}
 
 	log.Info("starting user helper",

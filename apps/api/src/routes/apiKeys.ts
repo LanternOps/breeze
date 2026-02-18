@@ -92,8 +92,8 @@ const createApiKeySchema = z.object({
   orgId: z.string().uuid(),
   name: z.string().min(1).max(255),
   scopes: z.array(z.string()).default([]),
-  expiresAt: z.string().datetime().optional(),
-  rateLimit: z.number().int().min(1).max(100000).default(1000)
+  expiresAt: z.string().datetime().nullable().optional(),
+  rateLimit: z.number().int().min(1).max(100000).nullable().optional().transform(v => v ?? 1000)
 });
 
 const updateApiKeySchema = z.object({

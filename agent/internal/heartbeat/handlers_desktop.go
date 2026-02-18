@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -10,6 +11,9 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
+
+// spawnGuard prevents concurrent helper spawns for the same target session.
+var spawnGuard sync.Mutex
 
 func init() {
 	handlerRegistry[tools.CmdFileTransfer] = handleFileTransfer
@@ -117,18 +121,25 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
 	if session == nil {
-		// No helper connected yet — try to spawn one
-		if err := h.spawnHelperForDesktop(targetSession); err != nil {
-			return tools.NewErrorResult(fmt.Errorf("no capable helper session and spawn failed: %w", err), 0)
-		}
-		// Poll for the helper to connect (up to 5s, every 500ms)
-		for i := 0; i < 10; i++ {
-			time.Sleep(500 * time.Millisecond)
-			session = h.sessionBroker.FindCapableSession("capture", targetSession)
-			if session != nil {
-				break
+		// Serialize spawns to prevent duplicate helpers for the same session
+		spawnGuard.Lock()
+		// Re-check after acquiring lock — another goroutine may have spawned it
+		session = h.sessionBroker.FindCapableSession("capture", targetSession)
+		if session == nil {
+			if err := h.spawnHelperForDesktop(targetSession); err != nil {
+				spawnGuard.Unlock()
+				return tools.NewErrorResult(fmt.Errorf("no capable helper session and spawn failed: %w", err), 0)
+			}
+			// Poll for the helper to connect (up to 5s, every 500ms)
+			for i := 0; i < 10; i++ {
+				time.Sleep(500 * time.Millisecond)
+				session = h.sessionBroker.FindCapableSession("capture", targetSession)
+				if session != nil {
+					break
+				}
 			}
 		}
+		spawnGuard.Unlock()
 		if session == nil {
 			return tools.NewErrorResult(fmt.Errorf("helper spawned but did not connect within 5s"), 0)
 		}
@@ -183,7 +194,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			return fmt.Errorf("failed to list sessions: %w", err)
 		}
 		for _, ds := range detected {
-			if ds.Type != "services" && (ds.State == "active" || ds.State == "online") {
+			if ds.Type != "services" && ds.State == "active" {
 				targetSession = ds.Session
 				break
 			}
@@ -279,6 +290,17 @@ func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+
+	// WS-based desktop streaming cannot work from Session 0 (no display).
+	// The viewer should use WebRTC (start_desktop) when connecting to a service agent.
+	if h.isService {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "desktop_stream_start unavailable in service mode; use start_desktop (WebRTC) instead",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
@@ -314,6 +336,9 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	if h.isService {
+		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
+	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
@@ -325,6 +350,17 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+
+	// Input injection cannot work from Session 0 (SetCursorPos, SendInput fail).
+	// WebRTC sessions handle input via the data channel in the user helper.
+	if h.isService {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "desktop_input unavailable in service mode; use WebRTC data channel",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
@@ -374,6 +410,13 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopConfig(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	if h.isService {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "desktop_config unavailable in service mode; use WebRTC",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()

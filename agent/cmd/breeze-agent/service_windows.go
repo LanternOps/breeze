@@ -5,9 +5,12 @@ package main
 import (
 	"fmt"
 	"sync"
+	"syscall"
 
 	"golang.org/x/sys/windows/svc"
 )
+
+var procGetConsoleWindow = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
 
 // isWindowsService reports whether the process was started by the Windows
 // Service Control Manager. Must be called early — before any console I/O.
@@ -18,6 +21,13 @@ func isWindowsService() bool {
 		return false
 	}
 	return ok
+}
+
+// hasConsole reports whether the process has an attached console window.
+// Returns false when spawned with CREATE_NO_WINDOW (e.g., user helper from service).
+func hasConsole() bool {
+	ret, _, _ := procGetConsoleWindow.Call()
+	return ret != 0
 }
 
 // breezeService implements svc.Handler for the Windows SCM.

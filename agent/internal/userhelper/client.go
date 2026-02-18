@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -188,6 +189,9 @@ func (c *Client) commandLoop() error {
 			if err := c.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
 				return fmt.Errorf("pong send failed: %w", err)
 			}
+
+		case ipc.TypePong:
+			// Response to our keepalive ping — no action needed
 
 		case ipc.TypeCommand:
 			go c.handleCommand(env)
@@ -429,7 +433,8 @@ func detectCapabilities() ipc.Capabilities {
 }
 
 func isTimeout(err error) bool {
-	if netErr, ok := err.(net.Error); ok {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 	return false

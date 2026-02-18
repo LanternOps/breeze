@@ -200,14 +200,22 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}
 
-	// Initialize session broker for user helpers (IPC)
-	if cfg.UserHelperEnabled {
+	// Initialize session broker for user helpers (IPC).
+	// Always enable when running as a Windows service — the helper is required
+	// for desktop capture, input injection, and other interactive operations
+	// that cannot work from Session 0.
+	if cfg.UserHelperEnabled || cfg.IsService {
 		socketPath := cfg.IPCSocketPath
 		if socketPath == "" {
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
-		log.Info("user helper IPC enabled", "socket", socketPath)
+		log.Info("user helper IPC enabled", "socket", socketPath, "reason", func() string {
+			if cfg.IsService {
+				return "windows-service"
+			}
+			return "config"
+		}())
 	}
 
 	// Register winget provider (dispatches via user helper for user-context execution)

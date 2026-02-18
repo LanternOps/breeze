@@ -386,6 +386,15 @@ export async function apiLogout(): Promise<void> {
   }
 
   logout();
+
+  // Clear all persisted store data to prevent stale state on next login
+  try {
+    localStorage.removeItem('breeze-auth');
+    localStorage.removeItem('breeze-org');
+    localStorage.removeItem('breeze-ai-chat');
+  } catch {
+    // localStorage may be unavailable
+  }
 }
 
 export async function apiForgotPassword(email: string): Promise<{

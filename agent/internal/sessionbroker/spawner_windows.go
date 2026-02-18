@@ -33,7 +33,7 @@ func SpawnHelperInSession(sessionID uint32) error {
 		processToken,
 		windows.MAXIMUM_ALLOWED,
 		nil, // default security attributes
-		windows.SecurityImpersonation,
+		windows.SecurityDelegation, // Delegation required for CreateProcessAsUser + cross-session GPU access
 		windows.TokenPrimary,
 		&dupToken,
 	)
@@ -83,7 +83,7 @@ func SpawnHelperInSession(sessionID uint32) error {
 		nil,     // lpProcessAttributes
 		nil,     // lpThreadAttributes
 		false,   // bInheritHandles
-		windows.CREATE_NEW_CONSOLE|windows.CREATE_UNICODE_ENVIRONMENT,
+		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
 		nil, // lpEnvironment (inherit)
 		nil, // lpCurrentDirectory (inherit)
 		&si,
