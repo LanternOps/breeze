@@ -72,6 +72,18 @@ export const TOOL_TIERS = {
   get_device_context: 1,
   set_device_context: 2,
   resolve_device_context: 2,
+  // Boot performance & startup tools
+  analyze_boot_performance: 1,
+  manage_startup_items: 3,
+  // Agent log tools
+  search_agent_logs: 1,
+  set_agent_log_level: 2,
+  // Configuration policy tools
+  list_configuration_policies: 1,
+  get_effective_configuration: 1,
+  preview_configuration_change: 1,
+  apply_configuration_policy: 2,
+  remove_configuration_policy_assignment: 2,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -659,6 +671,117 @@ export function createBreezeMcpServer(
         contextId: uuid,
       },
       makeHandler('resolve_device_context', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Boot performance & startup tools
+
+    tool(
+      'analyze_boot_performance',
+      'Analyze boot performance and startup items for a device. Returns boot time history, slowest startup items by impact score, and optimization recommendations.',
+      {
+        deviceId: uuid,
+        bootsBack: z.number().int().min(1).max(30).optional(),
+        triggerCollection: z.boolean().optional(),
+      },
+      makeHandler('analyze_boot_performance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_startup_items',
+      'Disable or enable startup items on a device. Device must be online. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',
+      {
+        deviceId: uuid,
+        itemName: z.string().min(1).max(255),
+        action: z.enum(['disable', 'enable']),
+        reason: z.string().max(500).optional(),
+      },
+      makeHandler('manage_startup_items', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Agent log tools
+
+    tool(
+      'search_agent_logs',
+      'Search agent diagnostic logs across the fleet. Filter by device, log level, component, time range, or message text.',
+      {
+        deviceIds: z.array(uuid).max(50).optional(),
+        level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
+        component: z.string().max(100).optional(),
+        startTime: z.string().datetime({ offset: true }).optional(),
+        endTime: z.string().datetime({ offset: true }).optional(),
+        message: z.string().max(500).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('search_agent_logs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'set_agent_log_level',
+      "Temporarily increase an agent's log shipping verbosity for debugging. The level will auto-revert after the specified duration.",
+      {
+        deviceId: uuid,
+        level: z.enum(['debug', 'info', 'warn', 'error']),
+        durationMinutes: z.number().int().min(1).max(1440).optional(),
+      },
+      makeHandler('set_agent_log_level', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Configuration policy tools
+
+    tool(
+      'list_configuration_policies',
+      'List available configuration policies in the organization. Shows policy name, status, and linked feature types.',
+      {
+        status: z.enum(['active', 'inactive', 'archived']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_configuration_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_effective_configuration',
+      'Resolve the effective configuration for a device by evaluating all configuration policy assignments in the hierarchy (device > group > site > org > partner).',
+      {
+        deviceId: uuid,
+      },
+      makeHandler('get_effective_configuration', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'preview_configuration_change',
+      'Preview how adding or removing configuration policy assignments would change the effective configuration for a device.',
+      {
+        deviceId: uuid,
+        add: z.array(z.object({
+          configPolicyId: uuid,
+          level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
+          targetId: uuid,
+          priority: z.number().int().optional(),
+        })).optional(),
+        remove: z.array(uuid).optional(),
+      },
+      makeHandler('preview_configuration_change', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'apply_configuration_policy',
+      'Assign a configuration policy to a target (partner, organization, site, device group, or device).',
+      {
+        configPolicyId: uuid,
+        level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
+        targetId: uuid,
+        priority: z.number().int().min(0).max(1000).optional(),
+      },
+      makeHandler('apply_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'remove_configuration_policy_assignment',
+      'Remove a configuration policy assignment, undoing its effect on the target and all devices beneath it in the hierarchy.',
+      {
+        assignmentId: uuid,
+      },
+      makeHandler('remove_configuration_policy_assignment', getAuth, onPreToolUse, onPostToolUse)
     ),
   ];
 

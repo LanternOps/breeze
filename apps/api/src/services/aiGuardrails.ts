@@ -181,6 +181,15 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_device_context: { resource: 'devices', action: 'read' },
   set_device_context: { resource: 'devices', action: 'write' },
   resolve_device_context: { resource: 'devices', action: 'write' },
+  // Agent log tools
+  search_agent_logs: { resource: 'devices', action: 'read' },
+  set_agent_log_level: { resource: 'devices', action: 'execute' },
+  // Configuration policy tools
+  list_configuration_policies: { resource: 'policies', action: 'read' },
+  get_effective_configuration: { resource: 'devices', action: 'read' },
+  preview_configuration_change: { resource: 'devices', action: 'read' },
+  apply_configuration_policy: { resource: 'policies', action: 'write' },
+  remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -209,6 +218,11 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Brain device context tools
   set_device_context: { limit: 20, windowSeconds: 300 },
   resolve_device_context: { limit: 20, windowSeconds: 300 },
+  // Agent log tools
+  set_agent_log_level: { limit: 5, windowSeconds: 600 },
+  // Configuration policy tools
+  apply_configuration_policy: { limit: 10, windowSeconds: 300 },
+  remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {
@@ -445,6 +459,27 @@ function buildApprovalDescription(
     case 'manage_alert_rules':
       if (action === 'delete_rule') parts.push(`Delete alert rule ${(input.ruleId as string)?.slice(0, 8)}...`);
       else parts.push(`Alert rule ${action}: ${(input.ruleId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
+
+    case 'manage_startup_items':
+      parts.push(`${action?.toUpperCase()} startup item "${input.itemName}"`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      if (input.reason) parts.push(`(${(input.reason as string).slice(0, 50)})`);
+      break;
+
+    case 'set_agent_log_level':
+      parts.push(`Set log level to ${input.level}`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      if (input.durationMinutes) parts.push(`for ${input.durationMinutes} minutes`);
+      break;
+
+    case 'apply_configuration_policy':
+      parts.push(`Assign config policy ${(input.configPolicyId as string)?.slice(0, 8)}...`);
+      parts.push(`to ${input.level} ${(input.targetId as string)?.slice(0, 8)}...`);
+      break;
+
+    case 'remove_configuration_policy_assignment':
+      parts.push(`Remove config policy assignment ${(input.assignmentId as string)?.slice(0, 8)}...`);
       break;
 
     default:
