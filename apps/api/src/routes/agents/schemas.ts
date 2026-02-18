@@ -276,7 +276,7 @@ export const submitSessionsSchema = z.object({
     sessionId: z.string().max(128).optional(),
     timestamp: z.string().optional(),
     activityState: sessionActivityStateSchema.optional(),
-  })).max(256).optional(),
+  })).max(256).nullish(),
   collectedAt: z.string().optional(),
 });
 

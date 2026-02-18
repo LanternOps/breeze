@@ -80,6 +80,38 @@ describe('tokenRevocation', () => {
       expect(result).toBe(true);
     });
 
+    it('returns true when blanket revocation active and tokenIssuedAt <= revokedAfter', async () => {
+      const revokedAfter = Math.floor(Date.now() / 1000);
+      const tokenIssuedAt = revokedAfter - 5; // issued before logout
+
+      const { redis } = createMockRedis({
+        get: vi.fn()
+          .mockResolvedValueOnce('1')                    // blanket revocation active
+          .mockResolvedValueOnce(String(revokedAfter))   // revoked_after timestamp
+      });
+      mockGetRedis.mockReturnValue(redis);
+
+      const result = await isUserTokenRevoked('user-1', tokenIssuedAt);
+
+      expect(result).toBe(true);
+    });
+
+    it('returns false when blanket revocation active but token issued after revocation (new login)', async () => {
+      const revokedAfter = Math.floor(Date.now() / 1000);
+      const tokenIssuedAt = revokedAfter + 10; // issued after logout (new login)
+
+      const { redis } = createMockRedis({
+        get: vi.fn()
+          .mockResolvedValueOnce('1')                    // blanket revocation active
+          .mockResolvedValueOnce(String(revokedAfter))   // revoked_after timestamp
+      });
+      mockGetRedis.mockReturnValue(redis);
+
+      const result = await isUserTokenRevoked('user-1', tokenIssuedAt);
+
+      expect(result).toBe(false);
+    });
+
     it('returns false when no revocation key exists and no tokenIssuedAt', async () => {
       const { redis } = createMockRedis();
       mockGetRedis.mockReturnValue(redis);

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -28,6 +29,7 @@ type Client struct {
 	agentID    string
 	scopes     []string
 	stopChan   chan struct{}
+	desktopMgr *helperDesktopManager
 }
 
 // New creates a new user helper client.
@@ -35,6 +37,7 @@ func New(socketPath string) *Client {
 	return &Client{
 		socketPath: socketPath,
 		stopChan:   make(chan struct{}),
+		desktopMgr: newHelperDesktopManager(),
 	}
 }
 
@@ -66,6 +69,9 @@ func (c *Client) Stop() {
 	case <-c.stopChan:
 	default:
 		close(c.stopChan)
+	}
+	if c.desktopMgr != nil {
+		c.desktopMgr.stopAll()
 	}
 	if c.conn != nil {
 		c.conn.SendTyped("disconnect", ipc.TypeDisconnect, nil)
@@ -111,6 +117,7 @@ func (c *Client) authenticate() error {
 		DisplayEnv:      displayEnv,
 		PID:             os.Getpid(),
 		BinaryHash:      binaryHash,
+		WinSessionID:    currentWinSessionID(),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -182,6 +189,9 @@ func (c *Client) commandLoop() error {
 			if err := c.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
 				return fmt.Errorf("pong send failed: %w", err)
 			}
+
+		case ipc.TypePong:
+			// Response to our keepalive ping — no action needed
 
 		case ipc.TypeCommand:
 			go c.handleCommand(env)
@@ -319,12 +329,49 @@ func (c *Client) handleTrayUpdate(env *ipc.Envelope) {
 }
 
 func (c *Client) handleDesktopStart(env *ipc.Envelope) {
-	// Phase 4: Desktop capture delegation
-	log.Debug("desktop_start received (not yet implemented)")
+	var req ipc.DesktopStartRequest
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_start payload", "error", err)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopStart, fmt.Sprintf("invalid payload: %v", err)); sendErr != nil {
+			log.Warn("failed to send desktop_start error", "error", sendErr)
+		}
+		return
+	}
+
+	log.Info("starting desktop session via IPC",
+		"sessionId", req.SessionID,
+		"displayIndex", req.DisplayIndex,
+	)
+
+	resp, err := c.desktopMgr.startSession(&req)
+	if err != nil {
+		log.Warn("desktop session start failed", "sessionId", req.SessionID, "error", err)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopStart, err.Error()); sendErr != nil {
+			log.Warn("failed to send desktop_start error", "error", sendErr)
+		}
+		return
+	}
+
+	if err := c.conn.SendTyped(env.ID, ipc.TypeDesktopStart, resp); err != nil {
+		log.Warn("failed to send desktop_start response", "error", err)
+		c.desktopMgr.stopSession(req.SessionID)
+	}
 }
 
 func (c *Client) handleDesktopStop(env *ipc.Envelope) {
-	log.Debug("desktop_stop received (not yet implemented)")
+	var req ipc.DesktopStopRequest
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_stop payload", "error", err)
+		return
+	}
+
+	log.Info("stopping desktop session via IPC", "sessionId", req.SessionID)
+	c.desktopMgr.stopSession(req.SessionID)
+
+	// Reply to unblock SendCommand on the broker side
+	if err := c.conn.SendTyped(env.ID, ipc.TypeDesktopStop, map[string]any{"stopped": true}); err != nil {
+		log.Warn("failed to send desktop_stop response", "error", err)
+	}
 }
 
 func (c *Client) handleDesktopInput(env *ipc.Envelope) {
@@ -358,6 +405,9 @@ func computeSelfHash() (string, error) {
 }
 
 func detectDisplayEnv() string {
+	if runtime.GOOS == "windows" {
+		return "windows"
+	}
 	if runtime.GOOS == "darwin" {
 		return "quartz"
 	}
@@ -383,7 +433,8 @@ func detectCapabilities() ipc.Capabilities {
 }
 
 func isTimeout(err error) bool {
-	if netErr, ok := err.(net.Error); ok {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 	return false

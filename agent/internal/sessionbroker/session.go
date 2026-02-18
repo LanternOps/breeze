@@ -21,6 +21,7 @@ type Session struct {
 	SessionID     string
 	Capabilities  *ipc.Capabilities
 	AllowedScopes []string
+	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
 	ConnectedAt   time.Time
 	LastSeen      time.Time
 
@@ -149,6 +150,7 @@ type SessionInfo struct {
 	Capabilities *ipc.Capabilities  `json:"capabilities,omitempty"`
 	ConnectedAt  time.Time          `json:"connectedAt"`
 	LastSeen     time.Time          `json:"lastSeen"`
+	WinSessionID string             `json:"winSessionId,omitempty"`
 }
 
 // Info returns a serializable summary of this session.
@@ -164,6 +166,7 @@ func (s *Session) Info() SessionInfo {
 		Capabilities: s.Capabilities,
 		ConnectedAt:  s.ConnectedAt,
 		LastSeen:     s.LastSeen,
+		WinSessionID: s.WinSessionID,
 	}
 }
 
@@ -174,7 +177,7 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 	for {
 		env, err := s.conn.Recv()
 		if err != nil {
-			log.Debug("session recv loop ended", "uid", s.UID, "error", err)
+			log.Info("session recv loop ended", "uid", s.UID, "sessionId", s.SessionID, "error", err)
 			return
 		}
 		s.Touch()

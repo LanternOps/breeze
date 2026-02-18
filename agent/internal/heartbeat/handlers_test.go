@@ -68,6 +68,9 @@ var allCommandTypes = []string{
 
 	// handlers_screenshot.go + handlers_computer_action.go init()
 	tools.CmdTakeScreenshot, tools.CmdComputerAction,
+
+	// handlers_desktop.go init() — session management
+	tools.CmdListSessions,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

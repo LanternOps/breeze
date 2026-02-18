@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 
@@ -301,7 +301,18 @@ export async function queueCommandForExecution(
 }
 
 /**
- * Execute a command and wait for result (convenience wrapper)
+ * Execute a command and wait for result (convenience wrapper).
+ *
+ * When called from routes protected by authMiddleware, the entire request
+ * handler runs inside a long-lived PostgreSQL transaction (via
+ * withDbAccessContext).  If the device_commands INSERT stays inside that
+ * transaction it is invisible to the WebSocket handler that processes the
+ * agent's response (separate transaction) — so the result is silently
+ * dropped and waitForCommandResult times out after 30 s.
+ *
+ * Fix: fetch the device (needs RLS → runs in the auth transaction), then
+ * break out of the DB context for the device_commands lifecycle.
+ * device_commands has no org_id column so RLS does not apply.
  */
 export async function executeCommand(
   deviceId: string,
@@ -313,23 +324,90 @@ export async function executeCommand(
     preferHeartbeat?: boolean;
   } = {}
 ): Promise<CommandResult> {
-  const { timeoutMs = 30000, ...queueOptions } = options;
-  const queueResult = await queueCommandForExecution(deviceId, type, payload, queueOptions);
+  const { timeoutMs = 30000, userId, preferHeartbeat = false } = options;
 
-  if (!queueResult.command) {
-    return {
-      status: 'failed',
-      error: queueResult.error || 'Failed to queue command'
-    };
+  // 1. Verify device inside the auth transaction (RLS-protected).
+  const [device] = await db
+    .select({
+      id: devices.id,
+      status: devices.status,
+      agentId: devices.agentId,
+      orgId: devices.orgId,
+      hostname: devices.hostname,
+    })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) {
+    return { status: 'failed', error: 'Device not found' };
   }
 
-  // Wait for result
-  const result = await waitForCommandResult(queueResult.command.id, timeoutMs);
+  if (device.status !== 'online') {
+    return { status: 'failed', error: `Device is ${device.status}, cannot execute command` };
+  }
 
-  return result.result ?? {
-    status: 'failed',
-    error: 'Command did not complete'
-  };
+  // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
+  //    INSERT commits immediately and is visible to the WS handler.
+  return runOutsideDbContext(async () => {
+    // Insert command (device_commands — no RLS)
+    const [command] = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type,
+        payload,
+        status: 'pending',
+        createdBy: userId || null,
+      })
+      .returning();
+
+    if (!command) {
+      return { status: 'failed' as const, error: 'Failed to create command' };
+    }
+
+    // Audit log for mutating commands (fire-and-forget).
+    // Uses device info fetched in step 1 to avoid an RLS-gated query.
+    if (AUDITED_COMMANDS.has(type)) {
+      db.insert(auditLogs)
+        .values({
+          orgId: device.orgId,
+          actorType: userId ? 'user' : 'system',
+          actorId: userId || '00000000-0000-0000-0000-000000000000',
+          action: `agent.command.${type}`,
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname,
+          details: { commandId: command.id, type, payload },
+          result: 'success',
+        })
+        .execute()
+        .catch((err) => console.error('Failed to write audit log:', err));
+    }
+
+    // Dispatch via WebSocket
+    if (device.agentId && !preferHeartbeat) {
+      const sent = sendCommandToAgent(device.agentId, {
+        id: command.id,
+        type,
+        payload,
+      });
+      if (sent) {
+        await db
+          .update(deviceCommands)
+          .set({ status: 'sent', executedAt: new Date() })
+          .where(eq(deviceCommands.id, command.id));
+      }
+    }
+
+    // Poll for result
+    const result = await waitForCommandResult(command.id, timeoutMs);
+
+    return result.result ?? {
+      status: 'failed' as const,
+      error: 'Command did not complete',
+    };
+  });
 }
 
 /**
