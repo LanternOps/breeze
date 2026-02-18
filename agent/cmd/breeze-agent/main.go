@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version          = "0.1.0"
+	version          = "0.5.0"
 	cfgFile          string
 	serverURL        string
 	enrollmentSecret string
@@ -113,6 +113,11 @@ func initLogging(cfg *config.Config) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v (logging to stdout)\n", cfg.LogFile, err)
 			logFileFallback = true
+		} else if isWindowsService() {
+			// Windows services have no console — stdout is an invalid handle.
+			// io.MultiWriter stops on first error, so writing stdout first would
+			// silently prevent log file writes. Use the file writer only.
+			output = rw
 		} else {
 			output = logging.TeeWriter(os.Stdout, rw)
 		}
@@ -234,6 +239,10 @@ func startAgent() (*agentComponents, error) {
 			log.Info("mTLS client certificate loaded")
 		}
 	}
+
+	// Propagate service mode flag so the heartbeat can route desktop
+	// sessions through the IPC user helper instead of capturing directly.
+	cfg.IsService = isWindowsService()
 
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
