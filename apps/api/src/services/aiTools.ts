@@ -1380,6 +1380,7 @@ registerTool({
     const { device } = access;
 
     // Optionally trigger fresh collection
+    let collectionFailed = false;
     if (triggerCollection && device.status === 'online') {
       const { executeCommand } = await getCommandQueue();
       try {
@@ -1388,6 +1389,7 @@ registerTool({
           timeoutMs: 15000,
         });
       } catch (err) {
+        collectionFailed = true;
         console.warn(`[AI] Boot performance collection trigger failed for device ${deviceId}:`, err);
         // Non-fatal: proceed with existing data
       }
@@ -1402,7 +1404,9 @@ registerTool({
 
     if (bootRecords.length === 0) {
       return JSON.stringify({
-        error: 'No boot performance data available. Try triggerCollection: true if device is online.'
+        error: collectionFailed
+          ? 'Boot performance data collection failed and no cached data exists. The device may not support this feature or may be experiencing issues.'
+          : 'No boot performance data available. Try triggerCollection: true if device is online.'
       });
     }
 
@@ -1477,6 +1481,7 @@ registerTool({
         })),
       },
       recommendations,
+      ...(collectionFailed ? { collectionWarning: 'Fresh data collection was requested but failed. The data shown may be stale.' } : {}),
     });
   }
 });

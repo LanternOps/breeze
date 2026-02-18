@@ -7,7 +7,7 @@
 
 import { db } from '../db';
 import { brainDeviceContext, devices } from '../db/schema';
-import { eq, and, isNull, desc, type SQL } from 'drizzle-orm';
+import { eq, and, or, gt, isNull, desc, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 
 export type ContextType = 'issue' | 'quirk' | 'followup' | 'preference';
@@ -30,23 +30,23 @@ export async function getActiveDeviceContext(
   deviceId: string,
   auth: AuthContext
 ): Promise<ContextEntry[]> {
+  const now = new Date();
   const conditions: SQL[] = [
     eq(brainDeviceContext.deviceId, deviceId),
     isNull(brainDeviceContext.resolvedAt),
+    // or() returns undefined only when all args are undefined; isNull() always returns defined SQL
+    or(isNull(brainDeviceContext.expiresAt), gt(brainDeviceContext.expiresAt, now))!,
   ];
 
   const orgCond = auth.orgCondition(brainDeviceContext.orgId);
   if (orgCond) conditions.push(orgCond);
 
-  const results = await db
+  return await db
     .select()
     .from(brainDeviceContext)
     .where(and(...conditions))
     .orderBy(desc(brainDeviceContext.createdAt))
-    .limit(100);
-
-  const now = new Date();
-  return results.filter(r => !r.expiresAt || r.expiresAt > now) as ContextEntry[];
+    .limit(100) as ContextEntry[];
 }
 
 /**

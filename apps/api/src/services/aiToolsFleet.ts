@@ -73,7 +73,7 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
       console.error(`[fleet:${toolName}]`, input.action, message, err);
-      return JSON.stringify({ error: `Operation failed: ${message}` });
+      return JSON.stringify({ error: `Operation failed. Check server logs for details.` });
     }
   };
 }
@@ -1086,7 +1086,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'update') {
         if (!input.windowId) return JSON.stringify({ error: 'windowId is required' });
-        const conditions: SQL[] = [eq(maintenanceWindows.id, input.windowId as string)];
+        const windowId = input.windowId as string;
+        const conditions: SQL[] = [eq(maintenanceWindows.id, windowId)];
         const oc = orgWhere(auth, maintenanceWindows.orgId);
         if (oc) conditions.push(oc);
 
@@ -1110,7 +1111,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'delete') {
         if (!input.windowId) return JSON.stringify({ error: 'windowId is required' });
-        const conditions: SQL[] = [eq(maintenanceWindows.id, input.windowId as string)];
+        const windowId = input.windowId as string;
+        const conditions: SQL[] = [eq(maintenanceWindows.id, windowId)];
         const oc = orgWhere(auth, maintenanceWindows.orgId);
         if (oc) conditions.push(oc);
 
