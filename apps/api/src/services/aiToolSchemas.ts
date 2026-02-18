@@ -24,16 +24,21 @@ const BLOCKED_PATH_PREFIXES = [
   'C:\\Users\\*\\AppData',
 ];
 
-function normalizePath(path: string): string {
-  return path
+export function normalizePath(path: string): string {
+  let result = path
     .replace(/\\/g, '/')      // Normalize backslashes
     .replace(/\/+/g, '/')     // Collapse redundant separators (/etc///shadow → /etc/shadow)
-    .replace(/\/\.\//g, '/')  // Remove dot components (/etc/./shadow → /etc/shadow)
-    .replace(/\/\.$/, '/')    // Trailing dot component
     .toLowerCase();
+  // Iteratively remove dot components until stable
+  let prev: string;
+  do {
+    prev = result;
+    result = result.replace(/\/\.\//g, '/').replace(/\/\.$/, '/');
+  } while (result !== prev);
+  return result;
 }
 
-function isBlockedPath(path: string): boolean {
+export function isBlockedPath(path: string): boolean {
   const normalized = normalizePath(path);
   return BLOCKED_PATH_PREFIXES.some(prefix => {
     const normalizedPrefix = normalizePath(prefix);
@@ -49,7 +54,7 @@ function isBlockedPath(path: string): boolean {
   });
 }
 
-const safePath = z.string().max(4096).refine(
+export const safePath = z.string().max(4096).refine(
   (path) => !path.includes('\0'),
   { message: 'Path contains null bytes' }
 ).refine(
@@ -244,13 +249,56 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     contextId: uuid,
   }),
 
+  // Computer control with conditional field validation
+  computer_control: z.object({
+    deviceId: uuid,
+    action: z.enum([
+      'screenshot', 'left_click', 'right_click', 'middle_click',
+      'double_click', 'mouse_move', 'scroll', 'key', 'type',
+    ]),
+    x: z.number().int().min(0).max(10000).optional(),
+    y: z.number().int().min(0).max(10000).optional(),
+    text: z.string().max(1000).optional(),
+    key: z.string().max(50).optional(),
+    modifiers: z.array(z.enum(['ctrl', 'alt', 'shift', 'meta'])).max(4).optional(),
+    scrollDelta: z.number().int().min(-100).max(100).optional(),
+    monitor: z.number().int().min(0).max(10).optional(),
+    captureAfter: z.boolean().optional(),
+    captureDelayMs: z.number().int().min(0).max(3000).optional(),
+  }).superRefine((data, ctx) => {
+    const MOUSE_ACTIONS = ['left_click', 'right_click', 'middle_click', 'double_click', 'mouse_move', 'scroll'];
+    if (MOUSE_ACTIONS.includes(data.action)) {
+      if (data.x === undefined || data.y === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `x and y coordinates are required for ${data.action} action`,
+          path: ['x'],
+        });
+      }
+    }
+    if (data.action === 'key' && !data.key) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'key field is required for key action',
+        path: ['key'],
+      });
+    }
+    if (data.action === 'type' && !data.text) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'text field is required for type action',
+        path: ['text'],
+      });
+    }
+  }),
+
   // Fleet orchestration tools
   ...fleetToolInputSchemas,
 };
 
 /**
  * Validate tool input against the registered schema.
- * Returns null on success, or an error message on failure.
+ * Returns { success: true } if valid, or { success: false, error } with details.
  */
 export function validateToolInput(
   toolName: string,
