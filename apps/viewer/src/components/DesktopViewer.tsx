@@ -867,6 +867,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     sendInputFn({ type: 'key_press', key, modifiers });
   }, [sendInputFn]);
 
+  const handleSendSAS = useCallback(() => {
+    const ch = webrtcRef.current?.controlChannel;
+    if (ch && ch.readyState === 'open') {
+      ch.send(JSON.stringify({ type: 'send_sas' }));
+    } else {
+      // WebSocket fallback: send as regular keystrokes (won't trigger real SAS)
+      sendInputFn({ type: 'key_press', key: 'delete', modifiers: ['ctrl', 'alt'] });
+    }
+  }, [sendInputFn]);
+
   const handleDisconnect = useCallback(() => {
     releaseAllKeys();
 
@@ -924,6 +934,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onSwitchMonitor={handleSwitchMonitor}
         onToggleAudio={handleToggleAudio}
         onSendKeys={handleSendKeys}
+        onSendSAS={handleSendSAS}
         onPasteAsKeystrokes={handlePasteAsKeystrokes}
         onCancelPaste={handleCancelPaste}
         onDisconnect={handleDisconnect}

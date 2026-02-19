@@ -1171,7 +1171,7 @@ func (s *Session) handleInputMessage(data []byte) {
 	}
 
 	if err := s.inputHandler.HandleEvent(event); err != nil {
-		slog.Warn("Failed to handle input event", "session", s.id, "error", err)
+		slog.Warn("Failed to handle input event", "session", s.id, "error", err.Error())
 	}
 }
 
@@ -1237,6 +1237,23 @@ func (s *Session) handleControlMessage(data []byte) {
 		enabled := msg.Value != 0
 		s.audioEnabled.Store(enabled)
 		slog.Info("Audio toggled", "session", s.id, "enabled", enabled)
+	case "send_sas":
+		slog.Info("SAS requested via control channel", "session", s.id)
+		sasErr := InvokeSAS()
+		ok := sasErr == nil
+		if sasErr != nil {
+			slog.Warn("SendSAS failed", "session", s.id, "error", sasErr.Error())
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"type": "sas_result",
+			"ok":   ok,
+		})
+		s.mu.RLock()
+		dc := s.controlDC
+		s.mu.RUnlock()
+		if dc != nil {
+			dc.SendText(string(resp))
+		}
 	case "switch_monitor":
 		if msg.Value < 0 {
 			return

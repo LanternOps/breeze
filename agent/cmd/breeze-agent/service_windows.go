@@ -7,6 +7,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -28,6 +29,26 @@ func isWindowsService() bool {
 func hasConsole() bool {
 	ret, _, _ := procGetConsoleWindow.Call()
 	return ret != 0
+}
+
+// ensureSASPolicy checks the SoftwareSASGeneration registry value and
+// auto-enables it if not sufficient. Value 3 = services + applications can
+// generate SAS. We need 3 (not 1) because the user helper calls SendSAS(TRUE)
+// from the user's session (it's not a service — it runs as SYSTEM via
+// CreateProcessAsUser). SendSAS targets the caller's session, so it must be
+// invoked from the user session, not Session 0.
+func ensureSASPolicy() {
+	policy := desktop.CheckSASPolicy()
+	if policy >= desktop.SASPolicyServicesApps {
+		log.Info("SoftwareSASGeneration policy is enabled", "value", int(policy))
+		return
+	}
+	log.Info("SoftwareSASGeneration policy insufficient for helper SAS, upgrading", "currentValue", int(policy))
+	if err := desktop.SetSASPolicy(uint32(desktop.SASPolicyServicesApps)); err != nil {
+		log.Warn("Failed to auto-set SoftwareSASGeneration policy", "error", err)
+	} else {
+		log.Info("Auto-set SoftwareSASGeneration policy to 3 (services + apps)")
+	}
 }
 
 // breezeService implements svc.Handler for the Windows SCM.
