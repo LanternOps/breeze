@@ -1,0 +1,10 @@
+---
+import AuthLayout from '../layouts/AuthLayout.astro';
+import AcceptInviteForm from '../components/portal/AcceptInviteForm';
+
+const token = Astro.url.searchParams.get('token') || '';
+---
+
+<AuthLayout title="Accept Invite">
+  <AcceptInviteForm client:load token={token} />
+</AuthLayout>

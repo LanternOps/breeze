@@ -3,12 +3,16 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
+import { nanoid } from 'nanoid';
 import { db } from '../db';
 import { users, partnerUsers, organizationUsers, roles, organizations } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
 import { getEmailService } from '../services/email';
+import { getRedis } from '../services';
+import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey } from './auth/helpers';
 
 export const userRoutes = new Hono();
 
@@ -165,9 +169,36 @@ function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeCo
   return auth.orgId ?? null;
 }
 
-function buildInviteUrl(email: string): string {
+function buildInviteUrl(inviteToken: string): string {
   const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
-  return `${appBaseUrl}/login?invite=${encodeURIComponent(email)}`;
+  return `${appBaseUrl}/accept-invite?token=${encodeURIComponent(inviteToken)}`;
+}
+
+async function generateInviteToken(userId: string): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) {
+    console.warn('[UsersRoute] Redis unavailable; cannot generate invite token');
+    return null;
+  }
+
+  try {
+    // Revoke any existing invite token for this user
+    const existingHash = await redis.get(inviteUserRedisKey(userId));
+    if (existingHash) {
+      await redis.del(inviteRedisKey(existingHash));
+    }
+
+    const inviteToken = nanoid(48);
+    const tokenHash = hashInviteToken(inviteToken);
+
+    await redis.setex(inviteRedisKey(tokenHash), INVITE_TOKEN_TTL_SECONDS, userId);
+    await redis.setex(inviteUserRedisKey(userId), INVITE_TOKEN_TTL_SECONDS, tokenHash);
+
+    return inviteToken;
+  } catch (err) {
+    console.error('[UsersRoute] Failed to store invite token in Redis:', err);
+    return null;
+  }
 }
 
 async function resolveInviteOrgName(scopeContext: ScopeContext): Promise<string | undefined> {
@@ -187,7 +218,8 @@ async function resolveInviteOrgName(scopeContext: ScopeContext): Promise<string 
 async function sendInviteEmail(
   scopeContext: ScopeContext,
   invitee: { email: string; name: string },
-  inviter: { name?: string; email?: string }
+  inviter: { name?: string; email?: string },
+  inviteToken: string
 ): Promise<boolean> {
   const emailService = getEmailService();
   if (!emailService) {
@@ -204,13 +236,35 @@ async function sendInviteEmail(
       name: invitee.name,
       inviterName,
       orgName,
-      inviteUrl: buildInviteUrl(invitee.email)
+      inviteUrl: buildInviteUrl(inviteToken)
     });
     return true;
   } catch (error) {
     console.error(`[UsersRoute] Failed to send invite email to ${invitee.email}:`, error);
     return false;
   }
+}
+
+async function generateAndDeliverInvite(
+  userId: string,
+  scopeContext: ScopeContext,
+  invitee: { email: string; name: string },
+  inviter: { name?: string; email?: string }
+): Promise<{ inviteEmailSent: boolean; inviteUrl?: string; warning?: string }> {
+  const inviteToken = await generateInviteToken(userId);
+  if (!inviteToken) {
+    return {
+      inviteEmailSent: false,
+      warning: 'Invite token could not be generated. Please resend the invite later.',
+    };
+  }
+
+  const inviteEmailSent = await sendInviteEmail(scopeContext, invitee, inviter, inviteToken);
+
+  return {
+    inviteEmailSent,
+    inviteUrl: inviteEmailSent ? undefined : buildInviteUrl(inviteToken),
+  };
 }
 
 function writeUserAudit(
@@ -565,10 +619,12 @@ userRoutes.post(
       return c.json({ error: 'User already exists in this scope' }, 409);
     }
 
-    const inviteEmailSent = await sendInviteEmail(scopeContext, {
-      email: result.user.email,
-      name: result.user.name
-    }, auth.user);
+    const invite = await generateAndDeliverInvite(
+      result.user.id,
+      scopeContext,
+      { email: result.user.email, name: result.user.name },
+      auth.user
+    );
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.invite',
@@ -582,7 +638,7 @@ userRoutes.post(
         orgIds: scopeContext.scope === 'partner' ? data.orgIds ?? [] : undefined,
         siteIds: scopeContext.scope === 'organization' ? data.siteIds ?? [] : undefined,
         deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined,
-        inviteEmailSent
+        inviteEmailSent: invite.inviteEmailSent
       }
     });
 
@@ -593,7 +649,9 @@ userRoutes.post(
         name: result.user.name,
         status: result.user.status,
         roleId: data.roleId,
-        inviteEmailSent
+        inviteEmailSent: invite.inviteEmailSent,
+        inviteUrl: invite.inviteUrl,
+        warning: invite.warning,
       },
       201
     );
@@ -619,10 +677,12 @@ userRoutes.post(
       return c.json({ error: 'User is not in invited status' }, 400);
     }
 
-    const inviteEmailSent = await sendInviteEmail(scopeContext, {
-      email: record.email,
-      name: record.name
-    }, auth.user);
+    const invite = await generateAndDeliverInvite(
+      record.id,
+      scopeContext,
+      { email: record.email, name: record.name },
+      auth.user
+    );
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.invite.resend',
@@ -631,11 +691,16 @@ userRoutes.post(
       details: {
         invitedEmail: record.email,
         scope: scopeContext.scope,
-        inviteEmailSent
+        inviteEmailSent: invite.inviteEmailSent
       }
     });
 
-    return c.json({ success: true, inviteEmailSent });
+    return c.json({
+      success: true,
+      inviteEmailSent: invite.inviteEmailSent,
+      inviteUrl: invite.inviteUrl,
+      warning: invite.warning,
+    });
   }
 );
 

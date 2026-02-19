@@ -7,6 +7,7 @@ import { db, withDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
 import { and, eq, inArray, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
+import { ENABLE_2FA } from '../routes/auth/schemas';
 
 export interface AuthContext {
   user: {
@@ -400,6 +401,11 @@ export function requirePermission(resource: string, action: string) {
  */
 export function requireMfa() {
   return async (c: Context, next: Next) => {
+    if (!ENABLE_2FA) {
+      await next();
+      return;
+    }
+
     const auth = c.get('auth');
 
     if (!auth) {

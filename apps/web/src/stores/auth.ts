@@ -533,3 +533,30 @@ export async function apiEnableSmsMfa(): Promise<{
     return { success: false, error: 'Network error' };
   }
 }
+
+export async function apiAcceptInvite(token: string, password: string): Promise<{
+  success: boolean;
+  user?: User;
+  tokens?: Tokens;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(buildApiUrl('/auth/accept-invite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ token, password })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || 'Failed to accept invite' };
+    }
+
+    return { success: true, user: data.user, tokens: data.tokens };
+  } catch (err) {
+    console.error('[apiAcceptInvite] Request failed:', err);
+    return { success: false, error: 'Network error' };
+  }
+}
