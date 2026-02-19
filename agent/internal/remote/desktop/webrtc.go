@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,9 +69,22 @@ type Session struct {
 	// capturerSwapped is set by switch_monitor. The capture loop checks and
 	// clears it to re-read s.capturer and reinitialize GPU pipeline state.
 	capturerSwapped atomic.Bool
-	// oldCapturer holds the previous capturer after a monitor switch so the
-	// capture loop can close it safely after confirming the swap.
-	oldCapturer ScreenCapturer
+	// oldCapturers holds previous capturers after monitor switches so the
+	// capture loop can close them safely after confirming the swap. A slice
+	// prevents leaking capturers if multiple switches arrive before the
+	// capture loop drains the swap.
+	oldCapturers []ScreenCapturer
+
+	// gpuEncodeErrors tracks consecutive GPU encode failures. The GPU path
+	// is only permanently disabled after 3+ consecutive errors to allow the
+	// MFT to warm up after a monitor switch (first frame often fails).
+	gpuEncodeErrors int
+
+	// cursorOffsetX/Y store the active monitor's virtual desktop origin so
+	// cursorStreamLoop can convert absolute GetCursorInfo coords to
+	// display-relative coords before sending to the viewer.
+	cursorOffsetX atomic.Int32
+	cursorOffsetY atomic.Int32
 
 	frameIdx uint64
 }
@@ -273,7 +287,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if len(displayIndex) > 0 {
 		displayIdx = displayIndex[0]
 	}
-	applyDisplayOffset(session.inputHandler, displayIdx)
+	applyDisplayOffset(session.inputHandler, displayIdx, &session.cursorOffsetX, &session.cursorOffsetY)
 
 	// Get screen bounds first — needed for bitrate scaling and encoder init
 	w, h, err := capturer.GetScreenBounds()
@@ -350,6 +364,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		MaxBitrate:     maxAdaptiveBitrate,
 		MinQuality:     QualityLow,
 		MaxQuality:     QualityUltra,
+		MaxFPS:         maxFrameRate,
+		OnFPSChange: func(fps int) {
+			session.mu.Lock()
+			session.fps = fps
+			session.mu.Unlock()
+			session.encoder.SetFPS(fps)
+		},
 	})
 	if err == nil {
 		session.adaptive = adaptive
@@ -642,9 +663,10 @@ func (s *Session) doCleanup() {
 		if s.encoder != nil {
 			s.encoder.Close()
 		}
-		if s.oldCapturer != nil {
-			s.oldCapturer.Close()
+		for _, oc := range s.oldCapturers {
+			oc.Close()
 		}
+		s.oldCapturers = nil
 		if s.capturer != nil {
 			s.capturer.Close()
 		}
@@ -663,7 +685,10 @@ func (s *Session) doCleanup() {
 // waiting for new frames, so a ticker would only add latency.
 // For non-DXGI capturers, uses a ticker to pace frames.
 func (s *Session) captureLoop() {
-	if h, ok := s.capturer.(TightLoopHint); ok && h.TightLoop() {
+	s.mu.RLock()
+	cap := s.capturer
+	s.mu.RUnlock()
+	if h, ok := cap.(TightLoopHint); ok && h.TightLoop() {
 		s.captureLoopDXGI()
 	} else {
 		s.captureLoopTicker()
@@ -676,7 +701,10 @@ func (s *Session) captureLoopDXGI() {
 	fps := s.getFPS()
 	frameDuration := time.Second / time.Duration(fps)
 	hwChecked := false
-	tp, hasTP := s.capturer.(TextureProvider)
+	s.mu.RLock()
+	initCap := s.capturer
+	s.mu.RUnlock()
+	tp, hasTP := initCap.(TextureProvider)
 	gpuDisabled := false
 
 	// Dynamic FPS scaling: track consecutive "no new frame" iterations.
@@ -686,6 +714,12 @@ func (s *Session) captureLoopDXGI() {
 	const idleSleep = 16 * time.Millisecond // one frame at 60fps — responsive wake-up
 	consecutiveSkips := 0
 	wasIdle := false
+
+	// Post-switch repaint counter: after a monitor switch, keep forcing desktop
+	// repaints so the browser decoder receives enough frames at the new resolution
+	// to fully initialize. Without this, a static display goes idle after 2-3
+	// frames, which may not be enough for the decoder to stabilize.
+	postSwitchRepaints := 0
 
 	for {
 		loopStart := time.Now()
@@ -713,36 +747,50 @@ func (s *Session) captureLoopDXGI() {
 
 		// Monitor switch: re-read capturer and reinitialize GPU pipeline state.
 		if s.capturerSwapped.CompareAndSwap(true, false) {
-			// Close the old capturer now that we're safely outside captureAndSendFrameGPU.
-			s.mu.RLock()
-			oldCap := s.oldCapturer
+			// Close old capturers now that we're safely outside captureAndSendFrameGPU.
+			s.mu.Lock()
+			pending := s.oldCapturers
+			s.oldCapturers = nil
 			newCap := s.capturer
-			s.mu.RUnlock()
-			if oldCap != nil {
-				oldCap.Close()
-				s.mu.Lock()
-				s.oldCapturer = nil
-				s.mu.Unlock()
+			s.mu.Unlock()
+			for _, oc := range pending {
+				oc.Close()
 			}
 			tp, hasTP = newCap.(TextureProvider)
 			gpuDisabled = false
 			hwChecked = false
 			consecutiveSkips = 0
 			wasIdle = false
+			s.gpuEncodeErrors = 0
+			s.frameIdx = 0 // reset so first frames after switch are logged
 			// Pass new D3D11 device to encoder
 			if hasTP && s.encoder != nil {
 				s.encoder.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
 			}
 			// Update encoder dimensions for the new monitor
 			if w, h, err := newCap.GetScreenBounds(); err == nil && s.encoder != nil {
-				_ = s.encoder.SetDimensions(w, h)
-				_ = s.encoder.ForceKeyframe()
+				if dimErr := s.encoder.SetDimensions(w, h); dimErr != nil {
+					slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr)
+				}
+				if kfErr := s.encoder.ForceKeyframe(); kfErr != nil {
+					slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr)
+				}
 			}
+			// Second repaint nudge — the first (in handleControlMessage) may
+			// have been consumed by a stale capture iteration on the old capturer.
+			forceDesktopRepaint()
+			// Keep forcing repaints for ~2s so the browser decoder gets enough
+			// frames at the new resolution to fully stabilize. Critical for
+			// static displays where DXGI produces zero dirty rects naturally.
+			postSwitchRepaints = 120 // ~2s at 60fps
 		}
 
 		// If the capturer falls back to a non-blocking mode (e.g. DXGI→GDI),
 		// switch to the ticker loop to avoid spinning.
-		if h, ok := s.capturer.(TightLoopHint); ok && !h.TightLoop() {
+		s.mu.RLock()
+		currentCap := s.capturer
+		s.mu.RUnlock()
+		if h, ok := currentCap.(TightLoopHint); ok && !h.TightLoop() {
 			slog.Info("Capturer no longer supports tight loop, switching to ticker loop", "session", s.id)
 			s.captureLoopTicker()
 			return
@@ -775,13 +823,19 @@ func (s *Session) captureLoopDXGI() {
 			handled, disable, sent := s.captureAndSendFrameGPU(tp, frameDuration)
 			if disable {
 				gpuDisabled = true
+				slog.Warn("GPU capture disabled, falling back to CPU Capture() path", "session", s.id)
 			}
 			if handled {
 				frameSent = sent
 				sleepDur := frameDuration
 				if !frameSent {
 					consecutiveSkips++
-					if consecutiveSkips >= idleThreshold {
+					// After a monitor switch, keep nudging the display so
+					// DXGI picks up dirty rects on an otherwise static screen.
+					if postSwitchRepaints > 0 {
+						postSwitchRepaints--
+						forceDesktopRepaint()
+					} else if consecutiveSkips >= idleThreshold {
 						sleepDur = idleSleep // idle mode: poll less often
 					}
 				} else {
@@ -835,7 +889,11 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 			if cv {
 				v = 1
 			}
-			_ = s.cursorDC.SendText(fmt.Sprintf(`{"x":%d,"y":%d,"v":%d}`, cx, cy, v))
+			// Convert absolute virtual desktop coords to display-relative
+			// so viewer can map directly using videoWidth/videoHeight.
+			relX := cx - s.cursorOffsetX.Load()
+			relY := cy - s.cursorOffsetY.Load()
+			_ = s.cursorDC.SendText(fmt.Sprintf(`{"x":%d,"y":%d,"v":%d}`, relX, relY, v))
 		}
 	}
 }
@@ -888,13 +946,14 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		s.mu.RUnlock()
 		return
 	}
+	cap := s.capturer
 	s.mu.RUnlock()
 
 	// 1. Capture screen
 	t0 := time.Now()
-	img, err := s.capturer.Capture()
+	img, err := cap.Capture()
 	if err != nil {
-		slog.Debug("Screen capture error", "session", s.id, "error", err)
+		slog.Warn("Screen capture error (CPU path)", "session", s.id, "error", err.Error())
 		return
 	}
 	if img == nil {
@@ -904,9 +963,30 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	s.metrics.RecordCapture(time.Since(t0))
 
+	// Diagnostic: check BGRA pixel data for non-black content.
+	// BGRA: 4 bytes per pixel [B,G,R,A]. Black = R+G+B == 0.
+	s.frameIdx++
+	if s.frameIdx <= 5 || s.frameIdx%300 == 0 {
+		nonBlack := 0
+		totalPx := len(img.Pix) / 4
+		for i := 0; i < len(img.Pix); i += 4 {
+			if img.Pix[i] != 0 || img.Pix[i+1] != 0 || img.Pix[i+2] != 0 {
+				nonBlack++
+			}
+		}
+		slog.Warn("BGRA content check (CPU path)",
+			"frame", s.frameIdx,
+			"nonBlackPixels", nonBlack,
+			"totalPixels", totalPx,
+			"pixLen", len(img.Pix),
+			"imgW", img.Rect.Dx(),
+			"imgH", img.Rect.Dy(),
+		)
+	}
+
 	// Keep the encoder's expected byte order in sync with the capturer.
 	desiredPF := PixelFormatRGBA
-	if bgraCap, ok := s.capturer.(BGRAProvider); ok && bgraCap.IsBGRA() {
+	if bgraCap, ok := cap.(BGRAProvider); ok && bgraCap.IsBGRA() {
 		desiredPF = PixelFormatBGRA
 	}
 	if desiredPF != s.encoderPF {
@@ -916,7 +996,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	// DXGI capturers already skip unchanged frames (Capture() returns nil,nil).
 	dxgiActive := false
-	if h, ok := s.capturer.(TightLoopHint); ok && h.TightLoop() {
+	if h, ok := cap.(TightLoopHint); ok && h.TightLoop() {
 		dxgiActive = true
 	}
 
@@ -983,7 +1063,7 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	t0 := time.Now()
 	texture, err := tp.CaptureTexture()
 	if err != nil {
-		slog.Warn("GPU capture error", "session", s.id, "error", err)
+		slog.Warn("GPU capture error", "session", s.id, "error", err.Error())
 		return false, true, false
 	}
 	if texture == 0 {
@@ -998,14 +1078,38 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	encodeTime := time.Since(t1)
 
 	if err != nil {
-		slog.Warn("GPU encode error", "session", s.id, "error", err)
-		return true, true, false
+		s.gpuEncodeErrors++
+		slog.Warn("GPU encode error", "session", s.id, "error", err.Error(),
+			"consecutive", s.gpuEncodeErrors)
+		// Allow up to 3 retries for MFT warm-up after monitor switch.
+		// First frame often fails because the hardware MFT needs a warm-up cycle.
+		if s.gpuEncodeErrors >= 3 {
+			// Force a repaint so the CPU fallback has dirty rects to capture.
+			forceDesktopRepaint()
+			return true, true, false // permanently disable GPU
+		}
+		// Force repaint so next CaptureTexture has something to work with.
+		forceDesktopRepaint()
+		return true, false, false // retry next frame
 	}
+	s.gpuEncodeErrors = 0
 	if h264Data == nil {
 		return true, false, false
 	}
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
+
+	s.frameIdx++
+	// Log the first 5 frames sent (catches monitor switch + encoder re-init)
+	if s.frameIdx <= 5 {
+		slog.Warn("H264 frame sent",
+			"session", s.id,
+			"frameIdx", s.frameIdx,
+			"bytes", len(h264Data),
+			"encodeMs", encodeTime.Milliseconds(),
+			"nalus", describeH264NALUs(h264Data),
+		)
+	}
 
 	sample := media.Sample{
 		Data:     h264Data,
@@ -1098,6 +1202,9 @@ func (s *Session) handleControlMessage(data []byte) {
 		}
 	case "set_fps":
 		if msg.Value > 0 && msg.Value <= maxFrameRate {
+			if s.adaptive != nil {
+				s.adaptive.SetMaxFPS(msg.Value)
+			}
 			s.mu.Lock()
 			s.fps = msg.Value
 			s.mu.Unlock()
@@ -1142,16 +1249,20 @@ func (s *Session) handleControlMessage(data []byte) {
 			slog.Warn("Failed to create capturer for monitor", "display", msg.Value, "error", capErr)
 			return
 		}
+		// Force a desktop repaint so DXGI has dirty rects for the initial
+		// AcquireNextFrame on the new display. Without this, a completely
+		// static display (no cursor, no animations) produces zero frames.
+		forceDesktopRepaint()
 		// Swap capturer and signal the capture loop to reinitialize.
 		// The old capturer is NOT closed here — the capture loop closes it
 		// after detecting the swap, avoiding a race where Close() is called
 		// while captureAndSendFrameGPU is mid-frame on the old capturer.
 		s.mu.Lock()
-		s.oldCapturer = s.capturer
+		s.oldCapturers = append(s.oldCapturers, s.capturer)
 		s.capturer = newCap
 		s.mu.Unlock()
 		s.capturerSwapped.Store(true)
-		applyDisplayOffset(s.inputHandler, msg.Value)
+		applyDisplayOffset(s.inputHandler, msg.Value, &s.cursorOffsetX, &s.cursorOffsetY)
 		// Get bounds for viewer notification — encoder dimensions are updated
 		// by the capture loop when it detects capturerSwapped, avoiding a race
 		// with the encoding goroutine.
@@ -1190,9 +1301,10 @@ func (s *Session) adaptiveLoop() {
 		return
 	}
 
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
+	var logCount int
 	for {
 		select {
 		case <-s.done:
@@ -1203,6 +1315,15 @@ func (s *Session) adaptiveLoop() {
 				continue
 			}
 			s.adaptive.Update(rtt, loss)
+			// Log RTCP stats periodically for bitrate diagnostics
+			logCount++
+			if logCount%5 == 1 { // every 10s (5 × 2s ticks)
+				slog.Info("WebRTC RTCP stats",
+					"session", s.id,
+					"rtt", rtt.Round(time.Millisecond),
+					"fractionLost", fmt.Sprintf("%.4f", loss),
+				)
+			}
 		}
 	}
 }
@@ -1235,18 +1356,79 @@ func (s *Session) AddICECandidate(candidate string) error {
 
 // applyDisplayOffset queries the monitor list and sets the input handler's
 // coordinate offset so viewer-relative (0,0) maps to the captured monitor's
-// top-left corner in virtual screen space.
-func applyDisplayOffset(handler InputHandler, displayIndex int) {
+// top-left corner in virtual screen space. Also stores the offset atomically
+// for cursorStreamLoop to convert absolute cursor coords to display-relative.
+func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, cursorOffY *atomic.Int32) {
 	monitors, err := ListMonitors()
 	if err != nil {
+		slog.Warn("applyDisplayOffset: ListMonitors failed", "error", err)
 		handler.SetDisplayOffset(0, 0)
+		cursorOffX.Store(0)
+		cursorOffY.Store(0)
 		return
 	}
 	for _, m := range monitors {
+		slog.Debug("applyDisplayOffset: monitor",
+			"index", m.Index, "name", m.Name,
+			"x", m.X, "y", m.Y, "w", m.Width, "h", m.Height,
+			"primary", m.IsPrimary)
+	}
+	for _, m := range monitors {
 		if m.Index == displayIndex {
+			slog.Debug("applyDisplayOffset: selected",
+				"display", displayIndex, "offsetX", m.X, "offsetY", m.Y)
 			handler.SetDisplayOffset(m.X, m.Y)
+			cursorOffX.Store(int32(m.X))
+			cursorOffY.Store(int32(m.Y))
 			return
 		}
 	}
+	slog.Warn("applyDisplayOffset: display not found, using 0,0", "display", displayIndex)
 	handler.SetDisplayOffset(0, 0)
+	cursorOffX.Store(0)
+	cursorOffY.Store(0)
+}
+
+// describeH264NALUs parses Annex B start codes and returns a summary of NALU types.
+// Used for diagnostics after monitor switch to verify SPS/PPS presence.
+func describeH264NALUs(data []byte) string {
+	types := make(map[string]int)
+	for i := 0; i < len(data)-4; {
+		// Look for start code: 00 00 01 or 00 00 00 01
+		startLen := 0
+		if data[i] == 0 && data[i+1] == 0 {
+			if data[i+2] == 1 {
+				startLen = 3
+			} else if data[i+2] == 0 && i+3 < len(data) && data[i+3] == 1 {
+				startLen = 4
+			}
+		}
+		if startLen == 0 {
+			i++
+			continue
+		}
+		naluType := data[i+startLen] & 0x1f
+		name := fmt.Sprintf("type%d", naluType)
+		switch naluType {
+		case 7:
+			name = "SPS"
+		case 8:
+			name = "PPS"
+		case 5:
+			name = "IDR"
+		case 1:
+			name = "non-IDR"
+		case 6:
+			name = "SEI"
+		case 9:
+			name = "AUD"
+		}
+		types[name]++
+		i += startLen + 1
+	}
+	parts := make([]string, 0, len(types))
+	for t, c := range types {
+		parts = append(parts, fmt.Sprintf("%s:%d", t, c))
+	}
+	return strings.Join(parts, " ")
 }

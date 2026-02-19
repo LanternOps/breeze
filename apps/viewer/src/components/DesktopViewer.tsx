@@ -502,6 +502,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setMonitors(msg.monitors);
         } else if (msg.type === 'monitor_switched') {
           setActiveMonitor(msg.index ?? 0);
+          // Request a keyframe so the browser decoder gets a fresh IDR
+          // with the new resolution's SPS/PPS immediately.
+          ch.send(JSON.stringify({ type: 'request_keyframe' }));
         }
       } catch (err) {
         console.warn('Failed to parse control message:', err);

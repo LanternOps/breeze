@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -187,6 +188,10 @@ func startAgent() (*agentComponents, error) {
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
 		})
+		// Dev builds ship info-level logs for performance tuning and diagnostics.
+		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
+			logging.SetShipperLevel("info")
+		}
 	}
 
 	log.Info("starting agent",
