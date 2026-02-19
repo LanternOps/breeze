@@ -21,8 +21,10 @@ func init() {
 }
 
 // InvokeSAS triggers the Secure Attention Sequence (Ctrl+Alt+Del) via sas.dll.
-// The helper runs as SYSTEM in the user's session (not as a Windows service),
-// so we pass TRUE (1) for application context. Requires SoftwareSASGeneration >= 2.
+// The helper runs as SYSTEM in the user's session, spawned by the service via
+// CreateProcessAsUser. Windows treats SYSTEM processes as "services" for SAS
+// purposes (checks LocalSystem identity, not SCM registration), so we use
+// AsUser=FALSE (service context). Requires SoftwareSASGeneration >= 1.
 func InvokeSAS() error {
 	if err := sasDLL.Load(); err != nil {
 		return fmt.Errorf("sas.dll not available (Server Core?): %w", err)
@@ -31,13 +33,12 @@ func InvokeSAS() error {
 		return fmt.Errorf("SendSAS proc not found in sas.dll: %w", err)
 	}
 
-	// SendSAS(BOOL AsUser) — TRUE = application context. The helper runs as
-	// SYSTEM in the user's session (not as a service), so AsUser=TRUE is correct.
-	// SAS targets the caller's session, so it must be called from the user session.
-	// Requires SoftwareSASGeneration >= 2 (we set it to 3 on startup).
+	// SendSAS(BOOL AsUser) — FALSE = service context. The helper is a SYSTEM
+	// process, and Windows verifies the LocalSystem identity (not SCM registration).
+	// SAS targets the caller's session. Requires SoftwareSASGeneration >= 1.
 	// SendSAS is a void function, no HRESULT to check.
-	sendSAS.Call(uintptr(1))
-	slog.Info("SendSAS invoked (AsUser=TRUE)")
+	sendSAS.Call(uintptr(0))
+	slog.Info("SendSAS invoked (AsUser=FALSE, service context)")
 	return nil
 }
 
