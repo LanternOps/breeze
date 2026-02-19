@@ -210,12 +210,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
-		log.Info("user helper IPC enabled", "socket", socketPath, "reason", func() string {
-			if cfg.IsService {
-				return "windows-service"
-			}
-			return "config"
-		}())
+		reason := "config"
+		if cfg.IsService {
+			reason = "windows-service"
+		}
+		log.Info("user helper IPC enabled", "socket", socketPath, "reason", reason)
 	}
 
 	// Register winget provider (dispatches via user helper for user-context execution)

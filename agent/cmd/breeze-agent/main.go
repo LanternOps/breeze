@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -187,6 +188,10 @@ func startAgent() (*agentComponents, error) {
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
 		})
+		// Dev builds ship info-level logs for performance tuning and diagnostics.
+		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
+			logging.SetShipperLevel("info")
+		}
 	}
 
 	log.Info("starting agent",
@@ -244,6 +249,12 @@ func startAgent() (*agentComponents, error) {
 	// Propagate service mode flag so the heartbeat can route desktop
 	// sessions through the IPC user helper instead of capturing directly.
 	cfg.IsService = isWindowsService()
+
+	// Ensure SAS (Ctrl+Alt+Del) policy allows services to generate it.
+	// Only relevant on Windows when running as a service.
+	if cfg.IsService {
+		ensureSASPolicy()
+	}
 
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)

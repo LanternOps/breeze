@@ -5,9 +5,11 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -85,6 +87,12 @@ type WindowsInputHandler struct {
 	cachedCW     int
 	cachedCH     int
 	metricsValid bool
+
+	// Secure desktop support: the input handler goroutine must be on the
+	// same desktop as the active input desktop for SendInput to work.
+	threadLocked    bool
+	lastDesktopSync time.Time
+	currentDesktop  uintptr
 }
 
 // NewInputHandler creates a Windows input handler
@@ -375,7 +383,44 @@ func (h *WindowsInputHandler) SendKeyUp(key string) error {
 	return nil
 }
 
+// ensureInputDesktop switches the input handler's thread to the active input
+// desktop so that SendInput works on the Winlogon/UAC secure desktop.
+// Only re-checks every 500ms to avoid overhead on every input event.
+func (h *WindowsInputHandler) ensureInputDesktop() {
+	now := time.Now()
+	if now.Sub(h.lastDesktopSync) < 500*time.Millisecond {
+		return
+	}
+	h.lastDesktopSync = now
+
+	if !h.threadLocked {
+		runtime.LockOSThread()
+		h.threadLocked = true
+	}
+
+	hDesk, _, _ := procOpenInputDesktop.Call(0, 0, uintptr(desktopGenericAll))
+	if hDesk == 0 {
+		return
+	}
+
+	ret, _, _ := procSetThreadDesktop.Call(hDesk)
+	if ret == 0 {
+		// Already on this desktop, or can't switch — close the handle.
+		procCloseDesktop.Call(hDesk)
+		return
+	}
+
+	// Successfully switched — close old handle, store new one.
+	if h.currentDesktop != 0 {
+		procCloseDesktop.Call(h.currentDesktop)
+	}
+	h.currentDesktop = hDesk
+}
+
 func (h *WindowsInputHandler) HandleEvent(event InputEvent) error {
+	// Ensure we're on the active input desktop (handles Winlogon/UAC switch).
+	h.ensureInputDesktop()
+
 	// Translate viewer-relative coordinates to virtual screen coordinates.
 	h.mu.Lock()
 	event.X += h.offsetX

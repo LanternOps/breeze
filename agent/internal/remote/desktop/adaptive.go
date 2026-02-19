@@ -15,7 +15,15 @@ type AdaptiveConfig struct {
 	MinQuality     QualityPreset
 	MaxQuality     QualityPreset
 	Cooldown       time.Duration
+	MaxFPS         int        // maximum FPS ceiling (from encoder/session)
+	OnFPSChange    func(int)  // called when adaptive FPS changes
 }
+
+// minBitsPerFrame is the minimum bits each frame should receive to maintain
+// acceptable quality for screen content. When bitrate drops, FPS is reduced
+// so each frame stays above this threshold — preventing MFT buffer buildup
+// from pushing too many low-quality frames.
+const minBitsPerFrame = 40000 // 5KB per frame
 
 type AdaptiveBitrate struct {
 	mu            sync.Mutex
@@ -28,6 +36,11 @@ type AdaptiveBitrate struct {
 	lastAdjust    time.Time
 	targetBitrate int
 	targetQuality QualityPreset
+
+	// Adaptive FPS: scaled with bitrate to maintain per-frame quality.
+	maxFPS      int
+	currentFPS  int
+	onFPSChange func(int)
 
 	// EWMA-smoothed metrics to avoid reacting to single transient spikes.
 	// Alpha = 0.3 gives ~70% weight to history, 30% to new sample.
@@ -63,7 +76,7 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 	}
 	cooldown := cfg.Cooldown
 	if cooldown == 0 {
-		cooldown = 2 * time.Second
+		cooldown = 500 * time.Millisecond
 	}
 
 	// Start at the encoder's actual bitrate, not the ceiling.
@@ -72,6 +85,12 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 		initialBitrate = cfg.MinBitrate
 	}
 	initialBitrate = clampInt(initialBitrate, cfg.MinBitrate, cfg.MaxBitrate)
+
+	maxFPS := cfg.MaxFPS
+	if maxFPS <= 0 {
+		maxFPS = 60
+	}
+	initialFPS := clampInt(initialBitrate/minBitsPerFrame, 10, maxFPS)
 
 	return &AdaptiveBitrate{
 		encoder:       cfg.Encoder,
@@ -83,7 +102,21 @@ func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
 		lastAdjust:    time.Time{},
 		targetBitrate: initialBitrate,
 		targetQuality: QualityAuto,
+		maxFPS:        maxFPS,
+		currentFPS:    initialFPS,
+		onFPSChange:   cfg.OnFPSChange,
 	}, nil
+}
+
+// SetMaxFPS updates the FPS ceiling for adaptive scaling.
+// Called when the viewer sends a set_fps control message.
+func (a *AdaptiveBitrate) SetMaxFPS(max int) {
+	if a == nil || max <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.maxFPS = max
 }
 
 // SetMaxBitrate updates the ceiling the adaptive controller will ramp up to.
@@ -136,7 +169,7 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	a.updateEWMA(rtt, packetLoss)
 
-	// Need at least 3 samples before making decisions (6s warmup).
+	// Need at least 3 samples before making decisions (~1.5s warmup).
 	if a.samplesCount < 3 {
 		a.mu.Unlock()
 		return
@@ -167,9 +200,10 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		}
 	}
 
-	// Require 3 consecutive stable samples (~6s) before upgrading.
-	// This prevents upgrade→degrade oscillation cycles.
-	const stableRequired = 3
+	// Require 2 consecutive stable samples (~1s) before upgrading.
+	// This prevents upgrade→degrade oscillation cycles while still
+	// recovering quickly from brief congestion.
+	const stableRequired = 2
 
 	action := "hold"
 	newBitrate := a.targetBitrate
@@ -198,26 +232,38 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		a.stableCount = 0 // reset so we need another stable period before next upgrade
 	}
 
-	if newBitrate == a.targetBitrate && newQuality == a.targetQuality {
+	// Scale FPS with bitrate: ensure each frame gets enough bits for quality.
+	newFPS := clampInt(newBitrate/minBitsPerFrame, 10, a.maxFPS)
+
+	if newBitrate == a.targetBitrate && newQuality == a.targetQuality && newFPS == a.currentFPS {
 		a.mu.Unlock()
 		return
 	}
 
 	prevBitrate := a.targetBitrate
+	prevFPS := a.currentFPS
 	a.targetBitrate = newBitrate
 	a.targetQuality = newQuality
+	a.currentFPS = newFPS
 	a.lastAdjust = now
 	encoder := a.encoder
+	fpsCallback := a.onFPSChange
 	a.mu.Unlock()
 
 	slog.Info("Adaptive bitrate adjustment",
 		"action", action,
 		"bitrate", newBitrate,
 		"prev", prevBitrate,
+		"fps", newFPS,
+		"prevFPS", prevFPS,
 		"quality", newQuality,
 		"smoothedLoss", loss,
 		"smoothedRTT", smoothRTT.Round(time.Millisecond),
 	)
+
+	if newFPS != prevFPS && fpsCallback != nil {
+		fpsCallback(newFPS)
+	}
 
 	if encoder != nil {
 		if err := encoder.SetBitrate(newBitrate); err != nil {

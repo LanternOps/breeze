@@ -45,6 +45,7 @@ type mftEncoder struct {
 	d3d11Device    uintptr // ID3D11Device (from capturer, not owned)
 	d3d11Context   uintptr // ID3D11DeviceContext (from capturer, not owned)
 	gpuConv        *gpuConverter
+	gpuFrameCount  uint64 // frames since gpuConv was (re)created, for diagnostic logging
 	dxgiManager    uintptr // IMFDXGIDeviceManager
 	dxgiResetToken uint32
 	gpuEnabled     bool
@@ -197,16 +198,17 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	if qiErr == nil && codecAPI != 0 {
 		m.codecAPI = codecAPI
 
-		// Set GOP size (keyframe interval) = 5 seconds at configured FPS.
-		// Longer GOPs save bandwidth for mostly-static screen sharing content.
-		// WebRTC PLI/FIR handles on-demand keyframe recovery.
+		// Set GOP size (keyframe interval) = 2 seconds at configured FPS.
+		// Short GOPs mean faster recovery from packet loss — viewer never
+		// waits more than 2s for a fresh IDR. WebRTC PLI/FIR also handles
+		// on-demand keyframe recovery for immediate cases.
 		cfgFPS := m.cfg.FPS
 		if cfgFPS <= 0 {
 			cfgFPS = 30
 		}
-		gopSize := uint32(cfgFPS * 5)
-		if gopSize < 60 {
-			gopSize = 60
+		gopSize := uint32(cfgFPS * 2)
+		if gopSize < 20 {
+			gopSize = 20
 		}
 		gv := comVariant{vt: vtUI4, val: uint64(gopSize)}
 		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
@@ -216,6 +218,44 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			slog.Debug("ICodecAPI SetValue(GOPSize) failed (non-fatal)", "gopSize", gopSize, "error", err)
 		} else {
 			slog.Debug("GOP size set via ICodecAPI", "gopSize", gopSize)
+		}
+
+		// Zero-latency configuration: eliminate encoder frame buffering.
+		// Screen sharing is real-time — every frame in should produce a frame
+		// out immediately. Buffering only adds lag.
+
+		// 1. Disable B-frames: B-frames require future reference frames,
+		//    adding 1+ frame of reordering latency.
+		bv := comVariant{vt: vtUI4, val: 0}
+		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+			uintptr(unsafe.Pointer(&codecAPIAVEncMPVDefaultBPictureCount)),
+			uintptr(unsafe.Pointer(&bv)),
+		); err != nil {
+			slog.Debug("ICodecAPI SetValue(BPictureCount=0) failed (non-fatal)", "error", err)
+		}
+
+		// 2. CBR rate control: VBR defers output to optimize compression.
+		//    CBR produces output immediately at the target bitrate.
+		rv := comVariant{vt: vtUI4, val: uint64(eAVEncCommonRateControlMode_CBR)}
+		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+			uintptr(unsafe.Pointer(&codecAPIAVEncCommonRateControlMode)),
+			uintptr(unsafe.Pointer(&rv)),
+		); err != nil {
+			slog.Debug("ICodecAPI SetValue(RateControl=CBR) failed (non-fatal)", "error", err)
+		}
+
+		// 3. Minimize VBV buffer: limits how many frames the encoder can queue
+		//    internally. Set to ~1 frame worth of bits at current bitrate/fps.
+		bitsPerFrame := uint32(m.cfg.Bitrate / max(m.cfg.FPS, 1))
+		if bitsPerFrame < 50000 {
+			bitsPerFrame = 50000
+		}
+		vbv := comVariant{vt: vtUI4, val: uint64(bitsPerFrame)}
+		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+			uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
+			uintptr(unsafe.Pointer(&vbv)),
+		); err != nil {
+			slog.Debug("ICodecAPI SetValue(BufferSize) failed (non-fatal)", "error", err)
 		}
 	} else {
 		slog.Debug("ICodecAPI not available on this MFT (dynamic bitrate disabled)", "error", qiErr)
@@ -1095,6 +1135,7 @@ func (m *mftEncoder) shutdown() {
 		m.gpuConv.Close()
 		m.gpuConv = nil
 	}
+	m.gpuFrameCount = 0
 	m.gpuEnabled = false
 	m.gpuFailed = false
 	m.forceKeyframePending = false
@@ -1116,6 +1157,8 @@ func (m *mftEncoder) shutdown() {
 	comRelease(m.transform)
 	m.transform = 0
 	m.inited = false
+	m.frameIdx = 0
+	m.startTime = time.Now()
 
 	procMFShutdown.Call()
 	procCoUninitialize.Call()
@@ -1148,6 +1191,17 @@ func (m *mftEncoder) IsPlaceholder() bool {
 func (m *mftEncoder) SetD3D11Device(device, context uintptr) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if device != m.d3d11Device && m.gpuConv != nil {
+		// D3D11 device changed (monitor switch) — the GPU converter holds video
+		// processor and texture resources bound to the old device. Close it so
+		// EncodeTexture lazily re-creates it with the new device.
+		m.gpuConv.Close()
+		m.gpuConv = nil
+		m.gpuFrameCount = 0
+		m.gpuEnabled = false
+		m.gpuFailed = false
+		slog.Info("GPU converter reset for new D3D11 device (monitor switch)")
+	}
 	m.d3d11Device = device
 	m.d3d11Context = context
 }
@@ -1212,6 +1266,63 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 		return nil, fmt.Errorf("GPU convert: %w", err)
 	}
 	defer putNV12Buffer(nv12)
+
+	// Diagnostic: check NV12 Y-plane brightness at multiple positions.
+	// Y=16 is limited-range black; varied values indicate real content.
+	m.gpuFrameCount++
+	if m.gpuFrameCount <= 3 || m.gpuFrameCount%300 == 0 {
+		yPlaneSize := m.width * m.height
+		checkLen := 1000
+		if checkLen > yPlaneSize {
+			checkLen = yPlaneSize
+		}
+		// Sample from START of Y plane (top of screen)
+		topSum := 0
+		for i := 0; i < checkLen; i++ {
+			topSum += int(nv12[i])
+		}
+		// Sample from MIDDLE of Y plane (center of screen, where content is)
+		midOffset := yPlaneSize / 2
+		midEnd := midOffset + checkLen
+		if midEnd > yPlaneSize {
+			midEnd = yPlaneSize
+		}
+		midSum := 0
+		for i := midOffset; i < midEnd; i++ {
+			midSum += int(nv12[i])
+		}
+		// Count non-black pixels in entire Y plane (Y != 16)
+		nonBlack := 0
+		for i := 0; i < yPlaneSize; i++ {
+			if nv12[i] != 16 {
+				nonBlack++
+			}
+		}
+		slog.Warn("NV12 content check",
+			"frame", m.gpuFrameCount,
+			"width", m.width, "height", m.height,
+			"topYSum", topSum,
+			"midYSum", midSum,
+			"nonBlackPixels", nonBlack,
+			"totalPixels", yPlaneSize,
+		)
+
+		// Self-healing: if the GPU Video Processor produces entirely black NV12
+		// output (all Y=16, zero non-black pixels), permanently switch to CPU
+		// BGRA→NV12 conversion. This occurs with certain monitor configurations
+		// (e.g., portrait 1080x1920) due to driver-level issues.
+		if m.gpuFrameCount <= 3 && nonBlack == 0 && yPlaneSize > 0 {
+			slog.Warn("GPU converter producing all-black NV12, disabling GPU pipeline",
+				"frame", m.gpuFrameCount,
+				"width", m.width, "height", m.height,
+			)
+			m.gpuConv.Close()
+			m.gpuConv = nil
+			m.gpuEnabled = false
+			m.gpuFailed = true
+			return nil, fmt.Errorf("GPU converter produced all-black frame (display %dx%d)", m.width, m.height)
+		}
+	}
 
 	// 2. Create MF sample with NV12 data (same path as CPU Encode)
 	sample, err := m.createSample(nv12)

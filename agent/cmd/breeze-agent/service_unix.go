@@ -14,3 +14,6 @@ func hasConsole() bool { return true }
 func runAsService(_ func() (*agentComponents, error)) error {
 	return fmt.Errorf("Windows service mode is not available on this platform")
 }
+
+// ensureSASPolicy is a no-op on non-Windows platforms.
+func ensureSASPolicy() {}

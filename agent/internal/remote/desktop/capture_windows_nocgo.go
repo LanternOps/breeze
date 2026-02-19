@@ -19,6 +19,7 @@ var (
 	procGetSystemMetrics   = user32.NewProc("GetSystemMetrics")
 	procSetProcessDPIAware = user32.NewProc("SetProcessDPIAware")
 
+	procCreateDCW              = gdi32.NewProc("CreateDCW")
 	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
 	procSelectObject           = gdi32.NewProc("SelectObject")
@@ -55,6 +56,9 @@ type bitmapInfo struct {
 	BmiColors [1]uint32
 }
 
+// displayDeviceName is L"DISPLAY" as a UTF-16 null-terminated string.
+var displayDeviceName = syscall.StringToUTF16Ptr("DISPLAY")
+
 // gdiCapturer implements ScreenCapturer using Windows GDI (no CGo required).
 // GDI handles are created once and reused across frames for performance.
 type gdiCapturer struct {
@@ -62,14 +66,15 @@ type gdiCapturer struct {
 	mu     sync.Mutex
 
 	// Persistent GDI handles
-	screenDC  uintptr
-	memDC     uintptr
-	hBitmap   uintptr
-	oldBitmap uintptr
-	bi        bitmapInfo
-	width     int
-	height    int
-	inited    bool
+	screenDC     uintptr
+	screenDCOwned bool // true if screenDC was created via CreateDC (must use DeleteDC)
+	memDC        uintptr
+	hBitmap      uintptr
+	oldBitmap    uintptr
+	bi           bitmapInfo
+	width        int
+	height       int
+	inited       bool
 
 	// Reusable pixel buffer (BGRA from GetDIBits)
 	pixBuf []byte
@@ -99,10 +104,23 @@ func (c *gdiCapturer) ensureHandles() error {
 	// Release old handles if resolution changed
 	c.releaseHandles()
 
-	// Get screen DC
-	hdc, _, _ := procGetDC.Call(0)
+	// Use CreateDC("DISPLAY") instead of GetDC(0). GetDC(0) returns a DC
+	// for the desktop window which fails on the Winlogon (secure) desktop.
+	// CreateDC("DISPLAY") creates a DC for the physical display directly,
+	// bypassing the window/desktop association, and works on all desktops.
+	hdc, _, _ := procCreateDCW.Call(
+		uintptr(unsafe.Pointer(displayDeviceName)),
+		0, 0, 0,
+	)
 	if hdc == 0 {
-		return fmt.Errorf("GetDC failed")
+		// Fall back to GetDC(0) if CreateDC fails
+		hdc, _, _ = procGetDC.Call(0)
+		if hdc == 0 {
+			return fmt.Errorf("both CreateDC and GetDC failed")
+		}
+		c.screenDCOwned = false
+	} else {
+		c.screenDCOwned = true
 	}
 
 	// Create compatible memory DC
@@ -168,10 +186,15 @@ func (c *gdiCapturer) releaseHandles() {
 		procDeleteDC.Call(c.memDC)
 	}
 	if c.screenDC != 0 {
-		procReleaseDC.Call(0, c.screenDC)
+		if c.screenDCOwned {
+			procDeleteDC.Call(c.screenDC) // CreateDC → DeleteDC
+		} else {
+			procReleaseDC.Call(0, c.screenDC) // GetDC → ReleaseDC
+		}
 	}
 	c.inited = false
 	c.screenDC = 0
+	c.screenDCOwned = false
 	c.memDC = 0
 	c.hBitmap = 0
 	c.oldBitmap = 0
@@ -190,6 +213,9 @@ func (c *gdiCapturer) Capture() (*image.RGBA, error) {
 	ret, _, _ := procBitBlt.Call(c.memDC, 0, 0, uintptr(c.width), uintptr(c.height),
 		c.screenDC, 0, 0, srcCopy)
 	if ret == 0 {
+		// BitBlt can fail after a desktop switch (DC becomes stale).
+		// Invalidate handles so the next Capture() re-acquires them.
+		c.releaseHandles()
 		return nil, fmt.Errorf("BitBlt failed")
 	}
 
