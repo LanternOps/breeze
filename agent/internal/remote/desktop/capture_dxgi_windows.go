@@ -21,11 +21,12 @@ var (
 	procD3D11CreateDevice = d3d11DLL.NewProc("D3D11CreateDevice")
 
 	// Desktop switching — needed to follow UAC/lock screen secure desktop.
-	procOpenInputDesktop  = user32.NewProc("OpenInputDesktop")
-	procSetThreadDesktop  = user32.NewProc("SetThreadDesktop")
-	procGetThreadDesktop  = user32.NewProc("GetThreadDesktop")
-	procCloseDesktop      = user32.NewProc("CloseDesktop")
-	procGetCurrentThreadId = kernel32.NewProc("GetCurrentThreadId")
+	procOpenInputDesktop        = user32.NewProc("OpenInputDesktop")
+	procSetThreadDesktop        = user32.NewProc("SetThreadDesktop")
+	procGetThreadDesktop        = user32.NewProc("GetThreadDesktop")
+	procCloseDesktop            = user32.NewProc("CloseDesktop")
+	procGetCurrentThreadId      = kernel32.NewProc("GetCurrentThreadId")
+	procGetUserObjectInformationW = user32.NewProc("GetUserObjectInformationW")
 )
 
 // D3D11/DXGI constants
@@ -44,12 +45,16 @@ const (
 
 	dxgiErrWaitTimeout   = 0x887A0027
 	dxgiErrAccessLost    = 0x887A0026
+	dxgiErrInvalidCall   = 0x887A0001
 	dxgiErrDeviceRemoved = 0x887A0005
 	dxgiErrDeviceReset   = 0x887A0007
 
 	// Desktop access rights for OpenInputDesktop (GENERIC_ALL).
 	// Required to attach to the secure desktop (UAC, lock screen).
 	desktopGenericAll = 0x10000000
+
+	// GetUserObjectInformation index for desktop name (UOI_NAME).
+	uoiName = 2
 
 	// DXGI/D3D11 COM vtable indices
 	dxgiDeviceGetAdapter       = 7  // IDXGIDevice (after IUnknown+IDXGIObject)
@@ -62,6 +67,7 @@ const (
 	d3d11CtxMap                = 14 // ID3D11DeviceContext
 	d3d11CtxUnmap              = 15 // ID3D11DeviceContext
 	d3d11CtxCopyResource       = 47 // ID3D11DeviceContext
+	d3d11CtxFlush              = 111 // ID3D11DeviceContext::Flush (void, no params beyond this)
 )
 
 // COM GUIDs for DXGI interfaces
@@ -142,9 +148,12 @@ type dxgiCapturer struct {
 	staging     uintptr // ID3D11Texture2D (staging, CPU-readable)
 	gpuTexture  uintptr // ID3D11Texture2D (DEFAULT usage, RENDER_TARGET bind, for GPU pipeline)
 
-	width  int
-	height int
-	inited bool
+	width    int    // logical desktop dimensions (post-rotation, what the user sees)
+	height   int
+	texWidth  int   // native texture dimensions (pre-rotation, what DXGI returns)
+	texHeight int
+	rotation uint32 // DXGI_MODE_ROTATION (0=unspecified, 1=identity, 2=90, 3=180, 4=270)
+	inited   bool
 
 	// True when CaptureTexture has an in-flight AcquireNextFrame that hasn't been released yet.
 	textureFrameAcquired bool
@@ -159,6 +168,17 @@ type dxgiCapturer struct {
 	// Failure tracking for GDI fallback
 	consecutiveFailures int
 	gdiFallback         *gdiCapturer
+
+	// Diagnostic counters for debugging capture failures
+	diagTimeouts      int
+	diagZeroFrames    int
+	diagSuccessFrames int
+	diagLogInterval   int // log every N skips
+
+	// Periodic desktop check: detect UAC/lock screen transitions that
+	// don't trigger DXGI_ERROR_ACCESS_LOST (Secure Desktop activation
+	// may just cause timeouts instead).
+	lastDesktopCheck time.Time
 }
 
 // newPlatformCapturer tries DXGI Desktop Duplication first, falls back to GDI.
@@ -169,7 +189,7 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 		return &gdiCapturer{config: config}, nil
 	}
 	slog.Info("DXGI Desktop Duplication initialized",
-		"width", c.width, "height", c.height)
+		"display", config.DisplayIndex, "width", c.width, "height", c.height)
 	return c, nil
 }
 
@@ -296,10 +316,22 @@ func (c *dxgiCapturer) initDXGI() error {
 		return fmt.Errorf("invalid duplication dimensions: %dx%d", width, height)
 	}
 
-	// Create persistent staging texture
+	// DXGI Desktop Duplication returns textures in the NATIVE (pre-rotation)
+	// orientation. ModeDesc reports post-rotation (desktop) dimensions, but
+	// AcquireNextFrame returns textures at native panel dimensions (swapped
+	// for 90°/270°). Staging/GPU textures must match native dims so
+	// CopyResource succeeds; we rotate the pixels after CPU readback.
+	desktopW, desktopH := width, height                          // logical desktop dimensions (from ModeDesc)
+	texW, texH := width, height                                  // native texture dimensions
+	rot := duplDesc.Rotation                                     // 1=identity, 2=90°, 3=180°, 4=270°
+	if rot == 2 || rot == 4 {                                    // 90° or 270° rotation
+		texW, texH = height, width                           // native texture: ModeDesc dims swapped
+	}
+
+	// Create persistent staging texture at NATIVE dimensions
 	stagingDesc := d3d11Texture2DDesc{
-		Width:          uint32(width),
-		Height:         uint32(height),
+		Width:          uint32(texW),
+		Height:         uint32(texH),
 		MipLevels:      1,
 		ArraySize:      1,
 		Format:         dxgiFormatB8G8R8A8,
@@ -325,9 +357,10 @@ func (c *dxgiCapturer) initDXGI() error {
 
 	// Create GPU-only texture for zero-copy pipeline (video processor input).
 	// Must have DEFAULT usage and RENDER_TARGET bind for CreateVideoProcessorInputView.
+	// Uses native (pre-rotation) dimensions to match acquired DXGI textures.
 	gpuDesc := d3d11Texture2DDesc{
-		Width:          uint32(width),
-		Height:         uint32(height),
+		Width:          uint32(texW),
+		Height:         uint32(texH),
 		MipLevels:      1,
 		ArraySize:      1,
 		Format:         dxgiFormatB8G8R8A8,
@@ -354,10 +387,19 @@ func (c *dxgiCapturer) initDXGI() error {
 	c.duplication = duplication
 	c.staging = staging
 	c.gpuTexture = gpuTexture
-	c.width = width
-	c.height = height
+	c.texWidth = texW
+	c.texHeight = texH
+	c.width = desktopW
+	c.height = desktopH
+	c.rotation = rot
 	c.inited = true
 
+	slog.Info("DXGI Desktop Duplication initialized",
+		"display", c.config.DisplayIndex,
+		"desktopW", desktopW, "desktopH", desktopH,
+		"texW", texW, "texH", texH,
+		"rotation", rot,
+	)
 	return nil
 }
 
@@ -373,6 +415,11 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Proactive desktop switch detection: MUST run before GDI fallback check
+	// so we can detect when the Secure Desktop is dismissed and switch back
+	// to DXGI. Without this, GDI fallback is permanent and never recovers.
+	c.checkDesktopSwitch()
+
 	// If we've fallen back to GDI, delegate
 	if c.gdiFallback != nil {
 		return c.gdiFallback.Capture()
@@ -385,13 +432,13 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	var frameInfo dxgiOutDuplFrameInfo
 	var resource uintptr
 
-	// 100ms timeout reduces idle CPU polling from ~62/sec to ~10/sec.
+	// 50ms timeout balances idle CPU polling (~20/sec) with frame release latency.
 	// AcquireNextFrame returns immediately when a new frame is available
 	// (regardless of timeout), so this doesn't add latency for active content.
 	hr, _, _ := syscall.SyscallN(
 		comVtblFn(c.duplication, dxgiDuplAcquireNextFrame),
 		c.duplication,
-		uintptr(100),
+		uintptr(50),
 		uintptr(unsafe.Pointer(&frameInfo)),
 		uintptr(unsafe.Pointer(&resource)),
 	)
@@ -400,16 +447,40 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 
 	if hresult == dxgiErrWaitTimeout {
 		c.lastAccumulatedFrames = 0
+		c.diagTimeouts++
+		if c.diagLogInterval == 0 {
+			c.diagLogInterval = 100
+		}
+		if c.diagTimeouts == 1 || c.diagTimeouts%c.diagLogInterval == 0 {
+			slog.Info("DXGI Capture diagnostic",
+				"display", c.config.DisplayIndex,
+				"timeouts", c.diagTimeouts,
+				"zeroFrames", c.diagZeroFrames,
+				"success", c.diagSuccessFrames,
+			)
+		}
 		return nil, nil // No new frame
 	}
 
-	if hresult == dxgiErrAccessLost {
-		slog.Warn("DXGI access lost (desktop switch/resolution change), reinitializing")
+	if hresult == dxgiErrAccessLost || hresult == dxgiErrInvalidCall {
+		slog.Info("DXGI duplication invalidated, reinitializing",
+			"hresult", fmt.Sprintf("0x%08X", hresult))
 		c.releaseDXGI()
-		// Try switching to the active input desktop. This handles UAC/lock
-		// screen transitions where Windows moves to the Secure Desktop.
 		c.switchToInputDesktop()
 		time.Sleep(200 * time.Millisecond)
+
+		// Check if we landed on a Secure Desktop (Winlogon/UAC).
+		// DXGI can't capture Secure Desktops — use GDI instead.
+		threadID, _, _ := procGetCurrentThreadId.Call()
+		desk, _, _ := procGetThreadDesktop.Call(threadID)
+		dname := desktopName(desk)
+		if dname != "" && dname != "Default" {
+			slog.Info("On Secure Desktop after DXGI error, using GDI capture",
+				"desktop", dname)
+			c.gdiFallback = &gdiCapturer{config: c.config}
+			return c.gdiFallback.Capture()
+		}
+
 		if err := c.initDXGI(); err != nil {
 			slog.Warn("DXGI reinit failed, falling back to GDI", "error", err)
 			c.switchToGDI()
@@ -447,11 +518,13 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 
 	// No new frames accumulated — skip
 	if frameInfo.AccumulatedFrames == 0 {
+		c.diagZeroFrames++
 		comRelease(resource)
 		syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
 		return nil, nil
 	}
 
+	c.diagSuccessFrames++
 	// QueryInterface → ID3D11Texture2D
 	var texture uintptr
 	_, err := comCall(resource, vtblQueryInterface,
@@ -464,18 +537,15 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 		return nil, fmt.Errorf("QueryInterface ID3D11Texture2D: %w", err)
 	}
 
-	// CopyResource(staging, texture) — GPU-to-GPU copy
-	copyHr, _, _ := syscall.SyscallN(
+	// CopyResource(staging, texture) — GPU-to-GPU copy.
+	// CopyResource is void — no HRESULT return. Errors surface via
+	// GetDeviceRemovedReason or a failed Map on the destination texture.
+	syscall.SyscallN(
 		comVtblFn(c.context, d3d11CtxCopyResource),
 		c.context,
 		c.staging,
 		texture,
 	)
-	if int32(copyHr) < 0 {
-		comRelease(texture)
-		syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
-		return nil, fmt.Errorf("CopyResource failed: 0x%08X", uint32(copyHr))
-	}
 	comRelease(texture)
 
 	// Map staging texture
@@ -494,19 +564,25 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 		return nil, fmt.Errorf("Map staging texture: 0x%08X", uint32(hr))
 	}
 
-	// Copy BGRA data directly into pooled image — single copy, no intermediate buffer.
-	img := captureImagePool.Get(c.width, c.height)
+	// Read BGRA pixels from the mapped staging texture.
+	// Staging uses native (pre-rotation) dimensions; output uses logical desktop dims.
 	rowPitch := int(mapped.RowPitch)
-	rowBytes := c.width * 4
-	if rowPitch == rowBytes {
-		// Fast path: no padding, single memcpy
-		src := unsafe.Slice((*byte)(unsafe.Pointer(mapped.PData)), c.height*rowPitch)
-		copy(img.Pix, src)
+	img := captureImagePool.Get(c.width, c.height)
+
+	if c.rotation == 2 || c.rotation == 4 {
+		// Rotated display: read native-dimension pixels with rotation transform.
+		c.readRotated(mapped.PData, rowPitch, img)
 	} else {
-		// Handle RowPitch > width*4 (GPU alignment padding)
-		for y := 0; y < c.height; y++ {
-			srcRow := unsafe.Slice((*byte)(unsafe.Pointer(mapped.PData+uintptr(y*rowPitch))), rowBytes)
-			copy(img.Pix[y*rowBytes:], srcRow)
+		// Identity: direct copy (texWidth == width when no rotation).
+		rowBytes := c.width * 4
+		if rowPitch == rowBytes {
+			src := unsafe.Slice((*byte)(unsafe.Pointer(mapped.PData)), c.height*rowPitch)
+			copy(img.Pix, src)
+		} else {
+			for y := 0; y < c.height; y++ {
+				srcRow := unsafe.Slice((*byte)(unsafe.Pointer(mapped.PData+uintptr(y*rowPitch))), rowBytes)
+				copy(img.Pix[y*rowBytes:], srcRow)
+			}
 		}
 	}
 
@@ -515,6 +591,41 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
 
 	return img, nil
+}
+
+// readRotated reads pixels from mapped GPU memory (native orientation) and writes
+// them to img with rotation applied, producing the correct desktop orientation.
+// pData is the mapped staging texture pointer, rowPitch is the GPU row stride.
+func (c *dxgiCapturer) readRotated(pData uintptr, rowPitch int, img *image.RGBA) {
+	srcW := c.texWidth  // native texture width
+	srcH := c.texHeight // native texture height
+	dstW := c.width     // output (desktop) width
+
+	if c.rotation == 2 {
+		// ROTATE90: undo by rotating 90° CW.
+		// desktop(ox, oy) = native(oy, srcH - 1 - ox)
+		for oy := 0; oy < c.height; oy++ {
+			sx := oy // constant for this row
+			for ox := 0; ox < c.width; ox++ {
+				sy := srcH - 1 - ox
+				srcOff := uintptr(sy*rowPitch + sx*4)
+				dstOff := (oy*dstW + ox) * 4
+				*(*[4]byte)(unsafe.Pointer(&img.Pix[dstOff])) = *(*[4]byte)(unsafe.Pointer(pData + srcOff))
+			}
+		}
+	} else {
+		// ROTATE270: undo by rotating 90° CCW.
+		// desktop(ox, oy) = native(srcW - 1 - oy, ox)
+		for oy := 0; oy < c.height; oy++ {
+			sx := srcW - 1 - oy // constant for this row
+			for ox := 0; ox < c.width; ox++ {
+				sy := ox
+				srcOff := uintptr(sy*rowPitch + sx*4)
+				dstOff := (oy*dstW + ox) * 4
+				*(*[4]byte)(unsafe.Pointer(&img.Pix[dstOff])) = *(*[4]byte)(unsafe.Pointer(pData + srcOff))
+			}
+		}
+	}
 }
 
 // CaptureRegion captures a specific region via full capture + crop.
@@ -668,6 +779,118 @@ func (c *dxgiCapturer) switchToInputDesktop() bool {
 	return true
 }
 
+// desktopName returns the name of the given desktop handle using
+// GetUserObjectInformationW(UOI_NAME). Returns "" on failure.
+func desktopName(hDesk uintptr) string {
+	var buf [128]uint16
+	var needed uint32
+	ret, _, _ := procGetUserObjectInformationW.Call(
+		hDesk,
+		uoiName,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)*2),
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if ret == 0 {
+		return ""
+	}
+	// Find null terminator
+	n := int(needed / 2)
+	if n > len(buf) {
+		n = len(buf)
+	}
+	for i := 0; i < n; i++ {
+		if buf[i] == 0 {
+			n = i
+			break
+		}
+	}
+	return syscall.UTF16ToString(buf[:n])
+}
+
+// checkDesktopSwitch detects UAC/lock screen transitions that don't trigger
+// DXGI_ERROR_ACCESS_LOST. Some Windows versions just stop producing frames
+// when the Secure Desktop activates, causing endless timeouts instead of
+// ACCESS_LOST. This method periodically checks if the input desktop changed.
+//
+// When switching TO a Secure Desktop (Winlogon/Screen-saver), DXGI Desktop
+// Duplication cannot capture the content — it produces empty frames. We fall
+// back to GDI (BitBlt) which can capture the Secure Desktop.
+// When switching BACK to Default, we reinit DXGI for GPU-accelerated capture.
+//
+// Returns true if a desktop switch was detected and capture was reconfigured.
+func (c *dxgiCapturer) checkDesktopSwitch() bool {
+	now := time.Now()
+	if now.Sub(c.lastDesktopCheck) < 2*time.Second {
+		return false
+	}
+	c.lastDesktopCheck = now
+
+	// Get the current thread's desktop name
+	threadID, _, _ := procGetCurrentThreadId.Call()
+	currentDesk, _, _ := procGetThreadDesktop.Call(threadID)
+	if currentDesk == 0 {
+		return false
+	}
+	currentName := desktopName(currentDesk)
+
+	// Open the active input desktop (may be Secure/Winlogon during UAC)
+	inputDesk, _, _ := procOpenInputDesktop.Call(0, 0, uintptr(desktopGenericAll))
+	if inputDesk == 0 {
+		// Can't open input desktop — may lack permission. Not a switch.
+		return false
+	}
+	inputName := desktopName(inputDesk)
+
+	// Compare by name: handle values differ even for the same desktop
+	// because OpenInputDesktop returns a new handle each time.
+	// Desktop names: "Default" (normal), "Winlogon" (UAC/lock), "Screen-saver".
+	if currentName == inputName {
+		procCloseDesktop.Call(inputDesk)
+		return false
+	}
+
+	slog.Info("Desktop change detected",
+		"from", currentName, "to", inputName)
+
+	// Release current capture resources
+	c.releaseDXGI()
+	if c.gdiFallback != nil {
+		c.gdiFallback.releaseHandles()
+		c.gdiFallback = nil
+	}
+
+	// Switch thread to new desktop
+	ret, _, _ := procSetThreadDesktop.Call(inputDesk)
+	if ret == 0 {
+		procCloseDesktop.Call(inputDesk)
+		slog.Warn("SetThreadDesktop failed during desktop switch")
+		c.initDXGI()
+		return true
+	}
+
+	if c.currentDesktop != 0 {
+		procCloseDesktop.Call(c.currentDesktop)
+	}
+	c.currentDesktop = inputDesk
+
+	if inputName == "Default" {
+		// Returning to normal desktop: use DXGI for GPU-accelerated capture.
+		slog.Info("Switched back to Default desktop, reinitializing DXGI")
+		if err := c.initDXGI(); err != nil {
+			slog.Warn("DXGI reinit failed after desktop switch", "error", err)
+			c.switchToGDI()
+		}
+	} else {
+		// Secure Desktop (Winlogon, Screen-saver): DXGI Desktop Duplication
+		// can't capture it — it produces empty frames. Use GDI BitBlt instead.
+		slog.Info("Switched to Secure Desktop, using GDI capture",
+			"desktop", inputName)
+		c.gdiFallback = &gdiCapturer{config: c.config}
+	}
+	return true
+}
+
 func (c *dxgiCapturer) switchToGDI() {
 	c.releaseDXGI()
 	c.gdiFallback = &gdiCapturer{config: c.config}
@@ -705,8 +928,17 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Proactive desktop switch detection: MUST run before gdiFallback check
+	// so we can switch back to DXGI when the Secure Desktop is dismissed.
+	c.checkDesktopSwitch()
+
 	if c.gdiFallback != nil || !c.inited {
 		return 0, nil
+	}
+	// GPU path doesn't support display rotation yet — return error so caller
+	// permanently disables GPU and falls back to CPU Capture() path.
+	if c.rotation == 2 || c.rotation == 4 {
+		return 0, fmt.Errorf("GPU path unsupported for rotated display (rotation=%d)", c.rotation)
 	}
 	if c.textureFrameAcquired {
 		// This indicates caller misuse: they didn't call ReleaseTexture().
@@ -716,7 +948,7 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 
 	// GPU texture is required for the video processor pipeline
 	if c.gpuTexture == 0 {
-		return 0, fmt.Errorf("GPU texture not available")
+		return 0, fmt.Errorf("GPU texture not available (display=%d)", c.config.DisplayIndex)
 	}
 
 	var frameInfo dxgiOutDuplFrameInfo
@@ -725,7 +957,7 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 	hr, _, _ := syscall.SyscallN(
 		comVtblFn(c.duplication, dxgiDuplAcquireNextFrame),
 		c.duplication,
-		uintptr(100),
+		uintptr(50),
 		uintptr(unsafe.Pointer(&frameInfo)),
 		uintptr(unsafe.Pointer(&resource)),
 	)
@@ -733,13 +965,35 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 	hresult := uint32(hr)
 	if hresult == dxgiErrWaitTimeout {
 		c.lastAccumulatedFrames = 0
+		c.diagTimeouts++
+		if c.diagTimeouts == 1 || c.diagTimeouts%200 == 0 {
+			slog.Debug("DXGI CaptureTexture diagnostic",
+				"display", c.config.DisplayIndex,
+				"timeouts", c.diagTimeouts,
+				"zeroFrames", c.diagZeroFrames,
+				"success", c.diagSuccessFrames,
+			)
+		}
 		return 0, nil
 	}
-	if hresult == dxgiErrAccessLost {
-		slog.Warn("DXGI access lost during GPU capture (desktop switch/resolution change), reinitializing")
+	if hresult == dxgiErrAccessLost || hresult == dxgiErrInvalidCall {
+		slog.Info("DXGI duplication invalidated during GPU capture, reinitializing",
+			"hresult", fmt.Sprintf("0x%08X", hresult))
 		c.releaseDXGI()
 		c.switchToInputDesktop()
 		time.Sleep(200 * time.Millisecond)
+
+		// Check if we landed on a Secure Desktop — use GDI instead of DXGI.
+		threadID, _, _ := procGetCurrentThreadId.Call()
+		desk, _, _ := procGetThreadDesktop.Call(threadID)
+		dname := desktopName(desk)
+		if dname != "" && dname != "Default" {
+			slog.Info("On Secure Desktop after DXGI error (GPU), using GDI capture",
+				"desktop", dname)
+			c.gdiFallback = &gdiCapturer{config: c.config}
+			return 0, nil // Caller will fall through to CPU Capture() path
+		}
+
 		if err := c.initDXGI(); err != nil {
 			slog.Warn("DXGI reinit failed after access lost (GPU capture), falling back to GDI", "error", err)
 			c.switchToGDI()
@@ -772,9 +1026,19 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 	c.lastAccumulatedFrames = frameInfo.AccumulatedFrames
 
 	if frameInfo.AccumulatedFrames == 0 {
+		c.diagZeroFrames++
 		comRelease(resource)
 		syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
 		return 0, nil
+	}
+
+	c.diagSuccessFrames++
+	if c.diagSuccessFrames <= 3 {
+		slog.Debug("DXGI CaptureTexture frame acquired",
+			"display", c.config.DisplayIndex,
+			"accumulated", frameInfo.AccumulatedFrames,
+			"frameNum", c.diagSuccessFrames,
+		)
 	}
 
 	// QueryInterface → ID3D11Texture2D
@@ -789,19 +1053,34 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 		return 0, fmt.Errorf("QueryInterface ID3D11Texture2D: %w", err)
 	}
 
-	// CopyResource(gpuTexture, texture) — GPU-to-GPU copy into DEFAULT-usage texture
-	// This texture has RENDER_TARGET bind, compatible with video processor input views.
-	copyHr, _, _ := syscall.SyscallN(
+	// Diagnostic: check actual acquired texture dimensions vs our staging/gpu texture.
+	if c.diagSuccessFrames <= 3 {
+		var texDesc d3d11Texture2DDesc
+		syscall.SyscallN(comVtblFn(texture, 10), // ID3D11Texture2D::GetDesc = vtable[10]
+			texture, uintptr(unsafe.Pointer(&texDesc)))
+		slog.Debug("DXGI acquired texture dimensions",
+			"display", c.config.DisplayIndex,
+			"texW", texDesc.Width, "texH", texDesc.Height,
+			"nativeW", c.texWidth, "nativeH", c.texHeight,
+			"rotation", c.rotation,
+			"format", texDesc.Format,
+		)
+	}
+
+	// CopyResource(gpuTexture, texture) — GPU-to-GPU copy into DEFAULT-usage texture.
+	// CopyResource is void — no HRESULT return. Errors surface via
+	// GetDeviceRemovedReason or a failed encode step.
+	syscall.SyscallN(
 		comVtblFn(c.context, d3d11CtxCopyResource),
 		c.context,
 		c.gpuTexture,
 		texture,
 	)
-	if int32(copyHr) < 0 {
-		comRelease(texture)
-		syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
-		return 0, fmt.Errorf("CopyResource failed: 0x%08X", uint32(copyHr))
-	}
+
+	// Flush ensures CopyResource reaches the GPU before downstream reads
+	// (e.g., VideoProcessorBlt in the encoder pipeline).
+	syscall.SyscallN(comVtblFn(c.context, d3d11CtxFlush), c.context)
+
 	comRelease(texture)
 
 	// Return GPU texture handle — caller must call ReleaseTexture()

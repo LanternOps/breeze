@@ -15,6 +15,16 @@ import (
 // spawnGuard prevents concurrent helper spawns for the same target session.
 var spawnGuard sync.Mutex
 
+// serviceUnavailable returns a failed CommandResult for commands that cannot
+// operate from Session 0 (Windows service mode).
+func serviceUnavailable(command string, start time.Time) tools.CommandResult {
+	return tools.CommandResult{
+		Status:     "failed",
+		Error:      command + " unavailable in service mode; use WebRTC instead",
+		DurationMs: time.Since(start).Milliseconds(),
+	}
+}
+
 func init() {
 	handlerRegistry[tools.CmdFileTransfer] = handleFileTransfer
 	handlerRegistry[tools.CmdCancelTransfer] = handleCancelTransfer
@@ -294,11 +304,7 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	// WS-based desktop streaming cannot work from Session 0 (no display).
 	// The viewer should use WebRTC (start_desktop) when connecting to a service agent.
 	if h.isService {
-		return tools.CommandResult{
-			Status:     "failed",
-			Error:      "desktop_stream_start unavailable in service mode; use start_desktop (WebRTC) instead",
-			DurationMs: time.Since(start).Milliseconds(),
-		}
+		return serviceUnavailable("desktop_stream_start", start)
 	}
 
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
@@ -337,6 +343,7 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	if h.isService {
+		// No WS stream running in service mode — return success as a no-op.
 		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
@@ -354,11 +361,7 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Input injection cannot work from Session 0 (SetCursorPos, SendInput fail).
 	// WebRTC sessions handle input via the data channel in the user helper.
 	if h.isService {
-		return tools.CommandResult{
-			Status:     "failed",
-			Error:      "desktop_input unavailable in service mode; use WebRTC data channel",
-			DurationMs: time.Since(start).Milliseconds(),
-		}
+		return serviceUnavailable("desktop_input", start)
 	}
 
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
@@ -411,11 +414,7 @@ func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
 func handleDesktopConfig(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	if h.isService {
-		return tools.CommandResult{
-			Status:     "failed",
-			Error:      "desktop_config unavailable in service mode; use WebRTC",
-			DurationMs: time.Since(start).Milliseconds(),
-		}
+		return serviceUnavailable("desktop_config", start)
 	}
 	sessionID, errResult := tools.RequirePayloadString(cmd.Payload, "sessionId")
 	if errResult != nil {

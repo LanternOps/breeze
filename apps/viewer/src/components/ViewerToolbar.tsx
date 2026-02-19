@@ -32,6 +32,7 @@ interface Props {
   onSwitchMonitor: (index: number) => void;
   onToggleAudio: () => void;
   onSendKeys: (key: string, modifiers: string[]) => void;
+  onSendSAS: () => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
   onDisconnect: () => void;
@@ -42,10 +43,11 @@ interface KeyCombo {
   key: string;
   modifiers: string[];
   description: string;
+  sas?: boolean;
 }
 
 const KEY_COMBOS: KeyCombo[] = [
-  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen' },
+  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen', sas: true },
   { label: 'Ctrl+Shift+Esc',  key: 'escape', modifiers: ['ctrl', 'shift'], description: 'Task Manager' },
   { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
   { label: 'Alt+F4',          key: 'f4',     modifiers: ['alt'],           description: 'Close window' },
@@ -86,6 +88,7 @@ export default function ViewerToolbar({
   onSwitchMonitor,
   onToggleAudio,
   onSendKeys,
+  onSendSAS,
   onPasteAsKeystrokes,
   onCancelPaste,
   onDisconnect,
@@ -107,6 +110,7 @@ export default function ViewerToolbar({
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
   const [keysOpen, setKeysOpen] = useState(false);
+  const [sasFlash, setSasFlash] = useState(false);
   const keysDropdownRef = useRef<HTMLDivElement>(null);
 
   // Update duration every second
@@ -283,6 +287,11 @@ export default function ViewerToolbar({
 
       <div className="flex-1" />
 
+      {/* SAS sent flash */}
+      {sasFlash && (
+        <span className="text-xs text-yellow-400 animate-pulse">Ctrl+Alt+Del sent</span>
+      )}
+
       {/* Paste progress indicator */}
       {pasteProgress && (
         <div className="flex items-center gap-1.5 text-xs text-yellow-400">
@@ -356,7 +365,13 @@ export default function ViewerToolbar({
               <button
                 key={combo.label}
                 onClick={() => {
-                  onSendKeys(combo.key, combo.modifiers);
+                  if (combo.sas) {
+                    onSendSAS();
+                    setSasFlash(true);
+                    setTimeout(() => setSasFlash(false), 2000);
+                  } else {
+                    onSendKeys(combo.key, combo.modifiers);
+                  }
                   setKeysOpen(false);
                 }}
                 className="w-full flex items-center justify-between px-3 py-1.5 text-xs hover:bg-gray-700 text-left"
