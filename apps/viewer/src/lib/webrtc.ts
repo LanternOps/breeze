@@ -18,7 +18,7 @@ export interface WebRTCSession {
   close: () => void;
 }
 
-const ICE_GATHER_TIMEOUT_MS = 3000;
+const ICE_GATHER_TIMEOUT_MS = 5000;
 const ANSWER_POLL_INTERVAL_MS = 200;
 
 /**

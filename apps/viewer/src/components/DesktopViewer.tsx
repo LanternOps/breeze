@@ -120,13 +120,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	          // Create a dedicated Audio element for the remote audio track.
           // The video element's MediaStream (set up in webrtc.ts) only carries
           // the video track, so audio needs its own playback element.
-	          const audioEl = new Audio();
-	          audioEl.srcObject = new MediaStream([event.track]);
-	          audioEl.muted = true; // start muted (user toggles)
-	          audioEl.play().catch(() => {});
-	          // Store ref for mute toggle
-	          (session as any)._audioEl = audioEl;
-	        }
+		          const audioEl = new Audio();
+		          audioEl.srcObject = new MediaStream([event.track]);
+		          audioEl.muted = true; // start muted (user toggles)
+		          audioEl.play().catch((err) => {
+		            console.warn('Failed to auto-play remote audio track:', err);
+		          });
+		          // Store ref for mute toggle
+		          (session as any)._audioEl = audioEl;
+		        }
 	      };
 
 	      // Monitor connection state
@@ -293,10 +295,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             onError(msg.message || 'Remote desktop error');
             break;
         }
-      } catch {
-        // Ignore parse errors
-      }
-    };
+	      } catch (err) {
+	        console.warn('Failed to parse websocket message:', err);
+	      }
+	    };
 
     ws.onclose = () => {
       cleanup();
@@ -524,26 +526,32 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       wsCleanupRef.current = null;
       webrtcRef.current?.close();
       webrtcRef.current = null;
-      if (sessionRegisteredRef.current) {
-        sessionRegisteredRef.current = false;
-        invoke('unregister_session').catch(() => {});
-      }
-    };
-  }, [connectWebRTC, connectWebSocket, onError, params, stopReconnect]);
+	      if (sessionRegisteredRef.current) {
+	        sessionRegisteredRef.current = false;
+	        invoke('unregister_session').catch((err) => {
+	          console.error('Failed to unregister desktop session on unmount:', err);
+	        });
+	      }
+	    };
+	  }, [connectWebRTC, connectWebSocket, onError, params, stopReconnect]);
 
   // Mark a window as "session active" only when fully connected.
   // Pass session_id so Rust can detect duplicate deep links for the same session.
-  useEffect(() => {
-    if (status === 'connected' && !sessionRegisteredRef.current) {
-      sessionRegisteredRef.current = true;
-      invoke('register_session', { sessionId: params.sessionId }).catch(() => {});
-      return;
-    }
-    if (status !== 'connected' && status !== 'reconnecting' && sessionRegisteredRef.current) {
-      sessionRegisteredRef.current = false;
-      invoke('unregister_session').catch(() => {});
-    }
-  }, [status, params.sessionId]);
+	  useEffect(() => {
+	    if (status === 'connected' && !sessionRegisteredRef.current) {
+	      sessionRegisteredRef.current = true;
+	      invoke('register_session', { sessionId: params.sessionId }).catch((err) => {
+	        console.error('Failed to register desktop session:', err);
+	      });
+	      return;
+	    }
+	    if (status !== 'connected' && status !== 'reconnecting' && sessionRegisteredRef.current) {
+	      sessionRegisteredRef.current = false;
+	      invoke('unregister_session').catch((err) => {
+	        console.error('Failed to unregister desktop session:', err);
+	      });
+	    }
+	  }, [status, params.sessionId]);
 
   // Count WebRTC video frames via requestVideoFrameCallback
   useEffect(() => {
@@ -603,15 +611,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [transport]);
 
   // Request monitor list and listen for control channel responses (WebRTC only)
-  useEffect(() => {
-    if (transport !== 'webrtc') return;
-    const ch = webrtcRef.current?.controlChannel;
-    if (!ch) return;
+	  useEffect(() => {
+	    if (transport !== 'webrtc') return;
+	    const ch = webrtcRef.current?.controlChannel;
+	    if (!ch) return;
 
-    const onOpen = () => {
-      ch.send(JSON.stringify({ type: 'list_monitors' }));
-      ch.send(JSON.stringify({ type: 'set_cursor_stream', value: showRemoteCursor ? 1 : 0 }));
-    };
+	    const onOpen = () => {
+	      ch.send(JSON.stringify({ type: 'list_monitors' }));
+	    };
     const onMessage = (e: MessageEvent) => {
       try {
         const msg = JSON.parse(e.data);
@@ -645,18 +652,26 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     ch.addEventListener('open', onOpen);
     ch.addEventListener('message', onMessage);
-    return () => {
-      ch.removeEventListener('open', onOpen);
-      ch.removeEventListener('message', onMessage);
-    };
-  }, [showRemoteCursor, transport]);
+	    return () => {
+	      ch.removeEventListener('open', onOpen);
+	      ch.removeEventListener('message', onMessage);
+	    };
+	  }, [transport]);
 
   // Keep agent cursor streaming in sync with the local Remote Cursor toggle.
   useEffect(() => {
     if (transport !== 'webrtc') return;
     const ch = webrtcRef.current?.controlChannel;
-    if (!ch || ch.readyState !== 'open') return;
-    ch.send(JSON.stringify({ type: 'set_cursor_stream', value: showRemoteCursor ? 1 : 0 }));
+    if (!ch) return;
+    const syncCursorStream = () => {
+      if (ch.readyState !== 'open') return;
+      ch.send(JSON.stringify({ type: 'set_cursor_stream', value: showRemoteCursor ? 1 : 0 }));
+    };
+    syncCursorStream();
+    ch.addEventListener('open', syncCursorStream);
+    return () => {
+      ch.removeEventListener('open', syncCursorStream);
+    };
   }, [showRemoteCursor, transport]);
 
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
@@ -1027,10 +1042,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     userDisconnectRef.current = true;
     stopReconnect();
     reconnectInFlightRef.current = false;
-    if (sessionRegisteredRef.current) {
-      sessionRegisteredRef.current = false;
-      invoke('unregister_session').catch(() => {});
-    }
+	    if (sessionRegisteredRef.current) {
+	      sessionRegisteredRef.current = false;
+	      invoke('unregister_session').catch((err) => {
+	        console.error('Failed to unregister desktop session on disconnect:', err);
+	      });
+	    }
     releaseAllKeys();
 
     if (webrtcMouseMoveRafRef.current !== null) {

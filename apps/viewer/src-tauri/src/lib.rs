@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
-use tauri::{Emitter, Manager, WebviewWindowBuilder, WebviewUrl, WindowEvent};
+use std::sync::{Mutex, MutexGuard};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Register this app bundle with macOS Launch Services so the `breeze://`
@@ -10,11 +10,25 @@ use tauri_plugin_deep_link::DeepLinkExt;
 fn register_url_scheme() {
     if let Ok(exe) = std::env::current_exe() {
         // Walk up from .app/Contents/MacOS/binary → .app
-        if let Some(app_bundle) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-            let _ = std::process::Command::new("/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister")
+        if let Some(app_bundle) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        {
+            match std::process::Command::new("/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister")
                 .arg("-f")
                 .arg(app_bundle)
-                .output();
+                .output()
+            {
+                Ok(output) => {
+                    if !output.status.success() {
+                        eprintln!("lsregister failed with status: {}", output.status);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Failed to run lsregister: {}", err);
+                }
+            }
         }
     }
 }
@@ -29,9 +43,25 @@ struct SessionMap(Mutex<HashMap<String, String>>);
 /// Monotonic counter for unique window labels.
 struct WindowCounter(Mutex<u32>);
 
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("Recovering from poisoned mutex: {}", name);
+            poisoned.into_inner()
+        }
+    }
+}
+
 /// Extract the `session=` query parameter from a breeze:// deep link URL.
 fn extract_session_id(url: &str) -> Option<String> {
-    let query_start = url.find('?')?;
+    let query_start = match url.find('?') {
+        Some(i) => i,
+        None => {
+            eprintln!("Deep link missing query string");
+            return None;
+        }
+    };
     let query = &url[query_start + 1..];
     for pair in query.split('&') {
         if let Some(value) = pair.strip_prefix("session=") {
@@ -40,8 +70,11 @@ fn extract_session_id(url: &str) -> Option<String> {
             if !id.is_empty() {
                 return Some(id.to_string());
             }
+            eprintln!("Deep link has empty session parameter");
+            return None;
         }
     }
+    eprintln!("Deep link missing session parameter");
     None
 }
 
@@ -52,16 +85,15 @@ fn get_pending_deep_link(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, DeepLinkState>,
 ) -> Option<String> {
-    state.0.lock().unwrap().get(window.label()).cloned()
+    let map = lock_or_recover(&state.0, "deep_link_state");
+    map.get(window.label()).cloned()
 }
 
 /// Called by the frontend to clear the pending URL after it has been applied.
 #[tauri::command]
-fn clear_pending_deep_link(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, DeepLinkState>,
-) {
-    state.0.lock().unwrap().remove(window.label());
+fn clear_pending_deep_link(window: tauri::WebviewWindow, state: tauri::State<'_, DeepLinkState>) {
+    let mut map = lock_or_recover(&state.0, "deep_link_state");
+    map.remove(window.label());
 }
 
 /// Called by the frontend when a DesktopViewer connects (session active).
@@ -72,20 +104,14 @@ fn register_session(
     session_id: String,
     state: tauri::State<'_, SessionMap>,
 ) {
-    state
-        .0
-        .lock()
-        .unwrap()
-        .insert(session_id, window.label().to_string());
+    let mut map = lock_or_recover(&state.0, "session_map");
+    map.insert(session_id, window.label().to_string());
 }
 
 /// Called by the frontend on disconnect (session no longer active).
 #[tauri::command]
-fn unregister_session(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, SessionMap>,
-) {
-    let mut map = state.0.lock().unwrap();
+fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, SessionMap>) {
+    let mut map = lock_or_recover(&state.0, "session_map");
     // Remove all entries that point to this window
     map.retain(|_, label| label != window.label());
 }
@@ -98,11 +124,16 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
     // Check if this session is already being viewed
     if let Some(session_id) = extract_session_id(&url) {
         let sessions = app.state::<SessionMap>();
-        let map = sessions.0.lock().unwrap();
+        let map = lock_or_recover(&sessions.0, "session_map");
         if let Some(existing_label) = map.get(&session_id) {
             // Session already active — just focus that window
             if let Some(window) = app.get_webview_window(existing_label) {
-                let _ = window.set_focus();
+                if let Err(err) = window.set_focus() {
+                    eprintln!(
+                        "Failed to focus existing session window {}: {}",
+                        existing_label, err
+                    );
+                }
             }
             return;
         }
@@ -110,22 +141,23 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
 
     let main_active = {
         let sessions = app.state::<SessionMap>();
-        let map = sessions.0.lock().unwrap();
+        let map = lock_or_recover(&sessions.0, "session_map");
         map.values().any(|label| label == "main")
     };
 
     if !main_active {
         // Route to main window (existing behavior)
         if let Some(state) = app.try_state::<DeepLinkState>() {
-            state
-                .0
-                .lock()
-                .unwrap()
-                .insert("main".to_string(), url.clone());
+            let mut links = lock_or_recover(&state.0, "deep_link_state");
+            links.insert("main".to_string(), url.clone());
         }
-        let _ = app.emit_to("main", "deep-link-received", url);
+        if let Err(err) = app.emit_to("main", "deep-link-received", url) {
+            eprintln!("Failed to emit deep-link-received to main window: {}", err);
+        }
         if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_focus();
+            if let Err(err) = window.set_focus() {
+                eprintln!("Failed to focus main window: {}", err);
+            }
         }
     } else {
         // Main is busy — create a new session window
@@ -137,7 +169,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
 fn create_session_window(app: &tauri::AppHandle, url: String) {
     let n = {
         let counter = app.state::<WindowCounter>();
-        let mut c = counter.0.lock().unwrap();
+        let mut c = lock_or_recover(&counter.0, "window_counter");
         *c += 1;
         *c
     };
@@ -145,11 +177,8 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
 
     // Store pending deep link for the new window
     if let Some(state) = app.try_state::<DeepLinkState>() {
-        state
-            .0
-            .lock()
-            .unwrap()
-            .insert(label.clone(), url.clone());
+        let mut links = lock_or_recover(&state.0, "deep_link_state");
+        links.insert(label.clone(), url.clone());
     }
 
     match WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
@@ -165,8 +194,14 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
             std::thread::spawn(move || {
                 for delay_ms in [500, 1500] {
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    let _ =
-                        handle.emit_to(&label_clone, "deep-link-received", url_clone.clone());
+                    if let Err(err) =
+                        handle.emit_to(&label_clone, "deep-link-received", url_clone.clone())
+                    {
+                        eprintln!(
+                            "Failed to emit deep-link-received to window {}: {}",
+                            label_clone, err
+                        );
+                    }
                 }
             });
         }
@@ -174,17 +209,20 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
             eprintln!("Failed to create session window: {}", e);
             // Clean up orphaned deep link state
             if let Some(state) = app.try_state::<DeepLinkState>() {
-                state.0.lock().unwrap().remove(&label);
+                let mut links = lock_or_recover(&state.0, "deep_link_state");
+                links.remove(&label);
             }
             // Fallback: route to main window
             if let Some(state) = app.try_state::<DeepLinkState>() {
-                state
-                    .0
-                    .lock()
-                    .unwrap()
-                    .insert("main".to_string(), url.clone());
+                let mut links = lock_or_recover(&state.0, "deep_link_state");
+                links.insert("main".to_string(), url.clone());
             }
-            let _ = app.emit_to("main", "deep-link-received", url);
+            if let Err(err) = app.emit_to("main", "deep-link-received", url) {
+                eprintln!(
+                    "Failed to emit deep-link-received to main window after fallback: {}",
+                    err
+                );
+            }
         }
     }
 }
@@ -208,7 +246,12 @@ pub fn run() {
             if let Some(url) = argv.iter().find(|arg| arg.starts_with("breeze:")).cloned() {
                 route_deep_link(app, url);
             } else if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_focus();
+                if let Err(err) = window.set_focus() {
+                    eprintln!(
+                        "Failed to focus main window on single-instance activate: {}",
+                        err
+                    );
+                }
             }
         }));
     }
@@ -241,7 +284,10 @@ pub fn run() {
                 std::thread::spawn(move || {
                     for delay_ms in [500, 1500] {
                         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                        let _ = handle.emit_to("main", "deep-link-received", url.clone());
+                        if let Err(err) = handle.emit_to("main", "deep-link-received", url.clone())
+                        {
+                            eprintln!("Failed to emit initial deep-link-received event: {}", err);
+                        }
                     }
                 });
             }
@@ -264,14 +310,12 @@ pub fn run() {
             if let WindowEvent::Destroyed = event {
                 // Clean up session and deep link state for destroyed windows
                 if let Some(sessions) = app_handle.try_state::<SessionMap>() {
-                    sessions
-                        .0
-                        .lock()
-                        .unwrap()
-                        .retain(|_, wl| wl != &label);
+                    let mut map = lock_or_recover(&sessions.0, "session_map");
+                    map.retain(|_, wl| wl != &label);
                 }
                 if let Some(links) = app_handle.try_state::<DeepLinkState>() {
-                    links.0.lock().unwrap().remove(&label);
+                    let mut map = lock_or_recover(&links.0, "deep_link_state");
+                    map.remove(&label);
                 }
             }
         }

@@ -27,6 +27,8 @@ var encodedFramePool = sync.Pool{
 func getEncodedFrameBuf(size int) []byte {
 	buf := encodedFramePool.Get().([]byte)
 	if cap(buf) < size {
+		// Return the undersized slice so it can still be reused for smaller frames.
+		putEncodedFrameBuf(buf)
 		return make([]byte, size)
 	}
 	return buf[:size]
@@ -114,17 +116,21 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 		s.lastEncodedMu.RUnlock()
 		return false
 	}
+	// Copy before releasing the lock so pooled backing memory cannot be recycled
+	// by cacheEncodedFrame while WriteSample is in progress.
+	frame := make([]byte, len(cached))
+	copy(frame, cached)
+	size := len(frame)
+	s.lastEncodedMu.RUnlock()
 	sample := media.Sample{
-		Data:     cached,
+		Data:     frame,
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		s.lastEncodedMu.RUnlock()
 		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err)
 		return false
 	}
-	s.lastEncodedMu.RUnlock()
-	s.metrics.RecordSend(len(cached))
+	s.metrics.RecordSend(size)
 	s.noteVideoWrite()
 	return true
 }

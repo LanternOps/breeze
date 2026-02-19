@@ -194,7 +194,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 			slog.Warn("DXGI reinit failed after SetThreadDesktop failure", "error", err)
 			c.switchToGDI()
 		}
-		slog.Warn("SetThreadDesktop failed during desktop switch; reinitialized capture on current desktop",
+		slog.Warn("SetThreadDesktop failed during desktop switch; capture fallback active on current desktop",
 			"from", currentName, "to", inputName, "current", actualName)
 		return switched
 	}
