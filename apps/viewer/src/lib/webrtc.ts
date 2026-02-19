@@ -18,6 +18,9 @@ export interface WebRTCSession {
   close: () => void;
 }
 
+const ICE_GATHER_TIMEOUT_MS = 3000;
+const ANSWER_POLL_INTERVAL_MS = 200;
+
 /**
  * Create a WebRTC session with the remote agent.
  *
@@ -92,7 +95,7 @@ export async function createWebRTCSession(
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    await waitForIceGathering(pc, 10000);
+    await waitForIceGathering(pc, ICE_GATHER_TIMEOUT_MS);
 
     const localDesc = pc.localDescription;
     if (!localDesc?.sdp) {
@@ -178,7 +181,7 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
       }
     }
 
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, ANSWER_POLL_INTERVAL_MS));
   }
 
   throw new Error('Timed out waiting for WebRTC answer from agent');

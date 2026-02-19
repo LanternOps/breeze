@@ -113,7 +113,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 			c.diagLogInterval = 100
 		}
 		if c.diagTimeouts == 1 || c.diagTimeouts%c.diagLogInterval == 0 {
-			slog.Info("DXGI Capture diagnostic",
+			slog.Debug("DXGI Capture diagnostic",
 				"display", c.config.DisplayIndex,
 				"timeouts", c.diagTimeouts,
 				"zeroFrames", c.diagZeroFrames,

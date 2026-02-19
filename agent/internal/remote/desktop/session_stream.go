@@ -3,6 +3,7 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,7 +93,17 @@ func (s *Session) startStreaming() {
 // and sends updates over the cursor data channel. Decoupled from the capture
 // loop so cursor movement stays smooth even when DXGI blocks on AcquireNextFrame.
 func (s *Session) cursorStreamLoop(prov CursorProvider) {
-	ticker := time.NewTicker(time.Second / 120)
+	const (
+		cursorActiveInterval = time.Second / 120
+		cursorIdleInterval   = 250 * time.Millisecond
+	)
+
+	enabled := s.cursorStreamEnabled.Load()
+	interval := cursorIdleInterval
+	if enabled {
+		interval = cursorActiveInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	var lastRelX, lastRelY int32
@@ -104,6 +115,18 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 		case <-s.done:
 			return
 		case <-ticker.C:
+			nowEnabled := s.cursorStreamEnabled.Load()
+			if nowEnabled != enabled {
+				enabled = nowEnabled
+				if enabled {
+					ticker.Reset(cursorActiveInterval)
+				} else {
+					ticker.Reset(cursorIdleInterval)
+				}
+			}
+			if !enabled {
+				continue
+			}
 			if s.cursorDC.ReadyState() != webrtc.DataChannelStateOpen {
 				continue
 			}
@@ -121,7 +144,15 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 			if cv {
 				v = 1
 			}
-			_ = s.cursorDC.SendText(fmt.Sprintf(`{"x":%d,"y":%d,"v":%d}`, relX, relY, v))
+			payload := make([]byte, 0, 40)
+			payload = append(payload, `{"x":`...)
+			payload = strconv.AppendInt(payload, int64(relX), 10)
+			payload = append(payload, `,"y":`...)
+			payload = strconv.AppendInt(payload, int64(relY), 10)
+			payload = append(payload, `,"v":`...)
+			payload = strconv.AppendInt(payload, int64(v), 10)
+			payload = append(payload, '}')
+			_ = s.cursorDC.Send(payload)
 		}
 	}
 }

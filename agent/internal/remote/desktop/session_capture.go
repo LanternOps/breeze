@@ -2,13 +2,42 @@ package desktop
 
 import (
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v3/pkg/media"
 )
 
-const secureDesktopMinFPS = 8
+const (
+	secureDesktopMinFPS        = 8
+	secureDesktopMaxFPS        = 12
+	secureDesktopKeyframeStall = 900 * time.Millisecond
+	secureDesktopKeyframeEvery = 2 * time.Second
+
+	enableFramePixelDiagnostics = false
+)
+
+var encodedFramePool = sync.Pool{
+	New: func() any {
+		return make([]byte, 0, 64*1024)
+	},
+}
+
+func getEncodedFrameBuf(size int) []byte {
+	buf := encodedFramePool.Get().([]byte)
+	if cap(buf) < size {
+		return make([]byte, size)
+	}
+	return buf[:size]
+}
+
+func putEncodedFrameBuf(buf []byte) {
+	if cap(buf) > 2*1024*1024 {
+		return // avoid pooling oversized slices
+	}
+	encodedFramePool.Put(buf[:0])
+}
 
 func secureDesktopMinInterval() time.Duration {
 	return time.Second / secureDesktopMinFPS
@@ -18,15 +47,53 @@ func (s *Session) cacheEncodedFrame(data []byte) {
 	if len(data) == 0 {
 		return
 	}
-	cp := make([]byte, len(data))
+
+	cp := getEncodedFrameBuf(len(data))
 	copy(cp, data)
+
 	s.lastEncodedMu.Lock()
+	old := s.lastEncodedFrame
 	s.lastEncodedFrame = cp
 	s.lastEncodedMu.Unlock()
+
+	if len(old) != 0 {
+		putEncodedFrameBuf(old)
+	}
+}
+
+func (s *Session) clearCachedEncodedFrame() {
+	s.lastEncodedMu.Lock()
+	old := s.lastEncodedFrame
+	s.lastEncodedFrame = nil
+	s.lastEncodedMu.Unlock()
+	if len(old) != 0 {
+		putEncodedFrameBuf(old)
+	}
 }
 
 func (s *Session) noteVideoWrite() {
 	s.lastVideoWriteUnixNano.Store(time.Now().UnixNano())
+}
+
+func clampSecureDesktopFPS(fps int) int {
+	if fps < secureDesktopMinFPS {
+		return secureDesktopMinFPS
+	}
+	if fps > secureDesktopMaxFPS {
+		return secureDesktopMaxFPS
+	}
+	return fps
+}
+
+func (s *Session) shouldForceSecureKeyframe(lastSecureKeyframe time.Time) bool {
+	if s.encoder == nil || time.Since(lastSecureKeyframe) < secureDesktopKeyframeEvery {
+		return false
+	}
+	lastWrite := s.lastVideoWriteUnixNano.Load()
+	if lastWrite == 0 {
+		return true
+	}
+	return time.Since(time.Unix(0, lastWrite)) >= secureDesktopKeyframeStall
 }
 
 func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, frameDuration time.Duration) bool {
@@ -47,19 +114,17 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 		s.lastEncodedMu.RUnlock()
 		return false
 	}
-	data := make([]byte, len(cached))
-	copy(data, cached)
-	s.lastEncodedMu.RUnlock()
-
 	sample := media.Sample{
-		Data:     data,
+		Data:     cached,
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
+		s.lastEncodedMu.RUnlock()
 		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err)
 		return false
 	}
-	s.metrics.RecordSend(len(data))
+	s.lastEncodedMu.RUnlock()
+	s.metrics.RecordSend(len(cached))
 	s.noteVideoWrite()
 	return true
 }
@@ -191,16 +256,19 @@ func (s *Session) captureLoopDXGI() captureMode {
 		s.mu.RLock()
 		currentCap := s.capturer
 		s.mu.RUnlock()
-		if dsn, ok := currentCap.(DesktopSwitchNotifier); ok && dsn.OnSecureDesktop() {
+		onSecure := false
+		if dsn, ok := currentCap.(DesktopSwitchNotifier); ok {
+			onSecure = dsn.OnSecureDesktop()
+		}
+
+		if onSecure {
 			if time.Since(lastRepaintTime) >= 500*time.Millisecond {
 				nudgeSecureDesktop()
 				forceDesktopRepaint()
 				lastRepaintTime = time.Now()
 			}
-			// Secure desktop transitions can leave the browser decoder on stale
-			// predicted frames until a fresh IDR arrives. Periodic keyframes avoid
-			// "content appears only after click/input" behavior.
-			if s.encoder != nil && time.Since(lastSecureKeyframe) >= time.Second {
+			// Only force keyframes when output appears stalled on secure desktop.
+			if s.shouldForceSecureKeyframe(lastSecureKeyframe) {
 				_ = s.encoder.ForceKeyframe()
 				lastSecureKeyframe = time.Now()
 			}
@@ -213,7 +281,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 			return captureModeTicker
 		}
 
-		if !hwChecked && s.encoder.BackendIsHardware() {
+		if !hwChecked && s.encoder.BackendIsHardware() && !onSecure {
 			hwChecked = true
 			targetFPS := maxFrameRate
 			if fps < targetFPS {
@@ -228,17 +296,16 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 
-		onSecure := false
-		if dsn, ok := currentCap.(DesktopSwitchNotifier); ok {
-			onSecure = dsn.OnSecureDesktop()
-		}
 		newFPS := s.getFPS()
-		if onSecure && newFPS < secureDesktopMinFPS {
-			newFPS = secureDesktopMinFPS
+		if onSecure {
+			newFPS = clampSecureDesktopFPS(newFPS)
 		}
 		if newFPS != fps {
 			fps = newFPS
 			frameDuration = time.Second / time.Duration(fps)
+			if err := s.encoder.SetFPS(fps); err != nil {
+				slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err)
+			}
 		}
 
 		// Prefer the GPU path when it works; fall back to CPU on any GPU error.
@@ -313,7 +380,6 @@ func (s *Session) captureLoopTicker() captureMode {
 			currentCap := s.capturer
 			s.mu.RUnlock()
 			// Force repaints on the secure desktop — static screens need dirty rects.
-			// Also send a zero-delta input nudge to trigger secure UI paint.
 			// Throttled to once per 500ms to avoid compositor overhead.
 			if dsn, ok := currentCap.(DesktopSwitchNotifier); ok && dsn.OnSecureDesktop() {
 				if time.Since(lastTickerRepaint) >= 500*time.Millisecond {
@@ -321,7 +387,7 @@ func (s *Session) captureLoopTicker() captureMode {
 					forceDesktopRepaint()
 					lastTickerRepaint = time.Now()
 				}
-				if s.encoder != nil && time.Since(lastSecureKeyframe) >= time.Second {
+				if s.shouldForceSecureKeyframe(lastSecureKeyframe) {
 					_ = s.encoder.ForceKeyframe()
 					lastSecureKeyframe = time.Now()
 				}
@@ -354,13 +420,16 @@ func (s *Session) captureLoopTicker() captureMode {
 			}
 
 			newFPS := s.getFPS()
-			if onSecure && newFPS < secureDesktopMinFPS {
-				newFPS = secureDesktopMinFPS
+			if onSecure {
+				newFPS = clampSecureDesktopFPS(newFPS)
 			}
 			if newFPS != fps {
 				fps = newFPS
 				frameDuration = time.Second / time.Duration(fps)
 				ticker.Reset(frameDuration)
+				if err := s.encoder.SetFPS(fps); err != nil {
+					slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err)
+				}
 			}
 			s.captureAndSendFrame(frameDuration)
 		}
@@ -392,10 +461,8 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	s.metrics.RecordCapture(time.Since(t0))
 
-	// Diagnostic: check BGRA pixel data for non-black content.
-	// BGRA: 4 bytes per pixel [B,G,R,A]. Black = R+G+B == 0.
 	s.frameIdx++
-	if s.frameIdx <= 5 || s.frameIdx%300 == 0 {
+	if enableFramePixelDiagnostics && (s.frameIdx <= 5 || s.frameIdx%300 == 0) {
 		nonBlack := 0
 		totalPx := len(img.Pix) / 4
 		for i := 0; i < len(img.Pix); i += 4 {
@@ -403,7 +470,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 				nonBlack++
 			}
 		}
-		slog.Warn("BGRA content check (CPU path)",
+		slog.Debug("BGRA content check (CPU path)",
 			"frame", s.frameIdx,
 			"nonBlackPixels", nonBlack,
 			"totalPixels", totalPx,

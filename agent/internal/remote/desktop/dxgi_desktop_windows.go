@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -165,9 +166,37 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 	ret, _, _ := procSetThreadDesktop.Call(inputDesk)
 	if ret == 0 {
 		procCloseDesktop.Call(inputDesk)
-		slog.Warn("SetThreadDesktop failed during desktop switch")
-		c.initDXGI()
-		return true
+		// Determine the desktop we're actually on after the failed switch and
+		// reconfigure capture accordingly so session-layer state stays coherent.
+		threadID, _, _ := procGetCurrentThreadId.Call()
+		threadDesk, _, _ := procGetThreadDesktop.Call(threadID)
+		actualName := desktopName(threadDesk)
+		if actualName == "" {
+			actualName = currentName
+		}
+		switched := !strings.EqualFold(actualName, currentName)
+		if switched {
+			c.desktopSwitchFlag.Store(true)
+		}
+
+		onSecure := !strings.EqualFold(actualName, "Default")
+		c.secureDesktopFlag.Store(onSecure)
+		c.gdiNoFrameCount = 0
+
+		if onSecure {
+			c.gdiFallback = &gdiCapturer{config: c.config}
+			slog.Warn("SetThreadDesktop failed during desktop switch; using GDI on current desktop",
+				"from", currentName, "to", inputName, "current", actualName)
+			return switched
+		}
+
+		if err := c.initDXGI(); err != nil {
+			slog.Warn("DXGI reinit failed after SetThreadDesktop failure", "error", err)
+			c.switchToGDI()
+		}
+		slog.Warn("SetThreadDesktop failed during desktop switch; reinitialized capture on current desktop",
+			"from", currentName, "to", inputName, "current", actualName)
+		return switched
 	}
 
 	if c.currentDesktop != 0 {
@@ -178,7 +207,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 	// Signal desktop switch to the session layer
 	c.desktopSwitchFlag.Store(true)
 
-	if inputName == "Default" {
+	if strings.EqualFold(inputName, "Default") {
 		// Returning to normal desktop: use DXGI for GPU-accelerated capture.
 		c.secureDesktopFlag.Store(false)
 		c.gdiNoFrameCount = 0

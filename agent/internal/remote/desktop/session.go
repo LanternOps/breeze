@@ -72,6 +72,10 @@ type Session struct {
 	// immediately when the user is interacting, even without screen changes.
 	inputActive atomic.Bool
 
+	// cursorStreamEnabled gates cursor polling + datachannel sends.
+	// Disabled by default; viewer can toggle via control message.
+	cursorStreamEnabled atomic.Bool
+
 	// capturerSwapped is set by switch_monitor. The capture loop checks and
 	// clears it to re-read s.capturer and reinitialize GPU pipeline state.
 	capturerSwapped atomic.Bool
@@ -250,6 +254,7 @@ func (s *Session) doCleanup() {
 		if s.cursorDC != nil {
 			s.cursorDC.Close()
 		}
+		s.clearCachedEncodedFrame()
 		if s.encoder != nil {
 			s.encoder.Close()
 		}
