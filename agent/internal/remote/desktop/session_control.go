@@ -116,6 +116,18 @@ func (s *Session) handleControlMessage(data []byte) {
 		enabled := msg.Value != 0
 		s.audioEnabled.Store(enabled)
 		slog.Info("Audio toggled", "session", s.id, "enabled", enabled)
+	case "set_cursor_stream":
+		enabled := msg.Value != 0
+		s.cursorStreamEnabled.Store(enabled)
+		if !enabled {
+			s.mu.RLock()
+			cdc := s.cursorDC
+			s.mu.RUnlock()
+			if cdc != nil {
+				_ = cdc.SendText(`{"v":0}`)
+			}
+		}
+		slog.Debug("Cursor stream toggled", "session", s.id, "enabled", enabled)
 	case "send_sas":
 		slog.Info("SAS requested via control channel", "session", s.id)
 		// Try service IPC first (Session 0 context), fall back to direct call.

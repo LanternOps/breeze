@@ -1,27 +1,25 @@
 package desktop
 
 import (
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // StreamMetrics tracks real-time performance data for a streaming session.
 type StreamMetrics struct {
-	mu sync.RWMutex
+	FramesCaptured atomic.Uint64
+	FramesEncoded  atomic.Uint64
+	FramesSent     atomic.Uint64
+	FramesSkipped  atomic.Uint64
+	FramesDropped  atomic.Uint64
 
-	FramesCaptured uint64
-	FramesEncoded  uint64
-	FramesSent     uint64
-	FramesSkipped  uint64
-	FramesDropped  uint64
+	LastCaptureNanos atomic.Int64
+	LastScaleNanos   atomic.Int64
+	LastEncodeNanos  atomic.Int64
+	LastFrameSize    atomic.Int64
 
-	LastCaptureTime time.Duration
-	LastScaleTime   time.Duration
-	LastEncodeTime  time.Duration
-	LastFrameSize   int
-
-	TotalBytesSent uint64
-	CurrentQuality int
+	TotalBytesSent atomic.Uint64
+	CurrentQuality atomic.Int64
 	startTime      time.Time
 }
 
@@ -30,49 +28,35 @@ func newStreamMetrics() *StreamMetrics {
 }
 
 func (m *StreamMetrics) RecordCapture(d time.Duration) {
-	m.mu.Lock()
-	m.FramesCaptured++
-	m.LastCaptureTime = d
-	m.mu.Unlock()
+	m.FramesCaptured.Add(1)
+	m.LastCaptureNanos.Store(d.Nanoseconds())
 }
 
 func (m *StreamMetrics) RecordSkip() {
-	m.mu.Lock()
-	m.FramesSkipped++
-	m.mu.Unlock()
+	m.FramesSkipped.Add(1)
 }
 
 func (m *StreamMetrics) RecordScale(d time.Duration) {
-	m.mu.Lock()
-	m.LastScaleTime = d
-	m.mu.Unlock()
+	m.LastScaleNanos.Store(d.Nanoseconds())
 }
 
 func (m *StreamMetrics) RecordEncode(d time.Duration, size int) {
-	m.mu.Lock()
-	m.FramesEncoded++
-	m.LastEncodeTime = d
-	m.LastFrameSize = size
-	m.mu.Unlock()
+	m.FramesEncoded.Add(1)
+	m.LastEncodeNanos.Store(d.Nanoseconds())
+	m.LastFrameSize.Store(int64(size))
 }
 
 func (m *StreamMetrics) RecordSend(size int) {
-	m.mu.Lock()
-	m.FramesSent++
-	m.TotalBytesSent += uint64(size)
-	m.mu.Unlock()
+	m.FramesSent.Add(1)
+	m.TotalBytesSent.Add(uint64(size))
 }
 
 func (m *StreamMetrics) RecordDrop() {
-	m.mu.Lock()
-	m.FramesDropped++
-	m.mu.Unlock()
+	m.FramesDropped.Add(1)
 }
 
 func (m *StreamMetrics) SetQuality(q int) {
-	m.mu.Lock()
-	m.CurrentQuality = q
-	m.mu.Unlock()
+	m.CurrentQuality.Store(int64(q))
 }
 
 // MetricsSnapshot is a point-in-time copy of metrics for logging.
@@ -92,27 +76,25 @@ type MetricsSnapshot struct {
 }
 
 func (m *StreamMetrics) Snapshot() MetricsSnapshot {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	uptime := time.Since(m.startTime)
 	bw := float64(0)
+	totalBytesSent := m.TotalBytesSent.Load()
 	if uptime.Seconds() > 0 {
-		bw = float64(m.TotalBytesSent) / uptime.Seconds() / 1024.0
+		bw = float64(totalBytesSent) / uptime.Seconds() / 1024.0
 	}
 
 	return MetricsSnapshot{
-		FramesCaptured: m.FramesCaptured,
-		FramesEncoded:  m.FramesEncoded,
-		FramesSent:     m.FramesSent,
-		FramesSkipped:  m.FramesSkipped,
-		FramesDropped:  m.FramesDropped,
-		CaptureMs:      float64(m.LastCaptureTime.Microseconds()) / 1000.0,
-		ScaleMs:        float64(m.LastScaleTime.Microseconds()) / 1000.0,
-		EncodeMs:       float64(m.LastEncodeTime.Microseconds()) / 1000.0,
-		LastFrameSize:  m.LastFrameSize,
+		FramesCaptured: m.FramesCaptured.Load(),
+		FramesEncoded:  m.FramesEncoded.Load(),
+		FramesSent:     m.FramesSent.Load(),
+		FramesSkipped:  m.FramesSkipped.Load(),
+		FramesDropped:  m.FramesDropped.Load(),
+		CaptureMs:      float64(time.Duration(m.LastCaptureNanos.Load()).Microseconds()) / 1000.0,
+		ScaleMs:        float64(time.Duration(m.LastScaleNanos.Load()).Microseconds()) / 1000.0,
+		EncodeMs:       float64(time.Duration(m.LastEncodeNanos.Load()).Microseconds()) / 1000.0,
+		LastFrameSize:  int(m.LastFrameSize.Load()),
 		BandwidthKBps:  bw,
-		CurrentQuality: m.CurrentQuality,
+		CurrentQuality: int(m.CurrentQuality.Load()),
 		Uptime:         uptime,
 	}
 }

@@ -71,6 +71,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		metrics:      newStreamMetrics(),
 		sasHandler:   m.OnSASRequest,
 	}
+	session.cursorStreamEnabled.Store(false)
 
 	m.mu.Lock()
 	m.sessions[sessionID] = session

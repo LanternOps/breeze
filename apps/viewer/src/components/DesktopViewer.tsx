@@ -532,17 +532,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [connectWebRTC, connectWebSocket, onError, params, stopReconnect]);
 
   // Mark a window as "session active" only when fully connected.
+  // Pass session_id so Rust can detect duplicate deep links for the same session.
   useEffect(() => {
     if (status === 'connected' && !sessionRegisteredRef.current) {
       sessionRegisteredRef.current = true;
-      invoke('register_session').catch(() => {});
+      invoke('register_session', { sessionId: params.sessionId }).catch(() => {});
       return;
     }
-    if (status !== 'connected' && sessionRegisteredRef.current) {
+    if (status !== 'connected' && status !== 'reconnecting' && sessionRegisteredRef.current) {
       sessionRegisteredRef.current = false;
       invoke('unregister_session').catch(() => {});
     }
-  }, [status]);
+  }, [status, params.sessionId]);
 
   // Count WebRTC video frames via requestVideoFrameCallback
   useEffect(() => {
@@ -609,6 +610,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     const onOpen = () => {
       ch.send(JSON.stringify({ type: 'list_monitors' }));
+      ch.send(JSON.stringify({ type: 'set_cursor_stream', value: showRemoteCursor ? 1 : 0 }));
     };
     const onMessage = (e: MessageEvent) => {
       try {
@@ -647,7 +649,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       ch.removeEventListener('open', onOpen);
       ch.removeEventListener('message', onMessage);
     };
-  }, [transport]);
+  }, [showRemoteCursor, transport]);
+
+  // Keep agent cursor streaming in sync with the local Remote Cursor toggle.
+  useEffect(() => {
+    if (transport !== 'webrtc') return;
+    const ch = webrtcRef.current?.controlChannel;
+    if (!ch || ch.readyState !== 'open') return;
+    ch.send(JSON.stringify({ type: 'set_cursor_stream', value: showRemoteCursor ? 1 : 0 }));
+  }, [showRemoteCursor, transport]);
 
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
