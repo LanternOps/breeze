@@ -74,6 +74,11 @@ export const mfaEnableSchema = z.object({
   code: z.string().length(6)
 });
 
+export const acceptInviteSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8),
+});
+
 // ============================================
 // Types
 // ============================================

@@ -3,12 +3,15 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
+import { nanoid } from 'nanoid';
+import { createHash } from 'crypto';
 import { db } from '../db';
 import { users, partnerUsers, organizationUsers, roles, organizations } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
 import { getEmailService } from '../services/email';
+import { getRedis } from '../services';
 
 export const userRoutes = new Hono();
 
@@ -165,9 +168,25 @@ function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeCo
   return auth.orgId ?? null;
 }
 
-function buildInviteUrl(email: string): string {
+function buildInviteUrl(inviteToken: string): string {
   const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
-  return `${appBaseUrl}/login?invite=${encodeURIComponent(email)}`;
+  return `${appBaseUrl}/accept-invite?token=${encodeURIComponent(inviteToken)}`;
+}
+
+async function generateInviteToken(userId: string): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) {
+    console.warn('[UsersRoute] Redis unavailable; cannot generate invite token');
+    return null;
+  }
+
+  const inviteToken = nanoid(48);
+  const tokenHash = createHash('sha256').update(inviteToken).digest('hex');
+
+  // 7-day TTL
+  await redis.setex(`invite:${tokenHash}`, 7 * 24 * 60 * 60, userId);
+
+  return inviteToken;
 }
 
 async function resolveInviteOrgName(scopeContext: ScopeContext): Promise<string | undefined> {
@@ -187,7 +206,8 @@ async function resolveInviteOrgName(scopeContext: ScopeContext): Promise<string 
 async function sendInviteEmail(
   scopeContext: ScopeContext,
   invitee: { email: string; name: string },
-  inviter: { name?: string; email?: string }
+  inviter: { name?: string; email?: string },
+  inviteToken: string
 ): Promise<boolean> {
   const emailService = getEmailService();
   if (!emailService) {
@@ -204,7 +224,7 @@ async function sendInviteEmail(
       name: invitee.name,
       inviterName,
       orgName,
-      inviteUrl: buildInviteUrl(invitee.email)
+      inviteUrl: buildInviteUrl(inviteToken)
     });
     return true;
   } catch (error) {
@@ -565,10 +585,22 @@ userRoutes.post(
       return c.json({ error: 'User already exists in this scope' }, 409);
     }
 
-    const inviteEmailSent = await sendInviteEmail(scopeContext, {
-      email: result.user.email,
-      name: result.user.name
-    }, auth.user);
+    // Generate a secure invite token
+    const inviteToken = await generateInviteToken(result.user.id);
+    let inviteEmailSent = false;
+    let inviteUrl: string | undefined;
+
+    if (inviteToken) {
+      inviteEmailSent = await sendInviteEmail(scopeContext, {
+        email: result.user.email,
+        name: result.user.name
+      }, auth.user, inviteToken);
+
+      // Return invite URL only when email was NOT sent (so admin can share manually)
+      if (!inviteEmailSent) {
+        inviteUrl = buildInviteUrl(inviteToken);
+      }
+    }
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.invite',
@@ -593,7 +625,8 @@ userRoutes.post(
         name: result.user.name,
         status: result.user.status,
         roleId: data.roleId,
-        inviteEmailSent
+        inviteEmailSent,
+        ...(inviteUrl ? { inviteUrl } : {})
       },
       201
     );
@@ -619,10 +652,21 @@ userRoutes.post(
       return c.json({ error: 'User is not in invited status' }, 400);
     }
 
-    const inviteEmailSent = await sendInviteEmail(scopeContext, {
-      email: record.email,
-      name: record.name
-    }, auth.user);
+    // Generate a new invite token
+    const inviteToken = await generateInviteToken(record.id);
+    let inviteEmailSent = false;
+    let inviteUrl: string | undefined;
+
+    if (inviteToken) {
+      inviteEmailSent = await sendInviteEmail(scopeContext, {
+        email: record.email,
+        name: record.name
+      }, auth.user, inviteToken);
+
+      if (!inviteEmailSent) {
+        inviteUrl = buildInviteUrl(inviteToken);
+      }
+    }
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.invite.resend',
@@ -635,7 +679,7 @@ userRoutes.post(
       }
     });
 
-    return c.json({ success: true, inviteEmailSent });
+    return c.json({ success: true, inviteEmailSent, ...(inviteUrl ? { inviteUrl } : {}) });
   }
 );
 

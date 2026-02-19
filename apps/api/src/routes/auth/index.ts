@@ -4,6 +4,7 @@ import { loginRoutes } from './login';
 import { mfaRoutes } from './mfa';
 import { phoneRoutes } from './phone';
 import { passwordRoutes } from './password';
+import { inviteRoutes } from './invite';
 
 export const authRoutes = new Hono();
 
@@ -15,4 +16,5 @@ authRoutes.route('/', loginRoutes);
 authRoutes.route('/', mfaRoutes);
 authRoutes.route('/', phoneRoutes);
 authRoutes.route('/', passwordRoutes);
+authRoutes.route('/', inviteRoutes);
 
