@@ -124,7 +124,9 @@ func (s *Session) handleControlMessage(data []byte) {
 			cdc := s.cursorDC
 			s.mu.RUnlock()
 			if cdc != nil {
-				_ = cdc.SendText(`{"v":0}`)
+				if err := cdc.SendText(`{"v":0}`); err != nil {
+					slog.Debug("Failed to send cursor hide message", "session", s.id, "error", err)
+				}
 			}
 		}
 		slog.Debug("Cursor stream toggled", "session", s.id, "enabled", enabled)
