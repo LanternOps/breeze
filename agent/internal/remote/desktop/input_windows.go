@@ -304,9 +304,14 @@ func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 	ki := (*keybdInput)(unsafe.Pointer(&inp.mi))
 	ki.wVk = vk
 	ki.wScan = vkToScanCode(vk)
-	if up {
-		ki.dwFlags = KEYEVENTF_KEYUP
+	var flags uint32
+	if isExtendedKey(vk) {
+		flags |= KEYEVENTF_EXTENDEDKEY
 	}
+	if up {
+		flags |= KEYEVENTF_KEYUP
+	}
+	ki.dwFlags = flags
 
 	ret, _, _ := sendInput.Call(1, uintptr(unsafe.Pointer(&inp)), unsafe.Sizeof(inp))
 	if ret == 0 {

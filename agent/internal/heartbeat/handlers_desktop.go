@@ -12,6 +12,31 @@ import (
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
+// handleSASFromHelper is called when the user helper requests a Secure
+// Attention Sequence. The service process (this process) is SCM-registered
+// and is the most reliable path for SendSAS(FALSE). The helper can also
+// attempt InvokeSAS() as a fallback (see session_control.go), but SendSAS
+// may be ignored by Windows if the caller is not SCM-registered.
+func (h *Heartbeat) handleSASFromHelper(session *sessionbroker.Session, env *ipc.Envelope) {
+	log.Info("SAS request from user helper",
+		"identity", session.IdentityKey,
+		"winSession", session.WinSessionID,
+	)
+
+	sasErr := desktop.InvokeSAS()
+	resp := ipc.SASResponse{OK: sasErr == nil}
+	if sasErr != nil {
+		resp.Error = sasErr.Error()
+		log.Warn("SAS invocation failed", "error", sasErr.Error())
+	} else {
+		log.Info("SAS invoked successfully from service context")
+	}
+
+	if err := session.SendNotify(env.ID, ipc.TypeSASResponse, resp); err != nil {
+		log.Warn("failed to send SAS response to helper", "error", err)
+	}
+}
+
 // spawnGuard prevents concurrent helper spawns for the same target session.
 var spawnGuard sync.Mutex
 

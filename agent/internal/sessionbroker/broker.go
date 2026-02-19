@@ -446,7 +446,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		case ipc.TypeDisconnect:
 			log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
 			s.Close()
-		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
+		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest:
 			if b.onMessage != nil {
 				b.onMessage(s, env)
 			}

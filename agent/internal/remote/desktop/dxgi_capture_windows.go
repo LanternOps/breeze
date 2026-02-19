@@ -26,6 +26,47 @@ func (c *dxgiCapturer) sampleCursorForCrossThread() {
 	}
 }
 
+// captureFromGDIFallbackLocked captures from the secure-desktop GDI fallback
+// and performs periodic self-healing when BitBlt/DC state is transiently
+// unavailable. Caller must hold c.mu.
+func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
+	if c.gdiFallback == nil {
+		return nil, nil
+	}
+
+	img, err := c.gdiFallback.Capture()
+	if err != nil {
+		return nil, err
+	}
+	if img != nil {
+		c.gdiNoFrameCount = 0
+		return img, nil
+	}
+
+	c.gdiNoFrameCount++
+	now := time.Now()
+	if c.gdiNoFrameCount == 1 || c.gdiNoFrameCount%120 == 0 {
+		slog.Warn("GDI fallback produced no frame",
+			"count", c.gdiNoFrameCount,
+			"secureDesktop", c.secureDesktopFlag.Load())
+	}
+
+	// Reattach/recreate fallback periodically if secure desktop capture yields
+	// no frame for an extended stretch.
+	if c.gdiNoFrameCount >= 15 && now.Sub(c.lastGDIRepair) >= 500*time.Millisecond {
+		c.lastGDIRepair = now
+		_ = c.switchToInputDesktop()
+		if c.gdiFallback != nil {
+			_ = c.gdiFallback.Close()
+		}
+		c.gdiFallback = &gdiCapturer{config: c.config}
+		slog.Info("Recreated GDI fallback after repeated no-frame samples",
+			"count", c.gdiNoFrameCount)
+	}
+
+	return nil, nil
+}
+
 // Capture acquires the next desktop frame via DXGI.
 // Returns nil, nil when no new frame is available (AccumulatedFrames==0).
 func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
@@ -42,7 +83,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 
 	// If we've fallen back to GDI, delegate
 	if c.gdiFallback != nil {
-		return c.gdiFallback.Capture()
+		return c.captureFromGDIFallbackLocked()
 	}
 
 	if !c.inited {
@@ -102,7 +143,8 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 			slog.Info("On Secure Desktop after DXGI error, using GDI capture",
 				"desktop", dname)
 			c.gdiFallback = &gdiCapturer{config: c.config}
-			return c.gdiFallback.Capture()
+			c.gdiNoFrameCount = 0
+			return c.captureFromGDIFallbackLocked()
 		}
 
 		// Back on Default desktop
@@ -111,7 +153,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 		if err := c.initDXGI(); err != nil {
 			slog.Warn("DXGI reinit failed, falling back to GDI", "error", err)
 			c.switchToGDI()
-			return c.gdiFallback.Capture()
+			return c.captureFromGDIFallbackLocked()
 		}
 		return nil, nil
 	}
@@ -124,13 +166,13 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 		if c.consecutiveFailures >= 3 {
 			slog.Warn("Too many DXGI failures, falling back to GDI permanently")
 			c.switchToGDI()
-			return c.gdiFallback.Capture()
+			return c.captureFromGDIFallbackLocked()
 		}
 		c.switchToInputDesktop()
 		time.Sleep(500 * time.Millisecond)
 		if err := c.initDXGI(); err != nil {
 			c.switchToGDI()
-			return c.gdiFallback.Capture()
+			return c.captureFromGDIFallbackLocked()
 		}
 		return nil, nil
 	}

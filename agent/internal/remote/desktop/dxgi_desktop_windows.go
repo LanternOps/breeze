@@ -11,6 +11,17 @@ import (
 	"unsafe"
 )
 
+// pinCaptureThreadLocked pins the capture goroutine to one OS thread.
+// Caller must hold c.mu.
+func (c *dxgiCapturer) pinCaptureThreadLocked() {
+	if c.captureThreadPinned {
+		return
+	}
+	runtime.LockOSThread()
+	c.captureThreadPinned = true
+	slog.Debug("Pinned capture goroutine to OS thread")
+}
+
 // closeDesktopHandle closes the desktop handle opened via OpenInputDesktop.
 // Called during final cleanup (Close).
 func (c *dxgiCapturer) closeDesktopHandle() {
@@ -28,11 +39,8 @@ func (c *dxgiCapturer) closeDesktopHandle() {
 // Must be called before initDXGI() — DuplicateOutput binds to whichever
 // desktop is current on the calling thread.
 func (c *dxgiCapturer) switchToInputDesktop() bool {
-	// Pin the goroutine to its OS thread. SetThreadDesktop is per-thread,
-	// and DXGI COM objects have thread affinity. Safe to call multiple times
-	// (increments internal counter). We intentionally never unlock because
-	// the capture loop should stay on one thread for the session lifetime.
-	runtime.LockOSThread()
+	// SetThreadDesktop is per-thread; keep capture on a single OS thread.
+	c.pinCaptureThreadLocked()
 
 	// Open the currently active input desktop.
 	// Required to attach to the secure desktop (UAC, lock screen).
@@ -110,6 +118,9 @@ func desktopName(hDesk uintptr) string {
 //
 // Returns true if a desktop switch was detected and capture was reconfigured.
 func (c *dxgiCapturer) checkDesktopSwitch() bool {
+	// Desktop attachment must be stable across calls in this loop.
+	c.pinCaptureThreadLocked()
+
 	now := time.Now()
 	if now.Sub(c.lastDesktopCheck) < 500*time.Millisecond {
 		return false
@@ -170,6 +181,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 	if inputName == "Default" {
 		// Returning to normal desktop: use DXGI for GPU-accelerated capture.
 		c.secureDesktopFlag.Store(false)
+		c.gdiNoFrameCount = 0
 		slog.Info("Switched back to Default desktop, reinitializing DXGI")
 		if err := c.initDXGI(); err != nil {
 			slog.Warn("DXGI reinit failed after desktop switch", "error", err)
@@ -183,6 +195,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		slog.Info("Switched to Secure Desktop, using GDI capture",
 			"desktop", inputName)
 		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.gdiNoFrameCount = 0
 	}
 	return true
 }
@@ -190,6 +203,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 func (c *dxgiCapturer) switchToGDI() {
 	c.releaseDXGI()
 	c.gdiFallback = &gdiCapturer{config: c.config}
+	c.gdiNoFrameCount = 0
 	slog.Info("Switched to GDI screen capture fallback")
 }
 

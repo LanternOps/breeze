@@ -5,8 +5,10 @@ package desktop
 import (
 	"fmt"
 	"image"
+	"log/slog"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -33,6 +35,7 @@ const (
 	smCxScreen   = 0
 	smCyScreen   = 1
 	srcCopy      = 0x00CC0020
+	captureBlt   = 0x40000000
 	biRGB        = 0
 	dibRGBColors = 0
 )
@@ -66,18 +69,22 @@ type gdiCapturer struct {
 	mu     sync.Mutex
 
 	// Persistent GDI handles
-	screenDC     uintptr
+	screenDC      uintptr
 	screenDCOwned bool // true if screenDC was created via CreateDC (must use DeleteDC)
-	memDC        uintptr
-	hBitmap      uintptr
-	oldBitmap    uintptr
-	bi           bitmapInfo
-	width        int
-	height       int
-	inited       bool
+	memDC         uintptr
+	hBitmap       uintptr
+	oldBitmap     uintptr
+	bi            bitmapInfo
+	width         int
+	height        int
+	inited        bool
 
 	// Reusable pixel buffer (BGRA from GetDIBits)
 	pixBuf []byte
+
+	// Failure throttling for secure-desktop transient capture outages.
+	consecutiveCaptureFailures int
+	lastFailureLog             time.Time
 }
 
 func init() {
@@ -126,7 +133,11 @@ func (c *gdiCapturer) ensureHandles() error {
 	// Create compatible memory DC
 	memDC, _, _ := procCreateCompatibleDC.Call(hdc)
 	if memDC == 0 {
-		procReleaseDC.Call(0, hdc)
+		if c.screenDCOwned {
+			procDeleteDC.Call(hdc)
+		} else {
+			procReleaseDC.Call(0, hdc)
+		}
 		return fmt.Errorf("CreateCompatibleDC failed")
 	}
 
@@ -134,7 +145,11 @@ func (c *gdiCapturer) ensureHandles() error {
 	hBitmap, _, _ := procCreateCompatibleBitmap.Call(hdc, uintptr(width), uintptr(height))
 	if hBitmap == 0 {
 		procDeleteDC.Call(memDC)
-		procReleaseDC.Call(0, hdc)
+		if c.screenDCOwned {
+			procDeleteDC.Call(hdc)
+		} else {
+			procReleaseDC.Call(0, hdc)
+		}
 		return fmt.Errorf("CreateCompatibleBitmap failed")
 	}
 
@@ -143,7 +158,11 @@ func (c *gdiCapturer) ensureHandles() error {
 	if oldBitmap == 0 {
 		procDeleteObject.Call(hBitmap)
 		procDeleteDC.Call(memDC)
-		procReleaseDC.Call(0, hdc)
+		if c.screenDCOwned {
+			procDeleteDC.Call(hdc)
+		} else {
+			procReleaseDC.Call(0, hdc)
+		}
 		return fmt.Errorf("SelectObject failed")
 	}
 
@@ -200,23 +219,17 @@ func (c *gdiCapturer) releaseHandles() {
 	c.oldBitmap = 0
 }
 
-// Capture captures the entire screen using persistent GDI handles.
-func (c *gdiCapturer) Capture() (*image.RGBA, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if err := c.ensureHandles(); err != nil {
-		return nil, err
-	}
-
+func (c *gdiCapturer) captureOnceLocked() (*image.RGBA, error) {
 	// BitBlt the screen into our reusable bitmap
 	ret, _, _ := procBitBlt.Call(c.memDC, 0, 0, uintptr(c.width), uintptr(c.height),
-		c.screenDC, 0, 0, srcCopy)
+		c.screenDC, 0, 0, srcCopy|captureBlt)
 	if ret == 0 {
-		// BitBlt can fail after a desktop switch (DC becomes stale).
-		// Invalidate handles so the next Capture() re-acquires them.
-		c.releaseHandles()
-		return nil, fmt.Errorf("BitBlt failed")
+		// Some secure-desktop transitions reject CAPTUREBLT. Retry with plain SRCCOPY.
+		ret, _, _ = procBitBlt.Call(c.memDC, 0, 0, uintptr(c.width), uintptr(c.height),
+			c.screenDC, 0, 0, srcCopy)
+		if ret == 0 {
+			return nil, fmt.Errorf("BitBlt failed")
+		}
 	}
 
 	// GetDIBits into reusable pixel buffer
@@ -240,11 +253,60 @@ func (c *gdiCapturer) Capture() (*image.RGBA, error) {
 	return img, nil
 }
 
+func (c *gdiCapturer) recordCaptureFailureLocked(err error) {
+	c.consecutiveCaptureFailures++
+	now := time.Now()
+	if c.consecutiveCaptureFailures == 1 || now.Sub(c.lastFailureLog) >= 2*time.Second {
+		slog.Warn("GDI capture unavailable (returning no frame)",
+			"error", err.Error(),
+			"consecutive", c.consecutiveCaptureFailures)
+		c.lastFailureLog = now
+	}
+}
+
+func (c *gdiCapturer) resetCaptureFailuresLocked() {
+	c.consecutiveCaptureFailures = 0
+}
+
+// Capture captures the entire screen using persistent GDI handles.
+func (c *gdiCapturer) Capture() (*image.RGBA, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Try once with current handles, then force handle rebuild and retry.
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt == 1 {
+			c.releaseHandles()
+		}
+		if err := c.ensureHandles(); err != nil {
+			lastErr = err
+			continue
+		}
+		img, err := c.captureOnceLocked()
+		if err == nil {
+			c.resetCaptureFailuresLocked()
+			return img, nil
+		}
+		lastErr = err
+	}
+
+	// Secure-desktop transitions can invalidate DCs transiently. Treat this as
+	// "no frame yet" so the session loop skips without flooding error logs.
+	if lastErr != nil {
+		c.recordCaptureFailureLocked(lastErr)
+	}
+	return nil, nil
+}
+
 // CaptureRegion captures a specific region of the screen.
 func (c *gdiCapturer) CaptureRegion(x, y, width, height int) (*image.RGBA, error) {
 	fullImg, err := c.Capture()
 	if err != nil {
 		return nil, err
+	}
+	if fullImg == nil {
+		return nil, nil
 	}
 
 	bounds := image.Rect(x, y, x+width, y+height)

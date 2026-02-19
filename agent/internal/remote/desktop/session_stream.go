@@ -95,8 +95,9 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 	ticker := time.NewTicker(time.Second / 120)
 	defer ticker.Stop()
 
-	var lastX, lastY int32
+	var lastRelX, lastRelY int32
 	var lastV bool
+	haveLast := false
 
 	for {
 		select {
@@ -107,18 +108,19 @@ func (s *Session) cursorStreamLoop(prov CursorProvider) {
 				continue
 			}
 			cx, cy, cv := prov.CursorPosition()
-			if cx == lastX && cy == lastY && cv == lastV {
-				continue
-			}
-			lastX, lastY, lastV = cx, cy, cv
-			v := 0
-			if cv {
-				v = 1
-			}
 			// Convert absolute virtual desktop coords to display-relative
 			// so viewer can map directly using videoWidth/videoHeight.
 			relX := cx - s.cursorOffsetX.Load()
 			relY := cy - s.cursorOffsetY.Load()
+			if haveLast && relX == lastRelX && relY == lastRelY && cv == lastV {
+				continue
+			}
+			lastRelX, lastRelY, lastV = relX, relY, cv
+			haveLast = true
+			v := 0
+			if cv {
+				v = 1
+			}
 			_ = s.cursorDC.SendText(fmt.Sprintf(`{"x":%d,"y":%d,"v":%d}`, relX, relY, v))
 		}
 	}

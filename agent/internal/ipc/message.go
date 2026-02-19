@@ -27,6 +27,10 @@ const (
 	TypeClipboardGet  = "clipboard_get"
 	TypeClipboardData = "clipboard_data"
 	TypeClipboardSet  = "clipboard_set"
+
+	// SAS (Secure Attention Sequence) — helper requests service to invoke SendSAS
+	TypeSASRequest  = "sas_request"
+	TypeSASResponse = "sas_response"
 )
 
 // MaxMessageSize is the maximum size of a JSON IPC message (16MB).
@@ -148,6 +152,20 @@ type DesktopStartResponse struct {
 // DesktopStopRequest tells the user helper to tear down a desktop session.
 type DesktopStopRequest struct {
 	SessionID string `json:"sessionId"`
+}
+
+// SASRequest is sent by the user helper to the service when it needs to
+// trigger the Secure Attention Sequence (Ctrl+Alt+Del). The service is the
+// SCM-registered process with the highest chance of SendSAS(FALSE) succeeding.
+// The helper may also attempt it as a fallback.
+type SASRequest struct {
+	WinSessionID uint32 `json:"winSessionId,omitempty"`
+}
+
+// SASResponse is sent by the service back to the helper after invoking SAS.
+type SASResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the

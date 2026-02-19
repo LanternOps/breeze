@@ -14,17 +14,17 @@ import (
 
 // DXGI/D3D11 DLL procs
 var (
-	d3d11DLL   = syscall.NewLazyDLL("d3d11.dll")
-	kernel32   = syscall.NewLazyDLL("kernel32.dll")
+	d3d11DLL = syscall.NewLazyDLL("d3d11.dll")
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
 	procD3D11CreateDevice = d3d11DLL.NewProc("D3D11CreateDevice")
 
 	// Desktop switching — needed to follow UAC/lock screen secure desktop.
-	procOpenInputDesktop        = user32.NewProc("OpenInputDesktop")
-	procSetThreadDesktop        = user32.NewProc("SetThreadDesktop")
-	procGetThreadDesktop        = user32.NewProc("GetThreadDesktop")
-	procCloseDesktop            = user32.NewProc("CloseDesktop")
-	procGetCurrentThreadId      = kernel32.NewProc("GetCurrentThreadId")
+	procOpenInputDesktop          = user32.NewProc("OpenInputDesktop")
+	procSetThreadDesktop          = user32.NewProc("SetThreadDesktop")
+	procGetThreadDesktop          = user32.NewProc("GetThreadDesktop")
+	procCloseDesktop              = user32.NewProc("CloseDesktop")
+	procGetCurrentThreadId        = kernel32.NewProc("GetCurrentThreadId")
 	procGetUserObjectInformationW = user32.NewProc("GetUserObjectInformationW")
 )
 
@@ -56,16 +56,16 @@ const (
 	uoiName = 2
 
 	// DXGI/D3D11 COM vtable indices
-	dxgiDeviceGetAdapter       = 7  // IDXGIDevice (after IUnknown+IDXGIObject)
-	dxgiAdapterEnumOutputs     = 7  // IDXGIAdapter
-	dxgiOutput1DuplicateOutput = 22 // IDXGIOutput1
-	dxgiDuplGetDesc            = 7  // IDXGIOutputDuplication
-	dxgiDuplAcquireNextFrame   = 8  // IDXGIOutputDuplication
-	dxgiDuplReleaseFrame       = 14 // IDXGIOutputDuplication
-	d3d11DeviceCreateTexture2D = 5  // ID3D11Device
-	d3d11CtxMap                = 14 // ID3D11DeviceContext
-	d3d11CtxUnmap              = 15 // ID3D11DeviceContext
-	d3d11CtxCopyResource       = 47 // ID3D11DeviceContext
+	dxgiDeviceGetAdapter       = 7   // IDXGIDevice (after IUnknown+IDXGIObject)
+	dxgiAdapterEnumOutputs     = 7   // IDXGIAdapter
+	dxgiOutput1DuplicateOutput = 22  // IDXGIOutput1
+	dxgiDuplGetDesc            = 7   // IDXGIOutputDuplication
+	dxgiDuplAcquireNextFrame   = 8   // IDXGIOutputDuplication
+	dxgiDuplReleaseFrame       = 14  // IDXGIOutputDuplication
+	d3d11DeviceCreateTexture2D = 5   // ID3D11Device
+	d3d11CtxMap                = 14  // ID3D11DeviceContext
+	d3d11CtxUnmap              = 15  // ID3D11DeviceContext
+	d3d11CtxCopyResource       = 47  // ID3D11DeviceContext
 	d3d11CtxFlush              = 111 // ID3D11DeviceContext::Flush (void, no params beyond this)
 )
 
@@ -140,6 +140,11 @@ type dxgiCapturer struct {
 	config CaptureConfig
 	mu     sync.Mutex
 
+	// captureThreadPinned indicates the capture goroutine has been pinned to a
+	// single OS thread. SetThreadDesktop is per-thread and must remain stable
+	// across desktop transitions.
+	captureThreadPinned bool
+
 	// D3D11/DXGI COM objects
 	device      uintptr // ID3D11Device
 	context     uintptr // ID3D11DeviceContext
@@ -147,12 +152,12 @@ type dxgiCapturer struct {
 	staging     uintptr // ID3D11Texture2D (staging, CPU-readable)
 	gpuTexture  uintptr // ID3D11Texture2D (DEFAULT usage, RENDER_TARGET bind, for GPU pipeline)
 
-	width    int    // logical desktop dimensions (post-rotation, what the user sees)
-	height   int
-	texWidth  int   // native texture dimensions (pre-rotation, what DXGI returns)
+	width     int // logical desktop dimensions (post-rotation, what the user sees)
+	height    int
+	texWidth  int // native texture dimensions (pre-rotation, what DXGI returns)
 	texHeight int
-	rotation uint32 // DXGI_MODE_ROTATION (0=unspecified, 1=identity, 2=90, 3=180, 4=270)
-	inited   bool
+	rotation  uint32 // DXGI_MODE_ROTATION (0=unspecified, 1=identity, 2=90, 3=180, 4=270)
+	inited    bool
 
 	// True when CaptureTexture has an in-flight AcquireNextFrame that hasn't been released yet.
 	textureFrameAcquired bool
@@ -167,6 +172,8 @@ type dxgiCapturer struct {
 	// Failure tracking for GDI fallback
 	consecutiveFailures int
 	gdiFallback         *gdiCapturer
+	gdiNoFrameCount     int
+	lastGDIRepair       time.Time
 
 	// Diagnostic counters for debugging capture failures
 	diagTimeouts      int
@@ -331,11 +338,11 @@ func (c *dxgiCapturer) initDXGI() error {
 	// AcquireNextFrame returns textures at native panel dimensions (swapped
 	// for 90°/270°). Staging/GPU textures must match native dims so
 	// CopyResource succeeds; we rotate the pixels after CPU readback.
-	desktopW, desktopH := width, height                          // logical desktop dimensions (from ModeDesc)
-	texW, texH := width, height                                  // native texture dimensions
-	rot := duplDesc.Rotation                                     // 1=identity, 2=90°, 3=180°, 4=270°
-	if rot == 2 || rot == 4 {                                    // 90° or 270° rotation
-		texW, texH = height, width                           // native texture: ModeDesc dims swapped
+	desktopW, desktopH := width, height // logical desktop dimensions (from ModeDesc)
+	texW, texH := width, height         // native texture dimensions
+	rot := duplDesc.Rotation            // 1=identity, 2=90°, 3=180°, 4=270°
+	if rot == 2 || rot == 4 {           // 90° or 270° rotation
+		texW, texH = height, width // native texture: ModeDesc dims swapped
 	}
 
 	// Create persistent staging texture at NATIVE dimensions

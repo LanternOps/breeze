@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/executor"
@@ -30,6 +32,9 @@ type Client struct {
 	scopes     []string
 	stopChan   chan struct{}
 	desktopMgr *helperDesktopManager
+	pendingMu  sync.Mutex
+	pending    map[string]chan *ipc.Envelope
+	sasReqSeq  atomic.Uint64
 }
 
 // New creates a new user helper client.
@@ -38,6 +43,7 @@ func New(socketPath string) *Client {
 		socketPath: socketPath,
 		stopChan:   make(chan struct{}),
 		desktopMgr: newHelperDesktopManager(),
+		pending:    make(map[string]chan *ipc.Envelope),
 	}
 }
 
@@ -55,6 +61,11 @@ func (c *Client) Run() error {
 
 	if err := c.sendCapabilities(); err != nil {
 		log.Warn("failed to send capabilities", "error", err)
+	}
+
+	// Set SAS callback: route through IPC to the SCM service which can call SendSAS
+	c.desktopMgr.mgr.OnSASRequest = func() error {
+		return c.requestSASViaIPC()
 	}
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
@@ -162,6 +173,8 @@ func (c *Client) sendCapabilities() error {
 }
 
 func (c *Client) commandLoop() error {
+	defer c.closePendingResponses()
+
 	for {
 		select {
 		case <-c.stopChan:
@@ -217,6 +230,11 @@ func (c *Client) commandLoop() error {
 		case ipc.TypeClipboardSet:
 			go c.handleClipboardSet(env)
 
+		case ipc.TypeSASResponse:
+			if !c.resolvePendingResponse(env) {
+				log.Warn("unsolicited sas_response from daemon", "id", env.ID)
+			}
+
 		case ipc.TypeDisconnect:
 			log.Info("disconnect received from daemon")
 			return nil
@@ -224,6 +242,58 @@ func (c *Client) commandLoop() error {
 		default:
 			log.Warn("unknown message type", "type", env.Type)
 		}
+	}
+}
+
+func (c *Client) registerPendingResponse(id string) chan *ipc.Envelope {
+	ch := make(chan *ipc.Envelope, 1)
+	c.pendingMu.Lock()
+	c.pending[id] = ch
+	c.pendingMu.Unlock()
+	return ch
+}
+
+func (c *Client) unregisterPendingResponse(id string) {
+	var ch chan *ipc.Envelope
+	c.pendingMu.Lock()
+	ch = c.pending[id]
+	delete(c.pending, id)
+	c.pendingMu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+}
+
+func (c *Client) resolvePendingResponse(env *ipc.Envelope) bool {
+	var ch chan *ipc.Envelope
+	c.pendingMu.Lock()
+	ch = c.pending[env.ID]
+	if ch != nil {
+		delete(c.pending, env.ID)
+	}
+	c.pendingMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- env:
+	default:
+		log.Warn("pending response channel full, dropping", "id", env.ID)
+	}
+	close(ch)
+	return true
+}
+
+func (c *Client) closePendingResponses() {
+	c.pendingMu.Lock()
+	chans := make([]chan *ipc.Envelope, 0, len(c.pending))
+	for id, ch := range c.pending {
+		delete(c.pending, id)
+		chans = append(chans, ch)
+	}
+	c.pendingMu.Unlock()
+	for _, ch := range chans {
+		close(ch)
 	}
 }
 
@@ -385,6 +455,51 @@ func (c *Client) handleClipboardGet(env *ipc.Envelope) {
 
 func (c *Client) handleClipboardSet(env *ipc.Envelope) {
 	log.Debug("clipboard_set received (not yet implemented)")
+}
+
+// requestSASViaIPC sends a sas_request to the service process via IPC.
+// The service (SCM-registered) is the preferred process for SendSAS(FALSE).
+// Route through IPC first for the most reliable SAS invocation.
+func (c *Client) requestSASViaIPC() error {
+	reqID := fmt.Sprintf("sas-%d", c.sasReqSeq.Add(1))
+	respCh := c.registerPendingResponse(reqID)
+	// defer unregister is safe even after resolvePendingResponse:
+	// resolvePendingResponse deletes the entry from c.pending before closing
+	// the channel, so unregisterPendingResponse will find nil and skip close.
+	defer c.unregisterPendingResponse(reqID)
+
+	req := ipc.SASRequest{
+		WinSessionID: currentWinSessionID(),
+	}
+	if err := c.conn.SendTyped(reqID, ipc.TypeSASRequest, req); err != nil {
+		return fmt.Errorf("IPC sas_request send failed: %w", err)
+	}
+	log.Info("SAS request sent to service via IPC", "id", reqID)
+
+	select {
+	case <-c.stopChan:
+		return errors.New("IPC stopped while waiting for SAS response")
+	case env, ok := <-respCh:
+		if !ok || env == nil {
+			return errors.New("IPC closed while waiting for SAS response")
+		}
+		if env.Error != "" {
+			return fmt.Errorf("SAS response error: %s", env.Error)
+		}
+		var resp ipc.SASResponse
+		if err := json.Unmarshal(env.Payload, &resp); err != nil {
+			return fmt.Errorf("invalid SAS response payload: %w", err)
+		}
+		if !resp.OK {
+			if resp.Error != "" {
+				return errors.New(resp.Error)
+			}
+			return errors.New("SAS request rejected by service")
+		}
+		return nil
+	case <-time.After(8 * time.Second):
+		return errors.New("timed out waiting for SAS response from service")
+	}
 }
 
 func computeSelfHash() (string, error) {

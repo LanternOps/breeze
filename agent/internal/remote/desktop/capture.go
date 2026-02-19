@@ -93,6 +93,16 @@ type CursorProvider interface {
 	CursorPosition() (x, y int32, visible bool)
 }
 
+// DesktopSwitchNotifier is implemented by capturers that detect Windows desktop
+// transitions (Default ↔ Winlogon/Screen-saver). This enables the session to
+// reset cursor/input offsets and force keyframes on secure desktop transitions.
+type DesktopSwitchNotifier interface {
+	// ConsumeDesktopSwitch returns true once after each desktop switch.
+	ConsumeDesktopSwitch() bool
+	// OnSecureDesktop returns true when capturing a secure desktop (Winlogon, Screen-saver).
+	OnSecureDesktop() bool
+}
+
 // ErrNotSupported is returned when screen capture is not supported on the platform
 var ErrNotSupported = fmt.Errorf("screen capture not supported on this platform")
 

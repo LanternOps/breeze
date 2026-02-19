@@ -615,8 +615,8 @@ sessionRoutes.post(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // Only allow offer in pending or connecting state
-    if (!['pending', 'connecting'].includes(session.status)) {
+    // Allow offer in pending, connecting, or disconnected state (reconnect)
+    if (!['pending', 'connecting', 'disconnected'].includes(session.status)) {
       return c.json({
         error: 'Cannot submit offer for session in current state',
         status: session.status
@@ -627,7 +627,9 @@ sessionRoutes.post(
       .update(remoteSessions)
       .set({
         webrtcOffer: data.offer,
-        status: 'connecting'
+        webrtcAnswer: null,
+        status: 'connecting',
+        ...(session.status === 'disconnected' ? { endedAt: null } : {}),
       })
       .where(eq(remoteSessions.id, sessionId))
       .returning();

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { buildWsUrl, type ConnectionParams } from '../lib/protocol';
 import { createDesktopWsTicket, exchangeDesktopConnectCode } from '../lib/api';
 import { createWebRTCSession, scaleVideoCoords, type AuthenticatedConnectionParams, type WebRTCSession } from '../lib/webrtc';
@@ -13,8 +14,11 @@ interface Props {
   onError: (msg: string) => void;
 }
 
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
 type Transport = 'webrtc' | 'websocket';
+
+const RECONNECT_TIMEOUT_MS = 30_000;
+const RECONNECT_INTERVAL_MS = 3_000;
 
 export default function DesktopViewer({ params, onDisconnect, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -29,10 +33,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const pressedKeysRef = useRef<Set<string>>(new Set());
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
   const pasteCancelRef = useRef(false);
+  const userDisconnectRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectDeadlineRef = useRef<number | null>(null);
+  const reconnectInFlightRef = useRef(false);
+  const startReconnectRef = useRef<() => void>(() => {});
+  const sessionRegisteredRef = useRef(false);
 
   const webrtcMouseMovePendingRef = useRef<{ x: number; y: number } | null>(null);
   const webrtcMouseMoveRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
+  const [reconnectSecondsLeft, setReconnectSecondsLeft] = useState(0);
   const [transport, setTransport] = useState<Transport | null>(null);
   const [fps, setFps] = useState(0);
   const [quality, setQuality] = useState(60);
@@ -49,12 +60,21 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [activeMonitor, setActiveMonitor] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
+  const [showRemoteCursor, setShowRemoteCursor] = useState(false);
   const cursorOverlayRef = useRef<HTMLDivElement>(null);
+  const showRemoteCursorRef = useRef(false);
 
   const setTransportState = useCallback((t: Transport | null) => {
     transportRef.current = t;
     setTransport(t);
   }, []);
+
+  useEffect(() => {
+    showRemoteCursorRef.current = showRemoteCursor;
+    if (!showRemoteCursor && cursorOverlayRef.current) {
+      cursorOverlayRef.current.style.display = 'none';
+    }
+  }, [showRemoteCursor]);
 
   // Frame rate tracking
   const frameCountRef = useRef(0);
@@ -119,9 +139,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	          setErrorMessage(null);
 	          // Ensure keyboard input is captured without an extra click.
 	          videoRef.current?.focus();
-	        } else if (state === 'failed') {
-	          void fallbackToWebSocket('WebRTC connection failed. Falling back to WebSocket...');
+	        } else if (state === 'failed' || state === 'disconnected') {
+	          // If user clicked disconnect, don't auto-reconnect
+	          if (userDisconnectRef.current) return;
+	          startReconnectRef.current();
 	        } else if (state === 'closed') {
+	          if (userDisconnectRef.current) return;
 	          setStatus('disconnected');
 	          setConnectedAt(null);
 	        }
@@ -136,6 +159,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             const overlay = cursorOverlayRef.current;
             const videoEl = videoRef.current;
             if (!overlay || !videoEl) return;
+            if (!showRemoteCursorRef.current) {
+              overlay.style.display = 'none';
+              return;
+            }
 
             try {
               const { x, y, v } = JSON.parse(msg.data);
@@ -168,12 +195,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
                 offsetY = (rect.height - displayH) / 2;
               }
 
-              const localX = (x / videoW) * displayW + offsetX + (rect.left - containerRect.left);
-              const localY = (y / videoH) * displayH + offsetY + (rect.top - containerRect.top);
+              const remoteX = Math.max(0, Math.min(videoW - 1, Number(x) || 0));
+              const remoteY = Math.max(0, Math.min(videoH - 1, Number(y) || 0));
+              const localX = (remoteX / videoW) * displayW + offsetX + (rect.left - containerRect.left);
+              const localY = (remoteY / videoH) * displayH + offsetY + (rect.top - containerRect.top);
 
               overlay.style.display = 'block';
               overlay.style.transform = `translate(${localX}px, ${localY}px)`;
-            } catch { /* ignore malformed cursor messages */ }
+            } catch (err) {
+              console.debug('Cursor message handling failed:', err);
+            }
           };
         }
       };
@@ -270,7 +301,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     ws.onclose = () => {
       cleanup();
       setConnectedAt(null);
-      if (!hadError) setStatus('disconnected');
+      if (!hadError && !userDisconnectRef.current) {
+        startReconnectRef.current();
+      } else if (!hadError) {
+        setStatus('disconnected');
+      }
     };
 
     ws.onerror = () => {
@@ -287,49 +322,110 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     return cleanup;
   }, [onError]);
 
-  async function fallbackToWebSocket(reason: string) {
-    if (cancelledRef.current) return;
-    if (webrtcFallbackAttemptedRef.current) return;
+  // ── Reconnect logic (refs to break circular deps with hooks defined later) ──
 
+  const stopReconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearInterval(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectDeadlineRef.current = null;
+    setReconnectSecondsLeft(0);
+  }, []);
+
+  // releaseAllKeys is defined after sendInputFn; use ref to break TDZ
+  const releaseAllKeysRef = useRef<() => void>(() => {});
+
+  const attemptReconnect = useCallback(async () => {
     const auth = authRef.current;
-    if (!auth) return;
+    if (!auth || cancelledRef.current || userDisconnectRef.current) {
+      stopReconnect();
+      return;
+    }
+    if (reconnectInFlightRef.current) return;
 
-    webrtcFallbackAttemptedRef.current = true;
+    // Check deadline
+    const deadline = reconnectDeadlineRef.current;
+    if (!deadline || Date.now() >= deadline) {
+      stopReconnect();
+      setStatus('disconnected');
+      setConnectedAt(null);
+      setErrorMessage('Reconnection timed out');
+      return;
+    }
 
-    console.warn(reason);
-    setStatus('connecting');
-    setTransportState(null);
-    setConnectedAt(null);
-    setErrorMessage(null);
+    setReconnectSecondsLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
 
+    // Tear down old connections
+    releaseAllKeysRef.current();
     if (webrtcMouseMoveRafRef.current !== null) {
       cancelAnimationFrame(webrtcMouseMoveRafRef.current);
       webrtcMouseMoveRafRef.current = null;
     }
     webrtcMouseMovePendingRef.current = null;
-
-    // Best-effort: release any held keys before switching transports.
-    releaseAllKeys();
-
-    // Tear down the WebRTC session before starting WS fallback.
+    wsCleanupRef.current?.();
+    wsCleanupRef.current = null;
     webrtcRef.current?.close();
     webrtcRef.current = null;
 
-    const cleanup = await connectWebSocket(auth);
-    if (cancelledRef.current) {
-      cleanup?.();
-      return;
+    reconnectInFlightRef.current = true;
+    try {
+      // Try WebRTC first
+      const webrtcOk = await connectWebRTC(auth);
+      if (cancelledRef.current || userDisconnectRef.current) return;
+
+      if (webrtcOk) {
+        stopReconnect();
+        return;
+      }
+
+      // Try WebSocket fallback
+      const cleanup = await connectWebSocket(auth);
+      if (cancelledRef.current || userDisconnectRef.current) {
+        cleanup?.();
+        return;
+      }
+      if (cleanup) {
+        wsCleanupRef.current = cleanup;
+        stopReconnect();
+      }
+    } catch (err) {
+      console.warn('Reconnect attempt failed (will retry):', err);
+    } finally {
+      reconnectInFlightRef.current = false;
     }
-    if (cleanup) {
-      wsCleanupRef.current = cleanup;
-    }
-  }
+  }, [connectWebRTC, connectWebSocket, stopReconnect]);
+
+  const startReconnect = useCallback(() => {
+    if (!authRef.current || userDisconnectRef.current) return;
+
+    // Don't start if already reconnecting
+    if (reconnectTimerRef.current) return;
+
+    setStatus('reconnecting');
+    const deadline = Date.now() + RECONNECT_TIMEOUT_MS;
+    reconnectDeadlineRef.current = deadline;
+    setReconnectSecondsLeft(Math.ceil(RECONNECT_TIMEOUT_MS / 1000));
+
+    // First attempt immediately
+    void attemptReconnect();
+
+    // Then retry every interval
+    reconnectTimerRef.current = setInterval(() => {
+      void attemptReconnect();
+    }, RECONNECT_INTERVAL_MS);
+  }, [attemptReconnect]);
+
+  // Keep refs in sync so callbacks inside earlier useCallback closures use the latest version
+  startReconnectRef.current = startReconnect;
 
   // ── Connection lifecycle ───────────────────────────────────────────
 
   useEffect(() => {
     cancelledRef.current = false;
     webrtcFallbackAttemptedRef.current = false;
+    userDisconnectRef.current = false;
+    reconnectInFlightRef.current = false;
     authRef.current = null;
     wheelAccRef.current = DEFAULT_WHEEL_ACCUMULATOR;
     setCursorStreamActive(false);
@@ -411,6 +507,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     return () => {
       cancelledRef.current = true;
+      stopReconnect();
+      reconnectInFlightRef.current = false;
 
       // Best-effort: release keys before closing the transport.
       releaseAllKeys();
@@ -426,8 +524,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       wsCleanupRef.current = null;
       webrtcRef.current?.close();
       webrtcRef.current = null;
+      if (sessionRegisteredRef.current) {
+        sessionRegisteredRef.current = false;
+        invoke('unregister_session').catch(() => {});
+      }
     };
-  }, [connectWebRTC, connectWebSocket, onError, params]);
+  }, [connectWebRTC, connectWebSocket, onError, params, stopReconnect]);
+
+  // Mark a window as "session active" only when fully connected.
+  useEffect(() => {
+    if (status === 'connected' && !sessionRegisteredRef.current) {
+      sessionRegisteredRef.current = true;
+      invoke('register_session').catch(() => {});
+      return;
+    }
+    if (status !== 'connected' && sessionRegisteredRef.current) {
+      sessionRegisteredRef.current = false;
+      invoke('unregister_session').catch(() => {});
+    }
+  }, [status]);
 
   // Count WebRTC video frames via requestVideoFrameCallback
   useEffect(() => {
@@ -498,13 +613,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const onMessage = (e: MessageEvent) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'monitors' && Array.isArray(msg.monitors)) {
-          setMonitors(msg.monitors);
-        } else if (msg.type === 'monitor_switched') {
-          setActiveMonitor(msg.index ?? 0);
-          // Request a keyframe so the browser decoder gets a fresh IDR
-          // with the new resolution's SPS/PPS immediately.
-          ch.send(JSON.stringify({ type: 'request_keyframe' }));
+        switch (msg.type) {
+          case 'monitors':
+            if (Array.isArray(msg.monitors)) setMonitors(msg.monitors);
+            break;
+          case 'monitor_switched':
+            setActiveMonitor(msg.index ?? 0);
+            // Request a keyframe so the browser decoder gets a fresh IDR
+            // with the new resolution's SPS/PPS immediately.
+            ch.send(JSON.stringify({ type: 'request_keyframe' }));
+            break;
+          case 'sas_result':
+            if (!msg.ok) console.warn('SAS failed:', msg.error);
+            if (msg.ok && msg.verificationSupported && !msg.verified) {
+              console.warn('SAS request was sent but secure-desktop transition was not observed');
+            }
+            break;
+          case 'lock_result':
+            if (!msg.ok) console.warn('Lock workstation failed:', msg.error);
+            break;
         }
       } catch (err) {
         console.warn('Failed to parse control message:', err);
@@ -633,6 +760,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     pressedKeysRef.current.clear();
   }, [sendInputFn]);
+  releaseAllKeysRef.current = releaseAllKeys;
 
   const flushWebRTCMouseMove = useCallback(() => {
     webrtcMouseMoveRafRef.current = null;
@@ -872,12 +1000,27 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ch && ch.readyState === 'open') {
       ch.send(JSON.stringify({ type: 'send_sas' }));
     } else {
-      // WebSocket fallback: send as regular keystrokes (won't trigger real SAS)
-      sendInputFn({ type: 'key_press', key: 'delete', modifiers: ['ctrl', 'alt'] });
+      console.warn('Ctrl+Alt+Del (SAS) requires WebRTC transport');
     }
-  }, [sendInputFn]);
+  }, []);
+
+  const handleLockWorkstation = useCallback(() => {
+    const ch = webrtcRef.current?.controlChannel;
+    if (ch && ch.readyState === 'open') {
+      ch.send(JSON.stringify({ type: 'lock_workstation' }));
+    } else {
+      console.warn('Lock workstation requires WebRTC transport');
+    }
+  }, []);
 
   const handleDisconnect = useCallback(() => {
+    userDisconnectRef.current = true;
+    stopReconnect();
+    reconnectInFlightRef.current = false;
+    if (sessionRegisteredRef.current) {
+      sessionRegisteredRef.current = false;
+      invoke('unregister_session').catch(() => {});
+    }
     releaseAllKeys();
 
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -897,7 +1040,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     webrtcRef.current?.close();
     webrtcRef.current = null;
     onDisconnect();
-  }, [onDisconnect, releaseAllKeys]);
+  }, [onDisconnect, releaseAllKeys, stopReconnect]);
 
   // ── Render ─────────────────────────────────────────────────────────
 
@@ -928,16 +1071,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         activeMonitor={activeMonitor}
         audioEnabled={audioEnabled}
         hasAudioTrack={hasAudioTrack}
+        showRemoteCursor={showRemoteCursor}
         onRemapCmdCtrlChange={setRemapCmdCtrl}
+        onShowRemoteCursorChange={setShowRemoteCursor}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}
         onSwitchMonitor={handleSwitchMonitor}
         onToggleAudio={handleToggleAudio}
         onSendKeys={handleSendKeys}
         onSendSAS={handleSendSAS}
+        onLockWorkstation={handleLockWorkstation}
         onPasteAsKeystrokes={handlePasteAsKeystrokes}
         onCancelPaste={handleCancelPaste}
         onDisconnect={handleDisconnect}
+        reconnectSecondsLeft={reconnectSecondsLeft}
       />
       <div className="flex-1 overflow-hidden flex items-center justify-center bg-black relative">
         {/* WebRTC: <video> element (hardware H264 decode) */}
@@ -947,7 +1094,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           autoPlay
           playsInline
           muted
-          className={`max-w-full max-h-full object-contain outline-none ${cursorStreamActive ? 'cursor-none' : 'cursor-default'} ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          className={`max-w-full max-h-full object-contain outline-none ${cursorStreamActive && showRemoteCursor ? 'cursor-none' : 'cursor-default'} ${transport !== 'webrtc' ? 'hidden' : ''}`}
           {...interactionProps}
         />
 
@@ -975,6 +1122,25 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             <div className="text-center">
               <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-4" />
               <p className="text-gray-300">Connecting to remote desktop...</p>
+            </div>
+          </div>
+        )}
+        {status === 'reconnecting' && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/60 backdrop-blur-[2px]">
+            <div className="text-center bg-gray-900/80 rounded-xl px-8 py-6 shadow-2xl border border-orange-700/50">
+              <div className="animate-spin w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full mx-auto mb-4" />
+              <p className="text-gray-200 font-medium mb-1">Reconnecting...</p>
+              <p className="text-gray-400 text-sm mb-4">
+                {reconnectSecondsLeft > 0
+                  ? `Retrying connection (${reconnectSecondsLeft}s remaining)`
+                  : 'Attempting to reconnect...'}
+              </p>
+              <button
+                onClick={handleDisconnect}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-sm"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         )}

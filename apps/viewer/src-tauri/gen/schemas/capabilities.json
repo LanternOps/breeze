@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Default permissions for Breeze Viewer","local":true,"windows":["main","session-*"],"permissions":["core:default","deep-link:default","shell:allow-open"]}}

@@ -3,7 +3,33 @@ package desktop
 import (
 	"encoding/json"
 	"log/slog"
+	"time"
 )
+
+// verifySecureDesktopTransition checks whether the session moved to a secure
+// desktop shortly after a SAS request. This is a best-effort verification
+// signal for diagnostics; SendSAS itself is a void API and cannot confirm
+// effect directly.
+func (s *Session) verifySecureDesktopTransition(timeout time.Duration) (supported bool, transitioned bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		s.mu.RLock()
+		cap := s.capturer
+		s.mu.RUnlock()
+
+		dsn, ok := cap.(DesktopSwitchNotifier)
+		if !ok {
+			return false, false
+		}
+		if dsn.OnSecureDesktop() {
+			return true, true
+		}
+		if time.Now().After(deadline) {
+			return true, false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // handleInputMessage processes input events from the data channel
 func (s *Session) handleInputMessage(data []byte) {
@@ -94,6 +120,8 @@ func (s *Session) handleControlMessage(data []byte) {
 		slog.Info("SAS requested via control channel", "session", s.id)
 		// Try service IPC first (Session 0 context), fall back to direct call.
 		var sasErr error
+		verificationSupported := false
+		verified := false
 		if s.sasHandler != nil {
 			sasErr = s.sasHandler()
 			if sasErr != nil {
@@ -103,16 +131,26 @@ func (s *Session) handleControlMessage(data []byte) {
 		} else {
 			sasErr = InvokeSAS()
 		}
+		if sasErr == nil {
+			verificationSupported, verified = s.verifySecureDesktopTransition(1200 * time.Millisecond)
+			if verificationSupported && !verified {
+				slog.Warn("SAS call succeeded but secure desktop transition not observed", "session", s.id)
+			}
+		}
 		ok := sasErr == nil
 		if sasErr != nil {
 			slog.Warn("SendSAS failed (all paths)", "session", s.id, "error", sasErr.Error())
 		}
 		respBody := map[string]any{
-			"type": "sas_result",
-			"ok":   ok,
+			"type":                  "sas_result",
+			"ok":                    ok,
+			"verificationSupported": verificationSupported,
+			"verified":              verified,
 		}
 		if sasErr != nil {
 			respBody["error"] = sasErr.Error()
+		} else if verificationSupported && !verified {
+			respBody["warning"] = "SAS request sent but secure-desktop transition not observed"
 		}
 		resp, _ := json.Marshal(respBody)
 		s.mu.RLock()
@@ -128,10 +166,14 @@ func (s *Session) handleControlMessage(data []byte) {
 		if lockErr != nil {
 			slog.Warn("LockWorkstation failed", "session", s.id, "error", lockErr.Error())
 		}
-		lockResp, _ := json.Marshal(map[string]any{
+		lockBody := map[string]any{
 			"type": "lock_result",
 			"ok":   lockOk,
-		})
+		}
+		if lockErr != nil {
+			lockBody["error"] = lockErr.Error()
+		}
+		lockResp, _ := json.Marshal(lockBody)
 		s.mu.RLock()
 		ldc := s.controlDC
 		s.mu.RUnlock()

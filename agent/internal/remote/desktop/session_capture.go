@@ -8,6 +8,62 @@ import (
 	"github.com/pion/webrtc/v3/pkg/media"
 )
 
+const secureDesktopMinFPS = 8
+
+func secureDesktopMinInterval() time.Duration {
+	return time.Second / secureDesktopMinFPS
+}
+
+func (s *Session) cacheEncodedFrame(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	s.lastEncodedMu.Lock()
+	s.lastEncodedFrame = cp
+	s.lastEncodedMu.Unlock()
+}
+
+func (s *Session) noteVideoWrite() {
+	s.lastVideoWriteUnixNano.Store(time.Now().UnixNano())
+}
+
+func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, frameDuration time.Duration) bool {
+	dsn, ok := cap.(DesktopSwitchNotifier)
+	if !ok || !dsn.OnSecureDesktop() {
+		return false
+	}
+
+	minInterval := secureDesktopMinInterval()
+	last := s.lastVideoWriteUnixNano.Load()
+	if last != 0 && time.Since(time.Unix(0, last)) < minInterval {
+		return false
+	}
+
+	s.lastEncodedMu.RLock()
+	cached := s.lastEncodedFrame
+	if len(cached) == 0 {
+		s.lastEncodedMu.RUnlock()
+		return false
+	}
+	data := make([]byte, len(cached))
+	copy(data, cached)
+	s.lastEncodedMu.RUnlock()
+
+	sample := media.Sample{
+		Data:     data,
+		Duration: frameDuration,
+	}
+	if err := s.videoTrack.WriteSample(sample); err != nil {
+		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err)
+		return false
+	}
+	s.metrics.RecordSend(len(data))
+	s.noteVideoWrite()
+	return true
+}
+
 // captureLoop continuously captures and sends encoded H264 frames.
 // Dispatches between DXGI tight-loop and ticker-paced modes. Mode switches
 // return to this function instead of calling each other recursively, avoiding
@@ -59,6 +115,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 	// frames, which may not be enough for the decoder to stabilize.
 	postSwitchRepaints := 0
 	var lastRepaintTime time.Time
+	var lastSecureKeyframe time.Time
 
 	for {
 		loopStart := time.Now()
@@ -129,14 +186,23 @@ func (s *Session) captureLoopDXGI() captureMode {
 
 		// Force repaints on the secure desktop — static screens (lock, UAC,
 		// security options) don't generate dirty rects naturally.
+		// Also send a zero-delta input nudge to trigger secure UI paint.
 		// Throttled to once per 500ms to avoid hammering the compositor.
 		s.mu.RLock()
 		currentCap := s.capturer
 		s.mu.RUnlock()
 		if dsn, ok := currentCap.(DesktopSwitchNotifier); ok && dsn.OnSecureDesktop() {
 			if time.Since(lastRepaintTime) >= 500*time.Millisecond {
+				nudgeSecureDesktop()
 				forceDesktopRepaint()
 				lastRepaintTime = time.Now()
+			}
+			// Secure desktop transitions can leave the browser decoder on stale
+			// predicted frames until a fresh IDR arrives. Periodic keyframes avoid
+			// "content appears only after click/input" behavior.
+			if s.encoder != nil && time.Since(lastSecureKeyframe) >= time.Second {
+				_ = s.encoder.ForceKeyframe()
+				lastSecureKeyframe = time.Now()
 			}
 		}
 
@@ -162,7 +228,14 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 
+		onSecure := false
+		if dsn, ok := currentCap.(DesktopSwitchNotifier); ok {
+			onSecure = dsn.OnSecureDesktop()
+		}
 		newFPS := s.getFPS()
+		if onSecure && newFPS < secureDesktopMinFPS {
+			newFPS = secureDesktopMinFPS
+		}
 		if newFPS != fps {
 			fps = newFPS
 			frameDuration = time.Second / time.Duration(fps)
@@ -180,6 +253,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 				frameSent = sent
 				sleepDur := frameDuration
 				if !frameSent {
+					if onSecure {
+						frameSent = s.maybeResendCachedFrameOnSecureDesktop(currentCap, frameDuration)
+					}
 					consecutiveSkips++
 					// After a monitor switch, keep nudging the display so
 					// DXGI picks up dirty rects on an otherwise static screen.
@@ -223,6 +299,7 @@ func (s *Session) captureLoopTicker() captureMode {
 
 	hwChecked := false
 	var lastTickerRepaint time.Time
+	var lastSecureKeyframe time.Time
 
 	for {
 		select {
@@ -236,11 +313,17 @@ func (s *Session) captureLoopTicker() captureMode {
 			currentCap := s.capturer
 			s.mu.RUnlock()
 			// Force repaints on the secure desktop — static screens need dirty rects.
+			// Also send a zero-delta input nudge to trigger secure UI paint.
 			// Throttled to once per 500ms to avoid compositor overhead.
 			if dsn, ok := currentCap.(DesktopSwitchNotifier); ok && dsn.OnSecureDesktop() {
 				if time.Since(lastTickerRepaint) >= 500*time.Millisecond {
+					nudgeSecureDesktop()
 					forceDesktopRepaint()
 					lastTickerRepaint = time.Now()
+				}
+				if s.encoder != nil && time.Since(lastSecureKeyframe) >= time.Second {
+					_ = s.encoder.ForceKeyframe()
+					lastSecureKeyframe = time.Now()
 				}
 			}
 			if h, ok := currentCap.(TightLoopHint); ok && h.TightLoop() {
@@ -271,6 +354,9 @@ func (s *Session) captureLoopTicker() captureMode {
 			}
 
 			newFPS := s.getFPS()
+			if onSecure && newFPS < secureDesktopMinFPS {
+				newFPS = secureDesktopMinFPS
+			}
 			if newFPS != fps {
 				fps = newFPS
 				frameDuration = time.Second / time.Duration(fps)
@@ -300,6 +386,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	if img == nil {
 		// DXGI: no new frame available (AccumulatedFrames==0)
+		_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
 		s.metrics.RecordSkip()
 		return
 	}
@@ -341,13 +428,21 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	if h, ok := cap.(TightLoopHint); ok && h.TightLoop() {
 		dxgiActive = true
 	}
+	onSecure := false
+	if dsn, ok := cap.(DesktopSwitchNotifier); ok {
+		onSecure = dsn.OnSecureDesktop()
+	}
 
 	// 2. Frame differencing — skip if unchanged.
 	// DXGI capturers already filter via AccumulatedFrames in Capture(),
 	// so we only need CRC32 for non-DXGI capturers.
-	if !dxgiActive {
+	// On secure desktop, avoid CRC skipping so the encoder keeps receiving
+	// frames even when UI is static; otherwise video can appear "stuck" until
+	// the next input event changes pixels.
+	if !dxgiActive && !onSecure {
 		if !s.differ.HasChanged(img.Pix) {
 			captureImagePool.Put(img)
+			_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
 			s.metrics.RecordSkip()
 			return
 		}
@@ -387,6 +482,8 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		return
 	}
 
+	s.cacheEncodedFrame(h264Data)
+	s.noteVideoWrite()
 	s.metrics.RecordSend(len(h264Data))
 }
 
@@ -409,6 +506,10 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		return false, true, false
 	}
 	if texture == 0 {
+		s.mu.RLock()
+		cap := s.capturer
+		s.mu.RUnlock()
+		_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
 		s.metrics.RecordSkip()
 		return true, false, false
 	}
@@ -463,6 +564,8 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		return true, false, false
 	}
 
+	s.cacheEncodedFrame(h264Data)
+	s.noteVideoWrite()
 	s.metrics.RecordSend(len(h264Data))
 	return true, false, true
 }
@@ -486,11 +589,15 @@ func (s *Session) handleDesktopSwitch() {
 		s.inputHandler.SetDisplayOffset(0, 0)
 		s.cursorOffsetX.Store(0)
 		s.cursorOffsetY.Store(0)
-		// Wake up the credential provider UI and force dirty rects.
-		// nudgeSecureDesktop sends a zero-delta mouse move — the UI may
-		// not paint until it receives user input.
-		nudgeSecureDesktop()
-		forceDesktopRepaint()
+		// Prime secure desktop rendering: some credential/UAC surfaces do not
+		// fully paint until they observe input + invalidation.
+		for i := 0; i < 3; i++ {
+			nudgeSecureDesktop()
+			forceDesktopRepaint()
+			if i < 2 {
+				time.Sleep(30 * time.Millisecond)
+			}
+		}
 	} else {
 		// Returning to normal desktop — restore monitor offsets
 		slog.Info("Desktop switch: returning to default desktop, restoring offsets", "session", s.id)
@@ -509,6 +616,9 @@ func (s *Session) handleDesktopSwitch() {
 
 	// Force keyframe so the viewer shows the new desktop content immediately
 	if s.encoder != nil {
+		// Drop any stale pre-switch compressed frames so the next delivered
+		// frame reflects the new desktop (Default <-> Winlogon) immediately.
+		s.encoder.Flush()
 		_ = s.encoder.ForceKeyframe()
 	}
 }

@@ -294,6 +294,15 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		log.Info("tray action from user helper", "uid", session.UID, "sessionId", session.SessionID)
 	case ipc.TypeNotifyResult:
 		log.Debug("notify result from user helper", "uid", session.UID)
+	case ipc.TypeSASRequest:
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in handleSASFromHelper", "error", fmt.Sprint(r))
+				}
+			}()
+			h.handleSASFromHelper(session, env)
+		}()
 	default:
 		log.Debug("unhandled user helper message", "type", env.Type, "uid", session.UID)
 	}
