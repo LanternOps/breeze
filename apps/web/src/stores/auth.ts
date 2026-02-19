@@ -551,11 +551,12 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error };
+      return { success: false, error: data.error || 'Failed to accept invite' };
     }
 
     return { success: true, user: data.user, tokens: data.tokens };
-  } catch {
+  } catch (err) {
+    console.error('[apiAcceptInvite] Request failed:', err);
     return { success: false, error: 'Network error' };
   }
 }

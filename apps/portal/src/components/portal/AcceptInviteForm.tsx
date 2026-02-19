@@ -27,7 +27,7 @@ interface AcceptInviteFormProps {
   token: string;
 }
 
-export function AcceptInviteForm({ token }: AcceptInviteFormProps) {
+export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -56,17 +56,35 @@ export function AcceptInviteForm({ token }: AcceptInviteFormProps) {
 
       if (!response.ok) {
         setError(result.error || 'Failed to accept invite');
-        setIsLoading(false);
         return;
       }
 
       setSuccess(true);
-    } catch {
+    } catch (err) {
+      console.error('[AcceptInviteForm] Request failed:', err);
       setError('Network error');
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
+
+  if (!token) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
+            <AlertCircle className="h-6 w-6 text-destructive" />
+          </div>
+          <div>
+            <h3 className="text-lg font-medium">Invalid invite link</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              This invite link is invalid or has expired.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (success) {
     return (
@@ -93,24 +111,6 @@ export function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         >
           Sign in
         </a>
-      </div>
-    );
-  }
-
-  if (!token) {
-    return (
-      <div className="space-y-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-            <AlertCircle className="h-6 w-6 text-destructive" />
-          </div>
-          <div>
-            <h3 className="text-lg font-medium">Invalid invite link</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              This invite link is invalid or has expired.
-            </p>
-          </div>
-        </div>
       </div>
     );
   }
@@ -211,5 +211,3 @@ export function AcceptInviteForm({ token }: AcceptInviteFormProps) {
     </form>
   );
 }
-
-export default AcceptInviteForm;

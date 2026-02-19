@@ -1,19 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import ResetPasswordForm from './ResetPasswordForm';
 import { apiAcceptInvite, useAuthStore } from '../../stores/auth';
 
 export default function AcceptInvitePage() {
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const [token, setToken] = useState<string>();
-
-  useEffect(() => {
+  const [token] = useState(() => {
+    if (typeof window === 'undefined') return undefined;
     const params = new URLSearchParams(window.location.search);
-    const tokenParam = params.get('token');
-    if (tokenParam) {
-      setToken(tokenParam);
-    }
-  }, []);
+    return params.get('token') ?? undefined;
+  });
 
   const handleSubmit = async (values: { password: string }) => {
     if (!token) {
@@ -24,19 +20,23 @@ export default function AcceptInvitePage() {
     setLoading(true);
     setError(undefined);
 
-    const result = await apiAcceptInvite(token, values.password);
+    try {
+      const result = await apiAcceptInvite(token, values.password);
 
-    if (!result.success) {
-      setError(result.error);
+      if (!result.success) {
+        setError(result.error || 'Failed to accept invite');
+        return;
+      }
+
+      if (result.user && result.tokens) {
+        useAuthStore.getState().login(result.user, result.tokens);
+        window.location.href = '/';
+      } else {
+        window.location.href = '/login';
+      }
+    } finally {
       setLoading(false);
-      return;
     }
-
-    if (result.user && result.tokens) {
-      useAuthStore.getState().login(result.user, result.tokens);
-    }
-
-    window.location.href = '/';
   };
 
   if (!token) {
