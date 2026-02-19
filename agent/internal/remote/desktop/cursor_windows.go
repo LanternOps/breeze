@@ -32,14 +32,21 @@ type iconInfoW struct {
 // CursorPosition implements CursorProvider for real-time cursor streaming.
 // Uses GetCursorInfo (independent of DXGI) so it works even when the desktop
 // is static and AcquireNextFrame times out.
+//
+// When the calling goroutine is on a different OS thread than the capture
+// thread (which has called SetThreadDesktop for secure desktops),
+// GetCursorInfo fails. In that case, return values sampled by the capture
+// thread via sampleCursorForCrossThread().
 func (c *dxgiCapturer) CursorPosition() (x, y int32, visible bool) {
 	var ci cursorInfoW
 	ci.CbSize = uint32(unsafe.Sizeof(ci))
 	ret, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci)))
-	if ret == 0 {
-		return 0, 0, false
+	if ret != 0 {
+		return ci.PtScreenPos.X, ci.PtScreenPos.Y, ci.Flags&cursorShowing != 0
 	}
-	return ci.PtScreenPos.X, ci.PtScreenPos.Y, ci.Flags&cursorShowing != 0
+	// GetCursorInfo failed — cursor goroutine is on a different desktop
+	// than the capture thread. Return values sampled by capture thread.
+	return c.cursorX.Load(), c.cursorY.Load(), c.cursorVis.Load()
 }
 
 var _ CursorProvider = (*dxgiCapturer)(nil)

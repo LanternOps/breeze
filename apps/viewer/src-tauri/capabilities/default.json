@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for Breeze Viewer",
+  "windows": ["main", "session-*"],
+  "permissions": [
+    "core:default",
+    "deep-link:default",
+    "shell:allow-open"
+  ]
+}

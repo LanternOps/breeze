@@ -32,21 +32,22 @@ func hasConsole() bool {
 }
 
 // ensureSASPolicy checks the SoftwareSASGeneration registry value and
-// auto-enables it if not sufficient. Value 1 = services can generate SAS.
-// The helper runs as SYSTEM (LocalSystem) in the user's session, and Windows
-// treats it as a "service" for SAS purposes — it checks LocalSystem identity,
-// not SCM registration. So SoftwareSASGeneration >= 1 is sufficient.
+// auto-enables it if not sufficient. Value 3 = services AND apps can generate
+// SAS, which covers both the service (Session 0) and the SYSTEM helper
+// (interactive session). The helper runs as SYSTEM (LocalSystem) but in an
+// interactive session; the classification logic for SAS dispatch is opaque
+// and undocumented, so we set policy=3 to cover all cases.
 func ensureSASPolicy() {
 	policy := desktop.CheckSASPolicy()
-	if policy >= desktop.SASPolicyServices {
+	if policy >= desktop.SASPolicyServicesApps {
 		log.Info("SoftwareSASGeneration policy is enabled", "value", int(policy))
 		return
 	}
-	log.Info("SoftwareSASGeneration policy not set, enabling for services", "currentValue", int(policy))
-	if err := desktop.SetSASPolicy(uint32(desktop.SASPolicyServices)); err != nil {
+	log.Info("SoftwareSASGeneration policy not set or insufficient, enabling for services+apps", "currentValue", int(policy))
+	if err := desktop.SetSASPolicy(uint32(desktop.SASPolicyServicesApps)); err != nil {
 		log.Warn("Failed to auto-set SoftwareSASGeneration policy", "error", err)
 	} else {
-		log.Info("Auto-set SoftwareSASGeneration policy to 1 (services)")
+		log.Info("Auto-set SoftwareSASGeneration policy to 3 (services+apps)")
 	}
 }
 

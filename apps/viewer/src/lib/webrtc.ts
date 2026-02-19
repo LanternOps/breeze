@@ -220,9 +220,11 @@ export function scaleVideoCoords(
 
   const relX = clientX - rect.left - offsetX;
   const relY = clientY - rect.top - offsetY;
+  const maxX = Math.max(0, videoW - 1);
+  const maxY = Math.max(0, videoH - 1);
 
   return {
-    x: Math.max(0, Math.min(videoW, Math.round((relX * videoW) / displayW))),
-    y: Math.max(0, Math.min(videoH, Math.round((relY * videoH) / displayH))),
+    x: Math.max(0, Math.min(maxX, Math.round((relX * videoW) / displayW))),
+    y: Math.max(0, Math.min(maxY, Math.round((relY * videoH) / displayH))),
   };
 }

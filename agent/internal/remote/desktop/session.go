@@ -99,6 +99,13 @@ type Session struct {
 
 	// displayIndex is the monitor index this session was started on.
 	displayIndex int
+
+	// Cached encoded H264 frame used as a fallback resend source when secure
+	// desktop capture yields temporary no-frame periods.
+	lastEncodedMu    sync.RWMutex
+	lastEncodedFrame []byte
+	// Nanoseconds since epoch of the last successful video sample write.
+	lastVideoWriteUnixNano atomic.Int64
 }
 
 // SessionManager manages remote desktop sessions

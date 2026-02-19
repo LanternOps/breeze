@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Power, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2 } from 'lucide-react';
 
 interface MonitorInfo {
   index: number;
@@ -11,9 +11,10 @@ interface MonitorInfo {
 }
 
 interface Props {
-  status: 'connecting' | 'connected' | 'disconnected' | 'error';
+  status: 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
   hostname: string;
   connectedAt: Date | null;
+  reconnectSecondsLeft?: number;
   fps: number;
   transport: 'webrtc' | 'websocket' | null;
   quality: number;
@@ -26,13 +27,16 @@ interface Props {
   activeMonitor: number;
   audioEnabled: boolean;
   hasAudioTrack: boolean;
+  showRemoteCursor: boolean;
   onRemapCmdCtrlChange: (v: boolean) => void;
+  onShowRemoteCursorChange: (v: boolean) => void;
   onConfigChange: (quality: number, scale: number, maxFps: number) => void;
   onBitrateChange: (bitrate: number) => void;
   onSwitchMonitor: (index: number) => void;
   onToggleAudio: () => void;
   onSendKeys: (key: string, modifiers: string[]) => void;
   onSendSAS: () => void;
+  onLockWorkstation: () => void;
   onPasteAsKeystrokes: () => void;
   onCancelPaste: () => void;
   onDisconnect: () => void;
@@ -43,15 +47,15 @@ interface KeyCombo {
   key: string;
   modifiers: string[];
   description: string;
-  sas?: boolean;
+  action?: 'sas' | 'lock';
 }
 
 const KEY_COMBOS: KeyCombo[] = [
-  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen', sas: true },
+  { label: 'Ctrl+Alt+Del',    key: 'delete', modifiers: ['ctrl', 'alt'],  description: 'Security screen', action: 'sas' },
   { label: 'Ctrl+Shift+Esc',  key: 'escape', modifiers: ['ctrl', 'shift'], description: 'Task Manager' },
   { label: 'Alt+Tab',         key: 'tab',    modifiers: ['alt'],           description: 'Switch windows' },
   { label: 'Alt+F4',          key: 'f4',     modifiers: ['alt'],           description: 'Close window' },
-  { label: 'Win+L',           key: 'l',      modifiers: ['win'],           description: 'Lock workstation' },
+  { label: 'Win+L',           key: 'l',      modifiers: ['win'],           description: 'Lock workstation', action: 'lock' },
   { label: 'Win+R',           key: 'r',      modifiers: ['win'],           description: 'Run dialog' },
   { label: 'Win+E',           key: 'e',      modifiers: ['win'],           description: 'File Explorer' },
   { label: 'Win+D',           key: 'd',      modifiers: ['win'],           description: 'Show desktop' },
@@ -82,16 +86,20 @@ export default function ViewerToolbar({
   activeMonitor,
   audioEnabled,
   hasAudioTrack,
+  showRemoteCursor,
   onRemapCmdCtrlChange,
+  onShowRemoteCursorChange,
   onConfigChange,
   onBitrateChange,
   onSwitchMonitor,
   onToggleAudio,
   onSendKeys,
   onSendSAS,
+  onLockWorkstation,
   onPasteAsKeystrokes,
   onCancelPaste,
   onDisconnect,
+  reconnectSecondsLeft,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
   const ConnectedIcon = Wifi as unknown as ComponentType<{ className?: string }>;
@@ -106,6 +114,7 @@ export default function ViewerToolbar({
   const SwapIcon = ArrowLeftRight as unknown as ComponentType<{ className?: string }>;
   const VolumeOnIcon = Volume2 as unknown as ComponentType<{ className?: string }>;
   const VolumeOffIcon = VolumeX as unknown as ComponentType<{ className?: string }>;
+  const CursorIcon = MousePointer2 as unknown as ComponentType<{ className?: string }>;
 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [duration, setDuration] = useState('0:00');
@@ -150,14 +159,15 @@ export default function ViewerToolbar({
       } else {
         await document.exitFullscreen();
       }
-    } catch {
-      // Fullscreen not supported or denied
+    } catch (err) {
+      console.warn('Fullscreen toggle failed:', err);
     }
   };
 
   const statusColor = {
     connecting: 'text-yellow-400',
     connected: 'text-green-400',
+    reconnecting: 'text-orange-400',
     disconnected: 'text-gray-400',
     error: 'text-red-400',
   }[status];
@@ -287,6 +297,13 @@ export default function ViewerToolbar({
 
       <div className="flex-1" />
 
+      {/* Reconnecting indicator */}
+      {status === 'reconnecting' && reconnectSecondsLeft != null && (
+        <span className="text-xs text-orange-400 animate-pulse">
+          Reconnecting... ({reconnectSecondsLeft}s)
+        </span>
+      )}
+
       {/* SAS sent flash */}
       {sasFlash && (
         <span className="text-xs text-yellow-400 animate-pulse">Ctrl+Alt+Del sent</span>
@@ -347,6 +364,21 @@ export default function ViewerToolbar({
         <span>Cmd↔Ctrl</span>
       </button>
 
+      {/* Remote cursor visibility toggle */}
+      <button
+        onClick={() => onShowRemoteCursorChange(!showRemoteCursor)}
+        disabled={transport !== 'webrtc'}
+        className={`flex items-center gap-1 px-2 py-1 text-xs rounded disabled:opacity-40 disabled:cursor-not-allowed ${
+          showRemoteCursor
+            ? 'text-green-400 bg-green-900/30 hover:bg-green-900/50'
+            : 'text-gray-400 hover:text-white hover:bg-gray-700'
+        }`}
+        title={showRemoteCursor ? 'Hide remote cursor overlay' : 'Show remote cursor overlay'}
+      >
+        <CursorIcon className="w-3.5 h-3.5" />
+        <span>Remote Cursor</span>
+      </button>
+
       {/* Send Keys dropdown */}
       <div className="relative" ref={keysDropdownRef}>
         <button
@@ -365,12 +397,17 @@ export default function ViewerToolbar({
               <button
                 key={combo.label}
                 onClick={() => {
-                  if (combo.sas) {
-                    onSendSAS();
-                    setSasFlash(true);
-                    setTimeout(() => setSasFlash(false), 2000);
-                  } else {
-                    onSendKeys(combo.key, combo.modifiers);
+                  switch (combo.action) {
+                    case 'sas':
+                      onSendSAS();
+                      setSasFlash(true);
+                      setTimeout(() => setSasFlash(false), 2000);
+                      break;
+                    case 'lock':
+                      onLockWorkstation();
+                      break;
+                    default:
+                      onSendKeys(combo.key, combo.modifiers);
                   }
                   setKeysOpen(false);
                 }}
