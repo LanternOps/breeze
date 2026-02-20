@@ -441,7 +441,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       set({ agentConfig: config, connectionState: 'connected' });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to read agent config';
+      const message = err instanceof Error ? err.message : String(err);
       console.error('[Helper] Initialize failed:', message);
       set({ connectionState: 'error', connectionError: message });
     }
@@ -556,7 +556,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : 'Failed to send message',
+        error: err instanceof Error ? err.message : String(err),
         isStreaming: false,
       });
     } finally {

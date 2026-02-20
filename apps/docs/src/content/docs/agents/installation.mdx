@@ -35,10 +35,9 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       --server https://breeze.yourdomain.com \
       --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    # Install as a systemd service
-    sudo cp breeze-agent /usr/local/bin/breeze-agent
-    sudo systemctl enable breeze-agent
-    sudo systemctl start breeze-agent
+    # Install as a systemd service and start
+    sudo ./breeze-agent service install
+    sudo breeze-agent service start
     ```
   </TabItem>
   <TabItem label="macOS">
@@ -53,9 +52,9 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       --server https://breeze.yourdomain.com \
       --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    # Copy to system path and start via launchd
-    sudo cp breeze-agent /usr/local/bin/breeze-agent
-    sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist
+    # Install as a launchd service and start
+    sudo ./breeze-agent service install
+    sudo breeze-agent service start
     ```
   </TabItem>
   <TabItem label="Windows">
@@ -93,10 +92,8 @@ During enrollment, the agent:
 ## Verifying Installation
 
 ```bash
-# Check service status
-sudo systemctl status breeze-agent   # Linux
-sudo launchctl list | grep breeze    # macOS
-Get-Service BreezeAgent              # Windows (PowerShell)
+# Check service status (all platforms)
+sudo breeze-agent service status
 
 # Check agent version
 breeze-agent version
@@ -143,27 +140,74 @@ enabled_collectors:
 
 ## Service Management
 
-<Tabs>
-  <TabItem label="Linux">
-    ```bash
-    sudo systemctl start breeze-agent    # Start
-    sudo systemctl stop breeze-agent     # Stop
-    sudo systemctl restart breeze-agent  # Restart
-    sudo systemctl enable breeze-agent   # Enable on boot
-    sudo systemctl disable breeze-agent  # Disable on boot
-    ```
-  </TabItem>
-  <TabItem label="macOS">
-    ```bash
-    sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist     # Start
-    sudo launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist   # Stop
-    ```
-  </TabItem>
-  <TabItem label="Windows">
-    ```powershell
-    breeze-agent.exe service start       # Start
-    breeze-agent.exe service stop        # Stop
-    breeze-agent.exe service uninstall   # Remove service
-    ```
-  </TabItem>
-</Tabs>
+The `service` subcommand provides a unified interface across all platforms:
+
+```bash
+sudo breeze-agent service install      # Install as a system service
+sudo breeze-agent service start        # Start the service
+sudo breeze-agent service stop         # Stop the service
+sudo breeze-agent service status       # Show service status
+sudo breeze-agent service uninstall    # Remove the service
+```
+
+Under the hood this uses **systemd** on Linux, **launchd** on macOS, and the **Windows Service Control Manager** on Windows.
+
+### User helper (optional)
+
+The agent includes an optional per-user desktop helper that runs in the logged-in user's GUI session and provides screen capture, tray icon, notifications, and clipboard access for remote desktop. To install it alongside the main agent:
+
+```bash
+sudo breeze-agent service install --with-user-helper
+```
+
+<Aside>
+  The user helper communicates with the root daemon via a local IPC socket. It has no direct network access.
+</Aside>
+
+## macOS Permissions
+
+macOS requires explicit user consent for certain agent capabilities via **System Settings → Privacy & Security**.
+
+### Screen & System Audio Recording
+
+Required for **Remote Desktop** sessions. Without this permission, the agent cannot capture the screen.
+
+- Navigate to **System Settings → Privacy & Security → Screen & System Audio Recording**
+- Add `/usr/local/bin/breeze-agent` (or your terminal app if running the agent directly from the terminal during development)
+
+### Full Disk Access (optional)
+
+Required if you need the agent to read files outside its own directories (e.g., for file transfer or backup features).
+
+- Navigate to **System Settings → Privacy & Security → Full Disk Access**
+- Add `/usr/local/bin/breeze-agent`
+
+### MDM Deployment
+
+For managed fleets, deploy a **PPPC (Privacy Preferences Policy Control)** configuration profile via your MDM to pre-approve these permissions silently. The profile should grant `ScreenCapture` and optionally `SystemPolicyAllFiles` to the agent binary.
+
+<Aside type="caution">
+  On macOS, TCC permissions can only be pre-approved via MDM configuration profiles. Without MDM, each machine requires manual approval through System Settings.
+</Aside>
+
+## Logging
+
+When running as a system service (launchd, systemd, or Windows SCM), the agent writes logs to a rotating log file only — it does not write to stdout since there is no console attached. When running interactively from a terminal, logs are written to both stdout and the log file.
+
+| OS | Log file path |
+|---|---|
+| Linux | `/var/log/breeze/agent.log` |
+| macOS | `/Library/Application Support/Breeze/logs/agent.log` |
+| Windows | `C:\ProgramData\Breeze\logs\agent.log` |
+
+Log rotation is configured via `agent.yaml`:
+
+```yaml
+log_level: info           # debug, info, warn, error
+log_format: text           # text or json
+log_file: /path/to/agent.log
+log_max_size_mb: 50        # rotate after 50 MB
+log_max_backups: 3         # keep 3 rotated files
+```
+
+Additionally, the agent ships `warn`-level (and above) logs to the Breeze server for centralized diagnostics. This threshold is configurable via `log_shipping_level` in `agent.yaml`.

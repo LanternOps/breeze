@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Register this app bundle with macOS Launch Services so the `breeze://`
@@ -39,6 +39,9 @@ struct DeepLinkState(Mutex<HashMap<String, String>>);
 /// Maps session_id → window_label for active sessions.
 /// Used to detect duplicate deep links and focus the existing window.
 struct SessionMap(Mutex<HashMap<String, String>>);
+
+/// Monotonic counter for unique window labels.
+struct WindowCounter(Mutex<u32>);
 
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
@@ -113,13 +116,11 @@ fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, Sess
     map.retain(|_, label| label != window.label());
 }
 
-/// Route an incoming deep link URL to the main window.
+/// Route an incoming deep link URL to the appropriate window.
 ///
-/// If the exact same session is already being viewed, just focus the window.
-/// Otherwise, always route to main — the React side will replace the active
-/// session. We intentionally avoid multi-window here because the agent
-/// enforces a single active desktop session; opening a second window would
-/// cause a reconnect ping-pong between the old and new viewer.
+/// - If the session is already active in a window, focus that window.
+/// - If the main window is idle (no active session), route to it.
+/// - Otherwise, create a new window for the session.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
     // Check if this session is already being viewed
     if let Some(session_id) = extract_session_id(&url) {
@@ -139,20 +140,91 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         }
     }
 
-    // Always route to main. If main has an active session the React side will
-    // tear it down cleanly before connecting to the new session, avoiding the
-    // reconnect war that arises when two viewer windows compete for the same
-    // single-session agent.
+    // Check if main window has an active session
+    let main_active = {
+        let sessions = app.state::<SessionMap>();
+        let map = lock_or_recover(&sessions.0, "session_map");
+        map.values().any(|label| label == "main")
+    };
+
+    if !main_active {
+        // Main window is idle — route the deep link there
+        if let Some(state) = app.try_state::<DeepLinkState>() {
+            let mut links = lock_or_recover(&state.0, "deep_link_state");
+            links.insert("main".to_string(), url.clone());
+        }
+        if let Err(err) = app.emit_to("main", "deep-link-received", url) {
+            eprintln!("Failed to emit deep-link-received to main window: {}", err);
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            if let Err(err) = window.set_focus() {
+                eprintln!("Failed to focus main window: {}", err);
+            }
+        }
+    } else {
+        // Main is busy with another session — open a new window
+        create_session_window(app, url);
+    }
+}
+
+/// Create a new WebviewWindow for an independent remote desktop session.
+fn create_session_window(app: &tauri::AppHandle, url: String) {
+    let n = {
+        let counter = app.state::<WindowCounter>();
+        let mut c = lock_or_recover(&counter.0, "window_counter");
+        *c += 1;
+        *c
+    };
+    let label = format!("session-{}", n);
+
+    // Store pending deep link for the new window
     if let Some(state) = app.try_state::<DeepLinkState>() {
         let mut links = lock_or_recover(&state.0, "deep_link_state");
-        links.insert("main".to_string(), url.clone());
+        links.insert(label.clone(), url.clone());
     }
-    if let Err(err) = app.emit_to("main", "deep-link-received", url) {
-        eprintln!("Failed to emit deep-link-received to main window: {}", err);
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        if let Err(err) = window.set_focus() {
-            eprintln!("Failed to focus main window: {}", err);
+
+    match WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title("Breeze Remote Desktop")
+        .inner_size(1280.0, 800.0)
+        .build()
+    {
+        Ok(_) => {
+            // Emit the deep link to the new window after delays to cover slow webview startup
+            let handle = app.clone();
+            let label_clone = label;
+            let url_clone = url;
+            std::thread::spawn(move || {
+                for delay_ms in [500, 1500] {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    if let Err(err) =
+                        handle.emit_to(&label_clone, "deep-link-received", url_clone.clone())
+                    {
+                        eprintln!(
+                            "Failed to emit deep-link-received to window {}: {}",
+                            label_clone, err
+                        );
+                    }
+                }
+            });
+        }
+        Err(e) => {
+            eprintln!("Failed to create session window: {}", e);
+            // Clean up orphaned deep link state
+            if let Some(state) = app.try_state::<DeepLinkState>() {
+                let mut links = lock_or_recover(&state.0, "deep_link_state");
+                links.remove(&label);
+            }
+            // Fallback: route to main (will replace active session)
+            if let Some(state) = app.try_state::<DeepLinkState>() {
+                let mut links = lock_or_recover(&state.0, "deep_link_state");
+                links.insert("main".to_string(), url.clone());
+            }
+            if let Err(err) = app.emit_to("main", "deep-link-received", url) {
+                eprintln!(
+                    "Failed to emit deep-link-received to main window after fallback: {}",
+                    err
+                );
+            }
         }
     }
 }
@@ -206,6 +278,7 @@ pub fn run() {
             }
             app.manage(DeepLinkState(Mutex::new(deep_links)));
             app.manage(SessionMap(Mutex::new(HashMap::new())));
+            app.manage(WindowCounter(Mutex::new(0)));
 
             // Emit the initial URL after delays to cover slow webview startup.
             if let Some(url) = initial_url {

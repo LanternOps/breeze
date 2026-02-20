@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -66,15 +66,15 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .map_err(|e| format!("Failed to parse agent config: {}", e))?;
 
     let api_url = yaml
-        .get("api_url")
+        .get("server_url")
         .and_then(|v| v.as_str())
-        .ok_or("Missing 'api_url' in agent config")?
+        .ok_or("Missing 'server_url' in agent config")?
         .to_string();
 
     let token = yaml
-        .get("token")
+        .get("auth_token")
         .and_then(|v| v.as_str())
-        .ok_or("Missing 'token' in agent config")?
+        .ok_or("Missing 'auth_token' in agent config")?
         .to_string();
 
     let agent_id = yaml
@@ -416,7 +416,19 @@ fn uuid_v4() -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![read_agent_config, helper_fetch])
+        .invoke_handler(tauri::generate_handler![read_agent_config, helper_fetch, hide_window])
+        .setup(|app| {
+            // Wire up tray icon click to toggle the main window
+            if let Some(tray) = app.tray_by_id("main") {
+                let app_handle = app.handle().clone();
+                tray.on_tray_icon_event(move |_tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                        show_window(&app_handle);
+                    }
+                });
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

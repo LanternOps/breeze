@@ -301,7 +301,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	    };
 
     ws.onclose = () => {
+      // If the effect cleanup already called cleanup() (closed=true), this is
+      // a teardown close, not a network disconnection — skip reconnect.
+      const wasCleanedUp = closed;
       cleanup();
+      if (wasCleanedUp) return;
       setConnectedAt(null);
       if (!hadError && !userDisconnectRef.current) {
         startReconnectRef.current();
@@ -367,8 +371,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     webrtcMouseMovePendingRef.current = null;
     wsCleanupRef.current?.();
     wsCleanupRef.current = null;
-    webrtcRef.current?.close();
+    const oldRtc = webrtcRef.current;
     webrtcRef.current = null;
+    oldRtc?.close();
 
     reconnectInFlightRef.current = true;
     try {
@@ -424,6 +429,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // ── Connection lifecycle ───────────────────────────────────────────
 
   useEffect(() => {
+    // Per-invocation cancel flag. Using a local variable (not the shared ref)
+    // ensures that when params change, the OLD connect() sees cancelled=true
+    // even after the NEW effect body resets cancelledRef for its own connect().
+    let cancelled = false;
     cancelledRef.current = false;
     webrtcFallbackAttemptedRef.current = false;
     userDisconnectRef.current = false;
@@ -436,14 +445,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // App.tsx replaces params via a new deep link while reconnecting).
     stopReconnect();
 
-    // Ensure any previous transport is fully torn down before reconnect.
+    // Ensure any previous transport is fully torn down before connecting.
     releaseAllKeys();
     wsCleanupRef.current?.();
     wsCleanupRef.current = null;
     wsRef.current?.close();
     wsRef.current = null;
-    webrtcRef.current?.close();
+    // Null ref before close to prevent stale onconnectionstatechange handlers
+    const prevWebrtc = webrtcRef.current;
     webrtcRef.current = null;
+    prevWebrtc?.close();
 
     setStatus('connecting');
     setTransportState(null);
@@ -458,7 +469,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           params.sessionId,
           params.connectCode
         );
-        if (cancelledRef.current) return;
+        if (cancelled) return;
 
         if (!exchange?.accessToken) {
           setStatus('error');
@@ -477,7 +488,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
         // Try WebRTC first
         const webrtcOk = await connectWebRTC(authParams);
-        if (cancelledRef.current) {
+        if (cancelled) {
           webrtcRef.current?.close();
           webrtcRef.current = null;
           return;
@@ -486,14 +497,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         if (!webrtcOk) {
           // Fall back to WebSocket
           const cleanup = await connectWebSocket(authParams);
-          if (cancelledRef.current) {
+          if (cancelled) {
             cleanup?.();
             return;
           }
           wsCleanupRef.current = cleanup;
         }
       } catch (err) {
-        if (cancelledRef.current) return;
+        if (cancelled) return;
         console.error('Remote desktop connect failed:', err);
         const msg = err instanceof Error ? err.message : 'Connection failed';
         setStatus('error');
@@ -512,6 +523,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }, 1000);
 
     return () => {
+      cancelled = true;
       cancelledRef.current = true;
       stopReconnect();
       reconnectInFlightRef.current = false;
@@ -528,8 +540,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       clearInterval(fpsIntervalRef.current);
       wsCleanupRef.current?.();
       wsCleanupRef.current = null;
-      webrtcRef.current?.close();
+      // Null the ref BEFORE close() so the onconnectionstatechange guard
+      // (webrtcRef.current !== session) catches any synchronous state
+      // change events and prevents stale reconnect triggers.
+      const oldWebrtc = webrtcRef.current;
       webrtcRef.current = null;
+      oldWebrtc?.close();
 	      if (sessionRegisteredRef.current) {
 	        sessionRegisteredRef.current = false;
 	        invoke('unregister_session').catch((err) => {
@@ -1063,13 +1079,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     wsCleanupRef.current?.();
     wsCleanupRef.current = null;
     // Clean up audio element to release MediaStream resources
-    const audioEl = (webrtcRef.current as any)?._audioEl as HTMLAudioElement | undefined;
+    const rtcSession = webrtcRef.current;
+    const audioEl = (rtcSession as any)?._audioEl as HTMLAudioElement | undefined;
     if (audioEl) {
       audioEl.pause();
       audioEl.srcObject = null;
     }
-    webrtcRef.current?.close();
     webrtcRef.current = null;
+    rtcSession?.close();
     onDisconnect();
   }, [onDisconnect, releaseAllKeys, stopReconnect]);
 

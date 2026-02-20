@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin && !linux
 
 package main
 
@@ -14,8 +14,9 @@ func init() {
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Manage the Breeze Agent Windows service",
+	Short: "Manage the Breeze Agent system service",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Service management is only available on Windows.")
+		fmt.Println("Service management is not yet supported on this platform.")
+		fmt.Println("Supported platforms: Windows, macOS (launchd), Linux (systemd).")
 	},
 }

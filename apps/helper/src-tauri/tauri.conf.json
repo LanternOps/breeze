@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.breezermm.helper",
   "build": {
+    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },
@@ -25,6 +27,17 @@
     "security": {
       "csp": "default-src 'self'; connect-src 'self' https://*; script-src 'self'; style-src 'self' 'unsafe-inline'"
     }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   },
   "plugins": {
     "shell": {

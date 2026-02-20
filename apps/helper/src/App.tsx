@@ -87,9 +87,9 @@ export default function App() {
 
   return (
     <div className="helper-container">
-      {/* Header */}
-      <div className="helper-header">
-        <div className="helper-header-left">
+      {/* Header — draggable title bar */}
+      <div className="helper-header" data-tauri-drag-region>
+        <div className="helper-header-left" data-tauri-drag-region>
           <span className="helper-status-dot helper-status-connected" />
           <span className="helper-title">Breeze Helper</span>
         </div>

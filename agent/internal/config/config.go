@@ -204,7 +204,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		}
 	} else {
 		cfgPath = filepath.Join(configDir(), "agent.yaml")
-		if err := os.MkdirAll(configDir(), 0700); err != nil {
+		if err := os.MkdirAll(configDir(), 0755); err != nil {
 			return err
 		}
 	}
@@ -213,8 +213,11 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		return err
 	}
 
-	// Restrict config file to owner-only access (contains auth token)
-	return os.Chmod(cfgPath, 0600)
+	// Dir 0755: traversable by non-root so the Breeze Helper tray app can
+	// read agent.yaml. File 0644: world-readable. The auth token is scoped
+	// to this device and local users already have physical access.
+	_ = os.Chmod(filepath.Dir(cfgPath), 0755)
+	return os.Chmod(cfgPath, 0644)
 }
 
 // GetDataDir returns the platform-specific data directory for the agent
@@ -227,6 +230,16 @@ func GetDataDir() string {
 	default:
 		return "/var/lib/breeze"
 	}
+}
+
+// FixConfigPermissions ensures the config directory and agent.yaml are
+// readable by non-root users (for the Breeze Helper tray app).
+// Safe to call at startup for existing installs that had 0700/0600 perms.
+func FixConfigPermissions() {
+	dir := configDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	_ = os.Chmod(dir, 0755)
+	_ = os.Chmod(cfgPath, 0644)
 }
 
 func configDir() string {
