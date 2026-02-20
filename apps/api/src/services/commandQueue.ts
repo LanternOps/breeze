@@ -47,6 +47,10 @@ export const CommandTypes = {
   FILE_MKDIR: 'file_mkdir',
   FILE_RENAME: 'file_rename',
   FILESYSTEM_ANALYSIS: 'filesystem_analysis',
+  FILE_COPY: 'file_copy',
+  FILE_TRASH_LIST: 'file_trash_list',
+  FILE_TRASH_RESTORE: 'file_trash_restore',
+  FILE_TRASH_PURGE: 'file_trash_purge',
 
   // Terminal
   TERMINAL_START: 'terminal_start',
@@ -130,6 +134,9 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.FILE_DELETE,
   CommandTypes.FILE_MKDIR,
   CommandTypes.FILE_RENAME,
+  CommandTypes.FILE_COPY,
+  CommandTypes.FILE_TRASH_RESTORE,
+  CommandTypes.FILE_TRASH_PURGE,
   CommandTypes.TERMINAL_START,
   CommandTypes.SCRIPT,
   CommandTypes.PATCH_SCAN,
