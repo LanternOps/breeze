@@ -395,6 +395,20 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Inject version into viewer config
+        shell: bash
+        working-directory: apps/viewer
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Update tauri.conf.json
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          # Update Cargo.toml
+          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          # Update package.json
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+          echo "Injected version $BUILD_VERSION into viewer config files"
+
       - name: Build Tauri app
         working-directory: apps/viewer
         shell: bash
@@ -479,6 +493,25 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Inject version into helper config
+        shell: bash
+        working-directory: apps/helper
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Update tauri.conf.json
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          # Update Cargo.toml
+          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          # Update package.json
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+          echo "Injected version $BUILD_VERSION into helper config files"
 
       - name: Build Tauri app
         working-directory: apps/helper

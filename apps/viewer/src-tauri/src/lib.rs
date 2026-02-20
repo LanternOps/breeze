@@ -271,6 +271,13 @@ pub fn run() {
                 .flatten()
                 .and_then(|urls| urls.first().map(|u| u.to_string()));
 
+            // Fallback: check command-line args for deep link URL.
+            // On Windows, the protocol handler passes the URL as a CLI argument,
+            // which get_current() may not capture in all Tauri versions.
+            let initial_url = initial_url.or_else(|| {
+                std::env::args().find(|arg| arg.starts_with("breeze:"))
+            });
+
             // Initialize state
             let mut deep_links = HashMap::new();
             if let Some(ref url) = initial_url {

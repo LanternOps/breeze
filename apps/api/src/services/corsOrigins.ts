@@ -50,7 +50,14 @@ export function createCorsOriginResolver(options: OriginResolverOptions = {}): (
     if (nodeEnv !== 'production') {
       try {
         const parsed = new URL(origin);
-        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+        if (
+          parsed.hostname === 'localhost' ||
+          parsed.hostname === '127.0.0.1' ||
+          parsed.hostname.startsWith('10.') ||
+          parsed.hostname.startsWith('192.168.') ||
+          parsed.hostname.startsWith('100.') ||
+          /^172\.(1[6-9]|2\d|3[01])\./.test(parsed.hostname)
+        ) {
           return origin;
         }
       } catch {

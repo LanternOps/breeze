@@ -15,6 +15,8 @@ COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
 RUN pnpm --filter @breeze/api build
+# Create a self-contained deployment (resolves pnpm symlinks)
+RUN pnpm --filter @breeze/api deploy --prod /deployed
 
 FROM base AS runner
 WORKDIR /app
@@ -22,10 +24,13 @@ ENV NODE_ENV=production
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 hono
+
+# Copy the self-contained deployment (flat node_modules, no symlinks)
+COPY --from=builder --chown=hono:nodejs /deployed/node_modules ./node_modules
+COPY --from=builder --chown=hono:nodejs /deployed/dist ./dist
+COPY --from=builder --chown=hono:nodejs /deployed/package.json ./
+
 USER hono
 
-COPY --from=builder --chown=hono:nodejs /app/apps/api/dist ./dist
-COPY --from=builder --chown=hono:nodejs /app/apps/api/package.json ./
-
 EXPOSE 3001
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/index.cjs"]
