@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -164,5 +166,138 @@ func TestCopyFile_MissingParams(t *testing.T) {
 
 	if result3.Status != "failed" {
 		t.Fatalf("expected failed status, got %q", result3.Status)
+	}
+}
+
+func TestDeleteFile_MovesToTrash(t *testing.T) {
+	tmpDir := t.TempDir()
+	origGetTrashDir := getTrashDirFunc
+	getTrashDirFunc = func() (string, error) { return filepath.Join(tmpDir, ".breeze-trash"), nil }
+	defer func() { getTrashDirFunc = origGetTrashDir }()
+
+	testFile := filepath.Join(tmpDir, "delete-me.txt")
+	os.WriteFile(testFile, []byte("goodbye"), 0644)
+
+	result := DeleteFile(map[string]any{"path": testFile})
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s: %s", result.Status, result.Error)
+	}
+
+	// File should be gone from original location
+	if _, err := os.Stat(testFile); !os.IsNotExist(err) {
+		t.Error("file should have been removed from original location")
+	}
+
+	// Trash should have contents
+	trashEntries, _ := os.ReadDir(filepath.Join(tmpDir, ".breeze-trash"))
+	if len(trashEntries) == 0 {
+		t.Error("trash directory should contain the deleted item")
+	}
+}
+
+func TestDeleteFile_PermanentSkipsTrash(t *testing.T) {
+	tmpDir := t.TempDir()
+	origGetTrashDir := getTrashDirFunc
+	getTrashDirFunc = func() (string, error) { return filepath.Join(tmpDir, ".breeze-trash"), nil }
+	defer func() { getTrashDirFunc = origGetTrashDir }()
+
+	testFile := filepath.Join(tmpDir, "perm-delete.txt")
+	os.WriteFile(testFile, []byte("gone forever"), 0644)
+
+	result := DeleteFile(map[string]any{"path": testFile, "permanent": true})
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s: %s", result.Status, result.Error)
+	}
+
+	if _, err := os.Stat(testFile); !os.IsNotExist(err) {
+		t.Error("file should have been permanently deleted")
+	}
+
+	trashDir := filepath.Join(tmpDir, ".breeze-trash")
+	os.MkdirAll(trashDir, 0700)
+	trashEntries, _ := os.ReadDir(trashDir)
+	if len(trashEntries) != 0 {
+		t.Error("trash should be empty for permanent delete")
+	}
+}
+
+func TestTrashList(t *testing.T) {
+	tmpDir := t.TempDir()
+	origGetTrashDir := getTrashDirFunc
+	getTrashDirFunc = func() (string, error) { return filepath.Join(tmpDir, ".breeze-trash"), nil }
+	defer func() { getTrashDirFunc = origGetTrashDir }()
+
+	testFile := filepath.Join(tmpDir, "list-me.txt")
+	os.WriteFile(testFile, []byte("listed"), 0644)
+	DeleteFile(map[string]any{"path": testFile})
+
+	result := TrashList(map[string]any{})
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s: %s", result.Status, result.Error)
+	}
+	// Verify stdout contains the original path
+	if !strings.Contains(result.Stdout, testFile) {
+		t.Errorf("trash list should contain original path %s, got: %s", testFile, result.Stdout)
+	}
+}
+
+func TestTrashRestore(t *testing.T) {
+	tmpDir := t.TempDir()
+	origGetTrashDir := getTrashDirFunc
+	getTrashDirFunc = func() (string, error) { return filepath.Join(tmpDir, ".breeze-trash"), nil }
+	defer func() { getTrashDirFunc = origGetTrashDir }()
+
+	testFile := filepath.Join(tmpDir, "restore-me.txt")
+	os.WriteFile(testFile, []byte("restore this"), 0644)
+	DeleteFile(map[string]any{"path": testFile})
+
+	// Get the trash ID from the list
+	listResult := TrashList(map[string]any{})
+	if listResult.Status != "completed" {
+		t.Fatalf("TrashList failed: %s", listResult.Error)
+	}
+
+	var listResp TrashListResponse
+	if err := json.Unmarshal([]byte(listResult.Stdout), &listResp); err != nil {
+		t.Fatalf("failed to parse trash list: %v", err)
+	}
+	if len(listResp.Items) == 0 {
+		t.Fatal("expected at least one trash item")
+	}
+
+	trashID := listResp.Items[0].TrashID
+	restoreResult := TrashRestore(map[string]any{"trashId": trashID})
+	if restoreResult.Status != "completed" {
+		t.Fatalf("expected completed, got %s: %s", restoreResult.Status, restoreResult.Error)
+	}
+
+	content, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("file should be restored: %v", err)
+	}
+	if string(content) != "restore this" {
+		t.Errorf("expected 'restore this', got %q", string(content))
+	}
+}
+
+func TestTrashPurge(t *testing.T) {
+	tmpDir := t.TempDir()
+	origGetTrashDir := getTrashDirFunc
+	getTrashDirFunc = func() (string, error) { return filepath.Join(tmpDir, ".breeze-trash"), nil }
+	defer func() { getTrashDirFunc = origGetTrashDir }()
+
+	testFile := filepath.Join(tmpDir, "purge-me.txt")
+	os.WriteFile(testFile, []byte("purge this"), 0644)
+	DeleteFile(map[string]any{"path": testFile})
+
+	result := TrashPurge(map[string]any{})
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s: %s", result.Status, result.Error)
+	}
+
+	trashDir := filepath.Join(tmpDir, ".breeze-trash")
+	entries, _ := os.ReadDir(trashDir)
+	if len(entries) != 0 {
+		t.Errorf("expected empty trash, got %d entries", len(entries))
 	}
 }

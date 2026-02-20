@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,23 @@ const (
 
 // deniedSystemPaths are critical system paths that mutating file operations should never target directly.
 var deniedSystemPaths = []string{"/", "/boot", "/proc", "/sys", "/dev", "/bin", "/sbin", "/usr"}
+
+// getTrashDirFunc returns the trash directory path. Variable allows test injection.
+var getTrashDirFunc = getTrashDir
+
+func getTrashDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	trashDir := filepath.Join(home, ".breeze-trash")
+	if err := os.MkdirAll(trashDir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create trash directory: %w", err)
+	}
+	return trashDir, nil
+}
+
+const trashMaxAgeDays = 30
 
 // isDeniedSystemPath checks whether the given cleaned path matches a denied system path.
 func isDeniedSystemPath(cleanPath string) bool {
@@ -179,7 +197,9 @@ func WriteFile(payload map[string]any) CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
-// DeleteFile deletes a file or directory
+// DeleteFile deletes a file or directory. By default it moves the item to the
+// .breeze-trash directory for later restore. Pass "permanent": true to bypass
+// the trash and delete immediately.
 func DeleteFile(payload map[string]any) CommandResult {
 	start := time.Now()
 
@@ -189,6 +209,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 	}
 
 	recursive := GetPayloadBool(payload, "recursive", false)
+	permanent := GetPayloadBool(payload, "permanent", false)
 
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
@@ -215,21 +236,283 @@ func DeleteFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
 	}
 
-	// Delete based on type
-	if info.IsDir() && recursive {
-		if err := os.RemoveAll(cleanPath); err != nil {
-			return NewErrorResult(fmt.Errorf("failed to remove directory: %w", err), time.Since(start).Milliseconds())
+	// Permanent delete — bypass trash
+	if permanent {
+		if info.IsDir() && recursive {
+			if err := os.RemoveAll(cleanPath); err != nil {
+				return NewErrorResult(fmt.Errorf("failed to remove directory: %w", err), time.Since(start).Milliseconds())
+			}
+		} else {
+			if err := os.Remove(cleanPath); err != nil {
+				return NewErrorResult(fmt.Errorf("failed to remove file: %w", err), time.Since(start).Milliseconds())
+			}
 		}
-	} else {
-		if err := os.Remove(cleanPath); err != nil {
-			return NewErrorResult(fmt.Errorf("failed to remove file: %w", err), time.Since(start).Milliseconds())
+		return NewSuccessResult(map[string]any{
+			"path":      cleanPath,
+			"deleted":   true,
+			"permanent": true,
+		}, time.Since(start).Milliseconds())
+	}
+
+	// Move to trash
+	trashDir, err := getTrashDirFunc()
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to get trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+	if err := os.MkdirAll(trashDir, 0700); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to create trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	// Create trash item directory: <trashDir>/<unixMillis>-<basename>/
+	now := time.Now()
+	trashID := fmt.Sprintf("%d-%s", now.UnixMilli(), filepath.Base(cleanPath))
+	trashItemDir := filepath.Join(trashDir, trashID)
+	if err := os.MkdirAll(trashItemDir, 0700); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to create trash item directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	// Write metadata.json
+	meta := TrashMetadata{
+		OriginalPath: cleanPath,
+		TrashID:      trashID,
+		DeletedAt:    now.Format(time.RFC3339),
+		IsDirectory:  info.IsDir(),
+		SizeBytes:    info.Size(),
+	}
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to marshal trash metadata: %w", err), time.Since(start).Milliseconds())
+	}
+	metaPath := filepath.Join(trashItemDir, "metadata.json")
+	if err := os.WriteFile(metaPath, metaBytes, 0600); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to write trash metadata: %w", err), time.Since(start).Milliseconds())
+	}
+
+	// Move content into trash item dir
+	contentPath := filepath.Join(trashItemDir, "content")
+	if err := os.Rename(cleanPath, contentPath); err != nil {
+		// Rename may fail across devices; fall back to copy + remove
+		if info.IsDir() {
+			if cpErr := copyDir(cleanPath, contentPath); cpErr != nil {
+				// Clean up the trash item dir on failure
+				os.RemoveAll(trashItemDir)
+				return NewErrorResult(fmt.Errorf("failed to move directory to trash: %w", cpErr), time.Since(start).Milliseconds())
+			}
+			if err := os.RemoveAll(cleanPath); err != nil {
+				return NewErrorResult(fmt.Errorf("copied to trash but failed to remove original: %w", err), time.Since(start).Milliseconds())
+			}
+		} else {
+			if cpErr := copyFile(cleanPath, contentPath, info.Mode()); cpErr != nil {
+				os.RemoveAll(trashItemDir)
+				return NewErrorResult(fmt.Errorf("failed to move file to trash: %w", cpErr), time.Since(start).Milliseconds())
+			}
+			if err := os.Remove(cleanPath); err != nil {
+				return NewErrorResult(fmt.Errorf("copied to trash but failed to remove original: %w", err), time.Since(start).Milliseconds())
+			}
 		}
 	}
+
+	// Lazily purge items older than trashMaxAgeDays
+	go lazyPurgeOldTrash()
 
 	return NewSuccessResult(map[string]any{
 		"path":    cleanPath,
 		"deleted": true,
+		"trashId": trashID,
 	}, time.Since(start).Milliseconds())
+}
+
+// TrashList lists all items currently in the trash directory.
+func TrashList(payload map[string]any) CommandResult {
+	start := time.Now()
+
+	trashDir, err := getTrashDirFunc()
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to get trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	// Ensure trash dir exists (may not yet)
+	if err := os.MkdirAll(trashDir, 0700); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to create trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	entries, err := os.ReadDir(trashDir)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to read trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	items := make([]TrashMetadata, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		metaPath := filepath.Join(trashDir, entry.Name(), "metadata.json")
+		metaBytes, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue // skip entries without valid metadata
+		}
+		var meta TrashMetadata
+		if err := json.Unmarshal(metaBytes, &meta); err != nil {
+			continue
+		}
+		items = append(items, meta)
+	}
+
+	return NewSuccessResult(TrashListResponse{
+		Items: items,
+		Path:  trashDir,
+	}, time.Since(start).Milliseconds())
+}
+
+// TrashRestore restores a trashed item back to its original location.
+func TrashRestore(payload map[string]any) CommandResult {
+	start := time.Now()
+
+	trashID := GetPayloadString(payload, "trashId", "")
+	if trashID == "" {
+		return NewErrorResult(fmt.Errorf("trashId is required"), time.Since(start).Milliseconds())
+	}
+
+	trashDir, err := getTrashDirFunc()
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to get trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	trashItemDir := filepath.Join(trashDir, trashID)
+	metaPath := filepath.Join(trashItemDir, "metadata.json")
+
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("trash item not found: %s", trashID), time.Since(start).Milliseconds())
+	}
+
+	var meta TrashMetadata
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to parse trash metadata: %w", err), time.Since(start).Milliseconds())
+	}
+
+	contentPath := filepath.Join(trashItemDir, "content")
+
+	// Ensure the parent directory of the original path exists
+	parentDir := filepath.Dir(meta.OriginalPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to create parent directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	// Move content back to original location
+	if err := os.Rename(contentPath, meta.OriginalPath); err != nil {
+		// Rename may fail across devices; fall back to copy + remove
+		info, statErr := os.Stat(contentPath)
+		if statErr != nil {
+			return NewErrorResult(fmt.Errorf("failed to stat trash content: %w", statErr), time.Since(start).Milliseconds())
+		}
+		if info.IsDir() {
+			if cpErr := copyDir(contentPath, meta.OriginalPath); cpErr != nil {
+				return NewErrorResult(fmt.Errorf("failed to restore directory: %w", cpErr), time.Since(start).Milliseconds())
+			}
+		} else {
+			if cpErr := copyFile(contentPath, meta.OriginalPath, info.Mode()); cpErr != nil {
+				return NewErrorResult(fmt.Errorf("failed to restore file: %w", cpErr), time.Since(start).Milliseconds())
+			}
+		}
+		// Remove the trash item after successful copy
+		os.RemoveAll(trashItemDir)
+	} else {
+		// Rename succeeded; remove the metadata and trash item directory
+		os.RemoveAll(trashItemDir)
+	}
+
+	return NewSuccessResult(map[string]any{
+		"trashId":      trashID,
+		"restoredPath": meta.OriginalPath,
+		"restored":     true,
+	}, time.Since(start).Milliseconds())
+}
+
+// TrashPurge permanently deletes items from the trash. If trashIds are
+// provided, only those items are purged. Otherwise everything is purged.
+func TrashPurge(payload map[string]any) CommandResult {
+	start := time.Now()
+
+	trashDir, err := getTrashDirFunc()
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to get trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	if err := os.MkdirAll(trashDir, 0700); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to create trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	trashIds := GetPayloadStringSlice(payload, "trashIds")
+
+	if len(trashIds) > 0 {
+		// Purge specific items
+		purged := 0
+		for _, id := range trashIds {
+			itemDir := filepath.Join(trashDir, id)
+			if err := os.RemoveAll(itemDir); err == nil {
+				purged++
+			}
+		}
+		return NewSuccessResult(map[string]any{
+			"purged": purged,
+		}, time.Since(start).Milliseconds())
+	}
+
+	// Purge everything
+	entries, err := os.ReadDir(trashDir)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to read trash directory: %w", err), time.Since(start).Milliseconds())
+	}
+
+	purged := 0
+	for _, entry := range entries {
+		itemDir := filepath.Join(trashDir, entry.Name())
+		if err := os.RemoveAll(itemDir); err == nil {
+			purged++
+		}
+	}
+
+	return NewSuccessResult(map[string]any{
+		"purged": purged,
+	}, time.Since(start).Milliseconds())
+}
+
+// lazyPurgeOldTrash removes trash items older than trashMaxAgeDays.
+func lazyPurgeOldTrash() {
+	trashDir, err := getTrashDirFunc()
+	if err != nil {
+		return
+	}
+
+	entries, err := os.ReadDir(trashDir)
+	if err != nil {
+		return
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -trashMaxAgeDays)
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		metaPath := filepath.Join(trashDir, entry.Name(), "metadata.json")
+		metaBytes, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var meta TrashMetadata
+		if err := json.Unmarshal(metaBytes, &meta); err != nil {
+			continue
+		}
+		deletedAt, err := time.Parse(time.RFC3339, meta.DeletedAt)
+		if err != nil {
+			continue
+		}
+		if deletedAt.Before(cutoff) {
+			os.RemoveAll(filepath.Join(trashDir, entry.Name()))
+		}
+	}
 }
 
 // MakeDirectory creates a directory
