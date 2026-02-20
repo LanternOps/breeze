@@ -5,7 +5,7 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getDeviceWithOrgCheck } from './helpers';
-import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema } from './schemas';
+import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema } from './schemas';
 
 export const fileBrowserRoutes = new Hono();
 
@@ -168,6 +168,298 @@ fileBrowserRoutes.post(
         success: true,
         data: { path: body.path, written: true }
       });
+    }
+  }
+);
+
+// POST /devices/:deviceId/files/copy - Copy files
+fileBrowserRoutes.post(
+  '/devices/:deviceId/files/copy',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', fileCopyBodySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { items } = c.req.valid('json');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const results = [];
+    for (const item of items) {
+      const result = await executeCommand(deviceId, CommandTypes.FILE_COPY, {
+        sourcePath: item.sourcePath,
+        destPath: item.destPath,
+      }, { userId: auth.user?.id, timeoutMs: 60000 });
+
+      const success = result.status !== 'failed';
+      results.push({
+        sourcePath: item.sourcePath,
+        destPath: item.destPath,
+        status: success ? 'success' : 'failure',
+        error: success ? undefined : result.error,
+      });
+
+      await createAuditLog({
+        orgId: device.orgId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'file_copy',
+        resourceType: 'device',
+        resourceId: deviceId,
+        resourceName: device.hostname ?? device.id,
+        details: { sourcePath: item.sourcePath, destPath: item.destPath },
+        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+        result: success ? 'success' : 'failure',
+        errorMessage: success ? undefined : result.error,
+      });
+    }
+
+    return c.json({ results });
+  }
+);
+
+// POST /devices/:deviceId/files/move - Move/rename files
+fileBrowserRoutes.post(
+  '/devices/:deviceId/files/move',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', fileMoveBodySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { items } = c.req.valid('json');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const results = [];
+    for (const item of items) {
+      const result = await executeCommand(deviceId, CommandTypes.FILE_RENAME, {
+        oldPath: item.sourcePath,
+        newPath: item.destPath,
+      }, { userId: auth.user?.id, timeoutMs: 60000 });
+
+      const success = result.status !== 'failed';
+      results.push({
+        sourcePath: item.sourcePath,
+        destPath: item.destPath,
+        status: success ? 'success' : 'failure',
+        error: success ? undefined : result.error,
+      });
+
+      await createAuditLog({
+        orgId: device.orgId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'file_move',
+        resourceType: 'device',
+        resourceId: deviceId,
+        resourceName: device.hostname ?? device.id,
+        details: { sourcePath: item.sourcePath, destPath: item.destPath },
+        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+        result: success ? 'success' : 'failure',
+        errorMessage: success ? undefined : result.error,
+      });
+    }
+
+    return c.json({ results });
+  }
+);
+
+// POST /devices/:deviceId/files/delete - Delete files (move to trash)
+fileBrowserRoutes.post(
+  '/devices/:deviceId/files/delete',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', fileDeleteBodySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { paths, permanent } = c.req.valid('json');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const results = [];
+    for (const path of paths) {
+      const result = await executeCommand(deviceId, CommandTypes.FILE_DELETE, {
+        path,
+        permanent,
+        recursive: true,
+        deletedBy: auth.user?.email || auth.user?.id,
+      }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+      const success = result.status !== 'failed';
+      results.push({
+        path,
+        status: success ? 'success' : 'failure',
+        error: success ? undefined : result.error,
+      });
+
+      await createAuditLog({
+        orgId: device.orgId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'file_delete',
+        resourceType: 'device',
+        resourceId: deviceId,
+        resourceName: device.hostname ?? device.id,
+        details: { path, permanent },
+        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+        result: success ? 'success' : 'failure',
+        errorMessage: success ? undefined : result.error,
+      });
+    }
+
+    return c.json({ results });
+  }
+);
+
+// GET /devices/:deviceId/files/trash - List trash contents
+fileBrowserRoutes.get(
+  '/devices/:deviceId/files/trash',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const result = await executeCommand(deviceId, CommandTypes.FILE_TRASH_LIST, {}, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to list trash' }, 502);
+    }
+
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({ data: data.items || [] });
+    } catch {
+      return c.json({ error: 'Failed to parse trash list response' }, 502);
+    }
+  }
+);
+
+// POST /devices/:deviceId/files/trash/restore - Restore from trash
+fileBrowserRoutes.post(
+  '/devices/:deviceId/files/trash/restore',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', fileTrashRestoreBodySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { trashIds } = c.req.valid('json');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const results = [];
+    for (const trashId of trashIds) {
+      const result = await executeCommand(deviceId, CommandTypes.FILE_TRASH_RESTORE, {
+        trashId,
+      }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+      const success = result.status !== 'failed';
+      let restoredPath: string | undefined;
+      if (success) {
+        try {
+          const data = JSON.parse(result.stdout || '{}');
+          restoredPath = data.restoredPath;
+        } catch { /* ignore parse error */ }
+      }
+
+      results.push({
+        trashId,
+        status: success ? 'success' : 'failure',
+        restoredPath,
+        error: success ? undefined : result.error,
+      });
+
+      await createAuditLog({
+        orgId: device.orgId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'file_restore',
+        resourceType: 'device',
+        resourceId: deviceId,
+        resourceName: device.hostname ?? device.id,
+        details: { trashId, restoredPath },
+        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+        result: success ? 'success' : 'failure',
+        errorMessage: success ? undefined : result.error,
+      });
+    }
+
+    return c.json({ results });
+  }
+);
+
+// POST /devices/:deviceId/files/trash/purge - Permanently delete from trash
+fileBrowserRoutes.post(
+  '/devices/:deviceId/files/trash/purge',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', fileTrashPurgeBodySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const result = await executeCommand(deviceId, CommandTypes.FILE_TRASH_PURGE, {
+      trashIds: body.trashIds || [],
+    }, { userId: auth.user?.id, timeoutMs: 30000 });
+
+    const success = result.status !== 'failed';
+
+    await createAuditLog({
+      orgId: device.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'file_trash_purge',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.id,
+      details: { trashIds: body.trashIds, purgeAll: !body.trashIds },
+      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      result: success ? 'success' : 'failure',
+      errorMessage: success ? undefined : result.error,
+    });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Failed to purge trash' }, 502);
+    }
+
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({ success: true, purged: data.purged || 0 });
+    } catch {
+      return c.json({ success: true });
     }
   }
 );
