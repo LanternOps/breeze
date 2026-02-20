@@ -18,11 +18,23 @@ import {
   FileCode,
   FileImage,
   FileArchive,
-  FileCog
+  FileCog,
+  Trash2,
+  Copy,
+  Move,
+  History,
+  Square,
+  CheckSquare
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
+import { copyFiles, moveFiles, deleteFiles } from './fileOperations';
+import FolderPickerDialog from './FolderPickerDialog';
+import DeleteConfirmDialog from './DeleteConfirmDialog';
+import TrashView from './TrashView';
+import FileActivityPanel from './FileActivityPanel';
+import type { FileActivity } from './FileActivityPanel';
 
 export type FileEntry = {
   name: string;
@@ -255,6 +267,14 @@ export default function FileManager({
   const [selectedCleanupPaths, setSelectedCleanupPaths] = useState<Set<string>>(new Set());
   const [cleanupResult, setCleanupResult] = useState<DiskCleanupResult | null>(null);
   const [scanCommand, setScanCommand] = useState<{ id: string; status: string } | null>(null);
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [folderPickerMode, setFolderPickerMode] = useState<'copy' | 'move'>('copy');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  const [showActivity, setShowActivity] = useState(false);
+  const [operationLoading, setOperationLoading] = useState(false);
+  const [activities, setActivities] = useState<FileActivity[]>([]);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
   const collapsedTopDirectories = useMemo(
     () => collapseAncestorDirectories(diskSnapshot?.topLargestDirectories ?? [], 5),
     [diskSnapshot?.topLargestDirectories]
@@ -555,6 +575,132 @@ export default function FileManager({
     }
   }, [entries, selectedItems, initiateDownload]);
 
+  // Add activity log entry
+  const addActivity = useCallback((action: FileActivity['action'], paths: string[], result: 'success' | 'failure', error?: string) => {
+    setActivities(prev => [{
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      action,
+      paths,
+      result,
+      error,
+    }, ...prev]);
+  }, []);
+
+  // Handle copy to destination
+  const handleCopyTo = useCallback(async (destPath: string) => {
+    setShowFolderPicker(false);
+    setOperationLoading(true);
+    const selectedPaths = Array.from(selectedItems);
+    try {
+      const items = selectedPaths.map(sourcePath => ({
+        sourcePath,
+        destPath: joinRemotePath(destPath, sourcePath.split('/').pop() || sourcePath.split('\\').pop() || 'file'),
+      }));
+      const response = await copyFiles(deviceId, items);
+      const failures = response.results.filter(r => r.status === 'failure');
+      if (failures.length > 0) {
+        addActivity('copy', selectedPaths, 'failure', `${failures.length} items failed`);
+      } else {
+        addActivity('copy', selectedPaths, 'success');
+      }
+      fetchDirectory(currentPath);
+      setSelectedItems(new Set());
+    } catch (err) {
+      addActivity('copy', selectedPaths, 'failure', err instanceof Error ? err.message : 'Copy failed');
+    } finally {
+      setOperationLoading(false);
+    }
+  }, [deviceId, selectedItems, currentPath, fetchDirectory, addActivity]);
+
+  // Handle move to destination
+  const handleMoveTo = useCallback(async (destPath: string) => {
+    setShowFolderPicker(false);
+    setOperationLoading(true);
+    const selectedPaths = Array.from(selectedItems);
+    try {
+      const items = selectedPaths.map(sourcePath => ({
+        sourcePath,
+        destPath: joinRemotePath(destPath, sourcePath.split('/').pop() || sourcePath.split('\\').pop() || 'file'),
+      }));
+      const response = await moveFiles(deviceId, items);
+      const failures = response.results.filter(r => r.status === 'failure');
+      if (failures.length > 0) {
+        addActivity('move', selectedPaths, 'failure', `${failures.length} items failed`);
+      } else {
+        addActivity('move', selectedPaths, 'success');
+      }
+      fetchDirectory(currentPath);
+      setSelectedItems(new Set());
+    } catch (err) {
+      addActivity('move', selectedPaths, 'failure', err instanceof Error ? err.message : 'Move failed');
+    } finally {
+      setOperationLoading(false);
+    }
+  }, [deviceId, selectedItems, currentPath, fetchDirectory, addActivity]);
+
+  // Handle delete confirmation
+  const handleDelete = useCallback(async (permanent: boolean) => {
+    setShowDeleteConfirm(false);
+    setOperationLoading(true);
+    const selectedPaths = Array.from(selectedItems);
+    try {
+      const response = await deleteFiles(deviceId, selectedPaths, permanent);
+      const failures = response.results.filter(r => r.status === 'failure');
+      if (failures.length > 0) {
+        addActivity('delete', selectedPaths, 'failure', `${failures.length} items failed`);
+      } else {
+        addActivity('delete', selectedPaths, 'success');
+      }
+      fetchDirectory(currentPath);
+      setSelectedItems(new Set());
+    } catch (err) {
+      addActivity('delete', selectedPaths, 'failure', err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setOperationLoading(false);
+    }
+  }, [deviceId, selectedItems, currentPath, fetchDirectory, addActivity]);
+
+  // Handle context menu
+  const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, entry });
+  }, []);
+
+  // Close context menu on any click
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, []);
+
+  // Context menu actions
+  const contextCopyTo = useCallback(() => {
+    if (contextMenu) {
+      setSelectedItems(new Set([contextMenu.entry.path]));
+      setFolderPickerMode('copy');
+      setShowFolderPicker(true);
+      setContextMenu(null);
+    }
+  }, [contextMenu]);
+
+  const contextMoveTo = useCallback(() => {
+    if (contextMenu) {
+      setSelectedItems(new Set([contextMenu.entry.path]));
+      setFolderPickerMode('move');
+      setShowFolderPicker(true);
+      setContextMenu(null);
+    }
+  }, [contextMenu]);
+
+  const contextDelete = useCallback(() => {
+    if (contextMenu) {
+      setSelectedItems(new Set([contextMenu.entry.path]));
+      setShowDeleteConfirm(true);
+      setContextMenu(null);
+    }
+  }, [contextMenu]);
+
   const loadLatestFilesystemSnapshot = useCallback(async () => {
     try {
       const response = await fetchWithAuth(`/devices/${deviceId}/filesystem`);
@@ -807,6 +953,32 @@ export default function FileManager({
           >
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
           </button>
+
+          {/* Trash toggle */}
+          <button
+            type="button"
+            onClick={() => setShowTrash(!showTrash)}
+            className={cn(
+              'flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors',
+              showTrash ? 'bg-red-600/20 text-red-400' : 'hover:bg-muted'
+            )}
+          >
+            <Trash2 className="h-4 w-4" />
+            Trash
+          </button>
+
+          {/* Activity panel toggle */}
+          <button
+            type="button"
+            onClick={() => setShowActivity(!showActivity)}
+            className={cn(
+              'flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors',
+              showActivity ? 'bg-blue-600/20 text-blue-400' : 'hover:bg-muted'
+            )}
+          >
+            <History className="h-4 w-4" />
+            Activity
+          </button>
         </div>
       </div>
 
@@ -988,140 +1160,234 @@ export default function FileManager({
         )}
       </div>
 
-      {/* File List */}
-      <div
-        className={cn(
-          'flex-1 overflow-auto relative',
-          isDragging && 'ring-2 ring-primary ring-inset'
-        )}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {isDragging && (
-          <div className="absolute inset-0 flex items-center justify-center bg-primary/10 z-10">
-            <div className="flex flex-col items-center gap-2 text-primary">
-              <Upload className="h-12 w-12" />
-              <p className="font-medium">Drop files to upload</p>
+      {/* File List / Trash View */}
+      {showTrash ? (
+        <TrashView deviceId={deviceId} onRestore={() => { fetchDirectory(currentPath); addActivity('restore', [], 'success'); }} />
+      ) : (
+        <div
+          className={cn(
+            'flex-1 overflow-auto relative',
+            isDragging && 'ring-2 ring-primary ring-inset'
+          )}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDragging && (
+            <div className="absolute inset-0 flex items-center justify-center bg-primary/10 z-10">
+              <div className="flex flex-col items-center gap-2 text-primary">
+                <Upload className="h-12 w-12" />
+                <p className="font-medium">Drop files to upload</p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40 sticky top-0">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3 w-8" />
-              <th
-                className="px-4 py-3 cursor-pointer hover:text-foreground"
-                onClick={() => toggleSort('name')}
-              >
-                Name
-                {sortBy === 'name' && (
-                  <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
-                )}
-              </th>
-              <th
-                className="px-4 py-3 cursor-pointer hover:text-foreground text-right"
-                onClick={() => toggleSort('size')}
-              >
-                Size
-                {sortBy === 'size' && (
-                  <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
-                )}
-              </th>
-              <th
-                className="px-4 py-3 cursor-pointer hover:text-foreground"
-                onClick={() => toggleSort('modified')}
-              >
-                Modified
-                {sortBy === 'modified' && (
-                  <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
-                )}
-              </th>
-              <th className="px-4 py-3 w-20" />
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {loading ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-8 text-center">
-                  <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
-                </td>
-              </tr>
-            ) : error ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-8 text-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <AlertCircle className="h-6 w-6 text-red-500" />
-                    <p className="text-sm text-red-500">{error}</p>
-                    <button
-                      type="button"
-                      onClick={() => fetchDirectory(currentPath)}
-                      className="text-xs text-primary hover:underline"
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40 sticky top-0">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3 w-8">
+                  {entries.length > 0 && (
+                    <div
+                      className="cursor-pointer"
+                      onClick={() => {
+                        const allPaths = getSortedEntries().map(e => e.path);
+                        setSelectedItems(prev => {
+                          if (prev.size === allPaths.length) {
+                            return new Set();
+                          }
+                          return new Set(allPaths);
+                        });
+                      }}
                     >
-                      Retry
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ) : getSortedEntries().length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  This directory is empty
-                </td>
-              </tr>
-            ) : (
-              getSortedEntries().map((entry) => {
-                const FileIcon = entry.type === 'directory' ? Folder : getFileIcon(entry.name);
-                const isSelected = selectedItems.has(entry.path);
-
-                return (
-                  <tr
-                    key={entry.path}
-                    className={cn(
-                      'transition hover:bg-muted/40 cursor-pointer',
-                      isSelected && 'bg-primary/10'
-                    )}
-                    onClick={(e) => handleItemClick(entry, e)}
-                    onDoubleClick={() => handleDoubleClick(entry)}
-                  >
-                    <td className="px-4 py-2">
-                      <FileIcon
-                        className={cn(
-                          'h-5 w-5',
-                          entry.type === 'directory' ? 'text-blue-500' : 'text-muted-foreground'
-                        )}
-                      />
-                    </td>
-                    <td className="px-4 py-2 text-sm font-medium">{entry.name}</td>
-                    <td className="px-4 py-2 text-sm text-muted-foreground text-right">
-                      {entry.type === 'file' ? formatSize(entry.size) : '-'}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-muted-foreground">
-                      {formatDate(entry.modified)}
-                    </td>
-                    <td className="px-4 py-2">
-                      {entry.type === 'file' && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            initiateDownload(entry);
-                          }}
-                          className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"
-                          title="Download"
-                        >
-                          <Download className="h-4 w-4" />
-                        </button>
+                      {selectedItems.size > 0 && selectedItems.size === entries.length ? (
+                        <CheckSquare className="w-4 h-4 text-blue-400" />
+                      ) : (
+                        <Square className="w-4 h-4 text-gray-500" />
                       )}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                    </div>
+                  )}
+                </th>
+                <th
+                  className="px-4 py-3 cursor-pointer hover:text-foreground"
+                  onClick={() => toggleSort('name')}
+                >
+                  Name
+                  {sortBy === 'name' && (
+                    <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
+                  )}
+                </th>
+                <th
+                  className="px-4 py-3 cursor-pointer hover:text-foreground text-right"
+                  onClick={() => toggleSort('size')}
+                >
+                  Size
+                  {sortBy === 'size' && (
+                    <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
+                  )}
+                </th>
+                <th
+                  className="px-4 py-3 cursor-pointer hover:text-foreground"
+                  onClick={() => toggleSort('modified')}
+                >
+                  Modified
+                  {sortBy === 'modified' && (
+                    <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
+                  )}
+                </th>
+                <th className="px-4 py-3 w-20" />
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center">
+                    <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
+                  </td>
+                </tr>
+              ) : error ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center">
+                    <div className="flex flex-col items-center gap-2">
+                      <AlertCircle className="h-6 w-6 text-red-500" />
+                      <p className="text-sm text-red-500">{error}</p>
+                      <button
+                        type="button"
+                        onClick={() => fetchDirectory(currentPath)}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : getSortedEntries().length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    This directory is empty
+                  </td>
+                </tr>
+              ) : (
+                getSortedEntries().map((entry) => {
+                  const FileIcon = entry.type === 'directory' ? Folder : getFileIcon(entry.name);
+                  const isSelected = selectedItems.has(entry.path);
+
+                  return (
+                    <tr
+                      key={entry.path}
+                      className={cn(
+                        'group transition hover:bg-muted/40 cursor-pointer',
+                        isSelected && 'bg-primary/10'
+                      )}
+                      onClick={(e) => handleItemClick(entry, e)}
+                      onDoubleClick={() => handleDoubleClick(entry)}
+                      onContextMenu={(e) => handleContextMenu(e, entry)}
+                    >
+                      <td className="px-4 py-2">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedItems(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(entry.path)) {
+                                  newSet.delete(entry.path);
+                                } else {
+                                  newSet.add(entry.path);
+                                }
+                                return newSet;
+                              });
+                            }}
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-4 h-4 text-blue-400" />
+                            ) : (
+                              <Square className="w-4 h-4 text-gray-500 opacity-0 group-hover:opacity-100" />
+                            )}
+                          </div>
+                          <FileIcon
+                            className={cn(
+                              'h-5 w-5',
+                              entry.type === 'directory' ? 'text-blue-500' : 'text-muted-foreground'
+                            )}
+                          />
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-sm font-medium">{entry.name}</td>
+                      <td className="px-4 py-2 text-sm text-muted-foreground text-right">
+                        {entry.type === 'file' ? formatSize(entry.size) : '-'}
+                      </td>
+                      <td className="px-4 py-2 text-sm text-muted-foreground">
+                        {formatDate(entry.modified)}
+                      </td>
+                      <td className="px-4 py-2">
+                        {entry.type === 'file' && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              initiateDownload(entry);
+                            }}
+                            className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"
+                            title="Download"
+                          >
+                            <Download className="h-4 w-4" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+
+          {/* Floating action bar */}
+          {selectedItems.size > 0 && (
+            <div className="absolute bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 px-4 py-3 flex items-center justify-between z-10">
+              <span className="text-sm text-gray-300">{selectedItems.size} item{selectedItems.size > 1 ? 's' : ''} selected</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setFolderPickerMode('copy'); setShowFolderPicker(true); }}
+                  disabled={operationLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 text-gray-200 rounded text-sm hover:bg-gray-600 disabled:opacity-50"
+                >
+                  <Copy className="w-4 h-4" />
+                  Copy to...
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setFolderPickerMode('move'); setShowFolderPicker(true); }}
+                  disabled={operationLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 text-gray-200 rounded text-sm hover:bg-gray-600 disabled:opacity-50"
+                >
+                  <Move className="w-4 h-4" />
+                  Move to...
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  disabled={operationLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-red-600/20 text-red-400 rounded text-sm hover:bg-red-600/30 disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadSelected}
+                  disabled={operationLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-blue-600/20 text-blue-400 rounded text-sm hover:bg-blue-600/30 disabled:opacity-50"
+                >
+                  <Download className="w-4 h-4" />
+                  Download
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Transfer Progress Panel */}
       {transfers.length > 0 && (
@@ -1200,6 +1466,53 @@ export default function FileManager({
           </div>
         </div>
       )}
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button type="button" onClick={contextCopyTo} className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2">
+            <Copy className="w-4 h-4" /> Copy to...
+          </button>
+          <button type="button" onClick={contextMoveTo} className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2">
+            <Move className="w-4 h-4" /> Move to...
+          </button>
+          <div className="border-t border-gray-700 my-1" />
+          <button type="button" onClick={contextDelete} className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-gray-700 flex items-center gap-2">
+            <Trash2 className="w-4 h-4" /> Delete
+          </button>
+          {contextMenu.entry.type === 'file' && (
+            <button type="button" onClick={() => { initiateDownload(contextMenu.entry); setContextMenu(null); }} className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2">
+              <Download className="w-4 h-4" /> Download
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Dialogs */}
+      <FolderPickerDialog
+        open={showFolderPicker}
+        title={folderPickerMode === 'copy' ? 'Copy to...' : 'Move to...'}
+        deviceId={deviceId}
+        initialPath={currentPath}
+        onSelect={folderPickerMode === 'copy' ? handleCopyTo : handleMoveTo}
+        onClose={() => setShowFolderPicker(false)}
+      />
+      <DeleteConfirmDialog
+        open={showDeleteConfirm}
+        items={entries.filter(e => selectedItems.has(e.path)).map(e => ({ name: e.name, path: e.path, size: e.size, type: e.type }))}
+        onConfirm={handleDelete}
+        onClose={() => setShowDeleteConfirm(false)}
+      />
+      <FileActivityPanel
+        deviceId={deviceId}
+        open={showActivity}
+        onToggle={() => setShowActivity(prev => !prev)}
+        activities={activities}
+        onClear={() => setActivities([])}
+      />
     </div>
   );
 }
