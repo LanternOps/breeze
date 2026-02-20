@@ -116,10 +116,15 @@ export const fileDeleteBodySchema = z.object({
   permanent: z.boolean().optional().default(false),
 });
 
+const trashIdString = z.string().min(1).max(512).refine(
+  (val) => !val.includes('/') && !val.includes('\\') && !val.includes('..') && !val.includes('\0'),
+  { message: 'Invalid trash ID: must not contain path separators or traversal sequences' }
+);
+
 export const fileTrashRestoreBodySchema = z.object({
-  trashIds: z.array(z.string().min(1).max(512)).min(1).max(100),
+  trashIds: z.array(trashIdString).min(1).max(100),
 });
 
 export const fileTrashPurgeBodySchema = z.object({
-  trashIds: z.array(z.string().min(1).max(512)).optional(),
+  trashIds: z.array(trashIdString).optional(),
 });

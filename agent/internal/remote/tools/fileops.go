@@ -271,13 +271,27 @@ func DeleteFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("failed to create trash item directory: %w", err), time.Since(start).Milliseconds())
 	}
 
+	// Calculate size (walk directory for recursive total)
+	var sizeBytes int64
+	if info.IsDir() {
+		filepath.Walk(cleanPath, func(_ string, fi os.FileInfo, _ error) error {
+			if fi != nil && !fi.IsDir() {
+				sizeBytes += fi.Size()
+			}
+			return nil
+		})
+	} else {
+		sizeBytes = info.Size()
+	}
+
 	// Write metadata.json
 	meta := TrashMetadata{
 		OriginalPath: cleanPath,
 		TrashID:      trashID,
 		DeletedAt:    now.Format(time.RFC3339),
+		DeletedBy:    GetPayloadString(payload, "deletedBy", ""),
 		IsDirectory:  info.IsDir(),
-		SizeBytes:    info.Size(),
+		SizeBytes:    sizeBytes,
 	}
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
@@ -378,12 +392,14 @@ func TrashRestore(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("failed to get trash directory: %w", err), time.Since(start).Milliseconds())
 	}
 
-	trashItemDir := filepath.Join(trashDir, trashID)
+	// Sanitize trashID to prevent path traversal
+	safeTrashID := filepath.Base(trashID)
+	trashItemDir := filepath.Join(trashDir, safeTrashID)
 	metaPath := filepath.Join(trashItemDir, "metadata.json")
 
 	metaBytes, err := os.ReadFile(metaPath)
 	if err != nil {
-		return NewErrorResult(fmt.Errorf("trash item not found: %s", trashID), time.Since(start).Milliseconds())
+		return NewErrorResult(fmt.Errorf("trash item not found: %s", safeTrashID), time.Since(start).Milliseconds())
 	}
 
 	var meta TrashMetadata
@@ -449,7 +465,7 @@ func TrashPurge(payload map[string]any) CommandResult {
 		// Purge specific items
 		purged := 0
 		for _, id := range trashIds {
-			itemDir := filepath.Join(trashDir, id)
+			itemDir := filepath.Join(trashDir, filepath.Base(id))
 			if err := os.RemoveAll(itemDir); err == nil {
 				purged++
 			}
