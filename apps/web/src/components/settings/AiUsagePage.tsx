@@ -11,6 +11,7 @@ interface UsageData {
     dailyBudgetCents: number | null;
     monthlyUsedCents: number;
     dailyUsedCents: number;
+    approvalMode: string;
   } | null;
 }
 
@@ -25,6 +26,8 @@ interface SessionRow {
   createdAt: string;
 }
 
+type ApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+
 interface BudgetForm {
   enabled: boolean;
   monthlyBudgetDollars: string;
@@ -32,6 +35,7 @@ interface BudgetForm {
   maxTurnsPerSession: string;
   messagesPerMinutePerUser: string;
   messagesPerHourPerOrg: string;
+  approvalMode: ApprovalMode;
 }
 
 export default function AiUsagePage() {
@@ -47,7 +51,8 @@ export default function AiUsagePage() {
     dailyBudgetDollars: '',
     maxTurnsPerSession: '50',
     messagesPerMinutePerUser: '20',
-    messagesPerHourPerOrg: '200'
+    messagesPerHourPerOrg: '200',
+    approvalMode: 'per_step',
   });
 
   const fetchData = useCallback(async () => {
@@ -68,7 +73,8 @@ export default function AiUsagePage() {
             dailyBudgetDollars: data.budget.dailyBudgetCents ? (data.budget.dailyBudgetCents / 100).toFixed(2) : '',
             maxTurnsPerSession: '50',
             messagesPerMinutePerUser: '20',
-            messagesPerHourPerOrg: '200'
+            messagesPerHourPerOrg: '200',
+            approvalMode: data.budget.approvalMode || 'per_step',
           });
         }
       }
@@ -98,7 +104,8 @@ export default function AiUsagePage() {
           dailyBudgetCents: budget.dailyBudgetDollars ? Math.round(parseFloat(budget.dailyBudgetDollars) * 100) : null,
           maxTurnsPerSession: parseInt(budget.maxTurnsPerSession) || 50,
           messagesPerMinutePerUser: parseInt(budget.messagesPerMinutePerUser) || 20,
-          messagesPerHourPerOrg: parseInt(budget.messagesPerHourPerOrg) || 200
+          messagesPerHourPerOrg: parseInt(budget.messagesPerHourPerOrg) || 200,
+          approvalMode: budget.approvalMode,
         })
       });
       if (!res.ok) throw new Error('Failed to save budget');
@@ -176,6 +183,25 @@ export default function AiUsagePage() {
               <option value="true">Enabled</option>
               <option value="false">Disabled</option>
             </select>
+          </label>
+          <label className="block">
+            <span className="text-sm text-muted-foreground">Approval Mode</span>
+            <select
+              value={budget.approvalMode}
+              onChange={(e) => setBudget({ ...budget, approvalMode: e.target.value as ApprovalMode })}
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+            >
+              <option value="per_step">Per Step (default)</option>
+              <option value="action_plan">Action Plan</option>
+              <option value="auto_approve">Auto Approve</option>
+              <option value="hybrid_plan">Hybrid Plan + Abort</option>
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {budget.approvalMode === 'per_step' && 'Each tool requiring approval blocks until the user approves or rejects.'}
+              {budget.approvalMode === 'action_plan' && 'AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.'}
+              {budget.approvalMode === 'auto_approve' && 'All tools auto-execute with audit logging. A Pause button reverts to per-step.'}
+              {budget.approvalMode === 'hybrid_plan' && 'Like Action Plan, plus live screenshots between steps and a persistent Stop button.'}
+            </p>
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">Monthly Budget ($)</span>
