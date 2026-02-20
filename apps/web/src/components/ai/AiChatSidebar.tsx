@@ -214,7 +214,7 @@ export default function AiChatSidebar() {
           /* Chat panel */
           <>
             {/* Cost indicator */}
-            <AiCostIndicator />
+            <AiCostIndicator enabled={isOpen} />
 
             {/* Context badge */}
             {pageContext && (

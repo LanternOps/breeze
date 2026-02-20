@@ -117,9 +117,10 @@ fn unregister_session(window: tauri::WebviewWindow, state: tauri::State<'_, Sess
 }
 
 /// Route an incoming deep link URL to the appropriate window.
+///
 /// - If the session is already active in a window, focus that window.
-/// - If the main window is idle, route to it.
-/// - Otherwise, create a new window.
+/// - If the main window is idle (no active session), route to it.
+/// - Otherwise, create a new window for the session.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
     // Check if this session is already being viewed
     if let Some(session_id) = extract_session_id(&url) {
@@ -139,6 +140,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         }
     }
 
+    // Check if main window has an active session
     let main_active = {
         let sessions = app.state::<SessionMap>();
         let map = lock_or_recover(&sessions.0, "session_map");
@@ -146,7 +148,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
     };
 
     if !main_active {
-        // Route to main window (existing behavior)
+        // Main window is idle — route the deep link there
         if let Some(state) = app.try_state::<DeepLinkState>() {
             let mut links = lock_or_recover(&state.0, "deep_link_state");
             links.insert("main".to_string(), url.clone());
@@ -160,7 +162,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
             }
         }
     } else {
-        // Main is busy — create a new session window
+        // Main is busy with another session — open a new window
         create_session_window(app, url);
     }
 }
@@ -212,7 +214,7 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
                 let mut links = lock_or_recover(&state.0, "deep_link_state");
                 links.remove(&label);
             }
-            // Fallback: route to main window
+            // Fallback: route to main (will replace active session)
             if let Some(state) = app.try_state::<DeepLinkState>() {
                 let mut links = lock_or_recover(&state.0, "deep_link_state");
                 links.insert("main".to_string(), url.clone());

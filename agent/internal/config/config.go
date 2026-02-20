@@ -216,6 +216,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	// Allow the Breeze Helper (running as the logged-in user) to read the
 	// config file. The auth token is still protected because the Helper
 	// binary runs in a sandboxed Tauri process that only exposes it via IPC.
+	_ = os.Chmod(filepath.Dir(cfgPath), 0755)
 	return os.Chmod(cfgPath, 0644)
 }
 
