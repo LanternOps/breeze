@@ -103,6 +103,10 @@ const (
 	CmdFileDelete         = "file_delete"
 	CmdFileMkdir          = "file_mkdir"
 	CmdFileRename         = "file_rename"
+	CmdFileCopy           = "file_copy"
+	CmdFileTrashList      = "file_trash_list"
+	CmdFileTrashRestore   = "file_trash_restore"
+	CmdFileTrashPurge     = "file_trash_purge"
 	CmdFilesystemAnalysis = "filesystem_analysis"
 
 	// Network discovery
@@ -333,6 +337,22 @@ type FileEntry struct {
 type FileListResponse struct {
 	Path    string      `json:"path"`
 	Entries []FileEntry `json:"entries"`
+}
+
+// TrashMetadata stores info about a trashed item for restore/audit purposes.
+type TrashMetadata struct {
+	OriginalPath string `json:"originalPath"`
+	TrashID      string `json:"trashId"`
+	DeletedAt    string `json:"deletedAt"`
+	DeletedBy    string `json:"deletedBy,omitempty"`
+	IsDirectory  bool   `json:"isDirectory"`
+	SizeBytes    int64  `json:"sizeBytes"`
+}
+
+// TrashListResponse is the response for listing trash contents.
+type TrashListResponse struct {
+	Items []TrashMetadata `json:"items"`
+	Path  string          `json:"path"`
 }
 
 // FilesystemLargestFile captures one large file candidate.
