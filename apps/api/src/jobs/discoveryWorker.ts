@@ -12,6 +12,7 @@ import {
   discoveryJobs,
   discoveredAssets,
   networkTopology,
+  networkBaselines,
   devices,
   deviceNetwork
 } from '../db/schema';
@@ -330,6 +331,32 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       updatedAt: new Date()
     })
     .where(eq(discoveryJobs.id, data.jobId));
+
+  // If this discovery job was launched by a network baseline, enqueue comparison.
+  const [baseline] = await db
+    .select({
+      id: networkBaselines.id,
+      orgId: networkBaselines.orgId,
+      siteId: networkBaselines.siteId
+    })
+    .from(networkBaselines)
+    .where(eq(networkBaselines.lastScanJobId, data.jobId))
+    .limit(1);
+
+  if (baseline) {
+    try {
+      const { enqueueBaselineComparison } = await import('./networkBaselineWorker');
+      await enqueueBaselineComparison(
+        baseline.id,
+        data.jobId,
+        baseline.orgId,
+        baseline.siteId,
+        data.hosts
+      );
+    } catch (error) {
+      console.error(`[DiscoveryWorker] Failed to enqueue baseline comparison for ${baseline.id}:`, error);
+    }
+  }
 
   console.log(`[DiscoveryWorker] Job ${data.jobId} completed: ${newCount} new, ${updatedCount} updated`);
   return { newAssets: newCount, updatedAssets: updatedCount, durationMs: Date.now() - startTime };
