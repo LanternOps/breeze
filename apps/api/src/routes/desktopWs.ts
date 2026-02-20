@@ -9,6 +9,11 @@ import { createAccessToken } from '../services/jwt';
 import { consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 
+// Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
+// return the same token instead of 401 after the one-time code is consumed.
+const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number }; expiresAt: number }>();
+const EXCHANGE_CACHE_TTL_MS = 30_000; // 30 seconds
+
 // Types for desktop messages
 interface DesktopInputMessage {
   type: 'input';
@@ -406,6 +411,15 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
     zValidator('json', desktopConnectExchangeSchema),
     async (c) => {
       const { sessionId, code } = c.req.valid('json');
+
+      // Check cache first — handles duplicate calls from React effect re-fires
+      const cacheKey = `${sessionId}:${code}`;
+      const cached = exchangeCache.get(cacheKey);
+      if (cached && Date.now() < cached.expiresAt) {
+        return c.json(cached.result);
+      }
+      exchangeCache.delete(cacheKey);
+
       const codeRecord = await consumeDesktopConnectCode(code);
 
       if (!codeRecord || codeRecord.sessionId !== sessionId) {
@@ -432,10 +446,15 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
       }
 
       const accessToken = await createAccessToken(codeRecord.tokenPayload);
-      return c.json({
+      const result = {
         accessToken,
         expiresInSeconds: getViewerAccessTokenExpirySeconds()
-      });
+      };
+
+      // Cache the result briefly for duplicate requests
+      exchangeCache.set(cacheKey, { result, expiresAt: Date.now() + EXCHANGE_CACHE_TTL_MS });
+
+      return c.json(result);
     }
   );
 
