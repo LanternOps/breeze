@@ -4,13 +4,13 @@ import { executeApiAssertion } from './executors/api';
 import { executeSqlAssertion } from './executors/sql';
 import { executeUiAssertion, initBrowser, closeBrowser } from './executors/ui';
 
-export interface RunOptions {
+interface RunOptions {
   apiUrl: string;
-  webUrl: string;
+  baseUrl: string;
   dbUrl: string;
   env: Record<string, string>;
-  filterPage?: string;
-  filterType?: 'api' | 'sql' | 'ui';
+  page?: string;
+  typeFilter?: ('api' | 'sql' | 'ui')[];
 }
 
 export async function runAssertions(
@@ -20,78 +20,79 @@ export async function runAssertions(
   const startedAt = new Date().toISOString();
   const results: AssertionResult[] = [];
 
-  // Collect all assertions, optionally filtering
-  const allAssertions: Assertion[] = [];
-  for (const page of manifest.pages) {
-    if (options.filterPage && !page.source.includes(options.filterPage)) continue;
+  let pages = manifest.pages;
+  if (options.page) {
+    pages = pages.filter((p) => p.source.includes(options.page!));
+  }
+
+  const allAssertions: { assertion: Assertion; source: string }[] = [];
+  for (const page of pages) {
     for (const assertion of page.assertions) {
-      if (options.filterType && assertion.type !== options.filterType) continue;
-      allAssertions.push(assertion);
+      if (options.typeFilter && !options.typeFilter.includes(assertion.type)) {
+        continue;
+      }
+      allAssertions.push({ assertion, source: page.source });
     }
   }
 
-  // Init browser if we have UI assertions
-  const hasUi = allAssertions.some((a) => a.type === 'ui');
-  if (hasUi) {
-    console.log('  [browser] Launching Chromium...');
+  console.log(`\nRunning ${allAssertions.length} assertions...\n`);
+
+  const hasUiAssertions = allAssertions.some((a) => a.assertion.type === 'ui');
+  if (hasUiAssertions) {
+    console.log('Initializing browser for UI assertions...');
     await initBrowser();
   }
 
-  // Execute sequentially
-  for (const assertion of allAssertions) {
-    try {
-      let result: AssertionResult;
+  const context: Record<string, string> = { ...options.env };
 
-      switch (assertion.type) {
-        case 'api':
-          result = await executeApiAssertion(assertion, options.apiUrl, options.env);
-          break;
-        case 'sql':
-          result = await executeSqlAssertion(assertion, options.dbUrl, options.env);
-          break;
-        case 'ui':
-          result = await executeUiAssertion(assertion, options.webUrl, options.env);
-          break;
-      }
+  for (const { assertion } of allAssertions) {
+    const prefix = `[${assertion.type}] ${assertion.id}`;
+    process.stdout.write(`  ${prefix}: ${assertion.claim.slice(0, 60)}...`);
 
-      const icon = result.status === 'pass' ? 'PASS' : result.status === 'fail' ? 'FAIL' : result.status === 'error' ? 'ERR ' : 'SKIP';
-      console.log(`  [${icon}] ${assertion.id}: ${assertion.claim.slice(0, 80)}`);
-      if (result.status !== 'pass') {
-        console.log(`         ${result.reason.slice(0, 120)}`);
-      }
+    let result: AssertionResult;
 
-      results.push(result);
-    } catch (err) {
-      const errResult: AssertionResult = {
-        id: assertion.id,
-        type: assertion.type,
-        claim: assertion.claim,
-        status: 'error',
-        reason: `Runner error: ${err instanceof Error ? err.message : String(err)}`,
-        durationMs: 0,
-      };
-      console.log(`  [ERR ] ${assertion.id}: ${errResult.reason.slice(0, 100)}`);
-      results.push(errResult);
+    switch (assertion.type) {
+      case 'api':
+        result = await executeApiAssertion(assertion, options.apiUrl, context);
+        break;
+      case 'sql':
+        result = await executeSqlAssertion(assertion, options.dbUrl, context);
+        break;
+      case 'ui':
+        result = await executeUiAssertion(assertion, options.baseUrl, context);
+        break;
+      default:
+        result = {
+          id: assertion.id,
+          type: assertion.type,
+          claim: assertion.claim,
+          status: 'skip',
+          reason: `Unknown assertion type: ${assertion.type}`,
+          durationMs: 0,
+        };
     }
+
+    const icon = result.status === 'pass' ? 'PASS' : result.status === 'fail' ? 'FAIL' : result.status === 'error' ? 'ERR ' : 'SKIP';
+    console.log(` ${icon} (${result.durationMs}ms)`);
+    if (result.status !== 'pass') {
+      console.log(`    ${result.reason}`);
+    }
+
+    results.push(result);
   }
 
-  if (hasUi) {
+  if (hasUiAssertions) {
     await closeBrowser();
   }
-
-  const passed = results.filter((r) => r.status === 'pass').length;
-  const failed = results.filter((r) => r.status === 'fail').length;
-  const skipped = results.filter((r) => r.status === 'skip').length;
-  const errors = results.filter((r) => r.status === 'error').length;
 
   return {
     startedAt,
     completedAt: new Date().toISOString(),
     total: results.length,
-    passed,
-    failed,
-    skipped,
-    errors,
+    passed: results.filter((r) => r.status === 'pass').length,
+    failed: results.filter((r) => r.status === 'fail').length,
+    skipped: results.filter((r) => r.status === 'skip').length,
+    errors: results.filter((r) => r.status === 'error').length,
     results,
   };
 }
