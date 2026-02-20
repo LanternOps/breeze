@@ -5,7 +5,8 @@ export const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:4322',
   'http://localhost:1420',
   'http://127.0.0.1:1420',
-  'tauri://localhost'
+  'tauri://localhost',
+  'http://tauri.localhost'
 ] as const;
 
 type OriginResolverOptions = {
