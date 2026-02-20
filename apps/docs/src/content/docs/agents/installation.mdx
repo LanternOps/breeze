@@ -48,15 +48,22 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       https://breeze.yourdomain.com/api/v1/agents/download/darwin/arm64
     chmod +x breeze-agent
 
+    # Remove Gatekeeper quarantine attribute (unsigned binary)
+    sudo xattr -d com.apple.quarantine breeze-agent
+
     # Enroll with your enrollment key
     sudo ./breeze-agent enroll YOUR_ENROLLMENT_KEY \
       --server https://breeze.yourdomain.com \
       --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    # Copy to system path and start via launchd
-    sudo cp breeze-agent /usr/local/bin/breeze-agent
-    sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist
+    # Install as a launchd service and start
+    sudo ./breeze-agent service install
+    sudo breeze-agent service start
     ```
+
+    <Aside type="tip">
+      macOS Gatekeeper blocks unsigned binaries downloaded from the internet. The `xattr -d com.apple.quarantine` command removes the quarantine flag so the binary can execute. Alternatively, right-click the binary in Finder → Open to bypass Gatekeeper on a per-file basis. For MDM-managed fleets, deploy the binary via your MDM to avoid quarantine entirely.
+    </Aside>
   </TabItem>
   <TabItem label="Windows">
     ```powershell

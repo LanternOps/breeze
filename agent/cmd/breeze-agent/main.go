@@ -168,6 +168,9 @@ func startAgent() (*agentComponents, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
+	// Loosen config file permissions so the Breeze Helper can read them.
+	config.FixConfigPermissions()
+
 	if cfg.AgentID == "" {
 		return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
 	}

@@ -10,7 +10,8 @@ import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions } from '../db/schema';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
@@ -208,10 +209,48 @@ export async function handleApproval(
 }
 
 // ============================================
+// Plan Approval Flow
+// ============================================
+
+/**
+ * Wait for plan approval via in-memory promise.
+ * The resolver is stored on session.planApprovalResolver and called
+ * when the user clicks Approve/Reject on the plan review card.
+ * 10-minute timeout (longer than per-step 5-min).
+ */
+export function waitForPlanApproval(
+  planId: string,
+  session: ActiveSession,
+  timeoutMs = 600_000,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      session.planApprovalResolver = null;
+      resolve(false);
+    }, timeoutMs);
+
+    session.planApprovalResolver = (approved: boolean) => {
+      clearTimeout(timer);
+      session.planApprovalResolver = null;
+      resolve(approved);
+    };
+  });
+}
+
+/**
+ * Handle plan approval (called from route handler).
+ * This is a no-op placeholder — the actual logic is in the route
+ * which directly resolves session.planApprovalResolver.
+ */
+export function handlePlanApproval(): void {
+  // Logic is inline in the route handler
+}
+
+// ============================================
 // System Prompt
 // ============================================
 
-export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext): string {
+export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext, approvalMode?: AiApprovalMode): string {
   const parts: string[] = [];
 
   parts.push(`You are Breeze AI, an intelligent IT assistant built into the Breeze RMM platform. You help IT technicians and MSP staff manage devices, troubleshoot issues, analyze security threats, and build automations.
@@ -278,6 +317,22 @@ export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext
       case 'custom':
         parts.push(`Context: ${pageContext.label}`);
         parts.push(JSON.stringify(pageContext.data, null, 2));
+        break;
+    }
+  }
+
+  // Approval mode instructions
+  if (approvalMode && approvalMode !== 'per_step') {
+    parts.push('\n## Approval Mode');
+    switch (approvalMode) {
+      case 'auto_approve':
+        parts.push('Tools execute without individual approval. Confirm destructive operations verbally before executing.');
+        break;
+      case 'action_plan':
+        parts.push('When executing multiple Tier 2+ operations, call `propose_action_plan` first with all planned steps. Wait for approval. Execute steps in order. Do NOT deviate from the approved plan.');
+        break;
+      case 'hybrid_plan':
+        parts.push('When executing multiple Tier 2+ operations, call `propose_action_plan` first. Wait for approval. Execute steps in order. Screenshots will be captured between steps. The user can click Stop to abort. Do NOT deviate from the approved plan.');
         break;
     }
   }

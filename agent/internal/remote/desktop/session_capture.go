@@ -16,6 +16,9 @@ const (
 	secureDesktopKeyframeEvery = 2 * time.Second
 
 	enableFramePixelDiagnostics = false
+
+	startupFrameWarmupWindow = 4 * time.Second
+	startupFrameRepaintEvery = 200 * time.Millisecond
 )
 
 var encodedFramePool = sync.Pool{
@@ -187,6 +190,8 @@ func (s *Session) captureLoopDXGI() captureMode {
 	postSwitchRepaints := 0
 	var lastRepaintTime time.Time
 	var lastSecureKeyframe time.Time
+	startupWarmupUntil := time.Now().Add(startupFrameWarmupWindow)
+	var lastStartupRepaint time.Time
 
 	for {
 		loopStart := time.Now()
@@ -265,6 +270,16 @@ func (s *Session) captureLoopDXGI() captureMode {
 		onSecure := false
 		if dsn, ok := currentCap.(DesktopSwitchNotifier); ok {
 			onSecure = dsn.OnSecureDesktop()
+		}
+
+		// Startup warm-up: on static lock/swipe surfaces there may be no dirty
+		// rects for a while. Force a few repaints until the first frame is sent.
+		if s.lastVideoWriteUnixNano.Load() == 0 && time.Now().Before(startupWarmupUntil) && time.Since(lastStartupRepaint) >= startupFrameRepaintEvery {
+			if onSecure {
+				nudgeSecureDesktop()
+			}
+			forceDesktopRepaint()
+			lastStartupRepaint = time.Now()
 		}
 
 		if onSecure {
@@ -373,6 +388,8 @@ func (s *Session) captureLoopTicker() captureMode {
 	hwChecked := false
 	var lastTickerRepaint time.Time
 	var lastSecureKeyframe time.Time
+	startupWarmupUntil := time.Now().Add(startupFrameWarmupWindow)
+	var lastStartupRepaint time.Time
 
 	for {
 		select {
@@ -408,6 +425,13 @@ func (s *Session) captureLoopTicker() captureMode {
 			onSecure := false
 			if dsn, ok2 := currentCap.(DesktopSwitchNotifier); ok2 {
 				onSecure = dsn.OnSecureDesktop()
+			}
+			if s.lastVideoWriteUnixNano.Load() == 0 && time.Now().Before(startupWarmupUntil) && time.Since(lastStartupRepaint) >= startupFrameRepaintEvery {
+				if onSecure {
+					nudgeSecureDesktop()
+				}
+				forceDesktopRepaint()
+				lastStartupRepaint = time.Now()
 			}
 			if !hwChecked && s.encoder.BackendIsHardware() && !onSecure {
 				hwChecked = true

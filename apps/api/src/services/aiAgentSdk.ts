@@ -9,11 +9,11 @@
  * - safeParseJson(): utility for parsing tool output
  */
 
-import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions } from '../db/schema';
+import { db, withSystemDbAccessContext } from '../db';
+import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
@@ -208,19 +208,75 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
     }
 
-    // Tier 3: Requires user approval
-    if (guardrailCheck.requiresApproval) {
+    // Tier 2+: Requires user approval (mutating and destructive tools)
+    // NOTE: This callback runs inside the background processor which operates
+    // outside the request's AsyncLocalStorage DB context (via runOutsideDbContext).
+    // All DB operations on RLS-protected tables (those with org_id) must be
+    // wrapped in withSystemDbAccessContext to set the correct PostgreSQL GUCs.
+    if (guardrailCheck.tier >= 2) {
+      // Determine effective approval mode (pause overrides to per_step)
+      const effectiveMode: AiApprovalMode = session.isPaused ? 'per_step' : session.approvalMode;
+
+      // Auto-approve mode: skip approval dialog, just create audit record
+      if (effectiveMode === 'auto_approve') {
+        try {
+          await withSystemDbAccessContext(() =>
+            db.insert(aiToolExecutions).values({
+              sessionId: session.breezeSessionId,
+              toolName,
+              toolInput: input,
+              status: 'executing',
+            })
+          );
+        } catch (err) {
+          console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
+        }
+        return { allowed: true };
+      }
+
+      // Action plan / hybrid plan mode: check if tool matches an approved plan step
+      if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
+        const match = matchPlanStep(session, toolName, input);
+        if (match.matches) {
+          // Emit plan_step_start event
+          session.eventBus.publish({
+            type: 'plan_step_start',
+            planId: session.activePlanId,
+            stepIndex: match.stepIndex,
+            toolName,
+          });
+          try {
+            await withSystemDbAccessContext(() =>
+              db.insert(aiToolExecutions).values({
+                sessionId: session.breezeSessionId,
+                toolName,
+                toolInput: input,
+                status: 'executing',
+              })
+            );
+          } catch (err) {
+            console.error('[AI-SDK] Failed to create plan-step audit record:', toolName, err);
+          }
+          session.currentPlanStepIndex = match.stepIndex + 1;
+          return { allowed: true };
+        }
+        // Deviation from plan — fall through to per-step approval
+      }
+
+      // Per-step approval flow (default behavior)
       let approvalExec: { id: string } | undefined;
       try {
-        const [row] = await db
-          .insert(aiToolExecutions)
-          .values({
-            sessionId: session.breezeSessionId,
-            toolName,
-            toolInput: input,
-            status: 'pending',
-          })
-          .returning();
+        const [row] = await withSystemDbAccessContext(() =>
+          db
+            .insert(aiToolExecutions)
+            .values({
+              sessionId: session.breezeSessionId,
+              toolName,
+              toolInput: input,
+              status: 'pending',
+            })
+            .returning()
+        );
         approvalExec = row;
       } catch (err) {
         console.error('[AI-SDK] Failed to create approval record:', toolName, err);
@@ -231,6 +287,59 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         return { allowed: false, error: 'Failed to create approval record' };
       }
 
+      // Look up device + active user sessions for the approval UI
+      let deviceContext: {
+        hostname: string;
+        displayName?: string;
+        status: string;
+        lastSeenAt?: string;
+        activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }>;
+      } | undefined;
+      const deviceId = input.deviceId as string | undefined;
+      if (deviceId) {
+        try {
+          const [[dev], sessions] = await withSystemDbAccessContext(() =>
+            Promise.all([
+              db.select({
+                hostname: devices.hostname,
+                displayName: devices.displayName,
+                status: devices.status,
+                lastSeenAt: devices.lastSeenAt,
+              })
+              .from(devices)
+              .where(eq(devices.id, deviceId))
+              .limit(1),
+              db.select({
+                username: deviceSessions.username,
+                activityState: deviceSessions.activityState,
+                idleMinutes: deviceSessions.idleMinutes,
+                sessionType: deviceSessions.sessionType,
+              })
+              .from(deviceSessions)
+              .where(and(eq(deviceSessions.deviceId, deviceId), eq(deviceSessions.isActive, true))),
+            ])
+          );
+          if (dev) {
+            deviceContext = {
+              hostname: dev.hostname,
+              displayName: dev.displayName ?? undefined,
+              status: dev.status,
+              lastSeenAt: dev.lastSeenAt?.toISOString(),
+              activeSessions: sessions.length > 0
+                ? sessions.map((s) => ({
+                    username: s.username,
+                    activityState: s.activityState ?? undefined,
+                    idleMinutes: s.idleMinutes ?? undefined,
+                    sessionType: s.sessionType,
+                  }))
+                : undefined,
+            };
+          }
+        } catch (err) {
+          console.error('[AI-SDK] Failed to look up device for approval context:', err);
+        }
+      }
+
       // Emit approval_required event via session event bus → UI shows Approve/Reject
       session.eventBus.publish({
         type: 'approval_required',
@@ -238,6 +347,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         toolName,
         input,
         description: guardrailCheck.description ?? `Execute ${toolName}`,
+        deviceContext,
       });
 
       // Block until user clicks Approve/Reject or 5-min timeout
@@ -253,10 +363,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
       // Mark as executing
       try {
-        await db
-          .update(aiToolExecutions)
-          .set({ status: 'executing' })
-          .where(eq(aiToolExecutions.id, approvalExec.id));
+        await withSystemDbAccessContext(() =>
+          db
+            .update(aiToolExecutions)
+            .set({ status: 'executing' })
+            .where(eq(aiToolExecutions.id, approvalExec!.id))
+        );
       } catch (err) {
         console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
       }
@@ -282,50 +394,58 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     const orgId = session.auth.orgId ?? undefined;
 
     // 1. Save tool_result to aiMessages
+    // NOTE: Runs in background processor (outside request DB context).
+    // Wrap in withSystemDbAccessContext for RLS compliance.
     try {
-      await db.insert(aiMessages).values({
-        sessionId,
-        role: 'tool_result',
-        toolName,
-        toolOutput: parsedOutput,
-        toolUseId: toolUseId ?? null,
-      });
+      await withSystemDbAccessContext(() =>
+        db.insert(aiMessages).values({
+          sessionId,
+          role: 'tool_result',
+          toolName,
+          toolOutput: parsedOutput,
+          toolUseId: toolUseId ?? null,
+        })
+      );
     } catch (err) {
       console.error('[AI-SDK] Failed to save tool_result message:', err);
     }
 
     // 2. Create/update aiToolExecutions record
     const guardrailCheck = checkGuardrails(toolName, input);
-    if (!guardrailCheck.requiresApproval) {
+    if (guardrailCheck.tier < 2) {
       try {
-        await db.insert(aiToolExecutions).values({
-          sessionId,
-          toolName,
-          toolInput: input,
-          toolOutput: parsedOutput,
-          status: isError ? 'failed' : 'completed',
-          errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
-          durationMs,
-          completedAt: new Date(),
-        });
+        await withSystemDbAccessContext(() =>
+          db.insert(aiToolExecutions).values({
+            sessionId,
+            toolName,
+            toolInput: input,
+            toolOutput: parsedOutput,
+            status: isError ? 'failed' : 'completed',
+            errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+            durationMs,
+            completedAt: new Date(),
+          })
+        );
       } catch (err) {
         console.error('[AI-SDK] Failed to save tool execution record:', err);
       }
     } else {
       try {
-        await db.update(aiToolExecutions)
-          .set({
-            status: isError ? 'failed' : 'completed',
-            toolOutput: parsedOutput,
-            errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
-            durationMs,
-            completedAt: new Date(),
-          })
-          .where(and(
-            eq(aiToolExecutions.sessionId, sessionId),
-            eq(aiToolExecutions.toolName, toolName),
-            eq(aiToolExecutions.status, 'executing'),
-          ));
+        await withSystemDbAccessContext(() =>
+          db.update(aiToolExecutions)
+            .set({
+              status: isError ? 'failed' : 'completed',
+              toolOutput: parsedOutput,
+              errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+              durationMs,
+              completedAt: new Date(),
+            })
+            .where(and(
+              eq(aiToolExecutions.sessionId, sessionId),
+              eq(aiToolExecutions.toolName, toolName),
+              eq(aiToolExecutions.status, 'executing'),
+            ))
+        );
       } catch (err) {
         console.error('[AI-SDK] Failed to update approval execution record:', err);
       }
@@ -339,7 +459,61 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       isError,
     });
 
-    // 4. Write audit event
+    // 4. Plan step tracking (action_plan and hybrid_plan modes)
+    if (session.activePlanId) {
+      const effectiveMode = session.isPaused ? 'per_step' : session.approvalMode;
+      const planStepIdx = session.currentPlanStepIndex - 1; // currentPlanStepIndex was already incremented in preToolUse
+
+      // Emit plan_step_complete event
+      if (planStepIdx >= 0) {
+        session.eventBus.publish({
+          type: 'plan_step_complete',
+          planId: session.activePlanId,
+          stepIndex: planStepIdx,
+          toolName,
+          isError,
+        });
+      }
+
+      // For hybrid_plan mode: emit screenshot if tool result contains imageBase64
+      if (effectiveMode === 'hybrid_plan' && planStepIdx >= 0) {
+        if (parsedOutput.imageBase64 && typeof parsedOutput.imageBase64 === 'string') {
+          session.eventBus.publish({
+            type: 'plan_screenshot',
+            planId: session.activePlanId,
+            stepIndex: planStepIdx,
+            imageBase64: parsedOutput.imageBase64 as string,
+          });
+        }
+      }
+
+      // Check if plan is fully executed
+      if (session.currentPlanStepIndex >= session.approvedPlanSteps.size) {
+        const planId = session.activePlanId;
+        try {
+          await withSystemDbAccessContext(() =>
+            db.update(aiActionPlans)
+              .set({ status: 'completed', completedAt: new Date() })
+              .where(eq(aiActionPlans.id, planId))
+          );
+        } catch (err) {
+          console.error('[AI-SDK] Failed to mark plan as completed:', planId, err);
+        }
+
+        session.eventBus.publish({
+          type: 'plan_complete',
+          planId,
+          status: 'completed',
+        });
+
+        // Clear session plan state
+        session.activePlanId = null;
+        session.approvedPlanSteps.clear();
+        session.currentPlanStepIndex = 0;
+      }
+    }
+
+    // 5. Write audit event
     if (session.auditSnapshot) {
       writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
         orgId,
@@ -354,11 +528,82 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           toolInput: input,
           durationMs,
           tier: guardrailCheck.tier,
-          ...(guardrailCheck.requiresApproval ? { approved: true } : {}),
+          ...(guardrailCheck.tier >= 2 ? { approved: true } : {}),
         },
       });
     }
   };
+}
+
+// ============================================
+// Plan Step Matching
+// ============================================
+
+/**
+ * Check if the current tool call matches the next expected step in an approved plan.
+ * Matches by toolName (exact) + key identifiers (deviceId, action). Allows
+ * flexibility in other params since AI may refine based on prior step results.
+ */
+function matchPlanStep(
+  session: ActiveSession,
+  toolName: string,
+  input: Record<string, unknown>,
+): { matches: boolean; stepIndex: number } {
+  const idx = session.currentPlanStepIndex;
+  const step = session.approvedPlanSteps.get(idx);
+
+  if (!step) return { matches: false, stepIndex: idx };
+  if (step.toolName !== toolName) return { matches: false, stepIndex: idx };
+
+  // Match key identifiers if present in the plan step
+  const keyFields = ['deviceId', 'action', 'scriptId', 'policyId'];
+  for (const key of keyFields) {
+    if (step.input[key] !== undefined && input[key] !== undefined) {
+      if (step.input[key] !== input[key]) {
+        return { matches: false, stepIndex: idx };
+      }
+    }
+  }
+
+  return { matches: true, stepIndex: idx };
+}
+
+// ============================================
+// Plan Abort
+// ============================================
+
+/**
+ * Abort the active plan for a session. Updates DB status to 'aborted',
+ * emits plan_complete event, and clears session plan state.
+ */
+export async function abortActivePlan(session: ActiveSession): Promise<boolean> {
+  const planId = session.activePlanId;
+  if (!planId) return false;
+
+  // Update DB
+  try {
+    await withSystemDbAccessContext(() =>
+      db.update(aiActionPlans)
+        .set({ status: 'aborted', completedAt: new Date() })
+        .where(eq(aiActionPlans.id, planId))
+    );
+  } catch (err) {
+    console.error('[AI-SDK] Failed to abort plan in DB:', planId, err);
+  }
+
+  // Emit plan_complete event
+  session.eventBus.publish({
+    type: 'plan_complete',
+    planId,
+    status: 'aborted',
+  });
+
+  // Clear session plan state
+  session.activePlanId = null;
+  session.approvedPlanSteps.clear();
+  session.currentPlanStepIndex = 0;
+
+  return true;
 }
 
 // ============================================
