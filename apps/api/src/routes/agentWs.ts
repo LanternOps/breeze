@@ -11,6 +11,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/disc
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
 import { isRedisAvailable } from '../services/redis';
+import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
 
@@ -36,9 +37,27 @@ const commandResultSchema = z.object({
   result: z.any().optional()
 });
 
+const ipHistoryEntrySchema = z.object({
+  interfaceName: z.string().min(1),
+  ipAddress: z.string().min(1),
+  ipType: z.enum(['ipv4', 'ipv6']).optional(),
+  assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+  macAddress: z.string().optional(),
+  subnetMask: z.string().optional(),
+  gateway: z.string().optional(),
+  dnsServers: z.array(z.string()).optional()
+});
+
 const heartbeatMessageSchema = z.object({
   type: z.literal('heartbeat'),
-  timestamp: z.number()
+  timestamp: z.number(),
+  ipHistoryUpdate: z.object({
+    deviceId: z.string().optional(),
+    currentIPs: z.array(ipHistoryEntrySchema).optional(),
+    changedIPs: z.array(ipHistoryEntrySchema).optional(),
+    removedIPs: z.array(ipHistoryEntrySchema).optional(),
+    detectedAt: z.string().datetime({ offset: true }).optional(),
+  }).optional()
 });
 
 const terminalOutputSchema = z.object({
@@ -677,17 +696,33 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
             break;
 
           case 'heartbeat':
-            // Update last seen timestamp
-            await runWithAgentDbAccess(async () => updateDeviceStatus(agentId, 'online'));
+            {
+              const heartbeatMessage = parsed.data as z.infer<typeof heartbeatMessageSchema>;
 
-            // Check for pending commands and send them
-            const pendingCommands = await runWithAgentDbAccess(async () => getPendingCommands(agentId));
-            ws.send(JSON.stringify({
-              type: 'heartbeat_ack',
-              timestamp: Date.now(),
-              commands: pendingCommands
-            }));
-            break;
+            // Update last seen timestamp
+              await runWithAgentDbAccess(async () => {
+                await updateDeviceStatus(agentId, 'online');
+                if (heartbeatMessage.ipHistoryUpdate) {
+                  if (heartbeatMessage.ipHistoryUpdate.deviceId && heartbeatMessage.ipHistoryUpdate.deviceId !== authenticatedAgent.deviceId) {
+                    console.warn(`[AgentWs] Ignoring mismatched ipHistoryUpdate.deviceId from ${agentId}: ${heartbeatMessage.ipHistoryUpdate.deviceId}`);
+                  }
+                  await processDeviceIPHistoryUpdate(
+                    authenticatedAgent.deviceId,
+                    authenticatedAgent.orgId,
+                    heartbeatMessage.ipHistoryUpdate
+                  );
+                }
+              });
+
+              // Check for pending commands and send them
+              const pendingCommands = await runWithAgentDbAccess(async () => getPendingCommands(agentId));
+              ws.send(JSON.stringify({
+                type: 'heartbeat_ack',
+                timestamp: Date.now(),
+                commands: pendingCommands
+              }));
+              break;
+            }
 
         }
       } catch (error) {

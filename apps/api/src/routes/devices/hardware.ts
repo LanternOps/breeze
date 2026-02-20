@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { deviceHardware, deviceDisks, deviceNetwork, deviceConnections } from '../../db/schema';
+import { deviceHardware, deviceDisks, deviceNetwork, deviceConnections, deviceIpHistory } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck } from './helpers';
 
@@ -67,6 +67,47 @@ hardwareRoutes.get(
       .where(eq(deviceNetwork.deviceId, deviceId));
 
     return c.json({ data: networkInterfaces });
+  }
+);
+
+// GET /devices/:id/ip-history - Get historical IP assignments for a device
+hardwareRoutes.get(
+  '/:id/ip-history',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const rawLimit = Number.parseInt(c.req.query('limit') ?? '100', 10);
+    const rawOffset = Number.parseInt(c.req.query('offset') ?? '0', 10);
+    const activeOnly = c.req.query('active_only') === 'true';
+
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 500) : 100;
+    const offset = Number.isFinite(rawOffset) ? Math.max(rawOffset, 0) : 0;
+
+    const conditions = [eq(deviceIpHistory.deviceId, deviceId)];
+    if (activeOnly) {
+      conditions.push(eq(deviceIpHistory.isActive, true));
+    }
+
+    const history = await db
+      .select()
+      .from(deviceIpHistory)
+      .where(and(...conditions))
+      .orderBy(desc(deviceIpHistory.firstSeen))
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({
+      deviceId,
+      count: history.length,
+      data: history,
+    });
   }
 );
 

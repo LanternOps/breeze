@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 // ============================================
 // Enrollment
@@ -63,6 +64,58 @@ export const heartbeatSchema = z.object({
   }),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
+  ipHistoryUpdate: z.object({
+    deviceId: z.string().optional(),
+    currentIPs: z.array(z.object({
+      interfaceName: z.string().min(1),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().optional(),
+      subnetMask: z.string().optional(),
+      gateway: z.string().optional(),
+      dnsServers: z.array(z.string()).optional()
+    })).optional(),
+    changedIPs: z.array(z.object({
+      interfaceName: z.string().min(1),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().optional(),
+      subnetMask: z.string().optional(),
+      gateway: z.string().optional(),
+      dnsServers: z.array(z.string()).optional()
+    })).optional(),
+    removedIPs: z.array(z.object({
+      interfaceName: z.string().min(1),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().optional(),
+      subnetMask: z.string().optional(),
+      gateway: z.string().optional(),
+      dnsServers: z.array(z.string()).optional()
+    })).optional(),
+    detectedAt: z.string().datetime({ offset: true }).optional()
+  }).optional(),
   pendingReboot: z.boolean().optional(),
   lastUser: z.string().max(255).optional(),
   uptime: z.number().int().min(0).optional()
