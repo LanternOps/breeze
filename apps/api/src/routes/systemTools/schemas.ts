@@ -89,3 +89,37 @@ export const paginationQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional()
 });
+
+// File operation schemas
+
+const filePathString = z.string().min(1).max(2048).refine(
+  (val) => !val.includes('\0') && !val.split('/').includes('..') && !val.split('\\').includes('..'),
+  { message: 'Invalid path: null bytes and path traversal (..) are not allowed' }
+);
+
+export const fileCopyBodySchema = z.object({
+  items: z.array(z.object({
+    sourcePath: filePathString,
+    destPath: filePathString,
+  })).min(1).max(100),
+});
+
+export const fileMoveBodySchema = z.object({
+  items: z.array(z.object({
+    sourcePath: filePathString,
+    destPath: filePathString,
+  })).min(1).max(100),
+});
+
+export const fileDeleteBodySchema = z.object({
+  paths: z.array(filePathString).min(1).max(100),
+  permanent: z.boolean().optional().default(false),
+});
+
+export const fileTrashRestoreBodySchema = z.object({
+  trashIds: z.array(z.string().min(1).max(512)).min(1).max(100),
+});
+
+export const fileTrashPurgeBodySchema = z.object({
+  trashIds: z.array(z.string().min(1).max(512)).optional(),
+});
