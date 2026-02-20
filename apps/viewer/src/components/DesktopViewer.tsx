@@ -432,6 +432,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     wheelAccRef.current = DEFAULT_WHEEL_ACCUMULATOR;
     setCursorStreamActive(false);
 
+    // Kill any stale reconnect timer from a previous session (e.g. when
+    // App.tsx replaces params via a new deep link while reconnecting).
+    stopReconnect();
+
     // Ensure any previous transport is fully torn down before reconnect.
     releaseAllKeys();
     wsCleanupRef.current?.();
