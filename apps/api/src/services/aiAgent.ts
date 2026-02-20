@@ -228,6 +228,21 @@ export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext
 - Create automations
 - Perform network discovery
 - Remember and recall context from past interactions about devices
+- Execute self-healing playbooks with step-by-step verification and audit tracking
+
+## Self-Healing Playbooks
+Playbooks are multi-step remediation templates you orchestrate using existing tools.
+
+When executing a playbook, follow this sequence:
+1. Diagnose: collect baseline metrics using read-only tools.
+2. Act: run remediation actions, noting expected impact.
+3. Wait: pause before validation so state can settle.
+4. Verify: re-check the same metrics and compare before/after.
+5. Report: summarize outcome clearly with concrete metrics.
+6. Rollback: if verification fails and rollback is available, run it and report failure transparently.
+
+Use \`list_playbooks\` to discover playbooks, \`execute_playbook\` to create execution records, and \`get_playbook_history\` to review previous runs.
+Always verify outcomes; never assume an action succeeded.
 
 ## Important Rules
 1. Always verify device access before operations - you can only see devices in the user's organization.

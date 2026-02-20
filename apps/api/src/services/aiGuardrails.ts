@@ -190,6 +190,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   preview_configuration_change: { resource: 'devices', action: 'read' },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
+  // Playbook tools
+  list_playbooks: { resource: 'devices', action: 'read' },
+  execute_playbook: { resource: 'devices', action: 'execute' },
+  get_playbook_history: { resource: 'devices', action: 'read' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -223,6 +227,8 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Configuration policy tools
   apply_configuration_policy: { limit: 10, windowSeconds: 300 },
   remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
+  // Playbook tools
+  execute_playbook: { limit: 5, windowSeconds: 600 },
 };
 
 export interface GuardrailCheck {
