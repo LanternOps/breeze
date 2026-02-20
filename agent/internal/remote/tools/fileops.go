@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -309,4 +310,110 @@ func RenameFile(payload map[string]any) CommandResult {
 		"newPath": cleanNewPath,
 		"renamed": true,
 	}, time.Since(start).Milliseconds())
+}
+
+// CopyFile copies a file or directory recursively
+func CopyFile(payload map[string]any) CommandResult {
+	start := time.Now()
+
+	sourcePath := GetPayloadString(payload, "sourcePath", "")
+	if sourcePath == "" {
+		return NewErrorResult(fmt.Errorf("sourcePath is required"), time.Since(start).Milliseconds())
+	}
+
+	destPath := GetPayloadString(payload, "destPath", "")
+	if destPath == "" {
+		return NewErrorResult(fmt.Errorf("destPath is required"), time.Since(start).Milliseconds())
+	}
+
+	// Normalize path separators
+	cleanSrc := filepath.Clean(sourcePath)
+	cleanDst := filepath.Clean(destPath)
+
+	// Check against denied system paths
+	if isDeniedSystemPath(cleanSrc) {
+		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanSrc), time.Since(start).Milliseconds())
+	}
+	if isDeniedSystemPath(cleanDst) {
+		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanDst), time.Since(start).Milliseconds())
+	}
+
+	// Check if source exists
+	info, err := os.Stat(cleanSrc)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return NewErrorResult(fmt.Errorf("source path does not exist: %s", cleanSrc), time.Since(start).Milliseconds())
+		}
+		return NewErrorResult(fmt.Errorf("failed to stat source: %w", err), time.Since(start).Milliseconds())
+	}
+
+	if info.IsDir() {
+		if err := copyDir(cleanSrc, cleanDst); err != nil {
+			return NewErrorResult(fmt.Errorf("failed to copy directory: %w", err), time.Since(start).Milliseconds())
+		}
+	} else {
+		// Ensure destination parent directory exists
+		parentDir := filepath.Dir(cleanDst)
+		if err := os.MkdirAll(parentDir, 0755); err != nil {
+			return NewErrorResult(fmt.Errorf("failed to create destination directory: %w", err), time.Since(start).Milliseconds())
+		}
+		if err := copyFile(cleanSrc, cleanDst, info.Mode()); err != nil {
+			return NewErrorResult(fmt.Errorf("failed to copy file: %w", err), time.Since(start).Milliseconds())
+		}
+	}
+
+	return NewSuccessResult(map[string]any{
+		"sourcePath": cleanSrc,
+		"destPath":   cleanDst,
+		"copied":     true,
+	}, time.Since(start).Milliseconds())
+}
+
+// copyFile copies a single file from src to dst, preserving the given file mode.
+func copyFile(src, dst string, mode os.FileMode) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("create destination: %w", err)
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("copy data: %w", err)
+	}
+
+	return nil
+}
+
+// copyDir recursively copies a directory tree from src to dst.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Compute the relative path from the source root
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return fmt.Errorf("compute relative path: %w", err)
+		}
+
+		targetPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(targetPath, info.Mode())
+		}
+
+		// Ensure the parent directory exists
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return fmt.Errorf("create parent dir: %w", err)
+		}
+
+		return copyFile(path, targetPath, info.Mode())
+	})
 }
