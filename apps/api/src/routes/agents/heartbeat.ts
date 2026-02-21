@@ -18,6 +18,7 @@ import {
   compareAgentVersions,
   getOrgHelperSettings,
 } from './helpers';
+import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 
 export const heartbeatRoutes = new Hono();
 
@@ -64,6 +65,19 @@ heartbeatRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), asyn
       interfaceStats: data.metrics.interfaceStats ?? null,
       processCount: data.metrics.processCount
     });
+
+  if (data.ipHistoryUpdate) {
+    if (data.ipHistoryUpdate.deviceId && data.ipHistoryUpdate.deviceId !== device.id) {
+      console.warn(`[agents] rejecting mismatched ipHistoryUpdate.deviceId for ${agentId}: sent=${data.ipHistoryUpdate.deviceId} expected=${device.id}`);
+    } else {
+      try {
+        await processDeviceIPHistoryUpdate(device.id, device.orgId, data.ipHistoryUpdate);
+      } catch (err) {
+        const errorCode = (err as Record<string, unknown>)?.code ?? 'UNKNOWN';
+        console.error(`[agents] failed to process ip history update for ${agentId} (device=${device.id}, org=${device.orgId}, dbError=${errorCode}):`, err);
+      }
+    }
+  }
 
   try {
     const thresholdScan = await maybeQueueThresholdFilesystemAnalysis(

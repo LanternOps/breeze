@@ -6,6 +6,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
+import { isIP } from 'node:net';
 import { db } from '../db';
 import {
   devices,
@@ -14,6 +15,7 @@ import {
   deviceDisks,
   deviceMetrics,
   deviceBootMetrics,
+  deviceIpHistory,
   alerts,
   sites,
   organizations,
@@ -52,6 +54,19 @@ import {
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+function normalizeIpLiteral(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const withoutZone = trimmed.includes('%')
+    ? trimmed.slice(0, Math.max(trimmed.indexOf('%'), 0))
+    : trimmed;
+
+  const parsed = isIP(withoutZone);
+  if (parsed === 0) return null;
+  return parsed === 6 ? withoutZone.toLowerCase() : withoutZone;
+}
 
 // ============================================
 // Cached dynamic import for commandQueue
@@ -236,6 +251,172 @@ registerTool({
       disks,
       recentMetrics
     }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
+  }
+});
+
+// ============================================
+// get_ip_history - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_ip_history',
+    description: 'Query historical IP assignments. Supports timeline mode (device_id) and reverse lookup mode (ip_address + at_time).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        device_id: { type: 'string', description: 'Device UUID for timeline mode' },
+        ip_address: { type: 'string', description: 'IP address for reverse lookup mode' },
+        at_time: { type: 'string', description: 'ISO timestamp used with ip_address for reverse lookup mode' },
+        since: { type: 'string', description: 'Optional timeline lower bound (ISO timestamp)' },
+        until: { type: 'string', description: 'Optional timeline upper bound (ISO timestamp)' },
+        interface_name: { type: 'string', description: 'Optional interface name filter' },
+        assignment_type: { type: 'string', enum: ['dhcp', 'static', 'vpn', 'link-local', 'unknown'], description: 'Optional assignment type filter' },
+        active_only: { type: 'boolean', description: 'Only include active assignments (default false)' },
+        limit: { type: 'number', description: 'Max rows to return (default 100, max 500)' },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceId = typeof input.device_id === 'string' ? input.device_id : undefined;
+    const rawIpAddress = typeof input.ip_address === 'string' ? input.ip_address : undefined;
+    const ipAddress = rawIpAddress ? normalizeIpLiteral(rawIpAddress) : undefined;
+    const atTime = typeof input.at_time === 'string' ? input.at_time : undefined;
+    const since = typeof input.since === 'string' ? input.since : undefined;
+    const until = typeof input.until === 'string' ? input.until : undefined;
+    const interfaceName = typeof input.interface_name === 'string' ? input.interface_name : undefined;
+    const assignmentType = typeof input.assignment_type === 'string' ? input.assignment_type : undefined;
+    const activeOnly = input.active_only === true;
+    const parsedLimit = Number(input.limit);
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 500)
+      : 100;
+
+    if (deviceId) {
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      const conditions: SQL[] = [eq(deviceIpHistory.deviceId, deviceId)];
+
+      if (since) {
+        const sinceDate = new Date(since);
+        if (Number.isNaN(sinceDate.getTime())) {
+          return JSON.stringify({ error: 'Invalid since timestamp' });
+        }
+        conditions.push(gte(deviceIpHistory.lastSeen, sinceDate));
+      }
+
+      if (until) {
+        const untilDate = new Date(until);
+        if (Number.isNaN(untilDate.getTime())) {
+          return JSON.stringify({ error: 'Invalid until timestamp' });
+        }
+        conditions.push(lte(deviceIpHistory.firstSeen, untilDate));
+      }
+
+      if (interfaceName) {
+        conditions.push(eq(deviceIpHistory.interfaceName, interfaceName));
+      }
+
+      if (assignmentType) {
+        conditions.push(eq(deviceIpHistory.assignmentType, assignmentType as typeof deviceIpHistory.assignmentType.enumValues[number]));
+      }
+
+      if (activeOnly) {
+        conditions.push(eq(deviceIpHistory.isActive, true));
+      }
+
+      const history = await db
+        .select()
+        .from(deviceIpHistory)
+        .where(and(...conditions))
+        .orderBy(desc(deviceIpHistory.firstSeen))
+        .limit(limit);
+
+      return JSON.stringify({
+        mode: 'timeline',
+        device_id: deviceId,
+        hostname: access.device.hostname,
+        history,
+        count: history.length,
+      });
+    }
+
+    if (ipAddress) {
+      if (!atTime) {
+        return JSON.stringify({
+          error: 'at_time is required when ip_address is provided',
+        });
+      }
+
+      const targetTime = new Date(atTime);
+      if (Number.isNaN(targetTime.getTime())) {
+        return JSON.stringify({ error: 'Invalid at_time timestamp' });
+      }
+      if (targetTime.getTime() > Date.now()) {
+        return JSON.stringify({ error: 'at_time cannot be in the future' });
+      }
+
+      const conditions: SQL[] = [
+        eq(deviceIpHistory.ipAddress, ipAddress),
+        lte(deviceIpHistory.firstSeen, targetTime),
+        gte(deviceIpHistory.lastSeen, targetTime),
+      ];
+
+      const orgCondition = auth.orgCondition(deviceIpHistory.orgId);
+      if (orgCondition) {
+        conditions.push(orgCondition);
+      }
+
+      if (interfaceName) {
+        conditions.push(eq(deviceIpHistory.interfaceName, interfaceName));
+      }
+
+      if (assignmentType) {
+        conditions.push(eq(deviceIpHistory.assignmentType, assignmentType as typeof deviceIpHistory.assignmentType.enumValues[number]));
+      }
+
+      const results = await db
+        .select({
+          ipHistory: deviceIpHistory,
+          device: devices,
+        })
+        .from(deviceIpHistory)
+        .innerJoin(devices, eq(deviceIpHistory.deviceId, devices.id))
+        .where(and(...conditions))
+        .orderBy(desc(deviceIpHistory.firstSeen))
+        .limit(limit);
+
+      return JSON.stringify({
+        mode: 'reverse_lookup',
+        ip_address: ipAddress,
+        at_time: atTime,
+        results: results.map((row) => ({
+          device: {
+            id: row.device.id,
+            hostname: row.device.hostname,
+            osType: row.device.osType,
+          },
+          assignment: {
+            interfaceName: row.ipHistory.interfaceName,
+            assignmentType: row.ipHistory.assignmentType,
+            firstSeen: row.ipHistory.firstSeen,
+            lastSeen: row.ipHistory.lastSeen,
+            isActive: row.ipHistory.isActive,
+          },
+        })),
+        count: results.length,
+      });
+    }
+
+    if (rawIpAddress && !ipAddress) {
+      return JSON.stringify({ error: 'Invalid ip_address format' });
+    }
+
+    return JSON.stringify({
+      error: 'Either device_id (timeline) or ip_address + at_time (reverse lookup) must be provided',
+    });
   }
 });
 

@@ -36,6 +36,7 @@ import DeviceNetworkConnections from './DeviceNetworkConnections';
 import DeviceFilesystemTab from './DeviceFilesystemTab';
 import DeviceManagementTab from './DeviceManagementTab';
 import DeviceEffectiveConfigTab from './DeviceEffectiveConfigTab';
+import DeviceIpHistoryTab from './DeviceIpHistoryTab';
 
 type Tab =
   | 'overview'
@@ -52,7 +53,8 @@ type Tab =
   | 'eventlog'
   | 'activities'
   | 'connections'
-  | 'filesystem';
+  | 'filesystem'
+  | 'ip-history';
 
 type DeviceDetailsProps = {
   device: Device;
@@ -127,7 +129,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" /> },
     { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" /> },
     { id: 'activities', label: 'Activities', icon: <ScrollText className="h-4 w-4" /> },
-    { id: 'connections', label: 'Network Connections', icon: <Network className="h-4 w-4" /> }
+    { id: 'connections', label: 'Network Connections', icon: <Network className="h-4 w-4" /> },
+    { id: 'ip-history', label: 'IP History', icon: <Network className="h-4 w-4" /> }
   ];
 
   return (
@@ -288,6 +291,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'connections' && (
         <DeviceNetworkConnections deviceId={device.id} />
+      )}
+
+      {activeTab === 'ip-history' && (
+        <DeviceIpHistoryTab deviceId={device.id} />
       )}
     </div>
   );

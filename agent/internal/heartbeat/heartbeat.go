@@ -53,6 +53,7 @@ type HeartbeatPayload struct {
 	MetricsAvailable *bool                     `json:"metricsAvailable,omitempty"`
 	Status           string                    `json:"status"`
 	AgentVersion     string                    `json:"agentVersion"`
+	IPHistoryUpdate  *IPHistoryUpdate          `json:"ipHistoryUpdate,omitempty"`
 	PendingReboot    bool                      `json:"pendingReboot,omitempty"`
 	LastUser         string                    `json:"lastUser,omitempty"`
 	UptimeSeconds    int64                     `json:"uptime,omitempty"`
@@ -1263,6 +1264,14 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Include dropped log count if any logs were lost
 	if dropped := logging.DroppedLogCount(); dropped > 0 {
 		payload.DroppedLogs = dropped
+	}
+
+	// Attach IP history update when assignments changed since last heartbeat.
+	if ipUpdate, ipErr := h.collectIPHistory(); ipErr != nil {
+		log.Error("failed to collect ip history", "error", ipErr.Error())
+		h.healthMon.Update("ip_history", health.Degraded, ipErr.Error())
+	} else {
+		payload.IPHistoryUpdate = ipUpdate
 	}
 
 	// Include user helper session info in heartbeat

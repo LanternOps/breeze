@@ -76,6 +76,7 @@ import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offli
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
+import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
@@ -793,6 +794,7 @@ async function initializeWorkers(): Promise<void> {
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['agentLogRetention', initializeAgentLogRetention],
+    ['ipHistoryRetention', initializeIPHistoryRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
@@ -888,6 +890,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
     shutdownAgentLogRetention,
+    shutdownIPHistoryRetention,
     shutdownSecurityPostureWorker,
     shutdownAutomationWorker,
     shutdownPolicyEvaluationWorker,
