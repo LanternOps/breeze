@@ -29,6 +29,7 @@ export * from './filters';
 export * from './customFields';
 export * from './agentVersions';
 export * from './eventLogs';
+export * from './reliability';
 export * from './ai';
 export * from './monitors';
 export * from './filesystem';

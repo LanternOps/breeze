@@ -182,6 +182,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(500).optional()
   }),
 
+  get_fleet_health: z.object({
+    orgId: uuid.optional(),
+    siteId: uuid.optional(),
+    scoreRange: z.enum(['critical', 'poor', 'fair', 'good']).optional(),
+    trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
+    issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
   file_operations: z.object({
     deviceId: uuid,
     action: z.enum(['list', 'read', 'write', 'delete', 'mkdir', 'rename']),

@@ -190,6 +190,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   preview_configuration_change: { resource: 'devices', action: 'read' },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
+  // Security + reliability read tools
+  get_security_posture: { resource: 'devices', action: 'read' },
+  get_fleet_health: { resource: 'devices', action: 'read' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }

@@ -75,37 +75,39 @@ type Command struct {
 }
 
 type Heartbeat struct {
-	config              *config.Config
-	secureToken         *secmem.SecureString
-	client              *http.Client
-	stopChan            chan struct{}
-	metricsCol          *collectors.MetricsCollector
-	hardwareCol         *collectors.HardwareCollector
-	softwareCol         *collectors.SoftwareCollector
-	inventoryCol        *collectors.InventoryCollector
-	sessionCol          *collectors.SessionCollector
-	policyStateCol      *collectors.PolicyStateCollector
-	patchCol            *collectors.PatchCollector
-	patchMgr            *patching.PatchManager
-	connectionsCol      *collectors.ConnectionsCollector
-	eventLogCol         *collectors.EventLogCollector
-	bootCol             *collectors.BootPerformanceCollector
-	agentVersion        string
-	fileTransferMgr     *filetransfer.Manager
-	desktopMgr          *desktop.SessionManager
-	wsDesktopMgr        *desktop.WsSessionManager
-	terminalMgr         *terminal.Manager
-	executor            *executor.Executor
-	backupMgr           *backup.BackupManager
-	rebootMgr           *patching.RebootManager
-	securityScanner     *security.SecurityScanner
-	wsClient            *websocket.Client
-	mu                  sync.Mutex
-	lastInventoryUpdate time.Time
-	lastEventLogUpdate  time.Time
-	lastSecurityUpdate  time.Time
-	lastSessionUpdate   time.Time
-	lastPostureUpdate   time.Time
+	config                *config.Config
+	secureToken           *secmem.SecureString
+	client                *http.Client
+	stopChan              chan struct{}
+	metricsCol            *collectors.MetricsCollector
+	hardwareCol           *collectors.HardwareCollector
+	softwareCol           *collectors.SoftwareCollector
+	inventoryCol          *collectors.InventoryCollector
+	sessionCol            *collectors.SessionCollector
+	policyStateCol        *collectors.PolicyStateCollector
+	patchCol              *collectors.PatchCollector
+	patchMgr              *patching.PatchManager
+	connectionsCol        *collectors.ConnectionsCollector
+	eventLogCol           *collectors.EventLogCollector
+	bootCol               *collectors.BootPerformanceCollector
+	reliabilityCol        *collectors.ReliabilityCollector
+	agentVersion          string
+	fileTransferMgr       *filetransfer.Manager
+	desktopMgr            *desktop.SessionManager
+	wsDesktopMgr          *desktop.WsSessionManager
+	terminalMgr           *terminal.Manager
+	executor              *executor.Executor
+	backupMgr             *backup.BackupManager
+	rebootMgr             *patching.RebootManager
+	securityScanner       *security.SecurityScanner
+	wsClient              *websocket.Client
+	mu                    sync.Mutex
+	lastInventoryUpdate   time.Time
+	lastEventLogUpdate    time.Time
+	lastSecurityUpdate    time.Time
+	lastSessionUpdate     time.Time
+	lastPostureUpdate     time.Time
+	lastReliabilityUpdate time.Time
 
 	// User session helper (IPC)
 	sessionBroker *sessionbroker.Broker
@@ -171,6 +173,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		connectionsCol:  collectors.NewConnectionsCollector(),
 		eventLogCol:     collectors.NewEventLogCollector(),
 		bootCol:         collectors.NewBootPerformanceCollector(),
+		reliabilityCol:  collectors.NewReliabilityCollector(),
 		agentVersion:    version,
 		executor:        executor.New(cfg),
 		fileTransferMgr: filetransfer.NewManager(ftConfig),
@@ -352,8 +355,10 @@ func (h *Heartbeat) Start() {
 
 	// Send initial inventory in background
 	go h.sendInventory()
+	go h.sendReliabilityMetrics()
 	h.mu.Lock()
 	h.lastPostureUpdate = time.Now()
+	h.lastReliabilityUpdate = time.Now()
 	h.mu.Unlock()
 
 	for {
@@ -381,6 +386,10 @@ func (h *Heartbeat) Start() {
 			shouldSendPosture := time.Since(h.lastPostureUpdate) > 15*time.Minute
 			if shouldSendPosture {
 				h.lastPostureUpdate = time.Now()
+			}
+			shouldSendReliability := time.Since(h.lastReliabilityUpdate) > 24*time.Hour
+			if shouldSendReliability {
+				h.lastReliabilityUpdate = time.Now()
 			}
 			h.mu.Unlock()
 
@@ -424,6 +433,9 @@ func (h *Heartbeat) Start() {
 			}
 			if shouldSendPosture {
 				go h.sendManagementPosture()
+			}
+			if shouldSendReliability {
+				go h.sendReliabilityMetrics()
 			}
 		case <-h.stopChan:
 			return
@@ -1217,6 +1229,54 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 	} else {
 		log.Info("boot performance uploaded successfully")
 	}
+}
+
+func (h *Heartbeat) sendReliabilityMetrics() {
+	if h.reliabilityCol == nil {
+		return
+	}
+
+	metrics, err := h.reliabilityCol.Collect()
+	if err != nil {
+		log.Error("failed to collect reliability metrics", "error", err)
+		return
+	}
+
+	body, err := json.Marshal(metrics)
+	if err != nil {
+		log.Error("failed to marshal reliability metrics", "error", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/reliability", h.config.ServerURL, h.config.AgentID)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {h.authHeader()},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
+	if err != nil {
+		log.Error("failed to send reliability metrics", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		log.Warn("reliability metrics upload returned non-success",
+			"status", resp.StatusCode,
+			"body", string(errBody))
+		return
+	}
+
+	log.Info("reliability metrics uploaded successfully",
+		"crashes", len(metrics.CrashEvents),
+		"hangs", len(metrics.AppHangs),
+		"serviceFailures", len(metrics.ServiceFailures),
+		"hardwareErrors", len(metrics.HardwareErrors))
 }
 
 func (h *Heartbeat) sendHeartbeat() {

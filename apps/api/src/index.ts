@@ -44,6 +44,7 @@ import { portalRoutes } from './routes/portal';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
+import { reliabilityRoutes } from './routes/reliability';
 import { snmpRoutes } from './routes/snmp';
 import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
@@ -78,9 +79,11 @@ import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/disco
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
+import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
+import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/reliabilityWorker';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
@@ -292,6 +295,7 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/agents\/[^/]+\/disks$/,
   /^\/api\/v1\/agents\/[^/]+\/network$/,
   /^\/api\/v1\/agents\/[^/]+\/connections$/,
+  /^\/api\/v1\/agents\/[^/]+\/reliability$/,
   /^\/api\/v1\/agents\/[^/]+\/registry-state$/,
   /^\/api\/v1\/agents\/[^/]+\/config-state$/,
   /^\/api\/v1\/security\/recommendations\/[^/]+\/(complete|dismiss)$/,
@@ -579,6 +583,7 @@ api.route('/portal', portalRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
+api.route('/reliability', reliabilityRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
@@ -786,9 +791,11 @@ async function initializeWorkers(): Promise<void> {
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
     ['automationWorker', initializeAutomationWorker],
     ['securityPostureWorker', initializeSecurityPostureWorker],
+    ['reliabilityWorker', initializeReliabilityWorker],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['agentLogRetention', initializeAgentLogRetention],
+    ['reliabilityRetention', initializeReliabilityRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
@@ -884,7 +891,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
     shutdownAgentLogRetention,
+    shutdownReliabilityRetention,
     shutdownSecurityPostureWorker,
+    shutdownReliabilityWorker,
     shutdownAutomationWorker,
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,

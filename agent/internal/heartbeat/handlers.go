@@ -58,8 +58,9 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdCollectSoftware: handleCollectSoftware,
 
 	// Boot performance
-	tools.CmdCollectBootPerformance: handleCollectBootPerformance,
-	tools.CmdManageStartupItem:      handleManageStartupItem,
+	tools.CmdCollectBootPerformance:    handleCollectBootPerformance,
+	tools.CmdManageStartupItem:         handleManageStartupItem,
+	tools.CmdCollectReliabilityMetrics: handleCollectReliabilityMetrics,
 
 	// File operations
 	tools.CmdFileList:           handleFileList,
@@ -282,15 +283,15 @@ func handleManageStartupItem(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 	if name == "" || action == "" {
 		return tools.CommandResult{
-			Status: "failed",
-			Error:  "missing required fields: itemName and action",
+			Status:     "failed",
+			Error:      "missing required fields: itemName and action",
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
 	if action != "disable" && action != "enable" {
 		return tools.CommandResult{
-			Status: "failed",
-			Error:  "action must be 'disable' or 'enable'",
+			Status:     "failed",
+			Error:      "action must be 'disable' or 'enable'",
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
@@ -302,4 +303,18 @@ func handleManageStartupItem(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(map[string]string{
 		"message": fmt.Sprintf("Startup item '%s' %sd successfully", name, action),
 	}, time.Since(start).Milliseconds())
+}
+
+func handleCollectReliabilityMetrics(h *Heartbeat, _ Command) tools.CommandResult {
+	start := time.Now()
+	if h.reliabilityCol == nil {
+		return tools.NewErrorResult(fmt.Errorf("reliability collector unavailable"), time.Since(start).Milliseconds())
+	}
+
+	metrics, err := h.reliabilityCol.Collect()
+	if err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	return tools.NewSuccessResult(metrics, time.Since(start).Milliseconds())
 }
