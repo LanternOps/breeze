@@ -58,4 +58,26 @@ describe('sanitizeCorrelationPattern', () => {
   it('rejects regex backreferences', () => {
     expect(() => sanitizeCorrelationPattern('(foo)\\1', true)).toThrow(/backreference/i);
   });
+
+  it('rejects empty text pattern', () => {
+    expect(() => sanitizeCorrelationPattern('   ', false)).toThrow(/empty/i);
+  });
+
+  it('rejects text pattern exceeding 1000 characters', () => {
+    expect(() => sanitizeCorrelationPattern('a'.repeat(1001), false)).toThrow(/too long/i);
+  });
+
+  it('rejects regex with too many meta characters', () => {
+    // 31 groups = 62 parens + 31 dots + 31 stars = 124 meta chars, well over the 60 limit
+    const pattern = Array.from({ length: 31 }, () => '(.*)').join('');
+    expect(() => sanitizeCorrelationPattern(pattern, true)).toThrow(/too complex/i);
+  });
+
+  it('rejects syntactically invalid regex', () => {
+    expect(() => sanitizeCorrelationPattern('[unclosed', true)).toThrow(/invalid regex/i);
+  });
+
+  it('accepts valid regex pattern', () => {
+    expect(sanitizeCorrelationPattern('error.*timeout', true)).toBe('error.*timeout');
+  });
 });
