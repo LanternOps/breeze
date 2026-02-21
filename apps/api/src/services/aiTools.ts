@@ -1825,7 +1825,7 @@ registerTool({
     if (!commandType) return JSON.stringify({ error: `Unknown action: ${action}` });
 
     const result = await executeCommand(deviceId, commandType, {
-      serviceName: input.serviceName
+      name: input.serviceName
     }, { userId: auth.user.id, timeoutMs: 30000 });
 
     return JSON.stringify(result);
@@ -3212,6 +3212,22 @@ registerTool({
         return JSON.stringify({ error: 'Failed to create playbook execution record' });
       }
 
+      // Substitute {{variable}} tokens in step toolInput using known variables
+      const allVariables: Record<string, string> = {
+        deviceId: device.id,
+        ...Object.fromEntries(
+          Object.entries({ ...existingVariables, ...variables })
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) => [k, String(v)])
+        ),
+      };
+      const resolvedSteps = JSON.parse(
+        JSON.stringify(playbook.steps).replace(
+          /\{\{(\w+)\}\}/g,
+          (match, key) => allVariables[key] ?? match
+        )
+      );
+
       return JSON.stringify({
         execution: {
           id: execution.id,
@@ -3224,7 +3240,7 @@ registerTool({
           name: playbook.name,
           description: playbook.description,
           category: playbook.category,
-          steps: playbook.steps,
+          steps: resolvedSteps,
         },
         device: {
           id: device.id,

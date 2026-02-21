@@ -235,6 +235,234 @@ describe('playbook routes', () => {
     expect(body.error).toContain('Invalid execution status transition');
   });
 
+  it('allows valid transition pending → running', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'pending' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'running' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.execution.status).toBe('running');
+  });
+
+  it('allows valid transition running → completed', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'completed' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('allows valid transition running → failed with error message', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: EXECUTION_ID, status: 'failed', errorMessage: 'Disk still full',
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'failed', errorMessage: 'Disk still full' }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('allows valid transition running → rolled_back', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: EXECUTION_ID, status: 'rolled_back', rollbackExecuted: true,
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'rolled_back', rollbackExecuted: true }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ['completed', 'running'],
+    ['completed', 'pending'],
+    ['failed', 'running'],
+    ['failed', 'completed'],
+    ['rolled_back', 'running'],
+    ['rolled_back', 'completed'],
+    ['cancelled', 'running'],
+    ['cancelled', 'completed'],
+  ])('rejects terminal transition %s → %s', async (from, to) => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: from }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: to }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('Invalid execution status transition');
+  });
+
+  it('returns 409 on concurrent modification (optimistic lock)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        }),
+      }),
+    } as any);
+    // update returns empty — another process changed the status between select and update
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('modified concurrently');
+  });
+
+  it('rejects PATCH with empty body', async () => {
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects PATCH with invalid status enum', async () => {
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'done' }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects PATCH with invalid UUID param', async () => {
+    const res = await app.request('/playbooks/executions/not-a-uuid', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'running' }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('updates step results and currentStepIndex without status change', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'running' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: EXECUTION_ID,
+            status: 'running',
+            currentStepIndex: 1,
+            steps: [{ stepIndex: 0, stepName: 'Check disk', status: 'completed' }],
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        currentStepIndex: 1,
+        steps: [{ stepIndex: 0, stepName: 'Check disk', status: 'completed' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.execution.currentStepIndex).toBe(1);
+  });
+
   it('returns 404 for execution details when execution is not accessible', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({

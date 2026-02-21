@@ -95,6 +95,7 @@ import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
+import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
@@ -103,6 +104,7 @@ import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWor
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
+import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -836,6 +838,7 @@ async function initializeWorkers(): Promise<void> {
     ['ipHistoryRetention', initializeIPHistoryRetention],
     ['reliabilityRetention', initializeReliabilityRetention],
     ['changeLogRetention', initializeChangeLogRetention],
+    ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['networkBaselineWorker', initializeNetworkBaselineWorker],
     ['snmpWorker', initializeSnmpWorker],
@@ -843,6 +846,7 @@ async function initializeWorkers(): Promise<void> {
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
+    ['logForwardingWorker', initializeLogForwardingWorker],
   ];
 
   await Promise.allSettled(
@@ -926,6 +930,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   getWebhookWorker().stop();
 
   const shutdownTasks: Array<() => Promise<void>> = [
+    shutdownLogForwardingWorker,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownSnmpRetention,
@@ -939,6 +944,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownIPHistoryRetention,
     shutdownReliabilityRetention,
     shutdownChangeLogRetention,
+    shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
     shutdownAutomationWorker,
