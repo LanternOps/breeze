@@ -131,7 +131,7 @@ Buttons: **Copy to...** | **Move to...** | **Delete** | **Download**
 
 ### Context Menu (right-click single file)
 
-Items: Copy to... | Move to... | Delete | Download
+Items: Copy to... | Move to... | Rename | Delete | Download
 
 ### Folder Picker Dialog (shared by Copy and Move)
 
@@ -149,9 +149,9 @@ Items: Copy to... | Move to... | Delete | Download
 ### Activity Panel
 
 - Collapsible sidebar in file browser
-- Recent file operations tracked in local component state
-- Shows: timestamp, action, path, result
-- Auto-populated from copy/move/delete/restore operations
+- Recent file operations for this device (from audit log API)
+- Shows: timestamp, user, action, path, result
+- Last 50 entries with "Load more"
 
 ### Progress and Feedback
 
@@ -177,7 +177,7 @@ Items: Copy to... | Move to... | Delete | Download
 ### Trash Safety
 
 - Agent creates trash directory with `0700` permissions
-- Metadata sidecar records original path, timestamp, and actor info
+- Metadata includes SHA256 of original path for integrity
 - Auto-purge: items older than 30 days cleaned on next trash operation
 
 ### Concurrency

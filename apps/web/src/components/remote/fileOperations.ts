@@ -1,26 +1,14 @@
 import { fetchWithAuth } from '@/stores/auth';
 
-export type CopyMoveResult = {
-  sourcePath: string;
-  destPath: string;
-  status: 'success' | 'failure';
-  error?: string;
-};
-
-export type DeleteResult = {
-  path: string;
-  status: 'success' | 'failure';
-  error?: string;
-};
-
-export type RestoreResult = {
-  trashId: string;
+export type FileOpResult = {
+  path?: string;
+  sourcePath?: string;
+  destPath?: string;
+  trashId?: string;
   restoredPath?: string;
   status: 'success' | 'failure';
   error?: string;
 };
-
-export type FileOpResult = CopyMoveResult | DeleteResult | RestoreResult;
 
 export type TrashItem = {
   originalPath: string;
@@ -34,14 +22,14 @@ export type TrashItem = {
 export async function copyFiles(
   deviceId: string,
   items: { sourcePath: string; destPath: string }[]
-): Promise<{ results: CopyMoveResult[] }> {
+): Promise<{ results: FileOpResult[] }> {
   const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/copy`, {
     method: 'POST',
     body: JSON.stringify({ items }),
   });
   if (!response.ok) {
-    const json = await response.json().catch(() => ({ error: `Copy failed (HTTP ${response.status})` }));
-    throw new Error(json.error || `Copy failed (HTTP ${response.status})`);
+    const json = await response.json().catch(() => ({ error: 'Copy failed' }));
+    throw new Error(json.error || 'Copy failed');
   }
   return response.json();
 }
@@ -49,14 +37,14 @@ export async function copyFiles(
 export async function moveFiles(
   deviceId: string,
   items: { sourcePath: string; destPath: string }[]
-): Promise<{ results: CopyMoveResult[] }> {
+): Promise<{ results: FileOpResult[] }> {
   const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/move`, {
     method: 'POST',
     body: JSON.stringify({ items }),
   });
   if (!response.ok) {
-    const json = await response.json().catch(() => ({ error: `Move failed (HTTP ${response.status})` }));
-    throw new Error(json.error || `Move failed (HTTP ${response.status})`);
+    const json = await response.json().catch(() => ({ error: 'Move failed' }));
+    throw new Error(json.error || 'Move failed');
   }
   return response.json();
 }
@@ -65,14 +53,14 @@ export async function deleteFiles(
   deviceId: string,
   paths: string[],
   permanent = false
-): Promise<{ results: DeleteResult[] }> {
+): Promise<{ results: FileOpResult[] }> {
   const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/delete`, {
     method: 'POST',
     body: JSON.stringify({ paths, permanent }),
   });
   if (!response.ok) {
-    const json = await response.json().catch(() => ({ error: `Delete failed (HTTP ${response.status})` }));
-    throw new Error(json.error || `Delete failed (HTTP ${response.status})`);
+    const json = await response.json().catch(() => ({ error: 'Delete failed' }));
+    throw new Error(json.error || 'Delete failed');
   }
   return response.json();
 }
@@ -80,8 +68,8 @@ export async function deleteFiles(
 export async function listTrash(deviceId: string): Promise<TrashItem[]> {
   const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/trash`);
   if (!response.ok) {
-    const json = await response.json().catch(() => ({ error: `Failed to list trash (HTTP ${response.status})` }));
-    throw new Error(json.error || `Failed to list trash (HTTP ${response.status})`);
+    const json = await response.json().catch(() => ({ error: 'Failed to list trash' }));
+    throw new Error(json.error || 'Failed to list trash');
   }
   const json = await response.json();
   return json.data || [];
@@ -90,14 +78,14 @@ export async function listTrash(deviceId: string): Promise<TrashItem[]> {
 export async function restoreFromTrash(
   deviceId: string,
   trashIds: string[]
-): Promise<{ results: RestoreResult[] }> {
+): Promise<{ results: FileOpResult[] }> {
   const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/trash/restore`, {
     method: 'POST',
     body: JSON.stringify({ trashIds }),
   });
   if (!response.ok) {
-    const json = await response.json().catch(() => ({ error: `Restore failed (HTTP ${response.status})` }));
-    throw new Error(json.error || `Restore failed (HTTP ${response.status})`);
+    const json = await response.json().catch(() => ({ error: 'Restore failed' }));
+    throw new Error(json.error || 'Restore failed');
   }
   return response.json();
 }
@@ -111,8 +99,8 @@ export async function purgeTrash(
     body: JSON.stringify({ trashIds }),
   });
   if (!response.ok) {
-    const json = await response.json().catch(() => ({ error: `Purge failed (HTTP ${response.status})` }));
-    throw new Error(json.error || `Purge failed (HTTP ${response.status})`);
+    const json = await response.json().catch(() => ({ error: 'Purge failed' }));
+    throw new Error(json.error || 'Purge failed');
   }
   return response.json();
 }
