@@ -43,6 +43,39 @@ fileBrowserRoutes.get(
   }
 );
 
+// GET /devices/:deviceId/files/drives - List available drives/mount points
+fileBrowserRoutes.get(
+  '/devices/:deviceId/files/drives',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    const result = await executeCommand(deviceId, CommandTypes.FILE_LIST_DRIVES, {}, {
+      userId: auth.user?.id,
+      timeoutMs: 15000,
+    });
+
+    if (result.status === 'failed') {
+      return c.json({ error: result.error || 'Agent failed to list drives. The device may be offline.' }, 502);
+    }
+
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      return c.json({ data: data.drives || [] });
+    } catch {
+      return c.json({ error: 'Failed to parse agent response for drive listing' }, 502);
+    }
+  }
+);
+
 // GET /devices/:deviceId/files/download - Download a file
 fileBrowserRoutes.get(
   '/devices/:deviceId/files/download',
@@ -191,32 +224,41 @@ fileBrowserRoutes.post(
 
     const results = [];
     for (const item of items) {
-      const result = await executeCommand(deviceId, CommandTypes.FILE_COPY, {
-        sourcePath: item.sourcePath,
-        destPath: item.destPath,
-      }, { userId: auth.user?.id, timeoutMs: 60000 });
+      try {
+        const result = await executeCommand(deviceId, CommandTypes.FILE_COPY, {
+          sourcePath: item.sourcePath,
+          destPath: item.destPath,
+        }, { userId: auth.user?.id, timeoutMs: 60000 });
 
-      const success = result.status !== 'failed';
-      results.push({
-        sourcePath: item.sourcePath,
-        destPath: item.destPath,
-        status: success ? 'success' : 'failure',
-        error: success ? undefined : result.error,
-      });
+        const success = result.status !== 'failed';
+        results.push({
+          sourcePath: item.sourcePath,
+          destPath: item.destPath,
+          status: success ? 'success' : 'failure',
+          error: success ? undefined : result.error,
+        });
 
-      await createAuditLog({
-        orgId: device.orgId,
-        actorId: auth.user.id,
-        actorEmail: auth.user.email,
-        action: 'file_copy',
-        resourceType: 'device',
-        resourceId: deviceId,
-        resourceName: device.hostname ?? device.id,
-        details: { sourcePath: item.sourcePath, destPath: item.destPath },
-        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-        result: success ? 'success' : 'failure',
-        errorMessage: success ? undefined : result.error,
-      });
+        await createAuditLog({
+          orgId: device.orgId,
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          action: 'file_copy',
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname ?? device.id,
+          details: { sourcePath: item.sourcePath, destPath: item.destPath },
+          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          result: success ? 'success' : 'failure',
+          errorMessage: success ? undefined : result.error,
+        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+      } catch (err) {
+        results.push({
+          sourcePath: item.sourcePath,
+          destPath: item.destPath,
+          status: 'failure',
+          error: err instanceof Error ? err.message : 'Unexpected error',
+        });
+      }
     }
 
     return c.json({ results });
@@ -242,32 +284,41 @@ fileBrowserRoutes.post(
 
     const results = [];
     for (const item of items) {
-      const result = await executeCommand(deviceId, CommandTypes.FILE_RENAME, {
-        oldPath: item.sourcePath,
-        newPath: item.destPath,
-      }, { userId: auth.user?.id, timeoutMs: 60000 });
+      try {
+        const result = await executeCommand(deviceId, CommandTypes.FILE_RENAME, {
+          oldPath: item.sourcePath,
+          newPath: item.destPath,
+        }, { userId: auth.user?.id, timeoutMs: 60000 });
 
-      const success = result.status !== 'failed';
-      results.push({
-        sourcePath: item.sourcePath,
-        destPath: item.destPath,
-        status: success ? 'success' : 'failure',
-        error: success ? undefined : result.error,
-      });
+        const success = result.status !== 'failed';
+        results.push({
+          sourcePath: item.sourcePath,
+          destPath: item.destPath,
+          status: success ? 'success' : 'failure',
+          error: success ? undefined : result.error,
+        });
 
-      await createAuditLog({
-        orgId: device.orgId,
-        actorId: auth.user.id,
-        actorEmail: auth.user.email,
-        action: 'file_move',
-        resourceType: 'device',
-        resourceId: deviceId,
-        resourceName: device.hostname ?? device.id,
-        details: { sourcePath: item.sourcePath, destPath: item.destPath },
-        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-        result: success ? 'success' : 'failure',
-        errorMessage: success ? undefined : result.error,
-      });
+        await createAuditLog({
+          orgId: device.orgId,
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          action: 'file_move',
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname ?? device.id,
+          details: { sourcePath: item.sourcePath, destPath: item.destPath },
+          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          result: success ? 'success' : 'failure',
+          errorMessage: success ? undefined : result.error,
+        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+      } catch (err) {
+        results.push({
+          sourcePath: item.sourcePath,
+          destPath: item.destPath,
+          status: 'failure',
+          error: err instanceof Error ? err.message : 'Unexpected error',
+        });
+      }
     }
 
     return c.json({ results });
@@ -293,33 +344,41 @@ fileBrowserRoutes.post(
 
     const results = [];
     for (const path of paths) {
-      const result = await executeCommand(deviceId, CommandTypes.FILE_DELETE, {
-        path,
-        permanent,
-        recursive: true,
-        deletedBy: auth.user?.email || auth.user?.id,
-      }, { userId: auth.user?.id, timeoutMs: 30000 });
+      try {
+        const result = await executeCommand(deviceId, CommandTypes.FILE_DELETE, {
+          path,
+          permanent,
+          recursive: true,
+          deletedBy: auth.user?.email || auth.user?.id,
+        }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-      const success = result.status !== 'failed';
-      results.push({
-        path,
-        status: success ? 'success' : 'failure',
-        error: success ? undefined : result.error,
-      });
+        const success = result.status !== 'failed';
+        results.push({
+          path,
+          status: success ? 'success' : 'failure',
+          error: success ? undefined : result.error,
+        });
 
-      await createAuditLog({
-        orgId: device.orgId,
-        actorId: auth.user.id,
-        actorEmail: auth.user.email,
-        action: 'file_delete',
-        resourceType: 'device',
-        resourceId: deviceId,
-        resourceName: device.hostname ?? device.id,
-        details: { path, permanent },
-        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-        result: success ? 'success' : 'failure',
-        errorMessage: success ? undefined : result.error,
-      });
+        await createAuditLog({
+          orgId: device.orgId,
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          action: 'file_delete',
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname ?? device.id,
+          details: { path, permanent },
+          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          result: success ? 'success' : 'failure',
+          errorMessage: success ? undefined : result.error,
+        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+      } catch (err) {
+        results.push({
+          path,
+          status: 'failure',
+          error: err instanceof Error ? err.message : 'Unexpected error',
+        });
+      }
     }
 
     return c.json({ results });
@@ -375,39 +434,49 @@ fileBrowserRoutes.post(
 
     const results = [];
     for (const trashId of trashIds) {
-      const result = await executeCommand(deviceId, CommandTypes.FILE_TRASH_RESTORE, {
-        trashId,
-      }, { userId: auth.user?.id, timeoutMs: 30000 });
+      try {
+        const result = await executeCommand(deviceId, CommandTypes.FILE_TRASH_RESTORE, {
+          trashId,
+        }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-      const success = result.status !== 'failed';
-      let restoredPath: string | undefined;
-      if (success) {
-        try {
-          const data = JSON.parse(result.stdout || '{}');
-          restoredPath = data.restoredPath;
-        } catch { /* ignore parse error */ }
+        const success = result.status !== 'failed';
+        let restoredPath: string | undefined;
+        if (success) {
+          try {
+            const data = JSON.parse(result.stdout || '{}');
+            restoredPath = data.restoredPath;
+          } catch (parseErr) {
+            console.error('[fileBrowser] failed to parse restore response:', parseErr);
+          }
+        }
+
+        results.push({
+          trashId,
+          status: success ? 'success' : 'failure',
+          restoredPath,
+          error: success ? undefined : result.error,
+        });
+
+        await createAuditLog({
+          orgId: device.orgId,
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          action: 'file_restore',
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname ?? device.id,
+          details: { trashId, restoredPath },
+          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          result: success ? 'success' : 'failure',
+          errorMessage: success ? undefined : result.error,
+        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+      } catch (err) {
+        results.push({
+          trashId,
+          status: 'failure',
+          error: err instanceof Error ? err.message : 'Unexpected error',
+        });
       }
-
-      results.push({
-        trashId,
-        status: success ? 'success' : 'failure',
-        restoredPath,
-        error: success ? undefined : result.error,
-      });
-
-      await createAuditLog({
-        orgId: device.orgId,
-        actorId: auth.user.id,
-        actorEmail: auth.user.email,
-        action: 'file_restore',
-        resourceType: 'device',
-        resourceId: deviceId,
-        resourceName: device.hostname ?? device.id,
-        details: { trashId, restoredPath },
-        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-        result: success ? 'success' : 'failure',
-        errorMessage: success ? undefined : result.error,
-      });
     }
 
     return c.json({ results });
@@ -458,8 +527,9 @@ fileBrowserRoutes.post(
     try {
       const data = JSON.parse(result.stdout || '{}');
       return c.json({ success: true, purged: data.purged || 0 });
-    } catch {
-      return c.json({ success: true });
+    } catch (parseErr) {
+      console.error('[fileBrowser] failed to parse purge response:', parseErr);
+      return c.json({ success: true, warning: 'Could not confirm purge count from agent' });
     }
   }
 );

@@ -51,6 +51,7 @@ export const CommandTypes = {
   FILE_TRASH_LIST: 'file_trash_list',
   FILE_TRASH_RESTORE: 'file_trash_restore',
   FILE_TRASH_PURGE: 'file_trash_purge',
+  FILE_LIST_DRIVES: 'file_list_drives',
 
   // Terminal
   TERMINAL_START: 'terminal_start',

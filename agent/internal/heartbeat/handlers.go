@@ -73,6 +73,7 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdFileTrashRestore:   handleFileTrashRestore,
 	tools.CmdFileTrashPurge:     handleFileTrashPurge,
 	tools.CmdFilesystemAnalysis: handleFilesystemAnalysis,
+	tools.CmdFileListDrives:     handleFileListDrives,
 
 	// Terminal commands
 	tools.CmdTerminalStart:  handleTerminalStart,
@@ -266,6 +267,10 @@ func handleFileTrashPurge(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleFilesystemAnalysis(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.AnalyzeFilesystem(cmd.Payload)
+}
+
+func handleFileListDrives(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.ListDrives(cmd.Payload)
 }
 
 func handleTerminalStart(h *Heartbeat, cmd Command) tools.CommandResult {

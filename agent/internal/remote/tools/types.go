@@ -108,6 +108,7 @@ const (
 	CmdFileTrashRestore   = "file_trash_restore"
 	CmdFileTrashPurge     = "file_trash_purge"
 	CmdFilesystemAnalysis = "filesystem_analysis"
+	CmdFileListDrives     = "file_list_drives"
 
 	// Network discovery
 	CmdNetworkDiscovery = "network_discovery"
@@ -353,6 +354,22 @@ type TrashMetadata struct {
 type TrashListResponse struct {
 	Items []TrashMetadata `json:"items"`
 	Path  string          `json:"path"`
+}
+
+// DriveInfo represents a logical drive (Windows) or mount point (Unix).
+type DriveInfo struct {
+	Letter     string `json:"letter,omitempty"`     // e.g. "C:" (Windows only)
+	MountPoint string `json:"mountPoint"`           // e.g. "C:\\" or "/"
+	Label      string `json:"label,omitempty"`      // volume label
+	FileSystem string `json:"fileSystem,omitempty"` // e.g. "NTFS", "ext4"
+	TotalBytes int64  `json:"totalBytes"`
+	FreeBytes  int64  `json:"freeBytes"`
+	DriveType  string `json:"driveType,omitempty"` // "fixed", "removable", "network", "cdrom", "unknown"
+}
+
+// DriveListResponse is the response for listing drives/mount points.
+type DriveListResponse struct {
+	Drives []DriveInfo `json:"drives"`
 }
 
 // FilesystemLargestFile captures one large file candidate.

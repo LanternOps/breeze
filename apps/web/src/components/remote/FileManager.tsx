@@ -24,7 +24,9 @@ import {
   Move,
   History,
   Square,
-  CheckSquare
+  CheckSquare,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
@@ -118,11 +120,22 @@ type DeviceCommandDetail = {
   result?: unknown;
 };
 
+export type DriveInfo = {
+  letter?: string;
+  mountPoint: string;
+  label?: string;
+  fileSystem?: string;
+  totalBytes: number;
+  freeBytes: number;
+  driveType?: string;
+};
+
 export type FileManagerProps = {
   deviceId: string;
   deviceHostname: string;
   sessionId?: string;
   initialPath: string;
+  osType?: string;
   onError?: (error: string) => void;
   className?: string;
 };
@@ -248,6 +261,7 @@ export default function FileManager({
   deviceId,
   deviceHostname,
   initialPath,
+  osType,
   onError,
   className
 }: FileManagerProps) {
@@ -275,6 +289,8 @@ export default function FileManager({
   const [operationLoading, setOperationLoading] = useState(false);
   const [activities, setActivities] = useState<FileActivity[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
+  const [showDiskIntel, setShowDiskIntel] = useState(false);
+  const [drives, setDrives] = useState<DriveInfo[]>([]);
   const collapsedTopDirectories = useMemo(
     () => collapseAncestorDirectories(diskSnapshot?.topLargestDirectories ?? [], 5),
     [diskSnapshot?.topLargestDirectories]
@@ -896,6 +912,22 @@ export default function FileManager({
     loadLatestFilesystemSnapshot();
   }, [loadLatestFilesystemSnapshot]);
 
+  // Fetch available drives on mount
+  useEffect(() => {
+    const fetchDrives = async () => {
+      try {
+        const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/drives`);
+        if (response.ok) {
+          const json = await response.json();
+          setDrives(json.data || []);
+        }
+      } catch {
+        // Drive listing is non-critical; silently fail
+      }
+    };
+    fetchDrives();
+  }, [deviceId]);
+
   const breadcrumbs = buildBreadcrumbs(currentPath);
 
   const activeTransfers = transfers.filter(t => ['pending', 'transferring'].includes(t.status));
@@ -1003,6 +1035,35 @@ export default function FileManager({
           <ArrowUp className="h-4 w-4" />
         </button>
 
+        {drives.length > 1 && (
+          <div className="flex items-center gap-0.5 border-r pr-2 mr-1">
+            {drives.map((drive) => {
+              const label = drive.letter || drive.mountPoint;
+              const isActive = currentPath.toLowerCase().startsWith(drive.mountPoint.toLowerCase()) ||
+                (drive.letter && currentPath.toLowerCase().startsWith(drive.letter.toLowerCase()));
+              return (
+                <button
+                  key={drive.mountPoint}
+                  type="button"
+                  onClick={() => navigateTo(drive.mountPoint)}
+                  className={cn(
+                    'flex h-7 items-center gap-1 rounded px-2 text-xs font-medium transition-colors',
+                    isActive ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  )}
+                  title={[
+                    drive.label || label,
+                    drive.fileSystem,
+                    drive.totalBytes > 0 ? `${formatSize(drive.freeBytes)} free of ${formatSize(drive.totalBytes)}` : '',
+                  ].filter(Boolean).join(' — ')}
+                >
+                  <HardDrive className="h-3 w-3" />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <div className="flex items-center gap-1 text-sm">
           <button
             type="button"
@@ -1027,135 +1088,143 @@ export default function FileManager({
       </div>
 
       {/* Disk Intelligence */}
-      <div className="border-b bg-muted/20 px-4 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="border-b bg-muted/20">
+        <button
+          type="button"
+          onClick={() => setShowDiskIntel(!showDiskIntel)}
+          className="flex w-full items-center justify-between px-4 py-2 hover:bg-muted/30"
+        >
           <div className="flex items-center gap-2">
             <HardDrive className="h-4 w-4 text-muted-foreground" />
-            <div>
-              <p className="text-sm font-medium">Disk Cleanup Intelligence</p>
-              <p className="text-xs text-muted-foreground">
-                Fast scan and safe cleanup planning for {currentPath}
-              </p>
+            <span className="text-sm font-medium">Disk Cleanup Intelligence</span>
+          </div>
+          {showDiskIntel ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+        </button>
+
+        {showDiskIntel && (
+          <div className="px-4 pb-3">
+            <p className="mb-2 text-xs text-muted-foreground">
+              Fast scan and safe cleanup planning for {currentPath}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={runFilesystemScan}
+                disabled={diskLoadingAction !== null}
+                className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {diskLoadingAction === 'scan' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                Analyze
+              </button>
+              <button
+                type="button"
+                onClick={runCleanupPreview}
+                disabled={diskLoadingAction !== null || !diskSnapshot}
+                className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {diskLoadingAction === 'preview' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Preview Cleanup
+              </button>
+              <button
+                type="button"
+                onClick={executeCleanup}
+                disabled={diskLoadingAction !== null || selectedCleanupPaths.size === 0}
+                className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {diskLoadingAction === 'execute' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+                Execute ({selectedCleanupPaths.size})
+              </button>
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={runFilesystemScan}
-              disabled={diskLoadingAction !== null}
-              className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              {diskLoadingAction === 'scan' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              Analyze
-            </button>
-            <button
-              type="button"
-              onClick={runCleanupPreview}
-              disabled={diskLoadingAction !== null || !diskSnapshot}
-              className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              {diskLoadingAction === 'preview' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Preview Cleanup
-            </button>
-            <button
-              type="button"
-              onClick={executeCleanup}
-              disabled={diskLoadingAction !== null || selectedCleanupPaths.size === 0}
-              className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              {diskLoadingAction === 'execute' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-              Execute ({selectedCleanupPaths.size})
-            </button>
-          </div>
-        </div>
 
-        {diskError && (
-          <div className="mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">
-            {diskError}
-          </div>
-        )}
+            {diskError && (
+              <div className="mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {diskError}
+              </div>
+            )}
 
-        {scanCommand && (
-          <div className="mt-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-700">
-            Scan running ({scanCommand.status})
-          </div>
-        )}
+            {scanCommand && (
+              <div className="mt-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                Scan running ({scanCommand.status})
+              </div>
+            )}
 
-        {diskSnapshot && (
-          <div className="mt-3 space-y-2">
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>Captured: {formatDate(diskSnapshot.capturedAt)}</span>
-              <span>Trigger: {diskSnapshot.trigger === 'threshold' ? 'Threshold' : 'On demand'}</span>
-              <span>Mode: {diskSnapshot.scanMode === 'incremental' ? 'Incremental' : 'Baseline'}</span>
-              <span>Scanned: {diskSnapshot.summary.filesScanned.toLocaleString()} files</span>
-              <span>Data: {formatSize(diskSnapshot.summary.bytesScanned)}</span>
-              {diskSnapshot.partial && <span className="text-amber-600">Partial scan</span>}
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-md border bg-background p-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Files</p>
-                <div className="mt-1 space-y-1">
-                  {diskSnapshot.topLargestFiles.slice(0, 5).map((file) => (
-                    <div key={file.path} className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate">{file.path}</span>
-                      <span className="shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{formatSize(file.sizeBytes)}</span>
+            {diskSnapshot && (
+              <div className="mt-3 space-y-2">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>Captured: {formatDate(diskSnapshot.capturedAt)}</span>
+                  <span>Trigger: {diskSnapshot.trigger === 'threshold' ? 'Threshold' : 'On demand'}</span>
+                  <span>Mode: {diskSnapshot.scanMode === 'incremental' ? 'Incremental' : 'Baseline'}</span>
+                  <span>Scanned: {diskSnapshot.summary.filesScanned.toLocaleString()} files</span>
+                  <span>Data: {formatSize(diskSnapshot.summary.bytesScanned)}</span>
+                  {diskSnapshot.partial && <span className="text-amber-600">Partial scan</span>}
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-md border bg-background p-2">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Files</p>
+                    <div className="mt-1 space-y-1">
+                      {diskSnapshot.topLargestFiles.slice(0, 5).map((file) => (
+                        <div key={file.path} className="flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate">{file.path}</span>
+                          <span className="shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{formatSize(file.sizeBytes)}</span>
+                        </div>
+                      ))}
                     </div>
+                  </div>
+                  <div className="rounded-md border bg-background p-2">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Directories</p>
+                    {diskSnapshot.topLargestDirectories.some((dir) => dir.estimated) && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">{'>='} indicates lower-bound size.</p>
+                    )}
+                    <div className="mt-1 space-y-1">
+                      {collapsedTopDirectories.map((dir) => (
+                        <div key={dir.path} className="flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate">{dir.path}</span>
+                          <span className="shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{dir.estimated ? '>=' : ''}{formatSize(dir.sizeBytes)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {cleanupPreview && (
+              <div className="mt-3 rounded-md border bg-background p-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-medium">Cleanup Preview</span>
+                  <span className="text-muted-foreground">
+                    {cleanupPreview.candidateCount} candidates · {formatSize(cleanupPreview.estimatedBytes)} potential
+                  </span>
+                  <span className="text-muted-foreground">
+                    Selected: {selectedCleanupPaths.size} · {formatSize(selectedCleanupBytes)}
+                  </span>
+                </div>
+                <div className="mt-2 max-h-44 space-y-1 overflow-auto">
+                  {cleanupPreview.candidates.slice(0, 40).map((candidate) => (
+                    <label key={candidate.path} className="flex items-center justify-between gap-2 rounded px-1 py-1 text-xs hover:bg-muted/60">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedCleanupPaths.has(candidate.path)}
+                          onChange={() => toggleCleanupPath(candidate.path)}
+                        />
+                        <span className="truncate">{candidate.path}</span>
+                      </span>
+                      <span className="whitespace-nowrap text-muted-foreground">
+                        {cleanupCategoryLabels[candidate.category] ?? candidate.category} · {formatSize(candidate.sizeBytes)}
+                      </span>
+                    </label>
                   ))}
                 </div>
               </div>
-              <div className="rounded-md border bg-background p-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Directories</p>
-                {diskSnapshot.topLargestDirectories.some((dir) => dir.estimated) && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">{'>='} indicates lower-bound size.</p>
-                )}
-                <div className="mt-1 space-y-1">
-                  {collapsedTopDirectories.map((dir) => (
-                    <div key={dir.path} className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate">{dir.path}</span>
-                      <span className="shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{dir.estimated ? '>=' : ''}{formatSize(dir.sizeBytes)}</span>
-                    </div>
-                  ))}
-                </div>
+            )}
+
+            {cleanupResult && (
+              <div className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                Cleanup {cleanupResult.status}: reclaimed {formatSize(cleanupResult.bytesReclaimed)} from {cleanupResult.selectedCount} target(s)
+                {cleanupResult.failedCount > 0 ? `, ${cleanupResult.failedCount} failed` : ''}.
               </div>
-            </div>
-          </div>
-        )}
-
-        {cleanupPreview && (
-          <div className="mt-3 rounded-md border bg-background p-2">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="font-medium">Cleanup Preview</span>
-              <span className="text-muted-foreground">
-                {cleanupPreview.candidateCount} candidates · {formatSize(cleanupPreview.estimatedBytes)} potential
-              </span>
-              <span className="text-muted-foreground">
-                Selected: {selectedCleanupPaths.size} · {formatSize(selectedCleanupBytes)}
-              </span>
-            </div>
-            <div className="mt-2 max-h-44 space-y-1 overflow-auto">
-              {cleanupPreview.candidates.slice(0, 40).map((candidate) => (
-                <label key={candidate.path} className="flex items-center justify-between gap-2 rounded px-1 py-1 text-xs hover:bg-muted/60">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedCleanupPaths.has(candidate.path)}
-                      onChange={() => toggleCleanupPath(candidate.path)}
-                    />
-                    <span className="truncate">{candidate.path}</span>
-                  </span>
-                  <span className="whitespace-nowrap text-muted-foreground">
-                    {cleanupCategoryLabels[candidate.category] ?? candidate.category} · {formatSize(candidate.sizeBytes)}
-                  </span>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {cleanupResult && (
-          <div className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-            Cleanup {cleanupResult.status}: reclaimed {formatSize(cleanupResult.bytesReclaimed)} from {cleanupResult.selectedCount} target(s)
-            {cleanupResult.failedCount > 0 ? `, ${cleanupResult.failedCount} failed` : ''}.
+            )}
           </div>
         )}
       </div>

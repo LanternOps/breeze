@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,11 @@ func isDeniedSystemPath(cleanPath string) bool {
 		}
 	}
 	return false
+}
+
+// ListDrives enumerates available drives/mount points.
+func ListDrives(_ map[string]any) CommandResult {
+	return listDrivesOS(time.Now())
 }
 
 // ListFiles lists the contents of a directory
@@ -274,8 +280,11 @@ func DeleteFile(payload map[string]any) CommandResult {
 	// Calculate size (walk directory for recursive total)
 	var sizeBytes int64
 	if info.IsDir() {
-		filepath.Walk(cleanPath, func(_ string, fi os.FileInfo, _ error) error {
-			if fi != nil && !fi.IsDir() {
+		filepath.Walk(cleanPath, func(_ string, fi os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return nil // skip inaccessible entries
+			}
+			if !fi.IsDir() {
 				sizeBytes += fi.Size()
 			}
 			return nil
@@ -409,6 +418,11 @@ func TrashRestore(payload map[string]any) CommandResult {
 
 	contentPath := filepath.Join(trashItemDir, "content")
 
+	// Check if something already exists at the original path to prevent silent overwrite
+	if _, existErr := os.Stat(meta.OriginalPath); existErr == nil {
+		return NewErrorResult(fmt.Errorf("cannot restore: path already exists: %s", meta.OriginalPath), time.Since(start).Milliseconds())
+	}
+
 	// Ensure the parent directory of the original path exists
 	parentDir := filepath.Dir(meta.OriginalPath)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
@@ -464,15 +478,20 @@ func TrashPurge(payload map[string]any) CommandResult {
 	if len(trashIds) > 0 {
 		// Purge specific items
 		purged := 0
+		var errors []string
 		for _, id := range trashIds {
 			itemDir := filepath.Join(trashDir, filepath.Base(id))
-			if err := os.RemoveAll(itemDir); err == nil {
+			if err := os.RemoveAll(itemDir); err != nil {
+				errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+			} else {
 				purged++
 			}
 		}
-		return NewSuccessResult(map[string]any{
-			"purged": purged,
-		}, time.Since(start).Milliseconds())
+		result := map[string]any{"purged": purged}
+		if len(errors) > 0 {
+			result["errors"] = errors
+		}
+		return NewSuccessResult(result, time.Since(start).Milliseconds())
 	}
 
 	// Purge everything
@@ -482,27 +501,34 @@ func TrashPurge(payload map[string]any) CommandResult {
 	}
 
 	purged := 0
+	var errors []string
 	for _, entry := range entries {
 		itemDir := filepath.Join(trashDir, entry.Name())
-		if err := os.RemoveAll(itemDir); err == nil {
+		if err := os.RemoveAll(itemDir); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", entry.Name(), err))
+		} else {
 			purged++
 		}
 	}
 
-	return NewSuccessResult(map[string]any{
-		"purged": purged,
-	}, time.Since(start).Milliseconds())
+	result := map[string]any{"purged": purged}
+	if len(errors) > 0 {
+		result["errors"] = errors
+	}
+	return NewSuccessResult(result, time.Since(start).Milliseconds())
 }
 
 // lazyPurgeOldTrash removes trash items older than trashMaxAgeDays.
 func lazyPurgeOldTrash() {
 	trashDir, err := getTrashDirFunc()
 	if err != nil {
+		log.Printf("[WARN] lazyPurgeOldTrash: failed to get trash dir: %v", err)
 		return
 	}
 
 	entries, err := os.ReadDir(trashDir)
 	if err != nil {
+		log.Printf("[WARN] lazyPurgeOldTrash: failed to read trash dir: %v", err)
 		return
 	}
 
@@ -515,10 +541,12 @@ func lazyPurgeOldTrash() {
 		metaPath := filepath.Join(trashDir, entry.Name(), "metadata.json")
 		metaBytes, err := os.ReadFile(metaPath)
 		if err != nil {
+			log.Printf("[WARN] lazyPurgeOldTrash: skipping %s, cannot read metadata: %v", entry.Name(), err)
 			continue
 		}
 		var meta TrashMetadata
 		if err := json.Unmarshal(metaBytes, &meta); err != nil {
+			log.Printf("[WARN] lazyPurgeOldTrash: skipping %s, corrupt metadata: %v", entry.Name(), err)
 			continue
 		}
 		deletedAt, err := time.Parse(time.RFC3339, meta.DeletedAt)
@@ -526,7 +554,9 @@ func lazyPurgeOldTrash() {
 			continue
 		}
 		if deletedAt.Before(cutoff) {
-			os.RemoveAll(filepath.Join(trashDir, entry.Name()))
+			if rmErr := os.RemoveAll(filepath.Join(trashDir, entry.Name())); rmErr != nil {
+				log.Printf("[WARN] lazyPurgeOldTrash: failed to remove expired item %s: %v", entry.Name(), rmErr)
+			}
 		}
 	}
 }
@@ -647,6 +677,10 @@ func CopyFile(payload map[string]any) CommandResult {
 	}
 
 	if info.IsDir() {
+		// Prevent copying a directory into itself (infinite recursion via filepath.Walk)
+		if strings.HasPrefix(cleanDst, cleanSrc+string(filepath.Separator)) || cleanDst == cleanSrc {
+			return NewErrorResult(fmt.Errorf("cannot copy directory into itself: %s -> %s", cleanSrc, cleanDst), time.Since(start).Milliseconds())
+		}
 		if err := copyDir(cleanSrc, cleanDst); err != nil {
 			return NewErrorResult(fmt.Errorf("failed to copy directory: %w", err), time.Since(start).Milliseconds())
 		}
@@ -680,20 +714,39 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("create destination: %w", err)
 	}
-	defer dstFile.Close()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		dstFile.Close()
 		return fmt.Errorf("copy data: %w", err)
+	}
+
+	if err := dstFile.Sync(); err != nil {
+		dstFile.Close()
+		return fmt.Errorf("sync destination: %w", err)
+	}
+
+	if err := dstFile.Close(); err != nil {
+		return fmt.Errorf("close destination: %w", err)
 	}
 
 	return nil
 }
 
 // copyDir recursively copies a directory tree from src to dst.
+// Symlinks are skipped to prevent security boundary escapes.
 func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+
+		// Skip symlinks to prevent escaping the source tree
+		realInfo, lstatErr := os.Lstat(path)
+		if lstatErr != nil {
+			return fmt.Errorf("lstat %s: %w", path, lstatErr)
+		}
+		if realInfo.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 
 		// Compute the relative path from the source root
