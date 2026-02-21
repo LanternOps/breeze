@@ -17,6 +17,7 @@ import { organizations, sites } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 import { alerts } from './alerts';
+import type { NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
 
 export const discoveredAssetTypeEnum = pgEnum('discovered_asset_type', [
   'workstation',
@@ -137,25 +138,14 @@ export interface KnownNetworkDevice {
   ip: string;
   mac?: string | null;
   hostname?: string | null;
-  assetType?: string | null;
+  assetType?: typeof discoveredAssetTypeEnum.enumValues[number] | null;
   manufacturer?: string | null;
   linkedDeviceId?: string | null;
   firstSeen: string;
   lastSeen: string;
 }
 
-export interface NetworkBaselineScanSchedule {
-  enabled: boolean;
-  intervalHours: number;
-  nextScanAt: string;
-}
-
-export interface NetworkBaselineAlertSettings {
-  newDevice: boolean;
-  disappeared: boolean;
-  changed: boolean;
-  rogueDevice: boolean;
-}
+export type { NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
 
 export const networkBaselines = pgTable('network_baselines', {
   id: uuid('id').primaryKey().defaultRandom(),

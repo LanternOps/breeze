@@ -7,24 +7,19 @@ import {
   alerts,
   devices,
   networkBaselines,
-  networkChangeEvents
+  networkChangeEvents,
+  sites
 } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import {
+  networkEventTypes,
+  optionalQueryBooleanSchema,
+  mapNetworkChangeRow,
+  resolveOrgId
+} from './networkShared';
 
 export const networkChangeRoutes = new Hono();
-
-const networkEventTypes = ['new_device', 'device_disappeared', 'device_changed', 'rogue_device'] as const;
-const optionalQueryBooleanSchema = z.preprocess((value) => {
-  if (value === undefined) return undefined;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true') return true;
-    if (normalized === 'false') return false;
-  }
-  return value;
-}, z.boolean().optional());
 
 const listNetworkChangesSchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -49,15 +44,6 @@ const bulkAcknowledgeSchema = z.object({
   eventIds: z.array(z.string().uuid()).min(1).max(200),
   notes: z.string().max(2000).optional()
 });
-
-function mapNetworkChangeRow(row: typeof networkChangeEvents.$inferSelect) {
-  return {
-    ...row,
-    detectedAt: row.detectedAt.toISOString(),
-    acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null,
-    createdAt: row.createdAt.toISOString()
-  };
-}
 
 async function getChangeEventWithAccess(
   eventId: string,
@@ -88,22 +74,39 @@ networkChangeRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
 
-    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
-      return c.json({ error: 'Access to this organization denied' }, 403);
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) {
+      return c.json({ error: orgResult.error }, orgResult.status);
     }
 
     const conditions: SQL[] = [];
-
-    const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
-    if (orgCondition) {
-      conditions.push(orgCondition);
-    }
-
-    if (query.orgId) {
-      conditions.push(eq(networkChangeEvents.orgId, query.orgId));
+    if (orgResult.orgId) {
+      conditions.push(eq(networkChangeEvents.orgId, orgResult.orgId));
+    } else {
+      const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
+      if (orgCondition) {
+        conditions.push(orgCondition);
+      }
     }
 
     if (query.siteId) {
+      // Validate that siteId belongs to the resolved org
+      if (orgResult.orgId) {
+        const [site] = await db
+          .select({ id: sites.id })
+          .from(sites)
+          .where(
+            and(
+              eq(sites.id, query.siteId),
+              eq(sites.orgId, orgResult.orgId)
+            )
+          )
+          .limit(1);
+
+        if (!site) {
+          return c.json({ error: 'Site not found for this organization' }, 404);
+        }
+      }
       conditions.push(eq(networkChangeEvents.siteId, query.siteId));
     }
 
@@ -123,7 +126,13 @@ networkChangeRoutes.get(
       conditions.push(gte(networkChangeEvents.detectedAt, new Date(query.since)));
     }
 
-    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    // Safeguard: prevent unbounded full-table scans for system-scope users
+    // with no filters. Require at least orgId or cap the result set.
+    if (conditions.length === 0) {
+      return c.json({ error: 'At least one filter (orgId, siteId, baselineId) is required' }, 400);
+    }
+
+    const where = and(...conditions);
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
 
@@ -248,10 +257,14 @@ networkChangeRoutes.post(
       return c.json({ error: 'Network change event not found' }, 404);
     }
 
+    const deviceConditions: SQL[] = [eq(devices.id, body.deviceId)];
+    const orgCond = auth.orgCondition(devices.orgId);
+    if (orgCond) deviceConditions.push(orgCond);
+
     const [device] = await db
       .select({ id: devices.id, orgId: devices.orgId })
       .from(devices)
-      .where(eq(devices.id, body.deviceId))
+      .where(and(...deviceConditions))
       .limit(1);
 
     if (!device || device.orgId !== event.orgId) {
@@ -271,10 +284,18 @@ networkChangeRoutes.post(
     }
 
     if (updated.alertId) {
-      await db
-        .update(alerts)
-        .set({ deviceId: body.deviceId })
-        .where(eq(alerts.id, updated.alertId));
+      try {
+        await db
+          .update(alerts)
+          .set({ deviceId: body.deviceId })
+          .where(eq(alerts.id, updated.alertId));
+      } catch (error) {
+        console.warn(
+          `[NetworkChanges] Failed to update alert ${updated.alertId} deviceId during link-device:`,
+          error instanceof Error ? error.message : error
+        );
+        // Don't fail the request -- the primary link was already persisted
+      }
     }
 
     writeRouteAudit(c, {

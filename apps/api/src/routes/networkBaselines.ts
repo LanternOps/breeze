@@ -17,6 +17,12 @@ import {
 } from '../services/networkBaseline';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
+import {
+  networkEventTypes,
+  optionalQueryBooleanSchema,
+  mapNetworkChangeRow,
+  resolveOrgId
+} from './networkShared';
 
 export const networkBaselineRoutes = new Hono();
 
@@ -34,18 +40,6 @@ const alertSettingsSchema = z.object({
   changed: z.boolean().optional(),
   rogueDevice: z.boolean().optional()
 });
-
-const networkEventTypes = ['new_device', 'device_disappeared', 'device_changed', 'rogue_device'] as const;
-const optionalQueryBooleanSchema = z.preprocess((value) => {
-  if (value === undefined) return undefined;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true') return true;
-    if (normalized === 'false') return false;
-  }
-  return value;
-}, z.boolean().optional());
 
 const listBaselinesSchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -82,66 +76,12 @@ const deleteBaselineQuerySchema = z.object({
   deleteChanges: optionalQueryBooleanSchema
 });
 
-function resolveOrgId(
-  auth: AuthContext,
-  requestedOrgId?: string,
-  requireForNonOrg = false
-):
-  | { orgId: string | null }
-  | { error: string; status: 400 | 403 } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) {
-      return { error: 'Organization context required', status: 403 };
-    }
-    if (requestedOrgId && requestedOrgId !== auth.orgId) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (requestedOrgId) {
-    if (!auth.canAccessOrg(requestedOrgId)) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: requestedOrgId };
-  }
-
-  if (auth.scope === 'partner') {
-    const orgIds = auth.accessibleOrgIds ?? [];
-    if (!requireForNonOrg && orgIds.length === 1) {
-      return { orgId: orgIds[0] ?? null };
-    }
-    if (requireForNonOrg) {
-      return { error: 'orgId is required for partner scope', status: 400 };
-    }
-    return { orgId: null };
-  }
-
-  if (auth.scope === 'system') {
-    if (requireForNonOrg && !requestedOrgId) {
-      return { error: 'orgId is required for system scope', status: 400 };
-    }
-    return { orgId: requestedOrgId ?? null };
-  }
-
-  return { error: 'Access denied', status: 403 };
-}
-
 function mapBaselineRow(row: typeof networkBaselines.$inferSelect) {
   return {
     ...row,
     lastScanAt: row.lastScanAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
-  };
-}
-
-function mapNetworkChangeRow(row: typeof networkChangeEvents.$inferSelect) {
-  return {
-    ...row,
-    detectedAt: row.detectedAt.toISOString(),
-    acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null,
-    createdAt: row.createdAt.toISOString()
   };
 }
 
@@ -190,6 +130,23 @@ networkBaselineRoutes.get(
     }
 
     if (query.siteId) {
+      // Validate that siteId belongs to the resolved org (same pattern as POST /)
+      if (orgResult.orgId) {
+        const [site] = await db
+          .select({ id: sites.id })
+          .from(sites)
+          .where(
+            and(
+              eq(sites.id, query.siteId),
+              eq(sites.orgId, orgResult.orgId)
+            )
+          )
+          .limit(1);
+
+        if (!site) {
+          return c.json({ error: 'Site not found for this organization' }, 404);
+        }
+      }
       conditions.push(eq(networkBaselines.siteId, query.siteId));
     }
 

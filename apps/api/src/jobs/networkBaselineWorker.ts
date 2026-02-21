@@ -105,36 +105,43 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
 
   let enqueued = 0;
   for (const baseline of dueBaselines) {
-    const schedule = normalizeBaselineScanSchedule(baseline.scanSchedule);
+    try {
+      const schedule = normalizeBaselineScanSchedule(baseline.scanSchedule);
 
-    await queue.add(
-      'execute-baseline-scan',
-      {
-        type: 'execute-baseline-scan',
-        baselineId: baseline.id,
-        orgId: baseline.orgId,
-        siteId: baseline.siteId,
-        subnet: baseline.subnet
-      },
-      {
-        removeOnComplete: { count: 50 },
-        removeOnFail: { count: 100 }
-      }
-    );
-
-    enqueued++;
-
-    const nextScanAt = new Date(Date.now() + schedule.intervalHours * 60 * 60 * 1000).toISOString();
-    await db
-      .update(networkBaselines)
-      .set({
-        scanSchedule: {
-          ...schedule,
-          nextScanAt
+      await queue.add(
+        'execute-baseline-scan',
+        {
+          type: 'execute-baseline-scan',
+          baselineId: baseline.id,
+          orgId: baseline.orgId,
+          siteId: baseline.siteId,
+          subnet: baseline.subnet
         },
-        updatedAt: new Date()
-      })
-      .where(eq(networkBaselines.id, baseline.id));
+        {
+          removeOnComplete: { count: 50 },
+          removeOnFail: { count: 100 }
+        }
+      );
+
+      enqueued++;
+
+      const nextScanAt = new Date(Date.now() + schedule.intervalHours * 60 * 60 * 1000).toISOString();
+      await db
+        .update(networkBaselines)
+        .set({
+          scanSchedule: {
+            ...schedule,
+            nextScanAt
+          },
+          updatedAt: new Date()
+        })
+        .where(eq(networkBaselines.id, baseline.id));
+    } catch (error) {
+      console.error(
+        `[NetworkBaselineWorker] Failed to schedule scan for baseline ${baseline.id} (${baseline.subnet}):`,
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   if (enqueued > 0) {
@@ -155,7 +162,7 @@ async function processExecuteScan(data: ExecuteBaselineScanJobData): Promise<{
     .limit(1);
 
   if (!baseline) {
-    console.warn(`[NetworkBaselineWorker] Baseline ${data.baselineId} not found`);
+    console.warn(`[NetworkBaselineWorker] Baseline ${data.baselineId} not found — may have been deleted. Skipping scan.`);
     return { queued: false, discoveryJobId: null };
   }
 
@@ -267,14 +274,8 @@ async function processCompareBaseline(data: CompareBaselineJobData) {
 async function scheduleRecurringScanPlanner(): Promise<void> {
   const queue = getNetworkBaselineQueue();
 
-  const repeatable = await queue.getRepeatableJobs();
-  for (const job of repeatable) {
-    if (job.name === 'schedule-baseline-scans') {
-      await queue.removeRepeatableByKey(job.key);
-    }
-  }
-
-  await queue.add(
+  // Add the new repeatable job first, so a scheduler always exists
+  const newJob = await queue.add(
     'schedule-baseline-scans',
     { type: 'schedule-baseline-scans' as const },
     {
@@ -285,6 +286,14 @@ async function scheduleRecurringScanPlanner(): Promise<void> {
       removeOnFail: { count: 20 }
     }
   );
+
+  // Then remove stale repeatable entries (any that aren't the one we just created)
+  const repeatable = await queue.getRepeatableJobs();
+  for (const job of repeatable) {
+    if (job.name === 'schedule-baseline-scans' && job.key !== newJob.repeatJobKey) {
+      await queue.removeRepeatableByKey(job.key);
+    }
+  }
 }
 
 export async function enqueueBaselineScan(
@@ -309,7 +318,10 @@ export async function enqueueBaselineScan(
     }
   );
 
-  return job.id!;
+  if (!job.id) {
+    throw new Error('BullMQ returned a job without an ID');
+  }
+  return job.id;
 }
 
 export async function enqueueBaselineComparison(
@@ -336,7 +348,10 @@ export async function enqueueBaselineComparison(
     }
   );
 
-  return job.id!;
+  if (!job.id) {
+    throw new Error('BullMQ returned a job without an ID');
+  }
+  return job.id;
 }
 
 export async function initializeNetworkBaselineWorker(): Promise<void> {

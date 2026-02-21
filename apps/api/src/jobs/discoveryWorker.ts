@@ -354,7 +354,11 @@ async function processResults(data: ProcessResultsJobData): Promise<{
         data.hosts
       );
     } catch (error) {
-      console.error(`[DiscoveryWorker] Failed to enqueue baseline comparison for ${baseline.id}:`, error);
+      console.error(
+        `[DiscoveryWorker] Failed to enqueue baseline comparison for baseline=${baseline.id} job=${data.jobId}:`,
+        error instanceof Error ? error.message : error
+      );
+      throw error; // Let BullMQ retry
     }
   }
 

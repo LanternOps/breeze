@@ -1,21 +1,12 @@
-export type NetworkEventType =
-  | 'new_device'
-  | 'device_disappeared'
-  | 'device_changed'
-  | 'rogue_device';
+import {
+  NETWORK_EVENT_TYPES,
+  type NetworkEventType,
+  type NetworkBaselineScanSchedule,
+  type NetworkBaselineAlertSettings
+} from '@breeze/shared';
 
-export type NetworkBaselineScanSchedule = {
-  enabled: boolean;
-  intervalHours: number;
-  nextScanAt: string | null;
-};
-
-export type NetworkBaselineAlertSettings = {
-  newDevice: boolean;
-  disappeared: boolean;
-  changed: boolean;
-  rogueDevice: boolean;
-};
+export { NETWORK_EVENT_TYPES };
+export type { NetworkEventType, NetworkBaselineScanSchedule, NetworkBaselineAlertSettings };
 
 export type NetworkBaseline = {
   id: string;
@@ -99,7 +90,7 @@ function parseScanSchedule(value: unknown): NetworkBaselineScanSchedule {
   return {
     enabled: asBoolean(schedule?.enabled) ?? true,
     intervalHours: interval !== null ? Math.min(Math.max(interval, 1), 168) : 4,
-    nextScanAt: asString(schedule?.nextScanAt)
+    nextScanAt: asString(schedule?.nextScanAt) ?? new Date().toISOString()
   };
 }
 
@@ -146,13 +137,8 @@ export function mapNetworkBaseline(raw: unknown): NetworkBaseline | null {
 }
 
 function normalizeEventType(value: unknown): NetworkEventType | null {
-  if (
-    value === 'new_device'
-    || value === 'device_disappeared'
-    || value === 'device_changed'
-    || value === 'rogue_device'
-  ) {
-    return value;
+  if (typeof value === 'string' && (NETWORK_EVENT_TYPES as readonly string[]).includes(value)) {
+    return value as NetworkEventType;
   }
   return null;
 }

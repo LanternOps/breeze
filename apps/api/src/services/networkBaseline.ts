@@ -24,7 +24,7 @@ type EnrichedDiscoveredHost = DiscoveredHostResult & {
   linkedDeviceId?: string | null;
 };
 
-interface OrgNetworkPolicy {
+export interface OrgNetworkPolicy {
   blockedManufacturers: string[];
   allowedAssetTypes: string[];
 }
@@ -82,7 +82,7 @@ const EVENT_SEVERITY_FALLBACK: Record<NetworkEventType, typeof alerts.$inferInse
 
 const ASSET_TYPE_SET = new Set(discoveredAssetTypeEnum.enumValues);
 
-function normalizeAssetType(value: string | null | undefined): typeof discoveredAssetTypeEnum.enumValues[number] {
+export function normalizeAssetType(value: string | null | undefined): typeof discoveredAssetTypeEnum.enumValues[number] {
   if (!value) return 'unknown';
 
   const normalized = value.trim().toLowerCase().replace(/[\s-]/g, '_');
@@ -123,7 +123,7 @@ function resolveLinkedDeviceId(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function parseKnownDevices(value: unknown): KnownNetworkDevice[] {
+export function parseKnownDevices(value: unknown): KnownNetworkDevice[] {
   if (!Array.isArray(value)) return [];
 
   const parsed: KnownNetworkDevice[] = [];
@@ -199,7 +199,7 @@ export function normalizeBaselineAlertSettings(settings: unknown): NetworkBaseli
   };
 }
 
-function renderTemplate(template: string, context: Record<string, unknown>): string {
+export function renderTemplate(template: string, context: Record<string, unknown>): string {
   return template.replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g, (match, key) => {
     const path = String(key).split('.');
     let value: unknown = context;
@@ -266,7 +266,7 @@ async function getOrgNetworkPolicy(orgId: string): Promise<OrgNetworkPolicy> {
   return { blockedManufacturers, allowedAssetTypes };
 }
 
-function isRogueDeviceByPolicy(host: DiscoveredHostResult, policy: OrgNetworkPolicy): boolean {
+export function isRogueDeviceByPolicy(host: DiscoveredHostResult, policy: OrgNetworkPolicy): boolean {
   const manufacturer = host.manufacturer?.trim().toLowerCase() ?? '';
   const normalizedType = normalizeAssetType(host.assetType);
 
@@ -358,12 +358,16 @@ function stringifyKeyState(value: unknown): string {
 
   try {
     return JSON.stringify(normalizeForStableStringify(value));
-  } catch {
+  } catch (error) {
+    console.warn(
+      '[NetworkBaseline] stringifyKeyState JSON.stringify failed, falling back to String():',
+      error instanceof Error ? error.message : error
+    );
     return String(value);
   }
 }
 
-function buildEventFingerprint(
+export function buildEventFingerprint(
   eventType: NetworkEventType,
   ipAddress: string,
   options?: {
@@ -428,6 +432,7 @@ interface AlertDeviceResolution {
 async function resolveAlertDeviceForChangeEvent(
   changeEvent: typeof networkChangeEvents.$inferSelect
 ): Promise<AlertDeviceResolution> {
+  // Strategy 1: Direct link from the change event
   if (changeEvent.linkedDeviceId) {
     return {
       deviceId: changeEvent.linkedDeviceId,
@@ -436,90 +441,122 @@ async function resolveAlertDeviceForChangeEvent(
     };
   }
 
-  const [linkedAsset] = await db
-    .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
-    .from(discoveredAssets)
-    .where(
-      and(
-        eq(discoveredAssets.orgId, changeEvent.orgId),
-        eq(discoveredAssets.ipAddress, changeEvent.ipAddress),
-        sql`${discoveredAssets.linkedDeviceId} is not null`
-      )
-    )
-    .limit(1);
-
-  if (linkedAsset?.linkedDeviceId) {
-    return {
-      deviceId: linkedAsset.linkedDeviceId,
-      shouldPersistLink: true,
-      strategy: 'discovered_asset_exact_ip'
-    };
-  }
-
-  const candidateConditions: SQL[] = [];
-  if (changeEvent.ipAddress) {
-    candidateConditions.push(eq(deviceNetwork.ipAddress, changeEvent.ipAddress));
-  }
-  if (changeEvent.macAddress) {
-    candidateConditions.push(eq(deviceNetwork.macAddress, changeEvent.macAddress));
-  }
-
-  if (candidateConditions.length > 0) {
-    const [candidate] = await db
-      .select({ deviceId: deviceNetwork.deviceId })
-      .from(deviceNetwork)
-      .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
+  // Strategy 2: Discovered asset with exact IP match
+  try {
+    const [linkedAsset] = await db
+      .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
+      .from(discoveredAssets)
       .where(
         and(
-          eq(devices.orgId, changeEvent.orgId),
-          eq(devices.siteId, changeEvent.siteId),
-          or(...candidateConditions)
+          eq(discoveredAssets.orgId, changeEvent.orgId),
+          eq(discoveredAssets.ipAddress, changeEvent.ipAddress),
+          sql`${discoveredAssets.linkedDeviceId} is not null`
         )
       )
       .limit(1);
 
-    if (candidate?.deviceId) {
+    if (linkedAsset?.linkedDeviceId) {
       return {
-        deviceId: candidate.deviceId,
+        deviceId: linkedAsset.linkedDeviceId,
         shouldPersistLink: true,
-        strategy: 'device_network_match'
+        strategy: 'discovered_asset_exact_ip'
       };
     }
+  } catch (error) {
+    console.error(
+      `[NetworkBaseline] resolveAlertDevice strategy 'discovered_asset_exact_ip' failed for event ${changeEvent.id}:`,
+      error instanceof Error ? error.message : error
+    );
   }
 
-  const [siteAnchorDevice] = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(
-      and(
-        eq(devices.orgId, changeEvent.orgId),
-        eq(devices.siteId, changeEvent.siteId)
+  // Strategy 3: Device network table match by IP or MAC
+  try {
+    const candidateConditions: SQL[] = [];
+    if (changeEvent.ipAddress) {
+      candidateConditions.push(eq(deviceNetwork.ipAddress, changeEvent.ipAddress));
+    }
+    if (changeEvent.macAddress) {
+      candidateConditions.push(eq(deviceNetwork.macAddress, changeEvent.macAddress));
+    }
+
+    if (candidateConditions.length > 0) {
+      const [candidate] = await db
+        .select({ deviceId: deviceNetwork.deviceId })
+        .from(deviceNetwork)
+        .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
+        .where(
+          and(
+            eq(devices.orgId, changeEvent.orgId),
+            eq(devices.siteId, changeEvent.siteId),
+            or(...candidateConditions)
+          )
+        )
+        .limit(1);
+
+      if (candidate?.deviceId) {
+        return {
+          deviceId: candidate.deviceId,
+          shouldPersistLink: true,
+          strategy: 'device_network_match'
+        };
+      }
+    }
+  } catch (error) {
+    console.error(
+      `[NetworkBaseline] resolveAlertDevice strategy 'device_network_match' failed for event ${changeEvent.id}:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+
+  // Strategy 4: Most recently seen device at the same site
+  try {
+    const [siteAnchorDevice] = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(
+        and(
+          eq(devices.orgId, changeEvent.orgId),
+          eq(devices.siteId, changeEvent.siteId)
+        )
       )
-    )
-    .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-    .limit(1);
+      .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
+      .limit(1);
 
-  if (siteAnchorDevice?.id) {
-    return {
-      deviceId: siteAnchorDevice.id,
-      shouldPersistLink: false,
-      strategy: 'site_anchor_device'
-    };
+    if (siteAnchorDevice?.id) {
+      return {
+        deviceId: siteAnchorDevice.id,
+        shouldPersistLink: false,
+        strategy: 'site_anchor_device'
+      };
+    }
+  } catch (error) {
+    console.error(
+      `[NetworkBaseline] resolveAlertDevice strategy 'site_anchor_device' failed for event ${changeEvent.id}:`,
+      error instanceof Error ? error.message : error
+    );
   }
 
-  const [orgAnchorDevice] = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(eq(devices.orgId, changeEvent.orgId))
-    .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-    .limit(1);
+  // Strategy 5: Most recently seen device in the same org
+  try {
+    const [orgAnchorDevice] = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(eq(devices.orgId, changeEvent.orgId))
+      .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
+      .limit(1);
 
-  if (orgAnchorDevice?.id) {
-    return {
-      deviceId: orgAnchorDevice.id,
-      shouldPersistLink: false,
-      strategy: 'org_anchor_device'
-    };
+    if (orgAnchorDevice?.id) {
+      return {
+        deviceId: orgAnchorDevice.id,
+        shouldPersistLink: false,
+        strategy: 'org_anchor_device'
+      };
+    }
+  } catch (error) {
+    console.error(
+      `[NetworkBaseline] resolveAlertDevice strategy 'org_anchor_device' failed for event ${changeEvent.id}:`,
+      error instanceof Error ? error.message : error
+    );
   }
 
   return {
@@ -535,7 +572,12 @@ export async function createNetworkChangeAlert(
   baselineSettings: { alertSettings: unknown }
 ): Promise<void> {
   const normalizedEventType = networkEventTypeEnum.enumValues.find((value) => value === eventType) as NetworkEventType | undefined;
-  if (!normalizedEventType) return;
+  if (!normalizedEventType) {
+    console.warn(
+      `[NetworkBaseline] Unrecognized event type "${eventType}" for change event ${changeEvent.id}. Alert skipped.`
+    );
+    return;
+  }
 
   const alertSettings = normalizeBaselineAlertSettings(baselineSettings.alertSettings);
   if (!eventEnabled(normalizedEventType, alertSettings)) {
@@ -617,6 +659,9 @@ export async function createNetworkChangeAlert(
 
   const alertId = alert?.id;
   if (!alertId) {
+    console.error(
+      `[NetworkBaseline] Alert insert returned no ID for change event ${changeEvent.id} (${normalizedEventType}, device=${alertDeviceId}). Alert may not have been persisted.`
+    );
     return;
   }
 
@@ -653,7 +698,7 @@ export async function createNetworkChangeAlert(
   }
 }
 
-function hasHostChanged(existing: KnownNetworkDevice, current: EnrichedDiscoveredHost): boolean {
+export function hasHostChanged(existing: KnownNetworkDevice, current: EnrichedDiscoveredHost): boolean {
   const existingMac = normalizeMac(existing.mac);
   const currentMac = normalizeMac(current.mac);
   if (existingMac !== currentMac) return true;
@@ -690,176 +735,170 @@ function buildCurrentState(host: EnrichedDiscoveredHost): Record<string, unknown
 }
 
 export async function compareBaselineScan(input: CompareBaselineInput): Promise<CompareBaselineResult> {
-  const [baseline] = await db
-    .select()
-    .from(networkBaselines)
-    .where(
-      and(
-        eq(networkBaselines.id, input.baselineId),
-        eq(networkBaselines.orgId, input.orgId),
-        eq(networkBaselines.siteId, input.siteId)
-      )
-    )
-    .limit(1);
+  return db.transaction(async (tx) => {
+    // Acquire a row-level lock on the baseline to prevent concurrent scans from
+    // reading stale knownDevices and overwriting each other's updates.
+    const lockedRows = await tx.execute(
+      sql`SELECT * FROM network_baselines WHERE id = ${input.baselineId} AND org_id = ${input.orgId} AND site_id = ${input.siteId} LIMIT 1 FOR UPDATE`
+    );
 
-  if (!baseline) {
-    throw new Error(`Baseline ${input.baselineId} not found`);
-  }
+    const baselineRow = lockedRows[0] as Record<string, unknown> | undefined;
+    if (!baselineRow) {
+      throw new Error(`Baseline ${input.baselineId} not found`);
+    }
 
-  const now = new Date();
-  const knownDevices = parseKnownDevices(baseline.knownDevices);
-  const alertSettings = normalizeBaselineAlertSettings(baseline.alertSettings);
-
-  const scannedHosts = input.hosts.filter((host): host is DiscoveredHostResult => typeof host.ip === 'string' && host.ip.length > 0);
-  const scannedIps = Array.from(new Set(scannedHosts.map((host) => host.ip)));
-
-  const discoveredByIp = new Map<string, {
-    linkedDeviceId: string | null;
-    macAddress: string | null;
-    hostname: string | null;
-    assetType: typeof discoveredAssetTypeEnum.enumValues[number] | null;
-    manufacturer: string | null;
-    openPorts: unknown;
-  }>();
-
-  if (scannedIps.length > 0) {
-    const discoveredRows = await db
-      .select({
-        ipAddress: discoveredAssets.ipAddress,
-        linkedDeviceId: discoveredAssets.linkedDeviceId,
-        macAddress: discoveredAssets.macAddress,
-        hostname: discoveredAssets.hostname,
-        assetType: discoveredAssets.assetType,
-        manufacturer: discoveredAssets.manufacturer,
-        openPorts: discoveredAssets.openPorts
-      })
-      .from(discoveredAssets)
+    // Re-query via Drizzle to get properly typed result within the transaction
+    const [baseline] = await tx
+      .select()
+      .from(networkBaselines)
       .where(
         and(
-          eq(discoveredAssets.orgId, input.orgId),
-          inArray(discoveredAssets.ipAddress, scannedIps)
+          eq(networkBaselines.id, input.baselineId),
+          eq(networkBaselines.orgId, input.orgId),
+          eq(networkBaselines.siteId, input.siteId)
         )
-      );
-
-    for (const row of discoveredRows) {
-      discoveredByIp.set(row.ipAddress, {
-        linkedDeviceId: row.linkedDeviceId,
-        macAddress: row.macAddress,
-        hostname: row.hostname,
-        assetType: row.assetType,
-        manufacturer: row.manufacturer,
-        openPorts: row.openPorts
-      });
-    }
-  }
-
-  const enrichedHosts: EnrichedDiscoveredHost[] = scannedHosts.map((host) => {
-    const discovered = discoveredByIp.get(host.ip);
-    return {
-      ...host,
-      mac: host.mac ?? discovered?.macAddress ?? undefined,
-      hostname: host.hostname ?? discovered?.hostname ?? undefined,
-      assetType: normalizeAssetType(host.assetType ?? discovered?.assetType ?? 'unknown'),
-      manufacturer: host.manufacturer ?? discovered?.manufacturer ?? undefined,
-      openPorts: host.openPorts ?? (Array.isArray(discovered?.openPorts)
-        ? (discovered?.openPorts as Array<{ port: number; service: string }>)
-        : undefined),
-      linkedDeviceId: discovered?.linkedDeviceId ?? null
-    };
-  });
-
-  const knownByIp = new Map<string, KnownNetworkDevice>();
-  for (const device of knownDevices) {
-    knownByIp.set(device.ip, device);
-  }
-
-  const scanByIp = new Map<string, EnrichedDiscoveredHost>();
-  for (const host of enrichedHosts) {
-    scanByIp.set(host.ip, host);
-  }
-
-  const policy = await getOrgNetworkPolicy(input.orgId);
-
-  const recentEvents = await db
-    .select({
-      eventType: networkChangeEvents.eventType,
-      ipAddress: networkChangeEvents.ipAddress,
-      macAddress: networkChangeEvents.macAddress,
-      hostname: networkChangeEvents.hostname,
-      assetType: networkChangeEvents.assetType,
-      previousState: networkChangeEvents.previousState,
-      currentState: networkChangeEvents.currentState
-    })
-    .from(networkChangeEvents)
-    .where(
-      and(
-        eq(networkChangeEvents.baselineId, input.baselineId),
-        gte(networkChangeEvents.detectedAt, new Date(now.getTime() - DUPLICATE_EVENT_WINDOW_MS))
       )
-    )
-    .orderBy(desc(networkChangeEvents.detectedAt));
+      .limit(1);
 
-  const eventKeys = new Set<string>(
-    recentEvents.map((event) => buildEventFingerprint(event.eventType, event.ipAddress, {
-      macAddress: event.macAddress,
-      hostname: event.hostname,
-      assetType: event.assetType,
-      previousState: event.previousState,
-      currentState: event.currentState
-    }))
-  );
-
-  const pendingEvents: Array<typeof networkChangeEvents.$inferInsert> = [];
-  let newDevices = 0;
-  let disappearedDevices = 0;
-  let changedDevices = 0;
-  let rogueDevices = 0;
-
-  const tryQueueEvent = (event: typeof networkChangeEvents.$inferInsert): boolean => {
-    const key = buildEventFingerprint(event.eventType, event.ipAddress, {
-      macAddress: event.macAddress,
-      hostname: event.hostname,
-      assetType: event.assetType,
-      previousState: event.previousState,
-      currentState: event.currentState
-    });
-    if (eventKeys.has(key)) {
-      return false;
+    if (!baseline) {
+      throw new Error(`Baseline ${input.baselineId} not found`);
     }
-    eventKeys.add(key);
-    pendingEvents.push(event);
-    return true;
-  };
 
-  for (const host of enrichedHosts) {
-    const existing = knownByIp.get(host.ip);
-    const currentState = buildCurrentState(host);
+    const now = new Date();
+    const knownDevices = parseKnownDevices(baseline.knownDevices);
+    const alertSettings = normalizeBaselineAlertSettings(baseline.alertSettings);
 
-    if (!existing) {
-      const queued = tryQueueEvent({
-        orgId: input.orgId,
-        siteId: input.siteId,
-        baselineId: input.baselineId,
-        eventType: 'new_device',
-        ipAddress: host.ip,
-        macAddress: host.mac ?? null,
-        hostname: host.hostname ?? null,
-        assetType: normalizeAssetType(host.assetType),
-        currentState,
-        linkedDeviceId: host.linkedDeviceId ?? null,
-        detectedAt: now
-      });
+    const scannedHosts = input.hosts.filter((host): host is DiscoveredHostResult => typeof host.ip === 'string' && host.ip.length > 0);
+    const scannedIps = Array.from(new Set(scannedHosts.map((host) => host.ip)));
 
-      if (queued) {
-        newDevices++;
+    const discoveredByIp = new Map<string, {
+      linkedDeviceId: string | null;
+      macAddress: string | null;
+      hostname: string | null;
+      assetType: typeof discoveredAssetTypeEnum.enumValues[number] | null;
+      manufacturer: string | null;
+      openPorts: unknown;
+    }>();
+
+    if (scannedIps.length > 0) {
+      const discoveredRows = await tx
+        .select({
+          ipAddress: discoveredAssets.ipAddress,
+          linkedDeviceId: discoveredAssets.linkedDeviceId,
+          macAddress: discoveredAssets.macAddress,
+          hostname: discoveredAssets.hostname,
+          assetType: discoveredAssets.assetType,
+          manufacturer: discoveredAssets.manufacturer,
+          openPorts: discoveredAssets.openPorts
+        })
+        .from(discoveredAssets)
+        .where(
+          and(
+            eq(discoveredAssets.orgId, input.orgId),
+            inArray(discoveredAssets.ipAddress, scannedIps)
+          )
+        );
+
+      for (const row of discoveredRows) {
+        discoveredByIp.set(row.ipAddress, {
+          linkedDeviceId: row.linkedDeviceId,
+          macAddress: row.macAddress,
+          hostname: row.hostname,
+          assetType: row.assetType,
+          manufacturer: row.manufacturer,
+          openPorts: row.openPorts
+        });
       }
+    }
 
-      if (isRogueDeviceByPolicy(host, policy)) {
-        const rogueQueued = tryQueueEvent({
+    const enrichedHosts: EnrichedDiscoveredHost[] = scannedHosts.map((host) => {
+      const discovered = discoveredByIp.get(host.ip);
+      return {
+        ...host,
+        mac: host.mac ?? discovered?.macAddress ?? undefined,
+        hostname: host.hostname ?? discovered?.hostname ?? undefined,
+        assetType: normalizeAssetType(host.assetType ?? discovered?.assetType ?? 'unknown'),
+        manufacturer: host.manufacturer ?? discovered?.manufacturer ?? undefined,
+        openPorts: host.openPorts ?? (Array.isArray(discovered?.openPorts)
+          ? (discovered?.openPorts as Array<{ port: number; service: string }>)
+          : undefined),
+        linkedDeviceId: discovered?.linkedDeviceId ?? null
+      };
+    });
+
+    const knownByIp = new Map<string, KnownNetworkDevice>();
+    for (const device of knownDevices) {
+      knownByIp.set(device.ip, device);
+    }
+
+    const scanByIp = new Map<string, EnrichedDiscoveredHost>();
+    for (const host of enrichedHosts) {
+      scanByIp.set(host.ip, host);
+    }
+
+    const policy = await getOrgNetworkPolicy(input.orgId);
+
+    const recentEvents = await tx
+      .select({
+        eventType: networkChangeEvents.eventType,
+        ipAddress: networkChangeEvents.ipAddress,
+        macAddress: networkChangeEvents.macAddress,
+        hostname: networkChangeEvents.hostname,
+        assetType: networkChangeEvents.assetType,
+        previousState: networkChangeEvents.previousState,
+        currentState: networkChangeEvents.currentState
+      })
+      .from(networkChangeEvents)
+      .where(
+        and(
+          eq(networkChangeEvents.baselineId, input.baselineId),
+          gte(networkChangeEvents.detectedAt, new Date(now.getTime() - DUPLICATE_EVENT_WINDOW_MS))
+        )
+      )
+      .orderBy(desc(networkChangeEvents.detectedAt));
+
+    const eventKeys = new Set<string>(
+      recentEvents.map((event) => buildEventFingerprint(event.eventType, event.ipAddress, {
+        macAddress: event.macAddress,
+        hostname: event.hostname,
+        assetType: event.assetType,
+        previousState: event.previousState,
+        currentState: event.currentState
+      }))
+    );
+
+    const pendingEvents: Array<typeof networkChangeEvents.$inferInsert> = [];
+    let newDevices = 0;
+    let disappearedDevices = 0;
+    let changedDevices = 0;
+    let rogueDevices = 0;
+
+    const tryQueueEvent = (event: typeof networkChangeEvents.$inferInsert): boolean => {
+      const key = buildEventFingerprint(event.eventType, event.ipAddress, {
+        macAddress: event.macAddress,
+        hostname: event.hostname,
+        assetType: event.assetType,
+        previousState: event.previousState,
+        currentState: event.currentState
+      });
+      if (eventKeys.has(key)) {
+        return false;
+      }
+      eventKeys.add(key);
+      pendingEvents.push(event);
+      return true;
+    };
+
+    for (const host of enrichedHosts) {
+      const existing = knownByIp.get(host.ip);
+      const currentState = buildCurrentState(host);
+
+      if (!existing) {
+        const queued = tryQueueEvent({
           orgId: input.orgId,
           siteId: input.siteId,
           baselineId: input.baselineId,
-          eventType: 'rogue_device',
+          eventType: 'new_device',
           ipAddress: host.ip,
           macAddress: host.mac ?? null,
           hostname: host.hostname ?? null,
@@ -869,92 +908,135 @@ export async function compareBaselineScan(input: CompareBaselineInput): Promise<
           detectedAt: now
         });
 
-        if (rogueQueued) {
-          rogueDevices++;
+        if (queued) {
+          newDevices++;
         }
+
+        if (isRogueDeviceByPolicy(host, policy)) {
+          const rogueQueued = tryQueueEvent({
+            orgId: input.orgId,
+            siteId: input.siteId,
+            baselineId: input.baselineId,
+            eventType: 'rogue_device',
+            ipAddress: host.ip,
+            macAddress: host.mac ?? null,
+            hostname: host.hostname ?? null,
+            assetType: normalizeAssetType(host.assetType),
+            currentState,
+            linkedDeviceId: host.linkedDeviceId ?? null,
+            detectedAt: now
+          });
+
+          if (rogueQueued) {
+            rogueDevices++;
+          }
+        }
+
+        continue;
       }
 
-      continue;
+      if (hasHostChanged(existing, host)) {
+        const changedQueued = tryQueueEvent({
+          orgId: input.orgId,
+          siteId: input.siteId,
+          baselineId: input.baselineId,
+          eventType: 'device_changed',
+          ipAddress: host.ip,
+          macAddress: host.mac ?? null,
+          hostname: host.hostname ?? null,
+          assetType: normalizeAssetType(host.assetType),
+          previousState: buildPreviousState(existing),
+          currentState,
+          linkedDeviceId: host.linkedDeviceId ?? existing.linkedDeviceId ?? null,
+          detectedAt: now
+        });
+
+        if (changedQueued) {
+          changedDevices++;
+        }
+      }
     }
 
-    if (hasHostChanged(existing, host)) {
-      const changedQueued = tryQueueEvent({
+    const disappearedCutoff = new Date(now.getTime() - DISAPPEARED_THRESHOLD_MS);
+
+    for (const known of knownDevices) {
+      if (scanByIp.has(known.ip)) continue;
+
+      const lastSeen = toDateOrNull(known.lastSeen);
+      if (!lastSeen || lastSeen > disappearedCutoff) continue;
+
+      const disappearedQueued = tryQueueEvent({
         orgId: input.orgId,
         siteId: input.siteId,
         baselineId: input.baselineId,
-        eventType: 'device_changed',
-        ipAddress: host.ip,
-        macAddress: host.mac ?? null,
-        hostname: host.hostname ?? null,
-        assetType: normalizeAssetType(host.assetType),
-        previousState: buildPreviousState(existing),
-        currentState,
-        linkedDeviceId: host.linkedDeviceId ?? existing.linkedDeviceId ?? null,
+        eventType: 'device_disappeared',
+        ipAddress: known.ip,
+        macAddress: known.mac ?? null,
+        hostname: known.hostname ?? null,
+        assetType: normalizeAssetType(known.assetType ?? 'unknown'),
+        previousState: buildPreviousState(known),
+        linkedDeviceId: known.linkedDeviceId ?? null,
         detectedAt: now
       });
 
-      if (changedQueued) {
-        changedDevices++;
+      if (disappearedQueued) {
+        disappearedDevices++;
       }
     }
-  }
 
-  const disappearedCutoff = new Date(now.getTime() - DISAPPEARED_THRESHOLD_MS);
+    const insertedEvents = pendingEvents.length > 0
+      ? await tx.insert(networkChangeEvents).values(pendingEvents).returning()
+      : [];
 
-  for (const known of knownDevices) {
-    if (scanByIp.has(known.ip)) continue;
+    // Create alerts for each inserted event, catching individual failures so that
+    // a single alert failure does not prevent other alerts or the baseline update.
+    if (insertedEvents.length > 0) {
+      const alertErrors: Array<{ eventId: string; error: unknown }> = [];
+      for (const event of insertedEvents) {
+        try {
+          await createNetworkChangeAlert(event.eventType, event, { alertSettings });
+        } catch (error) {
+          alertErrors.push({ eventId: event.id, error });
+          console.error(
+            `[NetworkBaseline] Failed to create alert for change event ${event.id} (${event.eventType}):`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+      if (alertErrors.length > 0) {
+        console.warn(
+          `[NetworkBaseline] ${alertErrors.length}/${insertedEvents.length} alert(s) failed for baseline ${input.baselineId}`
+        );
+      }
+    }
 
-    const lastSeen = toDateOrNull(known.lastSeen);
-    if (!lastSeen || lastSeen > disappearedCutoff) continue;
+    // Always update the baseline with merged known devices regardless of alert failures
+    const mergedKnownDevices = mergeKnownDevices(knownDevices, enrichedHosts);
 
-    const disappearedQueued = tryQueueEvent({
-      orgId: input.orgId,
-      siteId: input.siteId,
+    await tx
+      .update(networkBaselines)
+      .set({
+        knownDevices: mergedKnownDevices,
+        lastScanAt: now,
+        updatedAt: now,
+        scanSchedule: normalizeBaselineScanSchedule(baseline.scanSchedule)
+      })
+      .where(eq(networkBaselines.id, input.baselineId));
+
+    console.log(
+      `[NetworkBaseline] Compared baseline ${input.baselineId}: ${enrichedHosts.length} hosts processed, ` +
+      `${newDevices} new, ${disappearedDevices} disappeared, ${changedDevices} changed, ${rogueDevices} rogue, ` +
+      `${insertedEvents.length} events created`
+    );
+
+    return {
       baselineId: input.baselineId,
-      eventType: 'device_disappeared',
-      ipAddress: known.ip,
-      macAddress: known.mac ?? null,
-      hostname: known.hostname ?? null,
-      assetType: normalizeAssetType(known.assetType ?? 'unknown'),
-      previousState: buildPreviousState(known),
-      linkedDeviceId: known.linkedDeviceId ?? null,
-      detectedAt: now
-    });
-
-    if (disappearedQueued) {
-      disappearedDevices++;
-    }
-  }
-
-  const insertedEvents = pendingEvents.length > 0
-    ? await db.insert(networkChangeEvents).values(pendingEvents).returning()
-    : [];
-
-  if (insertedEvents.length > 0) {
-    for (const event of insertedEvents) {
-      await createNetworkChangeAlert(event.eventType, event, { alertSettings });
-    }
-  }
-
-  const mergedKnownDevices = mergeKnownDevices(knownDevices, enrichedHosts);
-
-  await db
-    .update(networkBaselines)
-    .set({
-      knownDevices: mergedKnownDevices,
-      lastScanAt: now,
-      updatedAt: now,
-      scanSchedule: normalizeBaselineScanSchedule(baseline.scanSchedule)
-    })
-    .where(eq(networkBaselines.id, input.baselineId));
-
-  return {
-    baselineId: input.baselineId,
-    processedHosts: enrichedHosts.length,
-    newDevices,
-    disappearedDevices,
-    changedDevices,
-    rogueDevices,
-    eventsCreated: insertedEvents.length
-  };
+      processedHosts: enrichedHosts.length,
+      newDevices,
+      disappearedDevices,
+      changedDevices,
+      rogueDevices,
+      eventsCreated: insertedEvents.length
+    };
+  });
 }
