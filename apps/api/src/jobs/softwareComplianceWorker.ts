@@ -256,6 +256,9 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     .limit(1);
 
   if (!policy) {
+    console.warn(
+      `[SoftwareComplianceWorker] Policy ${data.policyId} not found or inactive — job may be stale (queued after deletion)`
+    );
     return {
       policyId: data.policyId,
       devicesEvaluated: 0,

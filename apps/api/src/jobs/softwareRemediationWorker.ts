@@ -106,6 +106,9 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
     .limit(1);
 
   if (!policy || !policy.isActive) {
+    console.warn(
+      `[SoftwareRemediationWorker] Policy ${data.policyId} not found or inactive for device ${data.deviceId} — skipping remediation`
+    );
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,
@@ -124,6 +127,9 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
     .limit(1);
 
   if (!compliance) {
+    console.warn(
+      `[SoftwareRemediationWorker] No compliance record for device ${data.deviceId} under policy ${data.policyId} — cannot remediate`
+    );
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,
