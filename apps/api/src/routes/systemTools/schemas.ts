@@ -92,8 +92,9 @@ export const paginationQuerySchema = z.object({
 
 // File operation schemas
 
+// Check both forward and back slashes since paths may come from Windows or Unix agents
 const filePathString = z.string().min(1).max(2048).refine(
-  (val) => !val.includes('\0') && !val.split('/').includes('..') && !val.split('\\').includes('..'),
+  (val) => !val.includes('\0') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(val),
   { message: 'Invalid path: null bytes and path traversal (..) are not allowed' }
 );
 

@@ -250,7 +250,7 @@ fileBrowserRoutes.post(
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : result.error,
-        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+        }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
           sourcePath: item.sourcePath,
@@ -261,7 +261,8 @@ fileBrowserRoutes.post(
       }
     }
 
-    return c.json({ results });
+    const allFailed = results.length > 0 && results.every(r => r.status === 'failure');
+    return c.json({ results }, allFailed ? 502 : 200);
   }
 );
 
@@ -310,7 +311,7 @@ fileBrowserRoutes.post(
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : result.error,
-        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+        }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
           sourcePath: item.sourcePath,
@@ -321,7 +322,8 @@ fileBrowserRoutes.post(
       }
     }
 
-    return c.json({ results });
+    const allFailed = results.length > 0 && results.every(r => r.status === 'failure');
+    return c.json({ results }, allFailed ? 502 : 200);
   }
 );
 
@@ -371,7 +373,7 @@ fileBrowserRoutes.post(
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : result.error,
-        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+        }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
           path,
@@ -381,7 +383,8 @@ fileBrowserRoutes.post(
       }
     }
 
-    return c.json({ results });
+    const allFailed = results.length > 0 && results.every(r => r.status === 'failure');
+    return c.json({ results }, allFailed ? 502 : 200);
   }
 );
 
@@ -446,7 +449,7 @@ fileBrowserRoutes.post(
             const data = JSON.parse(result.stdout || '{}');
             restoredPath = data.restoredPath;
           } catch (parseErr) {
-            console.error('[fileBrowser] failed to parse restore response:', parseErr);
+            console.error(`[fileBrowser] failed to parse restore response for device ${deviceId}:`, parseErr instanceof Error ? parseErr.message : parseErr);
           }
         }
 
@@ -469,7 +472,7 @@ fileBrowserRoutes.post(
           ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : result.error,
-        }).catch(auditErr => console.error('[fileBrowser] audit log failed:', auditErr));
+        }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
       } catch (err) {
         results.push({
           trashId,
@@ -518,7 +521,7 @@ fileBrowserRoutes.post(
       ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
       result: success ? 'success' : 'failure',
       errorMessage: success ? undefined : result.error,
-    });
+    }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
 
     if (result.status === 'failed') {
       return c.json({ error: result.error || 'Failed to purge trash' }, 502);
@@ -528,7 +531,7 @@ fileBrowserRoutes.post(
       const data = JSON.parse(result.stdout || '{}');
       return c.json({ success: true, purged: data.purged || 0 });
     } catch (parseErr) {
-      console.error('[fileBrowser] failed to parse purge response:', parseErr);
+      console.error(`[fileBrowser] failed to parse purge response for device ${deviceId}:`, parseErr instanceof Error ? parseErr.message : parseErr);
       return c.json({ success: true, warning: 'Could not confirm purge count from agent' });
     }
   }
