@@ -1892,7 +1892,7 @@ registerTool({
   tier: 3,
   definition: {
     name: 'manage_software_policy',
-    description: 'Create, update, delete, list, or fetch software policies (allowlist/blocklist/audit).',
+    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit).',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -2079,10 +2079,16 @@ registerTool({
       const [existing] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
       if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
 
-      await db
-        .update(softwarePolicies)
-        .set({ isActive: false, updatedAt: new Date() })
-        .where(eq(softwarePolicies.id, existing.id));
+      await db.transaction(async (tx) => {
+        await tx
+          .update(softwarePolicies)
+          .set({ isActive: false, updatedAt: new Date() })
+          .where(eq(softwarePolicies.id, existing.id));
+
+        await tx
+          .delete(softwareComplianceStatus)
+          .where(eq(softwareComplianceStatus.policyId, existing.id));
+      });
 
       return JSON.stringify({ success: true, message: `Policy "${existing.name}" disabled` });
     }
