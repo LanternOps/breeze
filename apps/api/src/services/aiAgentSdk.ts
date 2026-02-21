@@ -11,7 +11,7 @@
 
 import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
@@ -448,6 +448,28 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         );
       } catch (err) {
         console.error('[AI-SDK] Failed to update approval execution record:', err);
+      }
+    }
+
+    // 2b. Auto-flag session on tool failure (first failure only)
+    if (isError) {
+      try {
+        const errorMsg = (typeof parsedOutput.error === 'string'
+          ? parsedOutput.error
+          : output).slice(0, 500);
+        await withSystemDbAccessContext(() =>
+          db.update(aiSessions)
+            .set({
+              flaggedAt: new Date(),
+              flagReason: `Tool failed: ${toolName} — ${errorMsg}`,
+            })
+            .where(and(
+              eq(aiSessions.id, sessionId),
+              isNull(aiSessions.flaggedAt),
+            ))
+        );
+      } catch (err) {
+        console.error('[AI-SDK] Failed to auto-flag session:', err);
       }
     }
 
