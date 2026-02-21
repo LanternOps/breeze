@@ -288,49 +288,43 @@ softwarePoliciesRoutes.get('/compliance/overview', async (c) => {
   const orgCondition = auth.orgCondition(devices.orgId);
   if (orgCondition) conditions.push(orgCondition);
 
-  const rows = await db
+  const worstStatusSq = db
     .select({
       deviceId: softwareComplianceStatus.deviceId,
-      status: softwareComplianceStatus.status,
+      worstStatus: sql<string>`
+        CASE
+          WHEN MAX(CASE WHEN ${softwareComplianceStatus.status} = 'violation' THEN 1 ELSE 0 END) = 1 THEN 'violation'
+          WHEN MAX(CASE WHEN ${softwareComplianceStatus.status} = 'unknown' THEN 1 ELSE 0 END) = 1 THEN 'unknown'
+          ELSE 'compliant'
+        END
+      `.as('worst_status'),
     })
     .from(softwareComplianceStatus)
     .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
-    .where(conditions.length > 0 ? and(...conditions) : undefined);
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .groupBy(softwareComplianceStatus.deviceId)
+    .as('device_worst');
 
-  const byDevice = new Map<string, 'compliant' | 'violation' | 'unknown'>();
-  for (const row of rows) {
-    const status = row.status as 'compliant' | 'violation' | 'unknown';
-    const current = byDevice.get(row.deviceId);
-    if (!current) {
-      byDevice.set(row.deviceId, status);
-      continue;
-    }
-
-    if (status === 'violation') {
-      byDevice.set(row.deviceId, 'violation');
-      continue;
-    }
-
-    if (status === 'unknown' && current !== 'violation') {
-      byDevice.set(row.deviceId, 'unknown');
-    }
-  }
+  const counts = await db
+    .select({
+      status: worstStatusSq.worstStatus,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(worstStatusSq)
+    .groupBy(worstStatusSq.worstStatus);
 
   let compliant = 0;
   let violations = 0;
   let unknown = 0;
-  for (const status of byDevice.values()) {
-    if (status === 'compliant') compliant += 1;
-    if (status === 'violation') violations += 1;
-    if (status === 'unknown') unknown += 1;
+  let total = 0;
+  for (const row of counts) {
+    total += row.count;
+    if (row.status === 'compliant') compliant = row.count;
+    else if (row.status === 'violation') violations = row.count;
+    else unknown += row.count;
   }
 
-  return c.json({
-    total: byDevice.size,
-    compliant,
-    violations,
-    unknown,
-  });
+  return c.json({ total, compliant, violations, unknown });
 });
 
 softwarePoliciesRoutes.get(
