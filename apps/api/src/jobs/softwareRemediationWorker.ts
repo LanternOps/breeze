@@ -12,7 +12,7 @@ const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   if (typeof withSystem !== 'function') {
-    console.error('[SoftwareRemediationWorker] withSystemDbAccessContext is not available — running without access context');
+    console.error('[SoftwareRemediationWorker] withSystemDbAccessContext unavailable — DB operations may bypass RLS');
   }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
@@ -106,9 +106,10 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
     .limit(1);
 
   if (!policy || !policy.isActive) {
-    console.warn(
-      `[SoftwareRemediationWorker] Policy ${data.policyId} not found or inactive for device ${data.deviceId} — skipping remediation`
-    );
+    console.warn('[SoftwareRemediationWorker] Policy not found or inactive, skipping remediation', {
+      policyId: data.policyId,
+      deviceId: data.deviceId,
+    });
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,
@@ -127,9 +128,10 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
     .limit(1);
 
   if (!compliance) {
-    console.warn(
-      `[SoftwareRemediationWorker] No compliance record for device ${data.deviceId} under policy ${data.policyId} — cannot remediate`
-    );
+    console.warn('[SoftwareRemediationWorker] Compliance record not found', {
+      policyId: data.policyId,
+      deviceId: data.deviceId,
+    });
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,
@@ -347,11 +349,16 @@ export async function initializeSoftwareRemediationWorker(): Promise<void> {
   softwareRemediationWorker = createSoftwareRemediationWorker();
 
   softwareRemediationWorker.on('error', (error) => {
-    console.error('[SoftwareRemediationWorker] Worker error:', error);
+    console.error('[SoftwareRemediationWorker] Worker error', { error });
   });
 
   softwareRemediationWorker.on('failed', (job, error) => {
-    console.error(`[SoftwareRemediationWorker] Job ${job?.id} failed:`, error);
+    console.error('[SoftwareRemediationWorker] Job failed', {
+      jobId: job?.id,
+      policyId: (job?.data as RemediateDeviceJobData | undefined)?.policyId,
+      deviceId: (job?.data as RemediateDeviceJobData | undefined)?.deviceId,
+      error,
+    });
     captureException(error);
   });
 

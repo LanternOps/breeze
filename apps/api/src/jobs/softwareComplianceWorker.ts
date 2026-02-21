@@ -27,7 +27,7 @@ const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   if (typeof withSystem !== 'function') {
-    console.error('[SoftwareComplianceWorker] withSystemDbAccessContext is not available — running without access context');
+    console.error('[SoftwareComplianceWorker] withSystemDbAccessContext unavailable — DB operations may bypass RLS');
   }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
@@ -112,7 +112,7 @@ function readRemediationOptions(raw: unknown): {
 } {
   if (!raw || typeof raw !== 'object') {
     return {
-      autoUninstallEnabled: true,
+      autoUninstallEnabled: false,
       gracePeriodHours: 0,
       cooldownMinutes: REMEDIATION_COOLDOWN_DEFAULT_MINUTES,
     };
@@ -127,7 +127,7 @@ function readRemediationOptions(raw: unknown): {
     : REMEDIATION_COOLDOWN_DEFAULT_MINUTES;
 
   return {
-    autoUninstallEnabled: options.autoUninstall !== false,
+    autoUninstallEnabled: options.autoUninstall === true,
     gracePeriodHours,
     cooldownMinutes,
   };
@@ -395,10 +395,11 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         }
       }
     } catch (error) {
-      console.error(
-        `[SoftwareComplianceWorker] Compliance evaluation failed for device ${deviceId} (policy ${policy.id}):`,
-        error
-      );
+      console.error('[SoftwareComplianceWorker] Device compliance evaluation failed', {
+        policyId: policy.id,
+        deviceId,
+        error,
+      });
       complianceUpserts.push({
         deviceId,
         policyId: policy.id,
@@ -519,11 +520,15 @@ export async function initializeSoftwareComplianceWorker(): Promise<void> {
   softwareComplianceWorker = createSoftwareComplianceWorker();
 
   softwareComplianceWorker.on('error', (error) => {
-    console.error('[SoftwareComplianceWorker] Worker error:', error);
+    console.error('[SoftwareComplianceWorker] Worker error', { error });
   });
 
   softwareComplianceWorker.on('failed', (job, error) => {
-    console.error(`[SoftwareComplianceWorker] Job ${job?.id} failed:`, error);
+    console.error('[SoftwareComplianceWorker] Job failed', {
+      jobId: job?.id,
+      jobType: job?.data?.type,
+      error,
+    });
     captureException(error);
   });
 
