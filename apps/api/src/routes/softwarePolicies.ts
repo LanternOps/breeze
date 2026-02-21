@@ -613,7 +613,8 @@ softwarePoliciesRoutes.post(
         .select({ deviceId: softwareComplianceStatus.deviceId })
         .from(softwareComplianceStatus)
         .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
-        .where(and(...complianceConditions));
+        .where(and(...complianceConditions))
+        .limit(500);
 
       targetDeviceIds = Array.from(new Set(rows.map((row) => row.deviceId)));
     }
@@ -625,16 +626,20 @@ softwarePoliciesRoutes.post(
     const queued = await scheduleSoftwareRemediation(policy.id, targetDeviceIds);
 
     if (queued > 0) {
-      await db
-        .update(softwareComplianceStatus)
-        .set({
-          remediationStatus: 'pending',
-          lastRemediationAttempt: new Date(),
-        })
-        .where(and(
-          eq(softwareComplianceStatus.policyId, policy.id),
-          inArray(softwareComplianceStatus.deviceId, targetDeviceIds),
-        ));
+      const CHUNK = 500;
+      for (let i = 0; i < targetDeviceIds.length; i += CHUNK) {
+        const chunk = targetDeviceIds.slice(i, i + CHUNK);
+        await db
+          .update(softwareComplianceStatus)
+          .set({
+            remediationStatus: 'pending',
+            lastRemediationAttempt: new Date(),
+          })
+          .where(and(
+            eq(softwareComplianceStatus.policyId, policy.id),
+            inArray(softwareComplianceStatus.deviceId, chunk),
+          ));
+      }
     }
 
     await recordSoftwarePolicyAudit({
