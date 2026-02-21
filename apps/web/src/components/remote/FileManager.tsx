@@ -936,7 +936,7 @@ export default function FileManager({
     .reduce((sum, candidate) => sum + candidate.sizeBytes, 0) ?? 0;
 
   return (
-    <div className={cn('flex flex-col rounded-lg border bg-card shadow-sm overflow-hidden', className)}>
+    <div className={cn('flex flex-col min-h-0 flex-1 rounded-lg border bg-card shadow-sm overflow-hidden', className)}>
       {/* Header */}
       <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-2">
         <div className="flex items-center gap-3">
@@ -956,24 +956,47 @@ export default function FileManager({
             onChange={(e) => e.target.files && handleUpload(e.target.files)}
           />
 
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Upload className="h-4 w-4" />
-            Upload
-          </button>
-
           {selectedItems.size > 0 && (
-            <button
-              type="button"
-              onClick={downloadSelected}
-              className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted"
-            >
-              <Download className="h-4 w-4" />
-              Download ({selectedItems.size})
-            </button>
+            <>
+              <span className="text-xs text-muted-foreground">{selectedItems.size} selected</span>
+              <button
+                type="button"
+                onClick={() => { setFolderPickerMode('copy'); setShowFolderPicker(true); }}
+                disabled={operationLoading}
+                className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                <Copy className="h-4 w-4" />
+                Copy to...
+              </button>
+              <button
+                type="button"
+                onClick={() => { setFolderPickerMode('move'); setShowFolderPicker(true); }}
+                disabled={operationLoading}
+                className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                <Move className="h-4 w-4" />
+                Move to...
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={operationLoading}
+                className="flex h-8 items-center gap-1.5 rounded-md border border-red-600/30 px-3 text-sm font-medium text-red-400 hover:bg-red-600/10 disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </button>
+              <button
+                type="button"
+                onClick={downloadSelected}
+                disabled={operationLoading}
+                className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                <Download className="h-4 w-4" />
+                Download
+              </button>
+              <div className="h-5 w-px bg-border" />
+            </>
           )}
 
           <button
@@ -999,17 +1022,13 @@ export default function FileManager({
             Trash
           </button>
 
-          {/* Activity panel toggle */}
           <button
             type="button"
-            onClick={() => setShowActivity(!showActivity)}
-            className={cn(
-              'flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors',
-              showActivity ? 'bg-blue-600/20 text-blue-400' : 'hover:bg-muted'
-            )}
+            onClick={() => fileInputRef.current?.click()}
+            className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            <History className="h-4 w-4" />
-            Activity
+            <Upload className="h-4 w-4" />
+            Upload
           </button>
         </div>
       </div>
@@ -1064,7 +1083,7 @@ export default function FileManager({
           </div>
         )}
 
-        <div className="flex items-center gap-1 text-sm">
+        <div className="flex flex-1 items-center gap-1 text-sm">
           <button
             type="button"
             onClick={() => navigateTo(breadcrumbs.rootPath)}
@@ -1085,6 +1104,19 @@ export default function FileManager({
             </span>
           ))}
         </div>
+
+        {/* Activity toggle */}
+        <button
+          type="button"
+          onClick={() => setShowActivity(!showActivity)}
+          className={cn(
+            'flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors',
+            showActivity ? 'bg-blue-600/20 text-blue-400' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+          )}
+        >
+          <History className="h-3.5 w-3.5" />
+          Activity{activities.length > 0 && ` (${activities.length})`}
+        </button>
       </div>
 
       {/* Disk Intelligence */}
@@ -1095,8 +1127,8 @@ export default function FileManager({
           className="flex w-full items-center justify-between px-4 py-2 hover:bg-muted/30"
         >
           <div className="flex items-center gap-2">
-            <HardDrive className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">Disk Cleanup Intelligence</span>
+            <Sparkles className="h-4 w-4 text-violet-400" />
+            <span className="text-sm font-medium bg-gradient-to-r from-violet-400 to-blue-400 bg-clip-text text-transparent">Disk Cleanup Intelligence</span>
           </div>
           {showDiskIntel ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
         </button>
@@ -1229,13 +1261,14 @@ export default function FileManager({
         )}
       </div>
 
-      {/* File List / Trash View */}
+      {/* File List + Activity sidebar */}
+      <div className="flex flex-1 min-h-0">
       {showTrash ? (
         <TrashView deviceId={deviceId} onRestore={() => { fetchDirectory(currentPath); addActivity('restore', [], 'success'); }} />
       ) : (
         <div
           className={cn(
-            'flex-1 overflow-auto relative',
+            'flex-1 overflow-auto',
             isDragging && 'ring-2 ring-primary ring-inset'
           )}
           onDragOver={handleDragOver}
@@ -1411,52 +1444,20 @@ export default function FileManager({
             </tbody>
           </table>
 
-          {/* Floating action bar */}
-          {selectedItems.size > 0 && (
-            <div className="absolute bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 px-4 py-3 flex items-center justify-between z-10">
-              <span className="text-sm text-gray-300">{selectedItems.size} item{selectedItems.size > 1 ? 's' : ''} selected</span>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => { setFolderPickerMode('copy'); setShowFolderPicker(true); }}
-                  disabled={operationLoading}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 text-gray-200 rounded text-sm hover:bg-gray-600 disabled:opacity-50"
-                >
-                  <Copy className="w-4 h-4" />
-                  Copy to...
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setFolderPickerMode('move'); setShowFolderPicker(true); }}
-                  disabled={operationLoading}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 text-gray-200 rounded text-sm hover:bg-gray-600 disabled:opacity-50"
-                >
-                  <Move className="w-4 h-4" />
-                  Move to...
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowDeleteConfirm(true)}
-                  disabled={operationLoading}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-red-600/20 text-red-400 rounded text-sm hover:bg-red-600/30 disabled:opacity-50"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Delete
-                </button>
-                <button
-                  type="button"
-                  onClick={downloadSelected}
-                  disabled={operationLoading}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-blue-600/20 text-blue-400 rounded text-sm hover:bg-blue-600/30 disabled:opacity-50"
-                >
-                  <Download className="w-4 h-4" />
-                  Download
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       )}
+
+      {/* Activity sidebar */}
+      {showActivity && (
+        <FileActivityPanel
+          deviceId={deviceId}
+          open={showActivity}
+          onToggle={() => setShowActivity(prev => !prev)}
+          activities={activities}
+          onClear={() => setActivities([])}
+        />
+      )}
+      </div>
 
       {/* Transfer Progress Panel */}
       {transfers.length > 0 && (
@@ -1574,13 +1575,6 @@ export default function FileManager({
         items={entries.filter(e => selectedItems.has(e.path)).map(e => ({ name: e.name, path: e.path, size: e.size, type: e.type }))}
         onConfirm={handleDelete}
         onClose={() => setShowDeleteConfirm(false)}
-      />
-      <FileActivityPanel
-        deviceId={deviceId}
-        open={showActivity}
-        onToggle={() => setShowActivity(prev => !prev)}
-        activities={activities}
-        onClear={() => setActivities([])}
       />
     </div>
   );

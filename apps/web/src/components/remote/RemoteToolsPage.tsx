@@ -780,7 +780,7 @@ export default function RemoteToolsPage({
       </div>
 
       {/* Tool Content */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className={`flex-1 min-h-0 flex flex-col p-6 ${activeTab === 'files' ? '' : 'overflow-auto'}`}>
         {activeTab === 'processes' && (
           <ProcessManager
             deviceId={deviceId}
