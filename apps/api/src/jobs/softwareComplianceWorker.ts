@@ -26,6 +26,12 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+function fireAudit(input: Parameters<typeof recordSoftwarePolicyAudit>[0]): void {
+  recordSoftwarePolicyAudit(input).catch((err) => {
+    console.error('[SoftwareComplianceWorker] Audit write failed:', err);
+  });
+}
+
 const SOFTWARE_COMPLIANCE_QUEUE = 'software-compliance';
 const SCAN_INTERVAL_MS = 15 * 60 * 1000;
 const REMEDIATION_COOLDOWN_DEFAULT_MINUTES = 120;
@@ -219,6 +225,8 @@ async function processScanPolicies(): Promise<{ queued: number }> {
         jobId: `software-compliance:${policy.id}:${slot}`,
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 300 },
+        attempts: 3,
+        backoff: { type: 'exponential' as const, delay: 5000 },
       },
     }))
   );
@@ -291,7 +299,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   }
 
   if (shadowedByDeviceId.size > 0) {
-    await recordSoftwarePolicyAudit({
+    fireAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       action: 'policy_precedence_applied',
@@ -342,7 +350,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         violations += 1;
         recordSoftwarePolicyViolation(policy.mode, violationsWithStableTimestamps.length);
 
-        await recordSoftwarePolicyAudit({
+        fireAudit({
           orgId: policy.orgId,
           policyId: policy.id,
           deviceId,
@@ -387,7 +395,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       });
       recordSoftwarePolicyEvaluation(policy.mode, 'unknown', Date.now() - startedAt, 'error');
 
-      await recordSoftwarePolicyAudit({
+      fireAudit({
         orgId: policy.orgId,
         policyId: policy.id,
         deviceId,
@@ -425,7 +433,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       }
     }
 
-    await recordSoftwarePolicyAudit({
+    fireAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       action: 'remediation_scheduled',
@@ -463,6 +471,9 @@ export function createSoftwareComplianceWorker(): Worker<SoftwareComplianceJobDa
     {
       connection: getRedisConnection(),
       concurrency: 4,
+      settings: {
+        backoffStrategy: (attemptsMade: number) => Math.min(attemptsMade * 5000, 30000),
+      },
     }
   );
 }
@@ -545,6 +556,8 @@ export async function scheduleSoftwareComplianceCheck(
         : undefined,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 },
+      attempts: 3,
+      backoff: { type: 'exponential' as const, delay: 5000 },
     }
   );
 

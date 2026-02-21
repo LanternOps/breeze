@@ -13,6 +13,12 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+function fireAudit(input: Parameters<typeof recordSoftwarePolicyAudit>[0]): void {
+  recordSoftwarePolicyAudit(input).catch((err) => {
+    console.error('[SoftwareRemediationWorker] Audit write failed:', err);
+  });
+}
+
 const SOFTWARE_REMEDIATION_QUEUE = 'software-remediation';
 const DEFAULT_REMEDIATION_COOLDOWN_MINUTES = 120;
 const IN_FLIGHT_LOOKBACK_MINUTES = 24 * 60;
@@ -141,7 +147,7 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
         })
         .where(eq(softwareComplianceStatus.id, compliance.id));
 
-      await recordSoftwarePolicyAudit({
+      fireAudit({
         orgId: policy.orgId,
         policyId: policy.id,
         deviceId: data.deviceId,
@@ -173,130 +179,145 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
     })
     .where(eq(softwareComplianceStatus.id, compliance.id));
 
-  const rawViolations = Array.isArray(compliance.violations) ? compliance.violations : [];
-  const unauthorizedViolations: Array<{
-    software?: {
-      name?: string;
-      version?: string | null;
-    };
-  }> = [];
-  const seenViolationKeys = new Set<string>();
-  for (const violation of rawViolations) {
-    if (!violation || typeof violation !== 'object') continue;
-    const typed = violation as {
-      type?: string;
-      software?: { name?: string; version?: string | null };
-    };
-    if (typed.type !== 'unauthorized') continue;
-    const softwareName = typed.software?.name?.trim();
-    if (!softwareName) continue;
-    const key = normalizeSoftwareKey(softwareName, typed.software?.version ?? undefined);
-    if (seenViolationKeys.has(key)) continue;
-    seenViolationKeys.add(key);
-    unauthorizedViolations.push(typed);
-  }
+  try {
+    const rawViolations = Array.isArray(compliance.violations) ? compliance.violations : [];
+    const unauthorizedViolations: Array<{
+      software?: {
+        name?: string;
+        version?: string | null;
+      };
+    }> = [];
+    const seenViolationKeys = new Set<string>();
+    for (const violation of rawViolations) {
+      if (!violation || typeof violation !== 'object') continue;
+      const typed = violation as {
+        type?: string;
+        software?: { name?: string; version?: string | null };
+      };
+      if (typed.type !== 'unauthorized') continue;
+      const softwareName = typed.software?.name?.trim();
+      if (!softwareName) continue;
+      const key = normalizeSoftwareKey(softwareName, typed.software?.version ?? undefined);
+      if (seenViolationKeys.has(key)) continue;
+      seenViolationKeys.add(key);
+      unauthorizedViolations.push(typed);
+    }
 
-  if (unauthorizedViolations.length === 0) {
+    if (unauthorizedViolations.length === 0) {
+      await db
+        .update(softwareComplianceStatus)
+        .set({
+          remediationStatus: 'completed',
+          lastRemediationAttempt: now,
+        })
+        .where(eq(softwareComplianceStatus.id, compliance.id));
+      recordSoftwareRemediationDecision('no_violations');
+
+      return {
+        policyId: data.policyId,
+        deviceId: data.deviceId,
+        commandsQueued: 0,
+        errors: 0,
+      };
+    }
+
+    const remediationErrors: RemediationError[] = [];
+    const inFlightKeys = await readInFlightUninstallKeys(data.deviceId, policy.id);
+    let skippedInFlight = 0;
+    let commandsQueued = 0;
+
+    for (const violation of unauthorizedViolations) {
+      const softwareName = violation.software?.name?.trim();
+      if (!softwareName) {
+        remediationErrors.push({ message: 'Unauthorized violation missing software name' });
+        continue;
+      }
+
+      const softwareVersion = violation.software?.version ?? undefined;
+      const key = normalizeSoftwareKey(softwareName, softwareVersion);
+      if (inFlightKeys.has(key)) {
+        skippedInFlight += 1;
+        recordSoftwareRemediationDecision('command_deduped');
+        continue;
+      }
+
+      try {
+        await queueCommand(
+          data.deviceId,
+          CommandTypes.SOFTWARE_UNINSTALL,
+          {
+            name: softwareName,
+            version: softwareVersion,
+            policyId: policy.id,
+            complianceStatusId: compliance.id,
+            source: 'software_policy',
+          }
+        );
+        commandsQueued += 1;
+        inFlightKeys.add(key);
+        recordSoftwareRemediationDecision('command_queued');
+      } catch (error) {
+        remediationErrors.push({
+          softwareName,
+          message: error instanceof Error ? error.message : 'Failed to queue uninstall command',
+        });
+        recordSoftwareRemediationDecision('command_failed');
+      }
+    }
+
+    const remediationStatus = (() => {
+      if (commandsQueued > 0 || skippedInFlight > 0) return 'pending';
+      if (remediationErrors.length > 0) return 'failed';
+      return 'completed';
+    })();
+
     await db
       .update(softwareComplianceStatus)
       .set({
-        remediationStatus: 'completed',
+        remediationStatus,
         lastRemediationAttempt: now,
+        remediationErrors: remediationErrors.length > 0 ? remediationErrors : null,
       })
       .where(eq(softwareComplianceStatus.id, compliance.id));
-    recordSoftwareRemediationDecision('no_violations');
+
+    const action = remediationErrors.length > 0
+      ? (commandsQueued > 0 ? 'remediation_partial' : 'remediation_failed')
+      : (skippedInFlight > 0 && commandsQueued === 0 ? 'remediation_deferred' : 'remediation_queued');
+    fireAudit({
+      orgId: policy.orgId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action,
+      actor: 'system',
+      details: {
+        policyName: policy.name,
+        unauthorizedViolations: unauthorizedViolations.length,
+        commandsQueued,
+        skippedInFlight,
+        errors: remediationErrors,
+      },
+    });
 
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,
-      commandsQueued: 0,
-      errors: 0,
-    };
-  }
-
-  const remediationErrors: RemediationError[] = [];
-  const inFlightKeys = await readInFlightUninstallKeys(data.deviceId, policy.id);
-  let skippedInFlight = 0;
-  let commandsQueued = 0;
-
-  for (const violation of unauthorizedViolations) {
-    const softwareName = violation.software?.name?.trim();
-    if (!softwareName) {
-      remediationErrors.push({ message: 'Unauthorized violation missing software name' });
-      continue;
-    }
-
-    const softwareVersion = violation.software?.version ?? undefined;
-    const key = normalizeSoftwareKey(softwareName, softwareVersion);
-    if (inFlightKeys.has(key)) {
-      skippedInFlight += 1;
-      recordSoftwareRemediationDecision('command_deduped');
-      continue;
-    }
-
-    try {
-      await queueCommand(
-        data.deviceId,
-        CommandTypes.SOFTWARE_UNINSTALL,
-        {
-          name: softwareName,
-          version: softwareVersion,
-          policyId: policy.id,
-          complianceStatusId: compliance.id,
-          source: 'software_policy',
-        }
-      );
-      commandsQueued += 1;
-      inFlightKeys.add(key);
-      recordSoftwareRemediationDecision('command_queued');
-    } catch (error) {
-      remediationErrors.push({
-        softwareName,
-        message: error instanceof Error ? error.message : 'Failed to queue uninstall command',
-      });
-      recordSoftwareRemediationDecision('command_failed');
-    }
-  }
-
-  const remediationStatus = (() => {
-    if (commandsQueued > 0 || skippedInFlight > 0) return 'pending';
-    if (remediationErrors.length > 0) return 'failed';
-    return 'completed';
-  })();
-
-  await db
-    .update(softwareComplianceStatus)
-    .set({
-      remediationStatus,
-      lastRemediationAttempt: now,
-      remediationErrors: remediationErrors.length > 0 ? remediationErrors : null,
-    })
-    .where(eq(softwareComplianceStatus.id, compliance.id));
-
-  const action = remediationErrors.length > 0
-    ? (commandsQueued > 0 ? 'remediation_partial' : 'remediation_failed')
-    : (skippedInFlight > 0 && commandsQueued === 0 ? 'remediation_deferred' : 'remediation_queued');
-  await recordSoftwarePolicyAudit({
-    orgId: policy.orgId,
-    policyId: policy.id,
-    deviceId: data.deviceId,
-    action,
-    actor: 'system',
-    details: {
-      policyName: policy.name,
-      unauthorizedViolations: unauthorizedViolations.length,
       commandsQueued,
-      skippedInFlight,
-      errors: remediationErrors,
-    },
-  });
-
-  return {
-    policyId: data.policyId,
-    deviceId: data.deviceId,
-    commandsQueued,
-    errors: remediationErrors.length,
-  };
+      errors: remediationErrors.length,
+    };
+  } catch (error) {
+    console.error(`[SoftwareRemediationWorker] Unhandled error for device ${data.deviceId}, policy ${data.policyId}:`, error);
+    await db
+      .update(softwareComplianceStatus)
+      .set({
+        remediationStatus: 'failed',
+        remediationErrors: [{ message: error instanceof Error ? error.message : 'Internal remediation error' }],
+      })
+      .where(eq(softwareComplianceStatus.id, compliance.id))
+      .catch((resetErr: unknown) => {
+        console.error('[SoftwareRemediationWorker] Failed to reset remediationStatus to failed:', resetErr);
+      });
+    throw error;
+  }
 }
 
 export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJobData> {
@@ -310,6 +331,9 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
     {
       connection: getRedisConnection(),
       concurrency: 5,
+      settings: {
+        backoffStrategy: (attemptsMade: number) => Math.min(attemptsMade * 5000, 30000),
+      },
     }
   );
 }
@@ -370,6 +394,8 @@ export async function scheduleSoftwareRemediation(
         jobId,
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 200 },
+        attempts: 3,
+        backoff: { type: 'exponential' as const, delay: 5000 },
       }
     );
     queued += 1;
