@@ -24,6 +24,7 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'query_audit_log',
     'search_logs',
     'get_log_trends',
+    'query_change_log',
   ],
   standard: [
     'take_screenshot',
@@ -40,6 +41,7 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'search_logs',
     'get_log_trends',
     'detect_log_correlations',
+    'query_change_log',
     'manage_alerts',
     'manage_services',
     'disk_cleanup',
@@ -61,6 +63,7 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'search_logs',
     'get_log_trends',
     'detect_log_correlations',
+    'query_change_log',
     'manage_alerts',
     'manage_services',
     'disk_cleanup',

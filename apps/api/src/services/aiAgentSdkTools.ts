@@ -61,6 +61,7 @@ export const TOOL_TIERS = {
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
   query_audit_log: 1,
+  query_change_log: 1,
   network_discovery: 3,
   take_screenshot: 2,
   analyze_screen: 2,
@@ -465,6 +466,20 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('query_audit_log', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_change_log',
+      'Search device configuration changes (software, services, startup, network, scheduled tasks, and user accounts).',
+      {
+        deviceId: uuid.optional(),
+        startTime: z.string().datetime({ offset: true }).optional(),
+        endTime: z.string().datetime({ offset: true }).optional(),
+        changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account']).optional(),
+        changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('query_change_log', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

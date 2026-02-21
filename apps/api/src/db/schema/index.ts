@@ -38,3 +38,4 @@ export * from './sessions';
 export * from './agentLogs';
 export * from './brainDeviceContext';
 export * from './playbooks';
+export * from './changes';

@@ -311,10 +311,17 @@ Any business builds any workflow. Order forms, dispatch, inventory, CRM — asse
 
 ---
 
-## Open Questions for Implementation Planning
+## Architecture Decisions
 
-1. Should Spaces map to the existing `organizations` + `sites` hierarchy, or be a new dimension?
-2. CRDT or operational transforms for real-time collaborative doc editing?
-3. Local SQLite schema — full mirror or delta-only sync?
-4. Block type definitions — org-scoped only, or a global template marketplace?
-5. Email edge conversion — at the API ingest layer or inside the Tauri app before local storage?
+1. **Spaces are team/department-scoped** — a new organizational dimension independent of the existing org → site → device hierarchy. Examples: Sales, Internal IT, Finance, Client: ACME. Spaces can reference orgs and devices but are not derived from them.
+
+2. **CRDT for collaborative editing** — every edit is a delta operation, mergeable automatically. The history is a log of operations, revertible like git. Sync is just exchanging missing deltas. Use Automerge or Yjs. This is the same mental model as decision #3.
+
+3. **Delta sync with git-style history** — local SQLite stores the operation log (deltas only, not full snapshots). Sync sends missing operations. Each change has a hash and parent reference — like git objects. Full document state is reconstructed from the operation log. Enables offline editing, conflict-free merge on reconnect, and complete version history for free.
+
+4. **Global block type marketplace** — block type definitions exist at two levels:
+   - **Global marketplace**: curated templates (Tickets, Knowledge Base, CRM, Inventory, etc.) published by Breeze, installable into any Space
+   - **Org-scoped custom types**: any org can define their own block types, private to their tenant
+   - Future: orgs can publish custom types to the marketplace
+
+5. **Email conversion at the API edge** — HTML → markdown conversion happens at the API ingest layer before storage. The Tauri app and SQLite cache only ever see clean markdown. No HTML reaches any renderer. Security guarantee is enforced at the boundary, not client-side.

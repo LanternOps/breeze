@@ -18,6 +18,7 @@ vi.mock('./aiTools', () => ({
       get_playbook_history: 1,
       // Non-fleet tools for baseline tests
       query_devices: 1,
+      query_change_log: 1,
       execute_command: 3,
     };
     return tiers[toolName];
@@ -186,6 +187,13 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     });
     expect(execTool.tier).toBe(3);
     expect(execTool.requiresApproval).toBe(true);
+  });
+
+  it('treats query_change_log as Tier 1 read-only', () => {
+    const result = checkGuardrails('query_change_log', {});
+    expect(result.tier).toBe(1);
+    expect(result.allowed).toBe(true);
+    expect(result.requiresApproval).toBe(false);
   });
 });
 

@@ -87,6 +87,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     rename: { resource: 'devices', action: 'execute' },
   },
   query_audit_log: { resource: 'audit', action: 'read' },
+  query_change_log: { resource: 'devices', action: 'read' },
   network_discovery: { resource: 'devices', action: 'execute' },
   analyze_boot_performance: { resource: 'devices', action: 'read' },
   manage_startup_items: { resource: 'devices', action: 'execute' },
