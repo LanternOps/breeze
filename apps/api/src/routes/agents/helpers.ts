@@ -658,7 +658,7 @@ export async function handleSoftwareRemediationCommandResult(
       })
       .where(eq(softwareComplianceStatus.id, compliance.id));
 
-    await recordSoftwarePolicyAudit({
+    recordSoftwarePolicyAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       deviceId: command.deviceId,
@@ -673,6 +673,8 @@ export async function handleSoftwareRemediationCommandResult(
         exitCode: resultData.exitCode ?? null,
         error: resultData.error ?? null,
       },
+    }).catch((err) => {
+      console.error('[agents/helpers] Audit write failed for remediation_command_failed:', err);
     });
     recordSoftwareRemediationDecision('command_result_failed');
     return;
@@ -689,8 +691,14 @@ export async function handleSoftwareRemediationCommandResult(
     })
     .where(eq(softwareComplianceStatus.id, compliance.id));
 
-  const verificationJobId = await scheduleSoftwareComplianceCheck(policy.id, [command.deviceId]);
-  await recordSoftwarePolicyAudit({
+  let verificationJobId: string | undefined;
+  try {
+    verificationJobId = await scheduleSoftwareComplianceCheck(policy.id, [command.deviceId]);
+  } catch (err) {
+    console.error('[agents/helpers] Failed to schedule verification scan after remediation:', err);
+  }
+
+  recordSoftwarePolicyAudit({
     orgId: policy.orgId,
     policyId: policy.id,
     deviceId: command.deviceId,
@@ -701,8 +709,10 @@ export async function handleSoftwareRemediationCommandResult(
       policyName: policy.name,
       softwareName,
       softwareVersion: softwareVersion ?? null,
-      verificationJobId,
+      verificationJobId: verificationJobId ?? 'schedule_failed',
     },
+  }).catch((err) => {
+    console.error('[agents/helpers] Audit write failed for software_uninstalled:', err);
   });
   recordSoftwareRemediationDecision('command_result_completed');
 }

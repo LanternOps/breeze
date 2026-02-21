@@ -12,7 +12,9 @@ const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   if (typeof withSystem !== 'function') {
-    console.error('[SoftwareRemediationWorker] withSystemDbAccessContext unavailable — DB operations may bypass RLS');
+    const msg = '[SoftwareRemediationWorker] withSystemDbAccessContext unavailable — DB operations may bypass RLS';
+    console.error(msg);
+    captureException(new Error(msg));
   }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
@@ -350,6 +352,7 @@ export async function initializeSoftwareRemediationWorker(): Promise<void> {
 
   softwareRemediationWorker.on('error', (error) => {
     console.error('[SoftwareRemediationWorker] Worker error', { error });
+    captureException(error);
   });
 
   softwareRemediationWorker.on('failed', (job, error) => {
@@ -397,7 +400,9 @@ export async function scheduleSoftwareRemediation(
         recordSoftwareRemediationDecision('job_deduped');
         continue;
       }
-      await existing.remove().catch(() => {});
+      await existing.remove().catch((err) => {
+        console.warn('[SoftwareRemediationWorker] Failed to remove stale job (non-fatal):', { jobId, error: err });
+      });
     }
 
     await queue.add(

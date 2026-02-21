@@ -250,7 +250,7 @@ softwarePoliciesRoutes.post(
       captureException(error);
     }
 
-    await recordSoftwarePolicyAudit({
+    recordSoftwarePolicyAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       action: 'policy_created',
@@ -260,6 +260,8 @@ softwarePoliciesRoutes.post(
         mode: policy.mode,
         targetType: policy.targetType,
       },
+    }).catch((err) => {
+      console.error('[softwarePolicies] Audit write failed for policy_created:', err);
     });
 
     writeRouteAudit(c, {
@@ -443,7 +445,7 @@ softwarePoliciesRoutes.patch(
       captureException(error);
     }
 
-    await recordSoftwarePolicyAudit({
+    recordSoftwarePolicyAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       action: 'policy_updated',
@@ -453,6 +455,8 @@ softwarePoliciesRoutes.patch(
         updatedFields: Object.keys(payload),
         scheduleWarning,
       },
+    }).catch((err) => {
+      console.error('[softwarePolicies] Audit write failed for policy_updated:', err);
     });
 
     writeRouteAudit(c, {
@@ -483,23 +487,31 @@ softwarePoliciesRoutes.delete(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
-    await db.transaction(async (tx) => {
-      await tx
-        .update(softwarePolicies)
-        .set({ isActive: false, updatedAt: new Date() })
-        .where(eq(softwarePolicies.id, id));
-      await tx
-        .delete(softwareComplianceStatus)
-        .where(eq(softwareComplianceStatus.policyId, id));
-    });
+    try {
+      await db.transaction(async (tx) => {
+        await tx
+          .update(softwarePolicies)
+          .set({ isActive: false, updatedAt: new Date() })
+          .where(eq(softwarePolicies.id, id));
+        await tx
+          .delete(softwareComplianceStatus)
+          .where(eq(softwareComplianceStatus.policyId, id));
+      });
+    } catch (error) {
+      console.error(`[softwarePolicies] Failed to delete policy ${id}:`, error);
+      captureException(error);
+      return c.json({ error: 'Failed to delete policy' }, 500);
+    }
 
-    await recordSoftwarePolicyAudit({
+    recordSoftwarePolicyAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       action: 'policy_deleted',
       actor: 'user',
       actorId: auth.user.id,
       details: { name: policy.name },
+    }).catch((err) => {
+      console.error('[softwarePolicies] Audit write failed for policy_deleted:', err);
     });
 
     writeRouteAudit(c, {
@@ -537,15 +549,24 @@ softwarePoliciesRoutes.post(
       return c.json({ error: parsed.error.issues.map((issue) => issue.message).join('; ') }, 400);
     }
 
-    const jobId = await scheduleSoftwareComplianceCheck(policy.id, parsed.data.deviceIds);
+    let jobId: string;
+    try {
+      jobId = await scheduleSoftwareComplianceCheck(policy.id, parsed.data.deviceIds);
+    } catch (error) {
+      console.error(`[softwarePolicies] Failed to schedule on-demand compliance check for policy ${id}:`, error);
+      captureException(error);
+      return c.json({ error: 'Failed to schedule compliance check. Please try again.' }, 503);
+    }
 
-    await recordSoftwarePolicyAudit({
+    recordSoftwarePolicyAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       action: 'compliance_check_requested',
       actor: 'user',
       actorId: auth.user.id,
       details: { jobId, deviceIds: parsed.data.deviceIds ?? null },
+    }).catch((err) => {
+      console.error('[softwarePolicies] Audit write failed for compliance_check_requested:', err);
     });
 
     writeRouteAudit(c, {
@@ -622,7 +643,14 @@ softwarePoliciesRoutes.post(
       return c.json({ message: 'No matching violating devices found for remediation', queued: 0 });
     }
 
-    const queued = await scheduleSoftwareRemediation(policy.id, targetDeviceIds);
+    let queued: number;
+    try {
+      queued = await scheduleSoftwareRemediation(policy.id, targetDeviceIds);
+    } catch (error) {
+      console.error(`[softwarePolicies] Failed to schedule remediation for policy ${id}:`, error);
+      captureException(error);
+      return c.json({ error: 'Failed to schedule remediation. Please try again.' }, 503);
+    }
 
     if (queued > 0) {
       const CHUNK = 500;
@@ -641,7 +669,7 @@ softwarePoliciesRoutes.post(
       }
     }
 
-    await recordSoftwarePolicyAudit({
+    recordSoftwarePolicyAudit({
       orgId: policy.orgId,
       policyId: policy.id,
       action: 'remediation_requested',
@@ -651,6 +679,8 @@ softwarePoliciesRoutes.post(
         requestedCount: targetDeviceIds.length,
         queued,
       },
+    }).catch((err) => {
+      console.error('[softwarePolicies] Audit write failed for remediation_requested:', err);
     });
 
     writeRouteAudit(c, {

@@ -27,7 +27,9 @@ const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   if (typeof withSystem !== 'function') {
-    console.error('[SoftwareComplianceWorker] withSystemDbAccessContext unavailable — DB operations may bypass RLS');
+    const msg = '[SoftwareComplianceWorker] withSystemDbAccessContext unavailable — DB operations may bypass RLS';
+    console.error(msg);
+    captureException(new Error(msg));
   }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
@@ -400,6 +402,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         deviceId,
         error,
       });
+      captureException(error);
       complianceUpserts.push({
         deviceId,
         policyId: policy.id,
@@ -409,21 +412,17 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       });
       recordSoftwarePolicyEvaluation(policy.mode, 'unknown', Date.now() - startedAt, 'error');
 
-      try {
-        await recordSoftwarePolicyAudit({
-          orgId: policy.orgId,
-          policyId: policy.id,
-          deviceId,
-          action: 'compliance_check_failed',
-          actor: 'system',
-          details: {
-            mode: policy.mode,
-            error: error instanceof Error ? error.message : 'Unknown compliance evaluation error',
-          },
-        });
-      } catch (auditError) {
-        console.error('[SoftwareComplianceWorker] Failed to write audit record (non-fatal):', auditError);
-      }
+      fireAudit({
+        orgId: policy.orgId,
+        policyId: policy.id,
+        deviceId,
+        action: 'compliance_check_failed',
+        actor: 'system',
+        details: {
+          mode: policy.mode,
+          error: error instanceof Error ? error.message : 'Unknown compliance evaluation error',
+        },
+      });
     }
   }
 
@@ -521,6 +520,7 @@ export async function initializeSoftwareComplianceWorker(): Promise<void> {
 
   softwareComplianceWorker.on('error', (error) => {
     console.error('[SoftwareComplianceWorker] Worker error', { error });
+    captureException(error);
   });
 
   softwareComplianceWorker.on('failed', (job, error) => {

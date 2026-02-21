@@ -2004,8 +2004,14 @@ registerTool({
         })
         .returning();
 
-      await scheduleSoftwareComplianceCheck(policy.id);
-      return JSON.stringify({ success: true, policyId: policy.id, name: policy.name });
+      let scheduleWarning: string | undefined;
+      try {
+        await scheduleSoftwareComplianceCheck(policy.id);
+      } catch (error) {
+        scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
+        console.error(`[aiTools] Failed to schedule compliance check for policy ${policy.id}:`, error);
+      }
+      return JSON.stringify({ success: true, policyId: policy.id, name: policy.name, ...(scheduleWarning ? { warning: scheduleWarning } : {}) });
     }
 
     if (action === 'update') {
@@ -2065,8 +2071,14 @@ registerTool({
         .where(eq(softwarePolicies.id, existing.id))
         .returning();
 
-      await scheduleSoftwareComplianceCheck(existing.id);
-      return JSON.stringify({ success: true, policyId: existing.id, name: updated?.name ?? existing.name });
+      let scheduleWarning: string | undefined;
+      try {
+        await scheduleSoftwareComplianceCheck(existing.id);
+      } catch (error) {
+        scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
+        console.error(`[aiTools] Failed to schedule compliance check for policy ${existing.id}:`, error);
+      }
+      return JSON.stringify({ success: true, policyId: existing.id, name: updated?.name ?? existing.name, ...(scheduleWarning ? { warning: scheduleWarning } : {}) });
     }
 
     if (action === 'delete') {
@@ -2156,7 +2168,13 @@ registerTool({
       return JSON.stringify({ message: 'No matching violation rows found for remediation', queued: 0 });
     }
 
-    const queued = await scheduleSoftwareRemediation(policy.id, deviceIds);
+    let queued: number;
+    try {
+      queued = await scheduleSoftwareRemediation(policy.id, deviceIds);
+    } catch (error) {
+      console.error(`[aiTools] Failed to schedule remediation for policy ${policy.id}:`, error);
+      return JSON.stringify({ error: 'Failed to schedule remediation', policyId: policy.id });
+    }
     return JSON.stringify({
       message: `Remediation scheduled for ${queued} device(s)`,
       policyId: policy.id,

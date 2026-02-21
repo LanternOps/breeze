@@ -348,6 +348,14 @@ export async function resolveTargetDeviceIdsForPolicy(
     return rows.map((row) => row.id);
   }
 
+  if (policy.targetType === 'organization') {
+    const rows = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(eq(devices.orgId, policy.orgId));
+    return rows.map((row) => row.id);
+  }
+
   console.warn(
     `[softwarePolicyService] resolveTargetDeviceIdsForPolicy: unrecognized targetType "${policy.targetType}" for policy in org ${policy.orgId} — returning empty device list`
   );
