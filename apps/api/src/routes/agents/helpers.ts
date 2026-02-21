@@ -9,11 +9,15 @@ import {
   deviceDisks,
   deviceFilesystemSnapshots,
   automationPolicies,
+  softwareComplianceStatus,
+  softwarePolicies,
   securityStatus,
   securityThreats,
   securityScans,
   organizations,
 } from '../../db/schema';
+import { scheduleSoftwareComplianceCheck } from '../../jobs/softwareComplianceWorker';
+import { recordSoftwareRemediationDecision } from '../metrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import {
   getFilesystemScanState,
@@ -24,6 +28,7 @@ import {
   saveFilesystemSnapshot,
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
+import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import {
   type SecurityProviderValue,
@@ -571,6 +576,145 @@ export async function handleSecurityCommandResult(
       await updateThreatStatusForAction(command);
     }
   }
+}
+
+// ============================================
+// Software Remediation
+// ============================================
+
+const softwareUninstallCommandType = 'software_uninstall';
+
+export async function handleSoftwareRemediationCommandResult(
+  command: typeof deviceCommands.$inferSelect,
+  resultData: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  if (command.type !== softwareUninstallCommandType) {
+    return;
+  }
+
+  const payload = isObject(command.payload) ? command.payload : {};
+  const policyId = readTrimmedString(payload.policyId);
+  if (!policyId || !isUuid(policyId)) {
+    console.warn(
+      `[agents/helpers] software_uninstall command ${command.id} for device ${command.deviceId} ` +
+      `has missing or invalid policyId — cannot update compliance status`
+    );
+    return;
+  }
+
+  const softwareName = readTrimmedString(payload.name) ?? 'unknown';
+  const softwareVersion = readTrimmedString(payload.version);
+  const [policy] = await db
+    .select({
+      id: softwarePolicies.id,
+      orgId: softwarePolicies.orgId,
+      name: softwarePolicies.name,
+    })
+    .from(softwarePolicies)
+    .where(eq(softwarePolicies.id, policyId))
+    .limit(1);
+
+  if (!policy) {
+    return;
+  }
+
+  const [compliance] = await db
+    .select({
+      id: softwareComplianceStatus.id,
+      remediationErrors: softwareComplianceStatus.remediationErrors,
+    })
+    .from(softwareComplianceStatus)
+    .where(and(
+      eq(softwareComplianceStatus.policyId, policyId),
+      eq(softwareComplianceStatus.deviceId, command.deviceId),
+    ))
+    .limit(1);
+
+  if (!compliance) {
+    return;
+  }
+
+  if (resultData.status !== 'completed') {
+    const existingErrors = Array.isArray(compliance.remediationErrors)
+      ? compliance.remediationErrors
+      : [];
+    const entry = {
+      commandId: command.id,
+      softwareName,
+      softwareVersion: softwareVersion ?? null,
+      message: resultData.error ?? resultData.stderr ?? 'Uninstall command failed',
+      status: resultData.status,
+      exitCode: resultData.exitCode ?? null,
+      failedAt: new Date().toISOString(),
+    };
+    const nextErrors = [...existingErrors, entry].slice(-25);
+
+    await db
+      .update(softwareComplianceStatus)
+      .set({
+        remediationStatus: 'failed',
+        lastRemediationAttempt: new Date(),
+        remediationErrors: nextErrors,
+      })
+      .where(eq(softwareComplianceStatus.id, compliance.id));
+
+    recordSoftwarePolicyAudit({
+      orgId: policy.orgId,
+      policyId: policy.id,
+      deviceId: command.deviceId,
+      action: 'remediation_command_failed',
+      actor: 'system',
+      details: {
+        commandId: command.id,
+        policyName: policy.name,
+        softwareName,
+        softwareVersion: softwareVersion ?? null,
+        commandStatus: resultData.status,
+        exitCode: resultData.exitCode ?? null,
+        error: resultData.error ?? null,
+      },
+    }).catch((err) => {
+      console.error('[agents/helpers] Audit write failed for remediation_command_failed:', err);
+    });
+    recordSoftwareRemediationDecision('command_result_failed');
+    return;
+  }
+
+  await db
+    .update(softwareComplianceStatus)
+    .set({
+      // Mark the current remediation attempt as completed and trigger a verification scan.
+      // If violations remain after verification, the next evaluation can queue remediation again.
+      remediationStatus: 'completed',
+      lastRemediationAttempt: new Date(),
+      remediationErrors: null,
+    })
+    .where(eq(softwareComplianceStatus.id, compliance.id));
+
+  let verificationJobId: string | undefined;
+  try {
+    verificationJobId = await scheduleSoftwareComplianceCheck(policy.id, [command.deviceId]);
+  } catch (err) {
+    console.error('[agents/helpers] Failed to schedule verification scan after remediation:', err);
+  }
+
+  recordSoftwarePolicyAudit({
+    orgId: policy.orgId,
+    policyId: policy.id,
+    deviceId: command.deviceId,
+    action: 'software_uninstalled',
+    actor: 'system',
+    details: {
+      commandId: command.id,
+      policyName: policy.name,
+      softwareName,
+      softwareVersion: softwareVersion ?? null,
+      verificationJobId: verificationJobId ?? 'schedule_failed',
+    },
+  }).catch((err) => {
+    console.error('[agents/helpers] Audit write failed for software_uninstalled:', err);
+  });
+  recordSoftwareRemediationDecision('command_result_completed');
 }
 
 // ============================================

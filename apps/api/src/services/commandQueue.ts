@@ -62,6 +62,9 @@ export const CommandTypes = {
   // Script execution
   SCRIPT: 'script',
 
+  // Software management
+  SOFTWARE_UNINSTALL: 'software_uninstall',
+
   // Patch management
   PATCH_SCAN: 'patch_scan',
   INSTALL_PATCHES: 'install_patches',
@@ -143,6 +146,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.PATCH_SCAN,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,
+  CommandTypes.SOFTWARE_UNINSTALL,
   CommandTypes.SECURITY_SCAN,
   CommandTypes.SECURITY_THREAT_QUARANTINE,
   CommandTypes.SECURITY_THREAT_REMOVE,
@@ -193,7 +197,12 @@ export async function queueCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log:', err));
+        .catch((err) => console.error('Failed to write audit log', {
+          commandId: command.id,
+          deviceId,
+          type,
+          error: err,
+        }));
     }
   }
 
@@ -395,7 +404,13 @@ export async function executeCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log:', err));
+        .catch((err) => console.error('Failed to write audit log', {
+          commandId: command.id,
+          deviceId,
+          type,
+          orgId: device.orgId,
+          error: err,
+        }));
     }
 
     // Dispatch via WebSocket

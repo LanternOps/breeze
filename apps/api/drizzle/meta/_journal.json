@@ -8,6 +8,13 @@
       "when": 1770939154506,
       "tag": "0000_even_nemesis",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1771660800000,
+      "tag": "0001_software_policies",
+      "breakpoints": true
     }
   ]
 }

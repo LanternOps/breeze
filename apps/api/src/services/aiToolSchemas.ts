@@ -369,6 +369,57 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reason: z.string().max(500).optional(),
   }),
 
+  // Software policy tools
+  get_software_compliance: z.object({
+    policyId: uuid.optional(),
+    deviceIds: z.array(uuid).max(500).optional(),
+    status: z.enum(['compliant', 'violation', 'unknown']).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }),
+
+  manage_software_policy: z.object({
+    action: z.enum(['create', 'update', 'delete', 'list', 'get']),
+    policyId: uuid.optional(),
+    orgId: uuid.optional(),
+    name: z.string().min(1).max(200).optional(),
+    description: z.string().max(4000).optional(),
+    mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
+    software: z.array(z.object({
+      name: z.string().min(1).max(500),
+      vendor: z.string().max(200).optional(),
+      minVersion: z.string().max(100).optional(),
+      maxVersion: z.string().max(100).optional(),
+      catalogId: uuid.optional(),
+      reason: z.string().max(1000).optional(),
+    })).max(1000).optional(),
+    allowUnknown: z.boolean().optional(),
+    targetType: z.enum(['organization', 'site', 'device_group', 'devices']).optional(),
+    targetIds: z.array(uuid).max(1000).optional(),
+    priority: z.number().int().min(0).max(100).optional(),
+    enforceMode: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+    remediationOptions: z.object({
+      autoUninstall: z.boolean().optional(),
+      notifyUser: z.boolean().optional(),
+      gracePeriod: z.number().int().min(0).max(24 * 90).optional(), // hours; max 90 days
+      cooldownMinutes: z.number().int().min(1).max(24 * 90 * 60).optional(),
+      maintenanceWindowOnly: z.boolean().optional(),
+    }).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }).refine(
+    (data) => !['update', 'delete', 'get'].includes(data.action) || !!data.policyId,
+    { message: 'policyId is required for update/delete/get actions' }
+  ).refine(
+    (data) => data.action !== 'create' || (!!data.name && !!data.mode && !!data.targetType),
+    { message: 'name, mode, and targetType are required for create action' }
+  ),
+
+  remediate_software_violation: z.object({
+    policyId: uuid,
+    deviceIds: z.array(uuid).max(500).optional(),
+    autoUninstall: z.boolean().optional(),
+  }),
+
   // Agent log tools
   search_agent_logs: z.object({
     deviceIds: z.array(uuid).max(50).optional(),

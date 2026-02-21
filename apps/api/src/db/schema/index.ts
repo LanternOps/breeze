@@ -19,6 +19,7 @@ export * from './mobile';
 export * from './maintenance';
 export * from './security';
 export * from './software';
+export * from './softwarePolicies';
 export * from './deployments';
 export * from './backup';
 export * from './snmp';
