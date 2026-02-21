@@ -191,7 +191,7 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 	if result.Result != nil {
 		var nested map[string]any
 		if err := json.Unmarshal(result.Result, &nested); err != nil {
-			log.Warn("failed to unmarshal nested result from user helper", "commandId", cmd.ID, "error", err)
+			log.Warn("failed to unmarshal nested result from user helper", "commandId", cmd.ID, "error", err.Error())
 		} else {
 			if stdout, ok := nested["stdout"].(string); ok {
 				cmdResult.Stdout = stdout

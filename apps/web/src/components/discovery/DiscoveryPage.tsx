@@ -5,10 +5,12 @@ import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySc
 import DiscoveryJobList from './DiscoveryJobList';
 import DiscoveredAssetList from './DiscoveredAssetList';
 import NetworkTopologyMap from './NetworkTopologyMap';
+import NetworkBaselinesPanel from './NetworkBaselinesPanel';
+import NetworkChangesPanel from './NetworkChangesPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
-const DISCOVERY_TABS = ['profiles', 'jobs', 'assets', 'topology'] as const;
+const DISCOVERY_TABS = ['profiles', 'jobs', 'assets', 'topology', 'baselines', 'changes'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
 
 type ApiDiscoverySchedule = {
@@ -216,12 +218,15 @@ export default function DiscoveryPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ApiDiscoveryProfile | null>(null);
   const [jobsProfileFilter, setJobsProfileFilter] = useState<string | null>(null);
+  const [changesBaselineFilter, setChangesBaselineFilter] = useState<string | null>(null);
 
   const tabLabels: Record<DiscoveryTab, string> = {
     profiles: 'Profiles',
     jobs: 'Jobs',
     assets: 'Assets',
-    topology: 'Topology'
+    topology: 'Topology',
+    baselines: 'Baselines',
+    changes: 'Changes'
   };
   const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
@@ -446,9 +451,17 @@ export default function DiscoveryPage() {
     navigateToTab('assets');
   }, [navigateToTab]);
 
+  const handleNavigateToChanges = useCallback((baselineId?: string) => {
+    if (baselineId) {
+      setChangesBaselineFilter(baselineId);
+    }
+    navigateToTab('changes');
+  }, [navigateToTab]);
+
   // Clear filters when manually clicking a tab
   const handleTabClick = useCallback((tab: DiscoveryTab) => {
     if (tab === 'jobs') setJobsProfileFilter(null);
+    if (tab !== 'changes') setChangesBaselineFilter(null);
     navigateToTab(tab);
   }, [navigateToTab]);
 
@@ -458,20 +471,22 @@ export default function DiscoveryPage() {
         <div>
           <h1 className="text-2xl font-bold">Network Discovery</h1>
           <p className="text-muted-foreground">
-            Configure discovery profiles, monitor scans, and review assets.
+            Configure discovery profiles, monitor scans, manage baselines, and triage network changes.
           </p>
         </div>
-        <button
-          type="button"
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          onClick={() => {
-            setEditingProfile(null);
-            navigateToTab('profiles');
-          }}
-        >
-          <Plus className="h-4 w-4" />
-          New Profile
-        </button>
+        {activeTab === 'profiles' && (
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            onClick={() => {
+              setEditingProfile(null);
+              navigateToTab('profiles');
+            }}
+          >
+            <Plus className="h-4 w-4" />
+            New Profile
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -524,6 +539,24 @@ export default function DiscoveryPage() {
       {activeTab === 'assets' && <DiscoveredAssetList />}
 
       {activeTab === 'topology' && <NetworkTopologyMap onNodeClick={handleNavigateToAssets} />}
+
+      {activeTab === 'baselines' && (
+        <NetworkBaselinesPanel
+          currentOrgId={currentOrgId}
+          currentSiteId={currentSiteId}
+          siteOptions={siteOptions}
+          onViewChanges={handleNavigateToChanges}
+        />
+      )}
+
+      {activeTab === 'changes' && (
+        <NetworkChangesPanel
+          currentOrgId={currentOrgId}
+          currentSiteId={currentSiteId}
+          siteOptions={siteOptions}
+          baselineFilterId={changesBaselineFilter}
+        />
+      )}
     </div>
   );
 }

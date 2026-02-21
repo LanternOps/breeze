@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 // ============================================
 // Enrollment
@@ -63,6 +64,58 @@ export const heartbeatSchema = z.object({
   }),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
+  ipHistoryUpdate: z.object({
+    deviceId: z.string().optional(),
+    currentIPs: z.array(z.object({
+      interfaceName: z.string().min(1).max(100),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).optional(),
+    changedIPs: z.array(z.object({
+      interfaceName: z.string().min(1).max(100),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).optional(),
+    removedIPs: z.array(z.object({
+      interfaceName: z.string().min(1).max(100),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).optional(),
+    detectedAt: z.string().datetime({ offset: true }).optional()
+  }).optional(),
   pendingReboot: z.boolean().optional(),
   lastUser: z.string().max(255).optional(),
   uptime: z.number().int().min(0).optional()
@@ -290,6 +343,7 @@ export const submitPatchesSchema = z.object({
     version: z.string().optional(),
     currentVersion: z.string().optional(),
     kbNumber: z.string().optional(),
+    externalId: z.string().optional(),
     category: z.string().optional(),
     severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
     size: z.number().int().optional(),
@@ -301,6 +355,8 @@ export const submitPatchesSchema = z.object({
   installed: z.array(z.object({
     name: z.string().min(1),
     version: z.string().optional(),
+    kbNumber: z.string().optional(),
+    externalId: z.string().optional(),
     category: z.string().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
     installedAt: z.string().optional()

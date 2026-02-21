@@ -7,11 +7,19 @@
  */
 
 import { z } from 'zod';
+import { isIP } from 'node:net';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 
 // Reusable validators
 const uuid = z.string().uuid();
 const deviceId = z.object({ deviceId: uuid });
+const ipAddress = z.string().trim().max(45).refine(
+  (value) => {
+    const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+    return isIP(withoutZone) !== 0;
+  },
+  { message: 'Invalid IP address format' }
+);
 
 // Path traversal defense
 const BLOCKED_PATH_PREFIXES = [
@@ -88,6 +96,24 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_device_details: z.object({
     deviceId: uuid,
   }),
+
+  get_ip_history: z.object({
+    device_id: uuid.optional(),
+    ip_address: ipAddress.optional(),
+    at_time: z.string().datetime({ offset: true }).optional(),
+    since: z.string().datetime({ offset: true }).optional(),
+    until: z.string().datetime({ offset: true }).optional(),
+    interface_name: z.string().max(100).optional(),
+    assignment_type: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+    active_only: z.boolean().optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }).refine(
+    (data) => Boolean(data.device_id || data.ip_address),
+    { message: 'Either device_id or ip_address must be provided' }
+  ).refine(
+    (data) => !data.ip_address || Boolean(data.at_time),
+    { message: 'at_time is required when ip_address is provided' }
+  ),
 
   analyze_metrics: z.object({
     deviceId: uuid,
@@ -221,6 +247,33 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     actorType: z.enum(['user', 'api_key', 'agent', 'system']).optional(),
     hoursBack: z.number().int().min(1).max(168).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_network_changes: z.object({
+    org_id: uuid.optional(),
+    site_id: uuid.optional(),
+    baseline_id: uuid.optional(),
+    event_type: z.enum(['new_device', 'device_disappeared', 'device_changed', 'rogue_device']).optional(),
+    acknowledged: z.boolean().optional(),
+    since: z.string().datetime().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  acknowledge_network_device: z.object({
+    event_id: uuid,
+    notes: z.string().max(2000).optional(),
+  }),
+
+  configure_network_baseline: z.object({
+    baseline_id: uuid.optional(),
+    org_id: uuid.optional(),
+    site_id: uuid.optional(),
+    subnet: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/).optional(),
+    scan_interval_hours: z.number().int().min(1).max(168).optional(),
+    alert_on_new_device: z.boolean().optional(),
+    alert_on_disappeared: z.boolean().optional(),
+    alert_on_changed: z.boolean().optional(),
+    alert_on_rogue_device: z.boolean().optional(),
   }),
 
   network_discovery: z.object({
@@ -405,6 +458,25 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   remove_configuration_policy_assignment: z.object({
     assignmentId: uuid,
+  }),
+
+  // Playbook tools
+  list_playbooks: z.object({
+    category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+  }),
+
+  execute_playbook: z.object({
+    playbookId: uuid,
+    deviceId: uuid,
+    variables: z.record(z.unknown()).optional(),
+    context: z.record(z.unknown()).optional(),
+  }),
+
+  get_playbook_history: z.object({
+    deviceId: uuid.optional(),
+    playbookId: uuid.optional(),
+    status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }),
 
   // Fleet orchestration tools

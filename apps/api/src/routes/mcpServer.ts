@@ -437,6 +437,25 @@ async function handleToolsCall(
 
   try {
     const result = await executeTool(toolName, toolInput, auth);
+
+    // If result contains imageBase64, return it as an MCP image content block
+    // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
+        const { imageBase64, ...metadata } = parsed;
+        const content: Array<Record<string, unknown>> = [
+          { type: 'image', data: imageBase64, mimeType: `image/${parsed.format || 'jpeg'}` },
+        ];
+        if (Object.keys(metadata).length > 0) {
+          content.push({ type: 'text', text: JSON.stringify(metadata) });
+        }
+        return jsonRpcResult(id, { content });
+      }
+    } catch {
+      // Not JSON or no imageBase64 — fall through to text
+    }
+
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: result }]
     });

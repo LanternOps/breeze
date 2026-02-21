@@ -11,6 +11,7 @@ interface AgentConfig {
   token: string;
   agent_id: string;
   has_mtls?: boolean;
+  os_username?: string;
 }
 
 interface ChatMessage {
@@ -26,7 +27,33 @@ interface ChatMessage {
   createdAt: Date;
 }
 
+export interface SessionSummary {
+  id: string;
+  title: string | null;
+  status: string;
+  helperUser: string | null;
+  turnCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+export interface DeviceContext {
+  hostname: string;
+  displayName?: string;
+  status: string;
+  lastSeenAt?: string;
+  activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }>;
+}
+
+export interface PendingApproval {
+  executionId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  description: string;
+  deviceContext?: DeviceContext;
+}
 
 interface ChatState {
   connectionState: ConnectionState;
@@ -36,10 +63,18 @@ interface ChatState {
   messages: ChatMessage[];
   isStreaming: boolean;
   error: string | null;
+  username: string | null;
+  sessions: SessionSummary[];
+  sessionsLoading: boolean;
+  pendingApproval: PendingApproval | null;
 
   initialize: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   clearMessages: () => Promise<void>;
+  setUsername: (name: string) => void;
+  loadSessions: () => Promise<void>;
+  loadSession: (id: string) => Promise<void>;
+  approveExecution: (executionId: string, approved: boolean) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +423,19 @@ function processSSELines(
           break;
         }
 
+        case 'approval_required': {
+          setDirect({
+            pendingApproval: {
+              executionId: event.executionId,
+              toolName: event.toolName,
+              input: event.input,
+              description: event.description,
+              deviceContext: event.deviceContext,
+            },
+          });
+          break;
+        }
+
         case 'error': {
           setDirect({ error: event.message || 'An error occurred' });
           break;
@@ -408,6 +456,8 @@ function processSSELines(
 // Store
 // ---------------------------------------------------------------------------
 
+const USERNAME_KEY = 'breeze-helper-username';
+
 export const useChatStore = create<ChatState>((set, get) => ({
   connectionState: 'disconnected',
   connectionError: null,
@@ -416,6 +466,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   error: null,
+  username: null,
+  sessions: [],
+  sessionsLoading: false,
+  pendingApproval: null,
 
   initialize: async () => {
     set({ connectionState: 'connecting', connectionError: null });
@@ -439,16 +493,90 @@ export const useChatStore = create<ChatState>((set, get) => ({
         config = { api_url: apiUrl, token, agent_id: agentId };
       }
 
-      set({ agentConfig: config, connectionState: 'connected' });
+      // Restore username from localStorage, fall back to OS username
+      const stored = localStorage.getItem(USERNAME_KEY);
+      const username = stored || config.os_username || null;
+
+      set({ agentConfig: config, connectionState: 'connected', username });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to read agent config';
+      const message = err instanceof Error ? err.message : String(err);
       console.error('[Helper] Initialize failed:', message);
       set({ connectionState: 'error', connectionError: message });
     }
   },
 
+  setUsername: (name: string) => {
+    localStorage.setItem(USERNAME_KEY, name);
+    set({ username: name });
+  },
+
+  loadSessions: async () => {
+    const { agentConfig, username } = get();
+    if (!agentConfig) return;
+
+    set({ sessionsLoading: true });
+
+    try {
+      const params = username ? `?helperUser=${encodeURIComponent(username)}` : '';
+      const res = await helperRequest(
+        agentConfig,
+        `${agentConfig.api_url}/api/v1/helper/chat/sessions${params}`,
+        { method: 'GET' },
+      );
+
+      if (res.ok) {
+        const sessions = JSON.parse(res.body) as SessionSummary[];
+        set({ sessions });
+      }
+    } catch (err) {
+      console.error('[Helper] Failed to load sessions:', err);
+    } finally {
+      set({ sessionsLoading: false });
+    }
+  },
+
+  loadSession: async (id: string) => {
+    const { agentConfig } = get();
+    if (!agentConfig) return;
+
+    try {
+      const res = await helperRequest(
+        agentConfig,
+        `${agentConfig.api_url}/api/v1/helper/chat/sessions/${id}/messages`,
+        { method: 'GET' },
+      );
+
+      if (!res.ok) {
+        const data = (() => {
+          try { return JSON.parse(res.body); } catch { return { error: 'Failed to load session' }; }
+        })();
+        throw new Error(data.error || 'Failed to load session');
+      }
+
+      const rawMessages = JSON.parse(res.body) as Array<{
+        id: string;
+        role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
+        content: string | null;
+        toolName: string | null;
+        createdAt: string;
+      }>;
+
+      const messages: ChatMessage[] = rawMessages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content ?? '',
+        toolName: m.toolName ?? undefined,
+        createdAt: new Date(m.createdAt),
+      }));
+
+      set({ sessionId: id, messages, error: null });
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Failed to load session' });
+    }
+  },
+
   sendMessage: async (content: string) => {
-    const { agentConfig, sessionId, connectionState } = get();
+    const { agentConfig, sessionId, connectionState, username } = get();
     if (!agentConfig || connectionState !== 'connected') return;
 
     const trimmed = content.trim();
@@ -479,7 +607,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify({
+              ...(username ? { helperUser: username } : {}),
+            }),
           },
         );
 
@@ -556,7 +686,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : 'Failed to send message',
+        error: err instanceof Error ? err.message : String(err),
         isStreaming: false,
       });
     } finally {
@@ -587,6 +717,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [],
       isStreaming: false,
       error: null,
+      pendingApproval: null,
     });
+  },
+
+  approveExecution: async (executionId: string, approved: boolean) => {
+    const { agentConfig, sessionId } = get();
+    if (!agentConfig || !sessionId) return;
+
+    try {
+      const res = await helperRequest(
+        agentConfig,
+        `${agentConfig.api_url}/api/v1/helper/chat/sessions/${sessionId}/approve/${executionId}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approved }),
+        },
+      );
+
+      if (!res.ok) {
+        const data = (() => {
+          try { return JSON.parse(res.body); } catch { return { error: 'Failed to process approval' }; }
+        })();
+        set({ error: data.error || 'Failed to process approval' });
+      }
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Failed to process approval' });
+    } finally {
+      set({ pendingApproval: null });
+    }
   },
 }));

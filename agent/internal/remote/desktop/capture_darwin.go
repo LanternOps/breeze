@@ -21,18 +21,29 @@ typedef struct {
     int error;
 } ScreenCaptureResult;
 
-// captureScreen captures using SCScreenshotManager (macOS 14+, synchronous via semaphore)
-ScreenCaptureResult captureScreen(int displayIndex) {
-    __block ScreenCaptureResult result = {0};
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    __block SCDisplay* targetDisplay = nil;
+// Cached ScreenCaptureKit objects — initialized once in initCapture(),
+// reused per-frame in captureFrame(). This avoids calling
+// getShareableContentExcludingDesktopWindows: every frame, which triggers
+// the macOS Screen Recording permission dialog repeatedly.
+static SCContentFilter* g_filter = nil;
+static SCStreamConfiguration* g_config = nil;
 
-    // Step 1: Get shareable content (display list)
+// initCapture queries the display list once, caches the filter and config
+// for the target display. Returns 0 on success, error code on failure.
+int initCapture(int displayIndex) {
+    // Release any previous state
+    g_filter = nil;
+    g_config = nil;
+
+    __block SCDisplay* targetDisplay = nil;
+    __block int error = 0;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO
                                              onScreenWindowsOnly:YES
-                                             completionHandler:^(SCShareableContent* _Nullable content, NSError* _Nullable error) {
-        if (error != nil || content == nil || content.displays.count == 0) {
-            result.error = 2;
+                                             completionHandler:^(SCShareableContent* _Nullable content, NSError* _Nullable err) {
+        if (err != nil || content == nil || content.displays.count == 0) {
+            error = 2;
             dispatch_semaphore_signal(sem);
             return;
         }
@@ -43,22 +54,48 @@ ScreenCaptureResult captureScreen(int displayIndex) {
     }];
 
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-    if (result.error != 0 || targetDisplay == nil) return result;
+    if (error != 0 || targetDisplay == nil) return error != 0 ? error : 2;
 
-    // Step 2: Capture a single screenshot
-    SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
-    SCStreamConfiguration* config = [[SCStreamConfiguration alloc] init];
-    config.width = targetDisplay.width;
-    config.height = targetDisplay.height;
-    config.showsCursor = YES;
+    // SCDisplay.width/height are in points. On Retina displays we must
+    // multiply by the backing scale factor to capture at native pixel
+    // resolution. Match the SCDisplay to its NSScreen via CGDirectDisplayID.
+    CGFloat scaleFactor = 1.0;
+    CGDirectDisplayID targetID = targetDisplay.displayID;
+    for (NSScreen *screen in [NSScreen screens]) {
+        NSNumber *screenNum = screen.deviceDescription[@"NSScreenNumber"];
+        if (screenNum && [screenNum unsignedIntValue] == targetID) {
+            scaleFactor = [screen backingScaleFactor];
+            break;
+        }
+    }
 
+    g_filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
+    g_config = [[SCStreamConfiguration alloc] init];
+    g_config.width = (size_t)(targetDisplay.width * scaleFactor);
+    g_config.height = (size_t)(targetDisplay.height * scaleFactor);
+    g_config.showsCursor = YES;
+
+    return 0;
+}
+
+// captureFrame captures a screenshot using the cached filter/config.
+// Must call initCapture() first.
+ScreenCaptureResult captureFrame(void) {
+    __block ScreenCaptureResult result = {0};
+
+    if (g_filter == nil || g_config == nil) {
+        result.error = 6; // not initialized
+        return result;
+    }
+
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     __block CGImageRef capturedImage = NULL;
 
-    [SCScreenshotManager captureImageWithFilter:filter
-                                  configuration:config
+    [SCScreenshotManager captureImageWithFilter:g_filter
+                                  configuration:g_config
                               completionHandler:^(CGImageRef _Nullable image, NSError* _Nullable error) {
         if (error != nil || image == NULL) {
-            result.error = 3; // Permission denied or capture failed
+            result.error = 3;
         } else {
             capturedImage = CGImageRetain(image);
         }
@@ -68,7 +105,7 @@ ScreenCaptureResult captureScreen(int displayIndex) {
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
     if (result.error != 0 || capturedImage == NULL) return result;
 
-    // Step 3: Convert CGImage to RGBA pixel data
+    // Convert CGImage to RGBA pixel data
     result.width = (int)CGImageGetWidth(capturedImage);
     result.height = (int)CGImageGetHeight(capturedImage);
     result.bytesPerRow = result.width * 4;
@@ -110,6 +147,12 @@ ScreenCaptureResult captureScreen(int displayIndex) {
     return result;
 }
 
+// releaseCapture frees cached ScreenCaptureKit state
+void releaseCapture(void) {
+    g_filter = nil;
+    g_config = nil;
+}
+
 // getScreenBounds returns the bounds of the specified display
 void getScreenBounds(int displayIndex, int* width, int* height, int* error) {
     *error = 0;
@@ -148,26 +191,34 @@ import (
 	"sync"
 )
 
-// darwinCapturer implements ScreenCapturer for macOS using ScreenCaptureKit
+// darwinCapturer implements ScreenCapturer for macOS using ScreenCaptureKit.
+// The ScreenCaptureKit display list and filter are queried once at init time
+// (triggering a single permission dialog) and cached for per-frame capture.
 type darwinCapturer struct {
-	config CaptureConfig
-	mu     sync.Mutex
+	config      CaptureConfig
+	mu          sync.Mutex
+	initialized bool
 }
 
-// newPlatformCapturer creates a new macOS screen capturer
+// newPlatformCapturer creates a new macOS screen capturer.
+// Calls SCShareableContent once to cache the display/filter/config.
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
-	return &darwinCapturer{config: config}, nil
+	errCode := int(C.initCapture(C.int(config.DisplayIndex)))
+	if errCode != 0 {
+		return nil, translateDarwinError(errCode)
+	}
+	return &darwinCapturer{config: config, initialized: true}, nil
 }
 
-// Capture captures the entire screen
+// Capture captures the entire screen using the cached filter/config.
 func (c *darwinCapturer) Capture() (*image.RGBA, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	result := C.captureScreen(C.int(c.config.DisplayIndex))
+	result := C.captureFrame()
 
 	if result.error != 0 {
-		return nil, c.translateError(int(result.error))
+		return nil, translateDarwinError(int(result.error))
 	}
 
 	if result.data == nil {
@@ -213,7 +264,7 @@ func (c *darwinCapturer) GetScreenBounds() (width, height int, err error) {
 	C.getScreenBounds(C.int(c.config.DisplayIndex), &cWidth, &cHeight, &cError)
 
 	if cError != 0 {
-		return 0, 0, c.translateError(int(cError))
+		return 0, 0, translateDarwinError(int(cError))
 	}
 
 	return int(cWidth), int(cHeight), nil
@@ -221,6 +272,12 @@ func (c *darwinCapturer) GetScreenBounds() (width, height int, err error) {
 
 // Close releases resources
 func (c *darwinCapturer) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.initialized {
+		C.releaseCapture()
+		c.initialized = false
+	}
 	return nil
 }
 
@@ -244,8 +301,8 @@ func (c *darwinCapturer) createImage(result C.ScreenCaptureResult) (*image.RGBA,
 	return img, nil
 }
 
-// translateError converts C error codes to Go errors
-func (c *darwinCapturer) translateError(code int) error {
+// translateDarwinError converts C error codes to Go errors
+func translateDarwinError(code int) error {
 	switch code {
 	case 1:
 		return fmt.Errorf("failed to get display list")
@@ -257,6 +314,8 @@ func (c *darwinCapturer) translateError(code int) error {
 		return fmt.Errorf("memory allocation failed")
 	case 5:
 		return fmt.Errorf("failed to create bitmap context")
+	case 6:
+		return fmt.Errorf("capturer not initialized — call initCapture first")
 	default:
 		return fmt.Errorf("unknown error: %d", code)
 	}

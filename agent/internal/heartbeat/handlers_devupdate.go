@@ -67,7 +67,7 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Run the update in a goroutine since UpdateFromURL triggers a restart
 	go func() {
 		if err := u.UpdateFromURL(downloadURL, checksum); err != nil {
-			log.Error("dev_update failed", "version", version, "error", err)
+			log.Error("dev_update failed", "version", version, "error", err.Error())
 		}
 	}()
 

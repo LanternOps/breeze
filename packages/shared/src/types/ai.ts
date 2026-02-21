@@ -1,4 +1,26 @@
 // ============================================
+// AI Approval Modes
+// ============================================
+
+export type AiApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+
+export interface ActionPlanStep {
+  index: number;
+  toolName: string;
+  input: Record<string, unknown>;
+  reasoning: string;
+  status?: 'pending' | 'executing' | 'completed' | 'failed' | 'skipped';
+}
+
+export interface ActionPlan {
+  id: string;
+  sessionId: string;
+  status: 'pending' | 'approved' | 'rejected' | 'executing' | 'completed' | 'aborted';
+  steps: ActionPlanStep[];
+  currentStepIndex: number;
+}
+
+// ============================================
 // AI Session & Message Types
 // ============================================
 
@@ -84,7 +106,13 @@ export type AiStreamEvent =
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; output: unknown; isError: boolean }
-  | { type: 'approval_required'; executionId: string; toolName: string; input: Record<string, unknown>; description: string }
+  | { type: 'approval_required'; executionId: string; toolName: string; input: Record<string, unknown>; description: string; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> } }
+  | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
+  | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
+  | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }
+  | { type: 'plan_complete'; planId: string; status: 'completed' | 'aborted' }
+  | { type: 'plan_screenshot'; planId: string; stepIndex: number; imageBase64: string }
+  | { type: 'approval_mode_changed'; mode: AiApprovalMode }
   | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'error'; message: string }
@@ -128,6 +156,7 @@ export interface AiUsageResponse {
     dailyBudgetCents: number | null;
     monthlyUsedCents: number;
     dailyUsedCents: number;
+    approvalMode: AiApprovalMode;
   } | null;
 }
 

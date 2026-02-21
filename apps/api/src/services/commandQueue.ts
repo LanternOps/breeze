@@ -47,6 +47,11 @@ export const CommandTypes = {
   FILE_MKDIR: 'file_mkdir',
   FILE_RENAME: 'file_rename',
   FILESYSTEM_ANALYSIS: 'filesystem_analysis',
+  FILE_COPY: 'file_copy',
+  FILE_TRASH_LIST: 'file_trash_list',
+  FILE_TRASH_RESTORE: 'file_trash_restore',
+  FILE_TRASH_PURGE: 'file_trash_purge',
+  FILE_LIST_DRIVES: 'file_list_drives',
 
   // Terminal
   TERMINAL_START: 'terminal_start',
@@ -130,6 +135,9 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.FILE_DELETE,
   CommandTypes.FILE_MKDIR,
   CommandTypes.FILE_RENAME,
+  CommandTypes.FILE_COPY,
+  CommandTypes.FILE_TRASH_RESTORE,
+  CommandTypes.FILE_TRASH_PURGE,
   CommandTypes.TERMINAL_START,
   CommandTypes.SCRIPT,
   CommandTypes.PATCH_SCAN,
@@ -350,6 +358,11 @@ export async function executeCommand(
   // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
   //    INSERT commits immediately and is visible to the WS handler.
   return runOutsideDbContext(async () => {
+    // Validate userId for FK constraint: device_commands.created_by references users.id.
+    // Helper sessions use a synthetic auth where auth.user.id is actually the device ID
+    // (no real user record exists). Detect this by checking if userId equals deviceId.
+    const safeUserId = userId && userId !== deviceId ? userId : null;
+
     // Insert command (device_commands — no RLS)
     const [command] = await db
       .insert(deviceCommands)
@@ -358,7 +371,7 @@ export async function executeCommand(
         type,
         payload,
         status: 'pending',
-        createdBy: userId || null,
+        createdBy: safeUserId,
       })
       .returning();
 
@@ -372,8 +385,8 @@ export async function executeCommand(
       db.insert(auditLogs)
         .values({
           orgId: device.orgId,
-          actorType: userId ? 'user' : 'system',
-          actorId: userId || '00000000-0000-0000-0000-000000000000',
+          actorType: safeUserId ? 'user' : 'system',
+          actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
           action: `agent.command.${type}`,
           resourceType: 'device',
           resourceId: deviceId,

@@ -9,9 +9,14 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
+import { db, withSystemDbAccessContext } from '../db';
+import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
-import type { AiToolTier } from '@breeze/shared/types/ai';
+import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import type { ActiveSession } from './streamingSessionManager';
+import { waitForPlanApproval } from './aiAgent';
+import { aiActionPlans } from '../db/schema';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -88,6 +93,11 @@ export const TOOL_TIERS = {
   preview_configuration_change: 1,
   apply_configuration_policy: 2,
   remove_configuration_policy_assignment: 2,
+  // Playbook tools
+  list_playbooks: 1,
+  execute_playbook: 3,
+  get_playbook_history: 1,
+  propose_action_plan: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -142,16 +152,19 @@ function makeHandler(
     }
     try {
       const auth = getAuth();
+      // Tool handlers query RLS-protected tables (e.g. devices via verifyDeviceAccess).
+      // The background processor runs outside the request's DB context, so we must
+      // wrap execution in withSystemDbAccessContext for RLS to pass.
       const result = await withTimeout(
-        executeTool(toolName, args, auth),
+        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
         TOOL_EXECUTION_TIMEOUT_MS,
         toolName,
       );
       const compactResult = compactToolResultForChat(toolName, result);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
-      // Claude's vision API requires image data in structured content blocks (type: 'image'
-      // with base64 source). Returning the image as plain text would not trigger visual analysis.
+      // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
+      // flat { type: 'image', data, mimeType }, NOT Anthropic's nested source format.
       if (toolName === 'take_screenshot' || toolName === 'analyze_screen' || toolName === 'computer_control') {
         try {
           const parsed = JSON.parse(result);
@@ -164,14 +177,12 @@ function makeHandler(
               try { await onPostToolUse(toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs); }
               catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
             }
-            const contentBlocks: Array<{ type: string; source?: { type: string; media_type: string; data: string }; text?: string }> = [
+            // MCP ImageContent format: { type: 'image', data: base64, mimeType: string }
+            const contentBlocks: Array<{ type: string; data?: string; mimeType?: string; text?: string }> = [
               {
                 type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: 'image/jpeg',
-                  data: imageBase64,
-                },
+                data: imageBase64,
+                mimeType: `image/${parsed.format || 'jpeg'}`,
               },
             ];
             // For analyze_screen, include device context as text
@@ -243,6 +254,7 @@ export function createBreezeMcpServer(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => ActiveSession,
 ) {
   const uuid = z.string().uuid();
 
@@ -844,6 +856,147 @@ export function createBreezeMcpServer(
         assignmentId: uuid,
       },
       makeHandler('remove_configuration_policy_assignment', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Playbook tools
+
+    tool(
+      'list_playbooks',
+      'List available self-healing playbooks. Playbooks are multi-step remediation templates with verification loops.',
+      {
+        category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+      },
+      makeHandler('list_playbooks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'execute_playbook',
+      'Create a playbook execution record for a target device. This is approval-gated and used to start audited execution.',
+      {
+        playbookId: uuid,
+        deviceId: uuid,
+        variables: z.record(z.unknown()).optional(),
+        context: z.record(z.unknown()).optional(),
+      },
+      makeHandler('execute_playbook', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_playbook_history',
+      'Query historical playbook execution runs for auditing and analysis.',
+      {
+        deviceId: uuid.optional(),
+        playbookId: uuid.optional(),
+        status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_playbook_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Action Plan tool (for action_plan and hybrid_plan modes)
+    tool(
+      'propose_action_plan',
+      'Propose a multi-step action plan for user approval. Use this when the approval mode requires it and you need to execute multiple operations. The user will review all steps before any are executed.',
+      {
+        title: z.string().min(1).max(255),
+        steps: z.array(z.object({
+          toolName: z.string(),
+          input: z.record(z.unknown()),
+          reasoning: z.string().max(500),
+        })).min(1).max(20),
+      },
+      async (args: { title: string; steps: Array<{ toolName: string; input: Record<string, unknown>; reasoning: string }> }) => {
+        const session = getActiveSession?.();
+        if (!session) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No active session' }) }], isError: true };
+        }
+
+        // Validate all step tool names exist
+        for (const step of args.steps) {
+          if (!TOOL_TIERS[step.toolName]) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: `Unknown tool in plan: ${step.toolName}` }) }],
+              isError: true,
+            };
+          }
+        }
+
+        // Build plan steps with indexes
+        const planSteps: ActionPlanStep[] = args.steps.map((s, i) => ({
+          index: i,
+          toolName: s.toolName,
+          input: s.input,
+          reasoning: s.reasoning,
+          status: 'pending' as const,
+        }));
+
+        // Insert plan record
+        let planId: string;
+        try {
+          const [row] = await withSystemDbAccessContext(() =>
+            db.insert(aiActionPlans).values({
+              sessionId: session.breezeSessionId,
+              orgId: session.auth.orgId!,
+              status: 'pending',
+              steps: planSteps,
+            }).returning({ id: aiActionPlans.id })
+          );
+          planId = row!.id;
+        } catch (err) {
+          console.error('[AI-SDK] Failed to create action plan:', err);
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Failed to create action plan' }) }], isError: true };
+        }
+
+        // Set active plan ID on session before emitting event
+        session.activePlanId = planId;
+
+        // Emit plan_approval_required event
+        session.eventBus.publish({
+          type: 'plan_approval_required',
+          planId,
+          steps: planSteps,
+        });
+
+        // Block until user approves or rejects (10-min timeout)
+        const approved = await waitForPlanApproval(planId, session);
+
+        if (!approved) {
+          session.activePlanId = null;
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              result: 'rejected',
+              message: 'The action plan was rejected by the user. Ask them what changes they would like.',
+            }) }],
+          };
+        }
+
+        // Populate approved plan steps map on the session
+        session.approvedPlanSteps.clear();
+        session.currentPlanStepIndex = 0;
+        for (const step of planSteps) {
+          session.approvedPlanSteps.set(step.index, { toolName: step.toolName, input: step.input });
+        }
+
+        // Update DB status to executing
+        try {
+          await withSystemDbAccessContext(() =>
+            db.update(aiActionPlans)
+              .set({ status: 'executing' })
+              .where(eq(aiActionPlans.id, planId))
+          );
+        } catch (err) {
+          console.error('[AI-SDK] Failed to update plan status to executing:', err);
+        }
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            result: 'approved',
+            planId,
+            stepCount: planSteps.length,
+            message: 'Plan approved. Execute the steps in order now.',
+          }) }],
+        };
+      }
     ),
   ];
 

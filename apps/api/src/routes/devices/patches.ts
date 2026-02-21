@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
-import { eq, desc, inArray } from 'drizzle-orm';
+import { eq, desc, inArray, and, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
-import { patches, devicePatches } from '../../db/schema';
+import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
@@ -21,6 +21,104 @@ const rollbackPatchParamsSchema = z.object({
   id: z.string().uuid(),
   patchId: z.string().uuid()
 });
+
+const patchHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  offset: z.coerce.number().int().min(0).default(0),
+  type: z.enum(['install', 'scan', 'rollback', 'all']).default('all'),
+  status: z.enum(['completed', 'failed', 'pending', 'timeout', 'all']).default('all')
+});
+
+const PATCH_COMMAND_TYPES = ['install_patches', 'patch_scan', 'rollback_patches', 'download_patches'] as const;
+
+const TYPE_FILTER_MAP: Record<string, string[]> = {
+  install: ['install_patches'],
+  scan: ['patch_scan'],
+  rollback: ['rollback_patches'],
+  all: [...PATCH_COMMAND_TYPES]
+};
+
+function safeParsePatchResult(result: unknown): unknown {
+  if (!result || typeof result !== 'object') return result;
+  const raw = result as Record<string, unknown>;
+  // The result field contains {status, stdout, stderr, durationMs} where stdout
+  // is often a JSON string with the actual patch results.
+  if (typeof raw.stdout === 'string') {
+    try {
+      raw.stdout = JSON.parse(raw.stdout);
+    } catch {
+      // Leave as string if not valid JSON
+    }
+  }
+  return raw;
+}
+
+// GET /devices/:id/patches/history - Get patch operation history for a device
+patchesRoutes.get(
+  '/:id/patches/history',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', patchHistoryQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id');
+    const { limit, offset, type, status } = c.req.valid('query');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const commandTypes = TYPE_FILTER_MAP[type] ?? PATCH_COMMAND_TYPES;
+
+    const conditions = [
+      eq(deviceCommands.deviceId, deviceId),
+      inArray(deviceCommands.type, commandTypes)
+    ];
+    if (status !== 'all') {
+      conditions.push(eq(deviceCommands.status, status));
+    }
+    const whereClause = and(...conditions);
+
+    // Get total count
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(deviceCommands)
+      .where(whereClause);
+    const total = Number(countResult[0]?.count ?? 0);
+
+    // Get paginated results with user join
+    const rows = await db
+      .select({
+        id: deviceCommands.id,
+        type: deviceCommands.type,
+        status: deviceCommands.status,
+        createdAt: deviceCommands.createdAt,
+        completedAt: deviceCommands.completedAt,
+        result: deviceCommands.result,
+        createdBy: deviceCommands.createdBy,
+        createdByEmail: users.email
+      })
+      .from(deviceCommands)
+      .leftJoin(users, eq(deviceCommands.createdBy, users.id))
+      .where(whereClause)
+      .orderBy(desc(deviceCommands.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const history = rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      createdAt: row.createdAt,
+      completedAt: row.completedAt,
+      result: safeParsePatchResult(row.result),
+      createdBy: row.createdBy,
+      createdByEmail: row.createdByEmail
+    }));
+
+    return c.json({ history, total });
+  }
+);
 
 // GET /devices/:id/patches - Get patch status for a device
 patchesRoutes.get(

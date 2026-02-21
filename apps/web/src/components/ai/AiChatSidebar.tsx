@@ -17,6 +17,10 @@ export default function AiChatSidebar() {
     error,
     pageContext,
     pendingApproval,
+    pendingPlan,
+    activePlan,
+    approvalMode,
+    isPaused,
     sessionId,
     showHistory,
     sessions,
@@ -24,6 +28,9 @@ export default function AiChatSidebar() {
     isSearching,
     sendMessage,
     approveExecution,
+    approvePlan,
+    abortPlan,
+    pauseAi,
     createSession,
     closeSession,
     clearError,
@@ -207,7 +214,7 @@ export default function AiChatSidebar() {
           /* Chat panel */
           <>
             {/* Cost indicator */}
-            <AiCostIndicator />
+            <AiCostIndicator enabled={isOpen} />
 
             {/* Context badge */}
             {pageContext && (
@@ -233,8 +240,15 @@ export default function AiChatSidebar() {
             <AiChatMessages
               messages={messages}
               pendingApproval={pendingApproval}
+              pendingPlan={pendingPlan}
+              activePlan={activePlan}
+              approvalMode={approvalMode}
+              isPaused={isPaused}
               onApprove={(id) => approveExecution(id, true)}
               onReject={(id) => approveExecution(id, false)}
+              onApprovePlan={approvePlan}
+              onAbortPlan={abortPlan}
+              onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
             />
 

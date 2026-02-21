@@ -19,7 +19,7 @@ import {
   handleApproval,
   searchSessions
 } from '../services/aiAgent';
-import { runPreFlightChecks } from '../services/aiAgentSdk';
+import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -30,8 +30,11 @@ import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
   sendAiMessageSchema,
   approveToolSchema,
+  approvePlanSchema,
+  pauseAiSchema,
   aiSessionQuerySchema
 } from '@breeze/shared/validators/ai';
+import { aiActionPlans } from '../db/schema';
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional()
@@ -387,6 +390,151 @@ aiRoutes.post(
 );
 
 // ============================================
+// Pause AI (auto_approve → per_step fallback)
+// ============================================
+
+aiRoutes.post(
+  '/sessions/:id/pause',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', pauseAiSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+    const { paused } = c.req.valid('json');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const activeSession = streamingSessionManager.get(sessionId);
+    if (!activeSession) {
+      return c.json({ error: 'Session not active in memory' }, 404);
+    }
+
+    activeSession.isPaused = paused;
+
+    // If pausing while a plan is active, abort it
+    if (paused && activeSession.activePlanId) {
+      await abortActivePlan(activeSession);
+    }
+
+    const effectiveMode = paused ? 'per_step' : activeSession.approvalMode;
+    activeSession.eventBus.publish({ type: 'approval_mode_changed', mode: effectiveMode });
+
+    writeRouteAudit(c, {
+      orgId: session.orgId,
+      action: 'ai.session.pause',
+      resourceType: 'ai_session',
+      resourceId: sessionId,
+      details: { paused, effectiveMode },
+    });
+
+    return c.json({ success: true, paused, effectiveMode });
+  }
+);
+
+// ============================================
+// Plan Approval
+// ============================================
+
+aiRoutes.post(
+  '/sessions/:id/approve-plan',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', approvePlanSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+    const { approved } = c.req.valid('json');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const activeSession = streamingSessionManager.get(sessionId);
+    if (!activeSession) {
+      return c.json({ error: 'Session not active in memory' }, 404);
+    }
+
+    if (!activeSession.planApprovalResolver) {
+      return c.json({ error: 'No pending plan approval' }, 400);
+    }
+
+    // Resolve the in-memory promise
+    activeSession.planApprovalResolver(approved);
+    activeSession.planApprovalResolver = null;
+
+    // Update DB plan record
+    if (activeSession.activePlanId || !approved) {
+      try {
+        const planId = activeSession.activePlanId;
+        if (planId) {
+          await db.update(aiActionPlans)
+            .set({
+              status: approved ? 'approved' : 'rejected',
+              approvedBy: auth.user.id,
+              approvedAt: new Date(),
+            })
+            .where(eq(aiActionPlans.id, planId));
+        }
+      } catch (err) {
+        console.error('[AI] Failed to update plan status:', err);
+      }
+    }
+
+    writeRouteAudit(c, {
+      orgId: session.orgId,
+      action: 'ai.plan_approval.update',
+      resourceType: 'ai_action_plan',
+      resourceId: activeSession.activePlanId ?? sessionId,
+      details: { approved },
+    });
+
+    return c.json({ success: true, approved });
+  }
+);
+
+// ============================================
+// Plan Abort
+// ============================================
+
+aiRoutes.post(
+  '/sessions/:id/abort-plan',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const activeSession = streamingSessionManager.get(sessionId);
+    if (!activeSession) {
+      return c.json({ error: 'Session not active in memory' }, 404);
+    }
+
+    const planId = activeSession.activePlanId;
+    if (!planId) {
+      return c.json({ error: 'No active plan to abort' }, 400);
+    }
+
+    const aborted = await abortActivePlan(activeSession);
+
+    writeRouteAudit(c, {
+      orgId: session.orgId,
+      action: 'ai.plan.abort',
+      resourceType: 'ai_action_plan',
+      resourceId: planId,
+    });
+
+    return c.json({ success: aborted });
+  }
+);
+
+// ============================================
 // Usage & Budget
 // ============================================
 
@@ -426,7 +574,8 @@ aiRoutes.put(
     dailyBudgetCents: z.number().int().min(0).nullable().optional(),
     maxTurnsPerSession: z.number().int().min(1).max(200).optional(),
     messagesPerMinutePerUser: z.number().int().min(1).max(100).optional(),
-    messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional()
+    messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
+    approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
   })),
   async (c) => {
     const auth = c.get('auth');

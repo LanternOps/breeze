@@ -1,0 +1,11 @@
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: breeze-caddy-dev
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

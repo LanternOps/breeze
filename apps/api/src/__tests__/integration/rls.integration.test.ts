@@ -137,7 +137,7 @@ describe('RLS contract: serializeAccessibleOrgIds', () => {
 
     // The third execute call is for accessible_org_ids
     expect(executeMock).toHaveBeenCalledTimes(3);
-    const thirdCallArg = executeMock.mock.calls[2][0];
+    const thirdCallArg = executeMock.mock.calls[2]![0];
     const str = JSON.stringify(thirdCallArg);
     // Should NOT contain '*' but should have the empty string value
     expect(str).not.toContain('"*"');
@@ -152,7 +152,7 @@ describe('RLS contract: serializeAccessibleOrgIds', () => {
 
     await withDbAccessContext(context, async () => 'ok');
 
-    const orgIdsCall = executeMock.mock.calls[2][0];
+    const orgIdsCall = executeMock.mock.calls[2]![0];
     const str = JSON.stringify(orgIdsCall);
     expect(str).toContain('org-abc');
   });
@@ -166,7 +166,7 @@ describe('RLS contract: serializeAccessibleOrgIds', () => {
 
     await withDbAccessContext(context, async () => 'ok');
 
-    const orgIdsCall = executeMock.mock.calls[2][0];
+    const orgIdsCall = executeMock.mock.calls[2]![0];
     const str = JSON.stringify(orgIdsCall);
     expect(str).toContain('org-aaa,org-bbb,org-ccc');
   });
@@ -190,17 +190,17 @@ describe('RLS contract: withDbAccessContext session variables', () => {
     expect(executeMock).toHaveBeenCalledTimes(3);
 
     // Verify each set_config call by inspecting the SQL template objects
-    const call1Str = JSON.stringify(executeMock.mock.calls[0][0]);
+    const call1Str = JSON.stringify(executeMock.mock.calls[0]![0]);
     expect(call1Str).toContain('set_config');
     expect(call1Str).toContain('breeze.scope');
     expect(call1Str).toContain('organization');
 
-    const call2Str = JSON.stringify(executeMock.mock.calls[1][0]);
+    const call2Str = JSON.stringify(executeMock.mock.calls[1]![0]);
     expect(call2Str).toContain('set_config');
     expect(call2Str).toContain('breeze.org_id');
     expect(call2Str).toContain('org-456');
 
-    const call3Str = JSON.stringify(executeMock.mock.calls[2][0]);
+    const call3Str = JSON.stringify(executeMock.mock.calls[2]![0]);
     expect(call3Str).toContain('set_config');
     expect(call3Str).toContain('breeze.accessible_org_ids');
     expect(call3Str).toContain('org-456');
@@ -218,16 +218,16 @@ describe('RLS contract: withDbAccessContext session variables', () => {
     expect(result).toBe('partner-result');
     expect(executeMock).toHaveBeenCalledTimes(3);
 
-    const call1Str = JSON.stringify(executeMock.mock.calls[0][0]);
+    const call1Str = JSON.stringify(executeMock.mock.calls[0]![0]);
     expect(call1Str).toContain('breeze.scope');
     expect(call1Str).toContain('partner');
 
     // org_id should be empty string when orgId is null
-    const call2Str = JSON.stringify(executeMock.mock.calls[1][0]);
+    const call2Str = JSON.stringify(executeMock.mock.calls[1]![0]);
     expect(call2Str).toContain('breeze.org_id');
     // The null orgId is coalesced to empty string via `context.orgId ?? ''`
 
-    const call3Str = JSON.stringify(executeMock.mock.calls[2][0]);
+    const call3Str = JSON.stringify(executeMock.mock.calls[2]![0]);
     expect(call3Str).toContain('breeze.accessible_org_ids');
     expect(call3Str).toContain('org-a,org-b');
   });
@@ -244,14 +244,14 @@ describe('RLS contract: withDbAccessContext session variables', () => {
     expect(result).toBe('system-result');
     expect(executeMock).toHaveBeenCalledTimes(3);
 
-    const call1Str = JSON.stringify(executeMock.mock.calls[0][0]);
+    const call1Str = JSON.stringify(executeMock.mock.calls[0]![0]);
     expect(call1Str).toContain('breeze.scope');
     expect(call1Str).toContain('system');
 
-    const call2Str = JSON.stringify(executeMock.mock.calls[1][0]);
+    const call2Str = JSON.stringify(executeMock.mock.calls[1]![0]);
     expect(call2Str).toContain('breeze.org_id');
 
-    const call3Str = JSON.stringify(executeMock.mock.calls[2][0]);
+    const call3Str = JSON.stringify(executeMock.mock.calls[2]![0]);
     expect(call3Str).toContain('breeze.accessible_org_ids');
     expect(call3Str).toContain('*');
   });
@@ -268,9 +268,9 @@ describe('RLS contract: withDbAccessContext session variables', () => {
     expect(executeMock).toHaveBeenCalledTimes(3);
 
     // Verify order: scope first, org_id second, accessible_org_ids third
-    const firstCallStr = JSON.stringify(executeMock.mock.calls[0][0]);
-    const secondCallStr = JSON.stringify(executeMock.mock.calls[1][0]);
-    const thirdCallStr = JSON.stringify(executeMock.mock.calls[2][0]);
+    const firstCallStr = JSON.stringify(executeMock.mock.calls[0]![0]);
+    const secondCallStr = JSON.stringify(executeMock.mock.calls[1]![0]);
+    const thirdCallStr = JSON.stringify(executeMock.mock.calls[2]![0]);
 
     expect(firstCallStr).toContain('breeze.scope');
     expect(secondCallStr).toContain('breeze.org_id');
@@ -341,7 +341,7 @@ describe('RLS contract: deny-by-default', () => {
       vi.clearAllMocks();
       await withDbAccessContext(context, async () => undefined);
 
-      const scopeCallStr = JSON.stringify(executeMock.mock.calls[0][0]);
+      const scopeCallStr = JSON.stringify(executeMock.mock.calls[0]![0]);
       expect(scopeCallStr).not.toContain('"none"');
       expect(scopeCallStr).toContain(context.scope);
     }
@@ -396,7 +396,7 @@ describe('RLS contract: nested context detection', () => {
     expect(executeMock).toHaveBeenCalledTimes(3);
 
     // Verify that set_config was called with OUTER context values, not inner
-    const scopeStr = JSON.stringify(executeMock.mock.calls[0][0]);
+    const scopeStr = JSON.stringify(executeMock.mock.calls[0]![0]);
     expect(scopeStr).toContain('organization');
     expect(scopeStr).not.toContain('partner');
   });

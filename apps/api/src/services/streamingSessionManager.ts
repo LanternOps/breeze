@@ -14,11 +14,11 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
-import { db, runOutsideDbContext } from '../db';
-import { aiSessions, aiMessages } from '../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiStreamEvent } from '@breeze/shared/types/ai';
+import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { recordUsageFromSdkResult } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
@@ -185,6 +185,18 @@ export interface ActiveSession {
   readonly processorPromise: Promise<void>;
   /** Timer for per-turn timeout; cleared when 'result' arrives */
   turnTimeoutId: ReturnType<typeof setTimeout> | null;
+  /** Approval mode for this session (loaded from org's aiBudgets) */
+  approvalMode: AiApprovalMode;
+  /** True when admin has paused auto-approve — falls back to per_step */
+  isPaused: boolean;
+  /** ID of the currently active action plan (if any) */
+  activePlanId: string | null;
+  /** Approved plan steps keyed by step index */
+  approvedPlanSteps: Map<number, { toolName: string; input: Record<string, unknown> }>;
+  /** Current step index in the active plan */
+  currentPlanStepIndex: number;
+  /** Resolver for the plan approval promise (in-memory, no DB polling) */
+  planApprovalResolver: ((approved: boolean) => void) | null;
 }
 
 // ============================================
@@ -257,6 +269,21 @@ export class StreamingSessionManager {
       inputController.setSdkSessionId(dbSession.sdkSessionId);
     }
 
+    // Load org's approval mode from aiBudgets
+    let approvalMode: AiApprovalMode = 'per_step';
+    try {
+      const [budget] = await db
+        .select({ approvalMode: aiBudgets.approvalMode })
+        .from(aiBudgets)
+        .where(eq(aiBudgets.orgId, dbSession.orgId))
+        .limit(1);
+      if (budget?.approvalMode) {
+        approvalMode = budget.approvalMode as AiApprovalMode;
+      }
+    } catch (err) {
+      console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
+    }
+
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
@@ -276,6 +303,12 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
+      approvalMode,
+      isPaused: false,
+      activePlanId: null,
+      approvedPlanSteps: new Map(),
+      currentPlanStepIndex: 0,
+      planApprovalResolver: null,
     };
 
     // Create session-scoped callbacks (close over session object)
@@ -283,10 +316,21 @@ export class StreamingSessionManager {
     const postToolUse = createSessionPostToolUse(session);
 
     // Create MCP server with pre/post tool-use callbacks
-    const mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse);
+    const mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse, () => session);
     session.mcpServer = mcpServer;
 
     const maxTurns = Math.max(1, dbSession.maxTurns - dbSession.turnCount);
+
+    // Inject approval mode instructions into system prompt
+    let effectiveSystemPrompt = systemPrompt;
+    if (approvalMode !== 'per_step') {
+      const modeInstructions: Record<string, string> = {
+        auto_approve: '\n\n## Approval Mode\nTools execute without individual approval. Confirm destructive operations verbally before executing.',
+        action_plan: '\n\n## Approval Mode\nWhen executing multiple Tier 2+ operations, call `propose_action_plan` first with all planned steps. Wait for approval. Execute steps in order. Do NOT deviate from the approved plan.',
+        hybrid_plan: '\n\n## Approval Mode\nWhen executing multiple Tier 2+ operations, call `propose_action_plan` first. Wait for approval. Execute steps in order. Screenshots will be captured between steps. The user can click Stop to abort. Do NOT deviate from the approved plan.',
+      };
+      effectiveSystemPrompt += modeInstructions[approvalMode] ?? '';
+    }
 
     // CRITICAL: Create SDK query and background processor OUTSIDE the request's
     // AsyncLocalStorage DB context. The auth middleware wraps requests in a
@@ -297,7 +341,7 @@ export class StreamingSessionManager {
       const sdkQuery = query({
         prompt: inputController.getInputStream(),
         options: {
-          systemPrompt,
+          systemPrompt: effectiveSystemPrompt,
           model: dbSession.model,
           maxTurns,
           maxBudgetUsd,
@@ -438,10 +482,11 @@ export class StreamingSessionManager {
               session.sdkSessionId = sid;
               session.inputController.setSdkSessionId(sid);
 
-              db.update(aiSessions)
-                .set({ sdkSessionId: sid })
-                .where(eq(aiSessions.id, session.breezeSessionId))
-                .catch((err) => console.error('[StreamingSessionManager] Failed to store SDK session ID:', err));
+              withSystemDbAccessContext(() =>
+                db.update(aiSessions)
+                  .set({ sdkSessionId: sid })
+                  .where(eq(aiSessions.id, session.breezeSessionId))
+              ).catch((err) => console.error('[StreamingSessionManager] Failed to store SDK session ID:', err));
             }
 
             if (session.state === 'initializing') {
@@ -494,19 +539,21 @@ export class StreamingSessionManager {
 
           case 'assistant': {
             const assistantContent = message.message.content
-              .filter((b) => b.type === 'text')
-              .map((b) => ('text' in b ? (b as { text: string }).text : ''))
+              .filter((b: { type: string }) => b.type === 'text')
+              .map((b: { type: string; text?: string }) => b.text ?? '')
               .join('');
 
             try {
-              await db.insert(aiMessages).values({
-                sessionId: session.breezeSessionId,
-                role: 'assistant',
-                content: assistantContent || null,
-                contentBlocks: message.message.content as unknown as Record<string, unknown>[],
-                inputTokens: message.message.usage?.input_tokens ?? 0,
-                outputTokens: message.message.usage?.output_tokens ?? 0,
-              });
+              await withSystemDbAccessContext(() =>
+                db.insert(aiMessages).values({
+                  sessionId: session.breezeSessionId,
+                  role: 'assistant',
+                  content: assistantContent || null,
+                  contentBlocks: message.message.content as unknown as Record<string, unknown>[],
+                  inputTokens: message.message.usage?.input_tokens ?? 0,
+                  outputTokens: message.message.usage?.output_tokens ?? 0,
+                })
+              );
             } catch (err) {
               console.error('[StreamingSessionManager] Failed to save assistant message:', err);
             }
@@ -518,13 +565,15 @@ export class StreamingSessionManager {
                   : block.name;
 
                 try {
-                  await db.insert(aiMessages).values({
-                    sessionId: session.breezeSessionId,
-                    role: 'tool_use',
-                    toolName: bareName,
-                    toolInput: block.input as Record<string, unknown>,
-                    toolUseId: block.id,
-                  });
+                  await withSystemDbAccessContext(() =>
+                    db.insert(aiMessages).values({
+                      sessionId: session.breezeSessionId,
+                      role: 'tool_use',
+                      toolName: bareName,
+                      toolInput: block.input as Record<string, unknown>,
+                      toolUseId: block.id,
+                    })
+                  );
                 } catch (err) {
                   console.error('[StreamingSessionManager] Failed to save tool_use message:', err);
                 }
@@ -554,14 +603,16 @@ export class StreamingSessionManager {
 
             if (resultMsg.subtype === 'success') {
               try {
-                await recordUsageFromSdkResult(session.breezeSessionId, orgId, {
-                  total_cost_usd: resultMsg.total_cost_usd,
-                  usage: {
-                    input_tokens: resultMsg.usage.input_tokens,
-                    output_tokens: resultMsg.usage.output_tokens,
-                  },
-                  num_turns: resultMsg.num_turns,
-                });
+                await withSystemDbAccessContext(() =>
+                  recordUsageFromSdkResult(session.breezeSessionId, orgId, {
+                    total_cost_usd: resultMsg.total_cost_usd,
+                    usage: {
+                      input_tokens: resultMsg.usage.input_tokens,
+                      output_tokens: resultMsg.usage.output_tokens,
+                    },
+                    num_turns: resultMsg.num_turns,
+                  })
+                );
               } catch (err) {
                 console.error('[StreamingSessionManager] Failed to record SDK usage:', err);
               }
@@ -578,14 +629,16 @@ export class StreamingSessionManager {
               }
 
               try {
-                await recordUsageFromSdkResult(session.breezeSessionId, orgId, {
-                  total_cost_usd: resultMsg.total_cost_usd,
-                  usage: {
-                    input_tokens: resultMsg.usage.input_tokens,
-                    output_tokens: resultMsg.usage.output_tokens,
-                  },
-                  num_turns: resultMsg.num_turns,
-                });
+                await withSystemDbAccessContext(() =>
+                  recordUsageFromSdkResult(session.breezeSessionId, orgId, {
+                    total_cost_usd: resultMsg.total_cost_usd,
+                    usage: {
+                      input_tokens: resultMsg.usage.input_tokens,
+                      output_tokens: resultMsg.usage.output_tokens,
+                    },
+                    num_turns: resultMsg.num_turns,
+                  })
+                );
               } catch (err) {
                 console.error('[StreamingSessionManager] Failed to record SDK usage on error:', err);
               }
@@ -641,10 +694,11 @@ export class StreamingSessionManager {
         this.remove(sessionId);
 
         if (age > SESSION_MAX_AGE_MS) {
-          db.update(aiSessions)
-            .set({ status: 'expired', updatedAt: new Date() })
-            .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')))
-            .catch((err) => console.error('[StreamingSessionManager] Failed to expire session:', err));
+          withSystemDbAccessContext(() =>
+            db.update(aiSessions)
+              .set({ status: 'expired', updatedAt: new Date() })
+              .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')))
+          ).catch((err) => console.error('[StreamingSessionManager] Failed to expire session:', err));
         }
       }
     }

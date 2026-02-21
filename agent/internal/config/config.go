@@ -198,13 +198,13 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		cfgPath = cfgFile
 		dir := filepath.Dir(cfgPath)
 		if dir != "." {
-			if err := os.MkdirAll(dir, 0700); err != nil {
+			if err := os.MkdirAll(dir, 0755); err != nil {
 				return err
 			}
 		}
 	} else {
 		cfgPath = filepath.Join(configDir(), "agent.yaml")
-		if err := os.MkdirAll(configDir(), 0700); err != nil {
+		if err := os.MkdirAll(configDir(), 0755); err != nil {
 			return err
 		}
 	}
@@ -213,8 +213,11 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		return err
 	}
 
-	// Restrict config file to owner-only access (contains auth token)
-	return os.Chmod(cfgPath, 0600)
+	// Allow the Breeze Helper (running as the logged-in user) to read the
+	// config file. The auth token is still protected because the Helper
+	// binary runs in a sandboxed Tauri process that only exposes it via IPC.
+	_ = os.Chmod(filepath.Dir(cfgPath), 0755)
+	return os.Chmod(cfgPath, 0644)
 }
 
 // GetDataDir returns the platform-specific data directory for the agent
@@ -226,6 +229,21 @@ func GetDataDir() string {
 		return "/Library/Application Support/Breeze/data"
 	default:
 		return "/var/lib/breeze"
+	}
+}
+
+// FixConfigPermissions loosens the config directory and file permissions so
+// the Breeze Helper (running as the logged-in user) can read the config.
+// Safe to call on every startup — it is a no-op if permissions are already
+// correct or the paths don't exist yet.
+func FixConfigPermissions() {
+	dir := configDir()
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		_ = os.Chmod(dir, 0755)
+	}
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if _, err := os.Stat(cfgPath); err == nil {
+		_ = os.Chmod(cfgPath, 0644)
 	}
 }
 

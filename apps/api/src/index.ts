@@ -41,6 +41,8 @@ import { patchPolicyRoutes } from './routes/patchPolicies';
 import { mobileRoutes } from './routes/mobile';
 import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
+import { networkBaselineRoutes } from './routes/networkBaselines';
+import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
@@ -68,6 +70,8 @@ import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
+import { playbookRoutes } from './routes/playbooks';
+import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -76,7 +80,9 @@ import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
+import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
+import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
@@ -265,6 +271,7 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/discovery',
   '/monitors',
   '/monitoring',
+  '/network',
   '/sso',
   '/reports',
   '/logs',
@@ -279,7 +286,8 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/viewers',
   '/devices',
   '/security',
-  '/system-tools'
+  '/system-tools',
+  '/playbooks'
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -579,6 +587,8 @@ api.route('/patch-policies', patchPolicyRoutes);
 api.route('/mobile', mobileRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/discovery', discoveryRoutes);
+api.route('/network/baselines', networkBaselineRoutes);
+api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
@@ -605,6 +615,7 @@ api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
+api.route('/playbooks', playbookRoutes);
 
 app.route('/api/v1', api);
 
@@ -794,7 +805,9 @@ async function initializeWorkers(): Promise<void> {
     ['eventLogRetention', initializeEventLogRetention],
     ['logCorrelationWorker', initializeLogCorrelationWorker],
     ['agentLogRetention', initializeAgentLogRetention],
+    ['ipHistoryRetention', initializeIPHistoryRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
+    ['networkBaselineWorker', initializeNetworkBaselineWorker],
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
@@ -886,10 +899,12 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,
+    shutdownNetworkBaselineWorker,
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
     shutdownLogCorrelationWorker,
     shutdownAgentLogRetention,
+    shutdownIPHistoryRetention,
     shutdownSecurityPostureWorker,
     shutdownAutomationWorker,
     shutdownPolicyEvaluationWorker,
@@ -948,6 +963,19 @@ async function bootstrap(): Promise<void> {
   // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to disable)
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      await seedBuiltInPlaybooks();
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('relation "playbook_definitions" does not exist')) {
+      console.warn('[startup] Playbook table not yet created — skipping seed (run migrations first)');
+    } else {
+      console.error('[startup] Failed to seed built-in playbooks:', err);
+    }
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
