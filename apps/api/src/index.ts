@@ -38,6 +38,7 @@ import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches';
 import { patchPolicyRoutes } from './routes/patchPolicies';
+import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
 import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
@@ -59,6 +60,7 @@ import { metricsRoutes } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
+import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
 import { filterRoutes } from './routes/filters';
@@ -76,6 +78,7 @@ import { playbookRoutes } from './routes/playbooks';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
+import { softwareInventoryRoutes } from './routes/softwareInventory';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -299,7 +302,8 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/security',
   '/system-tools',
   '/playbooks',
-  '/dns-security'
+  '/dns-security',
+  '/software-inventory'
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -598,6 +602,7 @@ api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
+api.route('/update-rings', updateRingRoutes);
 api.route('/mobile', mobileRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/discovery', discoveryRoutes);
@@ -619,6 +624,7 @@ api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
 api.route('/partner', partnerRoutes);
+api.route('/partner/known-guests', networkKnownGuestsRoutes);
 api.route('/tags', tagRoutes);
 api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
@@ -634,6 +640,7 @@ api.route('/helper', helperRoutes);
 api.route('/playbooks', playbookRoutes);
 api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
+api.route('/software-inventory', softwareInventoryRoutes);
 
 app.route('/api/v1', api);
 
