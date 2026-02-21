@@ -227,7 +227,7 @@ describe('networkKnownGuests routes', () => {
 
     it('returns 409 on duplicate MAC for same partner', async () => {
       const mockReturning = vi.fn().mockRejectedValue(
-        new Error('duplicate key value violates unique constraint "network_known_guests_partner_mac_unique"')
+        Object.assign(new Error('unique constraint'), { code: '23505' })
       );
       const mockValues = vi.fn().mockReturnValue({ returning: mockReturning });
       vi.mocked(db.insert).mockReturnValue({ values: mockValues } as any);

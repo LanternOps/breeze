@@ -59,8 +59,7 @@ networkKnownGuestsRoutes.post(
 
       return c.json({ data: guest }, 201);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : '';
-      if (message.includes('unique') || message.includes('duplicate')) {
+      if (typeof err === 'object' && err !== null && (err as Record<string, unknown>).code === '23505') {
         return c.json({ error: 'This MAC address is already in your known guests list' }, 409);
       }
       throw err;
