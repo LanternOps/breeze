@@ -10,11 +10,14 @@ import {
   integer,
   inet,
   real,
-  uniqueIndex
+  uniqueIndex,
+  index
 } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
+import { alerts } from './alerts';
+import type { NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
 
 export const discoveredAssetTypeEnum = pgEnum('discovered_asset_type', [
   'workstation',
@@ -129,6 +132,81 @@ export const discoveredAssets = pgTable('discovered_assets', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique').on(table.orgId, table.ipAddress)
+}));
+
+export interface KnownNetworkDevice {
+  ip: string;
+  mac?: string | null;
+  hostname?: string | null;
+  assetType?: typeof discoveredAssetTypeEnum.enumValues[number] | null;
+  manufacturer?: string | null;
+  linkedDeviceId?: string | null;
+  firstSeen: string;
+  lastSeen: string;
+}
+
+export type { NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
+
+export const networkBaselines = pgTable('network_baselines', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  subnet: varchar('subnet', { length: 50 }).notNull(),
+  lastScanAt: timestamp('last_scan_at'),
+  lastScanJobId: uuid('last_scan_job_id').references(() => discoveryJobs.id),
+  knownDevices: jsonb('known_devices').$type<KnownNetworkDevice[]>().notNull().default([]),
+  scanSchedule: jsonb('scan_schedule').$type<NetworkBaselineScanSchedule>(),
+  alertSettings: jsonb('alert_settings').$type<NetworkBaselineAlertSettings>().notNull().default({
+    newDevice: true,
+    disappeared: true,
+    changed: true,
+    rogueDevice: false
+  }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  orgSiteSubnetUnique: uniqueIndex('network_baselines_org_site_subnet_unique').on(
+    table.orgId,
+    table.siteId,
+    table.subnet
+  ),
+  orgIdIdx: index('network_baselines_org_id_idx').on(table.orgId),
+  siteIdIdx: index('network_baselines_site_id_idx').on(table.siteId)
+}));
+
+export const networkEventTypeEnum = pgEnum('network_event_type', [
+  'new_device',
+  'device_disappeared',
+  'device_changed',
+  'rogue_device'
+]);
+
+export const networkChangeEvents = pgTable('network_change_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  baselineId: uuid('baseline_id').notNull().references(() => networkBaselines.id),
+  eventType: networkEventTypeEnum('event_type').notNull(),
+  ipAddress: inet('ip_address').notNull(),
+  macAddress: varchar('mac_address', { length: 17 }),
+  hostname: varchar('hostname', { length: 255 }),
+  assetType: discoveredAssetTypeEnum('asset_type'),
+  previousState: jsonb('previous_state'),
+  currentState: jsonb('current_state'),
+  detectedAt: timestamp('detected_at').defaultNow().notNull(),
+  acknowledged: boolean('acknowledged').notNull().default(false),
+  acknowledgedBy: uuid('acknowledged_by').references(() => users.id),
+  acknowledgedAt: timestamp('acknowledged_at'),
+  alertId: uuid('alert_id').references(() => alerts.id),
+  linkedDeviceId: uuid('linked_device_id').references(() => devices.id),
+  notes: text('notes'),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+}, (table) => ({
+  orgIdIdx: index('network_change_events_org_id_idx').on(table.orgId),
+  siteIdIdx: index('network_change_events_site_id_idx').on(table.siteId),
+  baselineIdIdx: index('network_change_events_baseline_id_idx').on(table.baselineId),
+  detectedAtIdx: index('network_change_events_detected_at_idx').on(table.detectedAt),
+  acknowledgedIdx: index('network_change_events_acknowledged_idx').on(table.acknowledged)
 }));
 
 export const networkTopology = pgTable('network_topology', {

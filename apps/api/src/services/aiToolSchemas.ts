@@ -249,6 +249,33 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  get_network_changes: z.object({
+    org_id: uuid.optional(),
+    site_id: uuid.optional(),
+    baseline_id: uuid.optional(),
+    event_type: z.enum(['new_device', 'device_disappeared', 'device_changed', 'rogue_device']).optional(),
+    acknowledged: z.boolean().optional(),
+    since: z.string().datetime().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  acknowledge_network_device: z.object({
+    event_id: uuid,
+    notes: z.string().max(2000).optional(),
+  }),
+
+  configure_network_baseline: z.object({
+    baseline_id: uuid.optional(),
+    org_id: uuid.optional(),
+    site_id: uuid.optional(),
+    subnet: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/).optional(),
+    scan_interval_hours: z.number().int().min(1).max(168).optional(),
+    alert_on_new_device: z.boolean().optional(),
+    alert_on_disappeared: z.boolean().optional(),
+    alert_on_changed: z.boolean().optional(),
+    alert_on_rogue_device: z.boolean().optional(),
+  }),
+
   network_discovery: z.object({
     deviceId: uuid,
     subnet: z.string().max(50).regex(
