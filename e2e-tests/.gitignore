@@ -11,3 +11,7 @@ blob-report/
 
 # Reports from YAML runner
 reports/
+
+# Doc verify artifacts
+doc-verify/assertions.json
+doc-verify/reports/

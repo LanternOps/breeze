@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Coins } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 
 interface UsageData {
   daily: { totalCostCents: number; messageCount: number };
@@ -14,13 +14,29 @@ interface UsageData {
   } | null;
 }
 
-export default function AiCostIndicator() {
+interface AiCostIndicatorProps {
+  enabled?: boolean;
+}
+
+export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps) {
   const [usage, setUsage] = useState<UsageData | null>(null);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
 
   useEffect(() => {
+    if (!enabled || !isAuthenticated) {
+      return;
+    }
+
     let mounted = true;
     let failCount = 0;
-    let intervalId: ReturnType<typeof setInterval>;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const stopPolling = () => {
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
 
     async function fetchUsage() {
       try {
@@ -29,20 +45,23 @@ export default function AiCostIndicator() {
           setUsage(await res.json());
           failCount = 0;
         } else if (res.status === 401 || res.status === 403) {
-          clearInterval(intervalId);
+          stopPolling();
         }
       } catch {
         failCount++;
-        if (failCount >= 5) clearInterval(intervalId);
+        if (failCount >= 5) stopPolling();
       }
     }
 
-    fetchUsage();
     intervalId = setInterval(fetchUsage, 60_000);
-    return () => { mounted = false; clearInterval(intervalId); };
-  }, []);
+    void fetchUsage();
+    return () => {
+      mounted = false;
+      stopPolling();
+    };
+  }, [enabled, isAuthenticated]);
 
-  if (!usage) return null;
+  if (!enabled || !usage) return null;
 
   const monthlyBudget = usage.budget?.monthlyBudgetCents;
   const monthlyUsed = usage.monthly.totalCostCents;

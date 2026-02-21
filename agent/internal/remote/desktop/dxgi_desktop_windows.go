@@ -148,6 +148,31 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 	// because OpenInputDesktop returns a new handle each time.
 	// Desktop names: "Default" (normal), "Winlogon" (UAC/lock), "Screen-saver".
 	if currentName == inputName {
+		onSecure := inputName != "" && !strings.EqualFold(inputName, "Default")
+		wasSecure := c.secureDesktopFlag.Load()
+		c.secureDesktopFlag.Store(onSecure)
+		c.gdiNoFrameCount = 0
+
+		// Startup edge-case: if capture starts while already on Winlogon/UAC,
+		// there is no "transition" event to trigger fallback. Force GDI now.
+		if onSecure && c.gdiFallback == nil {
+			c.releaseDXGI()
+			c.gdiFallback = &gdiCapturer{config: c.config}
+			c.desktopSwitchFlag.Store(true)
+			slog.Info("Secure desktop active without transition event, using GDI capture",
+				"desktop", inputName)
+		} else if !onSecure && c.gdiFallback != nil {
+			// Recover DXGI if we're back on Default but still in fallback mode.
+			c.gdiFallback.releaseHandles()
+			c.gdiFallback = nil
+			if err := c.initDXGI(); err != nil {
+				slog.Warn("DXGI reinit failed while leaving fallback mode", "error", err)
+				c.switchToGDI()
+			}
+		}
+		if onSecure != wasSecure {
+			c.desktopSwitchFlag.Store(true)
+		}
 		procCloseDesktop.Call(inputDesk)
 		return false
 	}

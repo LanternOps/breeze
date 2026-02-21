@@ -1,119 +1,126 @@
 // e2e-tests/doc-verify/cli.ts
 import { resolve } from 'path';
-import { extractAssertions, listDocPages, loadManifest, saveManifest } from './extractor';
+import { mkdirSync } from 'fs';
+import {
+  extractAssertions,
+  listDocPages,
+  loadManifest,
+  saveManifest,
+} from './extractor';
 import { runAssertions } from './runner';
 import { printSummary, saveJsonReport, saveHtmlReport } from './report';
 import { seedViaApi } from './fixtures/seed';
 
-const DOC_SCOPE = ['getting-started', 'agents'];
 const MANIFEST_PATH = resolve(import.meta.dirname, 'assertions.json');
 const REPORT_DIR = resolve(import.meta.dirname, 'reports');
 
-const API_URL = process.env.API_URL || 'http://localhost:3001';
-const WEB_URL = process.env.WEB_URL || 'http://localhost:4322';
-const DB_URL = process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
+// Initial scope: getting-started + agents docs
+const DOC_SCOPE = ['getting-started', 'agents'];
 
-const command = process.argv[2] || 'all';
-const args = process.argv.slice(3);
-const incremental = args.includes('--incremental');
-const pageFilter = args.find((a) => a.startsWith('--page='))?.split('=')[1];
-const typeFilter = args.find((a) => a.startsWith('--type='))?.split('=')[1] as 'api' | 'sql' | 'ui' | undefined;
+function getEnv(): Record<string, string> {
+  return {
+    ENROLLMENT_SECRET: process.env.AGENT_ENROLLMENT_SECRET || 'test-enrollment-secret',
+    ADMIN_EMAIL: process.env.E2E_ADMIN_EMAIL || 'admin@breeze.local',
+    ADMIN_PASSWORD: process.env.E2E_ADMIN_PASSWORD || 'BreezeAdmin123!',
+    AUTH_TOKEN: '',
+  };
+}
 
-async function doExtract() {
-  console.log('Extracting assertions from docs...');
+async function extract(incremental: boolean) {
+  console.log('Extracting assertions from documentation...');
   const docPaths = await listDocPages(DOC_SCOPE);
-  console.log(`Found ${docPaths.length} doc pages in scope: ${DOC_SCOPE.join(', ')}`);
+  console.log(`Found ${docPaths.length} doc pages in scope.`);
 
   const existing = incremental ? await loadManifest(MANIFEST_PATH) : undefined;
   const manifest = await extractAssertions(docPaths, existing, incremental);
 
-  const totalAssertions = manifest.pages.reduce((sum, p) => sum + p.assertions.length, 0);
-  console.log(`Extracted ${totalAssertions} assertions from ${manifest.pages.length} pages`);
-
   await saveManifest(manifest, MANIFEST_PATH);
+
+  const totalAssertions = manifest.pages.reduce((sum, p) => sum + p.assertions.length, 0);
+  console.log(`\nExtracted ${totalAssertions} assertions across ${manifest.pages.length} pages.`);
   console.log(`Manifest saved to ${MANIFEST_PATH}`);
-  return manifest;
 }
 
-async function doRun() {
-  console.log('Running assertions...');
+async function run(pageFilter?: string) {
   const manifest = await loadManifest(MANIFEST_PATH);
   if (!manifest) {
-    console.error('No assertions.json found. Run "extract" first.');
+    console.error('No assertions.json found. Run "doc-verify extract" first.');
     process.exit(1);
   }
 
-  const totalAssertions = manifest.pages.reduce((sum, p) => sum + p.assertions.length, 0);
-  console.log(`Loaded ${totalAssertions} assertions from manifest`);
+  const apiUrl = process.env.DOC_VERIFY_API_URL || 'http://localhost:3001';
+  const baseUrl = process.env.DOC_VERIFY_BASE_URL || 'http://localhost:4321';
+  const dbUrl =
+    process.env.DOC_VERIFY_DB_URL ||
+    'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 
   // Seed test data
   console.log('Seeding test data...');
-  let env: Record<string, string> = {};
-  try {
-    const seed = await seedViaApi(API_URL);
-    env = {
-      ORG_ID: seed.orgId,
-      SITE_ID: seed.siteId,
-      ENROLLMENT_KEY: seed.enrollmentKey,
-      ADMIN_EMAIL: seed.adminEmail,
-      ADMIN_PASSWORD: seed.adminPassword,
-    };
+  const seedData = await seedViaApi(apiUrl);
+  const env = {
+    ...getEnv(),
+    ORG_ID: seedData.orgId,
+    SITE_ID: seedData.siteId,
+    ENROLLMENT_KEY: seedData.enrollmentKey,
+  };
 
-    // Login to get auth token for API assertions
-    const loginRes = await fetch(`${API_URL}/api/v1/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: seed.adminEmail, password: seed.adminPassword }),
-    });
-    if (loginRes.ok) {
-      const loginData = (await loginRes.json()) as Record<string, unknown>;
-      env.AUTH_TOKEN = (loginData.token || loginData.accessToken || '') as string;
-    }
-    console.log(`Seeded: org=${env.ORG_ID}, site=${env.SITE_ID}, token=${env.AUTH_TOKEN ? 'yes' : 'no'}`);
-  } catch (err) {
-    console.warn(`Seed failed (continuing with empty env): ${err instanceof Error ? err.message : String(err)}`);
+  // Login to get auth token
+  const loginRes = await fetch(`${apiUrl}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: env.ADMIN_EMAIL,
+      password: env.ADMIN_PASSWORD,
+    }),
+  });
+  if (loginRes.ok) {
+    const loginData = await loginRes.json() as Record<string, unknown>;
+    env.AUTH_TOKEN = (loginData.token || loginData.accessToken || '') as string;
   }
 
   const report = await runAssertions(manifest, {
-    apiUrl: API_URL,
-    webUrl: WEB_URL,
-    dbUrl: DB_URL,
+    apiUrl,
+    baseUrl,
+    dbUrl,
     env,
-    filterPage: pageFilter,
-    filterType: typeFilter,
+    page: pageFilter,
   });
 
   printSummary(report);
 
   // Save reports
-  const { mkdirSync } = await import('fs');
-  try { mkdirSync(REPORT_DIR, { recursive: true }); } catch { /* exists */ }
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  await saveJsonReport(report, resolve(REPORT_DIR, `report-${ts}.json`));
-  await saveHtmlReport(report, resolve(REPORT_DIR, `report-${ts}.html`));
+  mkdirSync(REPORT_DIR, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  await saveJsonReport(report, resolve(REPORT_DIR, `report-${timestamp}.json`));
+  await saveHtmlReport(report, resolve(REPORT_DIR, `report-${timestamp}.html`));
 
-  // Exit with non-zero if any failures
+  // Exit with error code if any failures
   if (report.failed > 0 || report.errors > 0) {
     process.exit(1);
   }
 }
 
 async function main() {
+  const command = process.argv[2] || 'all';
+  const flags = process.argv.slice(3);
+  const incremental = flags.includes('--incremental');
+  const pageFlag = flags.find((f) => f.startsWith('--page='));
+  const page = pageFlag?.split('=')[1];
+
   switch (command) {
     case 'extract':
-      await doExtract();
+      await extract(incremental);
       break;
     case 'run':
-      await doRun();
+      await run(page);
       break;
     case 'all':
-      await doExtract();
-      await doRun();
+      await extract(incremental);
+      await run(page);
       break;
     default:
       console.error(`Unknown command: ${command}`);
-      console.error('Usage: doc-verify [extract|run|all]');
-      console.error('Flags: --incremental --page=<filter> --type=api|sql|ui');
+      console.error('Usage: doc-verify [extract|run|all] [--incremental] [--page=path]');
       process.exit(1);
   }
 }

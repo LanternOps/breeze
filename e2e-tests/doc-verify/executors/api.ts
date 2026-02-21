@@ -53,11 +53,10 @@ export async function executeApiAssertion(
   const resolvedBody = body ? resolveObject(body, env) : undefined;
 
   try {
-    const isBodyAllowed = method !== 'GET' && method !== 'HEAD';
     const response = await fetch(url, {
       method,
       headers,
-      body: isBodyAllowed && resolvedBody ? JSON.stringify(resolvedBody) : undefined,
+      body: resolvedBody ? JSON.stringify(resolvedBody) : undefined,
     });
 
     const responseBody = await response.text();
