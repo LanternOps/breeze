@@ -89,7 +89,14 @@ commandsRoutes.post(
       try {
         await handleSoftwareRemediationCommandResult(command, data);
       } catch (err) {
-        console.error(`[agents] software remediation post-processing failed for ${commandId}:`, err);
+        const policyId = command.payload && typeof command.payload === 'object'
+          ? (command.payload as Record<string, unknown>).policyId ?? 'unknown'
+          : 'unknown';
+        console.error(
+          `[agents] software remediation post-processing failed for command ${commandId} ` +
+          `(device ${command.deviceId}, policy ${policyId}) — device may be stuck in_progress:`,
+          err
+        );
         captureException(err);
       }
     }
