@@ -69,6 +69,8 @@ interface AiState {
   searchResults: SearchResult[];
   isSearching: boolean;
   isInterrupting: boolean;
+  isFlagged: boolean;
+  flagReason: string | null;
 
   // Actions
   toggle: () => void;
@@ -89,6 +91,8 @@ interface AiState {
   interruptResponse: () => Promise<void>;
   searchConversations: (query: string) => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
+  flagSession: (reason?: string) => Promise<void>;
+  unflagSession: () => Promise<void>;
 }
 
 function mapMessagesFromApi(rawMessages: Record<string, unknown>[]): AiMessage[] {
@@ -124,6 +128,8 @@ export const useAiStore = create<AiState>()(
   searchResults: [],
   isSearching: false,
   isInterrupting: false,
+  isFlagged: false,
+  flagReason: null,
 
   toggle: () => set((s) => ({ isOpen: !s.isOpen })),
   open: () => set({ isOpen: true }),
@@ -145,7 +151,7 @@ export const useAiStore = create<AiState>()(
         throw new Error(data.error || 'Failed to create session');
       }
       const data = await res.json();
-      set({ sessionId: data.id, messages: [], isLoading: false });
+      set({ sessionId: data.id, messages: [], isLoading: false, isFlagged: false, flagReason: null });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
@@ -175,7 +181,13 @@ export const useAiStore = create<AiState>()(
 
       const messages = mapMessagesFromApi(data.messages || []);
 
-      set({ sessionId, messages, isLoading: false });
+      set({
+        sessionId,
+        messages,
+        isLoading: false,
+        isFlagged: !!data.session.flaggedAt,
+        flagReason: data.session.flagReason ?? null,
+      });
     } catch (err) {
       set({
         sessionId: null,
@@ -472,7 +484,32 @@ export const useAiStore = create<AiState>()(
         isLoading: false
       });
     }
-  }
+  },
+
+  flagSession: async (reason?: string) => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    try {
+      await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+      set({ isFlagged: true, flagReason: reason ?? null });
+    } catch (err) {
+      console.error('Failed to flag session:', err);
+    }
+  },
+
+  unflagSession: async () => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    try {
+      await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, { method: 'DELETE' });
+      set({ isFlagged: false, flagReason: null });
+    } catch (err) {
+      console.error('Failed to unflag session:', err);
+    }
+  },
     }),
     {
       name: 'breeze-ai-chat',

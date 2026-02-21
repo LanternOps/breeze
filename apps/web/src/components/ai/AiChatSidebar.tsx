@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2 } from 'lucide-react';
+import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2, Flag } from 'lucide-react';
 import { useAiStore } from '@/stores/aiStore';
 import AiChatMessages from './AiChatMessages';
 import AiChatInput from './AiChatInput';
@@ -40,7 +40,10 @@ export default function AiChatSidebar() {
     searchConversations,
     switchSession,
     interruptResponse,
-    isInterrupting
+    isInterrupting,
+    isFlagged,
+    flagSession,
+    unflagSession
   } = useAiStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -144,6 +147,19 @@ export default function AiChatSidebar() {
                 title="New conversation"
               >
                 <Plus className="h-4 w-4" />
+              </button>
+            )}
+            {!showHistory && sessionId && (
+              <button
+                onClick={() => isFlagged ? unflagSession() : flagSession()}
+                className={`rounded p-1.5 transition-colors ${
+                  isFlagged
+                    ? 'text-amber-400 hover:bg-gray-800 hover:text-amber-300'
+                    : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                }`}
+                title={isFlagged ? 'Unflag conversation' : 'Flag conversation for review'}
+              >
+                <Flag className="h-4 w-4" fill={isFlagged ? 'currentColor' : 'none'} />
               </button>
             )}
             <button
