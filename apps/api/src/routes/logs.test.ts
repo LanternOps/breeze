@@ -316,4 +316,103 @@ describe('logs routes', () => {
       '33333333-3333-3333-3333-333333333333',
     );
   });
+
+  it('returns 404 when savedQueryId does not exist', async () => {
+    getSavedLogSearchQueryMock.mockResolvedValue(null);
+
+    const res = await app.request('/logs/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ savedQueryId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toMatch(/not found/i);
+  });
+
+  it('returns 400 when search service throws a time range error', async () => {
+    searchFleetLogsMock.mockRejectedValue(new Error('Invalid time range. start must be before end.'));
+
+    const res = await app.request('/logs/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: 'test' }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for rules-based correlation detect when orgId cannot be resolved', async () => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: ['org-a', 'org-b'],
+        user: { id: 'partner-user' },
+        canAccessOrg: () => true,
+        orgCondition: () => undefined,
+      });
+      return next();
+    });
+
+    const res = await app.request('/logs/correlation/detect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/orgId/i);
+    expect(runCorrelationRulesMock).not.toHaveBeenCalled();
+  });
+
+  it('runs correlation rules scoped to resolved orgId', async () => {
+    runCorrelationRulesMock.mockResolvedValue([]);
+
+    const res = await app.request('/logs/correlation/detect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(runCorrelationRulesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: '11111111-1111-1111-1111-111111111111' }),
+    );
+  });
+
+  it('GET /logs/queries returns list of saved queries', async () => {
+    listSavedLogSearchQueriesMock.mockResolvedValue([
+      { id: 'q-1', name: 'My Query' },
+    ]);
+
+    const res = await app.request('/logs/queries');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].id).toBe('q-1');
+  });
+
+  it('POST /logs/queries creates a saved query and returns 201', async () => {
+    createSavedLogSearchQueryMock.mockResolvedValue({ id: 'new-query-id', name: 'My Search' });
+
+    const res = await app.request('/logs/queries', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'My Search', filters: {} }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data.id).toBe('new-query-id');
+  });
+
+  it('GET /logs/queries/:id returns 404 when query not found', async () => {
+    getSavedLogSearchQueryMock.mockResolvedValue(null);
+
+    const res = await app.request('/logs/queries/44444444-4444-4444-4444-444444444444');
+    expect(res.status).toBe(404);
+  });
 });
