@@ -64,6 +64,7 @@ import {
 } from './networkBaseline';
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { listReliabilityDevices } from './reliabilityScoring';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -1467,6 +1468,88 @@ registerTool({
       worstDevices: rows.slice(0, Math.min(10, rows.length)),
       devices: rows
     });
+  }
+});
+
+// ============================================
+// get_fleet_health - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_fleet_health',
+    description: 'Query device reliability scores across the fleet. Returns devices ranked by reliability (worst first) with uptime, crash history, and failure metrics.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        orgId: { type: 'string', description: 'Optional org UUID (must be accessible)' },
+        siteId: { type: 'string', description: 'Optional site UUID' },
+        scoreRange: { type: 'string', enum: ['critical', 'poor', 'fair', 'good'], description: 'Score range filter' },
+        trendDirection: { type: 'string', enum: ['improving', 'stable', 'degrading'], description: 'Trend direction filter' },
+        issueType: { type: 'string', enum: ['crashes', 'hangs', 'hardware', 'services', 'uptime'], description: 'Issue-type filter' },
+        limit: { type: 'number', description: 'Maximum results (default 25, max 100)' },
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    try {
+      if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
+        return JSON.stringify({ error: 'Access denied to this organization' });
+      }
+
+      const orgIds = typeof input.orgId === 'string' && input.orgId
+        ? [input.orgId]
+        : auth.orgId
+          ? [auth.orgId]
+          : (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds : undefined);
+
+      if (!orgIds && auth.scope !== 'system') {
+        return JSON.stringify({ error: 'Organization context required' });
+      }
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+      const scoreRange = (typeof input.scoreRange === 'string' && ['critical', 'poor', 'fair', 'good'].includes(input.scoreRange))
+        ? input.scoreRange as 'critical' | 'poor' | 'fair' | 'good'
+        : undefined;
+      const trendDirection = (typeof input.trendDirection === 'string' && ['improving', 'stable', 'degrading'].includes(input.trendDirection))
+        ? input.trendDirection as 'improving' | 'stable' | 'degrading'
+        : undefined;
+      const issueType = (typeof input.issueType === 'string' && ['crashes', 'hangs', 'hardware', 'services', 'uptime'].includes(input.issueType))
+        ? input.issueType as 'crashes' | 'hangs' | 'hardware' | 'services' | 'uptime'
+        : undefined;
+
+      const { total, rows } = await listReliabilityDevices({
+        orgIds,
+        siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
+        scoreRange,
+        trendDirection,
+        issueType,
+        limit,
+        offset: 0,
+      });
+
+      const avgScore = rows.length > 0
+        ? Math.round(rows.reduce((sum, row) => sum + row.reliabilityScore, 0) / rows.length)
+        : 0;
+
+      return JSON.stringify({
+        devices: rows,
+        total,
+        summary: {
+          averageScore: avgScore,
+          criticalDevices: rows.filter((row) => row.reliabilityScore <= 50).length,
+          poorDevices: rows.filter((row) => row.reliabilityScore >= 51 && row.reliabilityScore <= 70).length,
+          fairDevices: rows.filter((row) => row.reliabilityScore >= 71 && row.reliabilityScore <= 85).length,
+          goodDevices: rows.filter((row) => row.reliabilityScore >= 86).length,
+          degradingDevices: rows.filter((row) => row.trendDirection === 'degrading').length,
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      console.error('[fleet:get_fleet_health]', message, err);
+      return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
+    }
   }
 });
 

@@ -69,6 +69,7 @@ export const CommandTypes = {
   PATCH_SCAN: 'patch_scan',
   INSTALL_PATCHES: 'install_patches',
   ROLLBACK_PATCHES: 'rollback_patches',
+  COLLECT_RELIABILITY_METRICS: 'collect_reliability_metrics',
 
   // Security
   SECURITY_COLLECT_STATUS: 'security_collect_status',

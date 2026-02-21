@@ -198,6 +198,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   list_playbooks: { resource: 'devices', action: 'read' },
   execute_playbook: { resource: 'devices', action: 'execute' },
   get_playbook_history: { resource: 'devices', action: 'read' },
+  // Security + reliability read tools
+  get_security_posture: { resource: 'devices', action: 'read' },
+  get_fleet_health: { resource: 'devices', action: 'read' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }

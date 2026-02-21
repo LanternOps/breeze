@@ -52,8 +52,9 @@ const (
 	CmdSoftwareUninstall = "software_uninstall"
 
 	// Boot performance
-	CmdCollectBootPerformance = "collect_boot_performance"
-	CmdManageStartupItem      = "manage_startup_item"
+	CmdCollectBootPerformance    = "collect_boot_performance"
+	CmdManageStartupItem         = "manage_startup_item"
+	CmdCollectReliabilityMetrics = "collect_reliability_metrics"
 
 	// File transfer
 	CmdFileTransfer   = "file_transfer"

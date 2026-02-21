@@ -56,6 +56,7 @@ export const TOOL_TIERS = {
   manage_services: 3,
   security_scan: 3,
   get_security_posture: 1,
+  get_fleet_health: 1,
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
@@ -392,6 +393,20 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('get_security_posture', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_fleet_health',
+      'Query fleet reliability scores to identify devices that need attention first.',
+      {
+        orgId: uuid.optional(),
+        siteId: uuid.optional(),
+        scoreRange: z.enum(['critical', 'poor', 'fair', 'good']).optional(),
+        trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
+        issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

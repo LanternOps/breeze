@@ -11,6 +11,8 @@ import {
   NOTIFICATION_CHANNEL_TYPES
 } from '../constants';
 
+export * from './reliability';
+
 // ============================================
 // Common Validators
 // ============================================

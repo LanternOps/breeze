@@ -37,7 +37,8 @@ vi.mock('./redis', () => ({
   getRedis: vi.fn(),
 }));
 
-import { checkGuardrails } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission } from './aiGuardrails';
+import { getUserPermissions, hasPermission } from './permissions';
 
 // ─── Tier escalation for fleet tools ────────────────────────────────────
 
@@ -214,5 +215,31 @@ describe('checkGuardrails — fleet approval descriptions', () => {
   it('includes automation name in create description', () => {
     const result = checkGuardrails('manage_automations', { action: 'create', name: 'Auto-restart' });
     expect(result.description).toContain('Auto-restart');
+  });
+});
+
+describe('checkToolPermission — reliability and posture read tools', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  it('enforces devices.read for get_fleet_health', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    const result = await checkToolPermission('get_fleet_health', {}, auth);
+    expect(result).toContain('requires devices.read');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'read');
+  });
+
+  it('allows get_security_posture when devices.read is present', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const result = await checkToolPermission('get_security_posture', { orgId: 'org-1' }, auth);
+    expect(result).toBeNull();
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'read');
   });
 });
