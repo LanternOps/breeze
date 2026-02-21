@@ -67,6 +67,7 @@ import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
+import { dnsSecurityRoutes } from './routes/dnsSecurity';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -82,6 +83,7 @@ import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
+import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -276,7 +278,8 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/viewers',
   '/devices',
   '/security',
-  '/system-tools'
+  '/system-tools',
+  '/dns-security'
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -601,6 +604,7 @@ api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
+api.route('/dns-security', dnsSecurityRoutes);
 
 app.route('/api/v1', api);
 
@@ -794,6 +798,7 @@ async function initializeWorkers(): Promise<void> {
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
+    ['dnsSyncWorker', initializeDnsSyncJob],
   ];
 
   await Promise.allSettled(
@@ -878,6 +883,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
 
   const shutdownTasks: Array<() => Promise<void>> = [
     shutdownPatchComplianceReportWorker,
+    shutdownDnsSyncJob,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,

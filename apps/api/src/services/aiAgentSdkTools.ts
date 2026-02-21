@@ -46,6 +46,8 @@ export const TOOL_TIERS = {
   get_active_users: 1,
   get_user_experience_metrics: 1,
   manage_alerts: 1, // Base tier; action-level escalation handled in guardrails
+  get_dns_security: 1,
+  manage_dns_policy: 2,
   execute_command: 3,
   run_script: 3,
   manage_services: 3,
@@ -312,6 +314,35 @@ export function createBreezeMcpServer(
         resolutionNote: z.string().max(1000).optional(),
       },
       makeHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_dns_security',
+      'Get DNS security statistics: blocked domains, threat categories, and top offending devices.',
+      {
+        timeRange: z.object({
+          start: z.string().datetime({ offset: true }),
+          end: z.string().datetime({ offset: true }),
+        }),
+        deviceId: uuid.optional(),
+        integrationId: uuid.optional(),
+        action: z.enum(['allowed', 'blocked', 'redirected']).optional(),
+        category: z.string().max(100).optional(),
+        topN: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_dns_security', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_dns_policy',
+      'Add or remove domains from DNS blocklist/allowlist and synchronize with the provider.',
+      {
+        integrationId: uuid,
+        action: z.enum(['add_block', 'remove_block', 'add_allow', 'remove_allow']),
+        domains: z.array(z.string().min(1).max(500)).min(1).max(500),
+        reason: z.string().max(2000).optional(),
+      },
+      makeHandler('manage_dns_policy', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

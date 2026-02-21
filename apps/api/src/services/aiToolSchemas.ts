@@ -127,6 +127,44 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     { message: 'alertId is required for get/acknowledge/resolve actions' }
   ),
 
+  get_dns_security: z.object({
+    timeRange: z.object({
+      start: z.string().datetime({ offset: true }),
+      end: z.string().datetime({ offset: true }),
+    }),
+    deviceId: uuid.optional(),
+    integrationId: uuid.optional(),
+    action: z.enum(['allowed', 'blocked', 'redirected']).optional(),
+    category: z.string().max(100).optional(),
+    topN: z.number().int().min(1).max(100).optional(),
+  }).superRefine((data, ctx) => {
+    const start = new Date(data.timeRange.start);
+    const end = new Date(data.timeRange.end);
+    if (start.getTime() > end.getTime()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeRange', 'start'],
+        message: 'timeRange.start must be before or equal to timeRange.end',
+      });
+      return;
+    }
+    const maxWindowMs = 90 * 24 * 60 * 60 * 1000;
+    if ((end.getTime() - start.getTime()) > maxWindowMs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeRange'],
+        message: 'timeRange cannot exceed 90 days',
+      });
+    }
+  }),
+
+  manage_dns_policy: z.object({
+    integrationId: uuid,
+    action: z.enum(['add_block', 'remove_block', 'add_allow', 'remove_allow']),
+    domains: z.array(z.string().min(1).max(500)).min(1).max(500),
+    reason: z.string().max(2000).optional(),
+  }),
+
   execute_command: z.object({
     deviceId: uuid,
     commandType: z.enum([
