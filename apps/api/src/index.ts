@@ -75,6 +75,7 @@ import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { changesRoutes } from './routes/changes';
+import { dnsSecurityRoutes } from './routes/dnsSecurity';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -98,6 +99,7 @@ import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/r
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
+import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -296,7 +298,8 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/devices',
   '/security',
   '/system-tools',
-  '/playbooks'
+  '/playbooks',
+  '/dns-security'
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -630,6 +633,7 @@ api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
 api.route('/playbooks', playbookRoutes);
 api.route('/changes', changesRoutes);
+api.route('/dns-security', dnsSecurityRoutes);
 
 app.route('/api/v1', api);
 
@@ -831,6 +835,7 @@ async function initializeWorkers(): Promise<void> {
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
+    ['dnsSyncWorker', initializeDnsSyncJob],
   ];
 
   await Promise.allSettled(
@@ -915,6 +920,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
 
   const shutdownTasks: Array<() => Promise<void>> = [
     shutdownPatchComplianceReportWorker,
+    shutdownDnsSyncJob,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,
