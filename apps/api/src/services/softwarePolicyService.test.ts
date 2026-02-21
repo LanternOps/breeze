@@ -87,4 +87,62 @@ describe('softwarePolicyService', () => {
     const stabilized = withStableViolationTimestamps(nextViolations, previousViolations);
     expect(stabilized[0]?.detectedAt).toBe(previousDetectedAt);
   });
+
+  it('drops rules without a name field from normalization', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [
+        { name: 'Google Chrome' },
+        { vendor: 'Adobe' },
+        { name: '' },
+        { name: '   ' },
+      ],
+    });
+
+    expect(rules.software).toHaveLength(1);
+    expect(rules.software[0]?.name).toBe('Google Chrome');
+  });
+
+  it('treats allowUnknown: false as default when not provided', () => {
+    const rules = normalizeSoftwarePolicyRules({ software: [{ name: 'Chrome' }] });
+    expect(rules.allowUnknown).toBe(false);
+  });
+
+  it('allowUnknown: true skips unauthorized violations for unknowns in allowlist mode', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: 'Google Chrome*' }],
+      allowUnknown: true,
+    });
+
+    const violations = evaluateSoftwareInventory('allowlist', rules, [
+      { name: 'TeamViewer Host', version: '15.2', vendor: null, catalogId: null },
+    ]);
+
+    expect(violations.filter((v) => v.type === 'unauthorized')).toHaveLength(0);
+  });
+
+  it('audit mode produces medium severity violations', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: 'TeamViewer*', reason: 'Unapproved' }],
+    });
+
+    const violations = evaluateSoftwareInventory('audit', rules, [
+      { name: 'TeamViewer Host', version: '15.2', vendor: 'TeamViewer', catalogId: null },
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.severity).toBe('medium');
+  });
+
+  it('blocklist mode produces critical severity violations', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: 'TeamViewer*' }],
+    });
+
+    const violations = evaluateSoftwareInventory('blocklist', rules, [
+      { name: 'TeamViewer Host', version: '15.2', vendor: 'TeamViewer', catalogId: null },
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.severity).toBe('critical');
+  });
 });
