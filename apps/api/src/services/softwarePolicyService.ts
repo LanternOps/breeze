@@ -583,13 +583,23 @@ export async function recordSoftwarePolicyAudit(input: {
   actorId?: string | null;
   details?: Record<string, unknown> | null;
 }): Promise<void> {
-  await db.insert(softwarePolicyAudit).values({
-    orgId: input.orgId,
-    policyId: input.policyId ?? null,
-    deviceId: input.deviceId ?? null,
-    action: input.action,
-    actor: input.actor,
-    actorId: input.actorId ?? null,
-    details: input.details ?? null,
-  });
+  try {
+    await db.insert(softwarePolicyAudit).values({
+      orgId: input.orgId,
+      policyId: input.policyId ?? null,
+      deviceId: input.deviceId ?? null,
+      action: input.action,
+      actor: input.actor,
+      actorId: input.actorId ?? null,
+      details: input.details ?? null,
+    });
+  } catch (err) {
+    console.error('[softwarePolicyService] Failed to write policy audit record', {
+      orgId: input.orgId,
+      policyId: input.policyId,
+      deviceId: input.deviceId,
+      action: input.action,
+      error: err,
+    });
+  }
 }
