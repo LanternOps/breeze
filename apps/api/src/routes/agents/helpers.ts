@@ -595,6 +595,10 @@ export async function handleSoftwareRemediationCommandResult(
   const payload = isObject(command.payload) ? command.payload : {};
   const policyId = readTrimmedString(payload.policyId);
   if (!policyId || !isUuid(policyId)) {
+    console.warn(
+      `[agents/helpers] software_uninstall command ${command.id} for device ${command.deviceId} ` +
+      `has missing or invalid policyId — cannot update compliance status`
+    );
     return;
   }
 
