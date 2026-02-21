@@ -953,7 +953,12 @@ async function bootstrap(): Promise<void> {
       await seedBuiltInPlaybooks();
     });
   } catch (err) {
-    console.error('[startup] Failed to seed built-in playbooks (non-fatal):', err);
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('relation "playbook_definitions" does not exist')) {
+      console.warn('[startup] Playbook table not yet created — skipping seed (run migrations first)');
+    } else {
+      console.error('[startup] Failed to seed built-in playbooks:', err);
+    }
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

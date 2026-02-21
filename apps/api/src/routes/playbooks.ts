@@ -26,6 +26,8 @@ const executionStatusSchema = z.enum([
 
 const playbookCategorySchema = z.enum(['disk', 'service', 'memory', 'patch', 'security']);
 
+const uuidParamSchema = z.object({ id: z.string().uuid() });
+
 const listPlaybooksQuerySchema = z.object({
   category: playbookCategorySchema.or(z.literal('all')).optional(),
 });
@@ -163,8 +165,9 @@ playbookRoutes.get(
 playbookRoutes.get(
   '/executions/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', uuidParamSchema),
   async (c) => {
-    const id = c.req.param('id');
+    const { id } = c.req.valid('param');
     const auth = c.get('auth');
 
     const conditions: SQL[] = [eq(playbookExecutions.id, id)];
@@ -195,100 +198,110 @@ playbookRoutes.get(
 playbookRoutes.post(
   '/:id/execute',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', uuidParamSchema),
   zValidator('json', executePlaybookBodySchema),
   async (c) => {
-    const playbookId = c.req.param('id');
+    const { id: playbookId } = c.req.valid('param');
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const playbookConditions: SQL[] = [
-      eq(playbookDefinitions.id, playbookId),
-      eq(playbookDefinitions.isActive, true),
-    ];
+    try {
+      const playbookConditions: SQL[] = [
+        eq(playbookDefinitions.id, playbookId),
+        eq(playbookDefinitions.isActive, true),
+      ];
 
-    const playbookOrgCond = auth.orgCondition(playbookDefinitions.orgId);
-    if (playbookOrgCond) {
-      playbookConditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${playbookOrgCond})`);
-    }
+      const playbookOrgCond = auth.orgCondition(playbookDefinitions.orgId);
+      if (playbookOrgCond) {
+        playbookConditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${playbookOrgCond})`);
+      }
 
-    const [playbook] = await db
-      .select()
-      .from(playbookDefinitions)
-      .where(and(...playbookConditions))
-      .limit(1);
+      const [playbook] = await db
+        .select()
+        .from(playbookDefinitions)
+        .where(and(...playbookConditions))
+        .limit(1);
 
-    if (!playbook) {
-      return c.json({ error: 'Playbook not found or access denied' }, 404);
-    }
+      if (!playbook) {
+        return c.json({ error: 'Playbook not found or access denied' }, 404);
+      }
 
-    const permissionCheck = await checkPlaybookRequiredPermissions(playbook.requiredPermissions, auth);
-    if (!permissionCheck.allowed) {
+      const permissionCheck = await checkPlaybookRequiredPermissions(playbook.requiredPermissions, auth);
+      if (!permissionCheck.allowed) {
+        return c.json({
+          error: permissionCheck.error ?? 'Missing required permissions for this playbook',
+          missingPermissions: permissionCheck.missingPermissions,
+        }, 403);
+      }
+
+      const deviceConditions: SQL[] = [eq(devices.id, body.deviceId)];
+      const deviceOrgCond = auth.orgCondition(devices.orgId);
+      if (deviceOrgCond) deviceConditions.push(deviceOrgCond);
+
+      const [device] = await db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          hostname: devices.hostname,
+        })
+        .from(devices)
+        .where(and(...deviceConditions))
+        .limit(1);
+
+      if (!device) {
+        return c.json({ error: 'Device not found or access denied' }, 404);
+      }
+
+      if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
+        return c.json({ error: 'Playbook and device must belong to the same organization' }, 403);
+      }
+
+      const baseContext = (body.context ?? {}) as PlaybookExecutionContext;
+      const mergedContext: PlaybookExecutionContext = {
+        ...baseContext,
+        variables: {
+          ...(baseContext.variables ?? {}),
+          ...(body.variables ?? {}),
+        },
+      };
+
+      const [execution] = await db
+        .insert(playbookExecutions)
+        .values({
+          orgId: device.orgId,
+          deviceId: device.id,
+          playbookId: playbook.id,
+          status: 'pending',
+          context: mergedContext,
+          triggeredBy: 'ai',
+          triggeredByUserId: auth.user.id,
+        })
+        .returning();
+
+      if (!execution) {
+        return c.json({ error: 'Failed to create playbook execution' }, 500);
+      }
+
       return c.json({
-        error: permissionCheck.error ?? 'Missing required permissions for this playbook',
-        missingPermissions: permissionCheck.missingPermissions,
-      }, 403);
+        execution,
+        playbook: {
+          id: playbook.id,
+          name: playbook.name,
+          description: playbook.description,
+          category: playbook.category,
+          steps: playbook.steps,
+        },
+        device,
+        message: 'Execution created. Execute playbook steps sequentially and update status as progress is made.',
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[playbooks] Execute playbook error:', message);
+      if (message.includes('violates foreign key')) {
+        return c.json({ error: 'Referenced resource no longer exists' }, 409);
+      }
+      return c.json({ error: 'Failed to execute playbook' }, 500);
     }
-
-    const deviceConditions: SQL[] = [eq(devices.id, body.deviceId)];
-    const deviceOrgCond = auth.orgCondition(devices.orgId);
-    if (deviceOrgCond) deviceConditions.push(deviceOrgCond);
-
-    const [device] = await db
-      .select({
-        id: devices.id,
-        orgId: devices.orgId,
-        hostname: devices.hostname,
-      })
-      .from(devices)
-      .where(and(...deviceConditions))
-      .limit(1);
-
-    if (!device) {
-      return c.json({ error: 'Device not found or access denied' }, 404);
-    }
-
-    if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
-      return c.json({ error: 'Playbook and device must belong to the same organization' }, 403);
-    }
-
-    const baseContext = (body.context ?? {}) as PlaybookExecutionContext;
-    const mergedContext: PlaybookExecutionContext = {
-      ...baseContext,
-      variables: {
-        ...(baseContext.variables ?? {}),
-        ...(body.variables ?? {}),
-      },
-    };
-
-    const [execution] = await db
-      .insert(playbookExecutions)
-      .values({
-        orgId: device.orgId,
-        deviceId: device.id,
-        playbookId: playbook.id,
-        status: 'pending',
-        context: mergedContext,
-        triggeredBy: 'ai',
-        triggeredByUserId: auth.user.id,
-      })
-      .returning();
-
-    if (!execution) {
-      return c.json({ error: 'Failed to create playbook execution' }, 500);
-    }
-
-    return c.json({
-      execution,
-      playbook: {
-        id: playbook.id,
-        name: playbook.name,
-        description: playbook.description,
-        category: playbook.category,
-        steps: playbook.steps,
-      },
-      device,
-      message: 'Execution created. Execute playbook steps sequentially and update status as progress is made.',
-    });
   }
 );
 
@@ -296,60 +309,75 @@ playbookRoutes.post(
 playbookRoutes.patch(
   '/executions/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', uuidParamSchema),
   zValidator('json', patchExecutionBodySchema),
   async (c) => {
-    const id = c.req.param('id');
+    const { id } = c.req.valid('param');
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const accessConditions: SQL[] = [eq(playbookExecutions.id, id)];
-    const orgCond = auth.orgCondition(playbookExecutions.orgId);
-    if (orgCond) accessConditions.push(orgCond);
+    try {
+      const accessConditions: SQL[] = [eq(playbookExecutions.id, id)];
+      const orgCond = auth.orgCondition(playbookExecutions.orgId);
+      if (orgCond) accessConditions.push(orgCond);
 
-    const [existing] = await db
-      .select({
-        id: playbookExecutions.id,
-        status: playbookExecutions.status,
-      })
-      .from(playbookExecutions)
-      .where(and(...accessConditions))
-      .limit(1);
+      const [existing] = await db
+        .select({
+          id: playbookExecutions.id,
+          status: playbookExecutions.status,
+        })
+        .from(playbookExecutions)
+        .where(and(...accessConditions))
+        .limit(1);
 
-    if (!existing) {
-      return c.json({ error: 'Execution not found' }, 404);
-    }
-
-    const updateData: Partial<typeof playbookExecutions.$inferInsert> = {
-      updatedAt: new Date(),
-    };
-
-    if (body.status !== undefined) {
-      if (!canTransitionExecutionStatus(existing.status, body.status)) {
-        return c.json({
-          error: `Invalid execution status transition from "${existing.status}" to "${body.status}"`,
-        }, 400);
+      if (!existing) {
+        return c.json({ error: 'Execution not found' }, 404);
       }
-      updateData.status = body.status;
-    }
-    if (body.currentStepIndex !== undefined) updateData.currentStepIndex = body.currentStepIndex;
-    if (body.steps !== undefined) updateData.steps = body.steps as PlaybookStepResult[];
-    if (body.context !== undefined) updateData.context = body.context as PlaybookExecutionContext;
-    if (body.errorMessage !== undefined) updateData.errorMessage = body.errorMessage;
-    if (body.rollbackExecuted !== undefined) updateData.rollbackExecuted = body.rollbackExecuted;
-    if (body.startedAt !== undefined) {
-      updateData.startedAt = body.startedAt ? new Date(body.startedAt) : null;
-    }
-    if (body.completedAt !== undefined) {
-      updateData.completedAt = body.completedAt ? new Date(body.completedAt) : null;
-    }
 
-    const [updated] = await db
-      .update(playbookExecutions)
-      .set(updateData)
-      .where(and(...accessConditions))
-      .returning();
+      const updateData: Partial<typeof playbookExecutions.$inferInsert> = {
+        updatedAt: new Date(),
+      };
 
-    return c.json({ execution: updated });
+      if (body.status !== undefined) {
+        if (!canTransitionExecutionStatus(existing.status, body.status)) {
+          return c.json({
+            error: `Invalid execution status transition from "${existing.status}" to "${body.status}"`,
+          }, 400);
+        }
+        updateData.status = body.status;
+      }
+      if (body.currentStepIndex !== undefined) updateData.currentStepIndex = body.currentStepIndex;
+      if (body.steps !== undefined) updateData.steps = body.steps as PlaybookStepResult[];
+      if (body.context !== undefined) updateData.context = body.context as PlaybookExecutionContext;
+      if (body.errorMessage !== undefined) updateData.errorMessage = body.errorMessage;
+      if (body.rollbackExecuted !== undefined) updateData.rollbackExecuted = body.rollbackExecuted;
+      if (body.startedAt !== undefined) {
+        updateData.startedAt = body.startedAt ? new Date(body.startedAt) : null;
+      }
+      if (body.completedAt !== undefined) {
+        updateData.completedAt = body.completedAt ? new Date(body.completedAt) : null;
+      }
+
+      // Optimistic lock: include current status in WHERE to prevent race conditions
+      const [updated] = await db
+        .update(playbookExecutions)
+        .set(updateData)
+        .where(and(...accessConditions, eq(playbookExecutions.status, existing.status)))
+        .returning();
+
+      if (!updated) {
+        return c.json({ error: 'Execution was modified concurrently, please retry' }, 409);
+      }
+
+      return c.json({ execution: updated });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[playbooks] Update execution error:', message);
+      if (message.includes('violates foreign key')) {
+        return c.json({ error: 'Referenced resource no longer exists' }, 409);
+      }
+      return c.json({ error: 'Failed to update execution' }, 500);
+    }
   }
 );
 
@@ -357,8 +385,9 @@ playbookRoutes.patch(
 playbookRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', uuidParamSchema),
   async (c) => {
-    const id = c.req.param('id');
+    const { id } = c.req.valid('param');
     const auth = c.get('auth');
 
     const conditions: SQL[] = [eq(playbookDefinitions.id, id)];

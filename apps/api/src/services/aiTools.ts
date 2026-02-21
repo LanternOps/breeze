@@ -1800,32 +1800,38 @@ registerTool({
     },
   },
   handler: async (input, auth) => {
-    const conditions: SQL[] = [eq(playbookDefinitions.isActive, true)];
-    const category = typeof input.category === 'string' ? input.category : undefined;
-    if (category && category !== 'all') {
-      conditions.push(eq(playbookDefinitions.category, category));
+    try {
+      const conditions: SQL[] = [eq(playbookDefinitions.isActive, true)];
+      const category = typeof input.category === 'string' ? input.category : undefined;
+      if (category && category !== 'all') {
+        conditions.push(eq(playbookDefinitions.category, category));
+      }
+
+      const orgCond = auth.orgCondition(playbookDefinitions.orgId);
+      if (orgCond) {
+        conditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${orgCond})`);
+      }
+
+      const playbooks = await db
+        .select({
+          id: playbookDefinitions.id,
+          name: playbookDefinitions.name,
+          description: playbookDefinitions.description,
+          category: playbookDefinitions.category,
+          isBuiltIn: playbookDefinitions.isBuiltIn,
+          requiredPermissions: playbookDefinitions.requiredPermissions,
+          steps: playbookDefinitions.steps,
+        })
+        .from(playbookDefinitions)
+        .where(and(...conditions))
+        .orderBy(playbookDefinitions.category, playbookDefinitions.name);
+
+      return JSON.stringify({ playbooks, count: playbooks.length });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[AI] list_playbooks failed:`, err);
+      return JSON.stringify({ error: `list_playbooks failed: ${message}` });
     }
-
-    const orgCond = auth.orgCondition(playbookDefinitions.orgId);
-    if (orgCond) {
-      conditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${orgCond})`);
-    }
-
-    const playbooks = await db
-      .select({
-        id: playbookDefinitions.id,
-        name: playbookDefinitions.name,
-        description: playbookDefinitions.description,
-        category: playbookDefinitions.category,
-        isBuiltIn: playbookDefinitions.isBuiltIn,
-        requiredPermissions: playbookDefinitions.requiredPermissions,
-        steps: playbookDefinitions.steps,
-      })
-      .from(playbookDefinitions)
-      .where(and(...conditions))
-      .orderBy(playbookDefinitions.category, playbookDefinitions.name);
-
-    return JSON.stringify({ playbooks, count: playbooks.length });
   },
 });
 
@@ -1856,95 +1862,101 @@ registerTool({
     },
   },
   handler: async (input, auth) => {
-    const playbookId = input.playbookId as string;
-    const deviceId = input.deviceId as string;
-    const variables = (input.variables as Record<string, unknown> | undefined) ?? {};
-    const extraContext = (input.context as Record<string, unknown> | undefined) ?? {};
+    try {
+      const playbookId = input.playbookId as string;
+      const deviceId = input.deviceId as string;
+      const variables = (input.variables as Record<string, unknown> | undefined) ?? {};
+      const extraContext = (input.context as Record<string, unknown> | undefined) ?? {};
 
-    const playbookConditions: SQL[] = [
-      eq(playbookDefinitions.id, playbookId),
-      eq(playbookDefinitions.isActive, true),
-    ];
-    const orgCond = auth.orgCondition(playbookDefinitions.orgId);
-    if (orgCond) {
-      playbookConditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${orgCond})`);
-    }
+      const playbookConditions: SQL[] = [
+        eq(playbookDefinitions.id, playbookId),
+        eq(playbookDefinitions.isActive, true),
+      ];
+      const orgCond = auth.orgCondition(playbookDefinitions.orgId);
+      if (orgCond) {
+        playbookConditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${orgCond})`);
+      }
 
-    const [playbook] = await db
-      .select()
-      .from(playbookDefinitions)
-      .where(and(...playbookConditions))
-      .limit(1);
+      const [playbook] = await db
+        .select()
+        .from(playbookDefinitions)
+        .where(and(...playbookConditions))
+        .limit(1);
 
-    if (!playbook) {
-      return JSON.stringify({ error: 'Playbook not found or access denied' });
-    }
+      if (!playbook) {
+        return JSON.stringify({ error: 'Playbook not found or access denied' });
+      }
 
-    const permissionCheck = await checkPlaybookRequiredPermissions(playbook.requiredPermissions, auth);
-    if (!permissionCheck.allowed) {
-      return JSON.stringify({
-        error: permissionCheck.error ?? 'Missing required permissions for this playbook',
-        missingPermissions: permissionCheck.missingPermissions,
-      });
-    }
+      const permissionCheck = await checkPlaybookRequiredPermissions(playbook.requiredPermissions, auth);
+      if (!permissionCheck.allowed) {
+        return JSON.stringify({
+          error: permissionCheck.error ?? 'Missing required permissions for this playbook',
+          missingPermissions: permissionCheck.missingPermissions,
+        });
+      }
 
-    const access = await verifyDeviceAccess(deviceId, auth);
-    if ('error' in access) return JSON.stringify({ error: access.error });
-    const { device } = access;
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      const { device } = access;
 
-    if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
-      return JSON.stringify({ error: 'Playbook and device must belong to the same organization' });
-    }
+      if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
+        return JSON.stringify({ error: 'Playbook and device must belong to the same organization' });
+      }
 
-    const existingVariables =
-      extraContext.variables && typeof extraContext.variables === 'object'
-        ? (extraContext.variables as Record<string, unknown>)
-        : {};
+      const existingVariables =
+        extraContext.variables && typeof extraContext.variables === 'object'
+          ? (extraContext.variables as Record<string, unknown>)
+          : {};
 
-    const [execution] = await db
-      .insert(playbookExecutions)
-      .values({
-        orgId: device.orgId,
-        deviceId: device.id,
-        playbookId: playbook.id,
-        status: 'pending',
-        context: {
-          ...extraContext,
-          variables: {
-            ...existingVariables,
-            ...variables,
+      const [execution] = await db
+        .insert(playbookExecutions)
+        .values({
+          orgId: device.orgId,
+          deviceId: device.id,
+          playbookId: playbook.id,
+          status: 'pending',
+          context: {
+            ...extraContext,
+            variables: {
+              ...existingVariables,
+              ...variables,
+            },
           },
+          triggeredBy: 'ai',
+          triggeredByUserId: auth.user.id,
+        })
+        .returning();
+
+      if (!execution) {
+        return JSON.stringify({ error: 'Failed to create playbook execution record' });
+      }
+
+      return JSON.stringify({
+        execution: {
+          id: execution.id,
+          status: execution.status,
+          currentStepIndex: execution.currentStepIndex,
+          createdAt: execution.createdAt,
         },
-        triggeredBy: 'ai',
-        triggeredByUserId: auth.user.id,
-      })
-      .returning();
-
-    if (!execution) {
-      return JSON.stringify({ error: 'Failed to create playbook execution record' });
+        playbook: {
+          id: playbook.id,
+          name: playbook.name,
+          description: playbook.description,
+          category: playbook.category,
+          steps: playbook.steps,
+        },
+        device: {
+          id: device.id,
+          hostname: device.hostname,
+          status: device.status,
+        },
+        message: 'Execution created. Execute each step sequentially and update status/step results as work progresses.',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[AI] execute_playbook failed:`, err);
+      return JSON.stringify({ error: `execute_playbook failed: ${message}` });
     }
-
-    return JSON.stringify({
-      execution: {
-        id: execution.id,
-        status: execution.status,
-        currentStepIndex: execution.currentStepIndex,
-        createdAt: execution.createdAt,
-      },
-      playbook: {
-        id: playbook.id,
-        name: playbook.name,
-        description: playbook.description,
-        category: playbook.category,
-        steps: playbook.steps,
-      },
-      device: {
-        id: device.id,
-        hostname: device.hostname,
-        status: device.status,
-      },
-      message: 'Execution created. Execute each step sequentially and update status/step results as work progresses.',
-    });
   },
 });
 
@@ -1975,46 +1987,52 @@ registerTool({
     },
   },
   handler: async (input, auth) => {
-    const conditions: SQL[] = [];
-    const orgCond = auth.orgCondition(playbookExecutions.orgId);
-    if (orgCond) conditions.push(orgCond);
+    try {
+      const conditions: SQL[] = [];
+      const orgCond = auth.orgCondition(playbookExecutions.orgId);
+      if (orgCond) conditions.push(orgCond);
 
-    if (typeof input.deviceId === 'string') {
-      conditions.push(eq(playbookExecutions.deviceId, input.deviceId));
+      if (typeof input.deviceId === 'string') {
+        conditions.push(eq(playbookExecutions.deviceId, input.deviceId));
+      }
+      if (typeof input.playbookId === 'string') {
+        conditions.push(eq(playbookExecutions.playbookId, input.playbookId));
+      }
+      if (typeof input.status === 'string') {
+        conditions.push(eq(playbookExecutions.status, input.status as typeof playbookExecutions.status.enumValues[number]));
+      }
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 20), 100);
+
+      const executions = await db
+        .select({
+          id: playbookExecutions.id,
+          status: playbookExecutions.status,
+          currentStepIndex: playbookExecutions.currentStepIndex,
+          steps: playbookExecutions.steps,
+          errorMessage: playbookExecutions.errorMessage,
+          rollbackExecuted: playbookExecutions.rollbackExecuted,
+          startedAt: playbookExecutions.startedAt,
+          completedAt: playbookExecutions.completedAt,
+          triggeredBy: playbookExecutions.triggeredBy,
+          createdAt: playbookExecutions.createdAt,
+          playbookName: playbookDefinitions.name,
+          playbookCategory: playbookDefinitions.category,
+          deviceHostname: devices.hostname,
+        })
+        .from(playbookExecutions)
+        .leftJoin(playbookDefinitions, eq(playbookExecutions.playbookId, playbookDefinitions.id))
+        .leftJoin(devices, eq(playbookExecutions.deviceId, devices.id))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(playbookExecutions.createdAt))
+        .limit(limit);
+
+      return JSON.stringify({ executions, count: executions.length });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[AI] get_playbook_history failed:`, err);
+      return JSON.stringify({ error: `get_playbook_history failed: ${message}` });
     }
-    if (typeof input.playbookId === 'string') {
-      conditions.push(eq(playbookExecutions.playbookId, input.playbookId));
-    }
-    if (typeof input.status === 'string') {
-      conditions.push(eq(playbookExecutions.status, input.status as typeof playbookExecutions.status.enumValues[number]));
-    }
-
-    const limit = Math.min(Math.max(1, Number(input.limit) || 20), 100);
-
-    const executions = await db
-      .select({
-        id: playbookExecutions.id,
-        status: playbookExecutions.status,
-        currentStepIndex: playbookExecutions.currentStepIndex,
-        steps: playbookExecutions.steps,
-        errorMessage: playbookExecutions.errorMessage,
-        rollbackExecuted: playbookExecutions.rollbackExecuted,
-        startedAt: playbookExecutions.startedAt,
-        completedAt: playbookExecutions.completedAt,
-        triggeredBy: playbookExecutions.triggeredBy,
-        createdAt: playbookExecutions.createdAt,
-        playbookName: playbookDefinitions.name,
-        playbookCategory: playbookDefinitions.category,
-        deviceHostname: devices.hostname,
-      })
-      .from(playbookExecutions)
-      .leftJoin(playbookDefinitions, eq(playbookExecutions.playbookId, playbookDefinitions.id))
-      .leftJoin(devices, eq(playbookExecutions.deviceId, devices.id))
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(desc(playbookExecutions.createdAt))
-      .limit(limit);
-
-    return JSON.stringify({ executions, count: executions.length });
   },
 });
 

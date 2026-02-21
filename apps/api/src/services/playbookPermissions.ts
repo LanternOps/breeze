@@ -42,7 +42,10 @@ export function parsePlaybookRequiredPermissions(value: unknown): RequiredPermis
       permission = normalizePermission(record.resource, record.action);
     }
 
-    if (!permission) continue;
+    if (!permission) {
+      console.warn(`[playbookPermissions] Dropping unparseable permission entry:`, JSON.stringify(item));
+      continue;
+    }
 
     const key = `${permission.resource}:${permission.action}`;
     if (!seen.has(key)) {

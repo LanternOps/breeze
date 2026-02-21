@@ -488,6 +488,13 @@ function buildApprovalDescription(
       parts.push(`Remove config policy assignment ${(input.assignmentId as string)?.slice(0, 8)}...`);
       break;
 
+    case 'execute_playbook': {
+      parts.push('Execute self-healing playbook');
+      if (input.playbookId) parts.push(`(playbook ${String(input.playbookId).slice(0, 8)}...)`);
+      if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
+      break;
+    }
+
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);
   }

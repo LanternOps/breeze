@@ -4,7 +4,7 @@ import {
   playbookDefinitions,
   type PlaybookStep,
   type PlaybookTriggerConditions,
-} from '../db/schema/playbooks';
+} from '../db/schema';
 
 type BuiltInPlaybook = {
   name: string;
@@ -191,6 +191,7 @@ const BUILT_IN_PLAYBOOKS: BuiltInPlaybook[] = [
 ];
 
 async function fallbackEnsureBuiltIn(playbook: BuiltInPlaybook): Promise<void> {
+  console.warn(`[startup] Using fallback seeder for "${playbook.name}" (unique constraint missing)`);
   const [existing] = await db
     .select({ id: playbookDefinitions.id })
     .from(playbookDefinitions)
@@ -233,7 +234,8 @@ async function fallbackEnsureBuiltIn(playbook: BuiltInPlaybook): Promise<void> {
 
 export async function seedBuiltInPlaybooks(): Promise<void> {
   const builtinScopeKey = '00000000-0000-0000-0000-000000000000';
-  let ensured = 0;
+  let primaryCount = 0;
+  let fallbackCount = 0;
 
   for (const playbook of BUILT_IN_PLAYBOOKS) {
     try {
@@ -275,17 +277,17 @@ export async function seedBuiltInPlaybooks(): Promise<void> {
           required_permissions = EXCLUDED.required_permissions,
           updated_at = NOW()
       `);
+      primaryCount += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('no unique or exclusion constraint matching the ON CONFLICT specification')) {
         await fallbackEnsureBuiltIn(playbook);
+        fallbackCount += 1;
       } else {
         throw error;
       }
     }
-
-    ensured += 1;
   }
 
-  console.log(`[startup] Built-in playbooks ensured (${ensured} definitions)`);
+  console.log(`[startup] Built-in playbooks ensured: ${primaryCount} via upsert, ${fallbackCount} via fallback`);
 }
