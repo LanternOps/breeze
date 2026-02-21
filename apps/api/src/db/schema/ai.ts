@@ -39,11 +39,15 @@ export const aiSessions = pgTable('ai_sessions', {
   sdkSessionId: varchar('sdk_session_id', { length: 255 }),
   lastActivityAt: timestamp('last_activity_at').defaultNow().notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  flaggedAt: timestamp('flagged_at'),
+  flaggedBy: uuid('flagged_by').references(() => users.id),
+  flagReason: text('flag_reason'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
-  statusIdx: index('ai_sessions_status_idx').on(table.status)
+  statusIdx: index('ai_sessions_status_idx').on(table.status),
+  flaggedAtIdx: index('ai_sessions_flagged_at_idx').on(table.flaggedAt),
 }));
 
 // ============================================
