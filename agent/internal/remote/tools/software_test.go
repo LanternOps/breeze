@@ -59,14 +59,39 @@ func TestSafeMacOSApplicationPath(t *testing.T) {
 func TestIsProtectedLinuxPackage(t *testing.T) {
 	t.Parallel()
 
-	if !isProtectedLinuxPackage("systemd") {
-		t.Fatal("expected systemd to be protected")
+	protected := []string{
+		"systemd",
+		"kernel-default",
+		"linux-image-5.15.0-91-generic",
+		"linux-headers-5.15.0",
+		"systemd-resolved",
+		"libc6",
+		"bash",
+		"apt",
+		"dpkg",
+		"rpm",
+		"grub",
+		"grub2-common",
+		"openssl",
+		"openssh-server",
+		"initramfs-tools",
 	}
-	if !isProtectedLinuxPackage("kernel-default") {
-		t.Fatal("expected kernel-default to be protected")
+	allowed := []string{
+		"google-chrome-stable",
+		"slack",
+		"vscode",
+		"nodejs",
 	}
-	if isProtectedLinuxPackage("google-chrome-stable") {
-		t.Fatal("expected google-chrome-stable to be allowed")
+
+	for _, name := range protected {
+		if !isProtectedLinuxPackage(name) {
+			t.Errorf("expected %q to be protected", name)
+		}
+	}
+	for _, name := range allowed {
+		if isProtectedLinuxPackage(name) {
+			t.Errorf("expected %q to be allowed", name)
+		}
 	}
 }
 

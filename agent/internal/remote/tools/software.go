@@ -25,6 +25,7 @@ var (
 	invalidSoftwareNamePattern = regexp.MustCompile(`[\\/\x00\r\n']`)
 	shellMetaPattern           = regexp.MustCompile("[;&|><`$'\"]")
 	protectedLinuxPackageNames = map[string]struct{}{
+		// Core OS
 		"kernel":    {},
 		"linux":     {},
 		"systemd":   {},
@@ -34,6 +35,30 @@ var (
 		"bash":      {},
 		"sudo":      {},
 		"init":      {},
+		// Package managers
+		"apt":     {},
+		"apt-get": {},
+		"dpkg":    {},
+		"rpm":     {},
+		"yum":     {},
+		"dnf":     {},
+		"zypper":  {},
+		"pacman":  {},
+		// Bootloader
+		"grub":         {},
+		"grub2":        {},
+		"grub-common":  {},
+		"grub2-common": {},
+		"grub-efi":     {},
+		// Security-critical
+		"openssl":        {},
+		"openssh-server": {},
+		"openssh-client": {},
+		"libssl":         {},
+		// Init/recovery
+		"initramfs-tools": {},
+		"dracut":          {},
+		"systemd-sysv":    {},
 	}
 )
 
