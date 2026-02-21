@@ -706,11 +706,15 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
                   if (heartbeatMessage.ipHistoryUpdate.deviceId && heartbeatMessage.ipHistoryUpdate.deviceId !== authenticatedAgent.deviceId) {
                     console.warn(`[AgentWs] Ignoring mismatched ipHistoryUpdate.deviceId from ${agentId}: ${heartbeatMessage.ipHistoryUpdate.deviceId}`);
                   }
-                  await processDeviceIPHistoryUpdate(
-                    authenticatedAgent.deviceId,
-                    authenticatedAgent.orgId,
-                    heartbeatMessage.ipHistoryUpdate
-                  );
+                  try {
+                    await processDeviceIPHistoryUpdate(
+                      authenticatedAgent.deviceId,
+                      authenticatedAgent.orgId,
+                      heartbeatMessage.ipHistoryUpdate
+                    );
+                  } catch (err) {
+                    console.error(`[AgentWs] Failed to process ip history update for ${agentId}:`, err);
+                  }
                 }
               });
 

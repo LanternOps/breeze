@@ -393,7 +393,7 @@ func (h *Heartbeat) collectIPHistory() *IPHistoryUpdate {
 	changedIPs, removedIPs := detectIPChanges(currentIPs, previousIPs)
 	h.savePreviousIPState(currentIPs)
 
-	if len(changedIPs) == 0 && len(removedIPs) == 0 {
+	if len(currentIPs) == 0 && len(changedIPs) == 0 && len(removedIPs) == 0 {
 		return nil
 	}
 
