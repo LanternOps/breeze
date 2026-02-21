@@ -24,7 +24,8 @@ import {
   BarChart3,
   BrainCircuit,
   Activity,
-  Layers
+  Layers,
+  ScrollText
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -57,7 +58,8 @@ const monitoringNav = [
 
 const operationsNav = [
   { name: 'Backup', href: '/backup', icon: HardDrive },
-  { name: 'Audit Logs', href: '/audit', icon: FileText }
+  { name: 'Audit Logs', href: '/audit', icon: FileText },
+  { name: 'Event Logs', href: '/logs', icon: ScrollText }
 ];
 
 const managementNav = [
