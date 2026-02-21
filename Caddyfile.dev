@@ -1,0 +1,16 @@
+{
+	auto_https off
+}
+
+:80 {
+	encode zstd gzip
+
+	@api path /api/* /health /ready /metrics/*
+	handle @api {
+		reverse_proxy host.docker.internal:3001
+	}
+
+	handle {
+		reverse_proxy host.docker.internal:4321
+	}
+}

@@ -52,6 +52,14 @@ export const approveToolSchema = z.object({
   approved: z.boolean()
 });
 
+export const approvePlanSchema = z.object({
+  approved: z.boolean()
+});
+
+export const pauseAiSchema = z.object({
+  paused: z.boolean()
+});
+
 // ============================================
 // Query Validators
 // ============================================

@@ -1,0 +1,68 @@
+# .github/workflows/doc-verify.yml
+name: Documentation Verification
+
+on:
+  pull_request:
+    paths:
+      - 'apps/docs/src/content/docs/getting-started/**'
+      - 'apps/docs/src/content/docs/agents/**'
+      - 'e2e-tests/doc-verify/**'
+
+jobs:
+  doc-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Install Playwright browsers
+        run: cd e2e-tests && npx playwright install chromium
+
+      - name: Start test stack
+        run: docker compose -f docker-compose.doc-verify.yml up -d --wait
+        timeout-minutes: 5
+
+      - name: Wait for services
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3001/health && break
+            echo "Waiting for API... ($i/30)"
+            sleep 2
+          done
+
+      - name: Extract assertions
+        run: cd e2e-tests && pnpm doc-verify extract --incremental
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Run assertions
+        run: cd e2e-tests && pnpm doc-verify run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DOC_VERIFY_API_URL: http://localhost:3001
+          DOC_VERIFY_BASE_URL: http://localhost:4321
+          DOC_VERIFY_DB_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-verify-report
+          path: e2e-tests/doc-verify/reports/
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.doc-verify.yml down -v

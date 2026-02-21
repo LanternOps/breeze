@@ -283,7 +283,8 @@ export function checkGuardrails(
     return {
       tier: 2,
       allowed: true,
-      requiresApproval: false
+      requiresApproval: false,
+      description: buildApprovalDescription(toolName, action, input)
     };
   }
 
@@ -300,7 +301,8 @@ export function checkGuardrails(
   return {
     tier: baseTier,
     allowed: true,
-    requiresApproval: false
+    requiresApproval: false,
+    description: buildApprovalDescription(toolName, input.action as string | undefined, input)
   };
 }
 
@@ -313,6 +315,10 @@ export async function checkToolPermission(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<string | null> {
+  // Helper sessions use a synthetic auth with no roleId — tool access is
+  // governed by the helper whitelist (helperToolFilter), not user RBAC.
+  if (auth.token.roleId === null) return null;
+
   const permDef = TOOL_PERMISSIONS[toolName];
   if (!permDef) return null; // No permission mapping — allow
 

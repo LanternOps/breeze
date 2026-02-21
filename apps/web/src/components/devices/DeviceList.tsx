@@ -1,7 +1,8 @@
-import { useMemo, useState, useEffect } from 'react';
-import { Search, ChevronLeft, ChevronRight, MoreHorizontal, Filter } from 'lucide-react';
+import { useMemo, useState, useEffect, useRef } from 'react';
+import { Search, ChevronLeft, ChevronRight, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -31,6 +32,7 @@ type DeviceListProps = {
   sites?: { id: string; name: string }[];
   timezone?: string;
   onSelect?: (device: Device) => void;
+  onAction?: (action: string, device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
   pageSize?: number;
   serverFilter?: FilterConditionGroup | null;
@@ -77,6 +79,7 @@ export default function DeviceList({
   sites = [],
   timezone,
   onSelect,
+  onAction,
   onBulkAction,
   pageSize = 10,
   serverFilter = null
@@ -92,8 +95,22 @@ export default function DeviceList({
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
+  const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
+  const rowMenuRef = useRef<HTMLDivElement>(null);
   const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
   const [serverFilterLoading, setServerFilterLoading] = useState(false);
+
+  // Close row action menu on outside click
+  useEffect(() => {
+    if (!rowMenuOpenId) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) {
+        setRowMenuOpenId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [rowMenuOpenId]);
 
   // Fetch matching device IDs from server when advanced filter changes
   useEffect(() => {
@@ -350,7 +367,7 @@ export default function DeviceList({
         </div>
       )}
 
-      <div className="mt-6 overflow-hidden rounded-md border">
+      <div className="mt-6 rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -373,12 +390,13 @@ export default function DeviceList({
               <th className="px-4 py-3">CPU %</th>
               <th className="px-4 py-3">RAM %</th>
               <th className="px-4 py-3">Last Seen</th>
+              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {paginatedDevices.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={10} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No devices found. Try adjusting your search or filters.
                 </td>
               </tr>
@@ -431,6 +449,86 @@ export default function DeviceList({
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     {formatLastSeen(device.lastSeen, effectiveTimezone)}
+                  </td>
+                  <td className="px-4 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-end gap-1">
+                      <ConnectDesktopButton
+                        deviceId={device.id}
+                        iconOnly
+                        disabled={device.status !== 'online'}
+                      />
+                      <div className="relative" ref={rowMenuOpenId === device.id ? rowMenuRef : undefined}>
+                        <button
+                          type="button"
+                          onClick={() => setRowMenuOpenId(rowMenuOpenId === device.id ? null : device.id)}
+                          className="flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                        {rowMenuOpenId === device.id && (
+                          <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+                            <button
+                              type="button"
+                              disabled={device.status !== 'online'}
+                              onClick={() => {
+                                onAction?.('terminal', device);
+                                setRowMenuOpenId(null);
+                              }}
+                              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Terminal className="h-4 w-4" />
+                              Remote Terminal
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onAction?.('run-script', device);
+                                setRowMenuOpenId(null);
+                              }}
+                              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                            >
+                              <FileCode className="h-4 w-4" />
+                              Run Script
+                            </button>
+                            <button
+                              type="button"
+                              disabled={device.status !== 'online'}
+                              onClick={() => {
+                                onAction?.('reboot', device);
+                                setRowMenuOpenId(null);
+                              }}
+                              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <RotateCcw className="h-4 w-4" />
+                              Reboot
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onAction?.('settings', device);
+                                setRowMenuOpenId(null);
+                              }}
+                              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                            >
+                              <Settings className="h-4 w-4" />
+                              Settings
+                            </button>
+                            <hr className="my-1" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onAction?.('decommission', device);
+                                setRowMenuOpenId(null);
+                              }}
+                              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Decommission
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ))

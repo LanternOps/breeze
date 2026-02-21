@@ -362,6 +362,7 @@ export async function updateBudget(orgId: string, settings: {
   maxTurnsPerSession?: number;
   messagesPerMinutePerUser?: number;
   messagesPerHourPerOrg?: number;
+  approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
 }): Promise<void> {
   const [existing] = await db
     .select()
@@ -433,6 +434,7 @@ export async function getUsageSummary(orgId: string): Promise<{
     dailyBudgetCents: number | null;
     monthlyUsedCents: number;
     dailyUsedCents: number;
+    approvalMode: string;
   } | null;
 }> {
   const now = new Date();
@@ -475,7 +477,8 @@ export async function getUsageSummary(orgId: string): Promise<{
       monthlyBudgetCents: budget.monthlyBudgetCents,
       dailyBudgetCents: budget.dailyBudgetCents,
       monthlyUsedCents: monthlyUsage?.totalCostCents ?? 0,
-      dailyUsedCents: dailyUsage?.totalCostCents ?? 0
+      dailyUsedCents: dailyUsage?.totalCostCents ?? 0,
+      approvalMode: budget.approvalMode ?? 'per_step',
     } : null
   };
 }
