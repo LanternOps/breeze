@@ -147,7 +147,8 @@ const listJobsSchema = z.object({
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
-  status: z.enum(['new', 'identified', 'managed', 'ignored', 'offline']).optional(),
+  // TODO(Task 3): replace with approvalStatus filter
+  // status: z.enum(['new', 'identified', 'managed', 'ignored', 'offline']).optional(),
   assetType: z.enum([
     'workstation', 'server', 'printer', 'router', 'switch',
     'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
@@ -585,7 +586,8 @@ discoveryRoutes.get(
 
     const conditions: ReturnType<typeof eq>[] = [];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
-    if (query.status) conditions.push(eq(discoveredAssets.status, query.status));
+    // TODO(Task 3): filter by approvalStatus instead of old status
+    // if (query.status) conditions.push(eq(discoveredAssets.approvalStatus, query.status));
     if (query.assetType) conditions.push(eq(discoveredAssets.assetType, query.assetType));
 
     const where = conditions.length ? and(...conditions) : undefined;
@@ -621,7 +623,8 @@ discoveryRoutes.get(
           id: a.id,
           orgId: a.orgId,
           assetType: a.assetType,
-          status: a.status,
+          approvalStatus: a.approvalStatus,
+          isOnline: a.isOnline,
           hostname: a.hostname,
           ipAddress: a.ipAddress,
           macAddress: a.macAddress,
@@ -665,7 +668,7 @@ discoveryRoutes.post(
 
     const [updated] = await db.update(discoveredAssets)
       .set({
-        status: 'managed',
+        approvalStatus: 'approved',
         linkedDeviceId: body.deviceId,
         updatedAt: new Date()
       })
@@ -705,11 +708,12 @@ discoveryRoutes.post(
 
     const [updated] = await db.update(discoveredAssets)
       .set({
-        status: 'ignored',
+        // TODO(Task 3): replaced by dismiss endpoint
+        approvalStatus: 'dismissed',
         linkedDeviceId: null,
         notes: body.reason ?? null,
-        ignoredBy: auth.user?.id ?? null,
-        ignoredAt: new Date(),
+        dismissedBy: auth.user?.id ?? null,
+        dismissedAt: new Date(),
         updatedAt: new Date()
       })
       .where(eq(discoveredAssets.id, assetId))
@@ -804,7 +808,8 @@ discoveryRoutes.get(
       id: a.id,
       type: a.assetType,
       label: a.hostname ?? a.ipAddress ?? a.id,
-      status: a.status,
+      approvalStatus: a.approvalStatus,
+      isOnline: a.isOnline,
       ipAddress: a.ipAddress,
       macAddress: a.macAddress
     }));

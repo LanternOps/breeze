@@ -13,7 +13,7 @@ import {
   uniqueIndex,
   index
 } from 'drizzle-orm/pg-core';
-import { organizations, sites } from './orgs';
+import { organizations, sites, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 import { alerts } from './alerts';
@@ -34,12 +34,19 @@ export const discoveredAssetTypeEnum = pgEnum('discovered_asset_type', [
   'unknown'
 ]);
 
+// @deprecated — use discoveredAssetApprovalStatusEnum instead
 export const discoveredAssetStatusEnum = pgEnum('discovered_asset_status', [
   'new',
   'identified',
   'managed',
   'ignored',
   'offline'
+]);
+
+export const discoveredAssetApprovalStatusEnum = pgEnum('discovered_asset_approval_status', [
+  'pending',
+  'approved',
+  'dismissed'
 ]);
 
 export const discoveryJobStatusEnum = pgEnum('discovery_job_status', [
@@ -80,6 +87,7 @@ export const discoveryProfiles = pgTable('discovery_profiles', {
   resolveHostnames: boolean('resolve_hostnames').notNull().default(false),
   timeout: integer('timeout'),
   concurrency: integer('concurrency'),
+  alertSettings: jsonb('alert_settings').$type<DiscoveryProfileAlertSettings>(),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
@@ -112,7 +120,12 @@ export const discoveredAssets = pgTable('discovered_assets', {
   hostname: varchar('hostname', { length: 255 }),
   netbiosName: varchar('netbios_name', { length: 255 }),
   assetType: discoveredAssetTypeEnum('asset_type').notNull().default('unknown'),
-  status: discoveredAssetStatusEnum('status').notNull().default('new'),
+  approvalStatus: discoveredAssetApprovalStatusEnum('approval_status').notNull().default('pending'),
+  isOnline: boolean('is_online').notNull().default(false),
+  approvedBy: uuid('approved_by').references(() => users.id),
+  approvedAt: timestamp('approved_at'),
+  dismissedBy: uuid('dismissed_by').references(() => users.id),
+  dismissedAt: timestamp('dismissed_at'),
   manufacturer: varchar('manufacturer', { length: 255 }),
   model: varchar('model', { length: 255 }),
   openPorts: jsonb('open_ports'),
@@ -126,8 +139,6 @@ export const discoveredAssets = pgTable('discovered_assets', {
   discoveryMethods: discoveryMethodEnum('discovery_methods').array().default([]),
   notes: text('notes'),
   tags: text('tags').array().default([]),
-  ignoredBy: uuid('ignored_by').references(() => users.id),
-  ignoredAt: timestamp('ignored_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -145,7 +156,29 @@ export interface KnownNetworkDevice {
   lastSeen: string;
 }
 
+export interface DiscoveryProfileAlertSettings {
+  enabled: boolean;
+  alertOnNew: boolean;
+  alertOnDisappeared: boolean;
+  alertOnChanged: boolean;
+  changeRetentionDays: number;
+}
+
 export type { NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
+
+export const networkKnownGuests = pgTable('network_known_guests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  macAddress: varchar('mac_address', { length: 17 }).notNull(),
+  label: varchar('label', { length: 255 }).notNull(),
+  notes: text('notes'),
+  addedBy: uuid('added_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  partnerMacUnique: uniqueIndex('network_known_guests_partner_mac_unique').on(table.partnerId, table.macAddress),
+  partnerIdIdx: index('network_known_guests_partner_id_idx').on(table.partnerId)
+}));
 
 export const networkBaselines = pgTable('network_baselines', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -186,6 +219,7 @@ export const networkChangeEvents = pgTable('network_change_events', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
   baselineId: uuid('baseline_id').notNull().references(() => networkBaselines.id),
+  profileId: uuid('profile_id').references(() => discoveryProfiles.id),
   eventType: networkEventTypeEnum('event_type').notNull(),
   ipAddress: inet('ip_address').notNull(),
   macAddress: varchar('mac_address', { length: 17 }),
@@ -205,6 +239,7 @@ export const networkChangeEvents = pgTable('network_change_events', {
   orgIdIdx: index('network_change_events_org_id_idx').on(table.orgId),
   siteIdIdx: index('network_change_events_site_id_idx').on(table.siteId),
   baselineIdIdx: index('network_change_events_baseline_id_idx').on(table.baselineId),
+  profileIdIdx: index('network_change_events_profile_id_idx').on(table.profileId),
   detectedAtIdx: index('network_change_events_detected_at_idx').on(table.detectedAt),
   acknowledgedIdx: index('network_change_events_acknowledged_idx').on(table.acknowledged)
 }));

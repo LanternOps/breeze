@@ -277,7 +277,6 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       const [inserted] = await db.insert(discoveredAssets).values({
         orgId: data.orgId,
         siteId: data.siteId,
-        status: 'new',
         ...assetData
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
@@ -302,7 +301,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
           if (match) {
             await db
               .update(discoveredAssets)
-              .set({ linkedDeviceId: match.deviceId, status: 'managed' as any })
+              .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved' })
               .where(eq(discoveredAssets.id, upsertedAssetId));
           }
         }
