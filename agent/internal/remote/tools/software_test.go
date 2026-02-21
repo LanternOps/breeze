@@ -17,7 +17,7 @@ func TestValidateSoftwareName(t *testing.T) {
 
 	for _, name := range valid {
 		if err := validateSoftwareName(name); err != nil {
-			t.Fatalf("expected %q to be valid, got error: %v", name, err)
+			t.Errorf("expected %q to be valid, got error: %v", name, err)
 		}
 	}
 
@@ -35,7 +35,7 @@ func TestValidateSoftwareName(t *testing.T) {
 
 	for _, name := range invalid {
 		if err := validateSoftwareName(name); err == nil {
-			t.Fatalf("expected %q to be invalid", name)
+			t.Errorf("expected %q to be invalid", name)
 		}
 	}
 }
@@ -127,7 +127,7 @@ func TestIsProtectedLinuxPackageSystemdVariants(t *testing.T) {
 	}
 	for _, name := range protected {
 		if !isProtectedLinuxPackage(name) {
-			t.Fatalf("expected %q to be protected", name)
+			t.Errorf("expected %q to be protected", name)
 		}
 	}
 }
