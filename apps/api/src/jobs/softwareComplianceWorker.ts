@@ -133,7 +133,7 @@ function readRemediationOptions(raw: unknown): {
   };
 }
 
-function readEarliestUnauthorizedDetection(violations: unknown): Date | null {
+export function readEarliestUnauthorizedDetection(violations: unknown): Date | null {
   if (!Array.isArray(violations)) return null;
   let earliest: Date | null = null;
 
@@ -524,9 +524,11 @@ export async function initializeSoftwareComplianceWorker(): Promise<void> {
   });
 
   softwareComplianceWorker.on('failed', (job, error) => {
+    const data = job?.data as { type?: string; policyId?: string } | undefined;
     console.error('[SoftwareComplianceWorker] Job failed', {
       jobId: job?.id,
-      jobType: job?.data?.type,
+      jobType: data?.type,
+      policyId: data?.policyId,
       error,
     });
     captureException(error);

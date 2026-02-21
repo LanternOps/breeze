@@ -483,10 +483,15 @@ softwarePoliciesRoutes.delete(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
-    await db
-      .update(softwarePolicies)
-      .set({ isActive: false, updatedAt: new Date() })
-      .where(eq(softwarePolicies.id, id));
+    await db.transaction(async (tx) => {
+      await tx
+        .update(softwarePolicies)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(eq(softwarePolicies.id, id));
+      await tx
+        .delete(softwareComplianceStatus)
+        .where(eq(softwareComplianceStatus.policyId, id));
+    });
 
     await recordSoftwarePolicyAudit({
       orgId: policy.orgId,

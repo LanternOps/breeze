@@ -184,7 +184,10 @@ func uninstallSoftwareMacOS(name string) error {
 	}
 
 	var directRemoveErr error
-	if _, statErr := os.Stat(appPath); statErr == nil {
+	if info, statErr := os.Lstat(appPath); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to remove symlink at %s", appPath)
+		}
 		if removeErr := os.RemoveAll(appPath); removeErr == nil {
 			return nil
 		} else {
