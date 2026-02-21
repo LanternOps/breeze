@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,8 +22,8 @@ const (
 )
 
 var (
-	invalidSoftwareNamePattern = regexp.MustCompile(`[\\/\x00\r\n]`)
-	shellMetaPattern           = regexp.MustCompile("[;&|><`$]")
+	invalidSoftwareNamePattern = regexp.MustCompile(`[\\/\x00\r\n']`)
+	shellMetaPattern           = regexp.MustCompile("[;&|><`$']")
 	protectedLinuxPackageNames = map[string]struct{}{
 		"kernel":    {},
 		"linux":     {},
@@ -157,10 +158,16 @@ func uninstallSoftwareMacOS(name string) error {
 		return pathErr
 	}
 
-	if _, err := os.Stat(appPath); err == nil {
-		if removeErr := os.RemoveAll(appPath); removeErr == nil {
-			return nil
+	if info, statErr := os.Lstat(appPath); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to remove symlink at %s", appPath)
 		}
+		if removeErr := os.RemoveAll(appPath); removeErr != nil {
+			return fmt.Errorf("failed to remove application at %s: %w", appPath, removeErr)
+		}
+		return nil
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat application at %s: %w", appPath, statErr)
 	}
 
 	attempts := []uninstallAttempt{

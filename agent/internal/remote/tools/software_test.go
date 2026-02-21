@@ -23,6 +23,8 @@ func TestValidateSoftwareName(t *testing.T) {
 		"../../etc/passwd",
 		"name/with/slash",
 		"bad;name",
+		"foo'bar",
+		"name with ' quote",
 	}
 
 	for _, name := range invalid {
@@ -59,5 +61,28 @@ func TestIsProtectedLinuxPackage(t *testing.T) {
 	}
 	if isProtectedLinuxPackage("google-chrome-stable") {
 		t.Fatal("expected google-chrome-stable to be allowed")
+	}
+}
+
+func TestUninstallSoftwareMacOSPathValidation(t *testing.T) {
+	t.Parallel()
+
+	// Traversal in name should fail at safeMacOSApplicationPath
+	if _, err := safeMacOSApplicationPath("../../../etc"); err == nil {
+		t.Fatal("expected path traversal to fail")
+	}
+
+	// Empty name should fail
+	if _, err := safeMacOSApplicationPath(""); err == nil {
+		t.Fatal("expected empty name to fail")
+	}
+
+	// Valid name should succeed
+	path, err := safeMacOSApplicationPath("Spotify")
+	if err != nil {
+		t.Fatalf("expected Spotify to produce valid path, got: %v", err)
+	}
+	if path != "/Applications/Spotify.app" {
+		t.Fatalf("unexpected path: %s", path)
 	}
 }
