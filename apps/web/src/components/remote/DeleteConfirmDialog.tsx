@@ -2,7 +2,7 @@ import { Trash2, AlertTriangle, File, Folder, X } from 'lucide-react';
 
 type DeleteConfirmDialogProps = {
   open: boolean;
-  items: { name: string; path: string; size?: number; type: string }[];
+  items: { name: string; path: string; size?: number; type: 'file' | 'directory' }[];
   onConfirm: (permanent: boolean) => void;
   onClose: () => void;
 };

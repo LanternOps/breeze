@@ -25,7 +25,6 @@ export type FileActivity = {
 };
 
 export type FileActivityPanelProps = {
-  deviceId: string;
   open: boolean;
   onToggle: () => void;
   activities: FileActivity[];

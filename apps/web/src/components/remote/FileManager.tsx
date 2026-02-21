@@ -921,8 +921,8 @@ export default function FileManager({
           const json = await response.json();
           setDrives(json.data || []);
         }
-      } catch {
-        // Drive listing is non-critical; silently fail
+      } catch (err) {
+        console.warn('[FileManager] Failed to fetch drives:', err);
       }
     };
     fetchDrives();
@@ -1576,7 +1576,6 @@ export default function FileManager({
         onClose={() => setShowDeleteConfirm(false)}
       />
       <FileActivityPanel
-        deviceId={deviceId}
         open={showActivity}
         onToggle={() => setShowActivity(prev => !prev)}
         activities={activities}
