@@ -95,19 +95,25 @@ hardwareRoutes.get(
       conditions.push(eq(deviceIpHistory.isActive, true));
     }
 
-    const history = await db
-      .select()
-      .from(deviceIpHistory)
-      .where(and(...conditions))
-      .orderBy(desc(deviceIpHistory.firstSeen))
-      .limit(limit)
-      .offset(offset);
+    try {
+      const history = await db
+        .select()
+        .from(deviceIpHistory)
+        .where(and(...conditions))
+        .orderBy(desc(deviceIpHistory.firstSeen))
+        .limit(limit)
+        .offset(offset);
 
-    return c.json({
-      deviceId,
-      count: history.length,
-      data: history,
-    });
+      return c.json({
+        deviceId,
+        count: history.length,
+        data: history,
+      });
+    } catch (err) {
+      const errorCode = (err as Record<string, unknown>)?.code ?? 'UNKNOWN';
+      console.error(`[devices] ip-history query failed for ${deviceId} (dbError=${errorCode}):`, err);
+      return c.json({ error: 'Failed to fetch IP history' }, 500);
+    }
   }
 );
 

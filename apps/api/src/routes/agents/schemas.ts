@@ -67,7 +67,7 @@ export const heartbeatSchema = z.object({
   ipHistoryUpdate: z.object({
     deviceId: z.string().optional(),
     currentIPs: z.array(z.object({
-      interfaceName: z.string().min(1),
+      interfaceName: z.string().min(1).max(100),
       ipAddress: z.string().trim().max(45).refine(
         (value) => {
           const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
@@ -77,13 +77,13 @@ export const heartbeatSchema = z.object({
       ),
       ipType: z.enum(['ipv4', 'ipv6']).optional(),
       assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      macAddress: z.string().optional(),
-      subnetMask: z.string().optional(),
-      gateway: z.string().optional(),
-      dnsServers: z.array(z.string()).optional()
-    })).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).optional(),
     changedIPs: z.array(z.object({
-      interfaceName: z.string().min(1),
+      interfaceName: z.string().min(1).max(100),
       ipAddress: z.string().trim().max(45).refine(
         (value) => {
           const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
@@ -93,13 +93,13 @@ export const heartbeatSchema = z.object({
       ),
       ipType: z.enum(['ipv4', 'ipv6']).optional(),
       assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      macAddress: z.string().optional(),
-      subnetMask: z.string().optional(),
-      gateway: z.string().optional(),
-      dnsServers: z.array(z.string()).optional()
-    })).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).optional(),
     removedIPs: z.array(z.object({
-      interfaceName: z.string().min(1),
+      interfaceName: z.string().min(1).max(100),
       ipAddress: z.string().trim().max(45).refine(
         (value) => {
           const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
@@ -109,11 +109,11 @@ export const heartbeatSchema = z.object({
       ),
       ipType: z.enum(['ipv4', 'ipv6']).optional(),
       assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      macAddress: z.string().optional(),
-      subnetMask: z.string().optional(),
-      gateway: z.string().optional(),
-      dnsServers: z.array(z.string()).optional()
-    })).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).optional(),
     detectedAt: z.string().datetime({ offset: true }).optional()
   }).optional(),
   pendingReboot: z.boolean().optional(),

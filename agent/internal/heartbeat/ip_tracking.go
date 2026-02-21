@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -357,7 +358,7 @@ func sortIPHistoryEntries(entries []IPHistoryEntry) {
 	})
 }
 
-func (h *Heartbeat) collectIPHistory() *IPHistoryUpdate {
+func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 	inventory := h.inventoryCol
 	if inventory == nil {
 		inventory = collectors.NewInventoryCollector()
@@ -365,8 +366,7 @@ func (h *Heartbeat) collectIPHistory() *IPHistoryUpdate {
 
 	adapters, err := inventory.CollectNetworkAdapters()
 	if err != nil {
-		log.Warn("failed to collect network adapters for ip history", "error", err)
-		return nil
+		return nil, fmt.Errorf("failed to collect network adapters for ip history: %w", err)
 	}
 
 	currentIPs := make([]IPHistoryEntry, 0, len(adapters))
@@ -391,10 +391,12 @@ func (h *Heartbeat) collectIPHistory() *IPHistoryUpdate {
 	currentIPs = dedupeEntries(currentIPs)
 	previousIPs := h.loadPreviousIPState()
 	changedIPs, removedIPs := detectIPChanges(currentIPs, previousIPs)
-	h.savePreviousIPState(currentIPs)
+	if err := h.savePreviousIPState(currentIPs); err != nil {
+		log.Warn("ip history state save failed, diff may be inaccurate next heartbeat", "error", err.Error())
+	}
 
 	if len(currentIPs) == 0 && len(changedIPs) == 0 && len(removedIPs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	return &IPHistoryUpdate{
@@ -402,7 +404,7 @@ func (h *Heartbeat) collectIPHistory() *IPHistoryUpdate {
 		ChangedIPs: changedIPs,
 		RemovedIPs: removedIPs,
 		DetectedAt: time.Now().UTC(),
-	}
+	}, nil
 }
 
 func (h *Heartbeat) ipStatePath() string {
@@ -412,7 +414,9 @@ func (h *Heartbeat) ipStatePath() string {
 
 	dataDir := strings.TrimSpace(config.GetDataDir())
 	if dataDir == "" {
-		return filepath.Join(os.TempDir(), "breeze", ipStateFileName)
+		tmpPath := filepath.Join(os.TempDir(), "breeze", ipStateFileName)
+		log.Warn("ip state directory unavailable, falling back to temp dir", "path", tmpPath)
+		return tmpPath
 	}
 	return filepath.Join(dataDir, ipStateFileName)
 }
@@ -438,28 +442,26 @@ func (h *Heartbeat) loadPreviousIPState() []IPHistoryEntry {
 }
 
 // savePreviousIPState saves current IP state to disk.
-func (h *Heartbeat) savePreviousIPState(current []IPHistoryEntry) {
+func (h *Heartbeat) savePreviousIPState(current []IPHistoryEntry) error {
 	path := h.ipStatePath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		log.Warn("failed to create ip history state directory", "path", dir, "error", err)
-		return
+		return fmt.Errorf("failed to create ip history state directory %s: %w", dir, err)
 	}
 
 	payload, err := json.Marshal(dedupeEntries(current))
 	if err != nil {
-		log.Warn("failed to encode ip history state", "error", err)
-		return
+		return fmt.Errorf("failed to encode ip history state: %w", err)
 	}
 
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, payload, 0600); err != nil {
-		log.Warn("failed to write ip history state temp file", "path", tmp, "error", err)
-		return
+		return fmt.Errorf("failed to write ip history state temp file %s: %w", tmp, err)
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		log.Warn("failed to persist ip history state", "path", path, "error", err)
 		_ = os.Remove(tmp)
+		return fmt.Errorf("failed to persist ip history state %s: %w", path, err)
 	}
+	return nil
 }

@@ -98,7 +98,14 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
       });
       const response = await fetchWithAuth(`/devices/${deviceId}/ip-history?${params.toString()}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch IP history');
+        if (response.status === 404) {
+          setError('IP history tracking is not available for this device');
+        } else if (response.status === 403) {
+          setError('You do not have permission to view IP history');
+        } else {
+          setError(`Failed to load IP history (HTTP ${response.status})`);
+        }
+        return;
       }
       const json = await response.json() as DeviceIpHistoryResponse;
       const payload = json.data ?? [];

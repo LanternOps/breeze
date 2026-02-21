@@ -59,6 +59,7 @@ function normalizeIPAddress(value: string | null | undefined): string | null {
 
   const parsed = isIP(withoutZone);
   if (parsed === 0) {
+    console.debug(`[DeviceIpHistory] dropping invalid IP address: ${value}`);
     return null;
   }
 
@@ -129,15 +130,15 @@ function dedupeEntries(entries: DeviceIPHistoryEntryInput[] | undefined): Normal
 function parseDetectedAt(value: string | undefined): Date {
   if (!value) return new Date();
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  if (Number.isNaN(parsed.getTime())) {
+    console.warn(`[DeviceIpHistory] invalid detectedAt timestamp: ${value}`);
+    return new Date();
+  }
+  return parsed;
 }
 
 function exactKey(entry: Pick<NormalizedDeviceIPHistoryEntry, 'interfaceName' | 'ipAddress' | 'ipType'>): string {
   return `${entry.interfaceName}|${entry.ipAddress}|${entry.ipType}`;
-}
-
-function interfaceTypeKey(entry: Pick<NormalizedDeviceIPHistoryEntry, 'interfaceName' | 'ipType'>): string {
-  return `${entry.interfaceName}|${entry.ipType}`;
 }
 
 function buildOrCondition(conditions: SQL[]): SQL | undefined {
@@ -161,6 +162,7 @@ export async function processDeviceIPHistoryUpdate(
 
   const detectedAt = parseDetectedAt(update.detectedAt);
 
+  try {
   await db.transaction(async (tx) => {
     const activeRows = await tx
       .select({
@@ -178,16 +180,10 @@ export async function processDeviceIPHistoryUpdate(
       );
 
     const activeByExactKey = new Map<string, { id: string; interfaceName: string; ipAddress: string; ipType: string }>();
-    const activeByInterfaceType = new Map<string, Array<{ id: string; interfaceName: string; ipAddress: string; ipType: string }>>();
 
     for (const row of activeRows) {
       const key = `${row.interfaceName}|${row.ipAddress}|${row.ipType}`;
       activeByExactKey.set(key, row);
-
-      const ifaceType = `${row.interfaceName}|${row.ipType}`;
-      const entries = activeByInterfaceType.get(ifaceType) ?? [];
-      entries.push(row);
-      activeByInterfaceType.set(ifaceType, entries);
     }
 
     const deactivateIds = new Set<string>();
@@ -210,10 +206,6 @@ export async function processDeviceIPHistoryUpdate(
       }
 
       newChanged.push(changed);
-      const siblings = activeByInterfaceType.get(interfaceTypeKey(changed)) ?? [];
-      for (const sibling of siblings) {
-        deactivateIds.add(sibling.id);
-      }
     }
 
     if (deactivateIds.size > 0) {
@@ -291,4 +283,13 @@ export async function processDeviceIPHistoryUpdate(
         .where(currentWhere);
     }
   });
+  } catch (err) {
+    const errorCode = (err as Record<string, unknown>)?.code ?? 'UNKNOWN';
+    console.error(
+      `[DeviceIpHistory] Transaction failed for device=${deviceId} org=${orgId} ` +
+      `(changed=${changedIPs.length} removed=${removedIPs.length} current=${currentIPs.length} dbError=${errorCode})`,
+      err
+    );
+    throw err;
+  }
 }

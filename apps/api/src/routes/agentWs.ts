@@ -11,6 +11,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/disc
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
 import { isRedisAvailable } from '../services/redis';
+import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
@@ -38,14 +39,20 @@ const commandResultSchema = z.object({
 });
 
 const ipHistoryEntrySchema = z.object({
-  interfaceName: z.string().min(1),
-  ipAddress: z.string().min(1),
+  interfaceName: z.string().min(1).max(100),
+  ipAddress: z.string().trim().max(45).refine(
+    (value) => {
+      const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+      return isIP(withoutZone) !== 0;
+    },
+    { message: 'Invalid IP address format' }
+  ),
   ipType: z.enum(['ipv4', 'ipv6']).optional(),
   assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-  macAddress: z.string().optional(),
-  subnetMask: z.string().optional(),
-  gateway: z.string().optional(),
-  dnsServers: z.array(z.string()).optional()
+  macAddress: z.string().max(17).optional(),
+  subnetMask: z.string().max(45).optional(),
+  gateway: z.string().max(45).optional(),
+  dnsServers: z.array(z.string().max(45)).max(8).optional()
 });
 
 const heartbeatMessageSchema = z.object({
@@ -53,9 +60,9 @@ const heartbeatMessageSchema = z.object({
   timestamp: z.number(),
   ipHistoryUpdate: z.object({
     deviceId: z.string().optional(),
-    currentIPs: z.array(ipHistoryEntrySchema).optional(),
-    changedIPs: z.array(ipHistoryEntrySchema).optional(),
-    removedIPs: z.array(ipHistoryEntrySchema).optional(),
+    currentIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
+    changedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
+    removedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     detectedAt: z.string().datetime({ offset: true }).optional(),
   }).optional()
 });
@@ -704,16 +711,18 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
                 await updateDeviceStatus(agentId, 'online');
                 if (heartbeatMessage.ipHistoryUpdate) {
                   if (heartbeatMessage.ipHistoryUpdate.deviceId && heartbeatMessage.ipHistoryUpdate.deviceId !== authenticatedAgent.deviceId) {
-                    console.warn(`[AgentWs] Ignoring mismatched ipHistoryUpdate.deviceId from ${agentId}: ${heartbeatMessage.ipHistoryUpdate.deviceId}`);
-                  }
-                  try {
-                    await processDeviceIPHistoryUpdate(
-                      authenticatedAgent.deviceId,
-                      authenticatedAgent.orgId,
-                      heartbeatMessage.ipHistoryUpdate
-                    );
-                  } catch (err) {
-                    console.error(`[AgentWs] Failed to process ip history update for ${agentId}:`, err);
+                    console.warn(`[AgentWs] rejecting mismatched ipHistoryUpdate.deviceId from ${agentId}: sent=${heartbeatMessage.ipHistoryUpdate.deviceId} expected=${authenticatedAgent.deviceId}`);
+                  } else {
+                    try {
+                      await processDeviceIPHistoryUpdate(
+                        authenticatedAgent.deviceId,
+                        authenticatedAgent.orgId,
+                        heartbeatMessage.ipHistoryUpdate
+                      );
+                    } catch (err) {
+                      const errorCode = (err as Record<string, unknown>)?.code ?? 'UNKNOWN';
+                      console.error(`[AgentWs] failed to process ip history (device=${authenticatedAgent.deviceId}, org=${authenticatedAgent.orgId}, dbError=${errorCode}):`, err);
+                    }
                   }
                 }
               });

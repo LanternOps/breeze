@@ -6,15 +6,18 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { and, eq, lte } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceIpHistory } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof withSystem !== 'function') {
+    console.warn('[ipHistoryRetention] withSystemDbAccessContext unavailable, skipping retention');
+    return fn();
+  }
+  return withSystem(fn);
 };
 
 const QUEUE_NAME = 'ip-history-retention';
@@ -44,20 +47,16 @@ export function createIPHistoryRetentionWorker(): Worker<RetentionJobData> {
         const retentionDays = Math.max(1, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS);
         const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
-        const deleted = await db
-          .delete(deviceIpHistory)
-          .where(
-            and(
-              eq(deviceIpHistory.isActive, false),
-              lte(deviceIpHistory.deactivatedAt, cutoff)
-            )
-          )
-          .returning({ id: deviceIpHistory.id });
+        const result = await db.execute(sql`
+          DELETE FROM device_ip_history
+          WHERE is_active = false AND deactivated_at <= ${cutoff}
+        `);
+        const deletedCount = Number((result as unknown as { count: number }).count ?? result.length ?? 0);
 
         const durationMs = Date.now() - startTime;
-        console.log(`[IPHistoryRetention] Pruned ${deleted.length} inactive rows older than ${retentionDays} days in ${durationMs}ms`);
+        console.log(`[IPHistoryRetention] Pruned ${deletedCount} inactive rows older than ${retentionDays} days in ${durationMs}ms`);
 
-        return { durationMs, deletedCount: deleted.length };
+        return { durationMs, deletedCount };
       });
     },
     {
@@ -75,6 +74,10 @@ export async function initializeIPHistoryRetention(): Promise<void> {
 
     retentionWorker.on('error', (error) => {
       console.error('[IPHistoryRetention] Worker error:', error);
+    });
+
+    retentionWorker.on('failed', (job, err) => {
+      console.error(`[IPHistoryRetention] job ${job?.id} failed:`, err);
     });
 
     const queue = getIPHistoryRetentionQueue();

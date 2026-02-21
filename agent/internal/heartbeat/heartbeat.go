@@ -1267,7 +1267,12 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	// Attach IP history update when assignments changed since last heartbeat.
-	payload.IPHistoryUpdate = h.collectIPHistory()
+	if ipUpdate, ipErr := h.collectIPHistory(); ipErr != nil {
+		log.Error("failed to collect ip history", "error", ipErr.Error())
+		h.healthMon.Update("ip_history", health.Degraded, ipErr.Error())
+	} else {
+		payload.IPHistoryUpdate = ipUpdate
+	}
 
 	// Include user helper session info in heartbeat
 	if h.sessionBroker != nil {
