@@ -1,3 +1,5 @@
+BEGIN;
+
 -- Device approval schema: replace status enum with approvalStatus + isOnline
 
 -- 1. New approval status enum
@@ -24,6 +26,7 @@ ALTER TABLE discovered_assets DROP COLUMN ignored_at;
 
 -- 5. Drop old status column
 ALTER TABLE discovered_assets DROP COLUMN status;
+DROP TYPE discovered_asset_status;
 
 -- 6. network_known_guests table
 CREATE TABLE network_known_guests (
@@ -45,3 +48,5 @@ ALTER TABLE discovery_profiles ADD COLUMN alert_settings jsonb;
 -- 8. Add profile_id to network_change_events (nullable, alongside existing baseline_id)
 ALTER TABLE network_change_events ADD COLUMN profile_id uuid REFERENCES discovery_profiles(id) ON DELETE SET NULL;
 CREATE INDEX network_change_events_profile_id_idx ON network_change_events(profile_id);
+
+COMMIT;

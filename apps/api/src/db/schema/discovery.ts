@@ -34,14 +34,6 @@ export const discoveredAssetTypeEnum = pgEnum('discovered_asset_type', [
   'unknown'
 ]);
 
-// @deprecated — use discoveredAssetApprovalStatusEnum instead
-export const discoveredAssetStatusEnum = pgEnum('discovered_asset_status', [
-  'new',
-  'identified',
-  'managed',
-  'ignored',
-  'offline'
-]);
 
 export const discoveredAssetApprovalStatusEnum = pgEnum('discovered_asset_approval_status', [
   'pending',
