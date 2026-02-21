@@ -725,16 +725,15 @@ export function sanitizeCorrelationPattern(pattern: string, isRegex: boolean): s
 }
 
 function buildMessagePatternCondition(pattern: string, isRegex: boolean): { condition: SQL; regex: boolean } {
-  const sanitized = sanitizeCorrelationPattern(pattern, isRegex);
   if (isRegex) {
     return {
-      condition: sql`${deviceEventLogs.message} ~* ${sanitized}`,
+      condition: sql`${deviceEventLogs.message} ~* ${pattern}`,
       regex: true,
     };
   }
 
   return {
-    condition: ilike(deviceEventLogs.message, `%${escapeLike(sanitized)}%`),
+    condition: ilike(deviceEventLogs.message, `%${escapeLike(pattern)}%`),
     regex: false,
   };
 }
