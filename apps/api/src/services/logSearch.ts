@@ -555,9 +555,8 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
   conditions.push(gte(deviceEventLogs.timestamp, start));
   conditions.push(lte(deviceEventLogs.timestamp, end));
 
-  const allowedLevels = levelsAtOrAbove(input.minLevel);
-  if (allowedLevels.length > 0) {
-    conditions.push(inArray(deviceEventLogs.level, allowedLevels));
+  if (input.minLevel) {
+    conditions.push(inArray(deviceEventLogs.level, levelsAtOrAbove(input.minLevel)));
   }
 
   if (input.source && input.source.trim().length > 0) {
@@ -753,9 +752,8 @@ async function runPatternDetection(
   sampleLogs: LogCorrelationSampleLog[];
 }> {
   const detected = buildMessagePatternCondition(pattern, isRegex);
-  const sanitizedPattern = sanitizeCorrelationPattern(pattern, isRegex);
   const condition = forceLike
-    ? ilike(deviceEventLogs.message, `%${escapeLike(sanitizedPattern)}%`)
+    ? ilike(deviceEventLogs.message, `%${escapeLike(pattern)}%`)
     : detected.condition;
 
   const whereCondition = and(
