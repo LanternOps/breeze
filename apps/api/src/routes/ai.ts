@@ -672,8 +672,9 @@ aiRoutes.get(
 
     const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 100);
     const offset = parseInt(c.req.query('offset') ?? '0', 10) || 0;
+    const flagged = c.req.query('flagged') === 'true' ? true : undefined;
 
-    const sessions = await getSessionHistory(orgId, { limit, offset });
+    const sessions = await getSessionHistory(orgId, { limit, offset, flagged });
     return c.json({ data: sessions });
   }
 );

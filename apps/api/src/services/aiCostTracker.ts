@@ -7,7 +7,7 @@
 
 import { db } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets } from '../db/schema';
-import { eq, and, sql, desc } from 'drizzle-orm';
+import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 
@@ -391,7 +391,7 @@ export async function updateBudget(orgId: string, settings: {
 /**
  * Get session history for admin dashboard.
  */
-export async function getSessionHistory(orgId: string, options: { limit?: number; offset?: number }): Promise<Array<{
+export async function getSessionHistory(orgId: string, options: { limit?: number; offset?: number; flagged?: boolean }): Promise<Array<{
   id: string;
   userId: string | null;
   title: string | null;
@@ -399,10 +399,18 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
   turnCount: number;
   totalCostCents: number;
   status: string;
+  flaggedAt: Date | null;
+  flaggedBy: string | null;
+  flagReason: string | null;
   createdAt: Date;
 }>> {
   const limit = Math.min(options.limit ?? 50, 100);
   const offset = options.offset ?? 0;
+
+  const conditions = [eq(aiSessions.orgId, orgId)];
+  if (options.flagged) {
+    conditions.push(isNotNull(aiSessions.flaggedAt));
+  }
 
   return db
     .select({
@@ -413,10 +421,13 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
       turnCount: aiSessions.turnCount,
       totalCostCents: aiSessions.totalCostCents,
       status: aiSessions.status,
+      flaggedAt: aiSessions.flaggedAt,
+      flaggedBy: aiSessions.flaggedBy,
+      flagReason: aiSessions.flagReason,
       createdAt: aiSessions.createdAt
     })
     .from(aiSessions)
-    .where(eq(aiSessions.orgId, orgId))
+    .where(and(...conditions))
     .orderBy(desc(aiSessions.createdAt))
     .limit(limit)
     .offset(offset);

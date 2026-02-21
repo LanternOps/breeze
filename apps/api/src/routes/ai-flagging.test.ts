@@ -110,6 +110,7 @@ vi.mock('../services/auditEvents', () => ({
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import { getSession } from '../services/aiAgent';
+import { getSessionHistory } from '../services/aiCostTracker';
 
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -229,5 +230,47 @@ describe('AI flagging routes', () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error).toBe('Session not found');
+  });
+});
+
+// ============================================
+// GET /admin/sessions?flagged=true
+// ============================================
+
+describe('GET /ai/admin/sessions?flagged filter', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/ai', aiRoutes);
+  });
+
+  it('passes flagged filter to getSessionHistory', async () => {
+    vi.mocked(getSessionHistory).mockResolvedValueOnce([]);
+
+    const res = await app.request('/ai/admin/sessions?flagged=true&orgId=11111111-1111-1111-1111-111111111111', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(getSessionHistory).toHaveBeenCalledWith(
+      '11111111-1111-1111-1111-111111111111',
+      expect.objectContaining({ flagged: true })
+    );
+  });
+
+  it('does not pass flagged filter when param absent', async () => {
+    vi.mocked(getSessionHistory).mockResolvedValueOnce([]);
+
+    const res = await app.request('/ai/admin/sessions?orgId=11111111-1111-1111-1111-111111111111', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(getSessionHistory).toHaveBeenCalledWith(
+      '11111111-1111-1111-1111-111111111111',
+      expect.objectContaining({ flagged: undefined })
+    );
   });
 });
