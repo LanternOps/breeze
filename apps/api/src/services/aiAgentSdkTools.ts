@@ -692,6 +692,9 @@ export function createBreezeMcpServer(
       {
         deviceId: uuid,
         itemName: z.string().min(1).max(255),
+        itemId: z.string().max(512).optional(),
+        itemType: z.string().max(64).optional(),
+        itemPath: z.string().max(2048).optional(),
         action: z.enum(['disable', 'enable']),
         reason: z.string().max(500).optional(),
       },

@@ -69,3 +69,32 @@ func TestEnrichItemsWithPerformance(t *testing.T) {
 		t.Errorf("items[2].CpuTimeMs = %d, want 0", items[2].CpuTimeMs)
 	}
 }
+
+func TestApplyDarwinBootTiming(t *testing.T) {
+	t.Run("desktop ready available", func(t *testing.T) {
+		metrics := &BootPerformanceMetrics{}
+		applyDarwinBootTiming(metrics, 37.5, 120)
+
+		if metrics.TotalBootSeconds != 37.5 {
+			t.Fatalf("TotalBootSeconds = %v, want 37.5", metrics.TotalBootSeconds)
+		}
+		if metrics.DesktopReadySeconds != 37.5 {
+			t.Fatalf("DesktopReadySeconds = %v, want 37.5", metrics.DesktopReadySeconds)
+		}
+		if metrics.OsLoaderSeconds != 0 {
+			t.Fatalf("OsLoaderSeconds = %v, want 0", metrics.OsLoaderSeconds)
+		}
+	})
+
+	t.Run("desktop ready unavailable", func(t *testing.T) {
+		metrics := &BootPerformanceMetrics{}
+		applyDarwinBootTiming(metrics, 0, 245.2)
+
+		if metrics.TotalBootSeconds != 245.2 {
+			t.Fatalf("TotalBootSeconds = %v, want 245.2", metrics.TotalBootSeconds)
+		}
+		if metrics.DesktopReadySeconds != 0 {
+			t.Fatalf("DesktopReadySeconds = %v, want 0", metrics.DesktopReadySeconds)
+		}
+	})
+}

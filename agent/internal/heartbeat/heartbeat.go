@@ -346,6 +346,8 @@ func (h *Heartbeat) Start() {
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	const bootCheckInterval = 5 * time.Minute
+	var lastBootCheck time.Time
 
 	// Send initial heartbeat after jitter
 	h.sendHeartbeat()
@@ -360,51 +362,55 @@ func (h *Heartbeat) Start() {
 		select {
 		case <-ticker.C:
 			h.sendHeartbeat()
+			now := time.Now()
 			// Send inventory every 15 minutes
 			h.mu.Lock()
-			shouldSendInventory := time.Since(h.lastInventoryUpdate) > 15*time.Minute
+			shouldSendInventory := now.Sub(h.lastInventoryUpdate) > 15*time.Minute
 			if shouldSendInventory {
-				h.lastInventoryUpdate = time.Now()
+				h.lastInventoryUpdate = now
 			}
-			shouldSendEventLogs := time.Since(h.lastEventLogUpdate) > 5*time.Minute
+			shouldSendEventLogs := now.Sub(h.lastEventLogUpdate) > 5*time.Minute
 			if shouldSendEventLogs {
-				h.lastEventLogUpdate = time.Now()
+				h.lastEventLogUpdate = now
 			}
-			shouldSendSecurity := time.Since(h.lastSecurityUpdate) > 5*time.Minute
+			shouldSendSecurity := now.Sub(h.lastSecurityUpdate) > 5*time.Minute
 			if shouldSendSecurity {
-				h.lastSecurityUpdate = time.Now()
+				h.lastSecurityUpdate = now
 			}
-			shouldSendSessions := time.Since(h.lastSessionUpdate) > 5*time.Minute
+			shouldSendSessions := now.Sub(h.lastSessionUpdate) > 5*time.Minute
 			if shouldSendSessions {
-				h.lastSessionUpdate = time.Now()
+				h.lastSessionUpdate = now
 			}
-			shouldSendPosture := time.Since(h.lastPostureUpdate) > 15*time.Minute
+			shouldSendPosture := now.Sub(h.lastPostureUpdate) > 15*time.Minute
 			if shouldSendPosture {
-				h.lastPostureUpdate = time.Now()
+				h.lastPostureUpdate = now
 			}
 			h.mu.Unlock()
 
-			// Check for recent boot to collect boot performance
-			if bootTime, err := host.BootTime(); err == nil && bootTime > 0 {
-				uptimeSec := time.Now().Unix() - int64(bootTime)
-				bt := time.Unix(int64(bootTime), 0)
-				if h.bootCol.ShouldCollect(uptimeSec, bt) {
-					h.bootCol.MarkCollected(bt)
-					go func() {
-						log.Info("detected recent boot, collecting boot performance")
-						metrics, err := h.bootCol.Collect()
-						if err != nil {
-							log.Error("failed to collect boot performance", "error", err)
-							return
-						}
-						// Check if agent is shutting down before sending
-						select {
-						case <-h.stopChan:
-							return
-						default:
-						}
-						h.sendBootPerformance(metrics)
-					}()
+			// Check for recent boot every few minutes (not every heartbeat tick).
+			if now.Sub(lastBootCheck) >= bootCheckInterval {
+				lastBootCheck = now
+				if bootTime, err := host.BootTime(); err == nil && bootTime > 0 {
+					uptimeSec := now.Unix() - int64(bootTime)
+					bt := time.Unix(int64(bootTime), 0)
+					if h.bootCol.ShouldCollect(uptimeSec, bt) {
+						h.bootCol.MarkCollected(bt)
+						go func() {
+							log.Info("detected recent boot, collecting boot performance")
+							metrics, err := h.bootCol.Collect()
+							if err != nil {
+								log.Error("failed to collect boot performance", "error", err)
+								return
+							}
+							// Check if agent is shutting down before sending
+							select {
+							case <-h.stopChan:
+								return
+							default:
+							}
+							h.sendBootPerformance(metrics)
+						}()
+					}
 				}
 			}
 

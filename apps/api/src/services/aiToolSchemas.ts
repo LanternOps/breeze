@@ -312,6 +312,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_startup_items: z.object({
     deviceId: uuid,
     itemName: z.string().min(1).max(255),
+    itemId: z.string().max(512).optional(),
+    itemType: z.string().max(64).optional(),
+    itemPath: z.string().max(2048).optional(),
     action: z.enum(['disable', 'enable']),
     reason: z.string().max(500).optional(),
   }),

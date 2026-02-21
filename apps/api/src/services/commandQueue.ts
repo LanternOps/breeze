@@ -77,6 +77,10 @@ export const CommandTypes = {
 
   // Computer control (AI Computer Use)
   COMPUTER_ACTION: 'computer_action',
+
+  // Boot performance
+  COLLECT_BOOT_PERFORMANCE: 'collect_boot_performance',
+  MANAGE_STARTUP_ITEM: 'manage_startup_item',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -141,6 +145,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.SECURITY_THREAT_RESTORE,
   CommandTypes.TAKE_SCREENSHOT,
   CommandTypes.COMPUTER_ACTION,
+  CommandTypes.MANAGE_STARTUP_ITEM,
 ]);
 
 /**

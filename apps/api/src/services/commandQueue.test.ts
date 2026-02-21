@@ -14,7 +14,8 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn()
-  }
+  },
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
