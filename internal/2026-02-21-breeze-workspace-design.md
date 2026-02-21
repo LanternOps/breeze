@@ -325,3 +325,49 @@ Any business builds any workflow. Order forms, dispatch, inventory, CRM — asse
    - Future: orgs can publish custom types to the marketplace
 
 5. **Email conversion at the API edge** — HTML → markdown conversion happens at the API ingest layer before storage. The Tauri app and SQLite cache only ever see clean markdown. No HTML reaches any renderer. Security guarantee is enforced at the boundary, not client-side.
+
+---
+
+## Coupling to Breeze RMM
+
+Workspace will likely start as a separate repo. Three options for how it connects to Breeze, in order of increasing complexity:
+
+### Option A: Shared Database (Recommended for early stage)
+
+Workspace runs as a separate service but points at the same Postgres instance as Breeze. It owns its own schema namespace (`workspace_*` tables) but can JOIN against Breeze tables (`devices`, `organizations`, `alerts`, etc.) for AI context.
+
+- **Pros**: No HTTP overhead for AI context lookups. Device data is always current. Simplest to implement.
+- **Cons**: Tighter operational coupling — both services share one database. Harder to separate later if needed.
+- **Auth**: Workspace uses Breeze's existing JWT tokens. Same session, same user identity.
+
+### Option B: API Key Coupling
+
+Workspace is fully independent — separate database, separate auth. It calls the Breeze REST API with an org-scoped API key (`ai:read`, `devices:read` scopes) to fetch device context when the AI needs it.
+
+- **Pros**: Clean separation. Workspace can be deployed anywhere, even for non-Breeze customers eventually.
+- **Cons**: HTTP overhead on every AI context fetch. Data is as fresh as the last API call. More moving parts.
+- **Auth**: Each org's Workspace install holds a Breeze API key in its config.
+
+### Option C: Plugin via Breeze Plugin System
+
+Breeze already has a plugin catalog with `hooks` (webhook events) and `permissions` (API scopes). Workspace registers as a `ui`-type plugin. When installed per org, Breeze fires webhook events (`alert.fired`, `device.status_changed`) to Workspace, and Workspace calls back to the Breeze API for context.
+
+```json
+{
+  "slug": "breeze-workspace",
+  "type": "ui",
+  "permissions": ["devices:read", "alerts:read", "ai:write"],
+  "hooks": {
+    "alert.fired": "https://workspace.host/hooks/alert",
+    "device.status_changed": "https://workspace.host/hooks/device"
+  }
+}
+```
+
+- **Pros**: Uses existing plugin infrastructure. Per-org opt-in. Clean distribution mechanism.
+- **Cons**: Breeze's plugin execution runtime doesn't exist yet (catalog and install management exist, but hook dispatch and UI loading are not implemented). This is the right long-term path but requires building the plugin runtime first.
+- **Auth**: Breeze passes a scoped token with each webhook call.
+
+### Recommendation
+
+Start with **Option A** (shared database) to move fast. Migrate to **Option C** (plugin system) when the plugin runtime is built — at that point Workspace becomes the first real-world test of the plugin architecture. Option B is the right choice if Workspace ever needs to serve customers who don't use Breeze RMM.
