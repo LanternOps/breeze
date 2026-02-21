@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, gte, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceCommands, softwareComplianceStatus, softwarePolicies } from '../db/schema';
+import { deviceCommands, softwareComplianceStatus, softwarePolicies, type RemediationError } from '../db/schema';
 import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getRedisConnection } from '../services/redis';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
@@ -46,11 +46,6 @@ export function getSoftwareRemediationQueue(): Queue<SoftwareRemediationJobData>
   }
   return softwareRemediationQueue;
 }
-
-type RemediationError = {
-  softwareName?: string;
-  message: string;
-};
 
 function readCooldownMinutes(raw: unknown): number {
   if (!raw || typeof raw !== 'object') return DEFAULT_REMEDIATION_COOLDOWN_MINUTES;

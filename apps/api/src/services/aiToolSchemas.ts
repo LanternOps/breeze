@@ -348,7 +348,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     remediationOptions: z.object({
       autoUninstall: z.boolean().optional(),
       notifyUser: z.boolean().optional(),
-      gracePeriod: z.number().int().min(0).max(24 * 90).optional(),
+      gracePeriod: z.number().int().min(0).max(24 * 90).optional(), // hours; max 90 days
       cooldownMinutes: z.number().int().min(1).max(24 * 90 * 60).optional(),
       maintenanceWindowOnly: z.boolean().optional(),
     }).optional(),

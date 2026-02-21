@@ -36,7 +36,7 @@ export type SoftwarePolicyRulesDefinition = {
 };
 
 export type SoftwarePolicyViolation = {
-  type: 'unauthorized' | 'missing' | 'outdated';
+  type: 'unauthorized' | 'missing'; // 'outdated' planned but not yet emitted
   software?: {
     name: string;
     version?: string | null;
@@ -54,10 +54,15 @@ export type SoftwarePolicyViolation = {
 
 export type SoftwarePolicyRemediationOptions = {
   autoUninstall?: boolean;
-  notifyUser?: boolean;
-  gracePeriod?: number;
+  notifyUser?: boolean; // not yet implemented
+  gracePeriod?: number; // hours; max 90 days
   cooldownMinutes?: number;
-  maintenanceWindowOnly?: boolean;
+  maintenanceWindowOnly?: boolean; // not yet implemented
+};
+
+export type RemediationError = {
+  softwareName?: string;
+  message: string;
 };
 
 export const softwarePolicies = pgTable('software_policies', {
@@ -91,7 +96,7 @@ export const softwareComplianceStatus = pgTable('software_compliance_status', {
   violations: jsonb('violations').$type<SoftwarePolicyViolation[]>(),
   remediationStatus: varchar('remediation_status', { length: 20 }).default('none'),
   lastRemediationAttempt: timestamp('last_remediation_attempt'),
-  remediationErrors: jsonb('remediation_errors'),
+  remediationErrors: jsonb('remediation_errors').$type<RemediationError[]>(),
 }, (table) => ({
   deviceIdIdx: index('software_compliance_device_id_idx').on(table.deviceId),
   policyIdIdx: index('software_compliance_policy_id_idx').on(table.policyId),
