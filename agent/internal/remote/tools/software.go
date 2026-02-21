@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -159,16 +158,13 @@ func uninstallSoftwareMacOS(name string) error {
 		return pathErr
 	}
 
-	if info, statErr := os.Lstat(appPath); statErr == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to remove symlink at %s", appPath)
+	var directRemoveErr error
+	if _, statErr := os.Stat(appPath); statErr == nil {
+		if removeErr := os.RemoveAll(appPath); removeErr == nil {
+			return nil
+		} else {
+			directRemoveErr = fmt.Errorf("os.RemoveAll(%s): %w", appPath, removeErr)
 		}
-		if removeErr := os.RemoveAll(appPath); removeErr != nil {
-			return fmt.Errorf("failed to remove application at %s: %w", appPath, removeErr)
-		}
-		return nil
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("failed to stat application at %s: %w", appPath, statErr)
 	}
 
 	attempts := []uninstallAttempt{
@@ -176,7 +172,14 @@ func uninstallSoftwareMacOS(name string) error {
 		{command: "brew", args: []string{"uninstall", name}},
 	}
 
-	return runUninstallAttempts(name, attempts)
+	pkgErr := runUninstallAttempts(name, attempts)
+	if pkgErr == nil {
+		return nil
+	}
+	if directRemoveErr != nil {
+		return fmt.Errorf("%w; also tried direct removal: %v", pkgErr, directRemoveErr)
+	}
+	return pkgErr
 }
 
 func isProtectedLinuxPackage(name string) bool {
