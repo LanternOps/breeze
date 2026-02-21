@@ -195,6 +195,61 @@ aiRoutes.patch(
   }
 );
 
+// POST /sessions/:id/flag - Flag a conversation
+aiRoutes.post(
+  '/sessions/:id/flag',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', z.object({ reason: z.string().max(1000).optional() }).optional()),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const body = c.req.valid('json') ?? {};
+
+    await db
+      .update(aiSessions)
+      .set({
+        flaggedAt: new Date(),
+        flaggedBy: auth.user?.id ?? null,
+        flagReason: body.reason ?? null,
+      })
+      .where(eq(aiSessions.id, sessionId));
+
+    return c.json({ success: true });
+  }
+);
+
+// DELETE /sessions/:id/flag - Unflag a conversation (admin only)
+aiRoutes.delete(
+  '/sessions/:id/flag',
+  requireScope('partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    await db
+      .update(aiSessions)
+      .set({
+        flaggedAt: null,
+        flaggedBy: null,
+        flagReason: null,
+      })
+      .where(eq(aiSessions.id, sessionId));
+
+    return c.json({ success: true });
+  }
+);
+
 // ============================================
 // Message Sending (SSE Stream via Streaming Sessions)
 // ============================================
