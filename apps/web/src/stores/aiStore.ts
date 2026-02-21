@@ -477,7 +477,13 @@ export const useAiStore = create<AiState>()(
 
       const messages = mapMessagesFromApi(data.messages || []);
 
-      set({ sessionId, messages, isLoading: false });
+      set({
+        sessionId,
+        messages,
+        isLoading: false,
+        isFlagged: !!data.session?.flaggedAt,
+        flagReason: data.session?.flagReason ?? null,
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to load session',
@@ -490,13 +496,19 @@ export const useAiStore = create<AiState>()(
     const { sessionId } = get();
     if (!sessionId) return;
     try {
-      await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, {
         method: 'POST',
         body: JSON.stringify({ reason }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'Failed to flag session' }));
+        set({ error: data.error || 'Failed to flag session' });
+        return;
+      }
       set({ isFlagged: true, flagReason: reason ?? null });
     } catch (err) {
       console.error('Failed to flag session:', err);
+      set({ error: 'Failed to flag session' });
     }
   },
 
@@ -504,10 +516,16 @@ export const useAiStore = create<AiState>()(
     const { sessionId } = get();
     if (!sessionId) return;
     try {
-      await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, { method: 'DELETE' });
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'Failed to unflag session' }));
+        set({ error: data.error || 'Failed to unflag session' });
+        return;
+      }
       set({ isFlagged: false, flagReason: null });
     } catch (err) {
       console.error('Failed to unflag session:', err);
+      set({ error: 'Failed to unflag session' });
     }
   },
     }),

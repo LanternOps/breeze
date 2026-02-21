@@ -47,7 +47,7 @@ export const aiSessions = pgTable('ai_sessions', {
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),
-  flaggedAtIdx: index('ai_sessions_flagged_at_idx').on(table.flaggedAt),
+  // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
 }));
 
 // ============================================

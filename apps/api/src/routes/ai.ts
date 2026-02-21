@@ -220,6 +220,13 @@ aiRoutes.post(
       })
       .where(eq(aiSessions.id, sessionId));
 
+    writeRouteAudit(c, {
+      orgId: session.orgId,
+      action: 'ai.session.flag',
+      resourceType: 'ai_session',
+      resourceId: sessionId,
+    });
+
     return c.json({ success: true });
   }
 );
@@ -245,6 +252,13 @@ aiRoutes.delete(
         flagReason: null,
       })
       .where(eq(aiSessions.id, sessionId));
+
+    writeRouteAudit(c, {
+      orgId: session.orgId,
+      action: 'ai.session.unflag',
+      resourceType: 'ai_session',
+      resourceId: sessionId,
+    });
 
     return c.json({ success: true });
   }

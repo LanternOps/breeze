@@ -469,7 +469,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
             ))
         );
       } catch (err) {
-        console.error('[AI-SDK] Failed to auto-flag session:', err);
+        console.error('[AI-SDK] Failed to auto-flag session:', sessionId, err);
       }
     }
 

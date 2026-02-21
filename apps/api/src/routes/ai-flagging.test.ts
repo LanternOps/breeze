@@ -111,6 +111,7 @@ import { aiRoutes } from './ai';
 import { db } from '../db';
 import { getSession } from '../services/aiAgent';
 import { getSessionHistory } from '../services/aiCostTracker';
+import { writeRouteAudit } from '../services/auditEvents';
 
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -133,11 +134,9 @@ describe('AI flagging routes', () => {
       orgId: '11111111-1111-1111-1111-111111111111',
     } as any);
 
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
+    const mockWhere = vi.fn().mockResolvedValue(undefined);
+    const mockSet = vi.fn().mockReturnValue({ where: mockWhere });
+    vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
 
     const res = await app.request(`/ai/sessions/${SESSION_ID}/flag`, {
       method: 'POST',
@@ -150,7 +149,14 @@ describe('AI flagging routes', () => {
     expect(body.success).toBe(true);
 
     expect(getSession).toHaveBeenCalledWith(SESSION_ID, expect.any(Object));
-    expect(db.update).toHaveBeenCalled();
+    expect(mockSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        flaggedBy: 'user-1',
+        flagReason: 'Inappropriate response',
+      })
+    );
+    expect(mockSet.mock.calls[0][0].flaggedAt).toBeInstanceOf(Date);
+    expect(writeRouteAudit).toHaveBeenCalled();
   });
 
   it('POST /flag — flags a session without a reason', async () => {
@@ -194,17 +200,15 @@ describe('AI flagging routes', () => {
   // DELETE /sessions/:id/flag
   // ============================================
 
-  it('DELETE /flag — clears the flag', async () => {
+  it('DELETE /flag — clears the flag with null values', async () => {
     vi.mocked(getSession).mockResolvedValueOnce({
       id: SESSION_ID,
       orgId: '11111111-1111-1111-1111-111111111111',
     } as any);
 
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      }),
-    } as any);
+    const mockWhere = vi.fn().mockResolvedValue(undefined);
+    const mockSet = vi.fn().mockReturnValue({ where: mockWhere });
+    vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
 
     const res = await app.request(`/ai/sessions/${SESSION_ID}/flag`, {
       method: 'DELETE',
@@ -215,8 +219,12 @@ describe('AI flagging routes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
 
-    expect(getSession).toHaveBeenCalledWith(SESSION_ID, expect.any(Object));
-    expect(db.update).toHaveBeenCalled();
+    expect(mockSet).toHaveBeenCalledWith({
+      flaggedAt: null,
+      flaggedBy: null,
+      flagReason: null,
+    });
+    expect(writeRouteAudit).toHaveBeenCalled();
   });
 
   it('DELETE /flag — returns 404 for nonexistent session', async () => {
