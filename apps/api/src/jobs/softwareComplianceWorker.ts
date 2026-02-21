@@ -408,17 +408,21 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       });
       recordSoftwarePolicyEvaluation(policy.mode, 'unknown', Date.now() - startedAt, 'error');
 
-      fireAudit({
-        orgId: policy.orgId,
-        policyId: policy.id,
-        deviceId,
-        action: 'compliance_check_failed',
-        actor: 'system',
-        details: {
-          mode: policy.mode,
-          error: error instanceof Error ? error.message : 'Unknown compliance evaluation error',
-        },
-      });
+      try {
+        await recordSoftwarePolicyAudit({
+          orgId: policy.orgId,
+          policyId: policy.id,
+          deviceId,
+          action: 'compliance_check_failed',
+          actor: 'system',
+          details: {
+            mode: policy.mode,
+            error: error instanceof Error ? error.message : 'Unknown compliance evaluation error',
+          },
+        });
+      } catch (auditError) {
+        console.error('[SoftwareComplianceWorker] Failed to write audit record (non-fatal):', auditError);
+      }
     }
   }
 
