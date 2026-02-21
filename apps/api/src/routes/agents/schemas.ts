@@ -343,6 +343,7 @@ export const submitPatchesSchema = z.object({
     version: z.string().optional(),
     currentVersion: z.string().optional(),
     kbNumber: z.string().optional(),
+    externalId: z.string().optional(),
     category: z.string().optional(),
     severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
     size: z.number().int().optional(),
@@ -354,6 +355,8 @@ export const submitPatchesSchema = z.object({
   installed: z.array(z.object({
     name: z.string().min(1),
     version: z.string().optional(),
+    kbNumber: z.string().optional(),
+    externalId: z.string().optional(),
     category: z.string().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
     installedAt: z.string().optional()

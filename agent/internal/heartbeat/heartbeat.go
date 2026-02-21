@@ -194,7 +194,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if cfg.AuditEnabled {
 		auditLogger, err := audit.NewLogger(cfg)
 		if err != nil {
-			log.Error("failed to start audit logger", "error", err)
+			log.Error("failed to start audit logger", "error", err.Error())
 			h.healthMon.Update("audit", health.Unhealthy, err.Error())
 		} else {
 			h.auditLog = auditLogger
@@ -220,7 +220,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// Register winget provider (dispatches via user helper for user-context execution)
 	if runtime.GOOS == "windows" && h.sessionBroker != nil {
-		h.patchMgr.RegisterProvider(patching.NewWingetProvider(h.makeUserExecFunc()))
+		helperCheck := func() bool {
+			return h.sessionBroker.SessionCount() > 0
+		}
+		h.patchMgr.RegisterProvider(patching.NewWingetProvider(h.makeUserExecFunc(), helperCheck))
 		log.Info("winget provider registered (via user helper IPC)")
 	}
 
@@ -313,7 +316,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 	if h.wsClient != nil {
 		if err := h.wsClient.SendTerminalOutput(sessionId, data); err != nil {
-			log.Warn("terminal output dropped", "sessionId", sessionId, "error", err)
+			log.Warn("terminal output dropped", "sessionId", sessionId, "error", err.Error())
 		}
 	}
 }
@@ -330,7 +333,7 @@ func (h *Heartbeat) Start() {
 	// Start backup scheduler if configured
 	if h.backupMgr != nil {
 		if err := h.backupMgr.Start(); err != nil {
-			log.Error("failed to start backup manager", "error", err)
+			log.Error("failed to start backup manager", "error", err.Error())
 		}
 	}
 
@@ -395,7 +398,7 @@ func (h *Heartbeat) Start() {
 						log.Info("detected recent boot, collecting boot performance")
 						metrics, err := h.bootCol.Collect()
 						if err != nil {
-							log.Error("failed to collect boot performance", "error", err)
+							log.Error("failed to collect boot performance", "error", err.Error())
 							return
 						}
 						// Check if agent is shutting down before sending
@@ -527,7 +530,7 @@ func (h *Heartbeat) authTokenPlaintext() string {
 func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Error("failed to marshal inventory", "label", label, "error", err)
+		log.Error("failed to marshal inventory", "label", label, "error", err.Error())
 		return
 	}
 
@@ -542,7 +545,7 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 
 	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
-		log.Error("failed to send inventory", "label", label, "error", err)
+		log.Error("failed to send inventory", "label", label, "error", err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -557,7 +560,7 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 func (h *Heartbeat) sendHardwareInventory() {
 	hw, err := h.hardwareCol.CollectHardware()
 	if err != nil {
-		log.Error("failed to collect hardware info", "error", err)
+		log.Error("failed to collect hardware info", "error", err.Error())
 		return
 	}
 	h.sendInventoryData("hardware", hw, "hardware")
@@ -566,7 +569,7 @@ func (h *Heartbeat) sendHardwareInventory() {
 func (h *Heartbeat) sendSoftwareInventory() {
 	software, err := h.softwareCol.Collect()
 	if err != nil {
-		log.Error("failed to collect software inventory", "error", err)
+		log.Error("failed to collect software inventory", "error", err.Error())
 		return
 	}
 
@@ -588,7 +591,7 @@ func (h *Heartbeat) sendSoftwareInventory() {
 func (h *Heartbeat) sendDiskInventory() {
 	disks, err := h.inventoryCol.CollectDisks()
 	if err != nil {
-		log.Error("failed to collect disk inventory", "error", err)
+		log.Error("failed to collect disk inventory", "error", err.Error())
 		return
 	}
 
@@ -598,7 +601,7 @@ func (h *Heartbeat) sendDiskInventory() {
 func (h *Heartbeat) sendNetworkInventory() {
 	adapters, err := h.inventoryCol.CollectNetworkAdapters()
 	if err != nil {
-		log.Error("failed to collect network inventory", "error", err)
+		log.Error("failed to collect network inventory", "error", err.Error())
 		return
 	}
 
@@ -877,7 +880,7 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 func (h *Heartbeat) sendPolicyRegistryState() {
 	entries, err := h.policyStateCol.CollectRegistryState(h.policyRegistryProbes())
 	if err != nil {
-		log.Warn("failed to collect policy registry state", "error", err)
+		log.Warn("failed to collect policy registry state", "error", err.Error())
 	}
 
 	h.sendInventoryData(
@@ -893,7 +896,7 @@ func (h *Heartbeat) sendPolicyRegistryState() {
 func (h *Heartbeat) sendPolicyConfigState() {
 	entries, err := h.policyStateCol.CollectConfigState(h.policyConfigProbes())
 	if err != nil {
-		log.Warn("failed to collect policy config state", "error", err)
+		log.Warn("failed to collect policy config state", "error", err.Error())
 	}
 
 	h.sendInventoryData(
@@ -909,7 +912,7 @@ func (h *Heartbeat) sendPolicyConfigState() {
 func (h *Heartbeat) sendPatchInventory() {
 	pendingItems, installedItems, err := h.collectPatchInventory()
 	if err != nil {
-		log.Warn("patch inventory collection warning", "error", err)
+		log.Warn("patch inventory collection warning", "error", err.Error())
 	}
 
 	if len(pendingItems) == 0 && len(installedItems) == 0 {
@@ -992,10 +995,11 @@ func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []
 			category = h.mapPatchProviderCategory(p.Provider)
 		}
 		m := map[string]any{
-			"name":     p.Title,
-			"version":  p.Version,
-			"category": category,
-			"source":   h.mapPatchProviderSource(p.Provider),
+			"name":       p.Title,
+			"version":    p.Version,
+			"category":   category,
+			"source":     h.mapPatchProviderSource(p.Provider),
+			"externalId": p.KBNumber,
 		}
 		if p.KBNumber != "" {
 			m["kbNumber"] = p.KBNumber
@@ -1019,6 +1023,7 @@ func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]any, []m
 			"version":         patch.Version,
 			"currentVersion":  patch.CurrentVer,
 			"kbNumber":        patch.KBNumber,
+			"externalId":      patch.KBNumber,
 			"category":        patch.Category,
 			"severity":        h.mapPatchSeverity(patch.Severity),
 			"size":            patch.Size,
@@ -1031,13 +1036,18 @@ func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]any, []m
 
 	installedItems := make([]map[string]any, len(installedPatches))
 	for i, patch := range installedPatches {
-		installedItems[i] = map[string]any{
-			"name":        patch.Name,
-			"version":     patch.Version,
-			"category":    patch.Category,
-			"source":      h.mapPatchSource(patch.Source),
+		m := map[string]any{
+			"name":       patch.Name,
+			"version":    patch.Version,
+			"category":   patch.Category,
+			"source":     h.mapPatchSource(patch.Source),
 			"installedAt": patch.InstalledAt,
+			"externalId": patch.KBNumber,
 		}
+		if patch.KBNumber != "" {
+			m["kbNumber"] = patch.KBNumber
+		}
+		installedItems[i] = m
 	}
 
 	if collectErr != nil && installedErr != nil {
@@ -1108,7 +1118,7 @@ func (h *Heartbeat) mapPatchSeverity(severity string) string {
 func (h *Heartbeat) sendConnectionsInventory() {
 	connections, err := h.connectionsCol.Collect()
 	if err != nil {
-		log.Error("failed to collect connections", "error", err)
+		log.Error("failed to collect connections", "error", err.Error())
 		return
 	}
 
@@ -1137,7 +1147,7 @@ func (h *Heartbeat) sendConnectionsInventory() {
 func (h *Heartbeat) sendEventLogs() {
 	events, err := h.eventLogCol.Collect()
 	if err != nil {
-		log.Error("failed to collect event logs", "error", err)
+		log.Error("failed to collect event logs", "error", err.Error())
 		return
 	}
 
@@ -1151,7 +1161,7 @@ func (h *Heartbeat) sendEventLogs() {
 func (h *Heartbeat) sendSecurityStatus() {
 	status, err := security.CollectStatus(h.config)
 	if err != nil {
-		log.Warn("security status collection warning", "error", err)
+		log.Warn("security status collection warning", "error", err.Error())
 	}
 
 	h.sendInventoryData("security/status", status, "security status")
@@ -1173,7 +1183,7 @@ func (h *Heartbeat) sendSessionInventory() {
 
 	sessions, err := h.sessionCol.Collect()
 	if err != nil {
-		log.Warn("failed to collect sessions", "error", err)
+		log.Warn("failed to collect sessions", "error", err.Error())
 		return
 	}
 	events := h.sessionCol.DrainEvents(256)
@@ -1192,7 +1202,7 @@ func (h *Heartbeat) sendSessionInventory() {
 func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetrics) {
 	body, err := json.Marshal(metrics)
 	if err != nil {
-		log.Error("failed to marshal boot performance", "error", err)
+		log.Error("failed to marshal boot performance", "error", err.Error())
 		return
 	}
 	url := fmt.Sprintf("%s/api/v1/agents/%s/boot-performance", h.config.ServerURL, h.config.AgentID)
@@ -1206,7 +1216,7 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 
 	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
 	if err != nil {
-		log.Error("failed to send boot performance", "error", err)
+		log.Error("failed to send boot performance", "error", err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -1224,7 +1234,7 @@ func (h *Heartbeat) sendHeartbeat() {
 	metrics, err := h.metricsCol.Collect()
 	metricsAvailable := true
 	if err != nil {
-		log.Error("failed to collect metrics", "error", err)
+		log.Error("failed to collect metrics", "error", err.Error())
 		h.healthMon.Update("metrics", health.Degraded, err.Error())
 		metricsAvailable = false
 	} else {
@@ -1256,7 +1266,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Compute uptime from boot time
 	if bootTime, err := host.BootTime(); err != nil {
-		log.Warn("failed to read boot time for uptime calculation", "error", err)
+		log.Warn("failed to read boot time for uptime calculation", "error", err.Error())
 	} else if bootTime > 0 {
 		payload.UptimeSeconds = time.Now().Unix() - int64(bootTime)
 	}
@@ -1297,7 +1307,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Error("failed to marshal heartbeat", "error", err)
+		log.Error("failed to marshal heartbeat", "error", err.Error())
 		return
 	}
 
@@ -1312,7 +1322,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
 	if err != nil {
-		log.Error("failed to send heartbeat", "error", err)
+		log.Error("failed to send heartbeat", "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
 		return
 	}
@@ -1333,7 +1343,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		log.Error("failed to decode heartbeat response", "error", err)
+		log.Error("failed to decode heartbeat response", "error", err.Error())
 		return
 	}
 
@@ -1405,7 +1415,7 @@ func (h *Heartbeat) handleCertRenewal() {
 
 	renewResp, err := renewClient.RenewCert()
 	if err != nil {
-		log.Error("mTLS cert renewal failed", "error", err)
+		log.Error("mTLS cert renewal failed", "error", err.Error())
 		return
 	}
 
@@ -1444,7 +1454,7 @@ func (h *Heartbeat) handleCertRenewal() {
 	h.config.AuthToken = ""
 
 	if err != nil {
-		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err)
+		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err.Error())
 		// Clear expires so next heartbeat re-triggers renewal
 		h.config.MtlsCertExpires = ""
 		return
@@ -1463,7 +1473,7 @@ func (h *Heartbeat) processCommand(cmd Command) {
 
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
-		log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err)
+		log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
 	}
 }
 
@@ -1714,6 +1724,15 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 		summary["rolledBackCount"] = successCount
 	}
 
+	// Post-install rescan: trigger an immediate patch inventory so the
+	// dashboard reflects the new state without waiting up to 15 minutes.
+	if successCount > 0 {
+		go func() {
+			log.Info("post-install patch rescan triggered", "successCount", successCount)
+			h.sendPatchInventory()
+		}()
+	}
+
 	durationMs := time.Since(start).Milliseconds()
 	if failedCount > 0 {
 		stdout, _ := json.Marshal(summary)
@@ -1758,6 +1777,19 @@ func (h *Heartbeat) patchRefsFromPayload(payload map[string]any) []patchCommandR
 	}
 
 	for _, id := range tools.GetPayloadStringSlice(payload, "patchIds") {
+		// Skip if this ID was already added via the patches array (which has
+		// richer source/externalId info). The patches array uses a composite
+		// key for dedup, so check all existing refs by ID directly.
+		alreadyHave := false
+		for _, existing := range refs {
+			if existing.ID == id {
+				alreadyHave = true
+				break
+			}
+		}
+		if alreadyHave {
+			continue
+		}
 		key := fmt.Sprintf("%s||", id)
 		if _, exists := seen[key]; exists {
 			continue
@@ -1910,13 +1942,13 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 
 	binaryPath, err := os.Executable()
 	if err != nil {
-		log.Error("failed to get executable path", "error", err)
+		log.Error("failed to get executable path", "error", err.Error())
 		return
 	}
 
 	binaryPath, err = filepath.EvalSymlinks(binaryPath)
 	if err != nil {
-		log.Error("failed to resolve symlinks", "error", err)
+		log.Error("failed to resolve symlinks", "error", err.Error())
 		return
 	}
 
@@ -1933,7 +1965,7 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 
 	u := updater.New(updaterCfg)
 	if err := u.UpdateTo(targetVersion); err != nil {
-		log.Error("failed to update", "targetVersion", targetVersion, "error", err)
+		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
 		return
 	}
 

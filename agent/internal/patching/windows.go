@@ -78,10 +78,21 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			log.Warn("EULA acceptance failed", "patchId", patchID, "error", err)
 		}
 
+		// Retrieve title early for logging and restore point
+		title, _ := w.getStringProperty(update, "Title")
+
+		// Auto-download if not already downloaded
+		isDownloaded, _ := w.getBoolProperty(update, "IsDownloaded")
+		if !isDownloaded {
+			log.Info("update not downloaded, downloading first", "patchId", patchID, "title", title)
+			if dlErr := w.downloadUpdate(session, update); dlErr != nil {
+				return fmt.Errorf("pre-install download failed: %w", dlErr)
+			}
+		}
+
 		// Create restore point before install (best-effort, skip for definitions)
 		category := w.mapCategory(update)
 		if category != "definitions" {
-			title, _ := w.getStringProperty(update, "Title")
 			if rpErr := CreateRestorePoint("Before install: " + title); rpErr != nil {
 				log.Debug("restore point creation failed (non-fatal)", "error", rpErr)
 			}
@@ -258,11 +269,13 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 	}
 	defer searcher.Release()
 
+	searchStart := time.Now()
 	resultVar, err := w.callWithRetry("Search", func() (*ole.VARIANT, error) {
 		return oleutil.CallMethod(searcher, "Search", criteria)
 	})
+	searchDuration := time.Since(searchStart)
 	if err != nil {
-		return nil, fmt.Errorf("search failed: %w", err)
+		return nil, fmt.Errorf("search failed (took %s): %w", searchDuration, err)
 	}
 
 	result := resultVar.ToIDispatch()
@@ -291,30 +304,36 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 	count := int(countVar.Val)
 	patches := make([]AvailablePatch, 0, count)
 
+	var excluded, parseErrors int
 	for i := 0; i < count; i++ {
-		itemVar, err := oleutil.CallMethod(updates, "Item", i)
+		itemVar, err := getCollectionItem(updates, i)
 		if err != nil {
+			parseErrors++
 			continue
 		}
 		update := itemVar.ToIDispatch()
 		if update == nil {
+			parseErrors++
 			continue
 		}
 
 		patch, err := w.updateToPatch(update)
 		update.Release()
 		if err != nil {
+			parseErrors++
 			continue
 		}
 
 		// Filter excluded update types
 		if w.shouldExcludePatch(patch) {
+			excluded++
 			continue
 		}
 
 		patches = append(patches, patch)
 	}
 
+	log.Info("WUA search done", "criteria", criteria, "raw", count, "returned", len(patches), "excluded", excluded, "parseErrors", parseErrors, "duration", searchDuration.String())
 	return patches, nil
 }
 
@@ -399,7 +418,7 @@ func (w *WindowsUpdateProvider) getKBNumber(update *ole.IDispatch) string {
 		return ""
 	}
 
-	itemVar, err := oleutil.CallMethod(kbIDs, "Item", 0)
+	itemVar, err := getCollectionItem(kbIDs, 0)
 	if err != nil {
 		return ""
 	}
@@ -435,7 +454,7 @@ func (w *WindowsUpdateProvider) mapCategory(update *ole.IDispatch) string {
 		return "application"
 	}
 
-	itemVar, err := oleutil.CallMethod(cats, "Item", 0)
+	itemVar, err := getCollectionItem(cats, 0)
 	if err != nil {
 		return "application"
 	}
@@ -507,7 +526,7 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 
 	count := int(countVar.Val)
 	for i := 0; i < count; i++ {
-		itemVar, err := oleutil.CallMethod(updates, "Item", i)
+		itemVar, err := getCollectionItem(updates, i)
 		if err != nil {
 			continue
 		}
@@ -535,6 +554,15 @@ func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, pat
 		if updateID == patchID {
 			return update, nil
 		}
+
+		// Also match by KB number (e.g. "KB5007651")
+		if strings.HasPrefix(patchID, "KB") {
+			kb := w.getKBNumber(update)
+			if kb == patchID {
+				return update, nil
+			}
+		}
+
 		update.Release()
 	}
 
@@ -579,6 +607,73 @@ func (w *WindowsUpdateProvider) createInstaller(session *ole.IDispatch, update *
 
 	collection.Release()
 	return installer, nil
+}
+
+// downloadUpdate downloads a single update using the WUA downloader.
+// Used by Install() when the update is not yet downloaded.
+func (w *WindowsUpdateProvider) downloadUpdate(session *ole.IDispatch, update *ole.IDispatch) error {
+	collectionObj, err := oleutil.CreateObject("Microsoft.Update.UpdateColl")
+	if err != nil {
+		return fmt.Errorf("create update collection failed: %w", err)
+	}
+	defer collectionObj.Release()
+
+	collection, err := collectionObj.QueryInterface(ole.IID_IDispatch)
+	if err != nil {
+		return fmt.Errorf("update collection dispatch failed: %w", err)
+	}
+	defer collection.Release()
+
+	if _, err := oleutil.CallMethod(collection, "Add", update); err != nil {
+		return fmt.Errorf("add update to collection failed: %w", err)
+	}
+
+	downloaderVar, err := oleutil.CallMethod(session, "CreateUpdateDownloader")
+	if err != nil {
+		return fmt.Errorf("create downloader failed: %w", err)
+	}
+	downloader := downloaderVar.ToIDispatch()
+	if downloader == nil {
+		return fmt.Errorf("create downloader failed: nil downloader")
+	}
+	defer downloader.Release()
+
+	if _, err := oleutil.PutProperty(downloader, "Updates", collection); err != nil {
+		return fmt.Errorf("set downloader updates failed: %w", err)
+	}
+
+	downloadResultVar, err := w.callWithRetry("Download", func() (*ole.VARIANT, error) {
+		return oleutil.CallMethod(downloader, "Download")
+	})
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+
+	downloadResult := downloadResultVar.ToIDispatch()
+	if downloadResult == nil {
+		return fmt.Errorf("download failed: nil result")
+	}
+	defer downloadResult.Release()
+
+	resultCode, _ := w.getIntProperty(downloadResult, "ResultCode")
+	if resultCode != wuaResultSucceeded {
+		hresult := 0
+		updateResultVar, urErr := oleutil.CallMethod(downloadResult, "GetUpdateResult", 0)
+		if urErr == nil {
+			ur := updateResultVar.ToIDispatch()
+			if ur != nil {
+				hresult, _ = w.getIntProperty(ur, "HResult")
+				ur.Release()
+			}
+		}
+		if hresult != 0 {
+			return fmt.Errorf("download failed with result code %d: %s", resultCode, FormatHResult(hresult))
+		}
+		return fmt.Errorf("download failed with result code %d", resultCode)
+	}
+
+	log.Info("update downloaded successfully")
+	return nil
 }
 
 // Download pre-downloads patches by their update IDs.
@@ -893,4 +988,18 @@ func (w *WindowsUpdateProvider) getBoolProperty(dispatch *ole.IDispatch, name st
 		return false, nil
 	}
 	return true, nil
+}
+
+// getCollectionItem retrieves an item from a COM collection by index.
+// Uses DISPID 0 (default property) which works even when "Item" name lookup
+// fails in Session 0 or non-interactive service contexts.
+func getCollectionItem(collection *ole.IDispatch, index int) (*ole.VARIANT, error) {
+	// First try by name — works on most Windows builds
+	result, err := oleutil.GetProperty(collection, "Item", index)
+	if err == nil {
+		return result, nil
+	}
+
+	// Fallback: invoke DISPID 0 (default/Item property) directly via raw dispatch
+	return collection.Invoke(0, ole.DISPATCH_PROPERTYGET, index)
 }
