@@ -13,6 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
+import { getActiveDeviceContext } from './brainDeviceContext';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
@@ -38,7 +39,7 @@ export async function createSession(
       model: options.model ?? DEFAULT_MODEL,
       title: options.title ?? null,
       contextSnapshot: options.pageContext ?? null,
-      systemPrompt: buildSystemPrompt(auth, options.pageContext)
+      systemPrompt: await buildSystemPrompt(auth, options.pageContext)
     })
     .returning();
 
@@ -250,7 +251,7 @@ export function handlePlanApproval(): void {
 // System Prompt
 // ============================================
 
-export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext, approvalMode?: AiApprovalMode): string {
+export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext, approvalMode?: AiApprovalMode): Promise<string> {
   const parts: string[] = [];
 
   parts.push(`You are Breeze AI, an intelligent IT assistant built into the Breeze RMM platform. You help IT technicians and MSP staff manage devices, troubleshoot issues, analyze security threats, and build automations.
@@ -313,6 +314,22 @@ Always verify outcomes; never assume an action succeeded.
         if (pageContext.status) parts.push(`Status: ${pageContext.status}`);
         if (pageContext.ip) parts.push(`IP: ${pageContext.ip}`);
         parts.push('Prioritize information and actions related to this device.');
+
+        // Auto-load past device context so brain doesn't start cold
+        try {
+          const context = await getActiveDeviceContext(pageContext.id, auth);
+          if (context.length > 0) {
+            parts.push('\n### Past Device Memory');
+            parts.push('Previous interactions recorded the following context:');
+            for (const c of context) {
+              const detail = c.details ? ` — ${JSON.stringify(c.details)}` : '';
+              parts.push(`- [${c.contextType.toUpperCase()}] ${c.summary}${detail}`);
+            }
+            parts.push('Consider this historical context when assisting the user. You do NOT need to call get_device_context — it has already been loaded.');
+          }
+        } catch (err) {
+          console.error('[AI] Failed to auto-load device context:', err);
+        }
         break;
 
       case 'alert':

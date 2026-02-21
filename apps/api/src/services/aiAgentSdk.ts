@@ -146,8 +146,8 @@ export async function runPreFlightChecks(
     }
   }
   const systemPrompt = sanitizedPageContext
-    ? buildSystemPrompt(auth, sanitizedPageContext)
-    : (session.systemPrompt ?? buildSystemPrompt(auth));
+    ? await buildSystemPrompt(auth, sanitizedPageContext)
+    : (session.systemPrompt ?? await buildSystemPrompt(auth));
 
   // Remaining budget
   let maxBudgetUsd: number | undefined;
