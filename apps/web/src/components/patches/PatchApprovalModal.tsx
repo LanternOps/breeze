@@ -9,6 +9,7 @@ export type PatchApprovalAction = 'approve' | 'decline' | 'defer';
 type PatchApprovalModalProps = {
   open: boolean;
   patch?: Patch | null;
+  ringId?: string | null;
   onClose: () => void;
   onSubmit?: (patchId: string, action: PatchApprovalAction, notes: string) => void | Promise<void>;
   loading?: boolean;
@@ -38,6 +39,7 @@ const actionConfig: Record<PatchApprovalAction, { label: string; description: st
 export default function PatchApprovalModal({
   open,
   patch,
+  ringId,
   onClose,
   onSubmit,
   loading
@@ -68,11 +70,12 @@ export default function PatchApprovalModal({
     try {
       // Map actions to API endpoints: approve, decline, or defer
       const endpoint = action === 'approve' ? 'approve' : action === 'decline' ? 'decline' : 'defer';
+      const body: Record<string, unknown> = { note: notes };
+      if (ringId) body.ringId = ringId;
+
       const response = await fetchWithAuth(`/patches/${patch.id}/${endpoint}`, {
         method: 'POST',
-        body: JSON.stringify({
-          note: notes
-        })
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {

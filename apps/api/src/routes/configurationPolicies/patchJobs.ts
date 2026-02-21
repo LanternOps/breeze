@@ -9,6 +9,7 @@ import { db } from '../../db';
 import {
   configPolicyFeatureLinks,
   configPolicyPatchSettings,
+  patchPolicies,
   patchJobs,
   devices,
 } from '../../db/schema';
@@ -36,22 +37,54 @@ const createPatchJobFromConfigPolicySchema = z.object({
 // ============================================
 
 async function loadConfigPolicyPatchSettings(configPolicyId: string) {
-  const [result] = await db
-    .select({
-      patchSettings: configPolicyPatchSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-    })
+  // 1. Find the feature link for the patch feature type
+  const [featureLink] = await db
+    .select()
     .from(configPolicyFeatureLinks)
-    .innerJoin(
-      configPolicyPatchSettings,
-      eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
     .where(
       and(
         eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
         eq(configPolicyFeatureLinks.featureType, 'patch')
       )
     )
+    .limit(1);
+
+  if (!featureLink) return null;
+
+  // 2. If linked to an Update Ring via featurePolicyId, load settings from the ring (patchPolicies table)
+  if (featureLink.featurePolicyId) {
+    const [ring] = await db
+      .select()
+      .from(patchPolicies)
+      .where(eq(patchPolicies.id, featureLink.featurePolicyId))
+      .limit(1);
+
+    if (ring) {
+      // Return ring settings in the same shape as configPolicyPatchSettings
+      return {
+        id: ring.id,
+        featureLinkId: featureLink.id,
+        sources: ring.sources,
+        autoApprove: ring.autoApprove,
+        autoApproveSeverities: ring.autoApproveSeverities,
+        scheduleFrequency: ring.scheduleFrequency,
+        scheduleTime: ring.scheduleTime,
+        scheduleDayOfWeek: ring.scheduleDayOfWeek,
+        scheduleDayOfMonth: ring.scheduleDayOfMonth,
+        rebootPolicy: ring.rebootPolicy,
+        createdAt: ring.createdAt,
+        updatedAt: ring.updatedAt,
+      } as typeof configPolicyPatchSettings.$inferSelect;
+    }
+  }
+
+  // 3. Fall back to inline patch settings
+  const [result] = await db
+    .select({
+      patchSettings: configPolicyPatchSettings,
+    })
+    .from(configPolicyPatchSettings)
+    .where(eq(configPolicyPatchSettings.featureLinkId, featureLink.id))
     .limit(1);
 
   return result?.patchSettings ?? null;

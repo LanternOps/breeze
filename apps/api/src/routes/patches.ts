@@ -30,6 +30,7 @@ const listPatchesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
+  ringId: z.string().uuid().optional(),
   source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional()
@@ -52,17 +53,20 @@ const listApprovalsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
+  ringId: z.string().uuid().optional(),
   status: z.enum(['approved', 'rejected', 'deferred', 'pending']).optional(),
   patchId: z.string().uuid().optional()
 });
 
 const approvalActionSchema = z.object({
   orgId: z.string().uuid().optional(),
+  ringId: z.string().uuid().optional(),
   note: z.string().max(1000).optional()
 });
 
 const deferSchema = z.object({
   orgId: z.string().uuid().optional(),
+  ringId: z.string().uuid().optional(),
   deferUntil: z.string().datetime(),
   note: z.string().max(1000).optional()
 });
@@ -84,12 +88,14 @@ const rollbackSchema = z.object({
 
 const bulkApproveSchema = z.object({
   orgId: z.string().uuid().optional(),
+  ringId: z.string().uuid().optional(),
   patchIds: z.array(z.string().uuid()).min(1),
   note: z.string().max(1000).optional()
 });
 
 const complianceSchema = z.object({
   orgId: z.string().uuid().optional(),
+  ringId: z.string().uuid().optional(),
   source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional()
 });
@@ -160,6 +166,45 @@ function writePatchAuditForOrgIds(
   for (const orgId of uniqueOrgIds) {
     writeRouteAudit(c, { orgId, ...event });
   }
+}
+
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
+async function upsertPatchApproval(values: {
+  orgId: string;
+  patchId: string;
+  ringId: string | null;
+  status: 'approved' | 'rejected' | 'deferred' | 'pending';
+  approvedBy?: string | null;
+  approvedAt?: Date | null;
+  deferUntil?: Date | null;
+  notes?: string | null;
+}) {
+  // Use raw SQL for upsert because the unique index uses COALESCE expression
+  await db.execute(sql`
+    INSERT INTO patch_approvals (id, org_id, patch_id, ring_id, status, approved_by, approved_at, defer_until, notes, created_at, updated_at)
+    VALUES (
+      gen_random_uuid(),
+      ${values.orgId},
+      ${values.patchId},
+      ${values.ringId},
+      ${values.status},
+      ${values.approvedBy ?? null},
+      ${values.approvedAt ?? null},
+      ${values.deferUntil ?? null},
+      ${values.notes ?? null},
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (org_id, patch_id, COALESCE(ring_id, ${NIL_UUID}::uuid))
+    DO UPDATE SET
+      status = EXCLUDED.status,
+      approved_by = EXCLUDED.approved_by,
+      approved_at = EXCLUDED.approved_at,
+      defer_until = EXCLUDED.defer_until,
+      notes = EXCLUDED.notes,
+      updated_at = NOW()
+  `);
 }
 
 function resolvePatchApprovalOrgId(
@@ -286,16 +331,21 @@ patchRoutes.get(
       .from(patches)
       .where(whereClause);
 
-    // If org specified, get approval statuses
+    // If org specified, get approval statuses (optionally ring-scoped)
     let approvalStatuses: Record<string, string> = {};
     if (query.orgId) {
+      const approvalConditions = [eq(patchApprovals.orgId, query.orgId)];
+      if (query.ringId) {
+        approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
+      }
+
       const approvals = await db
         .select({
           patchId: patchApprovals.patchId,
           status: patchApprovals.status
         })
         .from(patchApprovals)
-        .where(eq(patchApprovals.orgId, query.orgId));
+        .where(and(...approvalConditions));
 
       approvalStatuses = Object.fromEntries(
         approvals.map(a => [a.patchId, a.status])
@@ -457,6 +507,7 @@ patchRoutes.get(
     const orgCond = auth.orgCondition(patchApprovals.orgId);
     if (orgCond) conditions.push(orgCond);
     if (query.orgId) conditions.push(eq(patchApprovals.orgId, query.orgId));
+    if (query.ringId) conditions.push(eq(patchApprovals.ringId, query.ringId));
     if (query.status) conditions.push(eq(patchApprovals.status, query.status));
     if (query.patchId) conditions.push(eq(patchApprovals.patchId, query.patchId));
 
@@ -502,26 +553,15 @@ patchRoutes.post(
 
     for (const patchId of data.patchIds) {
       try {
-        await db
-          .insert(patchApprovals)
-          .values({
-            orgId: targetOrgId,
-            patchId,
-            status: 'approved',
-            approvedBy: auth.user.id,
-            approvedAt: new Date(),
-            notes: data.note
-          })
-          .onConflictDoUpdate({
-            target: [patchApprovals.orgId, patchApprovals.patchId],
-            set: {
-              status: 'approved',
-              approvedBy: auth.user.id,
-              approvedAt: new Date(),
-              notes: data.note,
-              updatedAt: new Date()
-            }
-          });
+        await upsertPatchApproval({
+          orgId: targetOrgId,
+          patchId,
+          ringId: data.ringId ?? null,
+          status: 'approved',
+          approvedBy: auth.user.id,
+          approvedAt: new Date(),
+          notes: data.note ?? null,
+        });
         approved.push(patchId);
       } catch {
         failed.push(patchId);
@@ -535,7 +575,8 @@ patchRoutes.post(
       details: {
         approvedCount: approved.length,
         failedCount: failed.length,
-        patchIds: data.patchIds
+        patchIds: data.patchIds,
+        ringId: data.ringId ?? null
       }
     });
 
@@ -622,8 +663,36 @@ patchRoutes.get(
       });
     }
 
+    // If ringId specified, scope to ring-approved patches only
+    let ringPatchScope: string[] | null = null;
+    if (query.ringId && query.orgId) {
+      const ringApprovedPatches = await db
+        .select({ patchId: patchApprovals.patchId })
+        .from(patchApprovals)
+        .where(
+          and(
+            eq(patchApprovals.orgId, query.orgId),
+            eq(patchApprovals.ringId, query.ringId),
+            eq(patchApprovals.status, 'approved')
+          )
+        );
+      ringPatchScope = ringApprovedPatches.map(a => a.patchId);
+    }
+
     // Get patch status counts
     const complianceConditions = [inArray(devicePatches.deviceId, deviceIds)];
+    if (ringPatchScope !== null) {
+      if (ringPatchScope.length === 0) {
+        return c.json({
+          data: {
+            summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
+            compliancePercent: 100,
+            ringId: query.ringId ?? null
+          }
+        });
+      }
+      complianceConditions.push(inArray(devicePatches.patchId, ringPatchScope));
+    }
     if (query.source) {
       complianceConditions.push(eq(patches.source, query.source));
     }
@@ -668,7 +737,8 @@ patchRoutes.get(
         compliancePercent,
         filters: {
           source: query.source ?? null,
-          severity: query.severity ?? null
+          severity: query.severity ?? null,
+          ringId: query.ringId ?? null
         }
       }
     });
@@ -1018,26 +1088,15 @@ patchRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    await db
-      .insert(patchApprovals)
-      .values({
-        orgId: targetOrgId,
-        patchId: id,
-        status: 'approved',
-        approvedBy: auth.user.id,
-        approvedAt: new Date(),
-        notes: data.note
-      })
-      .onConflictDoUpdate({
-        target: [patchApprovals.orgId, patchApprovals.patchId],
-        set: {
-          status: 'approved',
-          approvedBy: auth.user.id,
-          approvedAt: new Date(),
-          notes: data.note,
-          updatedAt: new Date()
-        }
-      });
+    await upsertPatchApproval({
+      orgId: targetOrgId,
+      patchId: id,
+      ringId: data.ringId ?? null,
+      status: 'approved',
+      approvedBy: auth.user.id,
+      approvedAt: new Date(),
+      notes: data.note ?? null,
+    });
 
     writeRouteAudit(c, {
       orgId: targetOrgId,
@@ -1045,11 +1104,12 @@ patchRoutes.post(
       resourceType: 'patch',
       resourceId: id,
       details: {
-        note: data.note ?? null
+        note: data.note ?? null,
+        ringId: data.ringId ?? null
       }
     });
 
-    return c.json({ id, status: 'approved' });
+    return c.json({ id, status: 'approved', ringId: data.ringId ?? null });
   }
 );
 
@@ -1080,22 +1140,13 @@ patchRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    await db
-      .insert(patchApprovals)
-      .values({
-        orgId: targetOrgId,
-        patchId: id,
-        status: 'rejected',
-        notes: data.note
-      })
-      .onConflictDoUpdate({
-        target: [patchApprovals.orgId, patchApprovals.patchId],
-        set: {
-          status: 'rejected',
-          notes: data.note,
-          updatedAt: new Date()
-        }
-      });
+    await upsertPatchApproval({
+      orgId: targetOrgId,
+      patchId: id,
+      ringId: data.ringId ?? null,
+      status: 'rejected',
+      notes: data.note ?? null,
+    });
 
     writeRouteAudit(c, {
       orgId: targetOrgId,
@@ -1103,11 +1154,12 @@ patchRoutes.post(
       resourceType: 'patch',
       resourceId: id,
       details: {
-        note: data.note ?? null
+        note: data.note ?? null,
+        ringId: data.ringId ?? null
       }
     });
 
-    return c.json({ id, status: 'declined' });
+    return c.json({ id, status: 'declined', ringId: data.ringId ?? null });
   }
 );
 
@@ -1138,24 +1190,14 @@ patchRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    await db
-      .insert(patchApprovals)
-      .values({
-        orgId: targetOrgId,
-        patchId: id,
-        status: 'deferred',
-        deferUntil: new Date(data.deferUntil),
-        notes: data.note
-      })
-      .onConflictDoUpdate({
-        target: [patchApprovals.orgId, patchApprovals.patchId],
-        set: {
-          status: 'deferred',
-          deferUntil: new Date(data.deferUntil),
-          notes: data.note,
-          updatedAt: new Date()
-        }
-      });
+    await upsertPatchApproval({
+      orgId: targetOrgId,
+      patchId: id,
+      ringId: data.ringId ?? null,
+      status: 'deferred',
+      deferUntil: new Date(data.deferUntil),
+      notes: data.note ?? null,
+    });
 
     writeRouteAudit(c, {
       orgId: targetOrgId,
@@ -1164,14 +1206,16 @@ patchRoutes.post(
       resourceId: id,
       details: {
         deferUntil: data.deferUntil,
-        note: data.note ?? null
+        note: data.note ?? null,
+        ringId: data.ringId ?? null
       }
     });
 
     return c.json({
       id,
       status: 'deferred',
-      deferUntil: data.deferUntil
+      deferUntil: data.deferUntil,
+      ringId: data.ringId ?? null
     });
   }
 );

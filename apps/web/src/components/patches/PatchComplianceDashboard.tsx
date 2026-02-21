@@ -138,7 +138,11 @@ function SeveritySummaryCard({
   );
 }
 
-export default function PatchComplianceDashboard() {
+type PatchComplianceDashboardProps = {
+  ringId?: string | null;
+};
+
+export default function PatchComplianceDashboard({ ringId }: PatchComplianceDashboardProps = {}) {
   const [data, setData] = useState<PatchComplianceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -147,7 +151,10 @@ export default function PatchComplianceDashboard() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/patches/compliance');
+      const params = new URLSearchParams();
+      if (ringId) params.set('ringId', ringId);
+      const url = params.toString() ? `/patches/compliance?${params}` : '/patches/compliance';
+      const response = await fetchWithAuth(url);
       if (!response.ok) {
         if (response.status === 401) {
           window.location.href = '/login';
@@ -163,7 +170,7 @@ export default function PatchComplianceDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [ringId]);
 
   useEffect(() => {
     fetchCompliance();
