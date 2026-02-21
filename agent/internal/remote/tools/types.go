@@ -49,6 +49,8 @@ const (
 
 	// Software inventory
 	CmdCollectSoftware = "collect_software"
+	CmdSoftwareUninstall = "software_uninstall"
+	CmdSoftwareInstall   = "software_install"
 
 	// Boot performance
 	CmdCollectBootPerformance = "collect_boot_performance"

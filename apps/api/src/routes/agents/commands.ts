@@ -5,7 +5,11 @@ import { db } from '../../db';
 import { deviceCommands } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { commandResultSchema, securityCommandTypes, filesystemAnalysisCommandType } from './schemas';
-import { handleSecurityCommandResult, handleFilesystemAnalysisCommandResult } from './helpers';
+import {
+  handleSecurityCommandResult,
+  handleFilesystemAnalysisCommandResult,
+  handleSoftwareRemediationCommandResult,
+} from './helpers';
 
 export const commandsRoutes = new Hono();
 
@@ -77,6 +81,14 @@ commandsRoutes.post(
         await handleFilesystemAnalysisCommandResult(command, data);
       } catch (err) {
         console.error(`[agents] filesystem analysis post-processing failed for ${commandId}:`, err);
+      }
+    }
+
+    if (command.type === 'software_uninstall') {
+      try {
+        await handleSoftwareRemediationCommandResult(command, data);
+      } catch (err) {
+        console.error(`[agents] software remediation post-processing failed for ${commandId}:`, err);
       }
     }
 

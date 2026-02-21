@@ -48,6 +48,7 @@ import { snmpRoutes } from './routes/snmp';
 import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
 import { softwareRoutes } from './routes/software';
+import { softwarePoliciesRoutes } from './routes/softwarePolicies';
 import { systemToolsRoutes } from './routes/systemTools';
 import { notificationRoutes } from './routes/notifications';
 import { metricsRoutes } from './routes/metrics';
@@ -82,6 +83,8 @@ import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
+import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
+import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -257,6 +260,7 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/analytics',
   '/alert-templates',
   '/software',
+  '/software-policies',
   '/maintenance',
   '/psa',
   '/mobile',
@@ -583,6 +587,7 @@ api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
 api.route('/software', softwareRoutes);
+api.route('/software-policies', softwarePoliciesRoutes);
 api.route('/system-tools', systemToolsRoutes);
 api.route('/notifications', notificationRoutes);
 api.route('/groups', groupRoutes);
@@ -784,6 +789,8 @@ async function initializeWorkers(): Promise<void> {
     ['notificationDispatcher', initializeNotificationDispatcher],
     ['webhookDelivery', initializeWebhookDeliveryWorker],
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
+    ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
+    ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
     ['automationWorker', initializeAutomationWorker],
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['policyAlertBridge', initializePolicyAlertBridge],
@@ -886,6 +893,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAgentLogRetention,
     shutdownSecurityPostureWorker,
     shutdownAutomationWorker,
+    shutdownSoftwareRemediationWorker,
+    shutdownSoftwareComplianceWorker,
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,

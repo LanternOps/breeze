@@ -55,7 +55,8 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdLock:     handleLock,
 
 	// Software inventory
-	tools.CmdCollectSoftware: handleCollectSoftware,
+	tools.CmdCollectSoftware:   handleCollectSoftware,
+	tools.CmdSoftwareUninstall: handleSoftwareUninstall,
 
 	// Boot performance
 	tools.CmdCollectBootPerformance: handleCollectBootPerformance,
@@ -218,6 +219,10 @@ func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	return tools.NewSuccessResult(software, time.Since(start).Milliseconds())
+}
+
+func handleSoftwareUninstall(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.UninstallSoftware(cmd.Payload)
 }
 
 func handleFileList(_ *Heartbeat, cmd Command) tools.CommandResult {

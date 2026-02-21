@@ -57,6 +57,10 @@ export const CommandTypes = {
   // Script execution
   SCRIPT: 'script',
 
+  // Software management
+  SOFTWARE_UNINSTALL: 'software_uninstall',
+  SOFTWARE_INSTALL: 'software_install',
+
   // Patch management
   PATCH_SCAN: 'patch_scan',
   INSTALL_PATCHES: 'install_patches',
@@ -135,6 +139,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.PATCH_SCAN,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,
+  CommandTypes.SOFTWARE_UNINSTALL,
+  CommandTypes.SOFTWARE_INSTALL,
   CommandTypes.SECURITY_SCAN,
   CommandTypes.SECURITY_THREAT_QUARANTINE,
   CommandTypes.SECURITY_THREAT_REMOVE,

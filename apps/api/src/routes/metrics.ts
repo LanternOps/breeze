@@ -116,6 +116,35 @@ const scriptsExecutedTotal = new Counter({
   registers: [register]
 });
 
+const softwarePolicyEvaluationsTotal = new Counter({
+  name: 'breeze_software_policy_evaluations_total',
+  help: 'Software policy evaluations by policy mode and result',
+  labelNames: ['mode', 'status', 'reason'] as const,
+  registers: [register]
+});
+
+const softwarePolicyEvaluationDurationSeconds = new Histogram({
+  name: 'breeze_software_policy_evaluation_duration_seconds',
+  help: 'Software policy evaluation duration in seconds',
+  labelNames: ['mode', 'status'] as const,
+  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register]
+});
+
+const softwarePolicyViolationsTotal = new Counter({
+  name: 'breeze_software_policy_violations_total',
+  help: 'Software policy violations detected',
+  labelNames: ['mode'] as const,
+  registers: [register]
+});
+
+const softwareRemediationDecisionsTotal = new Counter({
+  name: 'breeze_software_remediation_decisions_total',
+  help: 'Software remediation queueing and execution outcomes',
+  labelNames: ['decision'] as const,
+  registers: [register]
+});
+
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
   help: 'Start time of the process since unix epoch in seconds',
@@ -138,6 +167,9 @@ alertQueueLengthGauge.set(0);
 agentHeartbeatTotal.labels('success').inc(0);
 agentHeartbeatTotal.labels('failed').inc(0);
 scriptsExecutedTotal.inc(0);
+softwarePolicyEvaluationsTotal.labels('allowlist', 'compliant', 'evaluated').inc(0);
+softwarePolicyViolationsTotal.labels('allowlist').inc(0);
+softwareRemediationDecisionsTotal.labels('queued').inc(0);
 nodejsVersionInfoGauge.labels(process.version).set(1);
 
 interface CounterValue {
@@ -147,6 +179,8 @@ interface CounterValue {
 
 const httpRequestState = new Map<string, CounterValue>();
 const agentHeartbeatState = new Map<string, CounterValue>();
+const softwarePolicyEvaluationState = new Map<string, CounterValue>();
+const softwareRemediationDecisionState = new Map<string, CounterValue>();
 
 let devicesActive = 0;
 let organizationsTotal = 0;
@@ -155,6 +189,7 @@ let alertsTotal = 0;
 let alertQueueLength = 0;
 let scriptsExecutedCount = 0;
 let inFlightRequests = 0;
+let softwarePolicyViolationsCount = 0;
 
 function normalizeRoute(route: string): string {
   return route
@@ -240,6 +275,44 @@ export function recordAlert(severity = 'info'): void {
 export function recordScriptExecution(): void {
   scriptsExecutedTotal.inc();
   scriptsExecutedCount += 1;
+}
+
+export function recordSoftwarePolicyEvaluation(
+  mode: 'allowlist' | 'blocklist' | 'audit',
+  status: 'compliant' | 'violation' | 'unknown',
+  durationMs: number,
+  reason = 'evaluated'
+): void {
+  const safeDuration = Number.isFinite(durationMs) ? Math.max(durationMs, 0) : 0;
+  const normalizedReason = reason.trim().length > 0 ? reason : 'evaluated';
+
+  softwarePolicyEvaluationsTotal.labels(mode, status, normalizedReason).inc();
+  softwarePolicyEvaluationDurationSeconds.labels(mode, status).observe(safeDuration / 1000);
+  upsertCounterState(softwarePolicyEvaluationState, {
+    mode,
+    status,
+    reason: normalizedReason,
+  });
+}
+
+export function recordSoftwarePolicyViolation(
+  mode: 'allowlist' | 'blocklist' | 'audit',
+  count = 1
+): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  softwarePolicyViolationsTotal.labels(mode).inc(safeCount);
+  softwarePolicyViolationsCount += safeCount;
+}
+
+export function recordSoftwareRemediationDecision(decision: string, count = 1): void {
+  const normalizedDecision = decision.trim().toLowerCase() || 'unknown';
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  softwareRemediationDecisionsTotal.labels(normalizedDecision).inc(safeCount);
+  upsertCounterState(softwareRemediationDecisionState, {
+    decision: normalizedDecision,
+  }, safeCount);
 }
 
 async function metricsResponse(c: any): Promise<Response> {
@@ -401,7 +474,13 @@ metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => 
       breeze_commands_total: commandsTotal,
       breeze_alerts_total: alertsTotal,
       alert_queue_length: alertQueueLength,
-      scripts_executed_total: scriptsExecutedCount
+      scripts_executed_total: scriptsExecutedCount,
+      software_policy_violations_total: softwarePolicyViolationsCount
+    },
+    software_policy: {
+      evaluations: Array.from(softwarePolicyEvaluationState.values()),
+      remediation_decisions: Array.from(softwareRemediationDecisionState.values()),
+      violations_total: softwarePolicyViolationsCount
     },
     agent_heartbeats: Array.from(agentHeartbeatState.values()),
     process: {
