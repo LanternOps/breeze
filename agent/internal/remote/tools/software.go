@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -224,8 +225,10 @@ func runUninstallAttempts(softwareName string, attempts []uninstallAttempt) erro
 		}
 
 		attempted++
-		cmd := exec.Command(attempt.command, attempt.args...)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		cmd := exec.CommandContext(ctx, attempt.command, attempt.args...)
 		output, err := cmd.CombinedOutput()
+		cancel()
 		lowerOutput := strings.ToLower(string(output))
 
 		if err == nil {
