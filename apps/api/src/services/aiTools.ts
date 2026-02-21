@@ -20,7 +20,8 @@ import {
   auditLogs,
   deviceCommands,
   deviceFilesystemCleanupRuns,
-  deviceSessions
+  deviceSessions,
+  deviceChangeLog
 } from '../db/schema';
 import { eq, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -1315,6 +1316,104 @@ registerTool({
       .limit(limit);
 
     return JSON.stringify({ entries: results, showing: results.length });
+  }
+});
+
+// ============================================
+// query_change_log - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'query_change_log',
+    description: 'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, and user account changes.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'Optional device UUID to scope results to a specific device' },
+        startTime: { type: 'string', description: 'Optional ISO timestamp lower bound (inclusive)' },
+        endTime: { type: 'string', description: 'Optional ISO timestamp upper bound (inclusive)' },
+        changeType: {
+          type: 'string',
+          enum: ['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account'],
+          description: 'Optional change category filter'
+        },
+        changeAction: {
+          type: 'string',
+          enum: ['added', 'removed', 'modified', 'updated'],
+          description: 'Optional change action filter'
+        },
+        limit: { type: 'number', description: 'Max results to return (default 100, max 500)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(deviceChangeLog.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    if (input.deviceId) {
+      const access = await verifyDeviceAccess(input.deviceId as string, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      conditions.push(eq(deviceChangeLog.deviceId, input.deviceId as string));
+    }
+
+    if (input.startTime) {
+      conditions.push(gte(deviceChangeLog.timestamp, new Date(input.startTime as string)));
+    }
+
+    if (input.endTime) {
+      conditions.push(lte(deviceChangeLog.timestamp, new Date(input.endTime as string)));
+    }
+
+    if (input.changeType) {
+      conditions.push(eq(deviceChangeLog.changeType, input.changeType as any));
+    }
+
+    if (input.changeAction) {
+      conditions.push(eq(deviceChangeLog.changeAction, input.changeAction as any));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
+
+    const [changes, countResult] = await Promise.all([
+      db
+        .select({
+          timestamp: deviceChangeLog.timestamp,
+          changeType: deviceChangeLog.changeType,
+          changeAction: deviceChangeLog.changeAction,
+          subject: deviceChangeLog.subject,
+          beforeValue: deviceChangeLog.beforeValue,
+          afterValue: deviceChangeLog.afterValue,
+          details: deviceChangeLog.details,
+          hostname: devices.hostname,
+          deviceId: deviceChangeLog.deviceId
+        })
+        .from(deviceChangeLog)
+        .leftJoin(devices, eq(deviceChangeLog.deviceId, devices.id))
+        .where(whereClause)
+        .orderBy(desc(deviceChangeLog.timestamp))
+        .limit(limit),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(deviceChangeLog)
+        .where(whereClause)
+    ]);
+
+    return JSON.stringify({
+      changes,
+      total: Number(countResult[0]?.count ?? 0),
+      showing: changes.length,
+      filters: {
+        deviceId: input.deviceId ?? null,
+        startTime: input.startTime ?? null,
+        endTime: input.endTime ?? null,
+        changeType: input.changeType ?? null,
+        changeAction: input.changeAction ?? null
+      }
+    });
   }
 });
 

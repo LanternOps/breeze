@@ -83,6 +83,7 @@ type Heartbeat struct {
 	hardwareCol         *collectors.HardwareCollector
 	softwareCol         *collectors.SoftwareCollector
 	inventoryCol        *collectors.InventoryCollector
+	changeTrackerCol    *collectors.ChangeTrackerCollector
 	sessionCol          *collectors.SessionCollector
 	policyStateCol      *collectors.PolicyStateCollector
 	patchCol            *collectors.PatchCollector
@@ -156,14 +157,17 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	}
 
 	h := &Heartbeat{
-		config:          cfg,
-		secureToken:     ftToken,
-		client:          httpClient,
-		stopChan:        make(chan struct{}),
-		metricsCol:      collectors.NewMetricsCollector(),
-		hardwareCol:     collectors.NewHardwareCollector(),
-		softwareCol:     collectors.NewSoftwareCollector(),
-		inventoryCol:    collectors.NewInventoryCollector(),
+		config:       cfg,
+		secureToken:  ftToken,
+		client:       httpClient,
+		stopChan:     make(chan struct{}),
+		metricsCol:   collectors.NewMetricsCollector(),
+		hardwareCol:  collectors.NewHardwareCollector(),
+		softwareCol:  collectors.NewSoftwareCollector(),
+		inventoryCol: collectors.NewInventoryCollector(),
+		changeTrackerCol: collectors.NewChangeTrackerCollector(
+			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
+		),
 		sessionCol:      collectors.NewSessionCollector(),
 		policyStateCol:  collectors.NewPolicyStateCollector(),
 		patchCol:        collectors.NewPatchCollector(),
@@ -484,6 +488,7 @@ func (h *Heartbeat) sendInventory() {
 		h.sendSoftwareInventory,
 		h.sendDiskInventory,
 		h.sendNetworkInventory,
+		h.sendConfigurationChanges,
 		h.sendSessionInventory,
 		h.sendConnectionsInventory,
 		h.sendPatchInventory,
@@ -546,7 +551,7 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		log.Debug("inventory sent", "label", label)
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
@@ -602,6 +607,24 @@ func (h *Heartbeat) sendNetworkInventory() {
 	}
 
 	h.sendInventoryData("network", map[string]any{"adapters": adapters}, fmt.Sprintf("network (%d adapters)", len(adapters)))
+}
+
+func (h *Heartbeat) sendConfigurationChanges() {
+	if h.changeTrackerCol == nil {
+		return
+	}
+
+	changes, err := h.changeTrackerCol.CollectChanges()
+	if err != nil {
+		log.Error("failed to collect configuration changes", "error", err)
+		return
+	}
+
+	if len(changes) == 0 {
+		return
+	}
+
+	h.sendInventoryData("changes", map[string]any{"changes": changes}, fmt.Sprintf("changes (%d)", len(changes)))
 }
 
 func (h *Heartbeat) policyRegistryProbes() []collectors.RegistryProbe {

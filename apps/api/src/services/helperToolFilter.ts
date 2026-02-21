@@ -21,6 +21,7 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'get_security_posture',
     'analyze_disk_usage',
     'query_audit_log',
+    'query_change_log',
   ],
   standard: [
     'take_screenshot',
@@ -33,6 +34,7 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'get_security_posture',
     'analyze_disk_usage',
     'query_audit_log',
+    'query_change_log',
     'manage_alerts',
     'manage_services',
     'disk_cleanup',
@@ -50,6 +52,7 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'get_security_posture',
     'analyze_disk_usage',
     'query_audit_log',
+    'query_change_log',
     'manage_alerts',
     'manage_services',
     'disk_cleanup',

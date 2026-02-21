@@ -28,7 +28,10 @@ const defaultSelectChain = () => ({
 });
 
 const defaultInsertChain = () => ({
-  values: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+  values: vi.fn(() => ({
+    onConflictDoNothing: vi.fn(() => ({
+      returning: vi.fn(() => Promise.resolve([]))
+    })),
     returning: vi.fn(() => Promise.resolve([]))
   }))
 });
@@ -78,6 +81,7 @@ vi.mock('../db/schema', () => ({
   patches: {},
   devicePatches: {},
   deviceEventLogs: {},
+  deviceChangeLog: {},
   securityStatus: {},
   securityThreats: {},
   securityScans: {},
@@ -715,6 +719,66 @@ describe('agent routes', () => {
           installedAt: null
         })
       );
+    });
+  });
+
+  describe('PUT /agents/:id/changes', () => {
+    it('accepts and stores change tracking payloads', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'device-123',
+              agentId: 'agent-123',
+              orgId: 'org-123'
+            }])
+          })
+        })
+      } as any);
+
+      const returning = vi.fn().mockResolvedValue([{ id: 'change-1' }]);
+      const onConflictDoNothing = vi.fn().mockReturnValue({
+        returning
+      });
+      const insertValues = vi.fn().mockReturnValue({
+        onConflictDoNothing
+      });
+      vi.mocked(db.insert).mockReturnValue({
+        values: insertValues
+      } as any);
+
+      const res = await app.request('/agents/agent-123/changes', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          changes: [
+            {
+              timestamp: '2026-02-21T19:00:00Z',
+              changeType: 'software',
+              changeAction: 'updated',
+              subject: 'Google Chrome',
+              beforeValue: { version: '121.0.0' },
+              afterValue: { version: '122.0.0' }
+            }
+          ]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.count).toBe(1);
+      expect(insertValues).toHaveBeenCalledWith([
+        expect.objectContaining({
+          deviceId: 'device-123',
+          orgId: 'org-123',
+          changeType: 'software',
+          changeAction: 'updated',
+          subject: 'Google Chrome'
+        })
+      ]);
+      expect(onConflictDoNothing).toHaveBeenCalledTimes(1);
+      expect(returning).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -223,6 +223,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  query_change_log: z.object({
+    deviceId: uuid.optional(),
+    startTime: z.string().datetime({ offset: true }).optional(),
+    endTime: z.string().datetime({ offset: true }).optional(),
+    changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account']).optional(),
+    changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }),
+
   network_discovery: z.object({
     deviceId: uuid,
     subnet: z.string().max(50).regex(

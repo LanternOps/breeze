@@ -67,6 +67,7 @@ import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
+import { changesRoutes } from './routes/changes';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -74,6 +75,7 @@ import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offli
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
+import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
@@ -291,6 +293,7 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/agents\/[^/]+\/software$/,
   /^\/api\/v1\/agents\/[^/]+\/disks$/,
   /^\/api\/v1\/agents\/[^/]+\/network$/,
+  /^\/api\/v1\/agents\/[^/]+\/changes$/,
   /^\/api\/v1\/agents\/[^/]+\/connections$/,
   /^\/api\/v1\/agents\/[^/]+\/registry-state$/,
   /^\/api\/v1\/agents\/[^/]+\/config-state$/,
@@ -601,6 +604,7 @@ api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
+api.route('/changes', changesRoutes);
 
 app.route('/api/v1', api);
 
@@ -789,6 +793,7 @@ async function initializeWorkers(): Promise<void> {
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['agentLogRetention', initializeAgentLogRetention],
+    ['changeLogRetention', initializeChangeLogRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
@@ -884,6 +889,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
     shutdownAgentLogRetention,
+    shutdownChangeLogRetention,
     shutdownSecurityPostureWorker,
     shutdownAutomationWorker,
     shutdownPolicyEvaluationWorker,

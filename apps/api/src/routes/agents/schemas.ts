@@ -358,6 +358,47 @@ export const submitEventLogsSchema = z.object({
 });
 
 // ============================================
+// Change Tracking
+// ============================================
+
+export const changeTypeValues = [
+  'software',
+  'service',
+  'startup',
+  'network',
+  'scheduled_task',
+  'user_account'
+] as const;
+
+export const changeActionValues = [
+  'added',
+  'removed',
+  'modified',
+  'updated'
+] as const;
+
+export const submitChangesSchema = z.object({
+  changes: z.array(z.object({
+    timestamp: z.string().datetime({ offset: true }),
+    changeType: z.enum(changeTypeValues),
+    changeAction: z.enum(changeActionValues),
+    subject: z.string().min(1).max(500),
+    beforeValue: z.record(z.any()).optional().refine(
+      (value) => !value || JSON.stringify(value).length <= 65535,
+      { message: 'beforeValue too large (max 64KB)' }
+    ),
+    afterValue: z.record(z.any()).optional().refine(
+      (value) => !value || JSON.stringify(value).length <= 65535,
+      { message: 'afterValue too large (max 64KB)' }
+    ),
+    details: z.record(z.any()).optional().refine(
+      (value) => !value || JSON.stringify(value).length <= 65535,
+      { message: 'details too large (max 64KB)' }
+    ),
+  })).max(1000).default([])
+});
+
+// ============================================
 // Download
 // ============================================
 
