@@ -23,7 +23,7 @@ const (
 
 var (
 	invalidSoftwareNamePattern = regexp.MustCompile(`[\\/\x00\r\n']`)
-	shellMetaPattern           = regexp.MustCompile("[;&|><`$']")
+	shellMetaPattern           = regexp.MustCompile("[;&|><`$'\"]")
 	protectedLinuxPackageNames = map[string]struct{}{
 		"kernel":    {},
 		"linux":     {},
@@ -109,7 +109,7 @@ func uninstallSoftwareWindows(name, version string) error {
 			args: []string{
 				"product",
 				"where",
-				fmt.Sprintf("name like '%%%s%%'", name),
+				fmt.Sprintf("name='%s'", name),
 				"call",
 				"uninstall",
 				"/nointeractive",

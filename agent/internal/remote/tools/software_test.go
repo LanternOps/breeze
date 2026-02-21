@@ -1,6 +1,9 @@
 package tools
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateSoftwareName(t *testing.T) {
 	t.Parallel()
@@ -25,6 +28,9 @@ func TestValidateSoftwareName(t *testing.T) {
 		"bad;name",
 		"foo'bar",
 		"name with ' quote",
+		"name'with'quotes",
+		"Foo' OR name like '%",
+		`name"with"doublequotes`,
 	}
 
 	for _, name := range invalid {
@@ -84,5 +90,42 @@ func TestUninstallSoftwareMacOSPathValidation(t *testing.T) {
 	}
 	if path != "/Applications/Spotify.app" {
 		t.Fatalf("unexpected path: %s", path)
+	}
+}
+
+func TestIsProtectedLinuxPackageSystemdVariants(t *testing.T) {
+	t.Parallel()
+	protected := []string{
+		"systemd-journald",
+		"systemd-resolved",
+		"systemd-networkd",
+	}
+	for _, name := range protected {
+		if !isProtectedLinuxPackage(name) {
+			t.Fatalf("expected %q to be protected", name)
+		}
+	}
+}
+
+func TestValidateSoftwareNameBoundaries(t *testing.T) {
+	t.Parallel()
+
+	// Exactly 200 chars — must be valid
+	long200 := strings.Repeat("a", 200)
+	if err := validateSoftwareName(long200); err != nil {
+		t.Fatalf("expected 200-char name to be valid, got: %v", err)
+	}
+
+	// 201 chars — must be invalid
+	long201 := strings.Repeat("a", 201)
+	if err := validateSoftwareName(long201); err == nil {
+		t.Fatal("expected 201-char name to be invalid")
+	}
+}
+
+func TestValidateSoftwareNameRejectsSingleQuote(t *testing.T) {
+	t.Parallel()
+	if err := validateSoftwareName("Joe's App"); err == nil {
+		t.Fatal("expected name with single quote to be rejected")
 	}
 }
