@@ -415,4 +415,26 @@ describe('logs routes', () => {
     const res = await app.request('/logs/queries/44444444-4444-4444-4444-444444444444');
     expect(res.status).toBe(404);
   });
+
+  it('returns 403 when non-owner org-scoped user tries to delete a saved query', async () => {
+    getSavedLogSearchQueryByIdMock.mockResolvedValue({
+      id: '33333333-3333-3333-3333-333333333333',
+      createdBy: 'someone-else',
+      isShared: false,
+    });
+    deleteSavedLogSearchQueryMock.mockResolvedValue(false);
+
+    const res = await app.request('/logs/queries/33333333-3333-3333-3333-333333333333', {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 when detection job is not found', async () => {
+    getLogCorrelationDetectionJobMock.mockResolvedValue(null);
+
+    const res = await app.request('/logs/correlation/detect/nonexistent-job');
+    expect(res.status).toBe(404);
+  });
 });

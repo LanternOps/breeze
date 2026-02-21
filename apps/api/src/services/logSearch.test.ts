@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergeSavedLogSearchFilters, sanitizeCorrelationPattern } from './logSearch';
+import { mergeSavedLogSearchFilters, resolveSingleOrgId, sanitizeCorrelationPattern } from './logSearch';
 
 describe('mergeSavedLogSearchFilters', () => {
   it('applies saved filters when request does not override fields', () => {
@@ -79,5 +79,49 @@ describe('sanitizeCorrelationPattern', () => {
 
   it('accepts valid regex pattern', () => {
     expect(sanitizeCorrelationPattern('error.*timeout', true)).toBe('error.*timeout');
+  });
+
+  it('rejects regex with too many alternations', () => {
+    // 27 terms joined by 26 pipes, over the 25 alternation limit
+    const pattern = Array.from({ length: 27 }, () => 'a').join('|');
+    expect(() => sanitizeCorrelationPattern(pattern, true)).toThrow(/too complex/i);
+  });
+});
+
+describe('resolveSingleOrgId', () => {
+  it('returns null when requested orgId is not accessible', () => {
+    const auth = {
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+      canAccessOrg: (id: string) => id === 'org-1',
+    } as any;
+    expect(resolveSingleOrgId(auth, 'org-999')).toBeNull();
+  });
+
+  it('falls back to auth.orgId when no requestedOrgId is provided', () => {
+    const auth = {
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+      canAccessOrg: () => true,
+    } as any;
+    expect(resolveSingleOrgId(auth)).toBe('org-1');
+  });
+
+  it('returns single accessible orgId when auth.orgId is absent', () => {
+    const auth = {
+      orgId: null,
+      accessibleOrgIds: ['only-org'],
+      canAccessOrg: () => true,
+    } as any;
+    expect(resolveSingleOrgId(auth)).toBe('only-org');
+  });
+
+  it('returns null when multiple orgs are accessible and no orgId provided', () => {
+    const auth = {
+      orgId: null,
+      accessibleOrgIds: ['org-a', 'org-b'],
+      canAccessOrg: () => true,
+    } as any;
+    expect(resolveSingleOrgId(auth)).toBeNull();
   });
 });
