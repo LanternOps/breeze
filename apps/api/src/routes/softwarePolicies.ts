@@ -16,6 +16,7 @@ import {
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
+import { captureException } from '../services/sentry';
 
 export const softwarePoliciesRoutes = new Hono();
 
@@ -245,10 +246,8 @@ softwarePoliciesRoutes.post(
       await scheduleSoftwareComplianceCheck(policy.id);
     } catch (error) {
       scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
-      console.error('[softwarePolicies] Failed to schedule compliance check', {
-        policyId: policy.id,
-        error,
-      });
+      console.error(`[softwarePolicies] Failed to schedule compliance check for policy ${policy.id}:`, error);
+      captureException(error);
     }
 
     await recordSoftwarePolicyAudit({
@@ -446,10 +445,8 @@ softwarePoliciesRoutes.patch(
       await scheduleSoftwareComplianceCheck(policy.id);
     } catch (error) {
       scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
-      console.error('[softwarePolicies] Failed to schedule compliance check', {
-        policyId: policy.id,
-        error,
-      });
+      console.error(`[softwarePolicies] Failed to schedule compliance check for policy ${policy.id}:`, error);
+      captureException(error);
     }
 
     await recordSoftwarePolicyAudit({
@@ -492,16 +489,10 @@ softwarePoliciesRoutes.delete(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
-    await db.transaction(async (tx) => {
-      await tx
-        .update(softwarePolicies)
-        .set({ isActive: false, updatedAt: new Date() })
-        .where(eq(softwarePolicies.id, id));
-
-      await tx
-        .delete(softwareComplianceStatus)
-        .where(eq(softwareComplianceStatus.policyId, id));
-    });
+    await db
+      .update(softwarePolicies)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(softwarePolicies.id, id));
 
     await recordSoftwarePolicyAudit({
       orgId: policy.orgId,

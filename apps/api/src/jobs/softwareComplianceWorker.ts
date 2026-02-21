@@ -19,6 +19,7 @@ import {
   withStableViolationTimestamps,
 } from '../services/softwarePolicyService';
 import { scheduleSoftwareRemediation } from './softwareRemediationWorker';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -507,10 +508,16 @@ export async function initializeSoftwareComplianceWorker(): Promise<void> {
 
   softwareComplianceWorker.on('failed', (job, error) => {
     console.error(`[SoftwareComplianceWorker] Job ${job?.id} failed:`, error);
+    captureException(error);
   });
 
-  await scheduleComplianceScan();
-  console.log('[SoftwareComplianceWorker] Initialized');
+  try {
+    await scheduleComplianceScan();
+    console.log('[SoftwareComplianceWorker] Initialized');
+  } catch (error) {
+    console.error('[SoftwareComplianceWorker] Failed to schedule compliance scan — scans will not run:', error);
+    captureException(error);
+  }
 }
 
 export async function shutdownSoftwareComplianceWorker(): Promise<void> {

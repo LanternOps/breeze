@@ -10,6 +10,7 @@ import {
   handleFilesystemAnalysisCommandResult,
   handleSoftwareRemediationCommandResult,
 } from './helpers';
+import { captureException } from '../../services/sentry';
 
 export const commandsRoutes = new Hono();
 
@@ -89,6 +90,7 @@ commandsRoutes.post(
         await handleSoftwareRemediationCommandResult(command, data);
       } catch (err) {
         console.error(`[agents] software remediation post-processing failed for ${commandId}:`, err);
+        captureException(err);
       }
     }
 

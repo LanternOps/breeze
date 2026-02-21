@@ -6,10 +6,14 @@ import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getRedisConnection } from '../services/redis';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
+  if (typeof withSystem !== 'function') {
+    console.error('[SoftwareRemediationWorker] withSystemDbAccessContext is not available — running without access context');
+  }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
@@ -347,6 +351,7 @@ export async function initializeSoftwareRemediationWorker(): Promise<void> {
 
   softwareRemediationWorker.on('failed', (job, error) => {
     console.error(`[SoftwareRemediationWorker] Job ${job?.id} failed:`, error);
+    captureException(error);
   });
 
   console.log('[SoftwareRemediationWorker] Initialized');
@@ -379,8 +384,12 @@ export async function scheduleSoftwareRemediation(
     const jobId = `software-remediation:${policyId}:${deviceId}`;
     const existing = await queue.getJob(jobId);
     if (existing) {
-      recordSoftwareRemediationDecision('job_deduped');
-      continue;
+      const state = await existing.getState();
+      if (state === 'waiting' || state === 'active' || state === 'delayed') {
+        recordSoftwareRemediationDecision('job_deduped');
+        continue;
+      }
+      await existing.remove().catch(() => {});
     }
 
     await queue.add(
