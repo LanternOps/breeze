@@ -351,12 +351,14 @@ logsRoutes.post(
         }
       }
 
-      if (body.orgId && !auth.canAccessOrg(body.orgId)) {
-        return c.json({ error: 'Access denied for requested org' }, 403);
+      // Rules-based path: orgId is required (no pattern provided means broad rule run)
+      const orgId = resolveSingleOrgId(auth, body.orgId);
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for this scope' }, 400);
       }
 
       const detections = await runCorrelationRules({
-        orgId: body.orgId,
+        orgId,
         ruleIds: body.ruleIds,
       });
 
