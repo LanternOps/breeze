@@ -25,6 +25,7 @@ import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { reportRoutes } from './routes/reports';
 import { searchRoutes } from './routes/search';
+import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { enrollmentKeyRoutes } from './routes/enrollmentKeys';
@@ -74,6 +75,7 @@ import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offli
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
+import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
@@ -265,6 +267,7 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/monitoring',
   '/sso',
   '/reports',
+  '/logs',
   '/filters',
   '/ai',
   '/notifications',
@@ -558,6 +561,7 @@ api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
 api.route('/search', searchRoutes);
+api.route('/logs', logsRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
 api.route('/remote', remoteRoutes);
@@ -788,6 +792,7 @@ async function initializeWorkers(): Promise<void> {
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
+    ['logCorrelationWorker', initializeLogCorrelationWorker],
     ['agentLogRetention', initializeAgentLogRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['snmpWorker', initializeSnmpWorker],
@@ -883,6 +888,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownSnmpWorker,
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
+    shutdownLogCorrelationWorker,
     shutdownAgentLogRetention,
     shutdownSecurityPostureWorker,
     shutdownAutomationWorker,

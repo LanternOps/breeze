@@ -184,6 +184,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   // Agent log tools
   search_agent_logs: { resource: 'devices', action: 'read' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
+  // Event log tools
+  search_logs: { resource: 'devices', action: 'read' },
+  get_log_trends: { resource: 'devices', action: 'read' },
+  detect_log_correlations: { resource: 'devices', action: 'read' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
   get_effective_configuration: { resource: 'devices', action: 'read' },
@@ -218,6 +222,10 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Brain device context tools
   set_device_context: { limit: 20, windowSeconds: 300 },
   resolve_device_context: { limit: 20, windowSeconds: 300 },
+  // Event log tools
+  search_logs: { limit: 30, windowSeconds: 300 },
+  get_log_trends: { limit: 20, windowSeconds: 300 },
+  detect_log_correlations: { limit: 10, windowSeconds: 300 },
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
   // Configuration policy tools

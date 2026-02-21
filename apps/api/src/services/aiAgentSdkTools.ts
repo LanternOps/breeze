@@ -78,6 +78,10 @@ export const TOOL_TIERS = {
   // Agent log tools
   search_agent_logs: 1,
   set_agent_log_level: 2,
+  // Event log tools
+  search_logs: 1,
+  get_log_trends: 1,
+  detect_log_correlations: 2,
   // Configuration policy tools
   list_configuration_policies: 1,
   get_effective_configuration: 1,
@@ -724,6 +728,64 @@ export function createBreezeMcpServer(
         durationMinutes: z.number().int().min(1).max(1440).optional(),
       },
       makeHandler('set_agent_log_level', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Event log tools
+
+    tool(
+      'search_logs',
+      'Search event logs across devices in the organization. Supports full-text, time range, and filter-based search.',
+      {
+        query: z.string().max(500).optional(),
+        timeRange: z.object({
+          start: z.string().datetime({ offset: true }),
+          end: z.string().datetime({ offset: true }),
+        }).optional(),
+        level: z.array(z.enum(['info', 'warning', 'error', 'critical'])).max(4).optional(),
+        category: z.array(z.enum(['security', 'hardware', 'application', 'system'])).max(4).optional(),
+        source: z.string().max(255).optional(),
+        deviceIds: z.array(uuid).max(500).optional(),
+        siteIds: z.array(uuid).max(500).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+        offset: z.number().int().min(0).optional(),
+        cursor: z.string().max(1024).optional(),
+        countMode: z.enum(['exact', 'estimated', 'none']).optional(),
+        sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
+        sortOrder: z.enum(['asc', 'desc']).optional(),
+      },
+      makeHandler('search_logs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_log_trends',
+      'Analyze event log trends: level distribution, top sources/devices, error timeline, and spike detection.',
+      {
+        timeRange: z.object({
+          start: z.string().datetime({ offset: true }),
+          end: z.string().datetime({ offset: true }),
+        }).optional(),
+        groupBy: z.enum(['level', 'source', 'device', 'category']).optional(),
+        minLevel: z.enum(['info', 'warning', 'error', 'critical']).optional(),
+        source: z.string().max(255).optional(),
+        deviceIds: z.array(uuid).max(500).optional(),
+        siteIds: z.array(uuid).max(500).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_log_trends', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'detect_log_correlations',
+      'Detect log patterns that appear across multiple devices within a short window.',
+      {
+        orgId: uuid.optional(),
+        pattern: z.string().min(1).max(1000),
+        isRegex: z.boolean().optional(),
+        timeWindow: z.number().int().min(30).max(86_400).optional(),
+        minDevices: z.number().int().min(1).max(200).optional(),
+        minOccurrences: z.number().int().min(1).max(50_000).optional(),
+      },
+      makeHandler('detect_log_correlations', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Configuration policy tools

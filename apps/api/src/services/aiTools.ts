@@ -28,6 +28,7 @@ import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
+import { registerEventLogTools } from './aiToolsEventLogs';
 import { registerFleetTools } from './aiToolsFleet';
 import {
   getActiveDeviceContext,
@@ -1783,6 +1784,7 @@ registerTool({
 registerFleetTools(aiTools);
 registerAgentLogTools(aiTools);
 registerConfigPolicyTools(aiTools);
+registerEventLogTools(aiTools);
 
 // ============================================
 // get_device_context - Tier 1 (auto-execute)
