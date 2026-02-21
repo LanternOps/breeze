@@ -15,13 +15,23 @@ import { writeRouteAudit } from '../services/auditEvents';
 export const networkChangeRoutes = new Hono();
 
 const networkEventTypes = ['new_device', 'device_disappeared', 'device_changed', 'rogue_device'] as const;
+const optionalQueryBooleanSchema = z.preprocess((value) => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return value;
+}, z.boolean().optional());
 
 const listNetworkChangesSchema = z.object({
   orgId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
   baselineId: z.string().uuid().optional(),
   eventType: z.enum(networkEventTypes).optional(),
-  acknowledged: z.coerce.boolean().optional(),
+  acknowledged: optionalQueryBooleanSchema,
   since: z.string().datetime().optional(),
   limit: z.coerce.number().int().positive().max(200).optional(),
   offset: z.coerce.number().int().min(0).optional()

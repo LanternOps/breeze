@@ -333,8 +333,31 @@ function stringifyKeyState(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value.trim().toLowerCase();
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+  const normalizeForStableStringify = (input: unknown): unknown => {
+    if (Array.isArray(input)) {
+      return input.map((entry) => normalizeForStableStringify(entry));
+    }
+
+    if (input instanceof Date) {
+      return input.toISOString();
+    }
+
+    if (input && typeof input === 'object') {
+      const record = input as Record<string, unknown>;
+      const normalized: Record<string, unknown> = {};
+      const sortedKeys = Object.keys(record).sort((left, right) => left.localeCompare(right));
+      for (const key of sortedKeys) {
+        normalized[key] = normalizeForStableStringify(record[key]);
+      }
+      return normalized;
+    }
+
+    return input;
+  };
+
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(normalizeForStableStringify(value));
   } catch {
     return String(value);
   }
@@ -390,6 +413,122 @@ function eventMessageFallback(eventType: NetworkEventType, context: Record<strin
   }
 }
 
+interface AlertDeviceResolution {
+  deviceId: string | null;
+  shouldPersistLink: boolean;
+  strategy:
+    | 'event_link'
+    | 'discovered_asset_exact_ip'
+    | 'device_network_match'
+    | 'site_anchor_device'
+    | 'org_anchor_device'
+    | 'unresolved';
+}
+
+async function resolveAlertDeviceForChangeEvent(
+  changeEvent: typeof networkChangeEvents.$inferSelect
+): Promise<AlertDeviceResolution> {
+  if (changeEvent.linkedDeviceId) {
+    return {
+      deviceId: changeEvent.linkedDeviceId,
+      shouldPersistLink: true,
+      strategy: 'event_link'
+    };
+  }
+
+  const [linkedAsset] = await db
+    .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
+    .from(discoveredAssets)
+    .where(
+      and(
+        eq(discoveredAssets.orgId, changeEvent.orgId),
+        eq(discoveredAssets.ipAddress, changeEvent.ipAddress),
+        sql`${discoveredAssets.linkedDeviceId} is not null`
+      )
+    )
+    .limit(1);
+
+  if (linkedAsset?.linkedDeviceId) {
+    return {
+      deviceId: linkedAsset.linkedDeviceId,
+      shouldPersistLink: true,
+      strategy: 'discovered_asset_exact_ip'
+    };
+  }
+
+  const candidateConditions: SQL[] = [];
+  if (changeEvent.ipAddress) {
+    candidateConditions.push(eq(deviceNetwork.ipAddress, changeEvent.ipAddress));
+  }
+  if (changeEvent.macAddress) {
+    candidateConditions.push(eq(deviceNetwork.macAddress, changeEvent.macAddress));
+  }
+
+  if (candidateConditions.length > 0) {
+    const [candidate] = await db
+      .select({ deviceId: deviceNetwork.deviceId })
+      .from(deviceNetwork)
+      .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
+      .where(
+        and(
+          eq(devices.orgId, changeEvent.orgId),
+          eq(devices.siteId, changeEvent.siteId),
+          or(...candidateConditions)
+        )
+      )
+      .limit(1);
+
+    if (candidate?.deviceId) {
+      return {
+        deviceId: candidate.deviceId,
+        shouldPersistLink: true,
+        strategy: 'device_network_match'
+      };
+    }
+  }
+
+  const [siteAnchorDevice] = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.orgId, changeEvent.orgId),
+        eq(devices.siteId, changeEvent.siteId)
+      )
+    )
+    .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
+    .limit(1);
+
+  if (siteAnchorDevice?.id) {
+    return {
+      deviceId: siteAnchorDevice.id,
+      shouldPersistLink: false,
+      strategy: 'site_anchor_device'
+    };
+  }
+
+  const [orgAnchorDevice] = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(eq(devices.orgId, changeEvent.orgId))
+    .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
+    .limit(1);
+
+  if (orgAnchorDevice?.id) {
+    return {
+      deviceId: orgAnchorDevice.id,
+      shouldPersistLink: false,
+      strategy: 'org_anchor_device'
+    };
+  }
+
+  return {
+    deviceId: null,
+    shouldPersistLink: false,
+    strategy: 'unresolved'
+  };
+}
+
 export async function createNetworkChangeAlert(
   eventType: string,
   changeEvent: typeof networkChangeEvents.$inferSelect,
@@ -403,57 +542,11 @@ export async function createNetworkChangeAlert(
     return;
   }
 
-  let alertDeviceId = changeEvent.linkedDeviceId ?? null;
-
-  if (!alertDeviceId) {
-    const [linkedAsset] = await db
-      .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
-      .from(discoveredAssets)
-      .where(
-        and(
-          eq(discoveredAssets.orgId, changeEvent.orgId),
-          eq(discoveredAssets.ipAddress, changeEvent.ipAddress),
-          sql`${discoveredAssets.linkedDeviceId} is not null`
-        )
-      )
-      .limit(1);
-
-    if (linkedAsset?.linkedDeviceId) {
-      alertDeviceId = linkedAsset.linkedDeviceId;
-    }
-  }
-
-  if (!alertDeviceId) {
-    const candidateConditions: SQL[] = [];
-    if (changeEvent.ipAddress) {
-      candidateConditions.push(eq(deviceNetwork.ipAddress, changeEvent.ipAddress));
-    }
-    if (changeEvent.macAddress) {
-      candidateConditions.push(eq(deviceNetwork.macAddress, changeEvent.macAddress));
-    }
-
-    if (candidateConditions.length > 0) {
-      const [candidate] = await db
-        .select({ deviceId: deviceNetwork.deviceId })
-        .from(deviceNetwork)
-        .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
-        .where(
-          and(
-            eq(devices.orgId, changeEvent.orgId),
-            or(...candidateConditions)
-          )
-        )
-        .limit(1);
-
-      if (candidate?.deviceId) {
-        alertDeviceId = candidate.deviceId;
-      }
-    }
-  }
-
+  const alertDeviceResolution = await resolveAlertDeviceForChangeEvent(changeEvent);
+  const alertDeviceId = alertDeviceResolution.deviceId;
   if (!alertDeviceId) {
     console.warn(
-      `[NetworkBaseline] Skipping alert for event ${changeEvent.id} (${normalizedEventType}) because no managed device mapping was found`
+      `[NetworkBaseline] Skipping alert for event ${changeEvent.id} (${normalizedEventType}) because no managed device mapping or fallback device exists`
     );
     return;
   }
@@ -489,6 +582,10 @@ export async function createNetworkChangeAlert(
     previousState,
     currentState
   };
+  if (!alertDeviceResolution.shouldPersistLink) {
+    context.alertDeviceFallback = true;
+    context.alertDeviceResolution = alertDeviceResolution.strategy;
+  }
 
   const title = template
     ? renderTemplate(template.titleTemplate, context)
@@ -523,10 +620,17 @@ export async function createNetworkChangeAlert(
     return;
   }
 
-  await db
-    .update(networkChangeEvents)
-    .set({ alertId, linkedDeviceId: alertDeviceId })
-    .where(eq(networkChangeEvents.id, changeEvent.id));
+  if (alertDeviceResolution.shouldPersistLink) {
+    await db
+      .update(networkChangeEvents)
+      .set({ alertId, linkedDeviceId: alertDeviceId })
+      .where(eq(networkChangeEvents.id, changeEvent.id));
+  } else {
+    await db
+      .update(networkChangeEvents)
+      .set({ alertId })
+      .where(eq(networkChangeEvents.id, changeEvent.id));
+  }
 
   try {
     await publishEvent(
