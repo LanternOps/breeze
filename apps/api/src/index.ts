@@ -67,6 +67,8 @@ import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
+import { playbookRoutes } from './routes/playbooks';
+import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -276,7 +278,8 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/viewers',
   '/devices',
   '/security',
-  '/system-tools'
+  '/system-tools',
+  '/playbooks'
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -601,6 +604,7 @@ api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
+api.route('/playbooks', playbookRoutes);
 
 app.route('/api/v1', api);
 
@@ -942,6 +946,19 @@ async function bootstrap(): Promise<void> {
   // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to disable)
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      await seedBuiltInPlaybooks();
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('relation "playbook_definitions" does not exist')) {
+      console.warn('[startup] Playbook table not yet created — skipping seed (run migrations first)');
+    } else {
+      console.error('[startup] Failed to seed built-in playbooks:', err);
+    }
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

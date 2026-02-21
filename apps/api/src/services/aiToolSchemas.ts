@@ -365,6 +365,25 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     assignmentId: uuid,
   }),
 
+  // Playbook tools
+  list_playbooks: z.object({
+    category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+  }),
+
+  execute_playbook: z.object({
+    playbookId: uuid,
+    deviceId: uuid,
+    variables: z.record(z.unknown()).optional(),
+    context: z.record(z.unknown()).optional(),
+  }),
+
+  get_playbook_history: z.object({
+    deviceId: uuid.optional(),
+    playbookId: uuid.optional(),
+    status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
   // Fleet orchestration tools
   ...fleetToolInputSchemas,
 };

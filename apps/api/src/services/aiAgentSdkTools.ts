@@ -89,6 +89,10 @@ export const TOOL_TIERS = {
   preview_configuration_change: 1,
   apply_configuration_policy: 2,
   remove_configuration_policy_assignment: 2,
+  // Playbook tools
+  list_playbooks: 1,
+  execute_playbook: 3,
+  get_playbook_history: 1,
   propose_action_plan: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
@@ -790,6 +794,41 @@ export function createBreezeMcpServer(
         assignmentId: uuid,
       },
       makeHandler('remove_configuration_policy_assignment', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Playbook tools
+
+    tool(
+      'list_playbooks',
+      'List available self-healing playbooks. Playbooks are multi-step remediation templates with verification loops.',
+      {
+        category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+      },
+      makeHandler('list_playbooks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'execute_playbook',
+      'Create a playbook execution record for a target device. This is approval-gated and used to start audited execution.',
+      {
+        playbookId: uuid,
+        deviceId: uuid,
+        variables: z.record(z.unknown()).optional(),
+        context: z.record(z.unknown()).optional(),
+      },
+      makeHandler('execute_playbook', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_playbook_history',
+      'Query historical playbook execution runs for auditing and analysis.',
+      {
+        deviceId: uuid.optional(),
+        playbookId: uuid.optional(),
+        status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_playbook_history', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Action Plan tool (for action_plan and hybrid_plan modes)

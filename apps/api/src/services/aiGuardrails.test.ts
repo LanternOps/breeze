@@ -12,6 +12,10 @@ vi.mock('./aiTools', () => ({
       manage_automations: 1,
       manage_alert_rules: 1,
       generate_report: 1,
+      // Playbook tools
+      list_playbooks: 1,
+      execute_playbook: 3,
+      get_playbook_history: 1,
       // Non-fleet tools for baseline tests
       query_devices: 1,
       execute_command: 3,
@@ -168,6 +172,19 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     expect(result.tier).toBe(1);
     expect(result.allowed).toBe(true);
     expect(result.requiresApproval).toBe(false);
+  });
+
+  it('applies base tier semantics for playbook tools', () => {
+    const readTool = checkGuardrails('list_playbooks', {});
+    expect(readTool.tier).toBe(1);
+    expect(readTool.requiresApproval).toBe(false);
+
+    const execTool = checkGuardrails('execute_playbook', {
+      playbookId: '11111111-1111-1111-1111-111111111111',
+      deviceId: '22222222-2222-2222-2222-222222222222',
+    });
+    expect(execTool.tier).toBe(3);
+    expect(execTool.requiresApproval).toBe(true);
   });
 });
 
