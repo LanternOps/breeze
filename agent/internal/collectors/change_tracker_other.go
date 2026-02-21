@@ -2,14 +2,16 @@
 
 package collectors
 
-func (c *ChangeTrackerCollector) collectStartupItems() ([]TrackedStartupItem, error) {
+import "context"
+
+func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]TrackedStartupItem, error) {
 	return []TrackedStartupItem{}, nil
 }
 
-func (c *ChangeTrackerCollector) collectScheduledTasks() ([]TrackedScheduledTask, error) {
+func (c *ChangeTrackerCollector) collectScheduledTasks(_ context.Context) ([]TrackedScheduledTask, error) {
 	return []TrackedScheduledTask{}, nil
 }
 
-func (c *ChangeTrackerCollector) collectUserAccounts() ([]TrackedUserAccount, error) {
+func (c *ChangeTrackerCollector) collectUserAccounts(_ context.Context) ([]TrackedUserAccount, error) {
 	return []TrackedUserAccount{}, nil
 }

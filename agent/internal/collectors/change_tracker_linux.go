@@ -12,17 +12,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
-func (c *ChangeTrackerCollector) collectStartupItems() ([]TrackedStartupItem, error) {
+func (c *ChangeTrackerCollector) collectStartupItems(ctx context.Context) ([]TrackedStartupItem, error) {
 	var combinedErr error
 	items := make([]TrackedStartupItem, 0)
 
 	// systemd services enabled at boot.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
 	cmd := exec.CommandContext(
 		ctx,
 		"systemctl",
@@ -84,7 +80,7 @@ func (c *ChangeTrackerCollector) collectStartupItems() ([]TrackedStartupItem, er
 	return items, nil
 }
 
-func (c *ChangeTrackerCollector) collectScheduledTasks() ([]TrackedScheduledTask, error) {
+func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]TrackedScheduledTask, error) {
 	var combinedErr error
 	tasks := make([]TrackedScheduledTask, 0)
 
@@ -111,9 +107,6 @@ func (c *ChangeTrackerCollector) collectScheduledTasks() ([]TrackedScheduledTask
 	}
 
 	// systemd timers.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
 	timerCmd := exec.CommandContext(
 		ctx,
 		"systemctl",
@@ -158,7 +151,7 @@ func (c *ChangeTrackerCollector) collectScheduledTasks() ([]TrackedScheduledTask
 	return tasks, nil
 }
 
-func (c *ChangeTrackerCollector) collectUserAccounts() ([]TrackedUserAccount, error) {
+func (c *ChangeTrackerCollector) collectUserAccounts(_ context.Context) ([]TrackedUserAccount, error) {
 	passwdData, err := os.ReadFile("/etc/passwd")
 	if err != nil {
 		return nil, fmt.Errorf("read /etc/passwd: %w", err)

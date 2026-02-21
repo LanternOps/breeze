@@ -48,5 +48,6 @@ export const deviceChangeLog = pgTable('device_change_log', {
   actionIdx: index('device_change_log_action_idx').on(table.changeAction),
   deviceTimeIdx: index('device_change_log_device_time_idx').on(table.deviceId, table.timestamp),
   orgTimeIdx: index('device_change_log_org_time_idx').on(table.orgId, table.timestamp),
+  createdAtIdx: index('device_change_log_created_at_idx').on(table.createdAt),
   deviceFingerprintUniqueIdx: uniqueIndex('device_change_log_device_fingerprint_uniq').on(table.deviceId, table.fingerprint)
 }));

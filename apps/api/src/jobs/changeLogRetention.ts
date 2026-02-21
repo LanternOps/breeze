@@ -49,7 +49,7 @@ export function createChangeLogRetentionWorker(): Worker<RetentionJobData> {
 
         const result = await db
           .delete(deviceChangeLog)
-          .where(lt(deviceChangeLog.timestamp, cutoff));
+          .where(lt(deviceChangeLog.createdAt, cutoff));
 
         const raw = result as unknown as Record<string, unknown>;
         const deletedCount = typeof raw?.rowCount === 'number'

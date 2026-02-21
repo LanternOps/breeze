@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 )
 
 type winScheduledTask struct {
@@ -27,7 +26,7 @@ type winUserAccount struct {
 	Lockout  bool   `json:"Lockout"`
 }
 
-func (c *ChangeTrackerCollector) collectStartupItems() ([]TrackedStartupItem, error) {
+func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]TrackedStartupItem, error) {
 	var combinedErr error
 	seen := make(map[string]struct{})
 	items := make([]TrackedStartupItem, 0)
@@ -78,7 +77,7 @@ func (c *ChangeTrackerCollector) collectStartupItems() ([]TrackedStartupItem, er
 	return items, nil
 }
 
-func (c *ChangeTrackerCollector) collectScheduledTasks() ([]TrackedScheduledTask, error) {
+func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]TrackedScheduledTask, error) {
 	psScript := `
 $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
   $actions = @($_.Actions | ForEach-Object {
@@ -100,7 +99,7 @@ $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
 $tasks | ConvertTo-Json -Compress -Depth 4
 `
 
-	rows, err := runWindowsJSON[winScheduledTask](psScript)
+	rows, err := runWindowsJSON[winScheduledTask](ctx, psScript)
 	if err != nil {
 		return nil, err
 	}
@@ -123,14 +122,14 @@ $tasks | ConvertTo-Json -Compress -Depth 4
 	return tasks, nil
 }
 
-func (c *ChangeTrackerCollector) collectUserAccounts() ([]TrackedUserAccount, error) {
+func (c *ChangeTrackerCollector) collectUserAccounts(ctx context.Context) ([]TrackedUserAccount, error) {
 	psScript := `
 Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue |
   Select-Object Name, FullName, Disabled, Lockout |
   ConvertTo-Json -Compress -Depth 2
 `
 
-	rows, err := runWindowsJSON[winUserAccount](psScript)
+	rows, err := runWindowsJSON[winUserAccount](ctx, psScript)
 	if err != nil {
 		return nil, err
 	}
@@ -151,10 +150,7 @@ Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction Silen
 	return users, nil
 }
 
-func runWindowsJSON[T any](script string) ([]T, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-
+func runWindowsJSON[T any](ctx context.Context, script string) ([]T, error) {
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	output, err := cmd.Output()
 	if err != nil {

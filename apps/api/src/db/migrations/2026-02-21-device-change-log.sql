@@ -62,6 +62,9 @@ CREATE INDEX IF NOT EXISTS device_change_log_device_time_idx
 CREATE INDEX IF NOT EXISTS device_change_log_org_time_idx
   ON device_change_log (org_id, timestamp);
 
+CREATE INDEX IF NOT EXISTS device_change_log_created_at_idx
+  ON device_change_log (created_at);
+
 CREATE UNIQUE INDEX IF NOT EXISTS device_change_log_device_fingerprint_uniq
   ON device_change_log (device_id, fingerprint);
 

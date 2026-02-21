@@ -9,10 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
-func (c *ChangeTrackerCollector) collectStartupItems() ([]TrackedStartupItem, error) {
+func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]TrackedStartupItem, error) {
 	items := make([]TrackedStartupItem, 0)
 
 	paths := []struct {
@@ -46,41 +45,26 @@ func (c *ChangeTrackerCollector) collectStartupItems() ([]TrackedStartupItem, er
 	return items, nil
 }
 
-func (c *ChangeTrackerCollector) collectScheduledTasks() ([]TrackedScheduledTask, error) {
+func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]TrackedScheduledTask, error) {
 	tasks := make([]TrackedScheduledTask, 0)
-
-	startupItems, err := c.collectStartupItems()
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range startupItems {
-		tasks = append(tasks, TrackedScheduledTask{
-			Name:     item.Name,
-			Path:     item.Path,
-			Status:   "loaded",
-			Schedule: "launchd",
-			Command:  item.Path,
-		})
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "crontab", "-l")
 	output, err := cmd.Output()
-	if err == nil {
-		for _, entry := range parseDarwinCrontab(string(output)) {
-			tasks = append(tasks, entry)
+	if err != nil {
+		// "no crontab for <user>" exits non-zero; that is expected.
+		if exitErr, ok := err.(*exec.ExitError); ok && strings.Contains(string(exitErr.Stderr), "no crontab") {
+			return tasks, nil
 		}
+		return nil, fmt.Errorf("crontab -l failed: %w", err)
+	}
+	for _, entry := range parseDarwinCrontab(string(output)) {
+		tasks = append(tasks, entry)
 	}
 
 	return tasks, nil
 }
 
-func (c *ChangeTrackerCollector) collectUserAccounts() ([]TrackedUserAccount, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
+func (c *ChangeTrackerCollector) collectUserAccounts(ctx context.Context) ([]TrackedUserAccount, error) {
 	cmd := exec.CommandContext(ctx, "dscl", ".", "-list", "/Users", "UniqueID")
 	output, err := cmd.Output()
 	if err != nil {

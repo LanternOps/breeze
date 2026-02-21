@@ -1,9 +1,11 @@
 package collectors
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -198,36 +200,45 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	serviceCollector := NewServiceCollector()
 	invCollector := NewInventoryCollector()
 
+	ctx := context.Background()
+
 	var wg sync.WaitGroup
 	wg.Add(6)
 	go func() {
 		defer wg.Done()
-		software, softwareErr = collectWithTimeout(c.collectorTimeout, softwareCollector.Collect)
+		software, softwareErr = collectWithTimeout(ctx, c.collectorTimeout, func(_ context.Context) ([]SoftwareItem, error) {
+			return softwareCollector.Collect()
+		})
 	}()
 	go func() {
 		defer wg.Done()
-		services, servicesErr = collectWithTimeout(c.collectorTimeout, serviceCollector.Collect)
+		services, servicesErr = collectWithTimeout(ctx, c.collectorTimeout, func(_ context.Context) ([]ServiceInfo, error) {
+			return serviceCollector.Collect()
+		})
 	}()
 	go func() {
 		defer wg.Done()
-		adapters, adaptersErr = collectWithTimeout(c.collectorTimeout, invCollector.CollectNetworkAdapters)
+		adapters, adaptersErr = collectWithTimeout(ctx, c.collectorTimeout, func(_ context.Context) ([]NetworkAdapterInfo, error) {
+			return invCollector.CollectNetworkAdapters()
+		})
 	}()
 	go func() {
 		defer wg.Done()
-		startupItems, startupItemsErr = collectWithTimeout(c.collectorTimeout, c.collectStartupItems)
+		startupItems, startupItemsErr = collectWithTimeout(ctx, c.collectorTimeout, c.collectStartupItems)
 	}()
 	go func() {
 		defer wg.Done()
-		scheduledTasks, scheduledTasksErr = collectWithTimeout(c.collectorTimeout, c.collectScheduledTasks)
+		scheduledTasks, scheduledTasksErr = collectWithTimeout(ctx, c.collectorTimeout, c.collectScheduledTasks)
 	}()
 	go func() {
 		defer wg.Done()
-		userAccounts, userAccountsErr = collectWithTimeout(c.collectorTimeout, c.collectUserAccounts)
+		userAccounts, userAccountsErr = collectWithTimeout(ctx, c.collectorTimeout, c.collectUserAccounts)
 	}()
 	wg.Wait()
 
 	if softwareErr != nil {
 		if c.lastSnapshot != nil {
+			slog.Warn("software collection failed, using previous snapshot", "error", softwareErr.Error())
 			snapshot.Software = maps.Clone(c.lastSnapshot.Software)
 		} else {
 			return nil, fmt.Errorf("collect software inventory: %w", softwareErr)
@@ -240,6 +251,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	}
 
 	if servicesErr != nil {
+		slog.Warn("service collection failed, using previous snapshot", "error", servicesErr.Error())
 		if c.lastSnapshot != nil {
 			snapshot.Services = maps.Clone(c.lastSnapshot.Services)
 		}
@@ -252,6 +264,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 
 	if adaptersErr != nil {
 		if c.lastSnapshot != nil {
+			slog.Warn("network adapter collection failed, using previous snapshot", "error", adaptersErr.Error())
 			snapshot.NetworkAdapters = maps.Clone(c.lastSnapshot.NetworkAdapters)
 		} else {
 			return nil, fmt.Errorf("collect network adapters: %w", adaptersErr)
@@ -264,6 +277,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	}
 
 	if startupItemsErr != nil {
+		slog.Warn("startup items collection failed, using previous snapshot", "error", startupItemsErr.Error())
 		if c.lastSnapshot != nil {
 			snapshot.StartupItems = maps.Clone(c.lastSnapshot.StartupItems)
 		}
@@ -275,6 +289,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	}
 
 	if scheduledTasksErr != nil {
+		slog.Warn("scheduled tasks collection failed, using previous snapshot", "error", scheduledTasksErr.Error())
 		if c.lastSnapshot != nil {
 			snapshot.ScheduledTasks = maps.Clone(c.lastSnapshot.ScheduledTasks)
 		}
@@ -286,6 +301,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	}
 
 	if userAccountsErr != nil {
+		slog.Warn("user accounts collection failed, using previous snapshot", "error", userAccountsErr.Error())
 		if c.lastSnapshot != nil {
 			snapshot.UserAccounts = maps.Clone(c.lastSnapshot.UserAccounts)
 		}
@@ -300,27 +316,33 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	return snapshot, nil
 }
 
-func collectWithTimeout[T any](timeout time.Duration, collect func() (T, error)) (T, error) {
+func collectWithTimeout[T any](parent context.Context, timeout time.Duration, collect func(ctx context.Context) (T, error)) (T, error) {
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
 	type result struct {
 		value T
 		err   error
 	}
 	out := make(chan result, 1)
 	go func() {
-		value, err := collect()
+		value, err := collect(ctx)
 		out <- result{value: value, err: err}
 	}()
-
-	if timeout <= 0 {
-		timeout = 8 * time.Second
-	}
 
 	select {
 	case res := <-out:
 		return res.value, res.err
-	case <-time.After(timeout):
+	case <-ctx.Done():
 		var zero T
-		return zero, fmt.Errorf("collector timed out after %s", timeout)
+		if ctx.Err() == context.DeadlineExceeded {
+			return zero, fmt.Errorf("collector timed out after %s: %w", timeout, ctx.Err())
+		}
+		return zero, fmt.Errorf("collector cancelled: %w", ctx.Err())
 	}
 }
 
