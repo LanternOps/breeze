@@ -24,6 +24,9 @@ import { captureException } from '../services/sentry';
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
+  if (typeof withSystem !== 'function') {
+    console.error('[SoftwareComplianceWorker] withSystemDbAccessContext is not available — running without access context');
+  }
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
@@ -148,7 +151,7 @@ function readEarliestUnauthorizedDetection(violations: unknown): Date | null {
   return earliest;
 }
 
-function shouldQueueAutoRemediation(input: {
+export function shouldQueueAutoRemediation(input: {
   violations: unknown;
   previousRemediationStatus: string | null;
   lastRemediationAttempt: Date | null;
