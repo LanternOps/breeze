@@ -17,6 +17,8 @@ import {
   resolveTargetDeviceIdsForPolicy,
   upsertSoftwareComplianceStatuses,
   withStableViolationTimestamps,
+  type SoftwarePolicyComplianceStatus,
+  type SoftwarePolicyRemediationStatus,
 } from '../services/softwarePolicyService';
 import { scheduleSoftwareRemediation } from './softwareRemediationWorker';
 import { captureException } from '../services/sentry';
@@ -62,9 +64,9 @@ function stableShortHash(value: string): string {
 
 type ExistingComplianceState = {
   deviceId: string;
-  status: string;
+  status: SoftwarePolicyComplianceStatus;
   violations: unknown;
-  remediationStatus: string | null;
+  remediationStatus: SoftwarePolicyRemediationStatus | null;
   lastRemediationAttempt: Date | null;
 };
 
@@ -390,6 +392,10 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         }
       }
     } catch (error) {
+      console.error(
+        `[SoftwareComplianceWorker] Compliance evaluation failed for device ${deviceId} (policy ${policy.id}):`,
+        error
+      );
       complianceUpserts.push({
         deviceId,
         policyId: policy.id,
