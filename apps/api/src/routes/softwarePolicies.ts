@@ -94,7 +94,7 @@ const optionalDeviceIdsSchema = z.object({
   deviceIds: z.array(z.string().uuid()).min(1).max(500).optional(),
 });
 
-function resolveOrgIdForWrite(
+export function resolveOrgIdForWrite(
   auth: AuthContext,
   requestedOrgId?: string
 ): { orgId?: string; error?: string } {
@@ -245,6 +245,10 @@ softwarePoliciesRoutes.post(
       await scheduleSoftwareComplianceCheck(policy.id);
     } catch (error) {
       scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
+      console.error('[softwarePolicies] Failed to schedule compliance check', {
+        policyId: policy.id,
+        error,
+      });
     }
 
     await recordSoftwarePolicyAudit({
@@ -442,6 +446,10 @@ softwarePoliciesRoutes.patch(
       await scheduleSoftwareComplianceCheck(policy.id);
     } catch (error) {
       scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
+      console.error('[softwarePolicies] Failed to schedule compliance check', {
+        policyId: policy.id,
+        error,
+      });
     }
 
     await recordSoftwarePolicyAudit({
@@ -528,7 +536,12 @@ softwarePoliciesRoutes.post(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
-    const rawPayload = await c.req.json().catch(() => ({}));
+    let rawPayload: unknown;
+    try {
+      rawPayload = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON in request body' }, 400);
+    }
     const parsed = optionalDeviceIdsSchema.safeParse(rawPayload);
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues.map((issue) => issue.message).join('; ') }, 400);
@@ -574,7 +587,12 @@ softwarePoliciesRoutes.post(
       return c.json({ error: 'Remediation is not available for audit-only policies' }, 400);
     }
 
-    const rawPayload = await c.req.json().catch(() => ({}));
+    let rawPayload: unknown;
+    try {
+      rawPayload = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON in request body' }, 400);
+    }
     const parsed = optionalDeviceIdsSchema.safeParse(rawPayload);
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues.map((issue) => issue.message).join('; ') }, 400);
