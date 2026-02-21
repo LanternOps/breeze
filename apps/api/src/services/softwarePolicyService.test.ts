@@ -146,3 +146,36 @@ describe('softwarePolicyService', () => {
     expect(violations[0]?.severity).toBe('critical');
   });
 });
+
+describe('evaluateSoftwareInventory audit mode', () => {
+  it('produces unauthorized violations with medium severity', () => {
+    const rules = normalizeSoftwarePolicyRules({ software: [{ name: 'Slack', reason: 'Audit only' }] });
+    const inventory = [{ name: 'Slack', version: '4.0.0', vendor: null, catalogId: null }];
+    const result = evaluateSoftwareInventory('audit', rules, inventory);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('unauthorized');
+    expect(result[0].severity).toBe('medium');
+  });
+
+  it('does not produce missing violations in audit mode', () => {
+    const rules = normalizeSoftwarePolicyRules({ software: [{ name: 'RequiredApp' }] });
+    const result = evaluateSoftwareInventory('audit', rules, []);
+    expect(result).toHaveLength(0);
+  });
+});
+
+describe('compareSoftwareVersions edge cases', () => {
+  it('returns 0 for identical versions', () => {
+    expect(compareSoftwareVersions('1.2.3', '1.2.3')).toBe(0);
+  });
+
+  it('correctly orders 10.x as greater than 9.x', () => {
+    expect(compareSoftwareVersions('10.0', '9.9')).toBeGreaterThan(0);
+    expect(compareSoftwareVersions('9.9', '10.0')).toBeLessThan(0);
+  });
+
+  it('handles empty string inputs', () => {
+    expect(compareSoftwareVersions('', '')).toBe(0);
+  });
+});
