@@ -21,8 +21,11 @@ import (
 // psTimeout is the maximum duration for any single PowerShell invocation.
 const psTimeout = 30 * time.Second
 
-// shellMetacharRegex matches characters that could be used for shell injection.
-var shellMetacharRegex = regexp.MustCompile(`[;&|` + "`" + `$(){}[\]<>!~'"\\` + "\n\r" + `]`)
+// controlCharRegex rejects non-printable control characters in user-supplied values.
+var controlCharRegex = regexp.MustCompile(`[\x00-\x1F\x7F]`)
+
+// serviceKeyNameRegex parses `sc.exe getkeyname` output.
+var serviceKeyNameRegex = regexp.MustCompile(`(?im)^\s*(?:name|service_name)\s*(?:=|:)\s*([^\r\n]+)\s*$`)
 
 // Collect gathers boot performance metrics on Windows.
 // It returns partial data when some sub-collections fail.
@@ -326,10 +329,12 @@ Get-CimInstance -ClassName Win32_Service -Filter "StartMode='Auto'" -ErrorAction
 	var items []StartupItem
 	for _, svc := range services {
 		items = append(items, StartupItem{
-			Name:    svc.DisplayName,
-			Type:    "service",
-			Path:    svc.PathName,
-			Enabled: strings.EqualFold(svc.Status, "Running"),
+			Name: svc.DisplayName,
+			Type: "service",
+			Path: svc.PathName,
+			// We filtered StartMode='Auto', so the startup config is enabled even
+			// if the service is currently stopped.
+			Enabled: true,
 		})
 	}
 
@@ -448,16 +453,22 @@ func extractExeName(path string) string {
 // Supported types: "service", "run_key", "startup_folder".
 // action must be "enable" or "disable".
 func ManageStartupItem(name, itemType, path, action string) error {
+	name = strings.TrimSpace(name)
+	path = strings.TrimSpace(path)
+
 	// Validate action
 	if action != "enable" && action != "disable" {
 		return fmt.Errorf("invalid action %q: must be 'enable' or 'disable'", action)
 	}
+	if name == "" {
+		return fmt.Errorf("startup item name is required")
+	}
 
-	// Validate inputs against shell metacharacters
-	if shellMetacharRegex.MatchString(name) {
+	// exec.Command does not invoke a shell; reject only control characters.
+	if controlCharRegex.MatchString(name) {
 		return fmt.Errorf("invalid characters in startup item name")
 	}
-	if shellMetacharRegex.MatchString(path) {
+	if controlCharRegex.MatchString(path) {
 		return fmt.Errorf("invalid characters in startup item path")
 	}
 
@@ -482,6 +493,24 @@ func manageService(name, action string) error {
 		startType = "auto"
 	}
 
+	// Most reliable path: configure directly by key name (or display name when accepted).
+	initialErr := runServiceConfig(name, startType)
+	if initialErr == nil {
+		return nil
+	}
+
+	// Fallback for display-name inputs: resolve to service key name and retry.
+	resolvedName, err := resolveServiceKeyName(name)
+	if err != nil {
+		return fmt.Errorf("failed to configure service %q: %w (original error: %v)", name, err, initialErr)
+	}
+	if strings.EqualFold(strings.TrimSpace(resolvedName), strings.TrimSpace(name)) {
+		return initialErr
+	}
+	return runServiceConfig(resolvedName, startType)
+}
+
+func runServiceConfig(name, startType string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 
@@ -494,6 +523,24 @@ func manageService(name, action string) error {
 	}
 
 	return nil
+}
+
+func resolveServiceKeyName(name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sc.exe", "getkeyname", name)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("sc.exe getkeyname failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	match := serviceKeyNameRegex.FindStringSubmatch(string(output))
+	if len(match) < 2 {
+		return "", fmt.Errorf("service key name not found in output")
+	}
+
+	return strings.TrimSpace(match[1]), nil
 }
 
 // manageRunKey adds or removes a registry Run key entry.
@@ -521,6 +568,9 @@ func manageRunKey(name, path, action string) error {
 			}
 		}
 	} else {
+		if path == "" {
+			return fmt.Errorf("path is required to enable run_key item %q", name)
+		}
 		// Add the registry value to HKCU Run key
 		cmd := exec.CommandContext(ctx, "reg.exe", "add",
 			`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
@@ -537,6 +587,10 @@ func manageRunKey(name, path, action string) error {
 // manageStartupFolder disables a startup folder item by renaming with .disabled
 // extension, or re-enables by removing the .disabled extension.
 func manageStartupFolder(path, action string) error {
+	if path == "" {
+		return fmt.Errorf("startup folder path is required")
+	}
+
 	if action == "disable" {
 		// Rename file to file.disabled
 		disabledPath := path + ".disabled"

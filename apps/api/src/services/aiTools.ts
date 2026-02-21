@@ -66,6 +66,14 @@ import {
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
 import { listReliabilityDevices } from './reliabilityScoring';
+import {
+  mergeBootRecords,
+  parseCollectorBootMetricsFromCommandResult,
+} from './bootPerformance';
+import {
+  normalizeStartupItems,
+  resolveStartupItem,
+} from './startupItems';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -2064,13 +2072,18 @@ registerTool({
 
     // Optionally trigger fresh collection
     let collectionFailed = false;
+    let freshBootRecord: ReturnType<typeof parseCollectorBootMetricsFromCommandResult> = null;
     if (triggerCollection && device.status === 'online') {
       const { executeCommand } = await getCommandQueue();
       try {
-        await executeCommand(deviceId, 'collect_boot_performance', {}, {
+        const commandResult = await executeCommand(deviceId, 'collect_boot_performance', {}, {
           userId: auth.user.id,
           timeoutMs: 15000,
         });
+        freshBootRecord = parseCollectorBootMetricsFromCommandResult(commandResult);
+        if (!freshBootRecord) {
+          collectionFailed = true;
+        }
       } catch (err) {
         collectionFailed = true;
         console.warn(`[AI] Boot performance collection trigger failed for device ${deviceId}:`, err);
@@ -2085,7 +2098,9 @@ registerTool({
       .orderBy(desc(deviceBootMetrics.bootTimestamp))
       .limit(bootsBack);
 
-    if (bootRecords.length === 0) {
+    const mergedBootRecords = mergeBootRecords(bootRecords, freshBootRecord, bootsBack);
+
+    if (mergedBootRecords.length === 0) {
       return JSON.stringify({
         error: collectionFailed
           ? 'Boot performance data collection failed and no cached data exists. The device may not support this feature or may be experiencing issues.'
@@ -2094,19 +2109,18 @@ registerTool({
     }
 
     // Summary statistics
-    const totalBootTimes = bootRecords
+    const totalBootTimes = mergedBootRecords
       .map(b => b.totalBootSeconds)
       .filter((t): t is number => t !== null);
     const avgBootTime = totalBootTimes.length > 0
       ? totalBootTimes.reduce((a, b) => a + b, 0) / totalBootTimes.length
       : 0;
-    const latestBoot = bootRecords[0]!;
+    const latestBoot = mergedBootRecords[0]!;
 
     // Top impact startup items from latest boot
-    const allStartupItems = (latestBoot.startupItems ?? []) as Array<{
-      name: string; type: string; path: string; enabled: boolean;
-      cpuTimeMs: number; diskIoBytes: number; impactScore: number;
-    }>;
+    const allStartupItems = normalizeStartupItems(
+      Array.isArray(latestBoot.startupItems) ? latestBoot.startupItems : []
+    );
     const topImpactItems = [...allStartupItems]
       .sort((a, b) => b.impactScore - a.impactScore)
       .slice(0, 10);
@@ -2119,8 +2133,9 @@ registerTool({
     if (topImpactItems.some(item => item.impactScore > 60)) {
       recommendations.push('Several startup items have high resource usage. Consider disabling non-essential items.');
     }
-    if (latestBoot.startupItemCount > 50) {
-      recommendations.push(`High startup item count (${latestBoot.startupItemCount}). Disable unused services.`);
+    const latestBootStartupItemCount = Number(latestBoot.startupItemCount ?? allStartupItems.length);
+    if (latestBootStartupItemCount > 50) {
+      recommendations.push(`High startup item count (${latestBootStartupItemCount}). Disable unused services.`);
     }
     if (totalBootTimes.length >= 3) {
       const recent = totalBootTimes.slice(0, 3);
@@ -2137,11 +2152,11 @@ registerTool({
     return JSON.stringify({
       device: { id: device.id, hostname: device.hostname, osType: device.osType },
       bootHistory: {
-        totalBoots: bootRecords.length,
+        totalBoots: mergedBootRecords.length,
         avgBootTimeSeconds: Number(avgBootTime.toFixed(2)),
         fastestBootSeconds: totalBootTimes.length > 0 ? Number(Math.min(...totalBootTimes).toFixed(2)) : null,
         slowestBootSeconds: totalBootTimes.length > 0 ? Number(Math.max(...totalBootTimes).toFixed(2)) : null,
-        recentBoots: bootRecords.slice(0, 5).map(b => ({
+        recentBoots: mergedBootRecords.slice(0, 5).map(b => ({
           timestamp: b.bootTimestamp,
           totalSeconds: b.totalBootSeconds,
           biosSeconds: b.biosSeconds,
@@ -2152,8 +2167,9 @@ registerTool({
       latestBoot: {
         timestamp: latestBoot.bootTimestamp,
         totalSeconds: latestBoot.totalBootSeconds,
-        startupItemCount: latestBoot.startupItemCount,
+        startupItemCount: latestBootStartupItemCount,
         topImpactItems: topImpactItems.map(item => ({
+          itemId: item.itemId,
           name: item.name,
           type: item.type,
           path: item.path,
@@ -2179,6 +2195,9 @@ registerTool({
       properties: {
         deviceId: { type: 'string', description: 'The device UUID' },
         itemName: { type: 'string', description: 'The exact name of the startup item to manage' },
+        itemId: { type: 'string', description: 'Stable startup item identifier. Preferred when item names are duplicated.' },
+        itemType: { type: 'string', description: 'Optional startup item type to disambiguate name collisions.' },
+        itemPath: { type: 'string', description: 'Optional startup item path to disambiguate name collisions.' },
         action: { type: 'string', enum: ['disable', 'enable'], description: 'Action to perform' },
         reason: { type: 'string', description: 'Justification for this change' }
       },
@@ -2188,6 +2207,9 @@ registerTool({
   handler: async (input, auth) => {
     const deviceId = input.deviceId as string;
     const itemName = input.itemName as string;
+    const itemId = input.itemId as string | undefined;
+    const itemType = input.itemType as string | undefined;
+    const itemPath = input.itemPath as string | undefined;
     const action = input.action as 'disable' | 'enable';
     const reason = (input.reason as string) || 'No reason provided';
 
@@ -2207,15 +2229,33 @@ registerTool({
       return JSON.stringify({ error: 'No boot performance data available for this device.' });
     }
 
-    const allItems = (latestBoot.startupItems ?? []) as Array<{
-      name: string; type: string; path: string; enabled: boolean;
-    }>;
-    const item = allItems.find(i => i.name === itemName);
-    if (!item) {
+    const allItems = normalizeStartupItems(Array.isArray(latestBoot.startupItems) ? latestBoot.startupItems : []);
+    const match = resolveStartupItem(allItems, { itemId, itemName, itemType, itemPath });
+    if (!match.item) {
+      if (match.candidates && match.candidates.length > 1) {
+        return JSON.stringify({
+          error: `Startup item selector for "${itemName}" is ambiguous. Provide itemId or itemType+itemPath.`,
+          candidates: match.candidates.slice(0, 20).map(i => ({
+            itemId: i.itemId,
+            name: i.name,
+            type: i.type,
+            path: i.path,
+            enabled: i.enabled,
+          })),
+        });
+      }
       return JSON.stringify({
-        error: `Startup item "${itemName}" not found. Available items: ${allItems.map(i => i.name).slice(0, 20).join(', ')}`
+        error: `Startup item "${itemName}" not found.`,
+        availableItems: allItems.slice(0, 20).map(i => ({
+          itemId: i.itemId,
+          name: i.name,
+          type: i.type,
+          path: i.path,
+          enabled: i.enabled,
+        })),
       });
     }
+    const item = match.item;
 
     if (action === 'disable' && !item.enabled) {
       return JSON.stringify({ error: `Startup item "${itemName}" is already disabled.` });
@@ -2233,7 +2273,7 @@ registerTool({
     const result = await executeCommand(
       deviceId,
       'manage_startup_item',
-      { itemName, itemType: item.type, itemPath: item.path, action },
+      { itemName: item.name, itemType: item.type, itemPath: item.path, itemId: item.itemId, action, reason },
       { userId: auth.user.id, timeoutMs: 30000 }
     );
 
@@ -2249,6 +2289,7 @@ registerTool({
       message: `Startup item "${itemName}" ${action}d successfully.`,
       device: { hostname: device.hostname, osType: device.osType },
       item: {
+        itemId: item.itemId,
         name: item.name,
         type: item.type,
         path: item.path,

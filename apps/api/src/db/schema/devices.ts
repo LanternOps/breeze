@@ -238,6 +238,7 @@ export const deviceConnections = pgTable('device_connections', {
 
 // Boot performance metrics - stores boot time history and startup item analysis per device
 export interface BootStartupItem {
+  itemId?: string;
   name: string;
   type: 'service' | 'run_key' | 'startup_folder' | 'login_item' | 'launch_agent' | 'launch_daemon' | 'systemd' | 'cron' | 'init_d';
   path: string;
