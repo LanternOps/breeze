@@ -1892,6 +1892,10 @@ registerTool({
     if ('error' in access) return JSON.stringify({ error: access.error });
     const { device } = access;
 
+    if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
+      return JSON.stringify({ error: 'Playbook and device must belong to the same organization' });
+    }
+
     const existingVariables =
       extraContext.variables && typeof extraContext.variables === 'object'
         ? (extraContext.variables as Record<string, unknown>)

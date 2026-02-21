@@ -247,6 +247,10 @@ playbookRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
+      return c.json({ error: 'Playbook and device must belong to the same organization' }, 403);
+    }
+
     const baseContext = (body.context ?? {}) as PlaybookExecutionContext;
     const mergedContext: PlaybookExecutionContext = {
       ...baseContext,

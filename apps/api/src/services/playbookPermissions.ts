@@ -63,6 +63,10 @@ export async function checkPlaybookRequiredPermissions(
     return { allowed: true, missingPermissions: [] };
   }
 
+  if (auth.scope === 'system') {
+    return { allowed: true, missingPermissions: [] };
+  }
+
   const userPerms = await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId || undefined,
     orgId: auth.orgId || undefined,

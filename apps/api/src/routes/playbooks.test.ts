@@ -120,6 +120,8 @@ describe('playbook routes', () => {
               description: 'Restart a service and verify health',
               category: 'service',
               steps: [],
+              orgId: '11111111-1111-1111-1111-111111111111',
+              isBuiltIn: false,
               isActive: true,
               requiredPermissions: ['devices:execute'],
             }]),
@@ -162,6 +164,52 @@ describe('playbook routes', () => {
     expect(body.execution.id).toBe(EXECUTION_ID);
     expect(body.playbook.id).toBe(PLAYBOOK_ID);
     expect(body.device.id).toBe(DEVICE_ID);
+  });
+
+  it('rejects execution when playbook and device orgs do not match', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PLAYBOOK_ID,
+              name: 'Service Restart',
+              description: 'Restart a service and verify health',
+              category: 'service',
+              steps: [],
+              orgId: '11111111-1111-1111-1111-111111111111',
+              isBuiltIn: false,
+              isActive: true,
+              requiredPermissions: ['devices:execute'],
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: DEVICE_ID,
+              orgId: '99999999-9999-9999-9999-999999999999',
+              hostname: 'server-02',
+            }]),
+          }),
+        }),
+      } as any);
+    vi.mocked(checkPlaybookRequiredPermissions).mockResolvedValueOnce({
+      allowed: true,
+      missingPermissions: [],
+    });
+
+    const res = await app.request(`/playbooks/${PLAYBOOK_ID}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toContain('same organization');
   });
 
   it('rejects invalid execution status transitions', async () => {

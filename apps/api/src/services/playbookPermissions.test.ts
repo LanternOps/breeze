@@ -15,6 +15,14 @@ const AUTH = {
   user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
   partnerId: null,
   orgId: 'org-1',
+  scope: 'organization',
+} as any;
+
+const AUTH_SYSTEM = {
+  user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+  partnerId: null,
+  orgId: null,
+  scope: 'system',
 } as any;
 
 describe('playbookPermissions', () => {
@@ -93,6 +101,13 @@ describe('playbookPermissions', () => {
       );
 
       expect(result).toEqual({ allowed: true, missingPermissions: [] });
+    });
+
+    it('allows system-scope callers for required playbook permissions', async () => {
+      const result = await checkPlaybookRequiredPermissions(['devices:execute'], AUTH_SYSTEM);
+
+      expect(result).toEqual({ allowed: true, missingPermissions: [] });
+      expect(getUserPermissions).not.toHaveBeenCalled();
     });
   });
 });
