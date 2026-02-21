@@ -817,6 +817,28 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   return true;
 }
 
+async function runConcurrently<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<{ succeeded: number; failed: number }> {
+  let succeeded = 0;
+  let failed = 0;
+  for (let i = 0; i < items.length; i += concurrency) {
+    const chunk = items.slice(i, i + concurrency);
+    const results = await Promise.allSettled(chunk.map(fn));
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        succeeded++;
+      } else {
+        failed++;
+        console.error('[ReliabilityScoring] device computation failed:', result.reason);
+      }
+    }
+  }
+  return { succeeded, failed };
+}
+
 export async function computeAndPersistOrgReliability(orgId: string): Promise<{ orgId: string; devicesComputed: number }> {
   const orgDevices = await db
     .select({ id: devices.id })
@@ -824,8 +846,14 @@ export async function computeAndPersistOrgReliability(orgId: string): Promise<{ 
     .where(and(eq(devices.orgId, orgId), sql`${devices.status} <> 'decommissioned'`));
 
   if (orgDevices.length === 0) return { orgId, devicesComputed: 0 };
-  await Promise.all(orgDevices.map((device) => computeAndPersistDeviceReliability(device.id)));
-  return { orgId, devicesComputed: orgDevices.length };
+
+  const { succeeded } = await runConcurrently(
+    orgDevices,
+    10,
+    (device) => computeAndPersistDeviceReliability(device.id).then(() => undefined)
+  );
+
+  return { orgId, devicesComputed: succeeded };
 }
 
 export async function listReliabilityDevices(filter: ReliabilityListFilter): Promise<{ total: number; rows: ReliabilityListItem[] }> {
@@ -1127,4 +1155,11 @@ export const reliabilityScoringInternals = {
   buildDailyTrendPoints,
   computeTrend,
   computeMtbfHours,
+  scoreUptime,
+  scoreCrashes,
+  scoreHangs,
+  scoreServiceFailures,
+  scoreHardwareErrors,
+  scoreBand,
+  computeTopIssues,
 };

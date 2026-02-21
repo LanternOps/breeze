@@ -7,7 +7,7 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS device_reliability_history (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  device_id UUID NOT NULL REFERENCES devices(id),
+  device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
   org_id UUID NOT NULL REFERENCES organizations(id),
   collected_at TIMESTAMP NOT NULL DEFAULT NOW(),
   uptime_seconds BIGINT NOT NULL,
@@ -25,20 +25,20 @@ CREATE INDEX IF NOT EXISTS reliability_history_org_collected_idx
   ON device_reliability_history (org_id, collected_at);
 
 CREATE TABLE IF NOT EXISTS device_reliability (
-  device_id UUID PRIMARY KEY REFERENCES devices(id),
+  device_id UUID PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
   org_id UUID NOT NULL REFERENCES organizations(id),
   computed_at TIMESTAMP NOT NULL DEFAULT NOW(),
 
-  reliability_score INTEGER NOT NULL,
-  uptime_score INTEGER NOT NULL,
-  crash_score INTEGER NOT NULL,
-  hang_score INTEGER NOT NULL,
-  service_failure_score INTEGER NOT NULL,
-  hardware_error_score INTEGER NOT NULL,
+  reliability_score INTEGER NOT NULL CHECK (reliability_score BETWEEN 0 AND 100),
+  uptime_score INTEGER NOT NULL CHECK (uptime_score BETWEEN 0 AND 100),
+  crash_score INTEGER NOT NULL CHECK (crash_score BETWEEN 0 AND 100),
+  hang_score INTEGER NOT NULL CHECK (hang_score BETWEEN 0 AND 100),
+  service_failure_score INTEGER NOT NULL CHECK (service_failure_score BETWEEN 0 AND 100),
+  hardware_error_score INTEGER NOT NULL CHECK (hardware_error_score BETWEEN 0 AND 100),
 
-  uptime_7d REAL NOT NULL,
-  uptime_30d REAL NOT NULL,
-  uptime_90d REAL NOT NULL,
+  uptime_7d REAL NOT NULL CHECK (uptime_7d BETWEEN 0 AND 100),
+  uptime_30d REAL NOT NULL CHECK (uptime_30d BETWEEN 0 AND 100),
+  uptime_90d REAL NOT NULL CHECK (uptime_90d BETWEEN 0 AND 100),
 
   crash_count_7d INTEGER NOT NULL DEFAULT 0,
   crash_count_30d INTEGER NOT NULL DEFAULT 0,
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS device_reliability (
 
   hang_count_7d INTEGER NOT NULL DEFAULT 0,
   hang_count_30d INTEGER NOT NULL DEFAULT 0,
+  hang_count_90d INTEGER NOT NULL DEFAULT 0,
 
   service_failure_count_7d INTEGER NOT NULL DEFAULT 0,
   service_failure_count_30d INTEGER NOT NULL DEFAULT 0,
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS device_reliability (
 
   mtbf_hours REAL,
   trend_direction trend_direction NOT NULL,
-  trend_confidence REAL NOT NULL DEFAULT 0,
+  trend_confidence REAL NOT NULL DEFAULT 0 CHECK (trend_confidence BETWEEN 0 AND 1),
   top_issues JSONB NOT NULL DEFAULT '[]'::jsonb,
   details JSONB NOT NULL DEFAULT '{}'::jsonb
 );

@@ -8,6 +8,7 @@ import { deviceReliabilityHistory, devices } from '../../db/schema';
 import { enqueueDeviceReliabilityComputation } from '../../jobs/reliabilityWorker';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { computeAndPersistDeviceReliability } from '../../services/reliabilityScoring';
+import { captureException } from '../../services/sentry';
 
 export const reliabilityRoutes = new Hono();
 
@@ -26,23 +27,29 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  await db.insert(deviceReliabilityHistory).values({
-    deviceId: device.id,
-    orgId: device.orgId,
-    collectedAt: new Date(),
-    uptimeSeconds: metrics.uptimeSeconds,
-    bootTime: new Date(metrics.bootTime),
-    crashEvents: metrics.crashEvents,
-    appHangs: metrics.appHangs,
-    serviceFailures: metrics.serviceFailures,
-    hardwareErrors: metrics.hardwareErrors,
-    rawMetrics: metrics,
-  });
+  try {
+    await db.insert(deviceReliabilityHistory).values({
+      deviceId: device.id,
+      orgId: device.orgId,
+      collectedAt: new Date(),
+      uptimeSeconds: metrics.uptimeSeconds,
+      bootTime: new Date(metrics.bootTime),
+      crashEvents: metrics.crashEvents,
+      appHangs: metrics.appHangs,
+      serviceFailures: metrics.serviceFailures,
+      hardwareErrors: metrics.hardwareErrors,
+      rawMetrics: metrics,
+    });
+  } catch (error) {
+    console.error(`[agents] failed to insert reliability history device=${device.id} org=${device.orgId}:`, error);
+    return c.json({ error: 'Failed to record reliability metrics' }, 500);
+  }
 
   try {
     await enqueueDeviceReliabilityComputation(device.id);
   } catch (error) {
     console.error('[agents] failed to enqueue reliability computation, using inline fallback:', error);
+    captureException(error);
     await computeAndPersistDeviceReliability(device.id);
   }
 

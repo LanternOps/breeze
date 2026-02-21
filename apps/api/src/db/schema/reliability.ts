@@ -41,7 +41,7 @@ export const trendDirectionEnum = pgEnum('trend_direction', ['improving', 'stabl
 
 export const deviceReliabilityHistory = pgTable('device_reliability_history', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   collectedAt: timestamp('collected_at').defaultNow().notNull(),
   uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }).notNull(),
@@ -57,7 +57,7 @@ export const deviceReliabilityHistory = pgTable('device_reliability_history', {
 }));
 
 export const deviceReliability = pgTable('device_reliability', {
-  deviceId: uuid('device_id').primaryKey().references(() => devices.id),
+  deviceId: uuid('device_id').primaryKey().references(() => devices.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   computedAt: timestamp('computed_at').defaultNow().notNull(),
 
@@ -79,6 +79,7 @@ export const deviceReliability = pgTable('device_reliability', {
 
   hangCount7d: integer('hang_count_7d').notNull().default(0),
   hangCount30d: integer('hang_count_30d').notNull().default(0),
+  hangCount90d: integer('hang_count_90d').notNull().default(0),
 
   serviceFailureCount7d: integer('service_failure_count_7d').notNull().default(0),
   serviceFailureCount30d: integer('service_failure_count_30d').notNull().default(0),

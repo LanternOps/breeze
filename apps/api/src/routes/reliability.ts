@@ -71,7 +71,7 @@ reliabilityRoutes.get(
       ? [query.orgId]
       : auth.orgId
         ? [auth.orgId]
-        : (auth.accessibleOrgIds ?? undefined);
+        : (auth.accessibleOrgIds?.length ? auth.accessibleOrgIds : undefined);
 
     if (!orgIds && auth.scope !== 'system') {
       return c.json({ error: 'Organization context required' }, 400);

@@ -5,11 +5,14 @@ import * as dbModule from '../db';
 import { devices } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 import { computeAndPersistDeviceReliability, computeAndPersistOrgReliability } from '../services/reliabilityScoring';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[ReliabilityWorker] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
+  }
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const RELIABILITY_QUEUE = 'reliability-scoring';
@@ -135,9 +138,11 @@ export async function initializeReliabilityWorker(): Promise<void> {
   reliabilityWorker = createReliabilityWorker();
   reliabilityWorker.on('error', (error) => {
     console.error('[ReliabilityWorker] Worker error:', error);
+    captureException(error);
   });
   reliabilityWorker.on('failed', (job, error) => {
-    console.error(`[ReliabilityWorker] Job ${job?.id} failed:`, error);
+    console.error(`[ReliabilityWorker] Job ${job?.id} (${job?.data?.type}) failed after ${job?.attemptsMade} attempts:`, error);
+    captureException(error);
   });
 
   await scheduleReliabilityScan();

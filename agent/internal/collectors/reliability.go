@@ -117,10 +117,10 @@ func classifyHardwareType(message, source, eventID string) string {
 	case strings.Contains(src, "whea"), strings.Contains(msg, "machine check"), strings.Contains(msg, "mce"):
 		return "mce"
 	case strings.Contains(msg, "memory"), strings.Contains(msg, "edac"),
-		strings.Contains(eid, "13"), strings.Contains(eid, "50"), strings.Contains(eid, "51"):
+		eid == "13" || eid == "50" || eid == "51":
 		return "memory"
 	case strings.Contains(msg, "disk"), strings.Contains(msg, "i/o"), strings.Contains(msg, "blk_update_request"),
-		strings.Contains(eid, "7"), strings.Contains(eid, "11"), strings.Contains(eid, "15"):
+		eid == "7" || eid == "11" || eid == "15":
 		return "disk"
 	default:
 		return "unknown"

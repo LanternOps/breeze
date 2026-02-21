@@ -11,11 +11,14 @@ import { lt } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { deviceReliabilityHistory } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[ReliabilityRetention] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
+  }
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const QUEUE_NAME = 'reliability-history-retention';
@@ -67,6 +70,11 @@ export async function initializeReliabilityRetention(): Promise<void> {
     retentionWorker = createReliabilityRetentionWorker();
     retentionWorker.on('error', (error) => {
       console.error('[ReliabilityRetention] Worker error:', error);
+      captureException(error);
+    });
+    retentionWorker.on('failed', (job, error) => {
+      console.error(`[ReliabilityRetention] Job ${job?.id} failed after ${job?.attemptsMade} attempts:`, error);
+      captureException(error);
     });
 
     const queue = getReliabilityRetentionQueue();

@@ -23,6 +23,7 @@ func (c *ReliabilityCollector) Collect() (*ReliabilityMetrics, error) {
 		msg := strings.ToLower(entry.Message)
 		src := strings.ToLower(entry.Source)
 
+		classified := true
 		switch {
 		case strings.Contains(msg, "kernel panic"), strings.Contains(msg, "oops"), strings.Contains(msg, "segfault"):
 			appendCrash(metrics, "kernel_panic", ts, map[string]any{
@@ -31,10 +32,9 @@ func (c *ReliabilityCollector) Collect() (*ReliabilityMetrics, error) {
 			})
 
 		case strings.Contains(msg, "oom"), strings.Contains(msg, "out of memory"):
-			appendCrash(metrics, "system_crash", ts, map[string]any{
+			appendCrash(metrics, "oom_kill", ts, map[string]any{
 				"source":  entry.Source,
 				"eventId": entry.EventID,
-				"reason":  "oom",
 			})
 
 		case strings.Contains(msg, "service") && (strings.Contains(msg, "failed") || strings.Contains(msg, "failure")),
@@ -43,9 +43,12 @@ func (c *ReliabilityCollector) Collect() (*ReliabilityMetrics, error) {
 
 		case strings.Contains(msg, "hang"), strings.Contains(msg, "not responding"), strings.Contains(msg, "blocked for more than"):
 			appendHang(metrics, entry.Source, ts)
+
+		default:
+			classified = false
 		}
 
-		if entry.Category == "hardware" || strings.Contains(msg, "i/o error") || strings.Contains(msg, "edac") || strings.Contains(msg, "mce") {
+		if !classified && (entry.Category == "hardware" || strings.Contains(msg, "i/o error") || strings.Contains(msg, "edac") || strings.Contains(msg, "mce")) {
 			appendHardwareError(metrics, entry, ts)
 		}
 	}

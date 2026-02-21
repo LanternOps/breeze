@@ -996,57 +996,63 @@ registerTool({
     }
   },
   handler: async (input, auth) => {
-    if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
-      return JSON.stringify({ error: 'Access denied to this organization' });
+    try {
+      if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
+        return JSON.stringify({ error: 'Access denied to this organization' });
+      }
+
+      const orgIds = typeof input.orgId === 'string' && input.orgId
+        ? [input.orgId]
+        : auth.orgId
+          ? [auth.orgId]
+          : (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds : undefined);
+
+      if (!orgIds && auth.scope !== 'system') {
+        return JSON.stringify({ error: 'Organization context required' });
+      }
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+      const scoreRange = (typeof input.scoreRange === 'string' && ['critical', 'poor', 'fair', 'good'].includes(input.scoreRange))
+        ? input.scoreRange as 'critical' | 'poor' | 'fair' | 'good'
+        : undefined;
+      const trendDirection = (typeof input.trendDirection === 'string' && ['improving', 'stable', 'degrading'].includes(input.trendDirection))
+        ? input.trendDirection as 'improving' | 'stable' | 'degrading'
+        : undefined;
+      const issueType = (typeof input.issueType === 'string' && ['crashes', 'hangs', 'hardware', 'services', 'uptime'].includes(input.issueType))
+        ? input.issueType as 'crashes' | 'hangs' | 'hardware' | 'services' | 'uptime'
+        : undefined;
+
+      const { total, rows } = await listReliabilityDevices({
+        orgIds,
+        siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
+        scoreRange,
+        trendDirection,
+        issueType,
+        limit,
+        offset: 0,
+      });
+
+      const avgScore = rows.length > 0
+        ? Math.round(rows.reduce((sum, row) => sum + row.reliabilityScore, 0) / rows.length)
+        : 0;
+
+      return JSON.stringify({
+        devices: rows,
+        total,
+        summary: {
+          averageScore: avgScore,
+          criticalDevices: rows.filter((row) => row.reliabilityScore <= 50).length,
+          poorDevices: rows.filter((row) => row.reliabilityScore >= 51 && row.reliabilityScore <= 70).length,
+          fairDevices: rows.filter((row) => row.reliabilityScore >= 71 && row.reliabilityScore <= 85).length,
+          goodDevices: rows.filter((row) => row.reliabilityScore >= 86).length,
+          degradingDevices: rows.filter((row) => row.trendDirection === 'degrading').length,
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      console.error('[fleet:get_fleet_health]', message, err);
+      return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
     }
-
-    const orgIds = typeof input.orgId === 'string' && input.orgId
-      ? [input.orgId]
-      : auth.orgId
-        ? [auth.orgId]
-        : (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds : undefined);
-
-    if (!orgIds && auth.scope !== 'system') {
-      return JSON.stringify({ error: 'Organization context required' });
-    }
-
-    const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-    const scoreRange = (typeof input.scoreRange === 'string' && ['critical', 'poor', 'fair', 'good'].includes(input.scoreRange))
-      ? input.scoreRange as 'critical' | 'poor' | 'fair' | 'good'
-      : undefined;
-    const trendDirection = (typeof input.trendDirection === 'string' && ['improving', 'stable', 'degrading'].includes(input.trendDirection))
-      ? input.trendDirection as 'improving' | 'stable' | 'degrading'
-      : undefined;
-    const issueType = (typeof input.issueType === 'string' && ['crashes', 'hangs', 'hardware', 'services', 'uptime'].includes(input.issueType))
-      ? input.issueType as 'crashes' | 'hangs' | 'hardware' | 'services' | 'uptime'
-      : undefined;
-
-    const { total, rows } = await listReliabilityDevices({
-      orgIds,
-      siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
-      scoreRange,
-      trendDirection,
-      issueType,
-      limit,
-      offset: 0,
-    });
-
-    const avgScore = rows.length > 0
-      ? Math.round(rows.reduce((sum, row) => sum + row.reliabilityScore, 0) / rows.length)
-      : 0;
-
-    return JSON.stringify({
-      devices: rows,
-      total,
-      summary: {
-        averageScore: avgScore,
-        criticalDevices: rows.filter((row) => row.reliabilityScore <= 50).length,
-        poorDevices: rows.filter((row) => row.reliabilityScore >= 51 && row.reliabilityScore <= 70).length,
-        fairDevices: rows.filter((row) => row.reliabilityScore >= 71 && row.reliabilityScore <= 85).length,
-        goodDevices: rows.filter((row) => row.reliabilityScore >= 86).length,
-        degradingDevices: rows.filter((row) => row.trendDirection === 'degrading').length,
-      },
-    });
   }
 });
 
