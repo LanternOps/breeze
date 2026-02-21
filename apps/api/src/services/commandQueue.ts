@@ -189,7 +189,12 @@ export async function queueCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log:', err));
+        .catch((err) => console.error('Failed to write audit log', {
+          commandId: command.id,
+          deviceId,
+          type,
+          error: err,
+        }));
     }
   }
 
@@ -386,7 +391,13 @@ export async function executeCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log:', err));
+        .catch((err) => console.error('Failed to write audit log', {
+          commandId: command.id,
+          deviceId,
+          type,
+          orgId: device.orgId,
+          error: err,
+        }));
     }
 
     // Dispatch via WebSocket
