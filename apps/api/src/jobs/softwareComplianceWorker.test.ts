@@ -1,115 +1,142 @@
 import { describe, expect, it } from 'vitest';
-import { shouldQueueAutoRemediation } from './softwareComplianceWorker';
+import { readEarliestUnauthorizedDetection, shouldQueueAutoRemediation } from './softwareComplianceWorker';
+
+const NOW = new Date('2025-01-15T12:00:00Z');
+const PAST_VIOLATION = [{ type: 'unauthorized', detectedAt: '2025-01-01T00:00:00Z' }];
+const RECENT_VIOLATION = [{ type: 'unauthorized', detectedAt: '2025-01-15T11:00:00Z' }];
 
 describe('shouldQueueAutoRemediation', () => {
-  const now = new Date('2026-02-20T12:00:00Z');
-
-  it('returns queue=false when remediation is already in_progress', () => {
+  it('returns queue:false when status is in_progress', () => {
     const result = shouldQueueAutoRemediation({
-      violations: [],
+      violations: PAST_VIOLATION,
       previousRemediationStatus: 'in_progress',
       lastRemediationAttempt: null,
-      now,
+      now: NOW,
       gracePeriodHours: 0,
       cooldownMinutes: 120,
     });
-    expect(result.queue).toBe(false);
-    expect(result.reason).toBe('in_progress');
+    expect(result).toEqual({ queue: false, reason: 'in_progress' });
   });
 
-  it('returns queue=false when remediation is pending', () => {
+  it('returns queue:false when status is pending', () => {
     const result = shouldQueueAutoRemediation({
-      violations: [],
+      violations: PAST_VIOLATION,
       previousRemediationStatus: 'pending',
       lastRemediationAttempt: null,
-      now,
+      now: NOW,
       gracePeriodHours: 0,
       cooldownMinutes: 120,
     });
-    expect(result.queue).toBe(false);
-    expect(result.reason).toBe('in_progress');
+    expect(result).toEqual({ queue: false, reason: 'in_progress' });
   });
 
-  it('returns queue=false during grace period', () => {
-    const recentViolation = [{
-      type: 'unauthorized',
-      software: { name: 'TeamViewer Host', version: '15.2' },
-      severity: 'critical',
-      detectedAt: new Date('2026-02-20T11:00:00Z').toISOString(),
-    }];
-
+  it('returns queue:false when inside grace period', () => {
     const result = shouldQueueAutoRemediation({
-      violations: recentViolation,
+      violations: RECENT_VIOLATION,
       previousRemediationStatus: null,
       lastRemediationAttempt: null,
-      now,
+      now: NOW,
       gracePeriodHours: 24,
       cooldownMinutes: 120,
     });
-    expect(result.queue).toBe(false);
-    expect(result.reason).toBe('grace_period');
+    expect(result).toEqual({ queue: false, reason: 'grace_period' });
   });
 
-  it('returns queue=true when grace period has expired', () => {
-    const oldViolation = [{
-      type: 'unauthorized',
-      software: { name: 'TeamViewer Host', version: '15.2' },
-      severity: 'critical',
-      detectedAt: new Date('2026-02-18T12:00:00Z').toISOString(),
-    }];
-
+  it('returns queue:true when outside grace period', () => {
     const result = shouldQueueAutoRemediation({
-      violations: oldViolation,
+      violations: PAST_VIOLATION,
       previousRemediationStatus: null,
       lastRemediationAttempt: null,
-      now,
+      now: NOW,
       gracePeriodHours: 24,
       cooldownMinutes: 120,
     });
-    expect(result.queue).toBe(true);
+    expect(result).toEqual({ queue: true });
   });
 
-  it('returns queue=false within cooldown window', () => {
+  it('returns queue:false when inside cooldown window', () => {
+    const lastAttempt = new Date(NOW.getTime() - 30 * 60 * 1000);
     const result = shouldQueueAutoRemediation({
-      violations: [],
-      previousRemediationStatus: 'failed',
-      lastRemediationAttempt: new Date('2026-02-20T11:30:00Z'),
-      now,
+      violations: PAST_VIOLATION,
+      previousRemediationStatus: null,
+      lastRemediationAttempt: lastAttempt,
+      now: NOW,
       gracePeriodHours: 0,
       cooldownMinutes: 120,
     });
-    expect(result.queue).toBe(false);
-    expect(result.reason).toBe('cooldown');
+    expect(result).toEqual({ queue: false, reason: 'cooldown' });
   });
 
-  it('returns queue=true when cooldown has elapsed', () => {
+  it('returns queue:true when past cooldown window', () => {
+    const lastAttempt = new Date(NOW.getTime() - 200 * 60 * 1000);
     const result = shouldQueueAutoRemediation({
-      violations: [],
-      previousRemediationStatus: 'failed',
-      lastRemediationAttempt: new Date('2026-02-20T09:00:00Z'),
-      now,
+      violations: PAST_VIOLATION,
+      previousRemediationStatus: null,
+      lastRemediationAttempt: lastAttempt,
+      now: NOW,
       gracePeriodHours: 0,
       cooldownMinutes: 120,
     });
-    expect(result.queue).toBe(true);
+    expect(result).toEqual({ queue: true });
+  });
+
+  it('returns queue:true with no previous state and no grace/cooldown', () => {
+    const result = shouldQueueAutoRemediation({
+      violations: PAST_VIOLATION,
+      previousRemediationStatus: null,
+      lastRemediationAttempt: null,
+      now: NOW,
+      gracePeriodHours: 0,
+      cooldownMinutes: 120,
+    });
+    expect(result).toEqual({ queue: true });
   });
 
   it('skips grace period check when gracePeriodHours is 0', () => {
-    const recentViolation = [{
-      type: 'unauthorized',
-      software: { name: 'TeamViewer Host' },
-      severity: 'critical',
-      detectedAt: new Date('2026-02-20T11:59:00Z').toISOString(),
-    }];
-
     const result = shouldQueueAutoRemediation({
-      violations: recentViolation,
+      violations: RECENT_VIOLATION,
       previousRemediationStatus: null,
       lastRemediationAttempt: null,
-      now,
+      now: NOW,
       gracePeriodHours: 0,
       cooldownMinutes: 120,
     });
-    expect(result.queue).toBe(true);
+    expect(result).toEqual({ queue: true });
+  });
+});
+
+describe('readEarliestUnauthorizedDetection', () => {
+  it('returns null for non-array input', () => {
+    expect(readEarliestUnauthorizedDetection(null)).toBeNull();
+    expect(readEarliestUnauthorizedDetection('string')).toBeNull();
+    expect(readEarliestUnauthorizedDetection({})).toBeNull();
+  });
+
+  it('returns null for empty array', () => {
+    expect(readEarliestUnauthorizedDetection([])).toBeNull();
+  });
+
+  it('returns null when no unauthorized violations', () => {
+    const violations = [{ type: 'missing', detectedAt: '2025-01-01T00:00:00Z' }];
+    expect(readEarliestUnauthorizedDetection(violations)).toBeNull();
+  });
+
+  it('returns the earliest unauthorized detection date', () => {
+    const violations = [
+      { type: 'unauthorized', detectedAt: '2025-01-10T00:00:00Z' },
+      { type: 'unauthorized', detectedAt: '2025-01-01T00:00:00Z' },
+      { type: 'unauthorized', detectedAt: '2025-01-15T00:00:00Z' },
+    ];
+    const result = readEarliestUnauthorizedDetection(violations);
+    expect(result?.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+  });
+
+  it('skips violations with invalid detectedAt strings', () => {
+    const violations = [
+      { type: 'unauthorized', detectedAt: 'not-a-date' },
+      { type: 'unauthorized', detectedAt: '2025-01-05T00:00:00Z' },
+    ];
+    const result = readEarliestUnauthorizedDetection(violations);
+    expect(result?.toISOString()).toBe('2025-01-05T00:00:00.000Z');
   });
 });
