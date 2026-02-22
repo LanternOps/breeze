@@ -565,22 +565,22 @@ jobs:
 
           # Copy agent binaries
           for dir in artifacts/breeze-agent-*; do
-            if [ -d "$dir" ]; then
-              cp "$dir"/* release-assets/ 2>/dev/null || true
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
             fi
           done
 
           # Copy viewer installers
           for dir in artifacts/breeze-viewer-*; do
-            if [ -d "$dir" ]; then
-              cp "$dir"/* release-assets/ 2>/dev/null || true
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
             fi
           done
 
           # Copy helper installers
           for dir in artifacts/breeze-helper-*; do
-            if [ -d "$dir" ]; then
-              cp "$dir"/* release-assets/ 2>/dev/null || true
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
             fi
           done
 

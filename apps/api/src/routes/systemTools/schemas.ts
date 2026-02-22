@@ -129,3 +129,9 @@ export const fileTrashRestoreBodySchema = z.object({
 export const fileTrashPurgeBodySchema = z.object({
   trashIds: z.array(trashIdString).optional(),
 });
+
+export const fileUploadBodySchema = z.object({
+  path: filePathString,
+  content: z.string().min(0),
+  encoding: z.enum(['base64', 'text']).optional().default('text'),
+});

@@ -81,8 +81,8 @@ type Config struct {
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
 
-	// IsService is a runtime flag set when the agent is running as a Windows SCM service.
-	// It is not persisted to config.
+	// IsService is a runtime flag set when the agent is running as a system service
+	// (Windows SCM, macOS launchd, Linux systemd). It is not persisted to config.
 	IsService bool `mapstructure:"-"`
 }
 
@@ -207,6 +207,11 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("log_level", cfg.LogLevel)
 	viper.Set("log_shipping_level", cfg.LogShippingLevel)
 	viper.Set("auto_update", cfg.AutoUpdate)
+	// Write auth_token to agent.yaml so the Breeze Helper (which may not
+	// have root privileges to read secrets.yaml) can discover the token.
+	if cfg.AuthToken != "" {
+		viper.Set("auth_token", cfg.AuthToken)
+	}
 
 	var cfgPath string
 	if cfgFile != "" {
@@ -279,16 +284,22 @@ func GetDataDir() string {
 func FixConfigPermissions() {
 	dir := configDir()
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		_ = os.Chmod(dir, 0755)
+		if err := os.Chmod(dir, 0755); err != nil {
+			log.Warn("Failed to fix config directory permissions", "dir", dir, "error", err.Error())
+		}
 	}
 	cfgPath := filepath.Join(dir, "agent.yaml")
 	if _, err := os.Stat(cfgPath); err == nil {
-		_ = os.Chmod(cfgPath, 0644)
+		if err := os.Chmod(cfgPath, 0644); err != nil {
+			log.Warn("Failed to fix config file permissions", "path", cfgPath, "error", err.Error())
+		}
 	}
 	// Secrets file must remain root-only.
 	sPath := secretsFilePath()
 	if _, err := os.Stat(sPath); err == nil {
-		_ = os.Chmod(sPath, 0600)
+		if err := os.Chmod(sPath, 0600); err != nil {
+			log.Warn("Failed to fix secrets file permissions", "path", sPath, "error", err.Error())
+		}
 	}
 }
 

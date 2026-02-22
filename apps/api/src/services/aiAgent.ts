@@ -238,14 +238,7 @@ export function waitForPlanApproval(
   });
 }
 
-/**
- * Handle plan approval (called from route handler).
- * This is a no-op placeholder — the actual logic is in the route
- * which directly resolves session.planApprovalResolver.
- */
-export function handlePlanApproval(): void {
-  // Logic is inline in the route handler
-}
+
 
 // ============================================
 // System Prompt

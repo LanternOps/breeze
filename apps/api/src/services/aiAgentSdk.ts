@@ -171,8 +171,8 @@ export async function runPreFlightChecks(
 /**
  * Creates a PreToolUseCallback that enforces guardrails, RBAC, rate limits,
  * and the approval gate before MCP tool execution. This runs inside
- * makeHandler() in aiAgentSdkTools.ts — unlike canUseTool, it IS invoked
- * for in-process MCP server tools.
+ * makeHandler() in aiAgentSdkTools.ts and IS invoked for in-process MCP
+ * server tools.
  */
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   return async (toolName, input) => {
@@ -232,6 +232,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           );
         } catch (err) {
           console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
+          return { allowed: false, error: 'Failed to create audit record. Please try again.' };
         }
         return { allowed: true };
       }
@@ -258,6 +259,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             );
           } catch (err) {
             console.error('[AI-SDK] Failed to create plan-step audit record:', toolName, err);
+            return { allowed: false, error: 'Failed to create audit record. Please try again.' };
           }
           session.currentPlanStepIndex = match.stepIndex + 1;
           return { allowed: true };
@@ -580,7 +582,8 @@ function matchPlanStep(
   if (!step) return { matches: false, stepIndex: idx };
   if (step.toolName !== toolName) return { matches: false, stepIndex: idx };
 
-  // Match key identifiers if present in the plan step
+  // Only compare when BOTH sides have the field — if AI omits a field the plan
+  // specifies, still match.
   const keyFields = ['deviceId', 'action', 'scriptId', 'policyId'];
   for (const key of keyFields) {
     if (step.input[key] !== undefined && input[key] !== undefined) {
@@ -614,6 +617,7 @@ export async function abortActivePlan(session: ActiveSession): Promise<boolean> 
     );
   } catch (err) {
     console.error('[AI-SDK] Failed to abort plan in DB:', planId, err);
+    // Still proceed with abort — safety takes priority over DB consistency
   }
 
   // Emit plan_complete event

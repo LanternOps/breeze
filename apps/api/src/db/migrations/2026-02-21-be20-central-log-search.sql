@@ -68,9 +68,6 @@ CREATE TABLE IF NOT EXISTS log_correlation_rules (
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-ALTER TABLE log_correlation_rules
-ADD COLUMN IF NOT EXISTS is_regex BOOLEAN NOT NULL DEFAULT false;
-
 CREATE INDEX IF NOT EXISTS log_correlation_rules_org_id_idx ON log_correlation_rules(org_id);
 CREATE INDEX IF NOT EXISTS log_correlation_rules_active_idx ON log_correlation_rules(is_active);
 

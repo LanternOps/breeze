@@ -636,41 +636,39 @@ function processStreamEvent(
     case 'plan_approval_required':
       set(() => ({
         pendingPlan: {
-          planId: (event as { planId: string }).planId,
-          steps: (event as { steps: ActionPlanStep[] }).steps,
+          planId: event.planId,
+          steps: event.steps,
         },
       }));
       return currentAssistantId;
 
     case 'plan_step_start': {
-      const e = event as { planId: string; stepIndex: number; toolName: string };
       set((s) => ({
-        activePlan: s.activePlan ? { ...s.activePlan, currentStepIndex: e.stepIndex } : s.activePlan,
+        activePlan: s.activePlan ? { ...s.activePlan, currentStepIndex: event.stepIndex } : s.activePlan,
       }));
       return currentAssistantId;
     }
 
     case 'plan_step_complete': {
-      const e = event as { planId: string; stepIndex: number; toolName: string; isError: boolean };
       set((s) => {
         if (!s.activePlan) return {};
         const steps = s.activePlan.steps.map((step, i) =>
-          i === e.stepIndex ? { ...step, status: e.isError ? 'failed' as const : 'completed' as const } : step
+          i === event.stepIndex ? { ...step, status: event.isError ? 'failed' as const : 'completed' as const } : step
         );
-        return { activePlan: { ...s.activePlan, steps, currentStepIndex: e.stepIndex + 1 } };
+        return { activePlan: { ...s.activePlan, steps, currentStepIndex: event.stepIndex + 1 } };
       });
       return currentAssistantId;
     }
 
     case 'plan_complete': {
-      const e = event as { planId: string; status: 'completed' | 'aborted' };
+      const completedPlanId = event.planId;
       set((s) => ({
-        activePlan: s.activePlan ? { ...s.activePlan, status: e.status } : null,
+        activePlan: s.activePlan ? { ...s.activePlan, status: event.status } : null,
       }));
       // Clear activePlan after a brief delay so UI can show final state
       setTimeout(() => {
         const state = get();
-        if (state.activePlan?.status === 'completed' || state.activePlan?.status === 'aborted') {
+        if (state.activePlan?.planId === completedPlanId) {
           set(() => ({ activePlan: null }));
         }
       }, 3000);
@@ -678,14 +676,13 @@ function processStreamEvent(
     }
 
     case 'plan_screenshot': {
-      const e = event as { planId: string; stepIndex: number; imageBase64: string };
       // Insert inline screenshot as a special message
       const screenshotMsg: AiMessage = {
-        id: `plan-screenshot-${e.planId}-${e.stepIndex}`,
+        id: `plan-screenshot-${event.planId}-${event.stepIndex}`,
         role: 'tool_result',
         content: '',
         toolName: 'plan_screenshot',
-        toolOutput: { imageBase64: e.imageBase64, stepIndex: e.stepIndex },
+        toolOutput: { imageBase64: event.imageBase64, stepIndex: event.stepIndex },
         createdAt: new Date(),
       };
       set((s) => ({ messages: [...s.messages, screenshotMsg] }));
@@ -693,8 +690,7 @@ function processStreamEvent(
     }
 
     case 'approval_mode_changed': {
-      const e = event as { mode: AiApprovalMode };
-      set(() => ({ approvalMode: e.mode, isPaused: e.mode === 'per_step' }));
+      set(() => ({ approvalMode: event.mode, isPaused: event.mode === 'per_step' }));
       return currentAssistantId;
     }
 

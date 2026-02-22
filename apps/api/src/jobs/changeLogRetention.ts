@@ -9,15 +9,15 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { deviceChangeLog } from '../db/schema';
 import { lt } from 'drizzle-orm';
+import { captureException } from '../services/sentry';
 import { getRedisConnection } from '../services/redis';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  if (typeof withSystem !== 'function') {
-    console.error('[ChangeLogRetention] withSystemDbAccessContext is not available — running without access context');
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[ChangeLogRetention] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
   }
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const QUEUE_NAME = 'change-log-retention';
@@ -79,6 +79,12 @@ export async function initializeChangeLogRetention(): Promise<void> {
 
     retentionWorker.on('error', (error) => {
       console.error('[ChangeLogRetention] Worker error:', error);
+      captureException(error);
+    });
+
+    retentionWorker.on('failed', (job, error) => {
+      console.error(`[ChangeLogRetention] Job ${job?.id} failed:`, error);
+      captureException(error);
     });
 
     const queue = getChangeLogRetentionQueue();

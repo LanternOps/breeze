@@ -11,11 +11,14 @@ import * as dbModule from '../db';
 import { playbookExecutions } from '../db/schema';
 import { and, eq, lt, inArray } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[PlaybookRetention] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
+  }
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const QUEUE_NAME = 'playbook-execution-retention';
@@ -50,6 +53,7 @@ export function createPlaybookRetentionWorker(): Worker<RetentionJobData> {
 
         // 1. Prune terminal executions older than retention period
         const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+        let pruneError: unknown;
         try {
           await db
             .delete(playbookExecutions)
@@ -58,11 +62,14 @@ export function createPlaybookRetentionWorker(): Worker<RetentionJobData> {
               lt(playbookExecutions.createdAt, cutoff),
             ));
         } catch (err) {
+          pruneError = err;
           console.error('[PlaybookRetention] Failed to prune old executions:', err);
+          captureException(err);
         }
 
         // 2. Mark stale non-terminal executions as cancelled
         const staleCutoff = new Date(Date.now() - STALE_EXECUTION_HOURS * 60 * 60 * 1000);
+        let staleError: unknown;
         try {
           await db
             .update(playbookExecutions)
@@ -77,7 +84,14 @@ export function createPlaybookRetentionWorker(): Worker<RetentionJobData> {
               lt(playbookExecutions.updatedAt, staleCutoff),
             ));
         } catch (err) {
+          staleError = err;
           console.error('[PlaybookRetention] Failed to cancel stale executions:', err);
+          captureException(err);
+        }
+
+        // If both operations failed, throw so BullMQ retries
+        if (pruneError && staleError) {
+          throw new Error('[PlaybookRetention] Both prune and stale-cancel operations failed');
         }
 
         const durationMs = Date.now() - startTime;
@@ -101,6 +115,12 @@ export async function initializePlaybookRetention(): Promise<void> {
 
     retentionWorker.on('error', (error) => {
       console.error('[PlaybookRetention] Worker error:', error);
+      captureException(error);
+    });
+
+    retentionWorker.on('failed', (job, error) => {
+      console.error(`[PlaybookRetention] Job ${job?.id} failed:`, error);
+      captureException(error);
     });
 
     const queue = getPlaybookRetentionQueue();

@@ -30,7 +30,7 @@ interface ChatMessage {
 export interface SessionSummary {
   id: string;
   title: string | null;
-  status: string;
+  status: 'active' | 'closed' | 'expired';
   helperUser: string | null;
   turnCount: number;
   createdAt: string;
@@ -445,6 +445,15 @@ function processSSELines(
           setDirect({ isStreaming: false });
           break;
         }
+
+        case 'plan_approval_required':
+        case 'plan_step_start':
+        case 'plan_step_complete':
+        case 'plan_complete':
+        case 'plan_screenshot':
+        case 'approval_mode_changed':
+          // Plan events not yet supported in helper
+          break;
       }
     } catch (parseErr) {
       console.error('[Helper] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
@@ -527,6 +536,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (res.ok) {
         const sessions = JSON.parse(res.body) as SessionSummary[];
         set({ sessions });
+      } else {
+        console.error('[Helper] Failed to load sessions:', res.status);
       }
     } catch (err) {
       console.error('[Helper] Failed to load sessions:', err);
@@ -738,7 +749,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (!res.ok) {
         const data = (() => {
-          try { return JSON.parse(res.body); } catch { return { error: 'Failed to process approval' }; }
+          try { return JSON.parse(res.body); } catch { console.error('[Helper] Failed to parse approval response:', res.body.slice(0, 200)); return { error: 'Failed to process approval' }; }
         })();
         set({ error: data.error || 'Failed to process approval' });
       }

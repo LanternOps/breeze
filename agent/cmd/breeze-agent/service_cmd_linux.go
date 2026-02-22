@@ -106,6 +106,8 @@ var serviceInstallCmd = &cobra.Command{
 				return fmt.Errorf("failed to create %s: %w", dir, err)
 			}
 		}
+		// Note: FixConfigPermissions() loosens this to 0755 on startup so the Helper
+		// can read agent.yaml.
 		if err := os.Chmod(linuxConfigDir, 0700); err != nil {
 			return fmt.Errorf("failed to set permissions on %s: %w", linuxConfigDir, err)
 		}
@@ -159,12 +161,18 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		// Create breeze group for IPC socket access (best-effort)
-		exec.Command("groupadd", "--system", "breeze").Run()
+		if err := exec.Command("groupadd", "--system", "breeze").Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create 'breeze' group: %v (may already exist)\n", err)
+		}
 
 		// Create IPC socket directory
 		ipcDir := "/var/run/breeze"
-		os.MkdirAll(ipcDir, 0770)
-		exec.Command("chown", "root:breeze", ipcDir).Run()
+		if err := os.MkdirAll(ipcDir, 0770); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create IPC directory %s: %v\n", ipcDir, err)
+		}
+		if err := exec.Command("chown", "root:breeze", ipcDir).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set IPC directory ownership: %v\n", err)
+		}
 
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed and enabled.")
@@ -187,20 +195,32 @@ var serviceUninstallCmd = &cobra.Command{
 		}
 
 		// Stop the service
-		exec.Command("systemctl", "stop", linuxServiceName).Run()
+		if err := exec.Command("systemctl", "stop", linuxServiceName).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to stop service: %v\n", err)
+		}
 
 		// Disable the service
-		exec.Command("systemctl", "disable", linuxServiceName).Run()
+		if err := exec.Command("systemctl", "disable", linuxServiceName).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to disable service: %v\n", err)
+		}
 
 		// Remove unit files
-		os.Remove(linuxUnitDst)
-		os.Remove(linuxUserUnitDst)
+		if err := os.Remove(linuxUnitDst); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", linuxUnitDst, err)
+		}
+		if err := os.Remove(linuxUserUnitDst); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", linuxUserUnitDst, err)
+		}
 
 		// Reload systemd
-		exec.Command("systemctl", "daemon-reload").Run()
+		if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to reload systemd: %v\n", err)
+		}
 
 		// Remove binary
-		os.Remove(linuxBinaryPath)
+		if err := os.Remove(linuxBinaryPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", linuxBinaryPath, err)
+		}
 
 		fmt.Println("Breeze Agent service uninstalled.")
 		fmt.Printf("Config at %s was preserved.\n", linuxConfigDir)
@@ -260,9 +280,15 @@ var serviceStatusCmd = &cobra.Command{
 		}
 
 		out, err := exec.Command("systemctl", "status", linuxServiceName, "--no-pager").CombinedOutput()
-		// systemctl status returns non-zero if service is stopped — that's fine
+		if err != nil {
+			// systemctl status returns exit code 3 if service is stopped — not an error
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 3 {
+				// Service is stopped; output still contains useful status info
+			} else if !ok {
+				fmt.Fprintf(os.Stderr, "Warning: failed to query service status: %v\n", err)
+			}
+		}
 		fmt.Println(strings.TrimSpace(string(out)))
-		_ = err
 		return nil
 	},
 }

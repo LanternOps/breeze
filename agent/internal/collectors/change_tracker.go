@@ -128,7 +128,7 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 
 	if c.lastSnapshot == nil {
 		if err := c.loadSnapshot(); err != nil && !errors.Is(err, os.ErrNotExist) {
-			// Corrupt snapshot or read error: reset baseline on next successful collection.
+			slog.Warn("change tracker snapshot corrupt, resetting baseline", "error", err.Error())
 			c.lastSnapshot = nil
 		}
 	}

@@ -1,3 +1,5 @@
+BEGIN;
+
 DO $$
 BEGIN
   CREATE TYPE playbook_execution_status AS ENUM (
@@ -84,3 +86,5 @@ CREATE INDEX IF NOT EXISTS playbook_executions_status_idx
 
 CREATE INDEX IF NOT EXISTS playbook_executions_created_at_idx
   ON playbook_executions (created_at);
+
+COMMIT;

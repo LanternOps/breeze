@@ -452,7 +452,10 @@ async function handleToolsCall(
         }
         return jsonRpcResult(id, { content });
       }
-    } catch {
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) {
+        console.error('[MCP] Unexpected error parsing vision response:', err);
+      }
       // Not JSON or no imageBase64 — fall through to text
     }
 

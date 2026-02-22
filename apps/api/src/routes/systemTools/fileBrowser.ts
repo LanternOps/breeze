@@ -5,7 +5,7 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getDeviceWithOrgCheck } from './helpers';
-import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema } from './schemas';
+import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema, fileUploadBodySchema } from './schemas';
 
 export const fileBrowserRoutes = new Hono();
 
@@ -137,6 +137,7 @@ fileBrowserRoutes.post(
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
   zValidator('param', deviceIdParamSchema),
+  zValidator('json', fileUploadBodySchema),
   async (c) => {
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
@@ -146,23 +147,12 @@ fileBrowserRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const body = await c.req.json<{
-      path: string;
-      content: string;
-      encoding?: 'base64' | 'text';
-    }>();
-
-    if (!body.path || typeof body.path !== 'string') {
-      return c.json({ error: 'path is required' }, 400);
-    }
-    if (body.content === undefined || typeof body.content !== 'string') {
-      return c.json({ error: 'content is required' }, 400);
-    }
+    const body = c.req.valid('json');
 
     const result = await executeCommand(deviceId, CommandTypes.FILE_WRITE, {
       path: body.path,
       content: body.content,
-      encoding: body.encoding || 'text'
+      encoding: body.encoding
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
     await createAuditLog({

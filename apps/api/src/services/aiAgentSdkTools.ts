@@ -986,13 +986,18 @@ export function createBreezeMcpServer(
         }
 
         // Build plan steps with indexes
-        const planSteps: ActionPlanStep[] = args.steps.map((s, i) => ({
-          index: i,
+        const planSteps: ActionPlanStep[] = args.steps.map((s) => ({
           toolName: s.toolName,
           input: s.input,
           reasoning: s.reasoning,
           status: 'pending' as const,
         }));
+
+        // Guard: partner-scoped users may not have orgId
+        const orgId = session.auth.orgId;
+        if (!orgId) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Action plans require an organization context' }) }], isError: true };
+        }
 
         // Insert plan record
         let planId: string;
@@ -1000,12 +1005,15 @@ export function createBreezeMcpServer(
           const [row] = await withSystemDbAccessContext(() =>
             db.insert(aiActionPlans).values({
               sessionId: session.breezeSessionId,
-              orgId: session.auth.orgId!,
+              orgId,
               status: 'pending',
               steps: planSteps,
             }).returning({ id: aiActionPlans.id })
           );
-          planId = row!.id;
+          if (!row) {
+            return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Failed to create action plan record' }) }], isError: true };
+          }
+          planId = row.id;
         } catch (err) {
           console.error('[AI-SDK] Failed to create action plan:', err);
           return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Failed to create action plan' }) }], isError: true };
@@ -1037,8 +1045,9 @@ export function createBreezeMcpServer(
         // Populate approved plan steps map on the session
         session.approvedPlanSteps.clear();
         session.currentPlanStepIndex = 0;
-        for (const step of planSteps) {
-          session.approvedPlanSteps.set(step.index, { toolName: step.toolName, input: step.input });
+        for (let i = 0; i < planSteps.length; i++) {
+          const step = planSteps[i]!;
+          session.approvedPlanSteps.set(i, { toolName: step.toolName, input: step.input });
         }
 
         // Update DB status to executing

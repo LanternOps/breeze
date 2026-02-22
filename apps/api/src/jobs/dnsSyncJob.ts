@@ -19,11 +19,14 @@ import {
 import { createDnsProvider, type DnsEvent } from '../services/dnsProviders';
 import { getRedisConnection } from '../services/redis';
 import { decryptSecret } from '../services/secretCrypto';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[DnsSyncJob] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
+  }
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const DNS_SYNC_QUEUE = 'dns-sync';
@@ -234,7 +237,9 @@ async function addUniqueJob(
     ) {
       return String(existing.id);
     }
-    await existing.remove().catch(() => undefined);
+    await existing.remove().catch((err) => {
+      console.warn(`[DnsSyncJob] Failed to remove stale job ${jobId}:`, err instanceof Error ? err.message : err);
+    });
   }
 
   const job = await queue.add(name, data, {
@@ -659,10 +664,12 @@ export async function initializeDnsSyncJob(): Promise<void> {
 
   dnsSyncWorker.on('error', (error) => {
     console.error('[DnsSyncJob] Worker error:', error);
+    captureException(error);
   });
 
   dnsSyncWorker.on('failed', (job, error) => {
     console.error(`[DnsSyncJob] Job ${job?.id} failed:`, error);
+    captureException(error);
   });
 
   await scheduleRepeatSyncAllJob();

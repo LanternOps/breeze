@@ -420,6 +420,7 @@ export async function searchFleetLogs(auth: AuthContext, filters: LogSearchInput
     return await runFleetSearch(auth, filters, 'tsvector');
   } catch (error) {
     if (filters.query && isMissingSearchVectorError(error)) {
+      console.warn('[logSearch] tsvector search unavailable, falling back to LIKE search:', error instanceof Error ? error.message : error);
       return runFleetSearch(auth, filters, 'like');
     }
     throw error;
@@ -836,6 +837,7 @@ export async function detectPatternCorrelation(input: PatternDetectionInput): Pr
     if (!isRegex || !(error instanceof Error) || !error.message.toLowerCase().includes('regular expression')) {
       throw error;
     }
+    console.warn('[logSearch] Regex pattern detection failed, falling back to ILIKE:', error.message);
     detected = await runPatternDetection(input.orgId, pattern, false, since, sampleLimit, true);
   }
 

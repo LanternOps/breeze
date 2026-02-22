@@ -2,11 +2,14 @@ import { Job, Queue, Worker } from 'bullmq';
 
 import { getRedisConnection } from '../services/redis';
 import { detectPatternCorrelation, runCorrelationRules } from '../services/logSearch';
+import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[LogCorrelationWorker] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
+  }
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const LOG_CORRELATION_QUEUE = 'log-correlation';
@@ -127,9 +130,11 @@ export async function initializeLogCorrelationWorker(): Promise<void> {
   correlationWorker = createLogCorrelationWorker();
   correlationWorker.on('error', (error) => {
     console.error('[LogCorrelationWorker] Worker error:', error);
+    captureException(error);
   });
   correlationWorker.on('failed', (job, error) => {
     console.error(`[LogCorrelationWorker] Job ${job?.id} failed:`, error);
+    captureException(error);
   });
 
   await scheduleCorrelationDetection();

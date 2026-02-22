@@ -35,6 +35,7 @@ import {
   aiSessionQuerySchema
 } from '@breeze/shared/validators/ai';
 import { aiActionPlans } from '../db/schema';
+import { captureException } from '../services/sentry';
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional()
@@ -549,6 +550,8 @@ aiRoutes.post(
         }
       } catch (err) {
         console.error('[AI] Failed to update plan status:', err);
+        captureException(err);
+        return c.json({ success: true, approved, warning: 'Plan processed but database record could not be updated.' });
       }
     }
 

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, gte, ilike, lte, sql, type SQL } from 'drizzle-orm';
+import { escapeLike } from '../utils/sql';
 import { db } from '../db';
 import {
   devices,
@@ -427,7 +428,7 @@ dnsSecurityRoutes.get(
     if (query.category) conditions.push(eq(dnsSecurityEvents.category, query.category));
     if (query.deviceId) conditions.push(eq(dnsSecurityEvents.deviceId, query.deviceId));
     if (query.integrationId) conditions.push(eq(dnsSecurityEvents.integrationId, query.integrationId));
-    if (query.domain) conditions.push(ilike(dnsSecurityEvents.domain, `%${query.domain}%`));
+    if (query.domain) conditions.push(ilike(dnsSecurityEvents.domain, `%${escapeLike(query.domain)}%`));
 
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
@@ -899,12 +900,18 @@ dnsSecurityRoutes.post(
       return c.json({ error: 'Failed to create policy' }, 500);
     }
 
+    let syncScheduled = false;
+    let warning: string | undefined;
+
     try {
       await schedulePolicySync(policy.id, {
         add: normalizedDomains.map((entry) => entry.domain),
         remove: []
       });
+      syncScheduled = true;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warning = `Policy created but sync scheduling failed: ${message}`;
       console.error('[dns-security] Policy sync scheduling failed:', error);
     }
 
@@ -916,11 +923,12 @@ dnsSecurityRoutes.post(
       resourceName: policy.name,
       details: {
         type: policy.type,
-        domainCount: normalizedDomains.length
+        domainCount: normalizedDomains.length,
+        syncScheduled
       }
     });
 
-    return c.json(policy, 201);
+    return c.json({ ...policy, syncScheduled, warning }, 201);
   }
 );
 
@@ -995,13 +1003,19 @@ dnsSecurityRoutes.patch(
       })
       .where(eq(dnsPolicies.id, policy.id));
 
+    let syncScheduled = false;
+    let warning: string | undefined;
+
     if (addedDomains.length > 0 || removedDomains.length > 0) {
       try {
         await schedulePolicySync(policy.id, {
           add: addedDomains,
           remove: removedDomains
         });
+        syncScheduled = true;
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warning = `Domains updated but sync scheduling failed: ${message}`;
         console.error('[dns-security] Policy domain sync scheduling failed:', error);
       }
     }
@@ -1014,7 +1028,8 @@ dnsSecurityRoutes.patch(
       resourceName: policy.name,
       details: {
         added: addedDomains.length,
-        removed: removedDomains.length
+        removed: removedDomains.length,
+        syncScheduled
       }
     });
 
@@ -1023,7 +1038,9 @@ dnsSecurityRoutes.patch(
       policyId: policy.id,
       domainCount: updatedDomains.length,
       added: addedDomains,
-      removed: removedDomains
+      removed: removedDomains,
+      syncScheduled,
+      warning
     });
   }
 );

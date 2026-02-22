@@ -8,13 +8,16 @@ import {
   networkChangeEvents
 } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
+import { captureException } from '../services/sentry';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { enqueueDiscoveryScan, type DiscoveredHostResult } from './discoveryWorker';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[NetworkBaselineWorker] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
+  }
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const NETWORK_BASELINE_QUEUE = 'network-baseline';
@@ -149,6 +152,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
         `[NetworkBaselineWorker] Failed to schedule scan for baseline ${baseline.id} (${baseline.subnet}):`,
         error instanceof Error ? error.message : error
       );
+      captureException(error);
     }
   }
 
@@ -393,10 +397,12 @@ export async function initializeNetworkBaselineWorker(): Promise<void> {
 
   networkBaselineWorkerInstance.on('error', (error) => {
     console.error('[NetworkBaselineWorker] Worker error:', error);
+    captureException(error);
   });
 
   networkBaselineWorkerInstance.on('failed', (job, error) => {
     console.error(`[NetworkBaselineWorker] Job ${job?.id} failed:`, error);
+    captureException(error);
   });
 
   await scheduleRecurringScanPlanner();

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ShieldAlert, Check, X, Clock, Monitor } from 'lucide-react';
 
+// Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
 
 /** Keys that are internal identifiers — not useful to show the user */

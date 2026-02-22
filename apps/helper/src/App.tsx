@@ -130,6 +130,7 @@ function SessionHistory({ onClose }: { onClose: () => void }) {
   );
 }
 
+// Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000; // 5 minutes
 const HIDDEN_INPUT_KEYS = new Set(['deviceId', 'orgId', 'siteId', 'sessionId']);
 

@@ -5,11 +5,10 @@
 export type AiApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
 
 export interface ActionPlanStep {
-  index: number;
   toolName: string;
   input: Record<string, unknown>;
   reasoning: string;
-  status?: 'pending' | 'executing' | 'completed' | 'failed' | 'skipped';
+  status: 'pending' | 'executing' | 'completed' | 'failed' | 'skipped';
 }
 
 export interface ActionPlan {

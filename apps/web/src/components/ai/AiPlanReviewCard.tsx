@@ -75,19 +75,19 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
 
       {/* Steps list */}
       <div className="mt-3 space-y-1">
-        {steps.map((step) => {
-          const isExpanded = expandedStep === step.index;
+        {steps.map((step, stepIdx) => {
+          const isExpanded = expandedStep === stepIdx;
           const visibleInput = filterInput(step.input);
           const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
           return (
-            <div key={step.index} className="rounded-md bg-gray-800/40 px-2.5 py-2">
+            <div key={stepIdx} className="rounded-md bg-gray-800/40 px-2.5 py-2">
               <button
-                onClick={() => setExpandedStep(isExpanded ? null : step.index)}
+                onClick={() => setExpandedStep(isExpanded ? null : stepIdx)}
                 className="flex w-full items-center gap-2 text-left"
               >
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-700 text-xs text-gray-300">
-                  {step.index + 1}
+                  {stepIdx + 1}
                 </span>
                 {isExpanded ? (
                   <ChevronDown className="h-3 w-3 shrink-0 text-gray-500" />

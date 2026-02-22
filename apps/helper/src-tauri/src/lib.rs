@@ -72,10 +72,19 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .ok_or("Missing 'server_url' in agent config")?
         .to_string();
 
-    let token = yaml
-        .get("auth_token")
+    // Read secrets from secrets.yaml (same directory, different file) for tokens/mTLS creds.
+    // secrets.yaml is chmod 0640 (group-readable by breeze group) while agent.yaml is 0644.
+    let secrets_path = path.with_file_name("secrets.yaml");
+    let secrets: Option<serde_yaml::Value> = std::fs::read_to_string(&secrets_path)
+        .ok()
+        .and_then(|s| serde_yaml::from_str(&s).ok());
+
+    let token = secrets
+        .as_ref()
+        .and_then(|s| s.get("auth_token"))
         .and_then(|v| v.as_str())
-        .ok_or("Missing 'auth_token' in agent config")?
+        .or_else(|| yaml.get("auth_token").and_then(|v| v.as_str())) // fallback to agent.yaml
+        .ok_or("Missing 'auth_token' in secrets.yaml or agent.yaml")?
         .to_string();
 
     let agent_id = yaml
@@ -84,15 +93,19 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .ok_or("Missing 'agent_id' in agent config")?
         .to_string();
 
-    let mtls_cert_pem = yaml
-        .get("mtls_cert_pem")
+    let mtls_cert_pem = secrets
+        .as_ref()
+        .and_then(|s| s.get("mtls_cert_pem"))
         .and_then(|v| v.as_str())
+        .or_else(|| yaml.get("mtls_cert_pem").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 
-    let mtls_key_pem = yaml
-        .get("mtls_key_pem")
+    let mtls_key_pem = secrets
+        .as_ref()
+        .and_then(|s| s.get("mtls_key_pem"))
         .and_then(|v| v.as_str())
+        .or_else(|| yaml.get("mtls_key_pem").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 

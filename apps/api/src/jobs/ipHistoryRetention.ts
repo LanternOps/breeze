@@ -9,15 +9,14 @@ import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { getRedisConnection } from '../services/redis';
+import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  if (typeof withSystem !== 'function') {
-    console.warn('[ipHistoryRetention] withSystemDbAccessContext unavailable, skipping retention');
-    return fn();
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[IPHistoryRetention] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
   }
-  return withSystem(fn);
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 const QUEUE_NAME = 'ip-history-retention';
@@ -74,10 +73,12 @@ export async function initializeIPHistoryRetention(): Promise<void> {
 
     retentionWorker.on('error', (error) => {
       console.error('[IPHistoryRetention] Worker error:', error);
+      captureException(error);
     });
 
     retentionWorker.on('failed', (job, err) => {
       console.error(`[IPHistoryRetention] job ${job?.id} failed:`, err);
+      captureException(err);
     });
 
     const queue = getIPHistoryRetentionQueue();

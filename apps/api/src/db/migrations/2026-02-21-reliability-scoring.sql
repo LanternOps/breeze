@@ -1,3 +1,5 @@
+BEGIN;
+
 DO $$
 BEGIN
   CREATE TYPE trend_direction AS ENUM ('improving', 'stable', 'degrading');
@@ -67,3 +69,5 @@ CREATE INDEX IF NOT EXISTS reliability_score_idx
   ON device_reliability (reliability_score);
 CREATE INDEX IF NOT EXISTS reliability_trend_idx
   ON device_reliability (trend_direction);
+
+COMMIT;

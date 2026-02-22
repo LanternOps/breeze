@@ -191,23 +191,30 @@ import (
 	"sync"
 )
 
+// darwinCaptureMu serializes access to the global C statics (g_filter, g_config).
+// Only one darwinCapturer may be active at a time.
+var darwinCaptureMu sync.Mutex
+
 // darwinCapturer implements ScreenCapturer for macOS using ScreenCaptureKit.
 // The ScreenCaptureKit display list and filter are queried once at init time
 // (triggering a single permission dialog) and cached for per-frame capture.
 type darwinCapturer struct {
-	config      CaptureConfig
-	mu          sync.Mutex
-	initialized bool
+	config          CaptureConfig
+	mu              sync.Mutex
+	initialized     bool
+	holdsGlobalLock bool
 }
 
 // newPlatformCapturer creates a new macOS screen capturer.
 // Calls SCShareableContent once to cache the display/filter/config.
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
+	darwinCaptureMu.Lock()
 	errCode := int(C.initCapture(C.int(config.DisplayIndex)))
 	if errCode != 0 {
+		darwinCaptureMu.Unlock()
 		return nil, translateDarwinError(errCode)
 	}
-	return &darwinCapturer{config: config, initialized: true}, nil
+	return &darwinCapturer{config: config, initialized: true, holdsGlobalLock: true}, nil
 }
 
 // Capture captures the entire screen using the cached filter/config.
@@ -277,6 +284,10 @@ func (c *darwinCapturer) Close() error {
 	if c.initialized {
 		C.releaseCapture()
 		c.initialized = false
+	}
+	if c.holdsGlobalLock {
+		c.holdsGlobalLock = false
+		darwinCaptureMu.Unlock()
 	}
 	return nil
 }

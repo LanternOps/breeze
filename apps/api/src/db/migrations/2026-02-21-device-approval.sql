@@ -26,7 +26,7 @@ ALTER TABLE discovered_assets DROP COLUMN ignored_at;
 
 -- 5. Drop old status column
 ALTER TABLE discovered_assets DROP COLUMN status;
-DROP TYPE discovered_asset_status;
+DROP TYPE IF EXISTS discovered_asset_status;
 
 -- 6. network_known_guests table
 CREATE TABLE network_known_guests (

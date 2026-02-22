@@ -93,8 +93,8 @@ During enrollment, the agent:
 1. Collects system information (hostname, OS, architecture, hardware details)
 2. Sends an enrollment request with the enrollment key and secret
 3. Receives a unique `brz_` bearer token, device ID, org ID, and site ID
-4. Stores configuration in a YAML file with `0600` permissions (owner-only)
-5. Creates the config directory with `0700` permissions
+4. Stores non-secret configuration in `agent.yaml` (`0644`, readable by the Breeze Helper) and secrets (auth token, mTLS keys) in `secrets.yaml` (`0600`, root-only)
+5. Creates the config directory with `0755` permissions
 
 ## Verifying Installation
 
@@ -110,7 +110,7 @@ breeze-agent status
 
 # View agent logs
 sudo journalctl -u breeze-agent -f                    # Linux
-sudo tail -f /Library/Logs/Breeze/agent.log            # macOS
+sudo tail -f "/Library/Application Support/Breeze/logs/agent.log"  # macOS
 Get-Content "$env:ProgramData\Breeze\logs\agent.log"   # Windows
 ```
 
@@ -127,9 +127,9 @@ After enrollment, the agent stores its configuration at:
 | Windows | `C:\ProgramData\Breeze\agent.yaml` |
 
 ```yaml
+# agent.yaml — readable by the Breeze Helper (0644)
 agent_id: "uuid-..."
 server_url: "https://breeze.yourdomain.com"
-auth_token: "brz_..."
 org_id: "uuid-..."
 site_id: "uuid-..."
 heartbeat_interval_seconds: 60
@@ -139,10 +139,11 @@ enabled_collectors:
   - software
   - metrics
   - network
+# Auth token and mTLS keys are stored separately in secrets.yaml (0600)
 ```
 
 <Aside type="danger">
-  The config file contains the agent's bearer token. Its permissions are set to `0600` (owner-only read/write). Do not change this.
+  The agent's bearer token and mTLS keys are stored in `secrets.yaml` with `0600` permissions (root-only). Do not change these permissions. The main `agent.yaml` file is `0644` so the Breeze Helper can read it.
 </Aside>
 
 ## Service Management
@@ -168,7 +169,7 @@ sudo breeze-agent service install --with-user-helper
 ```
 
 <Aside>
-  The user helper communicates with the root daemon via a local IPC socket. It has no direct network access.
+  The user helper communicates with the root daemon via a local IPC socket. It has no direct network access except for log shipping (forwarding diagnostic logs to the Breeze server under the agent's identity).
 </Aside>
 
 ## macOS Permissions

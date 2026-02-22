@@ -129,7 +129,8 @@ var serviceInstallCmd = &cobra.Command{
 				return fmt.Errorf("failed to create %s: %w", dir, err)
 			}
 		}
-		// Config dir is more restrictive
+		// Config dir starts restrictive (0700). Note: FixConfigPermissions() loosens this
+		// to 0755 on startup so the Helper can read agent.yaml.
 		if err := os.Chmod(darwinConfigDir, 0700); err != nil {
 			return fmt.Errorf("failed to set permissions on %s: %w", darwinConfigDir, err)
 		}
@@ -172,9 +173,13 @@ var serviceInstallCmd = &cobra.Command{
 
 		// Create breeze group for IPC socket access (best-effort)
 		if err := exec.Command("dscl", ".", "-read", "/Groups/breeze").Run(); err != nil {
-			_ = exec.Command("dscl", ".", "-create", "/Groups/breeze").Run()
-			_ = exec.Command("dscl", ".", "-create", "/Groups/breeze", "PrimaryGroupID", "399").Run()
-			fmt.Println("Created 'breeze' group for IPC socket access.")
+			if err2 := exec.Command("dscl", ".", "-create", "/Groups/breeze").Run(); err2 != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to create 'breeze' group: %v\n", err2)
+			} else if err3 := exec.Command("dscl", ".", "-create", "/Groups/breeze", "PrimaryGroupID", "399").Run(); err3 != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to set group ID: %v\n", err3)
+			} else {
+				fmt.Println("Created 'breeze' group for IPC socket access.")
+			}
 		}
 
 		fmt.Println()
@@ -214,11 +219,17 @@ var serviceUninstallCmd = &cobra.Command{
 		}
 
 		// Remove plists
-		os.Remove(darwinPlistDst)
-		os.Remove(darwinUserPlistDst)
+		if err := os.Remove(darwinPlistDst); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinPlistDst, err)
+		}
+		if err := os.Remove(darwinUserPlistDst); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinUserPlistDst, err)
+		}
 
 		// Remove binary
-		os.Remove(darwinBinaryPath)
+		if err := os.Remove(darwinBinaryPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinBinaryPath, err)
+		}
 
 		fmt.Println("Breeze Agent service uninstalled.")
 		fmt.Printf("Config at %s was preserved.\n", darwinConfigDir)
@@ -309,8 +320,8 @@ var serviceStatusCmd = &cobra.Command{
 		// Get detailed info from launchctl print
 		out, err := exec.Command("launchctl", "print", "system/"+darwinLabel).CombinedOutput()
 		if err != nil {
-			// Fallback: just report as running
-			fmt.Println("Service: running")
+			// Fallback: can't get details but the job is loaded
+			fmt.Println("Service: loaded (unable to retrieve details)")
 			return nil
 		}
 

@@ -3,6 +3,7 @@
 package collectors
 
 import (
+	"log/slog"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ func (c *ReliabilityCollector) Collect() (*ReliabilityMetrics, error) {
 
 	events, err := c.eventLogCol.Collect()
 	if err != nil {
-		// Return base metrics even if event parsing fails.
+		slog.Warn("reliability event log collection failed, returning base metrics only", "error", err.Error())
 		return metrics, nil
 	}
 

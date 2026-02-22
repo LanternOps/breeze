@@ -46,8 +46,11 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
           failCount = 0;
         } else if (res.status === 401 || res.status === 403) {
           stopPolling();
+        } else {
+          failCount++;
         }
-      } catch {
+      } catch (err) {
+        console.warn('[AiCostIndicator] fetch failed:', err);
         failCount++;
         if (failCount >= 5) stopPolling();
       }

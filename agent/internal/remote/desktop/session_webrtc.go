@@ -157,9 +157,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	// Get screen bounds first — needed for bitrate scaling and encoder init.
 	// On macOS Retina, GetScreenBounds (NSScreen × scaleFactor) may report
-	// pixel dimensions that differ from what the capturer actually produces
-	// (SCScreenshotManager returns point-resolution images). Do a probe
-	// capture to get the real dimensions and use those for encoder init.
+	// pixel dimensions that differ from what the capturer actually produces.
+	// A defensive probe capture detects this mismatch and uses the actual
+	// capture dimensions for encoder init when they differ.
 	w, h, err := capturer.GetScreenBounds()
 	if err != nil {
 		return "", fmt.Errorf("failed to get screen bounds: %w", err)
@@ -174,6 +174,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			w, h = pw, ph
 		}
 		captureImagePool.Put(probeImg)
+	} else if probeErr != nil {
+		slog.Warn("Probe capture failed, using GetScreenBounds dimensions",
+			"session", sessionID, "error", probeErr.Error())
 	}
 
 	// Scale initial bitrate to resolution. 2.5Mbps is fine for 1080p but
