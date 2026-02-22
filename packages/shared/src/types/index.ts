@@ -189,6 +189,13 @@ export interface DeviceMetrics {
   ramUsedMb: number;
   diskPercent: number;
   diskUsedGb: number;
+  diskActivityAvailable: boolean | null;
+  diskReadBytes: bigint | null;
+  diskWriteBytes: bigint | null;
+  diskReadBps: bigint | null;
+  diskWriteBps: bigint | null;
+  diskReadOps: bigint | null;
+  diskWriteOps: bigint | null;
   networkInBytes: bigint | null;
   networkOutBytes: bigint | null;
   bandwidthInBps: bigint | null;
