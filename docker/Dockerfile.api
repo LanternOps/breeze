@@ -30,6 +30,11 @@ COPY --from=builder --chown=hono:nodejs /deployed/node_modules ./node_modules
 COPY --from=builder --chown=hono:nodejs /deployed/dist ./dist
 COPY --from=builder --chown=hono:nodejs /deployed/package.json ./
 
+# Copy Drizzle migration files for auto-migrate on startup
+COPY --from=builder --chown=hono:nodejs /app/apps/api/drizzle ./drizzle
+# Copy manual SQL migration files
+COPY --from=builder --chown=hono:nodejs /app/apps/api/src/db/migrations ./db/migrations
+
 USER hono
 
 EXPOSE 3001

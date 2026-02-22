@@ -40,8 +40,11 @@ const cspDirectives = [
   // Operators can still override per-directive behavior with explicit env flags.
   (() => {
     const isProduction = isProductionEnvironment();
-    const allowInlineScript = readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT') || !isProduction;
-    const allowInlineStyle = readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE') || !isProduction;
+    // TODO: Enforce strict CSP once all inline scripts/styles are migrated to external files
+    // Set CSP_STRICT=true to opt in to strict mode early
+    const strictCsp = readFlag('CSP_STRICT');
+    const allowInlineScript = !strictCsp || readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT');
+    const allowInlineStyle = !strictCsp || readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE');
     return {
       allowInlineScript,
       allowInlineStyle
@@ -54,8 +57,8 @@ const cspDirectives = [
   "frame-ancestors 'none'",
   "object-src 'none'",
   mode.allowInlineScript
-    ? "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
-    : "script-src 'self' https://cdn.jsdelivr.net",
+    ? "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com"
+    : "script-src 'self' https://cdn.jsdelivr.net https://static.cloudflareinsights.com",
   mode.allowInlineStyle
     ? "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
     : "style-src 'self' https://cdn.jsdelivr.net",
