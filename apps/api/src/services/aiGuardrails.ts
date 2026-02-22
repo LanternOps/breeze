@@ -87,6 +87,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     rename: { resource: 'devices', action: 'execute' },
   },
   query_audit_log: { resource: 'audit', action: 'read' },
+  query_change_log: { resource: 'devices', action: 'read' },
   network_discovery: { resource: 'devices', action: 'execute' },
   analyze_boot_performance: { resource: 'devices', action: 'read' },
   manage_startup_items: { resource: 'devices', action: 'execute' },
@@ -184,12 +185,23 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   // Agent log tools
   search_agent_logs: { resource: 'devices', action: 'read' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
+  // Event log tools
+  search_logs: { resource: 'devices', action: 'read' },
+  get_log_trends: { resource: 'devices', action: 'read' },
+  detect_log_correlations: { resource: 'devices', action: 'read' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
+  // Playbook tools
+  list_playbooks: { resource: 'devices', action: 'read' },
+  execute_playbook: { resource: 'devices', action: 'execute' },
+  get_playbook_history: { resource: 'devices', action: 'read' },
+  // Security + reliability read tools
+  get_security_posture: { resource: 'devices', action: 'read' },
+  get_fleet_health: { resource: 'devices', action: 'read' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -218,11 +230,17 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Brain device context tools
   set_device_context: { limit: 20, windowSeconds: 300 },
   resolve_device_context: { limit: 20, windowSeconds: 300 },
+  // Event log tools
+  search_logs: { limit: 30, windowSeconds: 300 },
+  get_log_trends: { limit: 20, windowSeconds: 300 },
+  detect_log_correlations: { limit: 10, windowSeconds: 300 },
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
   // Configuration policy tools
   apply_configuration_policy: { limit: 10, windowSeconds: 300 },
   remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
+  // Playbook tools
+  execute_playbook: { limit: 5, windowSeconds: 600 },
 };
 
 export interface GuardrailCheck {
@@ -277,7 +295,8 @@ export function checkGuardrails(
     return {
       tier: 2,
       allowed: true,
-      requiresApproval: false
+      requiresApproval: false,
+      description: buildApprovalDescription(toolName, action, input)
     };
   }
 
@@ -294,7 +313,8 @@ export function checkGuardrails(
   return {
     tier: baseTier,
     allowed: true,
-    requiresApproval: false
+    requiresApproval: false,
+    description: buildApprovalDescription(toolName, input.action as string | undefined, input)
   };
 }
 
@@ -307,6 +327,10 @@ export async function checkToolPermission(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<string | null> {
+  // Helper sessions use a synthetic auth with no roleId — tool access is
+  // governed by the helper whitelist (helperToolFilter), not user RBAC.
+  if (auth.token.roleId === null) return null;
+
   const permDef = TOOL_PERMISSIONS[toolName];
   if (!permDef) return null; // No permission mapping — allow
 
@@ -481,6 +505,13 @@ function buildApprovalDescription(
     case 'remove_configuration_policy_assignment':
       parts.push(`Remove config policy assignment ${(input.assignmentId as string)?.slice(0, 8)}...`);
       break;
+
+    case 'execute_playbook': {
+      parts.push('Execute self-healing playbook');
+      if (input.playbookId) parts.push(`(playbook ${String(input.playbookId).slice(0, 8)}...)`);
+      if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
+      break;
+    }
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

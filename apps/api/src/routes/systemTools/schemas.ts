@@ -89,3 +89,49 @@ export const paginationQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional()
 });
+
+// File operation schemas
+
+// Check both forward and back slashes since paths may come from Windows or Unix agents
+const filePathString = z.string().min(1).max(2048).refine(
+  (val) => !val.includes('\0') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(val),
+  { message: 'Invalid path: null bytes and path traversal (..) are not allowed' }
+);
+
+export const fileCopyBodySchema = z.object({
+  items: z.array(z.object({
+    sourcePath: filePathString,
+    destPath: filePathString,
+  })).min(1).max(100),
+});
+
+export const fileMoveBodySchema = z.object({
+  items: z.array(z.object({
+    sourcePath: filePathString,
+    destPath: filePathString,
+  })).min(1).max(100),
+});
+
+export const fileDeleteBodySchema = z.object({
+  paths: z.array(filePathString).min(1).max(100),
+  permanent: z.boolean().optional().default(false),
+});
+
+const trashIdString = z.string().min(1).max(512).refine(
+  (val) => !val.includes('/') && !val.includes('\\') && !val.includes('..') && !val.includes('\0'),
+  { message: 'Invalid trash ID: must not contain path separators or traversal sequences' }
+);
+
+export const fileTrashRestoreBodySchema = z.object({
+  trashIds: z.array(trashIdString).min(1).max(100),
+});
+
+export const fileTrashPurgeBodySchema = z.object({
+  trashIds: z.array(trashIdString).optional(),
+});
+
+export const fileUploadBodySchema = z.object({
+  path: filePathString,
+  content: z.string().min(0),
+  encoding: z.enum(['base64', 'text']).optional().default('text'),
+});

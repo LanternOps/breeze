@@ -1,20 +1,23 @@
 import { useCallback, useMemo, useState, useEffect } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import DiscoveryProfileList, { type DiscoveryProfile, type DiscoveryProfileStatus } from './DiscoveryProfileList';
-import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings } from './DiscoveryProfileForm';
+import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings, type ProfileAlertSettings, defaultAlertSettings } from './DiscoveryProfileForm';
 import DiscoveryJobList from './DiscoveryJobList';
 import DiscoveredAssetList from './DiscoveredAssetList';
+import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import NetworkTopologyMap from './NetworkTopologyMap';
+import NetworkChangesPanel from './NetworkChangesPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
-const DISCOVERY_TABS = ['profiles', 'jobs', 'assets', 'topology'] as const;
+const DISCOVERY_TABS = ['assets', 'profiles', 'jobs', 'topology', 'changes'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
 
 type ApiDiscoverySchedule = {
   type: 'manual' | 'cron' | 'interval';
   cron?: string;
   intervalMinutes?: number;
+  timezone?: string;
 };
 
 type ApiSnmpCredentials = {
@@ -38,12 +41,15 @@ type ApiDiscoveryProfile = {
   schedule?: ApiDiscoverySchedule;
   snmpCommunities?: string[];
   snmpCredentials?: ApiSnmpCredentials | null;
+  alertSettings?: ProfileAlertSettings | null;
   createdAt?: string;
   updatedAt?: string;
 };
 
 const fallbackSchedule: DiscoverySchedule = {
   cadence: 'daily',
+  intervalHours: 1,
+  intervalMinutes: 60,
   time: '02:00',
   dayOfWeek: 'Monday',
   dayOfMonth: '1',
@@ -111,6 +117,7 @@ function scheduleToForm(schedule?: ApiDiscoverySchedule): DiscoverySchedule {
       return {
         ...fallbackSchedule,
         ...parsed,
+        timezone: schedule.timezone?.trim() || fallbackSchedule.timezone,
         dayOfWeek: parsed.cadence === 'weekly' ? parsed.dayOfWeek : fallbackSchedule.dayOfWeek,
         dayOfMonth: parsed.cadence === 'monthly' ? parsed.dayOfMonth : fallbackSchedule.dayOfMonth
       };
@@ -118,7 +125,20 @@ function scheduleToForm(schedule?: ApiDiscoverySchedule): DiscoverySchedule {
   }
 
   if (schedule.type === 'interval' && schedule.intervalMinutes) {
-    return { ...fallbackSchedule, cadence: 'daily', time: '00:00' };
+    if (schedule.intervalMinutes % 60 !== 0) {
+      return {
+        ...fallbackSchedule,
+        cadence: 'interval',
+        intervalMinutes: Math.max(1, schedule.intervalMinutes)
+      };
+    }
+
+    return {
+      ...fallbackSchedule,
+      cadence: 'hourly',
+      intervalMinutes: schedule.intervalMinutes,
+      intervalHours: Math.max(1, Math.round(schedule.intervalMinutes / 60))
+    };
   }
 
   return { ...fallbackSchedule };
@@ -133,6 +153,10 @@ function scheduleToDisplay(schedule?: ApiDiscoverySchedule): { label: string; st
 
   if (schedule.type === 'interval') {
     const minutes = schedule.intervalMinutes ?? 0;
+    if (minutes > 0 && minutes % 60 === 0) {
+      const hours = minutes / 60;
+      return { label: hours === 1 ? 'Every hour' : `Every ${hours} hours`, status: 'active' };
+    }
     return { label: minutes ? `Every ${minutes} min` : 'Interval schedule', status: 'active' };
   }
 
@@ -152,6 +176,16 @@ function scheduleToDisplay(schedule?: ApiDiscoverySchedule): { label: string; st
 }
 
 function formScheduleToApi(schedule: DiscoverySchedule): ApiDiscoverySchedule {
+  if (schedule.cadence === 'interval') {
+    const intervalMinutes = Math.max(1, schedule.intervalMinutes ?? 30);
+    return { type: 'interval', intervalMinutes };
+  }
+
+  if (schedule.cadence === 'hourly') {
+    const intervalHours = Math.max(1, schedule.intervalHours ?? 1);
+    return { type: 'interval', intervalMinutes: intervalHours * 60 };
+  }
+
   const [hour, minute] = schedule.time.split(':');
   const safeHour = (hour ?? '00').padStart(2, '0');
   const safeMinute = (minute ?? '00').padStart(2, '0');
@@ -162,10 +196,12 @@ function formScheduleToApi(schedule: DiscoverySchedule): ApiDiscoverySchedule {
     cron = `${safeMinute} ${safeHour} * * ${dayIndex >= 0 ? dayIndex : 1}`;
   }
   if (schedule.cadence === 'monthly') {
-    cron = `${safeMinute} ${safeHour} ${schedule.dayOfMonth ?? '1'} * *`;
+    const parsedDay = Number(schedule.dayOfMonth ?? '1');
+    const safeDay = Number.isFinite(parsedDay) ? Math.min(28, Math.max(1, Math.trunc(parsedDay))) : 1;
+    cron = `${safeMinute} ${safeHour} ${safeDay} * *`;
   }
 
-  return { type: 'cron', cron };
+  return { type: 'cron', cron, timezone: schedule.timezone || 'UTC' };
 }
 
 function mapProfileToDisplay(profile: ApiDiscoveryProfile): DiscoveryProfile {
@@ -181,19 +217,19 @@ function mapProfileToDisplay(profile: ApiDiscoveryProfile): DiscoveryProfile {
 }
 
 function getTabFromURL(): DiscoveryTab {
-  if (typeof window === 'undefined') return 'profiles';
+  if (typeof window === 'undefined') return 'assets';
   const params = new URLSearchParams(window.location.search);
   const tab = params.get('tab');
   if (tab && (DISCOVERY_TABS as readonly string[]).includes(tab)) {
     return tab as DiscoveryTab;
   }
-  return 'profiles';
+  return 'assets';
 }
 
 function pushTabToURL(tab: DiscoveryTab) {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  if (tab === 'profiles') {
+  if (tab === 'assets') {
     url.searchParams.delete('tab');
   } else {
     url.searchParams.set('tab', tab);
@@ -202,10 +238,11 @@ function pushTabToURL(tab: DiscoveryTab) {
 }
 
 export default function DiscoveryPage() {
-  const [activeTab, setActiveTab] = useState<DiscoveryTab>(getTabFromURL);
+  const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
-  // Listen for back/forward navigation
+  // Sync tab from URL after hydration + listen for back/forward
   useEffect(() => {
+    setActiveTab(getTabFromURL());
     const onPopState = () => setActiveTab(getTabFromURL());
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -213,15 +250,49 @@ export default function DiscoveryPage() {
   const [profiles, setProfiles] = useState<ApiDiscoveryProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(true);
   const [profilesError, setProfilesError] = useState<string>();
+  const [profileFormError, setProfileFormError] = useState<string>();
   const [savingProfile, setSavingProfile] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ApiDiscoveryProfile | null>(null);
   const [jobsProfileFilter, setJobsProfileFilter] = useState<string | null>(null);
+  const [topologyAssetId, setTopologyAssetId] = useState<string | null>(null);
+  const [topologyAsset, setTopologyAsset] = useState<AssetDetail | null>(null);
+  const [topologyAssetLoading, setTopologyAssetLoading] = useState(false);
+
+  // Fetch asset detail when a topology node is clicked
+  useEffect(() => {
+    if (!topologyAssetId) {
+      setTopologyAsset(null);
+      return;
+    }
+    let cancelled = false;
+    setTopologyAssetLoading(true);
+    fetchWithAuth(`/discovery/assets/${topologyAssetId}`)
+      .then(async res => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setTopologyAsset(null);
+          return;
+        }
+        const data = await res.json();
+        const asset = data.data ?? data.asset ?? data;
+        if (!cancelled) setTopologyAsset(asset as AssetDetail);
+      })
+      .catch(() => {
+        if (!cancelled) setTopologyAsset(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTopologyAssetLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [topologyAssetId]);
 
   const tabLabels: Record<DiscoveryTab, string> = {
     profiles: 'Profiles',
     jobs: 'Jobs',
     assets: 'Assets',
-    topology: 'Topology'
+    topology: 'Topology',
+    changes: 'Changes'
   };
   const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
@@ -277,28 +348,29 @@ export default function DiscoveryPage() {
       subnets: editingProfile.subnets ?? [],
       methods: editingProfile.methods ?? [],
       schedule: scheduleToForm(editingProfile.schedule),
-      snmp
+      snmp,
+      alertSettings: editingProfile.alertSettings ?? defaultAlertSettings
     };
   }, [editingProfile, currentSiteId]);
 
   const handleSubmitProfile = async (values: DiscoveryProfileFormValues) => {
     setSavingProfile(true);
-    setProfilesError(undefined);
+    setProfileFormError(undefined);
 
     if (!values.siteId) {
-      setProfilesError('Please select a site for this discovery profile.');
+      setProfileFormError('Please select a site for this discovery profile.');
       setSavingProfile(false);
       return;
     }
 
     if (values.snmp.version === 'v3') {
       if (!values.snmp.username?.trim()) {
-        setProfilesError('SNMPv3 username is required.');
+        setProfileFormError('SNMPv3 username is required.');
         setSavingProfile(false);
         return;
       }
       if (!values.snmp.authPassphrase?.trim()) {
-        setProfilesError('SNMPv3 auth passphrase is required.');
+        setProfileFormError('SNMPv3 auth passphrase is required.');
         setSavingProfile(false);
         return;
       }
@@ -330,6 +402,7 @@ export default function DiscoveryPage() {
         siteId: values.siteId,
         snmpCommunities,
         snmpCredentials,
+        alertSettings: values.alertSettings,
         ...(currentOrgId ? { orgId: currentOrgId } : {})
       };
 
@@ -350,8 +423,10 @@ export default function DiscoveryPage() {
 
       await fetchProfiles();
       setEditingProfile(null);
+      setIsProfileModalOpen(false);
+      setProfileFormError(undefined);
     } catch (err) {
-      setProfilesError(err instanceof Error ? err.message : 'An error occurred');
+      setProfileFormError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setSavingProfile(false);
     }
@@ -403,6 +478,7 @@ export default function DiscoveryPage() {
 
   const handleEditProfile = async (profile: DiscoveryProfile) => {
     setProfilesError(undefined);
+    setProfileFormError(undefined);
     try {
       const response = await fetchWithAuth(`/discovery/profiles/${profile.id}`);
       if (!response.ok) {
@@ -415,6 +491,7 @@ export default function DiscoveryPage() {
           }
           setEditingProfile(match);
           setProfilesError('Profile detail endpoint unavailable. SNMP credentials may not be loaded.');
+          setIsProfileModalOpen(true);
           return;
         }
         const errData = await response.json().catch(() => null);
@@ -423,6 +500,7 @@ export default function DiscoveryPage() {
       const data = await response.json();
       const fullProfile: ApiDiscoveryProfile = data.data ?? data.profile ?? data;
       setEditingProfile(fullProfile);
+      setIsProfileModalOpen(true);
     } catch (err) {
       setProfilesError(err instanceof Error ? err.message : 'Failed to load profile details');
     }
@@ -452,26 +530,36 @@ export default function DiscoveryPage() {
     navigateToTab(tab);
   }, [navigateToTab]);
 
+  const handleCloseProfileModal = useCallback(() => {
+    if (savingProfile) return;
+    setIsProfileModalOpen(false);
+    setEditingProfile(null);
+    setProfileFormError(undefined);
+  }, [savingProfile]);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold">Network Discovery</h1>
           <p className="text-muted-foreground">
-            Configure discovery profiles, monitor scans, and review assets.
+            Configure discovery profiles, monitor scans, and manage network assets.
           </p>
         </div>
-        <button
-          type="button"
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          onClick={() => {
-            setEditingProfile(null);
-            navigateToTab('profiles');
-          }}
-        >
-          <Plus className="h-4 w-4" />
-          New Profile
-        </button>
+        {activeTab === 'profiles' && (
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            onClick={() => {
+              setEditingProfile(null);
+              setProfileFormError(undefined);
+              setIsProfileModalOpen(true);
+            }}
+          >
+            <Plus className="h-4 w-4" />
+            New Profile
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -490,26 +578,16 @@ export default function DiscoveryPage() {
       </div>
 
       {activeTab === 'profiles' && (
-        <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
-          <DiscoveryProfileList
-            profiles={displayProfiles}
-            loading={profilesLoading}
-            error={profilesError}
-            onRetry={fetchProfiles}
-            onEdit={handleEditProfile}
-            onDelete={handleDeleteProfile}
-            onRun={handleRunProfile}
-            onViewJobs={handleNavigateToJobs}
-          />
-          <DiscoveryProfileForm
-            initialValues={formInitialValues}
-            sites={siteOptions}
-            onSubmit={handleSubmitProfile}
-            onCancel={() => setEditingProfile(null)}
-            submitLabel={editingProfile ? (savingProfile ? 'Updating...' : 'Update Profile') : (savingProfile ? 'Creating...' : 'Create Profile')}
-            disabled={savingProfile}
-          />
-        </div>
+        <DiscoveryProfileList
+          profiles={displayProfiles}
+          loading={profilesLoading}
+          error={profilesError}
+          onRetry={fetchProfiles}
+          onEdit={handleEditProfile}
+          onDelete={handleDeleteProfile}
+          onRun={handleRunProfile}
+          onViewJobs={handleNavigateToJobs}
+        />
       )}
 
       {activeTab === 'jobs' && (
@@ -523,7 +601,69 @@ export default function DiscoveryPage() {
 
       {activeTab === 'assets' && <DiscoveredAssetList />}
 
-      {activeTab === 'topology' && <NetworkTopologyMap onNodeClick={handleNavigateToAssets} />}
+      {activeTab === 'topology' && (
+        <>
+          <NetworkTopologyMap onNodeClick={(nodeId) => setTopologyAssetId(nodeId)} />
+          {topologyAssetId && (
+            <AssetDetailModal
+              open={!!topologyAssetId}
+              asset={topologyAsset}
+              onClose={() => setTopologyAssetId(null)}
+              onDeleted={() => setTopologyAssetId(null)}
+              onUpdated={() => {
+                // Re-fetch to refresh data
+                setTopologyAssetId(prev => prev);
+              }}
+            />
+          )}
+        </>
+      )}
+
+      {activeTab === 'changes' && (
+        <NetworkChangesPanel
+          currentOrgId={currentOrgId}
+          currentSiteId={currentSiteId}
+          siteOptions={siteOptions}
+        />
+      )}
+
+      {isProfileModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+          <div className="w-full max-w-5xl rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {editingProfile ? 'Edit Discovery Profile' : 'New Discovery Profile'}
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Configure network scope, scan methods, and scheduling settings.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseProfileModal}
+                className="flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground hover:text-foreground"
+                disabled={savingProfile}
+                aria-label="Close profile settings modal"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-5 max-h-[calc(100vh-12rem)] overflow-y-auto pr-1">
+              <DiscoveryProfileForm
+                initialValues={formInitialValues}
+                sites={siteOptions}
+                onSubmit={handleSubmitProfile}
+                onCancel={handleCloseProfileModal}
+                submitLabel={editingProfile ? (savingProfile ? 'Updating...' : 'Update Profile') : (savingProfile ? 'Creating...' : 'Create Profile')}
+                disabled={savingProfile}
+                error={profileFormError}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

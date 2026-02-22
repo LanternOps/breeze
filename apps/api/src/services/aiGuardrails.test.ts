@@ -12,8 +12,13 @@ vi.mock('./aiTools', () => ({
       manage_automations: 1,
       manage_alert_rules: 1,
       generate_report: 1,
+      // Playbook tools
+      list_playbooks: 1,
+      execute_playbook: 3,
+      get_playbook_history: 1,
       // Non-fleet tools for baseline tests
       query_devices: 1,
+      query_change_log: 1,
       execute_command: 3,
     };
     return tiers[toolName];
@@ -33,7 +38,8 @@ vi.mock('./redis', () => ({
   getRedis: vi.fn(),
 }));
 
-import { checkGuardrails } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission } from './aiGuardrails';
+import { getUserPermissions, hasPermission } from './permissions';
 
 // ─── Tier escalation for fleet tools ────────────────────────────────────
 
@@ -169,6 +175,26 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     expect(result.allowed).toBe(true);
     expect(result.requiresApproval).toBe(false);
   });
+
+  it('applies base tier semantics for playbook tools', () => {
+    const readTool = checkGuardrails('list_playbooks', {});
+    expect(readTool.tier).toBe(1);
+    expect(readTool.requiresApproval).toBe(false);
+
+    const execTool = checkGuardrails('execute_playbook', {
+      playbookId: '11111111-1111-1111-1111-111111111111',
+      deviceId: '22222222-2222-2222-2222-222222222222',
+    });
+    expect(execTool.tier).toBe(3);
+    expect(execTool.requiresApproval).toBe(true);
+  });
+
+  it('treats query_change_log as Tier 1 read-only', () => {
+    const result = checkGuardrails('query_change_log', {});
+    expect(result.tier).toBe(1);
+    expect(result.allowed).toBe(true);
+    expect(result.requiresApproval).toBe(false);
+  });
 });
 
 // ─── Approval descriptions for fleet tools ──────────────────────────────
@@ -197,5 +223,31 @@ describe('checkGuardrails — fleet approval descriptions', () => {
   it('includes automation name in create description', () => {
     const result = checkGuardrails('manage_automations', { action: 'create', name: 'Auto-restart' });
     expect(result.description).toContain('Auto-restart');
+  });
+});
+
+describe('checkToolPermission — reliability and posture read tools', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  it('enforces devices.read for get_fleet_health', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    const result = await checkToolPermission('get_fleet_health', {}, auth);
+    expect(result).toContain('requires devices.read');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'read');
+  });
+
+  it('allows get_security_posture when devices.read is present', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const result = await checkToolPermission('get_security_posture', { orgId: 'org-1' }, auth);
+    expect(result).toBeNull();
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'read');
   });
 });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 // ============================================
 // Enrollment
@@ -43,6 +44,13 @@ export const heartbeatSchema = z.object({
     ramUsedMb: z.number().int(),
     diskPercent: z.number(),
     diskUsedGb: z.number(),
+    diskActivityAvailable: z.boolean().optional(),
+    diskReadBytes: z.number().int().min(0).optional(),
+    diskWriteBytes: z.number().int().min(0).optional(),
+    diskReadBps: z.number().int().min(0).optional(),
+    diskWriteBps: z.number().int().min(0).optional(),
+    diskReadOps: z.number().int().min(0).optional(),
+    diskWriteOps: z.number().int().min(0).optional(),
     networkInBytes: z.number().int().optional(),
     networkOutBytes: z.number().int().optional(),
     bandwidthInBps: z.number().int().min(0).optional(),
@@ -60,9 +68,62 @@ export const heartbeatSchema = z.object({
       speed: z.number().int().min(0).optional()
     })).max(100).optional(),
     processCount: z.number().int().optional()
-  }),
+  }).optional(),
+  metricsAvailable: z.boolean().optional(),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
+  ipHistoryUpdate: z.object({
+    deviceId: z.string().optional(),
+    currentIPs: z.array(z.object({
+      interfaceName: z.string().min(1).max(100),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).nullish(),
+    changedIPs: z.array(z.object({
+      interfaceName: z.string().min(1).max(100),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).nullish(),
+    removedIPs: z.array(z.object({
+      interfaceName: z.string().min(1).max(100),
+      ipAddress: z.string().trim().max(45).refine(
+        (value) => {
+          const withoutZone = value.includes('%') ? value.slice(0, Math.max(value.indexOf('%'), 0)) : value;
+          return isIP(withoutZone) !== 0;
+        },
+        { message: 'Invalid IP address format' }
+      ),
+      ipType: z.enum(['ipv4', 'ipv6']).optional(),
+      assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      macAddress: z.string().max(17).optional(),
+      subnetMask: z.string().max(45).optional(),
+      gateway: z.string().max(45).optional(),
+      dnsServers: z.array(z.string().max(45)).max(8).optional()
+    })).max(100).nullish(),
+    detectedAt: z.string().datetime({ offset: true }).optional()
+  }).optional(),
   pendingReboot: z.boolean().optional(),
   lastUser: z.string().max(255).optional(),
   uptime: z.number().int().min(0).optional()
@@ -197,7 +258,9 @@ export const updateSoftwareSchema = z.object({
     vendor: z.string().optional(),
     installDate: z.string().optional(),
     installLocation: z.string().optional(),
-    uninstallString: z.string().optional()
+    uninstallString: z.string().optional(),
+    fileHash: z.string().max(128).optional(),
+    hashAlgorithm: z.string().max(10).optional(),
   }))
 });
 
@@ -290,6 +353,7 @@ export const submitPatchesSchema = z.object({
     version: z.string().optional(),
     currentVersion: z.string().optional(),
     kbNumber: z.string().optional(),
+    externalId: z.string().optional(),
     category: z.string().optional(),
     severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
     size: z.number().int().optional(),
@@ -301,6 +365,8 @@ export const submitPatchesSchema = z.object({
   installed: z.array(z.object({
     name: z.string().min(1),
     version: z.string().optional(),
+    kbNumber: z.string().optional(),
+    externalId: z.string().optional(),
     category: z.string().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).default('custom'),
     installedAt: z.string().optional()
@@ -355,6 +421,47 @@ export const submitEventLogsSchema = z.object({
     message: z.string().min(1),
     details: z.record(z.any()).optional()
   }))
+});
+
+// ============================================
+// Change Tracking
+// ============================================
+
+export const changeTypeValues = [
+  'software',
+  'service',
+  'startup',
+  'network',
+  'scheduled_task',
+  'user_account'
+] as const;
+
+export const changeActionValues = [
+  'added',
+  'removed',
+  'modified',
+  'updated'
+] as const;
+
+export const submitChangesSchema = z.object({
+  changes: z.array(z.object({
+    timestamp: z.string().datetime({ offset: true }),
+    changeType: z.enum(changeTypeValues),
+    changeAction: z.enum(changeActionValues),
+    subject: z.string().min(1).max(500),
+    beforeValue: z.record(z.any()).optional().refine(
+      (value) => !value || JSON.stringify(value).length <= 65535,
+      { message: 'beforeValue too large (max 64KB)' }
+    ),
+    afterValue: z.record(z.any()).optional().refine(
+      (value) => !value || JSON.stringify(value).length <= 65535,
+      { message: 'afterValue too large (max 64KB)' }
+    ),
+    details: z.record(z.any()).optional().refine(
+      (value) => !value || JSON.stringify(value).length <= 65535,
+      { message: 'details too large (max 64KB)' }
+    ),
+  })).max(1000).default([])
 });
 
 // ============================================

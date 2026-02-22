@@ -6,6 +6,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
+import { isIP } from 'node:net';
 import { db } from '../db';
 import {
   devices,
@@ -14,21 +15,39 @@ import {
   deviceDisks,
   deviceMetrics,
   deviceBootMetrics,
+  deviceIpHistory,
   alerts,
+  networkBaselines,
+  networkChangeEvents,
   sites,
   organizations,
   auditLogs,
   deviceCommands,
   deviceFilesystemCleanupRuns,
-  deviceSessions
+  deviceSessions,
+  playbookDefinitions,
+  playbookExecutions,
+  softwareComplianceStatus,
+  softwarePolicies,
+  deviceChangeLog,
+  dnsFilterIntegrations,
+  dnsEventAggregations,
+  dnsPolicies,
+  dnsSecurityEvents,
+  dnsThreatCategoryEnum,
+  type DnsPolicyDomain
 } from '../db/schema';
 import { eq, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
+import { schedulePolicySync } from '../jobs/dnsSyncJob';
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
+import { registerEventLogTools } from './aiToolsEventLogs';
 import { registerFleetTools } from './aiToolsFleet';
+import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
+import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import {
   getActiveDeviceContext,
   getAllDeviceContext,
@@ -47,8 +66,36 @@ import {
   getLatestSecurityPostureForDevice,
   listLatestSecurityPosture
 } from './securityPosture';
+import {
+  normalizeBaselineAlertSettings,
+  normalizeBaselineScanSchedule
+} from './networkBaseline';
+import { checkPlaybookRequiredPermissions } from './playbookPermissions';
+import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { listReliabilityDevices } from './reliabilityScoring';
+import {
+  mergeBootRecords,
+  parseCollectorBootMetricsFromCommandResult,
+} from './bootPerformance';
+import {
+  normalizeStartupItems,
+  resolveStartupItem,
+} from './startupItems';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+function normalizeIpLiteral(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const withoutZone = trimmed.includes('%')
+    ? trimmed.slice(0, Math.max(trimmed.indexOf('%'), 0))
+    : trimmed;
+
+  const parsed = isIP(withoutZone);
+  if (parsed === 0) return null;
+  return parsed === 6 ? withoutZone.toLowerCase() : withoutZone;
+}
 
 // ============================================
 // Cached dynamic import for commandQueue
@@ -84,6 +131,63 @@ async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   if (orgCond) conditions.push(orgCond);
   const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
   return alert || null;
+}
+
+function resolveWritableToolOrgId(
+  auth: AuthContext,
+  inputOrgId?: string
+): { orgId?: string; error?: string } {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required' };
+    if (inputOrgId && inputOrgId !== auth.orgId) {
+      return { error: 'Cannot access another organization' };
+    }
+    return { orgId: auth.orgId };
+  }
+
+  if (inputOrgId) {
+    if (!auth.canAccessOrg(inputOrgId)) {
+      return { error: 'Access denied to this organization' };
+    }
+    return { orgId: inputOrgId };
+  }
+
+  if (auth.orgId) {
+    return { orgId: auth.orgId };
+  }
+
+  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    return { orgId: auth.accessibleOrgIds[0] };
+  }
+
+  return { error: 'orgId is required for this operation' };
+}
+
+function normalizeDnsDomain(domain: unknown): string | null {
+  if (typeof domain !== 'string') return null;
+  const normalized = domain.trim().toLowerCase().replace(/\.$/, '');
+  if (!normalized || normalized.length > 500) return null;
+  return normalized;
+}
+
+function normalizeDnsCategory(category: unknown): string | null {
+  if (typeof category !== 'string' || !category.trim()) return null;
+  const normalized = category.trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
+  if (dnsThreatCategoryEnum.enumValues.includes(normalized as typeof dnsThreatCategoryEnum.enumValues[number])) {
+    return normalized;
+  }
+  if (normalized.includes('phish')) return 'phishing';
+  if (normalized.includes('malware')) return 'malware';
+  if (normalized.includes('bot')) return 'botnet';
+  if (normalized.includes('ransom')) return 'ransomware';
+  if (normalized.includes('crypto')) return 'cryptomining';
+  if (normalized.includes('spam')) return 'spam';
+  if (normalized.includes('adult')) return 'adult_content';
+  if (normalized.includes('ad')) return 'adware';
+  if (normalized.includes('gambl')) return 'gambling';
+  if (normalized.includes('social')) return 'social_media';
+  if (normalized.includes('stream')) return 'streaming';
+  return 'unknown';
 }
 
 // ============================================
@@ -182,6 +286,277 @@ registerTool({
 });
 
 // ============================================
+// get_network_changes - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_network_changes',
+    description: 'Query network change events (new devices, disappeared devices, changed devices, and rogue devices).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        org_id: { type: 'string', description: 'Optional organization UUID filter' },
+        site_id: { type: 'string', description: 'Optional site UUID filter' },
+        baseline_id: { type: 'string', description: 'Optional baseline UUID filter' },
+        event_type: {
+          type: 'string',
+          enum: ['new_device', 'device_disappeared', 'device_changed', 'rogue_device'],
+          description: 'Filter by event type'
+        },
+        acknowledged: { type: 'boolean', description: 'Filter by acknowledgment status' },
+        since: { type: 'string', description: 'Only include changes detected after this ISO timestamp' },
+        limit: { type: 'number', description: 'Max results (default: 50, max: 200)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const orgId = typeof input.org_id === 'string' ? input.org_id : undefined;
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return JSON.stringify({ error: 'Access to this organization denied' });
+    }
+
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    if (orgId) conditions.push(eq(networkChangeEvents.orgId, orgId));
+
+    const siteId = typeof input.site_id === 'string' ? input.site_id : undefined;
+    if (siteId) conditions.push(eq(networkChangeEvents.siteId, siteId));
+
+    const baselineId = typeof input.baseline_id === 'string' ? input.baseline_id : undefined;
+    if (baselineId) conditions.push(eq(networkChangeEvents.baselineId, baselineId));
+
+    const eventType = typeof input.event_type === 'string'
+      ? input.event_type as typeof networkChangeEvents.eventType.enumValues[number]
+      : undefined;
+    if (eventType) conditions.push(eq(networkChangeEvents.eventType, eventType));
+
+    if (typeof input.acknowledged === 'boolean') {
+      conditions.push(eq(networkChangeEvents.acknowledged, input.acknowledged));
+    }
+
+    const since = typeof input.since === 'string' ? new Date(input.since) : null;
+    if (since && !Number.isNaN(since.getTime())) {
+      conditions.push(gte(networkChangeEvents.detectedAt, since));
+    }
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+
+    const events = await db
+      .select()
+      .from(networkChangeEvents)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(networkChangeEvents.detectedAt))
+      .limit(limit);
+
+    return JSON.stringify({
+      events,
+      count: events.length
+    });
+  }
+});
+
+// ============================================
+// acknowledge_network_device - Tier 2 (mutating)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'acknowledge_network_device',
+    description: 'Acknowledge a network change event and optionally attach notes.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        event_id: { type: 'string', description: 'Network change event UUID' },
+        notes: { type: 'string', description: 'Optional acknowledgment notes' }
+      },
+      required: ['event_id']
+    }
+  },
+  handler: async (input, auth) => {
+    const eventId = input.event_id as string;
+    const notes = typeof input.notes === 'string' ? input.notes : undefined;
+
+    const conditions: SQL[] = [eq(networkChangeEvents.id, eventId)];
+    const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    const [event] = await db
+      .select()
+      .from(networkChangeEvents)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!event) {
+      return JSON.stringify({ error: 'Event not found or access denied' });
+    }
+
+    if (event.acknowledged) {
+      return JSON.stringify({ error: 'Event already acknowledged' });
+    }
+
+    await db
+      .update(networkChangeEvents)
+      .set({
+        acknowledged: true,
+        acknowledgedBy: auth.user.id,
+        acknowledgedAt: new Date(),
+        notes: notes ?? event.notes
+      })
+      .where(eq(networkChangeEvents.id, event.id));
+
+    return JSON.stringify({ success: true, eventId: event.id });
+  }
+});
+
+// ============================================
+// configure_network_baseline - Tier 2 (mutating)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'configure_network_baseline',
+    description: 'Create or update network baseline configuration for scheduled scan cadence and alert behavior.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        baseline_id: { type: 'string', description: 'Existing baseline UUID to update' },
+        org_id: { type: 'string', description: 'Organization UUID (required for creation)' },
+        site_id: { type: 'string', description: 'Site UUID (required for creation)' },
+        subnet: { type: 'string', description: 'CIDR subnet, e.g. 192.168.1.0/24' },
+        scan_interval_hours: { type: 'number', description: 'Scan interval in hours (default 4)' },
+        alert_on_new_device: { type: 'boolean', description: 'Enable alerts for new devices' },
+        alert_on_disappeared: { type: 'boolean', description: 'Enable alerts for disappeared devices' },
+        alert_on_changed: { type: 'boolean', description: 'Enable alerts for changed devices' },
+        alert_on_rogue_device: { type: 'boolean', description: 'Enable alerts for rogue devices' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const baselineId = typeof input.baseline_id === 'string' ? input.baseline_id : undefined;
+
+    const intervalInput = Number(input.scan_interval_hours);
+    const hasIntervalInput = Number.isFinite(intervalInput) && intervalInput > 0;
+
+    const alertOverrides = {
+      newDevice: typeof input.alert_on_new_device === 'boolean' ? input.alert_on_new_device : undefined,
+      disappeared: typeof input.alert_on_disappeared === 'boolean' ? input.alert_on_disappeared : undefined,
+      changed: typeof input.alert_on_changed === 'boolean' ? input.alert_on_changed : undefined,
+      rogueDevice: typeof input.alert_on_rogue_device === 'boolean' ? input.alert_on_rogue_device : undefined
+    };
+
+    if (baselineId) {
+      const conditions: SQL[] = [eq(networkBaselines.id, baselineId)];
+      const orgCondition = auth.orgCondition(networkBaselines.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+
+      const [baseline] = await db
+        .select()
+        .from(networkBaselines)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!baseline) {
+        return JSON.stringify({ error: 'Baseline not found or access denied' });
+      }
+
+      const currentSchedule = normalizeBaselineScanSchedule(baseline.scanSchedule);
+      const currentAlertSettings = normalizeBaselineAlertSettings(baseline.alertSettings);
+
+      const schedulePatch: Record<string, unknown> = { ...currentSchedule };
+      if (hasIntervalInput) {
+        schedulePatch.intervalHours = Math.trunc(intervalInput);
+      }
+
+      const nextSchedule = normalizeBaselineScanSchedule(schedulePatch, currentSchedule.intervalHours);
+      const nextAlertSettings = normalizeBaselineAlertSettings({
+        ...currentAlertSettings,
+        ...(alertOverrides.newDevice !== undefined ? { newDevice: alertOverrides.newDevice } : {}),
+        ...(alertOverrides.disappeared !== undefined ? { disappeared: alertOverrides.disappeared } : {}),
+        ...(alertOverrides.changed !== undefined ? { changed: alertOverrides.changed } : {}),
+        ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
+      });
+
+      await db
+        .update(networkBaselines)
+        .set({
+          scanSchedule: nextSchedule,
+          alertSettings: nextAlertSettings,
+          updatedAt: new Date()
+        })
+        .where(eq(networkBaselines.id, baseline.id));
+
+      return JSON.stringify({ success: true, baselineId: baseline.id, action: 'updated' });
+    }
+
+    const orgId = typeof input.org_id === 'string' ? input.org_id : undefined;
+    const siteId = typeof input.site_id === 'string' ? input.site_id : undefined;
+    const subnet = typeof input.subnet === 'string' ? input.subnet : undefined;
+
+    if (!orgId || !siteId || !subnet) {
+      return JSON.stringify({ error: 'org_id, site_id, and subnet are required when creating a baseline' });
+    }
+
+    if (!auth.canAccessOrg(orgId)) {
+      return JSON.stringify({ error: 'Access to this organization denied' });
+    }
+
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+      .limit(1);
+
+    if (!site) {
+      return JSON.stringify({ error: 'Site not found for this organization' });
+    }
+
+    const nextSchedule = normalizeBaselineScanSchedule({
+      enabled: true,
+      intervalHours: hasIntervalInput ? Math.trunc(intervalInput) : undefined
+    });
+    const nextAlertSettings = normalizeBaselineAlertSettings({
+      ...(alertOverrides.newDevice !== undefined ? { newDevice: alertOverrides.newDevice } : {}),
+      ...(alertOverrides.disappeared !== undefined ? { disappeared: alertOverrides.disappeared } : {}),
+      ...(alertOverrides.changed !== undefined ? { changed: alertOverrides.changed } : {}),
+      ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
+    });
+
+    try {
+      const [created] = await db
+        .insert(networkBaselines)
+        .values({
+          orgId,
+          siteId,
+          subnet,
+          knownDevices: [],
+          scanSchedule: nextSchedule,
+          alertSettings: nextAlertSettings,
+          updatedAt: new Date()
+        })
+        .returning({ id: networkBaselines.id });
+
+      if (!created) {
+        return JSON.stringify({ error: 'Failed to create baseline' });
+      }
+
+      return JSON.stringify({ success: true, baselineId: created.id, action: 'created' });
+    } catch (error) {
+      const pgError = error as { code?: string };
+      if (pgError.code === '23505') {
+        return JSON.stringify({ error: 'Baseline already exists for this org/site/subnet' });
+      }
+      throw error;
+    }
+  }
+});
+
+// ============================================
 // get_device_details - Tier 1 (auto-execute)
 // ============================================
 
@@ -233,6 +608,172 @@ registerTool({
       disks,
       recentMetrics
     }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
+  }
+});
+
+// ============================================
+// get_ip_history - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_ip_history',
+    description: 'Query historical IP assignments. Supports timeline mode (device_id) and reverse lookup mode (ip_address + at_time).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        device_id: { type: 'string', description: 'Device UUID for timeline mode' },
+        ip_address: { type: 'string', description: 'IP address for reverse lookup mode' },
+        at_time: { type: 'string', description: 'ISO timestamp used with ip_address for reverse lookup mode' },
+        since: { type: 'string', description: 'Optional timeline lower bound (ISO timestamp)' },
+        until: { type: 'string', description: 'Optional timeline upper bound (ISO timestamp)' },
+        interface_name: { type: 'string', description: 'Optional interface name filter' },
+        assignment_type: { type: 'string', enum: ['dhcp', 'static', 'vpn', 'link-local', 'unknown'], description: 'Optional assignment type filter' },
+        active_only: { type: 'boolean', description: 'Only include active assignments (default false)' },
+        limit: { type: 'number', description: 'Max rows to return (default 100, max 500)' },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceId = typeof input.device_id === 'string' ? input.device_id : undefined;
+    const rawIpAddress = typeof input.ip_address === 'string' ? input.ip_address : undefined;
+    const ipAddress = rawIpAddress ? normalizeIpLiteral(rawIpAddress) : undefined;
+    const atTime = typeof input.at_time === 'string' ? input.at_time : undefined;
+    const since = typeof input.since === 'string' ? input.since : undefined;
+    const until = typeof input.until === 'string' ? input.until : undefined;
+    const interfaceName = typeof input.interface_name === 'string' ? input.interface_name : undefined;
+    const assignmentType = typeof input.assignment_type === 'string' ? input.assignment_type : undefined;
+    const activeOnly = input.active_only === true;
+    const parsedLimit = Number(input.limit);
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 500)
+      : 100;
+
+    if (deviceId) {
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      const conditions: SQL[] = [eq(deviceIpHistory.deviceId, deviceId)];
+
+      if (since) {
+        const sinceDate = new Date(since);
+        if (Number.isNaN(sinceDate.getTime())) {
+          return JSON.stringify({ error: 'Invalid since timestamp' });
+        }
+        conditions.push(gte(deviceIpHistory.lastSeen, sinceDate));
+      }
+
+      if (until) {
+        const untilDate = new Date(until);
+        if (Number.isNaN(untilDate.getTime())) {
+          return JSON.stringify({ error: 'Invalid until timestamp' });
+        }
+        conditions.push(lte(deviceIpHistory.firstSeen, untilDate));
+      }
+
+      if (interfaceName) {
+        conditions.push(eq(deviceIpHistory.interfaceName, interfaceName));
+      }
+
+      if (assignmentType) {
+        conditions.push(eq(deviceIpHistory.assignmentType, assignmentType as typeof deviceIpHistory.assignmentType.enumValues[number]));
+      }
+
+      if (activeOnly) {
+        conditions.push(eq(deviceIpHistory.isActive, true));
+      }
+
+      const history = await db
+        .select()
+        .from(deviceIpHistory)
+        .where(and(...conditions))
+        .orderBy(desc(deviceIpHistory.firstSeen))
+        .limit(limit);
+
+      return JSON.stringify({
+        mode: 'timeline',
+        device_id: deviceId,
+        hostname: access.device.hostname,
+        history,
+        count: history.length,
+      });
+    }
+
+    if (ipAddress) {
+      if (!atTime) {
+        return JSON.stringify({
+          error: 'at_time is required when ip_address is provided',
+        });
+      }
+
+      const targetTime = new Date(atTime);
+      if (Number.isNaN(targetTime.getTime())) {
+        return JSON.stringify({ error: 'Invalid at_time timestamp' });
+      }
+      if (targetTime.getTime() > Date.now()) {
+        return JSON.stringify({ error: 'at_time cannot be in the future' });
+      }
+
+      const conditions: SQL[] = [
+        eq(deviceIpHistory.ipAddress, ipAddress),
+        lte(deviceIpHistory.firstSeen, targetTime),
+        gte(deviceIpHistory.lastSeen, targetTime),
+      ];
+
+      const orgCondition = auth.orgCondition(deviceIpHistory.orgId);
+      if (orgCondition) {
+        conditions.push(orgCondition);
+      }
+
+      if (interfaceName) {
+        conditions.push(eq(deviceIpHistory.interfaceName, interfaceName));
+      }
+
+      if (assignmentType) {
+        conditions.push(eq(deviceIpHistory.assignmentType, assignmentType as typeof deviceIpHistory.assignmentType.enumValues[number]));
+      }
+
+      const results = await db
+        .select({
+          ipHistory: deviceIpHistory,
+          device: devices,
+        })
+        .from(deviceIpHistory)
+        .innerJoin(devices, eq(deviceIpHistory.deviceId, devices.id))
+        .where(and(...conditions))
+        .orderBy(desc(deviceIpHistory.firstSeen))
+        .limit(limit);
+
+      return JSON.stringify({
+        mode: 'reverse_lookup',
+        ip_address: ipAddress,
+        at_time: atTime,
+        results: results.map((row) => ({
+          device: {
+            id: row.device.id,
+            hostname: row.device.hostname,
+            osType: row.device.osType,
+          },
+          assignment: {
+            interfaceName: row.ipHistory.interfaceName,
+            assignmentType: row.ipHistory.assignmentType,
+            firstSeen: row.ipHistory.firstSeen,
+            lastSeen: row.ipHistory.lastSeen,
+            isActive: row.ipHistory.isActive,
+          },
+        })),
+        count: results.length,
+      });
+    }
+
+    if (rawIpAddress && !ipAddress) {
+      return JSON.stringify({ error: 'Invalid ip_address format' });
+    }
+
+    return JSON.stringify({
+      error: 'Either device_id (timeline) or ip_address + at_time (reverse lookup) must be provided',
+    });
   }
 });
 
@@ -695,6 +1236,463 @@ registerTool({
 });
 
 // ============================================
+// get_dns_security - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_dns_security',
+    description: 'Get DNS security statistics including blocked domains, threat categories, and top offending devices.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        timeRange: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', description: 'Start time (ISO 8601)' },
+            end: { type: 'string', description: 'End time (ISO 8601)' }
+          },
+          required: ['start', 'end']
+        },
+        deviceId: { type: 'string', description: 'Filter by device ID' },
+        integrationId: { type: 'string', description: 'Filter by integration ID' },
+        action: { type: 'string', enum: ['allowed', 'blocked', 'redirected'], description: 'Filter by DNS action' },
+        category: { type: 'string', description: 'Filter by threat category' },
+        topN: { type: 'number', description: 'Number of top results to return (default 10, max 100)' }
+      },
+      required: ['timeRange']
+    }
+  },
+  handler: async (input, auth) => {
+    const AGGREGATION_MIN_DAYS = 7;
+    const toDateKey = (value: Date): string => value.toISOString().slice(0, 10);
+    const shouldUseAggregations = (startDate: Date, endDate: Date): boolean => {
+      const diffMs = endDate.getTime() - startDate.getTime();
+      return diffMs > AGGREGATION_MIN_DAYS * 24 * 60 * 60 * 1000;
+    };
+
+    const timeRange = (input.timeRange ?? {}) as { start?: string; end?: string };
+    const start = timeRange.start ? new Date(timeRange.start) : null;
+    const end = timeRange.end ? new Date(timeRange.end) : null;
+
+    if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return JSON.stringify({ error: 'timeRange.start and timeRange.end must be valid ISO timestamps' });
+    }
+    if (start.getTime() > end.getTime()) {
+      return JSON.stringify({ error: 'timeRange.start must be before or equal to timeRange.end' });
+    }
+    const maxWindowMs = 90 * 24 * 60 * 60 * 1000;
+    if ((end.getTime() - start.getTime()) > maxWindowMs) {
+      return JSON.stringify({ error: 'timeRange cannot exceed 90 days' });
+    }
+
+    const conditions: SQL[] = [
+      gte(dnsSecurityEvents.timestamp, start),
+      lte(dnsSecurityEvents.timestamp, end)
+    ];
+    const orgCondition = auth.orgCondition(dnsSecurityEvents.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    if (input.deviceId) conditions.push(eq(dnsSecurityEvents.deviceId, input.deviceId as string));
+    if (input.integrationId) conditions.push(eq(dnsSecurityEvents.integrationId, input.integrationId as string));
+    if (input.action) conditions.push(eq(dnsSecurityEvents.action, input.action as typeof dnsSecurityEvents.action.enumValues[number]));
+    const normalizedCategory = input.category ? normalizeDnsCategory(input.category) : null;
+    if (normalizedCategory) {
+      conditions.push(eq(dnsSecurityEvents.category, normalizedCategory as typeof dnsSecurityEvents.category.enumValues[number]));
+    }
+
+    const topN = Math.min(Math.max(1, Number(input.topN) || 10), 100);
+    const where = and(...conditions);
+
+    if (shouldUseAggregations(start, end)) {
+      const aggConditions: SQL[] = [
+        gte(dnsEventAggregations.date, toDateKey(start)),
+        lte(dnsEventAggregations.date, toDateKey(end))
+      ];
+      const aggOrgCondition = auth.orgCondition(dnsEventAggregations.orgId);
+      if (aggOrgCondition) aggConditions.push(aggOrgCondition);
+      if (input.deviceId) aggConditions.push(eq(dnsEventAggregations.deviceId, input.deviceId as string));
+      if (input.integrationId) aggConditions.push(eq(dnsEventAggregations.integrationId, input.integrationId as string));
+      if (normalizedCategory) {
+        aggConditions.push(
+          eq(dnsEventAggregations.category, normalizedCategory as typeof dnsEventAggregations.category.enumValues[number])
+        );
+      }
+
+      const aggWhere = and(...aggConditions);
+      const [aggCountRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(dnsEventAggregations)
+        .where(aggWhere);
+
+      if (Number(aggCountRow?.count ?? 0) > 0) {
+        const topCategoryCountExpr: SQL<number> = input.action === 'blocked'
+          ? sql<number>`coalesce(sum(${dnsEventAggregations.blockedQueries}), 0)::int`
+          : input.action === 'allowed'
+            ? sql<number>`coalesce(sum(${dnsEventAggregations.allowedQueries}), 0)::int`
+            : input.action === 'redirected'
+              ? sql<number>`coalesce(sum(${dnsEventAggregations.totalQueries} - ${dnsEventAggregations.blockedQueries} - ${dnsEventAggregations.allowedQueries}), 0)::int`
+              : sql<number>`coalesce(sum(${dnsEventAggregations.totalQueries}), 0)::int`;
+
+        const [rawSummary, topBlockedDomains, topCategories, topDevices] = await Promise.all([
+          db
+            .select({
+              totalQueries: sql<number>`coalesce(sum(${dnsEventAggregations.totalQueries}), 0)::int`,
+              blockedQueries: sql<number>`coalesce(sum(${dnsEventAggregations.blockedQueries}), 0)::int`,
+              allowedQueries: sql<number>`coalesce(sum(${dnsEventAggregations.allowedQueries}), 0)::int`
+            })
+            .from(dnsEventAggregations)
+            .where(aggWhere),
+          input.action && input.action !== 'blocked'
+            ? Promise.resolve([])
+            : db
+              .select({
+                domain: dnsEventAggregations.domain,
+                category: dnsEventAggregations.category,
+                count: sql<number>`coalesce(sum(${dnsEventAggregations.blockedQueries}), 0)::int`
+              })
+              .from(dnsEventAggregations)
+              .where(and(
+                ...aggConditions,
+                sql`${dnsEventAggregations.blockedQueries} > 0`,
+                sql`${dnsEventAggregations.domain} is not null`
+              ))
+              .groupBy(dnsEventAggregations.domain, dnsEventAggregations.category)
+              .orderBy(desc(sql`coalesce(sum(${dnsEventAggregations.blockedQueries}), 0)`))
+              .limit(topN),
+          db
+            .select({
+              category: dnsEventAggregations.category,
+              count: topCategoryCountExpr
+            })
+            .from(dnsEventAggregations)
+            .where(and(...aggConditions, sql`${dnsEventAggregations.category} is not null`))
+            .groupBy(dnsEventAggregations.category)
+            .orderBy(desc(topCategoryCountExpr))
+            .limit(topN),
+          input.action && input.action !== 'blocked'
+            ? Promise.resolve([])
+            : db
+              .select({
+                deviceId: dnsEventAggregations.deviceId,
+                hostname: devices.hostname,
+                blockedCount: sql<number>`coalesce(sum(${dnsEventAggregations.blockedQueries}), 0)::int`
+              })
+              .from(dnsEventAggregations)
+              .leftJoin(devices, eq(dnsEventAggregations.deviceId, devices.id))
+              .where(and(...aggConditions, sql`${dnsEventAggregations.blockedQueries} > 0`))
+              .groupBy(dnsEventAggregations.deviceId, devices.hostname)
+              .orderBy(desc(sql`coalesce(sum(${dnsEventAggregations.blockedQueries}), 0)`))
+              .limit(topN)
+        ]);
+
+        const summaryBase = rawSummary[0] ?? {
+          totalQueries: 0,
+          blockedQueries: 0,
+          allowedQueries: 0
+        };
+        const redirectedFromTotals = Math.max(
+          0,
+          summaryBase.totalQueries - summaryBase.blockedQueries - summaryBase.allowedQueries
+        );
+
+        const summaryRow = input.action === 'blocked'
+          ? {
+            totalQueries: summaryBase.blockedQueries,
+            blockedQueries: summaryBase.blockedQueries,
+            allowedQueries: 0,
+            redirectedQueries: 0
+          }
+          : input.action === 'allowed'
+            ? {
+              totalQueries: summaryBase.allowedQueries,
+              blockedQueries: 0,
+              allowedQueries: summaryBase.allowedQueries,
+              redirectedQueries: 0
+            }
+            : input.action === 'redirected'
+              ? {
+                totalQueries: redirectedFromTotals,
+                blockedQueries: 0,
+                allowedQueries: 0,
+                redirectedQueries: redirectedFromTotals
+              }
+              : {
+                totalQueries: summaryBase.totalQueries,
+                blockedQueries: summaryBase.blockedQueries,
+                allowedQueries: summaryBase.allowedQueries,
+                redirectedQueries: redirectedFromTotals
+              };
+        const blockedRate = summaryRow.totalQueries > 0
+          ? Number(((summaryRow.blockedQueries / summaryRow.totalQueries) * 100).toFixed(2))
+          : 0;
+
+        return JSON.stringify({
+          summary: {
+            ...summaryRow,
+            blockedRate,
+            timeRange: { start: start.toISOString(), end: end.toISOString() }
+          },
+          topBlockedDomains,
+          topCategories,
+          topDevices,
+          source: 'aggregated'
+        });
+      }
+    }
+
+    const [summary, topBlockedDomains, topCategories, topDevices] = await Promise.all([
+      db
+        .select({
+          totalQueries: sql<number>`count(*)::int`,
+          blockedQueries: sql<number>`coalesce(sum(case when ${dnsSecurityEvents.action} = 'blocked' then 1 else 0 end), 0)::int`,
+          allowedQueries: sql<number>`coalesce(sum(case when ${dnsSecurityEvents.action} = 'allowed' then 1 else 0 end), 0)::int`,
+          redirectedQueries: sql<number>`coalesce(sum(case when ${dnsSecurityEvents.action} = 'redirected' then 1 else 0 end), 0)::int`
+        })
+        .from(dnsSecurityEvents)
+        .where(where),
+      db
+        .select({
+          domain: dnsSecurityEvents.domain,
+          category: dnsSecurityEvents.category,
+          count: sql<number>`count(*)::int`
+        })
+        .from(dnsSecurityEvents)
+        .where(and(where, eq(dnsSecurityEvents.action, 'blocked')))
+        .groupBy(dnsSecurityEvents.domain, dnsSecurityEvents.category)
+        .orderBy(desc(sql`count(*)`))
+        .limit(topN),
+      db
+        .select({
+          category: dnsSecurityEvents.category,
+          count: sql<number>`count(*)::int`
+        })
+        .from(dnsSecurityEvents)
+        .where(and(where, sql`${dnsSecurityEvents.category} is not null`))
+        .groupBy(dnsSecurityEvents.category)
+        .orderBy(desc(sql`count(*)`))
+        .limit(topN),
+      db
+        .select({
+          deviceId: dnsSecurityEvents.deviceId,
+          hostname: devices.hostname,
+          blockedCount: sql<number>`count(*)::int`
+        })
+        .from(dnsSecurityEvents)
+        .leftJoin(devices, eq(dnsSecurityEvents.deviceId, devices.id))
+        .where(and(where, eq(dnsSecurityEvents.action, 'blocked')))
+        .groupBy(dnsSecurityEvents.deviceId, devices.hostname)
+        .orderBy(desc(sql`count(*)`))
+        .limit(topN)
+    ]);
+
+    const summaryRow = summary[0] ?? {
+      totalQueries: 0,
+      blockedQueries: 0,
+      allowedQueries: 0,
+      redirectedQueries: 0
+    };
+    const blockedRate = summaryRow.totalQueries > 0
+      ? Number(((summaryRow.blockedQueries / summaryRow.totalQueries) * 100).toFixed(2))
+      : 0;
+
+    return JSON.stringify({
+      summary: {
+        ...summaryRow,
+        blockedRate,
+        timeRange: { start: start.toISOString(), end: end.toISOString() }
+      },
+      topBlockedDomains,
+      topCategories,
+      topDevices,
+      source: 'raw'
+    });
+  }
+});
+
+// ============================================
+// manage_dns_policy - Tier 2 (confirm before execute)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'manage_dns_policy',
+    description: 'Add or remove domains from DNS blocklist/allowlist and schedule provider synchronization.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        integrationId: { type: 'string', description: 'DNS integration UUID' },
+        action: { type: 'string', enum: ['add_block', 'remove_block', 'add_allow', 'remove_allow'], description: 'Policy action' },
+        domains: { type: 'array', items: { type: 'string' }, description: 'Domains to add or remove' },
+        reason: { type: 'string', description: 'Optional reason for policy changes' }
+      },
+      required: ['integrationId', 'action', 'domains']
+    }
+  },
+  handler: async (input, auth) => {
+    const integrationId = input.integrationId as string;
+    const action = input.action as 'add_block' | 'remove_block' | 'add_allow' | 'remove_allow';
+    const domainsInput = Array.isArray(input.domains) ? input.domains : [];
+    const reason = typeof input.reason === 'string' ? input.reason : undefined;
+
+    const domains = domainsInput
+      .map((domain) => normalizeDnsDomain(domain))
+      .filter((domain): domain is string => domain !== null);
+    const uniqueDomains = Array.from(new Set(domains));
+
+    if (uniqueDomains.length === 0) {
+      return JSON.stringify({ error: 'No valid domains were provided' });
+    }
+
+    const integrationConditions: SQL[] = [eq(dnsFilterIntegrations.id, integrationId)];
+    const orgCondition = auth.orgCondition(dnsFilterIntegrations.orgId);
+    if (orgCondition) integrationConditions.push(orgCondition);
+
+    const [integration] = await db
+      .select({
+        id: dnsFilterIntegrations.id,
+        orgId: dnsFilterIntegrations.orgId
+      })
+      .from(dnsFilterIntegrations)
+      .where(and(...integrationConditions))
+      .limit(1);
+
+    if (!integration) {
+      return JSON.stringify({ error: 'Integration not found or access denied' });
+    }
+
+    const policyType = action === 'add_block' || action === 'remove_block' ? 'blocklist' : 'allowlist';
+    const policyName = policyType === 'blocklist' ? 'AI Managed Blocklist' : 'AI Managed Allowlist';
+    const isAddAction = action === 'add_block' || action === 'add_allow';
+    const isRemoveAction = action === 'remove_block' || action === 'remove_allow';
+
+    const policyConditions: SQL[] = [
+      eq(dnsPolicies.integrationId, integration.id),
+      eq(dnsPolicies.type, policyType),
+    ];
+    const policyOrgCondition = auth.orgCondition(dnsPolicies.orgId);
+    if (policyOrgCondition) policyConditions.push(policyOrgCondition);
+
+    let [policy] = await db
+      .select()
+      .from(dnsPolicies)
+      .where(and(...policyConditions))
+      .orderBy(desc(dnsPolicies.createdAt))
+      .limit(1);
+
+    if (!policy && isRemoveAction) {
+      return JSON.stringify({
+        success: true,
+        policyId: null,
+        integrationId: integration.id,
+        action,
+        requested: uniqueDomains.length,
+        added: 0,
+        removed: 0,
+        syncScheduled: false,
+        warning: 'No policy exists for the requested remove action'
+      });
+    }
+
+    if (!policy && isAddAction) {
+      const [created] = await db
+        .insert(dnsPolicies)
+        .values({
+          orgId: integration.orgId,
+          integrationId: integration.id,
+          name: policyName,
+          description: 'Managed by AI assistant',
+          type: policyType,
+          domains: [],
+          categories: [],
+          syncStatus: 'pending',
+          isActive: true,
+          createdBy: auth.user.id
+        })
+        .returning();
+      policy = created;
+    }
+
+    if (!policy) {
+      return JSON.stringify({ error: 'Failed to create or load DNS policy' });
+    }
+
+    const existing = Array.isArray(policy.domains) ? policy.domains : [];
+    const domainMap = new Map<string, DnsPolicyDomain>();
+
+    for (const item of existing) {
+      const normalized = normalizeDnsDomain(item.domain);
+      if (!normalized) continue;
+      domainMap.set(normalized, {
+        domain: normalized,
+        reason: item.reason,
+        addedAt: item.addedAt,
+        addedBy: item.addedBy
+      });
+    }
+
+    const added: string[] = [];
+    const removed: string[] = [];
+    const nowIso = new Date().toISOString();
+
+    if (action === 'add_block' || action === 'add_allow') {
+      for (const domain of uniqueDomains) {
+        if (domainMap.has(domain)) continue;
+        domainMap.set(domain, {
+          domain,
+          reason,
+          addedAt: nowIso,
+          addedBy: auth.user.id
+        });
+        added.push(domain);
+      }
+    } else {
+      for (const domain of uniqueDomains) {
+        if (domainMap.delete(domain)) {
+          removed.push(domain);
+        }
+      }
+    }
+
+    await db
+      .update(dnsPolicies)
+      .set({
+        domains: Array.from(domainMap.values()),
+        syncStatus: 'pending',
+        syncError: null,
+        updatedAt: new Date()
+      })
+      .where(eq(dnsPolicies.id, policy.id));
+
+    let syncScheduled = false;
+    let warning: string | undefined;
+    if (added.length > 0 || removed.length > 0) {
+      try {
+        await schedulePolicySync(policy.id, { add: added, remove: removed });
+        syncScheduled = true;
+      } catch (error) {
+        console.error('[AiTools] Failed to schedule DNS policy sync:', error);
+        warning = 'Policy changes were saved, but provider sync could not be scheduled';
+      }
+    }
+
+    return JSON.stringify({
+      success: true,
+      policyId: policy.id,
+      integrationId: integration.id,
+      action,
+      requested: uniqueDomains.length,
+      added: added.length,
+      removed: removed.length,
+      syncScheduled,
+      warning
+    });
+  }
+});
+
+// ============================================
 // execute_command - Tier 3 (requires approval)
 // ============================================
 
@@ -827,7 +1825,7 @@ registerTool({
     if (!commandType) return JSON.stringify({ error: `Unknown action: ${action}` });
 
     const result = await executeCommand(deviceId, commandType, {
-      serviceName: input.serviceName
+      name: input.serviceName
     }, { userId: auth.user.id, timeoutMs: 30000 });
 
     return JSON.stringify(result);
@@ -970,6 +1968,88 @@ registerTool({
       worstDevices: rows.slice(0, Math.min(10, rows.length)),
       devices: rows
     });
+  }
+});
+
+// ============================================
+// get_fleet_health - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_fleet_health',
+    description: 'Query device reliability scores across the fleet. Returns devices ranked by reliability (worst first) with uptime, crash history, and failure metrics.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        orgId: { type: 'string', description: 'Optional org UUID (must be accessible)' },
+        siteId: { type: 'string', description: 'Optional site UUID' },
+        scoreRange: { type: 'string', enum: ['critical', 'poor', 'fair', 'good'], description: 'Score range filter' },
+        trendDirection: { type: 'string', enum: ['improving', 'stable', 'degrading'], description: 'Trend direction filter' },
+        issueType: { type: 'string', enum: ['crashes', 'hangs', 'hardware', 'services', 'uptime'], description: 'Issue-type filter' },
+        limit: { type: 'number', description: 'Maximum results (default 25, max 100)' },
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    try {
+      if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
+        return JSON.stringify({ error: 'Access denied to this organization' });
+      }
+
+      const orgIds = typeof input.orgId === 'string' && input.orgId
+        ? [input.orgId]
+        : auth.orgId
+          ? [auth.orgId]
+          : (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds : undefined);
+
+      if (!orgIds && auth.scope !== 'system') {
+        return JSON.stringify({ error: 'Organization context required' });
+      }
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+      const scoreRange = (typeof input.scoreRange === 'string' && ['critical', 'poor', 'fair', 'good'].includes(input.scoreRange))
+        ? input.scoreRange as 'critical' | 'poor' | 'fair' | 'good'
+        : undefined;
+      const trendDirection = (typeof input.trendDirection === 'string' && ['improving', 'stable', 'degrading'].includes(input.trendDirection))
+        ? input.trendDirection as 'improving' | 'stable' | 'degrading'
+        : undefined;
+      const issueType = (typeof input.issueType === 'string' && ['crashes', 'hangs', 'hardware', 'services', 'uptime'].includes(input.issueType))
+        ? input.issueType as 'crashes' | 'hangs' | 'hardware' | 'services' | 'uptime'
+        : undefined;
+
+      const { total, rows } = await listReliabilityDevices({
+        orgIds,
+        siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
+        scoreRange,
+        trendDirection,
+        issueType,
+        limit,
+        offset: 0,
+      });
+
+      const avgScore = rows.length > 0
+        ? Math.round(rows.reduce((sum, row) => sum + row.reliabilityScore, 0) / rows.length)
+        : 0;
+
+      return JSON.stringify({
+        devices: rows,
+        total,
+        summary: {
+          averageScore: avgScore,
+          criticalDevices: rows.filter((row) => row.reliabilityScore <= 50).length,
+          poorDevices: rows.filter((row) => row.reliabilityScore >= 51 && row.reliabilityScore <= 70).length,
+          fairDevices: rows.filter((row) => row.reliabilityScore >= 71 && row.reliabilityScore <= 85).length,
+          goodDevices: rows.filter((row) => row.reliabilityScore >= 86).length,
+          degradingDevices: rows.filter((row) => row.trendDirection === 'degrading').length,
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      console.error('[fleet:get_fleet_health]', message, err);
+      return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
+    }
   }
 });
 
@@ -1318,6 +2398,104 @@ registerTool({
   }
 });
 
+// ============================================
+// query_change_log - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'query_change_log',
+    description: 'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, and user account changes.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'Optional device UUID to scope results to a specific device' },
+        startTime: { type: 'string', description: 'Optional ISO timestamp lower bound (inclusive)' },
+        endTime: { type: 'string', description: 'Optional ISO timestamp upper bound (inclusive)' },
+        changeType: {
+          type: 'string',
+          enum: ['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account'],
+          description: 'Optional change category filter'
+        },
+        changeAction: {
+          type: 'string',
+          enum: ['added', 'removed', 'modified', 'updated'],
+          description: 'Optional change action filter'
+        },
+        limit: { type: 'number', description: 'Max results to return (default 100, max 500)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(deviceChangeLog.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    if (input.deviceId) {
+      const access = await verifyDeviceAccess(input.deviceId as string, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      conditions.push(eq(deviceChangeLog.deviceId, input.deviceId as string));
+    }
+
+    if (input.startTime) {
+      conditions.push(gte(deviceChangeLog.timestamp, new Date(input.startTime as string)));
+    }
+
+    if (input.endTime) {
+      conditions.push(lte(deviceChangeLog.timestamp, new Date(input.endTime as string)));
+    }
+
+    if (input.changeType) {
+      conditions.push(eq(deviceChangeLog.changeType, input.changeType as any));
+    }
+
+    if (input.changeAction) {
+      conditions.push(eq(deviceChangeLog.changeAction, input.changeAction as any));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
+
+    const [changes, countResult] = await Promise.all([
+      db
+        .select({
+          timestamp: deviceChangeLog.timestamp,
+          changeType: deviceChangeLog.changeType,
+          changeAction: deviceChangeLog.changeAction,
+          subject: deviceChangeLog.subject,
+          beforeValue: deviceChangeLog.beforeValue,
+          afterValue: deviceChangeLog.afterValue,
+          details: deviceChangeLog.details,
+          hostname: devices.hostname,
+          deviceId: deviceChangeLog.deviceId
+        })
+        .from(deviceChangeLog)
+        .leftJoin(devices, eq(deviceChangeLog.deviceId, devices.id))
+        .where(whereClause)
+        .orderBy(desc(deviceChangeLog.timestamp))
+        .limit(limit),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(deviceChangeLog)
+        .where(whereClause)
+    ]);
+
+    return JSON.stringify({
+      changes,
+      total: Number(countResult[0]?.count ?? 0),
+      showing: changes.length,
+      filters: {
+        deviceId: input.deviceId ?? null,
+        startTime: input.startTime ?? null,
+        endTime: input.endTime ?? null,
+        changeType: input.changeType ?? null,
+        changeAction: input.changeAction ?? null
+      }
+    });
+  }
+});
+
 // create_automation — DEPRECATED: superseded by manage_automations (fleet tools)
 
 // ============================================
@@ -1385,13 +2563,18 @@ registerTool({
 
     // Optionally trigger fresh collection
     let collectionFailed = false;
+    let freshBootRecord: ReturnType<typeof parseCollectorBootMetricsFromCommandResult> = null;
     if (triggerCollection && device.status === 'online') {
       const { executeCommand } = await getCommandQueue();
       try {
-        await executeCommand(deviceId, 'collect_boot_performance', {}, {
+        const commandResult = await executeCommand(deviceId, 'collect_boot_performance', {}, {
           userId: auth.user.id,
           timeoutMs: 15000,
         });
+        freshBootRecord = parseCollectorBootMetricsFromCommandResult(commandResult);
+        if (!freshBootRecord) {
+          collectionFailed = true;
+        }
       } catch (err) {
         collectionFailed = true;
         console.warn(`[AI] Boot performance collection trigger failed for device ${deviceId}:`, err);
@@ -1406,7 +2589,9 @@ registerTool({
       .orderBy(desc(deviceBootMetrics.bootTimestamp))
       .limit(bootsBack);
 
-    if (bootRecords.length === 0) {
+    const mergedBootRecords = mergeBootRecords(bootRecords, freshBootRecord, bootsBack);
+
+    if (mergedBootRecords.length === 0) {
       return JSON.stringify({
         error: collectionFailed
           ? 'Boot performance data collection failed and no cached data exists. The device may not support this feature or may be experiencing issues.'
@@ -1415,19 +2600,18 @@ registerTool({
     }
 
     // Summary statistics
-    const totalBootTimes = bootRecords
+    const totalBootTimes = mergedBootRecords
       .map(b => b.totalBootSeconds)
       .filter((t): t is number => t !== null);
     const avgBootTime = totalBootTimes.length > 0
       ? totalBootTimes.reduce((a, b) => a + b, 0) / totalBootTimes.length
       : 0;
-    const latestBoot = bootRecords[0]!;
+    const latestBoot = mergedBootRecords[0]!;
 
     // Top impact startup items from latest boot
-    const allStartupItems = (latestBoot.startupItems ?? []) as Array<{
-      name: string; type: string; path: string; enabled: boolean;
-      cpuTimeMs: number; diskIoBytes: number; impactScore: number;
-    }>;
+    const allStartupItems = normalizeStartupItems(
+      Array.isArray(latestBoot.startupItems) ? latestBoot.startupItems : []
+    );
     const topImpactItems = [...allStartupItems]
       .sort((a, b) => b.impactScore - a.impactScore)
       .slice(0, 10);
@@ -1440,8 +2624,9 @@ registerTool({
     if (topImpactItems.some(item => item.impactScore > 60)) {
       recommendations.push('Several startup items have high resource usage. Consider disabling non-essential items.');
     }
-    if (latestBoot.startupItemCount > 50) {
-      recommendations.push(`High startup item count (${latestBoot.startupItemCount}). Disable unused services.`);
+    const latestBootStartupItemCount = Number(latestBoot.startupItemCount ?? allStartupItems.length);
+    if (latestBootStartupItemCount > 50) {
+      recommendations.push(`High startup item count (${latestBootStartupItemCount}). Disable unused services.`);
     }
     if (totalBootTimes.length >= 3) {
       const recent = totalBootTimes.slice(0, 3);
@@ -1458,11 +2643,11 @@ registerTool({
     return JSON.stringify({
       device: { id: device.id, hostname: device.hostname, osType: device.osType },
       bootHistory: {
-        totalBoots: bootRecords.length,
+        totalBoots: mergedBootRecords.length,
         avgBootTimeSeconds: Number(avgBootTime.toFixed(2)),
         fastestBootSeconds: totalBootTimes.length > 0 ? Number(Math.min(...totalBootTimes).toFixed(2)) : null,
         slowestBootSeconds: totalBootTimes.length > 0 ? Number(Math.max(...totalBootTimes).toFixed(2)) : null,
-        recentBoots: bootRecords.slice(0, 5).map(b => ({
+        recentBoots: mergedBootRecords.slice(0, 5).map(b => ({
           timestamp: b.bootTimestamp,
           totalSeconds: b.totalBootSeconds,
           biosSeconds: b.biosSeconds,
@@ -1473,8 +2658,9 @@ registerTool({
       latestBoot: {
         timestamp: latestBoot.bootTimestamp,
         totalSeconds: latestBoot.totalBootSeconds,
-        startupItemCount: latestBoot.startupItemCount,
+        startupItemCount: latestBootStartupItemCount,
         topImpactItems: topImpactItems.map(item => ({
+          itemId: item.itemId,
           name: item.name,
           type: item.type,
           path: item.path,
@@ -1500,6 +2686,9 @@ registerTool({
       properties: {
         deviceId: { type: 'string', description: 'The device UUID' },
         itemName: { type: 'string', description: 'The exact name of the startup item to manage' },
+        itemId: { type: 'string', description: 'Stable startup item identifier. Preferred when item names are duplicated.' },
+        itemType: { type: 'string', description: 'Optional startup item type to disambiguate name collisions.' },
+        itemPath: { type: 'string', description: 'Optional startup item path to disambiguate name collisions.' },
         action: { type: 'string', enum: ['disable', 'enable'], description: 'Action to perform' },
         reason: { type: 'string', description: 'Justification for this change' }
       },
@@ -1509,6 +2698,9 @@ registerTool({
   handler: async (input, auth) => {
     const deviceId = input.deviceId as string;
     const itemName = input.itemName as string;
+    const itemId = input.itemId as string | undefined;
+    const itemType = input.itemType as string | undefined;
+    const itemPath = input.itemPath as string | undefined;
     const action = input.action as 'disable' | 'enable';
     const reason = (input.reason as string) || 'No reason provided';
 
@@ -1528,15 +2720,33 @@ registerTool({
       return JSON.stringify({ error: 'No boot performance data available for this device.' });
     }
 
-    const allItems = (latestBoot.startupItems ?? []) as Array<{
-      name: string; type: string; path: string; enabled: boolean;
-    }>;
-    const item = allItems.find(i => i.name === itemName);
-    if (!item) {
+    const allItems = normalizeStartupItems(Array.isArray(latestBoot.startupItems) ? latestBoot.startupItems : []);
+    const match = resolveStartupItem(allItems, { itemId, itemName, itemType, itemPath });
+    if (!match.item) {
+      if (match.candidates && match.candidates.length > 1) {
+        return JSON.stringify({
+          error: `Startup item selector for "${itemName}" is ambiguous. Provide itemId or itemType+itemPath.`,
+          candidates: match.candidates.slice(0, 20).map(i => ({
+            itemId: i.itemId,
+            name: i.name,
+            type: i.type,
+            path: i.path,
+            enabled: i.enabled,
+          })),
+        });
+      }
       return JSON.stringify({
-        error: `Startup item "${itemName}" not found. Available items: ${allItems.map(i => i.name).slice(0, 20).join(', ')}`
+        error: `Startup item "${itemName}" not found.`,
+        availableItems: allItems.slice(0, 20).map(i => ({
+          itemId: i.itemId,
+          name: i.name,
+          type: i.type,
+          path: i.path,
+          enabled: i.enabled,
+        })),
       });
     }
+    const item = match.item;
 
     if (action === 'disable' && !item.enabled) {
       return JSON.stringify({ error: `Startup item "${itemName}" is already disabled.` });
@@ -1554,7 +2764,7 @@ registerTool({
     const result = await executeCommand(
       deviceId,
       'manage_startup_item',
-      { itemName, itemType: item.type, itemPath: item.path, action },
+      { itemName: item.name, itemType: item.type, itemPath: item.path, itemId: item.itemId, action, reason },
       { userId: auth.user.id, timeoutMs: 30000 }
     );
 
@@ -1570,6 +2780,7 @@ registerTool({
       message: `Startup item "${itemName}" ${action}d successfully.`,
       device: { hostname: device.hostname, osType: device.osType },
       item: {
+        itemId: item.itemId,
         name: item.name,
         type: item.type,
         path: item.path,
@@ -1777,12 +2988,633 @@ registerTool({
 });
 
 // ============================================
+// list_playbooks - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'list_playbooks',
+    description: 'List available self-healing playbooks. Playbooks are multi-step remediation templates with verification loops.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        category: {
+          type: 'string',
+          enum: ['disk', 'service', 'memory', 'patch', 'security', 'all'],
+          description: 'Filter by playbook category (default: all)',
+        },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    try {
+      const conditions: SQL[] = [eq(playbookDefinitions.isActive, true)];
+      const category = typeof input.category === 'string' ? input.category : undefined;
+      if (category && category !== 'all') {
+        conditions.push(eq(playbookDefinitions.category, category));
+      }
+
+      const orgCond = auth.orgCondition(playbookDefinitions.orgId);
+      if (orgCond) {
+        conditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${orgCond})`);
+      }
+
+      const playbooks = await db
+        .select({
+          id: playbookDefinitions.id,
+          name: playbookDefinitions.name,
+          description: playbookDefinitions.description,
+          category: playbookDefinitions.category,
+          isBuiltIn: playbookDefinitions.isBuiltIn,
+          requiredPermissions: playbookDefinitions.requiredPermissions,
+          steps: playbookDefinitions.steps,
+        })
+        .from(playbookDefinitions)
+        .where(and(...conditions))
+        .orderBy(playbookDefinitions.category, playbookDefinitions.name);
+
+      return JSON.stringify({ playbooks, count: playbooks.length });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[AI] list_playbooks failed:`, err);
+      return JSON.stringify({ error: `list_playbooks failed: ${message}` });
+    }
+  },
+});
+
+// ============================================
+// get_software_compliance - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_software_compliance',
+    description: 'Check software compliance status across the fleet. Shows policy violations, unauthorized installations, and missing required software.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        policyId: { type: 'string', description: 'Filter by specific policy ID' },
+        deviceIds: { type: 'array', items: { type: 'string' }, description: 'Filter by device IDs' },
+        status: { type: 'string', enum: ['compliant', 'violation', 'unknown'], description: 'Filter by compliance status' },
+        limit: { type: 'number', description: 'Max results (default 50, max 500)' },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(devices.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+    if (typeof input.policyId === 'string') conditions.push(eq(softwareComplianceStatus.policyId, input.policyId));
+    if (typeof input.status === 'string') conditions.push(eq(softwareComplianceStatus.status, input.status));
+    if (Array.isArray(input.deviceIds) && input.deviceIds.length > 0) {
+      conditions.push(inArray(softwareComplianceStatus.deviceId, input.deviceIds as string[]));
+    }
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
+
+    const rows = await db
+      .select({
+        compliance: {
+          policyId: softwareComplianceStatus.policyId,
+          deviceId: softwareComplianceStatus.deviceId,
+          status: softwareComplianceStatus.status,
+          violations: softwareComplianceStatus.violations,
+          lastChecked: softwareComplianceStatus.lastChecked,
+          remediationStatus: softwareComplianceStatus.remediationStatus,
+        },
+        policy: {
+          id: softwarePolicies.id,
+          name: softwarePolicies.name,
+          mode: softwarePolicies.mode,
+        },
+        device: {
+          id: devices.id,
+          hostname: devices.hostname,
+        },
+      })
+      .from(softwareComplianceStatus)
+      .innerJoin(softwarePolicies, eq(softwareComplianceStatus.policyId, softwarePolicies.id))
+      .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(softwareComplianceStatus.lastChecked))
+      .limit(limit);
+
+    return JSON.stringify({
+      count: rows.length,
+      compliance: rows.map((row) => ({
+        device: row.device.hostname,
+        policy: row.policy.name,
+        mode: row.policy.mode,
+        status: row.compliance.status,
+        violations: row.compliance.violations ?? [],
+        remediationStatus: row.compliance.remediationStatus ?? 'none',
+        lastChecked: row.compliance.lastChecked,
+      })),
+    });
+  },
+});
+
+// ============================================
+// execute_playbook - Tier 3 (requires approval)
+// ============================================
+
+registerTool({
+  tier: 3,
+  definition: {
+    name: 'execute_playbook',
+    description: 'Create a self-healing playbook execution record for a device. This creates the audit trail; execute steps manually and update status as you progress.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        playbookId: { type: 'string', description: 'UUID of the playbook to execute' },
+        deviceId: { type: 'string', description: 'UUID of the target device' },
+        variables: {
+          type: 'object',
+          description: 'Template variables for playbook steps (for example serviceName, cleanupPaths, threshold)',
+        },
+        context: {
+          type: 'object',
+          description: 'Additional execution context such as alertId or userInput',
+        },
+      },
+      required: ['playbookId', 'deviceId'],
+    },
+  },
+  handler: async (input, auth) => {
+    try {
+      const playbookId = input.playbookId as string;
+      const deviceId = input.deviceId as string;
+      const variables = (input.variables as Record<string, unknown> | undefined) ?? {};
+      const extraContext = (input.context as Record<string, unknown> | undefined) ?? {};
+
+      const playbookConditions: SQL[] = [
+        eq(playbookDefinitions.id, playbookId),
+        eq(playbookDefinitions.isActive, true),
+      ];
+      const orgCond = auth.orgCondition(playbookDefinitions.orgId);
+      if (orgCond) {
+        playbookConditions.push(sql`(${playbookDefinitions.isBuiltIn} = true OR ${orgCond})`);
+      }
+
+      const [playbook] = await db
+        .select()
+        .from(playbookDefinitions)
+        .where(and(...playbookConditions))
+        .limit(1);
+
+      if (!playbook) {
+        return JSON.stringify({ error: 'Playbook not found or access denied' });
+      }
+
+      const permissionCheck = await checkPlaybookRequiredPermissions(playbook.requiredPermissions, auth);
+      if (!permissionCheck.allowed) {
+        return JSON.stringify({
+          error: permissionCheck.error ?? 'Missing required permissions for this playbook',
+          missingPermissions: permissionCheck.missingPermissions,
+        });
+      }
+
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      const { device } = access;
+
+      if (playbook.orgId !== null && playbook.orgId !== device.orgId) {
+        return JSON.stringify({ error: 'Playbook and device must belong to the same organization' });
+      }
+
+      const existingVariables =
+        extraContext.variables && typeof extraContext.variables === 'object'
+          ? (extraContext.variables as Record<string, unknown>)
+          : {};
+
+      const [execution] = await db
+        .insert(playbookExecutions)
+        .values({
+          orgId: device.orgId,
+          deviceId: device.id,
+          playbookId: playbook.id,
+          status: 'pending',
+          context: {
+            ...extraContext,
+            variables: {
+              ...existingVariables,
+              ...variables,
+            },
+          },
+          triggeredBy: 'ai',
+          triggeredByUserId: auth.user.id,
+        })
+        .returning();
+
+      if (!execution) {
+        return JSON.stringify({ error: 'Failed to create playbook execution record' });
+      }
+
+      // Substitute {{variable}} tokens in step toolInput using known variables
+      const allVariables: Record<string, string> = {
+        deviceId: device.id,
+        ...Object.fromEntries(
+          Object.entries({ ...existingVariables, ...variables })
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) => [k, String(v)])
+        ),
+      };
+      const resolvedSteps = JSON.parse(
+        JSON.stringify(playbook.steps).replace(
+          /\{\{(\w+)\}\}/g,
+          (match, key) => allVariables[key] ?? match
+        )
+      );
+
+      return JSON.stringify({
+        execution: {
+          id: execution.id,
+          status: execution.status,
+          currentStepIndex: execution.currentStepIndex,
+          createdAt: execution.createdAt,
+        },
+        playbook: {
+          id: playbook.id,
+          name: playbook.name,
+          description: playbook.description,
+          category: playbook.category,
+          steps: resolvedSteps,
+        },
+        device: {
+          id: device.id,
+          hostname: device.hostname,
+          status: device.status,
+        },
+        message: 'Execution created. Execute each step sequentially and update status/step results as work progresses.',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[AI] execute_playbook failed:`, err);
+      return JSON.stringify({ error: `execute_playbook failed: ${message}` });
+    }
+  },
+});
+
+// ============================================
+// manage_software_policy - Tier 3 (requires approval)
+// ============================================
+
+registerTool({
+  tier: 3,
+  definition: {
+    name: 'manage_software_policy',
+    description: 'Create, update, disable (soft-delete), list, or fetch software policies (allowlist/blocklist/audit).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: { type: 'string', enum: ['create', 'update', 'delete', 'list', 'get'], description: 'Action to perform' },
+        policyId: { type: 'string', description: 'Policy ID (for update/delete/get)' },
+        orgId: { type: 'string', description: 'Organization ID (required for create in partner/system scope)' },
+        name: { type: 'string', description: 'Policy name' },
+        description: { type: 'string', description: 'Policy description' },
+        mode: { type: 'string', enum: ['allowlist', 'blocklist', 'audit'], description: 'Policy mode' },
+        software: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              vendor: { type: 'string' },
+              minVersion: { type: 'string' },
+              maxVersion: { type: 'string' },
+              catalogId: { type: 'string' },
+              reason: { type: 'string' },
+            },
+          },
+          description: 'Software rule definitions',
+        },
+        allowUnknown: { type: 'boolean', description: 'Allow unmatched software in allowlist mode' },
+        targetType: { type: 'string', enum: ['organization', 'site', 'device_group', 'devices'], description: 'Target scope' },
+        targetIds: { type: 'array', items: { type: 'string' }, description: 'Target IDs' },
+        priority: { type: 'number', description: 'Policy priority (0-100)' },
+        enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
+        isActive: { type: 'boolean', description: 'Enable/disable policy' },
+        remediationOptions: { type: 'object', description: 'Remediation behavior options' },
+        limit: { type: 'number', description: 'List limit (default 50)' },
+      },
+      required: ['action'],
+    },
+  },
+  handler: async (input, auth) => {
+    const action = input.action as string;
+
+    if (action === 'list') {
+      const conditions: SQL[] = [];
+      const orgCondition = auth.orgCondition(softwarePolicies.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      if (typeof input.mode === 'string') conditions.push(eq(softwarePolicies.mode, input.mode as 'allowlist' | 'blocklist' | 'audit'));
+      if (typeof input.isActive === 'boolean') conditions.push(eq(softwarePolicies.isActive, input.isActive));
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+      const rows = await db
+        .select()
+        .from(softwarePolicies)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(softwarePolicies.priority), desc(softwarePolicies.updatedAt))
+        .limit(limit);
+
+      return JSON.stringify({ policies: rows, showing: rows.length });
+    }
+
+    if (action === 'get') {
+      if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
+      const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
+      const orgCondition = auth.orgCondition(softwarePolicies.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+
+      const [policy] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
+      if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
+
+      return JSON.stringify({ policy });
+    }
+
+    if (action === 'create') {
+      if (typeof input.name !== 'string' || typeof input.mode !== 'string') {
+        return JSON.stringify({ error: 'name and mode are required for create' });
+      }
+
+      const orgResolution = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' ? input.orgId : undefined);
+      if (!orgResolution.orgId) return JSON.stringify({ error: orgResolution.error });
+
+      const rules = normalizeSoftwarePolicyRules({
+        software: Array.isArray(input.software) ? input.software : [],
+        allowUnknown: input.allowUnknown === true,
+      });
+      if (rules.software.length === 0) {
+        return JSON.stringify({ error: 'At least one software rule is required' });
+      }
+
+      const [policy] = await db
+        .insert(softwarePolicies)
+        .values({
+          orgId: orgResolution.orgId,
+          name: input.name as string,
+          description: (input.description as string) ?? null,
+          mode: input.mode as 'allowlist' | 'blocklist' | 'audit',
+          rules,
+          enforceMode: input.enforceMode === true,
+          remediationOptions: (input.remediationOptions as Record<string, unknown>) ?? null,
+          createdBy: auth.user.id,
+        })
+        .returning();
+      if (!policy) {
+        return JSON.stringify({ error: 'Failed to create policy' });
+      }
+
+      let scheduleWarning: string | undefined;
+      try {
+        await scheduleSoftwareComplianceCheck(policy.id);
+      } catch (error) {
+        scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
+        console.error(`[aiTools] Failed to schedule compliance check for policy ${policy.id}:`, error);
+      }
+      return JSON.stringify({ success: true, policyId: policy.id, name: policy.name, ...(scheduleWarning ? { warning: scheduleWarning } : {}) });
+    }
+
+    if (action === 'update') {
+      if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
+
+      const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
+      const orgCondition = auth.orgCondition(softwarePolicies.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+
+      const [existing] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
+      if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
+
+      const updates: Partial<typeof softwarePolicies.$inferInsert> = { updatedAt: new Date() };
+      if (typeof input.name === 'string') updates.name = input.name;
+      if (typeof input.description === 'string') updates.description = input.description;
+      if (typeof input.mode === 'string') updates.mode = input.mode as 'allowlist' | 'blocklist' | 'audit';
+      if (typeof input.enforceMode === 'boolean') updates.enforceMode = input.enforceMode;
+      if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
+      if (input.remediationOptions && typeof input.remediationOptions === 'object') {
+        updates.remediationOptions = input.remediationOptions as Record<string, unknown>;
+      }
+
+      if (Array.isArray(input.software) || input.allowUnknown !== undefined) {
+        const existingRules = (existing.rules ?? {}) as { software?: unknown; allowUnknown?: boolean };
+        const rules = normalizeSoftwarePolicyRules({
+          software: Array.isArray(input.software) ? input.software : existingRules.software,
+          allowUnknown: typeof input.allowUnknown === 'boolean'
+            ? input.allowUnknown
+            : existingRules.allowUnknown === true,
+        });
+        if (rules.software.length === 0) {
+          return JSON.stringify({ error: 'At least one software rule is required' });
+        }
+        updates.rules = rules;
+      }
+
+      const [updated] = await db
+        .update(softwarePolicies)
+        .set(updates)
+        .where(eq(softwarePolicies.id, existing.id))
+        .returning();
+
+      let scheduleWarning: string | undefined;
+      try {
+        await scheduleSoftwareComplianceCheck(existing.id);
+      } catch (error) {
+        scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
+        console.error(`[aiTools] Failed to schedule compliance check for policy ${existing.id}:`, error);
+      }
+      return JSON.stringify({ success: true, policyId: existing.id, name: updated?.name ?? existing.name, ...(scheduleWarning ? { warning: scheduleWarning } : {}) });
+    }
+
+    if (action === 'delete') {
+      if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
+
+      const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
+      const orgCondition = auth.orgCondition(softwarePolicies.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+
+      const [existing] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
+      if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
+
+      await db.transaction(async (tx) => {
+        await tx
+          .update(softwarePolicies)
+          .set({ isActive: false, updatedAt: new Date() })
+          .where(eq(softwarePolicies.id, existing.id));
+
+        await tx
+          .delete(softwareComplianceStatus)
+          .where(eq(softwareComplianceStatus.policyId, existing.id));
+      });
+
+      return JSON.stringify({ success: true, message: `Policy "${existing.name}" disabled` });
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  },
+});
+
+// ============================================
+// get_playbook_history - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_playbook_history',
+    description: 'View past playbook executions for auditing and trend analysis.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'Filter by device UUID' },
+        playbookId: { type: 'string', description: 'Filter by playbook UUID' },
+        status: {
+          type: 'string',
+          enum: ['pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled'],
+          description: 'Filter by execution status',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default 20, max 100)',
+        },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    try {
+      const conditions: SQL[] = [];
+      const orgCond = auth.orgCondition(playbookExecutions.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      if (typeof input.deviceId === 'string') {
+        conditions.push(eq(playbookExecutions.deviceId, input.deviceId));
+      }
+      if (typeof input.playbookId === 'string') {
+        conditions.push(eq(playbookExecutions.playbookId, input.playbookId));
+      }
+      if (typeof input.status === 'string') {
+        conditions.push(eq(playbookExecutions.status, input.status as typeof playbookExecutions.status.enumValues[number]));
+      }
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 20), 100);
+
+      const executions = await db
+        .select({
+          id: playbookExecutions.id,
+          status: playbookExecutions.status,
+          currentStepIndex: playbookExecutions.currentStepIndex,
+          steps: playbookExecutions.steps,
+          errorMessage: playbookExecutions.errorMessage,
+          rollbackExecuted: playbookExecutions.rollbackExecuted,
+          startedAt: playbookExecutions.startedAt,
+          completedAt: playbookExecutions.completedAt,
+          triggeredBy: playbookExecutions.triggeredBy,
+          createdAt: playbookExecutions.createdAt,
+          playbookName: playbookDefinitions.name,
+          playbookCategory: playbookDefinitions.category,
+          deviceHostname: devices.hostname,
+        })
+        .from(playbookExecutions)
+        .leftJoin(playbookDefinitions, eq(playbookExecutions.playbookId, playbookDefinitions.id))
+        .leftJoin(devices, eq(playbookExecutions.deviceId, devices.id))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(playbookExecutions.createdAt))
+        .limit(limit);
+
+      return JSON.stringify({ executions, count: executions.length });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[AI] get_playbook_history failed:`, err);
+      return JSON.stringify({ error: `get_playbook_history failed: ${message}` });
+    }
+  },
+});
+
+// ============================================
+// remediate_software_violation - Tier 3 (requires approval)
+// ============================================
+
+registerTool({
+  tier: 3,
+  definition: {
+    name: 'remediate_software_violation',
+    description: 'Queue remediation for software policy violations by scheduling uninstall commands for unauthorized software.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceIds: { type: 'array', items: { type: 'string' }, description: 'Devices to remediate' },
+        policyId: { type: 'string', description: 'Policy ID' },
+        autoUninstall: { type: 'boolean', description: 'Whether to queue uninstall commands (default true)' },
+      },
+      required: ['policyId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const policyId = input.policyId as string;
+    const autoUninstall = input.autoUninstall !== false;
+    if (!autoUninstall) {
+      return JSON.stringify({ error: 'autoUninstall=false is not supported for this remediation action' });
+    }
+
+    const conditions: SQL[] = [eq(softwarePolicies.id, policyId)];
+    const orgCondition = auth.orgCondition(softwarePolicies.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    const [policy] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
+    if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
+    if (policy.mode === 'audit') return JSON.stringify({ error: 'Cannot remediate audit-only policy' });
+
+    let deviceIds = Array.isArray(input.deviceIds)
+      ? Array.from(new Set((input.deviceIds as string[]).filter((id) => typeof id === 'string' && id.length > 0)))
+      : [];
+
+    if (deviceIds.length === 0) {
+      const complianceConditions: SQL[] = [
+        eq(softwareComplianceStatus.policyId, policy.id),
+        eq(softwareComplianceStatus.status, 'violation'),
+      ];
+      const deviceOrgCondition = auth.orgCondition(devices.orgId);
+      if (deviceOrgCondition) complianceConditions.push(deviceOrgCondition);
+
+      const rows = await db
+        .select({ deviceId: softwareComplianceStatus.deviceId })
+        .from(softwareComplianceStatus)
+        .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
+        .where(and(...complianceConditions));
+
+      deviceIds = Array.from(new Set(rows.map((row) => row.deviceId)));
+    }
+
+    if (deviceIds.length === 0) {
+      return JSON.stringify({ message: 'No matching violation rows found for remediation', queued: 0 });
+    }
+
+    let queued: number;
+    try {
+      queued = await scheduleSoftwareRemediation(policy.id, deviceIds);
+    } catch (error) {
+      console.error(`[aiTools] Failed to schedule remediation for policy ${policy.id}:`, error);
+      return JSON.stringify({ error: 'Failed to schedule remediation', policyId: policy.id });
+    }
+    return JSON.stringify({
+      message: `Remediation scheduled for ${queued} device(s)`,
+      policyId: policy.id,
+      queued,
+      deviceIds,
+    });
+  },
+});
+
+// ============================================
 // Fleet Orchestration Tools (8 tools)
 // ============================================
 
 registerFleetTools(aiTools);
 registerAgentLogTools(aiTools);
 registerConfigPolicyTools(aiTools);
+registerEventLogTools(aiTools);
 
 // ============================================
 // get_device_context - Tier 1 (auto-execute)

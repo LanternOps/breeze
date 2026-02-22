@@ -5,13 +5,11 @@ import type { UiAssertion, AssertionResult } from '../types';
 
 let browser: Browser | null = null;
 let page: Page | null = null;
-let loginFailed = false;
 
 export async function initBrowser(): Promise<void> {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   page = await context.newPage();
-  loginFailed = false;
 }
 
 export async function closeBrowser(): Promise<void> {
@@ -29,11 +27,8 @@ async function loginIfNeeded(
 ): Promise<void> {
   const url = p.url();
   if (url.includes('/login') || url === 'about:blank') {
-    await p.goto(`${baseUrl}/login`, { waitUntil: 'networkidle', timeout: 15_000 });
-    // Wait for the React login form to hydrate
-    const emailField = p.locator('#email');
-    await emailField.waitFor({ state: 'visible', timeout: 10_000 });
-    await emailField.fill(env.ADMIN_EMAIL || 'admin@breeze.local');
+    await p.goto(`${baseUrl}/login`);
+    await p.locator('#email').fill(env.ADMIN_EMAIL || 'admin@breeze.local');
     await p.locator('#password').fill(env.ADMIN_PASSWORD || 'BreezeAdmin123!');
     await p.locator('button[type="submit"]').click();
     await p.waitForURL('**/*', { timeout: 15_000 });
@@ -59,39 +54,15 @@ export async function executeUiAssertion(
     };
   }
 
-  // Skip all remaining UI tests if login already failed (web app likely not running)
-  if (loginFailed) {
-    return {
-      id: assertion.id,
-      type: 'ui',
-      claim: assertion.claim,
-      status: 'skip',
-      reason: 'Skipped: web app login failed (web dashboard may not be running)',
-      durationMs: Date.now() - start,
-    };
-  }
-
   try {
-    try {
-      await loginIfNeeded(page, baseUrl, env);
-    } catch (loginErr) {
-      loginFailed = true;
-      return {
-        id: assertion.id,
-        type: 'ui',
-        claim: assertion.claim,
-        status: 'skip',
-        reason: `Login failed (web dashboard may not be running): ${loginErr instanceof Error ? loginErr.message.slice(0, 100) : String(loginErr)}`,
-        durationMs: Date.now() - start,
-      };
-    }
+    await loginIfNeeded(page, baseUrl, env);
 
     const targetUrl = `${baseUrl}${assertion.test.navigate}`;
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30_000 });
     await page.waitForTimeout(1000);
 
+    const snapshot = await page.accessibility.snapshot();
     const bodyText = await page.locator('body').innerText();
-    const ariaSnapshot = await page.locator('body').ariaSnapshot();
 
     const client = new Anthropic();
     const message = await client.messages.create({
@@ -107,8 +78,8 @@ Page URL: ${targetUrl}
 Page text content (truncated to 5000 chars):
 ${bodyText.slice(0, 5000)}
 
-Accessibility snapshot (truncated):
-${ariaSnapshot.slice(0, 3000)}
+Accessibility tree (truncated):
+${JSON.stringify(snapshot, null, 2).slice(0, 3000)}
 
 Documentation claim to verify:
 "${assertion.claim}"

@@ -33,7 +33,8 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
       .where(eq(devicePatches.deviceId, device.id));
 
     for (const patchData of data.patches) {
-      const externalId = patchData.kbNumber ||
+      const externalId = patchData.externalId ||
+        patchData.kbNumber ||
         `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
       const inferredOsType = inferPatchOsType(patchData.source, device.osType);
 
@@ -95,7 +96,9 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
 
     if (data.installed && data.installed.length > 0) {
       for (const patchData of data.installed) {
-        const externalId = `${patchData.source}:${patchData.name}:${patchData.version || 'installed'}`;
+        const externalId = patchData.externalId ||
+          patchData.kbNumber ||
+          `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
         const inferredOsType = inferPatchOsType(patchData.source, device.osType);
 
         const [patch] = await tx

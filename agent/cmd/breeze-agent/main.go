@@ -115,10 +115,12 @@ func initLogging(cfg *config.Config) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v (logging to stdout)\n", cfg.LogFile, err)
 			logFileFallback = true
-		} else if isWindowsService() {
-			// Windows services have no console — stdout is an invalid handle.
-			// io.MultiWriter stops on first error, so writing stdout first would
-			// silently prevent log file writes. Use the file writer only.
+		} else if !hasConsole() {
+			// No console attached (Windows service, launchd daemon, or systemd
+			// service). Use file-only logging — stdout may be invalid or already
+			// redirected to a log destination by the init system. Using
+			// io.MultiWriter with an invalid stdout would fail the first write
+			// and short-circuit all subsequent log output.
 			output = rw
 		} else {
 			output = logging.TeeWriter(os.Stdout, rw)
@@ -171,6 +173,10 @@ func startAgent() (*agentComponents, error) {
 	if cfg.AgentID == "" {
 		return nil, fmt.Errorf("agent not enrolled — run 'breeze-agent enroll <key>' first")
 	}
+
+	// Loosen config directory (0755) and agent.yaml (0644) so the Helper can read
+	// them. secrets.yaml stays root-only (0600).
+	config.FixConfigPermissions()
 
 	initLogging(cfg)
 

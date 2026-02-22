@@ -12,12 +12,19 @@ import {
   discoveryJobs,
   discoveredAssets,
   networkTopology,
+  networkBaselines,
+  networkKnownGuests,
+  networkChangeEvents,
+  organizations,
   devices,
   deviceNetwork
 } from '../db/schema';
+import type { DiscoveryProfileAlertSettings } from '../db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
+import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getRedisConnection } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
+import { isCronDue } from '../services/automationRuntime';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -54,9 +61,14 @@ interface DispatchScanJobData {
   agentId?: string | null;
 }
 
+interface ScheduleProfilesJobData {
+  type: 'schedule-profiles';
+}
+
 interface ProcessResultsJobData {
   type: 'process-results';
   jobId: string;
+  profileId?: string;
   orgId: string;
   siteId: string;
   hosts: DiscoveredHostResult[];
@@ -83,7 +95,7 @@ export interface DiscoveredHostResult {
   methods: string[];
 }
 
-type DiscoveryJobData = DispatchScanJobData | ProcessResultsJobData;
+type DiscoveryJobData = ScheduleProfilesJobData | DispatchScanJobData | ProcessResultsJobData;
 
 /**
  * Create the discovery worker
@@ -94,6 +106,8 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
     async (job: Job<DiscoveryJobData>) => {
       return runWithSystemDbAccess(async () => {
         switch (job.data.type) {
+          case 'schedule-profiles':
+            return await processScheduleProfiles();
           case 'dispatch-scan':
             return await processDispatchScan(job.data);
           case 'process-results':
@@ -108,6 +122,175 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
       concurrency: 5
     }
   );
+}
+
+type ProfileSchedule = {
+  type?: 'manual' | 'cron' | 'interval';
+  cron?: string;
+  intervalMinutes?: number;
+  timezone?: string;
+};
+
+function normalizeSchedule(raw: unknown): ProfileSchedule | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const type = typeof record.type === 'string' ? record.type : '';
+  if (type !== 'manual' && type !== 'cron' && type !== 'interval') return null;
+
+  const intervalMinutesRaw = typeof record.intervalMinutes === 'number'
+    ? record.intervalMinutes
+    : Number(record.intervalMinutes ?? NaN);
+  const intervalMinutes = Number.isFinite(intervalMinutesRaw) && intervalMinutesRaw > 0
+    ? Math.floor(intervalMinutesRaw)
+    : undefined;
+
+  return {
+    type,
+    cron: typeof record.cron === 'string' ? record.cron : undefined,
+    intervalMinutes,
+    timezone: typeof record.timezone === 'string' ? record.timezone : undefined
+  };
+}
+
+function resolveScheduleTimeZone(value?: string): string {
+  const candidate = value?.trim() || 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch {
+    return 'UTC';
+  }
+}
+
+async function hasActiveJob(profileId: string): Promise<boolean> {
+  const [active] = await db
+    .select({ id: discoveryJobs.id })
+    .from(discoveryJobs)
+    .where(
+      and(
+        eq(discoveryJobs.profileId, profileId),
+        sql`${discoveryJobs.status} in ('scheduled', 'running')`
+      )
+    )
+    .limit(1);
+  return Boolean(active);
+}
+
+async function enqueueScheduledProfileRun(
+  profileId: string,
+  orgId: string,
+  siteId: string
+): Promise<{ queued: boolean; jobId: string | null }> {
+  const [created] = await db.insert(discoveryJobs).values({
+    profileId,
+    orgId,
+    siteId,
+    status: 'scheduled',
+    scheduledAt: new Date()
+  }).returning();
+
+  const createdJobId = created?.id ?? null;
+  if (!created || !createdJobId) {
+    return { queued: false, jobId: null };
+  }
+
+  try {
+    await enqueueDiscoveryScan(createdJobId, profileId, orgId, siteId, null);
+    return { queued: true, jobId: createdJobId };
+  } catch (error) {
+    console.error(`[DiscoveryWorker] Failed to enqueue scheduled scan for profile ${profileId}:`, error);
+    await db.update(discoveryJobs).set({
+      status: 'failed',
+      completedAt: new Date(),
+      errors: { message: 'Failed to enqueue scheduled profile scan' },
+      updatedAt: new Date()
+    }).where(eq(discoveryJobs.id, createdJobId));
+    return { queued: false, jobId: createdJobId };
+  }
+}
+
+async function processScheduleProfiles(): Promise<{ enqueued: number }> {
+  const now = new Date();
+  const minuteStart = new Date(now);
+  minuteStart.setSeconds(0, 0);
+  const minuteEnd = new Date(minuteStart.getTime() + 60 * 1000);
+
+  const profiles = await db
+    .select({
+      id: discoveryProfiles.id,
+      orgId: discoveryProfiles.orgId,
+      siteId: discoveryProfiles.siteId,
+      schedule: discoveryProfiles.schedule
+    })
+    .from(discoveryProfiles)
+    .where(eq(discoveryProfiles.enabled, true));
+
+  if (profiles.length === 0) return { enqueued: 0 };
+
+  let enqueued = 0;
+
+  for (const profile of profiles) {
+    const schedule = normalizeSchedule(profile.schedule);
+    if (!schedule || schedule.type === 'manual') continue;
+
+    if (await hasActiveJob(profile.id)) {
+      continue;
+    }
+
+    if (schedule.type === 'interval') {
+      const intervalMinutes = schedule.intervalMinutes ?? 60;
+      const thresholdMs = intervalMinutes * 60 * 1000;
+
+      const [latest] = await db
+        .select({
+          scheduledAt: discoveryJobs.scheduledAt,
+          createdAt: discoveryJobs.createdAt
+        })
+        .from(discoveryJobs)
+        .where(eq(discoveryJobs.profileId, profile.id))
+        .orderBy(sql`${discoveryJobs.scheduledAt} desc nulls last, ${discoveryJobs.createdAt} desc`)
+        .limit(1);
+
+      const latestRunAt = latest?.scheduledAt ?? latest?.createdAt ?? null;
+      const isDue = !latestRunAt || (now.getTime() - latestRunAt.getTime() >= thresholdMs);
+      if (!isDue) continue;
+
+      const result = await enqueueScheduledProfileRun(profile.id, profile.orgId, profile.siteId);
+      if (result.queued) enqueued++;
+      continue;
+    }
+
+    if (schedule.type === 'cron') {
+      const cronExpression = schedule.cron?.trim();
+      if (!cronExpression) continue;
+
+      const timeZone = resolveScheduleTimeZone(schedule.timezone);
+      if (!isCronDue(cronExpression, timeZone, now)) continue;
+
+      const [existingMinuteJob] = await db
+        .select({ id: discoveryJobs.id })
+        .from(discoveryJobs)
+        .where(
+          and(
+            eq(discoveryJobs.profileId, profile.id),
+            sql`${discoveryJobs.scheduledAt} >= ${minuteStart.toISOString()}::timestamptz`,
+            sql`${discoveryJobs.scheduledAt} < ${minuteEnd.toISOString()}::timestamptz`
+          )
+        )
+        .limit(1);
+
+      if (existingMinuteJob) continue;
+
+      const result = await enqueueScheduledProfileRun(profile.id, profile.orgId, profile.siteId);
+      if (result.queued) enqueued++;
+    }
+  }
+
+  if (enqueued > 0) {
+    console.log(`[DiscoveryWorker] Scheduled ${enqueued} discovery profile scan job(s)`);
+  }
+
+  return { enqueued };
 }
 
 /**
@@ -134,6 +317,8 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 
   // Find an online agent to run the scan
   let agentId = data.agentId;
+  const requestedAgentId = data.agentId ?? null;
+  let selectionSource: 'requested' | 'site-auto' = requestedAgentId ? 'requested' : 'site-auto';
   if (!agentId) {
     // Pick an online agent from the same site
     const [onlineAgent] = await db
@@ -151,10 +336,28 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     agentId = onlineAgent?.agentId ?? null;
   }
 
-  if (!agentId || !isAgentConnected(agentId)) {
+  if (!agentId) {
+    console.warn(
+      `[DiscoveryWorker] No candidate agent found for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource})`
+    );
     await markJobFailed(data.jobId, 'No online agent available for this site');
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
+
+  if (!isAgentConnected(agentId)) {
+    console.warn(
+      `[DiscoveryWorker] Selected agent is not websocket-connected for job ${data.jobId} (agent=${agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${selectionSource})`
+    );
+    await markJobFailed(data.jobId, 'No online agent available for this site');
+    return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
+  }
+
+  if (!requestedAgentId) {
+    selectionSource = 'site-auto';
+  }
+  console.log(
+    `[DiscoveryWorker] Selected agent ${agentId} for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
+  );
 
   // Build the command payload from the profile
   const command: AgentCommand = {
@@ -218,6 +421,61 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     return { newAssets: 0, updatedAssets: 0, durationMs: Date.now() - startTime };
   }
 
+  // ── Resolve profileId ─────────────────────────────────────────────────
+  let profileId = data.profileId;
+  if (!profileId) {
+    const [jobRow] = await db
+      .select({ profileId: discoveryJobs.profileId })
+      .from(discoveryJobs)
+      .where(eq(discoveryJobs.id, data.jobId))
+      .limit(1);
+    profileId = jobRow?.profileId;
+  }
+
+  // ── Load profile alertSettings ────────────────────────────────────────
+  const defaultAlertSettings: DiscoveryProfileAlertSettings = {
+    enabled: false, alertOnNew: false, alertOnDisappeared: false, alertOnChanged: false, changeRetentionDays: 90
+  };
+  let alertSettings: DiscoveryProfileAlertSettings = defaultAlertSettings;
+  if (profileId) {
+    const [profile] = await db
+      .select({ alertSettings: discoveryProfiles.alertSettings, id: discoveryProfiles.id })
+      .from(discoveryProfiles)
+      .where(eq(discoveryProfiles.id, profileId))
+      .limit(1);
+    alertSettings = (profile?.alertSettings as DiscoveryProfileAlertSettings | null) ?? defaultAlertSettings;
+  }
+
+  // ── Load known guest MACs ─────────────────────────────────────────────
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, data.orgId))
+    .limit(1);
+
+  const knownGuests = org?.partnerId ? await db
+    .select({ macAddress: networkKnownGuests.macAddress })
+    .from(networkKnownGuests)
+    .where(eq(networkKnownGuests.partnerId, org.partnerId))
+  : [];
+  const knownGuestMacs = new Set(knownGuests.map(g => g.macAddress));
+
+  // ── Load existing assets for approval comparison ──────────────────────
+  const scannedIps = data.hosts.map(h => h.ip).filter(Boolean);
+  const existingAssets = scannedIps.length > 0
+    ? await db.select({
+        id: discoveredAssets.id,
+        ipAddress: discoveredAssets.ipAddress,
+        macAddress: discoveredAssets.macAddress,
+        hostname: discoveredAssets.hostname,
+        approvalStatus: discoveredAssets.approvalStatus,
+        isOnline: discoveredAssets.isOnline
+      }).from(discoveredAssets).where(
+        and(eq(discoveredAssets.orgId, data.orgId), inArray(discoveredAssets.ipAddress, scannedIps))
+      )
+    : [];
+  const existingByIp = new Map(existingAssets.map(a => [a.ipAddress, a]));
+
   let newCount = 0;
   let updatedCount = 0;
 
@@ -276,7 +534,6 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       const [inserted] = await db.insert(discoveredAssets).values({
         orgId: data.orgId,
         siteId: data.siteId,
-        status: 'new',
         ...assetData
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
@@ -301,12 +558,94 @@ async function processResults(data: ProcessResultsJobData): Promise<{
           if (match) {
             await db
               .update(discoveredAssets)
-              .set({ linkedDeviceId: match.deviceId, status: 'managed' as any })
+              .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved' })
               .where(eq(discoveredAssets.id, upsertedAssetId));
           }
         }
       } catch (linkErr) {
         console.warn(`[DiscoveryWorker] Auto-link failed for ${host.ip}:`, linkErr);
+      }
+    }
+
+    // ── Approval decision ─────────────────────────────────────────────────
+    const existingForApproval = existingByIp.get(host.ip) ?? null;
+    const guestMac = normalizeMac(host.mac);
+    const isGuest = !!guestMac && knownGuestMacs.has(guestMac);
+
+    const decision = buildApprovalDecision({
+      existingAsset: existingForApproval
+        ? { approvalStatus: existingForApproval.approvalStatus, macAddress: existingForApproval.macAddress }
+        : null,
+      incomingMac: host.mac,
+      isKnownGuest: isGuest,
+      alertSettings
+    });
+
+    // Update approvalStatus and isOnline
+    if (upsertedAssetId) {
+      await db.update(discoveredAssets)
+        .set({ approvalStatus: decision.approvalStatus, isOnline: true })
+        .where(eq(discoveredAssets.id, upsertedAssetId));
+    }
+
+    // Log change event if needed
+    if (decision.shouldAlert && decision.eventType && profileId) {
+      try {
+        await db.insert(networkChangeEvents).values({
+          orgId: data.orgId,
+          siteId: data.siteId,
+          baselineId: sql`(SELECT id FROM network_baselines WHERE org_id = ${data.orgId} AND site_id = ${data.siteId} LIMIT 1)`,
+          profileId: profileId,
+          eventType: decision.eventType,
+          ipAddress: host.ip,
+          macAddress: host.mac ?? null,
+          hostname: host.hostname ?? null,
+          assetType: mapAssetType(host.assetType),
+          previousState: existingForApproval
+            ? { macAddress: existingForApproval.macAddress, hostname: existingForApproval.hostname }
+            : null,
+          currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
+        });
+      } catch (changeErr) {
+        console.warn(
+          `[DiscoveryWorker] Failed to log change event for ${host.ip}:`,
+          changeErr instanceof Error ? changeErr.message : changeErr
+        );
+      }
+    }
+  }
+
+  // ── Mark approved assets not seen in this scan as offline ─────────────
+  if (scannedIps.length > 0) {
+    const seenIps = new Set(data.hosts.map(h => h.ip));
+    for (const asset of existingAssets) {
+      if (!seenIps.has(asset.ipAddress) && asset.approvalStatus === 'approved' && asset.isOnline) {
+        await db.update(discoveredAssets)
+          .set({ isOnline: false })
+          .where(eq(discoveredAssets.id, asset.id));
+
+        // Log disappeared event if configured
+        if (alertSettings.enabled && alertSettings.alertOnDisappeared && profileId) {
+          try {
+            await db.insert(networkChangeEvents).values({
+              orgId: data.orgId,
+              siteId: data.siteId,
+              baselineId: sql`(SELECT id FROM network_baselines WHERE org_id = ${data.orgId} AND site_id = ${data.siteId} LIMIT 1)`,
+              profileId,
+              eventType: 'device_disappeared',
+              ipAddress: asset.ipAddress,
+              macAddress: asset.macAddress ?? null,
+              hostname: asset.hostname ?? null,
+              previousState: { approvalStatus: asset.approvalStatus, isOnline: true },
+              currentState: { isOnline: false }
+            });
+          } catch (disappearedErr) {
+            console.warn(
+              `[DiscoveryWorker] Failed to log disappeared event for ${asset.ipAddress}:`,
+              disappearedErr instanceof Error ? disappearedErr.message : disappearedErr
+            );
+          }
+        }
       }
     }
   }
@@ -330,6 +669,36 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       updatedAt: new Date()
     })
     .where(eq(discoveryJobs.id, data.jobId));
+
+  // If this discovery job was launched by a network baseline, enqueue comparison.
+  const [baseline] = await db
+    .select({
+      id: networkBaselines.id,
+      orgId: networkBaselines.orgId,
+      siteId: networkBaselines.siteId
+    })
+    .from(networkBaselines)
+    .where(eq(networkBaselines.lastScanJobId, data.jobId))
+    .limit(1);
+
+  if (baseline) {
+    try {
+      const { enqueueBaselineComparison } = await import('./networkBaselineWorker');
+      await enqueueBaselineComparison(
+        baseline.id,
+        data.jobId,
+        baseline.orgId,
+        baseline.siteId,
+        data.hosts
+      );
+    } catch (error) {
+      console.error(
+        `[DiscoveryWorker] Failed to enqueue baseline comparison for baseline=${baseline.id} job=${data.jobId}:`,
+        error instanceof Error ? error.message : error
+      );
+      throw error; // Let BullMQ retry
+    }
+  }
 
   console.log(`[DiscoveryWorker] Job ${data.jobId} completed: ${newCount} new, ${updatedCount} updated`);
   return { newAssets: newCount, updatedAssets: updatedCount, durationMs: Date.now() - startTime };
@@ -533,7 +902,8 @@ export async function enqueueDiscoveryResults(
   siteId: string,
   hosts: DiscoveredHostResult[],
   hostsScanned: number,
-  hostsDiscovered: number
+  hostsDiscovered: number,
+  profileId?: string
 ): Promise<string> {
   const queue = getDiscoveryQueue();
   const job = await queue.add(
@@ -541,6 +911,7 @@ export async function enqueueDiscoveryResults(
     {
       type: 'process-results',
       jobId,
+      profileId,
       orgId,
       siteId,
       hosts,
@@ -553,6 +924,31 @@ export async function enqueueDiscoveryResults(
     }
   );
   return job.id!;
+}
+
+async function scheduleRecurringProfilePlanner(): Promise<void> {
+  const queue = getDiscoveryQueue();
+
+  const newJob = await queue.add(
+    'schedule-profiles',
+    { type: 'schedule-profiles' as const },
+    {
+      repeat: {
+        every: 60 * 1000
+      },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 20 }
+    }
+  );
+
+  const repeatable = await queue.getRepeatableJobs();
+  for (const job of repeatable) {
+    if (job.name === 'schedule-profiles' && job.key !== newJob.repeatJobKey) {
+      await queue.removeRepeatableByKey(job.key);
+    }
+  }
+
+  console.log('[DiscoveryWorker] Scheduled repeatable profile scheduler (every 60s)');
 }
 
 // Worker instance (kept for cleanup)
@@ -582,6 +978,8 @@ export async function initializeDiscoveryWorker(): Promise<void> {
         }
       }
     });
+
+    await scheduleRecurringProfilePlanner();
 
     console.log('[DiscoveryWorker] Discovery worker initialized');
   } catch (error) {

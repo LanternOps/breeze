@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { DiscoveredAsset, OpenPortEntry } from './DiscoveredAssetList';
-import { typeConfig, statusConfig } from './DiscoveredAssetList';
+import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import EnableMonitoringForm from './EnableMonitoringForm';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -9,6 +9,9 @@ export type AssetDetail = DiscoveredAsset & {
   osFingerprint?: string;
   snmpData?: Record<string, string>;
   linkedDeviceId?: string | null;
+  label?: string | null;
+  notes?: string | null;
+  tags?: string[];
 };
 
 type MonitoringStatus = {
@@ -58,6 +61,7 @@ type AssetDetailModalProps = {
   onClose: () => void;
   onLinked?: (assetId: string) => void;
   onDeleted?: (assetId: string) => void;
+  onUpdated?: (assetId: string) => void;
 };
 
 export default function AssetDetailModal({
@@ -66,7 +70,8 @@ export default function AssetDetailModal({
   devices = [],
   onClose,
   onLinked,
-  onDeleted
+  onDeleted,
+  onUpdated
 }: AssetDetailModalProps) {
   const [selectedDevice, setSelectedDevice] = useState(asset?.linkedDeviceId ?? '');
   const [linking, setLinking] = useState(false);
@@ -82,6 +87,12 @@ export default function AssetDetailModal({
   const [disableError, setDisableError] = useState<string>();
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string>();
+  const [editLabel, setEditLabel] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [editTags, setEditTags] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
     if (asset?.linkedDeviceId) {
@@ -92,6 +103,11 @@ export default function AssetDetailModal({
     setLinkError(undefined);
     setShowEnableForm(false);
     setDeleteError(undefined);
+    setEditLabel(asset?.label ?? '');
+    setEditNotes(asset?.notes ?? '');
+    setEditTags(asset?.tags?.join(', ') ?? '');
+    setSaveError(undefined);
+    setSaveSuccess(false);
   }, [asset]);
 
   const refreshMonitoring = useCallback(async (assetId: string) => {
@@ -211,6 +227,35 @@ export default function AssetDetailModal({
     }
   };
 
+  const handleSaveInfo = async () => {
+    try {
+      setSaving(true);
+      setSaveError(undefined);
+      setSaveSuccess(false);
+      const tags = editTags
+        .split(',')
+        .map(t => t.trim())
+        .filter(Boolean);
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          label: editLabel || null,
+          notes: editNotes || null,
+          tags
+        })
+      });
+      if (!response.ok) {
+        throw new Error('Failed to save asset info');
+      }
+      setSaveSuccess(true);
+      onUpdated?.(asset.id);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';
   const snmpData = asset.snmpData ?? {};
@@ -222,24 +267,23 @@ export default function AssetDetailModal({
   const activeMonitorCount = monitoring?.networkMonitors?.activeCount ?? activeNetworkMonitors.length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
-        <div className="flex items-start justify-between gap-4">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/80 px-4 py-8">
+      <div className="w-full max-w-5xl rounded-lg border bg-card shadow-sm flex flex-col max-h-[calc(100vh-4rem)]">
+        <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold">{asset.hostname || asset.ip}</h2>
+              <h2 className="text-lg font-semibold">{asset.label || asset.hostname || asset.ip}</h2>
               <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeConfig[asset.type].color}`}>
                 {typeConfig[asset.type].label}
               </span>
-              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusConfig[asset.status].color}`}>
-                {statusConfig[asset.status].label}
+              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
+                {approvalStatusConfig[asset.approvalStatus].label}
               </span>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              {asset.ip} • {asset.mac !== '—' ? asset.mac : 'No MAC'}
-              {asset.lastSeen && (
-                <> • Last seen {new Date(asset.lastSeen).toLocaleString()}</>
-              )}
+              {asset.ip}{asset.mac !== '—' && <> • {asset.mac}</>}
+              {asset.manufacturer !== '—' && <> • {asset.manufacturer}</>}
+              {asset.lastSeen && <> • Last seen {new Date(asset.lastSeen).toLocaleString()}</>}
             </p>
           </div>
           <button
@@ -251,25 +295,15 @@ export default function AssetDetailModal({
           </button>
         </div>
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="overflow-y-auto px-6 py-5">
+        <div className="grid gap-5 lg:grid-cols-2">
+          {/* Left column — Network & Discovery */}
           <div className="space-y-4">
             <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">Overview</h3>
-              <dl className="mt-3 space-y-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <dt className="text-muted-foreground">IP Address</dt>
-                  <dd className="font-medium">{asset.ip}</dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt className="text-muted-foreground">MAC Address</dt>
-                  <dd className="font-medium">{asset.mac}</dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt className="text-muted-foreground">Manufacturer</dt>
-                  <dd className="font-medium">{asset.manufacturer}</dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt className="text-muted-foreground">Ping</dt>
+              <h3 className="text-sm font-semibold">Network Details</h3>
+              <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                <div>
+                  <dt className="text-xs text-muted-foreground">Ping</dt>
                   <dd className="font-mono font-medium">
                     {asset.responseTimeMs != null
                       ? asset.responseTimeMs < 1
@@ -278,33 +312,31 @@ export default function AssetDetailModal({
                       : '—'}
                   </dd>
                 </div>
-                <div className="flex items-center justify-between">
-                  <dt className="text-muted-foreground">OS Fingerprint</dt>
-                  <dd className="font-medium">{osFingerprint}</dd>
+                <div>
+                  <dt className="text-xs text-muted-foreground">OS Fingerprint</dt>
+                  <dd className="font-medium truncate">{osFingerprint}</dd>
                 </div>
               </dl>
+              {openPorts.length > 0 && (
+                <div className="mt-3 border-t pt-3">
+                  <p className="text-xs font-medium text-muted-foreground">Open Ports</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {openPorts.map((p) => (
+                      <span
+                        key={p.port}
+                        className="rounded-full border border-muted bg-background px-2 py-0.5 text-xs"
+                      >
+                        {p.port}{p.service ? ` (${p.service})` : ''}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {openPorts.length === 0 && (
+                <p className="mt-3 text-xs text-muted-foreground">No open ports detected.</p>
+              )}
             </div>
 
-            <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">Open Ports</h3>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {openPorts.length === 0 ? (
-                  <span className="text-xs text-muted-foreground">No ports detected.</span>
-                ) : (
-                  openPorts.map((p) => (
-                    <span
-                      key={p.port}
-                      className="rounded-full border border-muted bg-background px-2 py-1 text-xs"
-                    >
-                      {p.port}{p.service ? ` (${p.service})` : ''}
-                    </span>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-4">
             <div className="rounded-md border bg-muted/30 p-4">
               <h3 className="text-sm font-semibold">SNMP Data</h3>
               <dl className="mt-3 space-y-2 text-sm">
@@ -407,7 +439,7 @@ export default function AssetDetailModal({
                     </div>
                   )}
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setShowEnableForm(true)}
@@ -435,6 +467,64 @@ export default function AssetDetailModal({
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Right column — Asset Management */}
+          <div className="space-y-4">
+            <div className="rounded-md border bg-muted/30 p-4">
+              <h3 className="text-sm font-semibold">Asset Info</h3>
+              <div className="mt-3 space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Display Name</label>
+                  <input
+                    type="text"
+                    value={editLabel}
+                    onChange={e => setEditLabel(e.target.value)}
+                    placeholder="e.g. Main Switch"
+                    maxLength={255}
+                    className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Notes / Description</label>
+                  <textarea
+                    value={editNotes}
+                    onChange={e => setEditNotes(e.target.value)}
+                    placeholder="e.g. Located in Closet A, 2nd floor"
+                    rows={2}
+                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Tags (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={editTags}
+                    onChange={e => setEditTags(e.target.value)}
+                    placeholder="e.g. critical, floor-2, networking"
+                    className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveInfo}
+                    disabled={saving}
+                    className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
+                  >
+                    {saving ? 'Saving...' : 'Save'}
+                  </button>
+                  {saveSuccess && (
+                    <span className="text-xs text-green-600">Saved</span>
+                  )}
+                </div>
+                {saveError && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {saveError}
+                  </div>
+                )}
+              </div>
+            </div>
 
             <div className="rounded-md border bg-muted/30 p-4">
               <h3 className="text-sm font-semibold">Link to Device</h3>
@@ -442,7 +532,7 @@ export default function AssetDetailModal({
                 <select
                   value={selectedDevice}
                   onChange={event => setSelectedDevice(event.target.value)}
-                  className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
                   <option value="">Select device</option>
                   {devices.map(device => (
@@ -455,7 +545,7 @@ export default function AssetDetailModal({
                   type="button"
                   onClick={handleLink}
                   disabled={linking}
-                  className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
+                  className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   {linking ? 'Linking...' : 'Link'}
                 </button>
@@ -465,25 +555,26 @@ export default function AssetDetailModal({
                   {linkError}
                 </div>
               )}
+            </div>
 
-              <div className="mt-4 border-t pt-4">
-                <p className="text-xs text-muted-foreground">Remove this discovered asset from discovery results.</p>
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className="mt-2 h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {deleting ? 'Deleting...' : 'Delete Asset'}
-                </button>
-                {deleteError && (
-                  <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {deleteError}
-                  </div>
-                )}
-              </div>
+            <div className="flex items-center justify-between rounded-md border bg-muted/30 px-4 py-3">
+              <p className="text-xs text-muted-foreground">Remove this asset from discovery results.</p>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleting}
+                className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deleting ? 'Deleting...' : 'Delete Asset'}
+              </button>
+              {deleteError && (
+                <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {deleteError}
+                </div>
+              )}
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>

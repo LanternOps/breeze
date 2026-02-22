@@ -20,6 +20,13 @@ function aggregateMetricsByInterval(
     avgRamUsedMb: number;
     avgDiskPercent: number;
     avgDiskUsedGb: number;
+    diskActivityAvailable: boolean;
+    totalDiskReadBytes: bigint;
+    totalDiskWriteBytes: bigint;
+    avgDiskReadBps: number;
+    avgDiskWriteBps: number;
+    totalDiskReadOps: bigint;
+    totalDiskWriteOps: bigint;
     totalNetworkIn: bigint;
     totalNetworkOut: bigint;
     avgBandwidthIn: number;
@@ -35,6 +42,13 @@ function aggregateMetricsByInterval(
   ramUsedMb: number;
   disk: number;
   diskUsedGb: number;
+  diskActivityAvailable: boolean;
+  diskReadBytes: number;
+  diskWriteBytes: number;
+  diskReadBps: number;
+  diskWriteBps: number;
+  diskReadOps: number;
+  diskWriteOps: number;
   networkIn: number;
   networkOut: number;
   bandwidthInBps: number;
@@ -52,6 +66,13 @@ function aggregateMetricsByInterval(
       ramUsedMb: Math.round(d.avgRamUsedMb ?? 0),
       disk: Number(d.avgDiskPercent?.toFixed(2) ?? 0),
       diskUsedGb: Number(d.avgDiskUsedGb?.toFixed(2) ?? 0),
+      diskActivityAvailable: Boolean(d.diskActivityAvailable),
+      diskReadBytes: Number(d.totalDiskReadBytes ?? 0),
+      diskWriteBytes: Number(d.totalDiskWriteBytes ?? 0),
+      diskReadBps: Math.round(d.avgDiskReadBps ?? 0),
+      diskWriteBps: Math.round(d.avgDiskWriteBps ?? 0),
+      diskReadOps: Number(d.totalDiskReadOps ?? 0),
+      diskWriteOps: Number(d.totalDiskWriteOps ?? 0),
       networkIn: Number(d.totalNetworkIn ?? 0),
       networkOut: Number(d.totalNetworkOut ?? 0),
       bandwidthInBps: Math.round(d.avgBandwidthIn ?? 0),
@@ -81,6 +102,13 @@ function aggregateMetricsByInterval(
     ramUsedMb: number;
     disk: number;
     diskUsedGb: number;
+    diskActivityAvailable: boolean;
+    diskReadBytes: number;
+    diskWriteBytes: number;
+    diskReadBps: number;
+    diskWriteBps: number;
+    diskReadOps: number;
+    diskWriteOps: number;
     networkIn: number;
     networkOut: number;
     bandwidthInBps: number;
@@ -95,6 +123,13 @@ function aggregateMetricsByInterval(
     const avgRamUsed = points.reduce((sum, p) => sum + (p.avgRamUsedMb ?? 0), 0) / count;
     const avgDisk = points.reduce((sum, p) => sum + (p.avgDiskPercent ?? 0), 0) / count;
     const avgDiskUsed = points.reduce((sum, p) => sum + (p.avgDiskUsedGb ?? 0), 0) / count;
+    const diskActivityAvailable = points.some((p) => p.diskActivityAvailable);
+    const totalDiskReadBytes = points.reduce((sum, p) => sum + Number(p.totalDiskReadBytes ?? 0), 0);
+    const totalDiskWriteBytes = points.reduce((sum, p) => sum + Number(p.totalDiskWriteBytes ?? 0), 0);
+    const avgDiskReadBps = points.reduce((sum, p) => sum + (p.avgDiskReadBps ?? 0), 0) / count;
+    const avgDiskWriteBps = points.reduce((sum, p) => sum + (p.avgDiskWriteBps ?? 0), 0) / count;
+    const totalDiskReadOps = points.reduce((sum, p) => sum + Number(p.totalDiskReadOps ?? 0), 0);
+    const totalDiskWriteOps = points.reduce((sum, p) => sum + Number(p.totalDiskWriteOps ?? 0), 0);
     const totalIn = points.reduce((sum, p) => sum + Number(p.totalNetworkIn ?? 0), 0);
     const totalOut = points.reduce((sum, p) => sum + Number(p.totalNetworkOut ?? 0), 0);
     const avgBwIn = points.reduce((sum, p) => sum + (p.avgBandwidthIn ?? 0), 0) / count;
@@ -108,6 +143,13 @@ function aggregateMetricsByInterval(
       ramUsedMb: Math.round(avgRamUsed),
       disk: Number(avgDisk.toFixed(2)),
       diskUsedGb: Number(avgDiskUsed.toFixed(2)),
+      diskActivityAvailable,
+      diskReadBytes: totalDiskReadBytes,
+      diskWriteBytes: totalDiskWriteBytes,
+      diskReadBps: Math.round(avgDiskReadBps),
+      diskWriteBps: Math.round(avgDiskWriteBps),
+      diskReadOps: totalDiskReadOps,
+      diskWriteOps: totalDiskWriteOps,
       networkIn: totalIn,
       networkOut: totalOut,
       bandwidthInBps: Math.round(avgBwIn),
@@ -193,6 +235,13 @@ metricsRoutes.get(
         avgRamUsedMb: sql<number>`avg(${deviceMetrics.ramUsedMb})`,
         avgDiskPercent: sql<number>`avg(${deviceMetrics.diskPercent})`,
         avgDiskUsedGb: sql<number>`avg(${deviceMetrics.diskUsedGb})`,
+        diskActivityAvailable: sql<boolean>`bool_or(coalesce(${deviceMetrics.diskActivityAvailable}, false))`,
+        totalDiskReadBytes: sql<bigint>`sum(${deviceMetrics.diskReadBytes})`,
+        totalDiskWriteBytes: sql<bigint>`sum(${deviceMetrics.diskWriteBytes})`,
+        avgDiskReadBps: sql<number>`avg(${deviceMetrics.diskReadBps})::float8`,
+        avgDiskWriteBps: sql<number>`avg(${deviceMetrics.diskWriteBps})::float8`,
+        totalDiskReadOps: sql<bigint>`sum(${deviceMetrics.diskReadOps})`,
+        totalDiskWriteOps: sql<bigint>`sum(${deviceMetrics.diskWriteOps})`,
         totalNetworkIn: sql<bigint>`sum(${deviceMetrics.networkInBytes})`,
         totalNetworkOut: sql<bigint>`sum(${deviceMetrics.networkOutBytes})`,
         avgBandwidthIn: sql<number>`avg(${deviceMetrics.bandwidthInBps})::float8`,

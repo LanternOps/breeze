@@ -7,7 +7,7 @@ import { devices, organizations } from '../../db/schema';
 import { authMiddleware, requirePermission } from '../../middleware/auth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
-import { orgMtlsSettingsSchema, orgHelperSettingsSchema } from '@breeze/shared';
+import { orgMtlsSettingsSchema, orgHelperSettingsSchema, orgLogForwardingSettingsSchema } from '@breeze/shared';
 import { getOrgMtlsSettings, getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
 
 export const mtlsRoutes = new Hono();
@@ -392,5 +392,155 @@ mtlsRoutes.patch(
     });
 
     return c.json({ success: true, settings: updatedSettings.helper });
+  }
+);
+
+// ============================================
+// Org Log Forwarding Settings (user JWT auth)
+// ============================================
+
+mtlsRoutes.get(
+  '/org/:orgId/settings/log-forwarding',
+  authMiddleware,
+  requirePermission('orgs', 'read'),
+  async (c) => {
+    const orgId = c.req.param('orgId');
+    const auth = c.get('auth') as { canAccessOrg?: (id: string) => boolean };
+
+    if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Not authorized' }, 403);
+    }
+
+    const [org] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+
+    if (!org) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+
+    const settings = isObject(org.settings) ? org.settings : {};
+    const forwarding = (isObject(settings.logForwarding) ? settings.logForwarding : { enabled: false }) as Record<string, unknown>;
+    const safe = {
+      ...forwarding,
+      elasticsearchApiKey: forwarding.elasticsearchApiKey ? '****' : undefined,
+      elasticsearchPassword: forwarding.elasticsearchPassword ? '****' : undefined,
+    };
+
+    return c.json({ settings: { logForwarding: safe } });
+  }
+);
+
+mtlsRoutes.patch(
+  '/org/:orgId/settings/log-forwarding',
+  authMiddleware,
+  requirePermission('orgs', 'write'),
+  zValidator('json', orgLogForwardingSettingsSchema),
+  async (c) => {
+    const orgId = c.req.param('orgId');
+    const data = c.req.valid('json');
+    const auth = c.get('auth') as { user?: { id: string }; canAccessOrg?: (id: string) => boolean };
+
+    if (auth.canAccessOrg && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Not authorized' }, 403);
+    }
+
+    const [org] = await db
+      .select({ id: organizations.id, settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+
+    if (!org) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+
+    const currentSettings = isObject(org.settings) ? org.settings : {};
+    const existingForwarding = isObject(currentSettings.logForwarding)
+      ? (currentSettings.logForwarding as Record<string, unknown>)
+      : {};
+    const hasOwn = (obj: Record<string, unknown>, key: string): boolean =>
+      Object.prototype.hasOwnProperty.call(obj, key);
+    const toOptionalString = (value: unknown): string | undefined =>
+      typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+    const resolveSecret = (incoming: unknown, existing: unknown): string | undefined => {
+      if (typeof incoming !== 'string') return undefined;
+      const trimmed = incoming.trim();
+      if (!trimmed) return undefined;
+      if (trimmed === '****') return toOptionalString(existing);
+      return trimmed;
+    };
+
+    const incoming = data as Record<string, unknown>;
+    const providedApiKey = hasOwn(incoming, 'elasticsearchApiKey');
+    const providedBasic =
+      hasOwn(incoming, 'elasticsearchUsername') || hasOwn(incoming, 'elasticsearchPassword');
+
+    const resolvedUrl = hasOwn(incoming, 'elasticsearchUrl')
+      ? toOptionalString(incoming.elasticsearchUrl)
+      : toOptionalString(existingForwarding.elasticsearchUrl);
+    const resolvedIndexPrefix = hasOwn(incoming, 'indexPrefix')
+      ? toOptionalString(incoming.indexPrefix)
+      : toOptionalString(existingForwarding.indexPrefix);
+    let resolvedApiKey = hasOwn(incoming, 'elasticsearchApiKey')
+      ? resolveSecret(incoming.elasticsearchApiKey, existingForwarding.elasticsearchApiKey)
+      : toOptionalString(existingForwarding.elasticsearchApiKey);
+    let resolvedUsername = hasOwn(incoming, 'elasticsearchUsername')
+      ? toOptionalString(incoming.elasticsearchUsername)
+      : toOptionalString(existingForwarding.elasticsearchUsername);
+    let resolvedPassword = hasOwn(incoming, 'elasticsearchPassword')
+      ? resolveSecret(incoming.elasticsearchPassword, existingForwarding.elasticsearchPassword)
+      : toOptionalString(existingForwarding.elasticsearchPassword);
+
+    // Explicit auth-method updates should clear stale credentials from the other mode.
+    if (providedBasic && !providedApiKey) {
+      resolvedApiKey = undefined;
+    } else if (providedApiKey && !providedBasic) {
+      resolvedUsername = undefined;
+      resolvedPassword = undefined;
+    }
+
+    const normalizedForwarding: Record<string, unknown> = {
+      enabled: data.enabled,
+      indexPrefix: resolvedIndexPrefix ?? 'breeze-logs',
+    };
+    if (resolvedUrl) normalizedForwarding.elasticsearchUrl = resolvedUrl;
+    if (resolvedApiKey) normalizedForwarding.elasticsearchApiKey = resolvedApiKey;
+    if (resolvedUsername) normalizedForwarding.elasticsearchUsername = resolvedUsername;
+    if (resolvedPassword) normalizedForwarding.elasticsearchPassword = resolvedPassword;
+
+    const updatedSettings = {
+      ...currentSettings,
+      logForwarding: normalizedForwarding,
+    };
+
+    await db
+      .update(organizations)
+      .set({
+        settings: updatedSettings,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, orgId));
+
+    const { elasticsearchApiKey, elasticsearchPassword, ...safeData } = normalizedForwarding;
+    const maskedDetails = {
+      ...safeData,
+      elasticsearchApiKey: elasticsearchApiKey ? '****' : undefined,
+      elasticsearchPassword: elasticsearchPassword ? '****' : undefined,
+    };
+
+    writeAuditEvent(c, {
+      orgId,
+      actorType: 'user',
+      actorId: auth.user?.id ?? 'unknown',
+      action: 'admin.org.log_forwarding_settings.update',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: maskedDetails,
+    });
+
+    return c.json({ success: true, settings: { logForwarding: maskedDetails } });
   }
 );

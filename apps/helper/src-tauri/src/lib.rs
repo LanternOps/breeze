@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -17,6 +17,7 @@ pub struct AgentConfig {
     pub token: String,
     pub agent_id: String,
     pub has_mtls: bool,
+    pub os_username: String,
 }
 
 /// Internal struct that also holds the raw PEM material (never sent to frontend).
@@ -66,15 +67,24 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .map_err(|e| format!("Failed to parse agent config: {}", e))?;
 
     let api_url = yaml
-        .get("api_url")
+        .get("server_url")
         .and_then(|v| v.as_str())
-        .ok_or("Missing 'api_url' in agent config")?
+        .ok_or("Missing 'server_url' in agent config")?
         .to_string();
 
-    let token = yaml
-        .get("token")
+    // Read secrets from secrets.yaml (same directory, different file) for tokens/mTLS creds.
+    // secrets.yaml is chmod 0640 (group-readable by breeze group) while agent.yaml is 0644.
+    let secrets_path = path.with_file_name("secrets.yaml");
+    let secrets: Option<serde_yaml::Value> = std::fs::read_to_string(&secrets_path)
+        .ok()
+        .and_then(|s| serde_yaml::from_str(&s).ok());
+
+    let token = secrets
+        .as_ref()
+        .and_then(|s| s.get("auth_token"))
         .and_then(|v| v.as_str())
-        .ok_or("Missing 'token' in agent config")?
+        .or_else(|| yaml.get("auth_token").and_then(|v| v.as_str())) // fallback to agent.yaml
+        .ok_or("Missing 'auth_token' in secrets.yaml or agent.yaml")?
         .to_string();
 
     let agent_id = yaml
@@ -83,15 +93,19 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .ok_or("Missing 'agent_id' in agent config")?
         .to_string();
 
-    let mtls_cert_pem = yaml
-        .get("mtls_cert_pem")
+    let mtls_cert_pem = secrets
+        .as_ref()
+        .and_then(|s| s.get("mtls_cert_pem"))
         .and_then(|v| v.as_str())
+        .or_else(|| yaml.get("mtls_cert_pem").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 
-    let mtls_key_pem = yaml
-        .get("mtls_key_pem")
+    let mtls_key_pem = secrets
+        .as_ref()
+        .and_then(|s| s.get("mtls_key_pem"))
         .and_then(|v| v.as_str())
+        .or_else(|| yaml.get("mtls_key_pem").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 
@@ -195,7 +209,13 @@ async fn read_agent_config() -> Result<AgentConfig, String> {
         token: state.config.token.clone(),
         agent_id: state.config.agent_id.clone(),
         has_mtls: state.config.mtls_cert_pem.is_some() && state.config.mtls_key_pem.is_some(),
+        os_username: whoami::username(),
     })
+}
+
+#[tauri::command]
+fn get_os_username() -> String {
+    whoami::username()
 }
 
 // -- helper_fetch types -----------------------------------------------------
@@ -416,7 +436,24 @@ fn uuid_v4() -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![read_agent_config, helper_fetch])
+        .invoke_handler(tauri::generate_handler![
+            read_agent_config,
+            helper_fetch,
+            hide_window,
+            get_os_username,
+        ])
+        .setup(|app| {
+            // Show and focus the window when the tray icon is clicked
+            let handle = app.handle().clone();
+            if let Some(tray) = app.tray_by_id("main") {
+                tray.on_tray_icon_event(move |_tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                        show_window(&handle);
+                    }
+                });
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

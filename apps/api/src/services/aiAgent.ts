@@ -10,8 +10,10 @@ import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions } from '../db/schema';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
+import { getActiveDeviceContext } from './brainDeviceContext';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
@@ -37,7 +39,7 @@ export async function createSession(
       model: options.model ?? DEFAULT_MODEL,
       title: options.title ?? null,
       contextSnapshot: options.pageContext ?? null,
-      systemPrompt: buildSystemPrompt(auth, options.pageContext)
+      systemPrompt: await buildSystemPrompt(auth, options.pageContext)
     })
     .returning();
 
@@ -208,10 +210,41 @@ export async function handleApproval(
 }
 
 // ============================================
+// Plan Approval Flow
+// ============================================
+
+/**
+ * Wait for plan approval via in-memory promise.
+ * The resolver is stored on session.planApprovalResolver and called
+ * when the user clicks Approve/Reject on the plan review card.
+ * 10-minute timeout (longer than per-step 5-min).
+ */
+export function waitForPlanApproval(
+  planId: string,
+  session: ActiveSession,
+  timeoutMs = 600_000,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      session.planApprovalResolver = null;
+      resolve(false);
+    }, timeoutMs);
+
+    session.planApprovalResolver = (approved: boolean) => {
+      clearTimeout(timer);
+      session.planApprovalResolver = null;
+      resolve(approved);
+    };
+  });
+}
+
+
+
+// ============================================
 // System Prompt
 // ============================================
 
-export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext): string {
+export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext, approvalMode?: AiApprovalMode): Promise<string> {
   const parts: string[] = [];
 
   parts.push(`You are Breeze AI, an intelligent IT assistant built into the Breeze RMM platform. You help IT technicians and MSP staff manage devices, troubleshoot issues, analyze security threats, and build automations.
@@ -228,6 +261,21 @@ export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext
 - Create automations
 - Perform network discovery
 - Remember and recall context from past interactions about devices
+- Execute self-healing playbooks with step-by-step verification and audit tracking
+
+## Self-Healing Playbooks
+Playbooks are multi-step remediation templates you orchestrate using existing tools.
+
+When executing a playbook, follow this sequence:
+1. Diagnose: collect baseline metrics using read-only tools.
+2. Act: run remediation actions, noting expected impact.
+3. Wait: pause before validation so state can settle.
+4. Verify: re-check the same metrics and compare before/after.
+5. Report: summarize outcome clearly with concrete metrics.
+6. Rollback: if verification fails and rollback is available, run it and report failure transparently.
+
+Use \`list_playbooks\` to discover playbooks, \`execute_playbook\` to create execution records, and \`get_playbook_history\` to review previous runs.
+Always verify outcomes; never assume an action succeeded.
 
 ## Important Rules
 1. Always verify device access before operations - you can only see devices in the user's organization.
@@ -259,6 +307,22 @@ export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext
         if (pageContext.status) parts.push(`Status: ${pageContext.status}`);
         if (pageContext.ip) parts.push(`IP: ${pageContext.ip}`);
         parts.push('Prioritize information and actions related to this device.');
+
+        // Auto-load past device context so brain doesn't start cold
+        try {
+          const context = await getActiveDeviceContext(pageContext.id, auth);
+          if (context.length > 0) {
+            parts.push('\n### Past Device Memory');
+            parts.push('Previous interactions recorded the following context:');
+            for (const c of context) {
+              const detail = c.details ? ` — ${JSON.stringify(c.details)}` : '';
+              parts.push(`- [${c.contextType.toUpperCase()}] ${c.summary}${detail}`);
+            }
+            parts.push('Consider this historical context when assisting the user. You do NOT need to call get_device_context — it has already been loaded.');
+          }
+        } catch (err) {
+          console.error('[AI] Failed to auto-load device context:', err);
+        }
         break;
 
       case 'alert':
@@ -278,6 +342,22 @@ export function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext
       case 'custom':
         parts.push(`Context: ${pageContext.label}`);
         parts.push(JSON.stringify(pageContext.data, null, 2));
+        break;
+    }
+  }
+
+  // Approval mode instructions
+  if (approvalMode && approvalMode !== 'per_step') {
+    parts.push('\n## Approval Mode');
+    switch (approvalMode) {
+      case 'auto_approve':
+        parts.push('Tools execute without individual approval. Confirm destructive operations verbally before executing.');
+        break;
+      case 'action_plan':
+        parts.push('When executing multiple Tier 2+ operations, call `propose_action_plan` first with all planned steps. Wait for approval. Execute steps in order. Do NOT deviate from the approved plan.');
+        break;
+      case 'hybrid_plan':
+        parts.push('When executing multiple Tier 2+ operations, call `propose_action_plan` first. Wait for approval. Execute steps in order. Screenshots will be captured between steps. The user can click Stop to abort. Do NOT deviate from the approved plan.');
         break;
     }
   }

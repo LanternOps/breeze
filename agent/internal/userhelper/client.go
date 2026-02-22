@@ -18,6 +18,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
@@ -310,8 +311,16 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 		return
 	}
 
-	// Execute using the standard executor (runs in user context since this process is the user)
-	result := c.executeScript(cmd)
+	// Dispatch based on command type. Screenshot/computer_action need to run
+	// in the user session (this process) since the service runs in Session 0
+	// and has no display for DXGI/GDI/SendInput.
+	var result ipc.IPCCommandResult
+	switch cmd.Type {
+	case tools.CmdTakeScreenshot, tools.CmdComputerAction:
+		result = c.executeToolCommand(cmd)
+	default:
+		result = c.executeScript(cmd)
+	}
 	if err := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result); err != nil {
 		log.Warn("failed to send command result", "id", env.ID, "error", err)
 	}
@@ -367,6 +376,50 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		Status:    status,
 		Result:    resultJSON,
 		Error:     result.Error,
+	}
+}
+
+// executeToolCommand runs screenshot/computer_action in the user session.
+// These commands require a display (DXGI/GDI) and input APIs (SendInput)
+// that are only available in user sessions, not Session 0 (service).
+func (c *Client) executeToolCommand(cmd ipc.IPCCommand) ipc.IPCCommandResult {
+	var payload map[string]any
+	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     "invalid payload",
+		}
+	}
+
+	var toolResult tools.CommandResult
+	switch cmd.Type {
+	case tools.CmdTakeScreenshot:
+		toolResult = tools.TakeScreenshot(payload)
+	case tools.CmdComputerAction:
+		toolResult = tools.ComputerAction(payload)
+	default:
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     fmt.Sprintf("unsupported tool command: %s", cmd.Type),
+		}
+	}
+
+	resultJSON, err := json.Marshal(toolResult)
+	if err != nil {
+		return ipc.IPCCommandResult{
+			CommandID: cmd.CommandID,
+			Status:    "failed",
+			Error:     fmt.Sprintf("marshal tool result: %v", err),
+		}
+	}
+
+	return ipc.IPCCommandResult{
+		CommandID: cmd.CommandID,
+		Status:    toolResult.Status,
+		Result:    resultJSON,
+		Error:     toolResult.Error,
 	}
 }
 

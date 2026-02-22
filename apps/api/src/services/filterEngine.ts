@@ -40,6 +40,19 @@ const OPERATORS_BY_TYPE: Record<FilterFieldType, FilterOperator[]> = {
   enum: ['equals', 'notEquals', 'in', 'notIn']
 };
 
+const CUSTOM_FIELD_KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
+
+function getCustomFieldKey(field: string): string | null {
+  if (!field.startsWith('custom.')) {
+    return null;
+  }
+  const customField = field.slice('custom.'.length);
+  if (!CUSTOM_FIELD_KEY_PATTERN.test(customField)) {
+    return null;
+  }
+  return customField;
+}
+
 export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Core Device fields
   { key: 'hostname', label: 'Hostname', category: 'core', type: 'string', operators: OPERATORS_BY_TYPE.string },
@@ -92,10 +105,11 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
 
 export function getFieldDefinition(fieldKey: string): FilterFieldDefinition | undefined {
   // Check for custom fields
-  if (fieldKey.startsWith('custom.')) {
+  const customFieldKey = getCustomFieldKey(fieldKey);
+  if (customFieldKey) {
     return {
       key: fieldKey,
-      label: fieldKey.replace('custom.', ''),
+      label: customFieldKey,
       category: 'custom',
       type: 'string', // Default type, actual type determined at runtime
       operators: OPERATORS_BY_TYPE.string
@@ -133,11 +147,14 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
     return { table: 'software', column: field.replace('software.', '') };
   }
   if (field.startsWith('custom.')) {
-    const customField = field.replace('custom.', '');
+    const customField = getCustomFieldKey(field);
+    if (!customField) {
+      throw new Error(`Invalid custom field key: ${field}`);
+    }
     return {
       table: 'devices',
       column: 'customFields',
-      computed: sql`${devices.customFields}->>${sql.raw(`'${customField}'`)}`
+      computed: sql`jsonb_extract_path_text(${devices.customFields}, ${customField})`
     };
   }
 
@@ -276,11 +293,25 @@ function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
 }
 
 function getIntervalSQL(amount: number, unit: string): SQL<unknown> {
-  const validUnits = ['minutes', 'hours', 'days', 'weeks', 'months'];
-  if (!validUnits.includes(unit)) {
-    throw new Error(`Invalid time unit: ${unit}`);
+  const normalizedAmount = Number(amount);
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    throw new Error(`Invalid interval amount: ${amount}`);
   }
-  return sql.raw(`INTERVAL '${amount} ${unit}'`);
+
+  switch (unit) {
+    case 'minutes':
+      return sql`${normalizedAmount} * INTERVAL '1 minute'`;
+    case 'hours':
+      return sql`${normalizedAmount} * INTERVAL '1 hour'`;
+    case 'days':
+      return sql`${normalizedAmount} * INTERVAL '1 day'`;
+    case 'weeks':
+      return sql`${normalizedAmount} * INTERVAL '1 week'`;
+    case 'months':
+      return sql`${normalizedAmount} * INTERVAL '1 month'`;
+    default:
+      throw new Error(`Invalid time unit: ${unit}`);
+  }
 }
 
 function buildGroupSQL(group: FilterConditionGroup): SQL<unknown> {
@@ -458,6 +489,9 @@ export function validateFilter(filter: FilterConditionGroup | FilterCondition): 
   } else if ('field' in filter) {
     // Validate single condition
     const fieldDef = getFieldDefinition(filter.field);
+    if (filter.field.startsWith('custom.') && !getCustomFieldKey(filter.field)) {
+      errors.push(`Invalid custom field key: ${filter.field}`);
+    }
     if (!fieldDef && !filter.field.startsWith('custom.')) {
       errors.push(`Unknown field: ${filter.field}`);
     }

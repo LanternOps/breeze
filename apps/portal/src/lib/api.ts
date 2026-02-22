@@ -5,7 +5,61 @@
 
 const API_BASE = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
-const CSRF_HEADER_VALUE = '1';
+const CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const target = `${name}=`;
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(target)) {
+      const value = trimmed.slice(target.length);
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+function resolveApiBase(): string {
+  if (!API_BASE) {
+    return '';
+  }
+
+  if (typeof window === 'undefined') {
+    return API_BASE;
+  }
+
+  try {
+    const parsed = new URL(API_BASE, window.location.origin);
+    const windowHostname = window.location.hostname;
+
+    // Keep localhost development same-site by default, even if PUBLIC_API_URL
+    // was set to a different hostname/IP.
+    if (isLoopbackHostname(windowHostname) && parsed.hostname !== windowHostname) {
+      parsed.hostname = windowHostname;
+      return parsed.origin;
+    }
+
+    if (isLoopbackHostname(parsed.hostname) && parsed.hostname !== window.location.hostname) {
+      parsed.hostname = window.location.hostname;
+    }
+    return parsed.origin;
+  } catch {
+    return API_BASE;
+  }
+}
 
 export function buildPortalApiUrl(path: string): string {
   if (path.startsWith('http://') || path.startsWith('https://')) {
@@ -19,7 +73,8 @@ export function buildPortalApiUrl(path: string): string {
       ? normalizedPath.slice(4)
       : normalizedPath;
 
-  return `${API_BASE}/api/v1${cleanPath}`;
+  const apiBase = resolveApiBase();
+  return `${apiBase}/api/v1${cleanPath}`;
 }
 
 export interface ApiError {
@@ -53,7 +108,10 @@ export async function apiRequest<T>(
   const headers = new Headers(options.headers);
   headers.set('Content-Type', 'application/json');
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    headers.set(CSRF_HEADER_NAME, CSRF_HEADER_VALUE);
+    const csrfToken = readCookie(CSRF_COOKIE_NAME);
+    if (csrfToken) {
+      headers.set(CSRF_HEADER_NAME, csrfToken);
+    }
   }
 
   try {

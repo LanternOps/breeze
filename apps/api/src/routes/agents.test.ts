@@ -28,7 +28,10 @@ const defaultSelectChain = () => ({
 });
 
 const defaultInsertChain = () => ({
-  values: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+  values: vi.fn(() => ({
+    onConflictDoNothing: vi.fn(() => ({
+      returning: vi.fn(() => Promise.resolve([]))
+    })),
     returning: vi.fn(() => Promise.resolve([]))
   }))
 });
@@ -78,6 +81,7 @@ vi.mock('../db/schema', () => ({
   patches: {},
   devicePatches: {},
   deviceEventLogs: {},
+  deviceChangeLog: {},
   securityStatus: {},
   securityThreats: {},
   securityScans: {},
@@ -279,8 +283,9 @@ describe('agent routes', () => {
         })
       } as any);
 
+      const insertValues = vi.fn().mockResolvedValue(undefined);
       vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockResolvedValue(undefined)
+        values: insertValues
       } as any);
 
       const res = await app.request('/agents/agent-123/heartbeat', {
@@ -292,7 +297,14 @@ describe('agent routes', () => {
             ramPercent: 20,
             ramUsedMb: 1024,
             diskPercent: 30,
-            diskUsedGb: 100
+            diskUsedGb: 100,
+            diskActivityAvailable: true,
+            diskReadBytes: 2048,
+            diskWriteBytes: 1024,
+            diskReadBps: 512,
+            diskWriteBps: 256,
+            diskReadOps: 12,
+            diskWriteOps: 6
           },
           status: 'ok',
           agentVersion: '2.0'
@@ -303,6 +315,15 @@ describe('agent routes', () => {
       const body = await res.json();
       expect(body.commands).toHaveLength(1);
       expect(body.commands[0].id).toBe('cmd-1');
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        diskActivityAvailable: true,
+        diskReadBytes: BigInt(2048),
+        diskWriteBytes: BigInt(1024),
+        diskReadBps: BigInt(512),
+        diskWriteBps: BigInt(256),
+        diskReadOps: BigInt(12),
+        diskWriteOps: BigInt(6),
+      }));
     });
 
     it('returns deduplicated policy probe config updates', async () => {
@@ -375,6 +396,12 @@ describe('agent routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.configUpdate).toEqual({
+        event_log_settings: {
+          max_events_per_cycle: 100,
+          collect_categories: ['security', 'hardware', 'application', 'system'],
+          minimum_level: 'info',
+          collection_interval_minutes: 5,
+        },
         policy_registry_state_probes: [
           { registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', value_name: 'Flag' },
           { registry_path: 'HKLM\\SOFTWARE\\Policies\\Zeta', value_name: 'Enabled' }
@@ -496,6 +523,12 @@ describe('agent routes', () => {
       expect(body.commands).toHaveLength(1);
       expect(body.commands[0].type).toBe('filesystem_analysis');
       expect(body.configUpdate).toEqual({
+        event_log_settings: {
+          max_events_per_cycle: 100,
+          collect_categories: ['security', 'hardware', 'application', 'system'],
+          minimum_level: 'info',
+          collection_interval_minutes: 5,
+        },
         policy_registry_state_probes: [],
         policy_config_state_probes: []
       });
@@ -513,17 +546,33 @@ describe('agent routes', () => {
   });
 
   describe('POST /agents/:id/commands/:commandId/result', () => {
+    it('accepts non-UUID command IDs without querying device_commands', async () => {
+      const res = await app.request('/agents/agent-123/commands/mon-test-123/result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'completed',
+          durationMs: 15
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
     it('should store command results', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'cmd-1',
-              status: 'sent'
-            }])
-          })
-        })
-      } as any);
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: '33333333-3333-4333-8333-333333333333',
+                  status: 'sent'
+                }])
+              })
+            })
+          } as any);
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -531,7 +580,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/cmd-1/result', {
+      const res = await app.request('/agents/agent-123/commands/33333333-3333-4333-8333-333333333333/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -556,7 +605,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/missing/result', {
+      const res = await app.request('/agents/agent-123/commands/44444444-4444-4444-8444-444444444444/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -571,12 +620,12 @@ describe('agent routes', () => {
     it('persists threshold filesystem analysis command results', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'cmd-fs-1',
-              type: 'filesystem_analysis',
-              payload: { trigger: 'threshold' },
-              deviceId: 'device-123',
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: '55555555-5555-4555-8555-555555555555',
+                  type: 'filesystem_analysis',
+                  payload: { trigger: 'threshold' },
+                  deviceId: 'device-123',
               createdAt: new Date()
             }])
           })
@@ -589,7 +638,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/cmd-fs-1/result', {
+      const res = await app.request('/agents/agent-123/commands/55555555-5555-4555-8555-555555555555/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -611,12 +660,12 @@ describe('agent routes', () => {
     it('persists on-demand filesystem analysis command results', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'cmd-fs-2',
-              type: 'filesystem_analysis',
-              payload: { trigger: 'on_demand' },
-              deviceId: 'device-123',
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: '66666666-6666-4666-8666-666666666666',
+                  type: 'filesystem_analysis',
+                  payload: { trigger: 'on_demand' },
+                  deviceId: 'device-123',
               createdAt: new Date()
             }])
           })
@@ -629,7 +678,7 @@ describe('agent routes', () => {
         })
       } as any);
 
-      const res = await app.request('/agents/agent-123/commands/cmd-fs-2/result', {
+      const res = await app.request('/agents/agent-123/commands/66666666-6666-4666-8666-666666666666/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -715,6 +764,66 @@ describe('agent routes', () => {
           installedAt: null
         })
       );
+    });
+  });
+
+  describe('PUT /agents/:id/changes', () => {
+    it('accepts and stores change tracking payloads', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'device-123',
+              agentId: 'agent-123',
+              orgId: 'org-123'
+            }])
+          })
+        })
+      } as any);
+
+      const returning = vi.fn().mockResolvedValue([{ id: 'change-1' }]);
+      const onConflictDoNothing = vi.fn().mockReturnValue({
+        returning
+      });
+      const insertValues = vi.fn().mockReturnValue({
+        onConflictDoNothing
+      });
+      vi.mocked(db.insert).mockReturnValue({
+        values: insertValues
+      } as any);
+
+      const res = await app.request('/agents/agent-123/changes', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          changes: [
+            {
+              timestamp: '2026-02-21T19:00:00Z',
+              changeType: 'software',
+              changeAction: 'updated',
+              subject: 'Google Chrome',
+              beforeValue: { version: '121.0.0' },
+              afterValue: { version: '122.0.0' }
+            }
+          ]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.count).toBe(1);
+      expect(insertValues).toHaveBeenCalledWith([
+        expect.objectContaining({
+          deviceId: 'device-123',
+          orgId: 'org-123',
+          changeType: 'software',
+          changeAction: 'updated',
+          subject: 'Google Chrome'
+        })
+      ]);
+      expect(onConflictDoNothing).toHaveBeenCalledTimes(1);
+      expect(returning).toHaveBeenCalledTimes(1);
     });
   });
 });

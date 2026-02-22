@@ -23,7 +23,8 @@ export async function rateLimiter(
   redis: Redis | null,
   key: string,
   limit: number,
-  windowSeconds: number
+  windowSeconds: number,
+  cost = 1
 ): Promise<RateLimitResult> {
   // If Redis is unavailable, fail closed — deny the request for security
   if (!redis) {
@@ -33,13 +34,17 @@ export async function rateLimiter(
 
   const now = Date.now();
   const windowStart = now - windowSeconds * 1000;
-  const member = `${now}-${Math.random().toString(36).slice(2, 10)}`;
+  const safeCost = Number.isFinite(cost) ? Math.max(1, Math.floor(cost)) : 1;
+  const zaddArgs: Array<string | number> = [];
+  for (let i = 0; i < safeCost; i += 1) {
+    zaddArgs.push(now, `${now}-${i}-${Math.random().toString(36).slice(2, 10)}`);
+  }
 
   try {
     const results = await redis
       .multi()
       .zremrangebyscore(key, '-inf', windowStart)
-      .zadd(key, now, member)
+      .zadd(key, ...zaddArgs)
       .zcard(key)
       .zrange(key, 0, 0, 'WITHSCORES')
       .expire(key, windowSeconds)

@@ -54,8 +54,14 @@ func TestPatchRefsFromPayloadDeduplicatesEntries(t *testing.T) {
 	}
 
 	refs := h.patchRefsFromPayload(payload)
-	if len(refs) != 3 {
-		t.Fatalf("expected 3 unique refs, got %d", len(refs))
+	// patch-a appears in both patches and patchIds arrays but is correctly
+	// deduplicated by ID. Expected: patch-a (from patches) + patch-b (from patchIds).
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 unique refs (cross-array dedup), got %d", len(refs))
+	}
+	// The ref from the patches array should be preserved with richer metadata
+	if refs[0].Source != "linux" {
+		t.Errorf("expected first ref source=linux, got %q", refs[0].Source)
 	}
 }
 

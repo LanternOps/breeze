@@ -47,6 +47,8 @@ export const RATE_LIMIT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 export const PORTAL_SESSION_COOKIE_NAME = 'breeze_portal_session';
 export const PORTAL_SESSION_COOKIE_PATH = '/api/v1/portal';
 export const CSRF_HEADER_NAME = 'x-breeze-csrf';
+export const PORTAL_CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
+export const PORTAL_CSRF_COOKIE_PATH = '/';
 export const RESET_TTL_SECONDS = Math.floor(RESET_TTL_MS / 1000);
 
 export const PORTAL_USE_REDIS =

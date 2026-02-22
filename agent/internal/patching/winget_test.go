@@ -268,6 +268,112 @@ Firefox  Mozilla.Firefox   128.0     129.0       winget
 	}
 }
 
+// --- Helper availability check ---
+
+func TestWingetScanSkipsWhenNoHelper(t *testing.T) {
+	execCalled := false
+	exec := func(name string, args []string, timeout time.Duration) (string, string, int, error) {
+		execCalled = true
+		return "", "", 0, nil
+	}
+	noHelper := func() bool { return false }
+	provider := NewWingetProvider(exec, noHelper)
+
+	patches, err := provider.Scan()
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(patches) != 0 {
+		t.Errorf("expected 0 patches, got %d", len(patches))
+	}
+	if execCalled {
+		t.Error("exec should not have been called when no helper is available")
+	}
+}
+
+func TestWingetGetInstalledSkipsWhenNoHelper(t *testing.T) {
+	execCalled := false
+	exec := func(name string, args []string, timeout time.Duration) (string, string, int, error) {
+		execCalled = true
+		return "", "", 0, nil
+	}
+	noHelper := func() bool { return false }
+	provider := NewWingetProvider(exec, noHelper)
+
+	installed, err := provider.GetInstalled()
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(installed) != 0 {
+		t.Errorf("expected 0 installed, got %d", len(installed))
+	}
+	if execCalled {
+		t.Error("exec should not have been called when no helper is available")
+	}
+}
+
+func TestWingetInstallFailsWhenNoHelper(t *testing.T) {
+	noHelper := func() bool { return false }
+	provider := NewWingetProvider(mockExec("", "", 0, nil), noHelper)
+
+	_, err := provider.Install("Mozilla.Firefox")
+	if err == nil {
+		t.Fatal("expected error when installing without helper")
+	}
+	if got := err.Error(); got != "winget install requires a connected user helper session" {
+		t.Errorf("error = %q, want %q", got, "winget install requires a connected user helper session")
+	}
+}
+
+func TestWingetUninstallFailsWhenNoHelper(t *testing.T) {
+	noHelper := func() bool { return false }
+	provider := NewWingetProvider(mockExec("", "", 0, nil), noHelper)
+
+	err := provider.Uninstall("Mozilla.Firefox")
+	if err == nil {
+		t.Fatal("expected error when uninstalling without helper")
+	}
+	if got := err.Error(); got != "winget uninstall requires a connected user helper session" {
+		t.Errorf("error = %q, want %q", got, "winget uninstall requires a connected user helper session")
+	}
+}
+
+func TestWingetScanProceedsWhenHelperAvailable(t *testing.T) {
+	output := `Name     Id                Version   Available   Source
+--------------------------------------------------------
+Firefox  Mozilla.Firefox   128.0     129.0       winget
+1 upgrades available.
+`
+	hasHelper := func() bool { return true }
+	provider := NewWingetProvider(mockExec(output, "", 0, nil), hasHelper)
+
+	patches, err := provider.Scan()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch, got %d", len(patches))
+	}
+}
+
+func TestWingetScanDefaultsToAvailableWhenNoCheck(t *testing.T) {
+	// When no helperAvailable func is provided, hasHelper() returns true
+	output := `Name     Id                Version   Available   Source
+--------------------------------------------------------
+Firefox  Mozilla.Firefox   128.0     129.0       winget
+1 upgrades available.
+`
+	provider := NewWingetProvider(mockExec(output, "", 0, nil))
+
+	patches, err := provider.Scan()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch, got %d", len(patches))
+	}
+}
+
 // --- RegisterProvider ---
 
 func TestRegisterProvider(t *testing.T) {

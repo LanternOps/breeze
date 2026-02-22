@@ -19,7 +19,7 @@ import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { ENABLE_2FA, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema } from './schemas';
 import {
-  getClientIP,
+  getClientRateLimitKey,
   revokeCurrentRefreshTokenJti
 } from './helpers';
 
@@ -30,7 +30,7 @@ export const passwordRoutes = new Hono();
 // Forgot password
 passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), async (c) => {
   const { email } = c.req.valid('json');
-  const ip = getClientIP(c);
+  const rateLimitClient = getClientRateLimitKey(c);
   const normalizedEmail = email.toLowerCase();
 
   // Rate limit - fail closed for security
@@ -40,7 +40,7 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
   }
   const rateCheck = await rateLimiter(
     redis,
-    `forgot:${ip}`,
+    `forgot:${rateLimitClient}`,
     forgotPasswordLimiter.limit,
     forgotPasswordLimiter.windowSeconds
   );
@@ -81,10 +81,6 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
       console.warn('[Auth] Email service not configured; password reset email was not sent');
     }
 
-    // Log token only in non-production environments
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`Password reset token for ${email}: ${resetToken}`);
-    }
   } else {
     // Log when password reset cannot be processed (user not found is expected, but Redis unavailability would be caught above)
     console.warn('[auth] Password reset requested for non-existent account');

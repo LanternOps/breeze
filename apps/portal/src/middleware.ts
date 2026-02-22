@@ -1,5 +1,10 @@
 import { defineMiddleware } from 'astro:middleware';
 
+function readFlag(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === '1' || raw === 'true';
+}
+
 function resolveConnectSrcDirective(): string {
   const sources = new Set<string>(["'self'", 'https:', 'ws:', 'wss:']);
   const configuredApiUrl = process.env.PUBLIC_API_URL;
@@ -32,12 +37,18 @@ const cspDirectives = [
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
+  readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT')
+    ? "script-src 'self' 'unsafe-inline'"
+    : "script-src 'self'",
+  readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE')
+    ? "style-src 'self' 'unsafe-inline'"
+    : "style-src 'self'",
+  readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE') ? null : "style-src-attr 'unsafe-inline'",
+  "script-src-attr 'none'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
   resolveConnectSrcDirective()
-].join('; ');
+].filter(Boolean).join('; ');
 
 export const onRequest = defineMiddleware(async (_context, next) => {
   const response = await next();

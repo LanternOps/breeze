@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
@@ -17,11 +18,13 @@ import {
   normalizeAgentArchitecture,
   compareAgentVersions,
   getOrgHelperSettings,
+  buildEventLogConfigUpdate,
 } from './helpers';
+import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 
 export const heartbeatRoutes = new Hono();
 
-heartbeatRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), async (c) => {
+heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
 
@@ -47,46 +50,75 @@ heartbeatRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), asyn
     })
     .where(eq(devices.id, device.id));
 
-  await db
-    .insert(deviceMetrics)
-    .values({
-      deviceId: device.id,
-      timestamp: new Date(),
-      cpuPercent: data.metrics.cpuPercent,
-      ramPercent: data.metrics.ramPercent,
-      ramUsedMb: data.metrics.ramUsedMb,
-      diskPercent: data.metrics.diskPercent,
-      diskUsedGb: data.metrics.diskUsedGb,
-      networkInBytes: data.metrics.networkInBytes != null ? BigInt(data.metrics.networkInBytes) : null,
-      networkOutBytes: data.metrics.networkOutBytes != null ? BigInt(data.metrics.networkOutBytes) : null,
-      bandwidthInBps: data.metrics.bandwidthInBps != null ? BigInt(data.metrics.bandwidthInBps) : null,
-      bandwidthOutBps: data.metrics.bandwidthOutBps != null ? BigInt(data.metrics.bandwidthOutBps) : null,
-      interfaceStats: data.metrics.interfaceStats ?? null,
-      processCount: data.metrics.processCount
-    });
-
-  try {
-    const thresholdScan = await maybeQueueThresholdFilesystemAnalysis(
-      { id: device.id, osType: device.osType },
-      data.metrics.diskPercent
-    );
-    if (thresholdScan.queued) {
-      writeAuditEvent(c, {
-        orgId: device.orgId,
-        actorType: 'agent',
-        actorId: agentId,
-        action: 'agent.filesystem.threshold_scan.queued',
-        resourceType: 'device',
-        resourceId: device.id,
-        details: {
-          diskPercent: data.metrics.diskPercent,
-          thresholdPercent: thresholdScan.thresholdPercent,
-          path: thresholdScan.path,
-        },
+  if (data.metrics) {
+    await db
+      .insert(deviceMetrics)
+      .values({
+        deviceId: device.id,
+        timestamp: new Date(),
+        cpuPercent: data.metrics.cpuPercent,
+        ramPercent: data.metrics.ramPercent,
+        ramUsedMb: data.metrics.ramUsedMb,
+        diskPercent: data.metrics.diskPercent,
+        diskUsedGb: data.metrics.diskUsedGb,
+        diskActivityAvailable: data.metrics.diskActivityAvailable ?? null,
+        diskReadBytes: data.metrics.diskReadBytes != null ? BigInt(data.metrics.diskReadBytes) : null,
+        diskWriteBytes: data.metrics.diskWriteBytes != null ? BigInt(data.metrics.diskWriteBytes) : null,
+        diskReadBps: data.metrics.diskReadBps != null ? BigInt(data.metrics.diskReadBps) : null,
+        diskWriteBps: data.metrics.diskWriteBps != null ? BigInt(data.metrics.diskWriteBps) : null,
+        diskReadOps: data.metrics.diskReadOps != null ? BigInt(data.metrics.diskReadOps) : null,
+        diskWriteOps: data.metrics.diskWriteOps != null ? BigInt(data.metrics.diskWriteOps) : null,
+        networkInBytes: data.metrics.networkInBytes != null ? BigInt(data.metrics.networkInBytes) : null,
+        networkOutBytes: data.metrics.networkOutBytes != null ? BigInt(data.metrics.networkOutBytes) : null,
+        bandwidthInBps: data.metrics.bandwidthInBps != null ? BigInt(data.metrics.bandwidthInBps) : null,
+        bandwidthOutBps: data.metrics.bandwidthOutBps != null ? BigInt(data.metrics.bandwidthOutBps) : null,
+        interfaceStats: data.metrics.interfaceStats ?? null,
+        processCount: data.metrics.processCount
       });
+  }
+
+  if (data.ipHistoryUpdate) {
+    if (data.ipHistoryUpdate.deviceId && data.ipHistoryUpdate.deviceId !== device.id) {
+      console.warn(`[agents] rejecting mismatched ipHistoryUpdate.deviceId for ${agentId}: sent=${data.ipHistoryUpdate.deviceId} expected=${device.id}`);
+    } else {
+      try {
+        await processDeviceIPHistoryUpdate(device.id, device.orgId, {
+          ...data.ipHistoryUpdate,
+          currentIPs: data.ipHistoryUpdate.currentIPs ?? undefined,
+          changedIPs: data.ipHistoryUpdate.changedIPs ?? undefined,
+          removedIPs: data.ipHistoryUpdate.removedIPs ?? undefined,
+        });
+      } catch (err) {
+        const errorCode = (err as Record<string, unknown>)?.code ?? 'UNKNOWN';
+        console.error(`[agents] failed to process ip history update for ${agentId} (device=${device.id}, org=${device.orgId}, dbError=${errorCode}):`, err);
+      }
     }
-  } catch (err) {
-    console.error(`[agents] failed to queue threshold filesystem scan for ${device.id}:`, err);
+  }
+
+  if (data.metrics) {
+    try {
+      const thresholdScan = await maybeQueueThresholdFilesystemAnalysis(
+        { id: device.id, osType: device.osType },
+        data.metrics.diskPercent
+      );
+      if (thresholdScan.queued) {
+        writeAuditEvent(c, {
+          orgId: device.orgId,
+          actorType: 'agent',
+          actorId: agentId,
+          action: 'agent.filesystem.threshold_scan.queued',
+          resourceType: 'device',
+          resourceId: device.id,
+          details: {
+            diskPercent: data.metrics.diskPercent,
+            thresholdPercent: thresholdScan.thresholdPercent,
+            path: thresholdScan.path,
+          },
+        });
+      }
+    } catch (err) {
+      console.error(`[agents] failed to queue threshold filesystem scan for ${device.id}:`, err);
+    }
   }
 
   const commands = await db
@@ -160,13 +192,28 @@ heartbeatRoutes.post('/:id/heartbeat', zValidator('json', heartbeatSchema), asyn
     console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
   }
 
+  let eventLogSettings: Record<string, unknown> | null = null;
+  try {
+    eventLogSettings = await buildEventLogConfigUpdate(device.id);
+  } catch (err) {
+    console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
+  }
+
+  let mergedConfigUpdate: Record<string, unknown> | null = null;
+  if (configUpdate || eventLogSettings) {
+    mergedConfigUpdate = { ...(configUpdate ?? {}) };
+    if (eventLogSettings) {
+      mergedConfigUpdate.event_log_settings = eventLogSettings;
+    }
+  }
+
   return c.json({
     commands: commands.map(cmd => ({
       id: cmd.id,
       type: cmd.type,
       payload: cmd.payload
     })),
-    configUpdate,
+    configUpdate: mergedConfigUpdate,
     upgradeTo,
     renewCert: renewCert || undefined,
     helperEnabled,

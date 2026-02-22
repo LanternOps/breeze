@@ -7,6 +7,7 @@ export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined']);
 export const deviceGroupTypeEnum = pgEnum('device_group_type', ['static', 'dynamic']);
 export const membershipSourceEnum = pgEnum('membership_source', ['manual', 'dynamic_rule', 'policy']);
+export const ipAssignmentTypeEnum = pgEnum('ip_assignment_type', ['dhcp', 'static', 'vpn', 'link-local', 'unknown']);
 
 export const devices = pgTable('devices', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -67,6 +68,34 @@ export const deviceNetwork = pgTable('device_network', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
+export const deviceIpHistory = pgTable('device_ip_history', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  interfaceName: varchar('interface_name', { length: 100 }).notNull(),
+  ipAddress: varchar('ip_address', { length: 45 }).notNull(),
+  ipType: varchar('ip_type', { length: 4 }).notNull().default('ipv4'),
+  assignmentType: ipAssignmentTypeEnum('assignment_type').notNull().default('unknown'),
+  macAddress: varchar('mac_address', { length: 17 }),
+  subnetMask: varchar('subnet_mask', { length: 45 }),
+  gateway: varchar('gateway', { length: 45 }),
+  dnsServers: text('dns_servers').array(),
+  firstSeen: timestamp('first_seen').notNull().defaultNow(),
+  lastSeen: timestamp('last_seen').notNull().defaultNow(),
+  isActive: boolean('is_active').notNull().default(true),
+  deactivatedAt: timestamp('deactivated_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  deviceIdIdx: index('device_ip_history_device_id_idx').on(table.deviceId),
+  orgIdIdx: index('device_ip_history_org_id_idx').on(table.orgId),
+  ipAddressIdx: index('device_ip_history_ip_address_idx').on(table.ipAddress),
+  firstSeenIdx: index('device_ip_history_first_seen_idx').on(table.firstSeen),
+  lastSeenIdx: index('device_ip_history_last_seen_idx').on(table.lastSeen),
+  isActiveIdx: index('device_ip_history_is_active_idx').on(table.isActive),
+  ipAddressTimeIdx: index('device_ip_history_ip_time_idx').on(table.ipAddress, table.firstSeen, table.lastSeen),
+}));
+
 export const deviceDisks = pgTable('device_disks', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
@@ -89,6 +118,13 @@ export const deviceMetrics = pgTable('device_metrics', {
   ramUsedMb: integer('ram_used_mb').notNull(),
   diskPercent: real('disk_percent').notNull(),
   diskUsedGb: real('disk_used_gb').notNull(),
+  diskActivityAvailable: boolean('disk_activity_available'),
+  diskReadBytes: bigint('disk_read_bytes', { mode: 'bigint' }),
+  diskWriteBytes: bigint('disk_write_bytes', { mode: 'bigint' }),
+  diskReadBps: bigint('disk_read_bps', { mode: 'bigint' }),
+  diskWriteBps: bigint('disk_write_bps', { mode: 'bigint' }),
+  diskReadOps: bigint('disk_read_ops', { mode: 'bigint' }),
+  diskWriteOps: bigint('disk_write_ops', { mode: 'bigint' }),
   networkInBytes: bigint('network_in_bytes', { mode: 'bigint' }),
   networkOutBytes: bigint('network_out_bytes', { mode: 'bigint' }),
   bandwidthInBps: bigint('bandwidth_in_bps', { mode: 'bigint' }),
@@ -205,10 +241,18 @@ export const deviceConnections = pgTable('device_connections', {
   pid: integer('pid'),
   processName: varchar('process_name', { length: 255 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  devicePortStateIdx: index('device_connections_device_port_state_idx').on(
+    table.deviceId,
+    table.localPort,
+    table.state
+  ),
+  deviceUpdatedIdx: index('device_connections_device_updated_idx').on(table.deviceId, table.updatedAt)
+}));
 
 // Boot performance metrics - stores boot time history and startup item analysis per device
 export interface BootStartupItem {
+  itemId?: string;
   name: string;
   type: 'service' | 'run_key' | 'startup_folder' | 'login_item' | 'launch_agent' | 'launch_daemon' | 'systemd' | 'cron' | 'init_d';
   path: string;

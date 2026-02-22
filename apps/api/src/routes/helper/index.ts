@@ -11,9 +11,10 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { createHash } from 'crypto';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, sql, asc } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext } from '../../db';
-import { aiSessions, aiMessages, devices } from '../../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, devices } from '../../db/schema';
+import { approveToolSchema } from '@breeze/shared/validators/ai';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
 import { getHelperAllowedMcpToolNames, validateHelperToolAccess, type HelperPermissionLevel } from '../../services/helperToolFilter';
@@ -271,6 +272,7 @@ helperRoutes.post(
   '/chat/sessions',
   zValidator('json', z.object({
     permissionLevel: z.enum(['basic', 'standard', 'extended']).optional(),
+    helperUser: z.string().max(100).optional(),
   }).optional()),
   async (c) => {
     const device = c.get('helperDevice');
@@ -301,6 +303,7 @@ helperRoutes.post(
           hostname: device.hostname,
           osType: device.osType,
           source: 'helper',
+          ...(body.helperUser ? { helperUser: body.helperUser } : {}),
         },
       })
       .returning();
@@ -473,6 +476,84 @@ helperRoutes.post(
 );
 
 // ============================================
+// GET /chat/sessions — List sessions for this device
+// ============================================
+
+helperRoutes.get('/chat/sessions', async (c) => {
+  const device = c.get('helperDevice');
+  const helperUser = c.req.query('helperUser');
+
+  const conditions = [eq(aiSessions.deviceId, device.id)];
+
+  if (helperUser) {
+    conditions.push(
+      sql`${aiSessions.contextSnapshot}->>'helperUser' = ${helperUser}`,
+    );
+  }
+
+  const sessions = await db
+    .select({
+      id: aiSessions.id,
+      title: aiSessions.title,
+      status: aiSessions.status,
+      contextSnapshot: aiSessions.contextSnapshot,
+      turnCount: aiSessions.turnCount,
+      createdAt: aiSessions.createdAt,
+      updatedAt: aiSessions.updatedAt,
+    })
+    .from(aiSessions)
+    .where(and(...conditions))
+    .orderBy(desc(aiSessions.updatedAt))
+    .limit(50);
+
+  return c.json(
+    sessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      status: s.status,
+      helperUser: (s.contextSnapshot as Record<string, unknown> | null)?.helperUser ?? null,
+      turnCount: s.turnCount,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    })),
+  );
+});
+
+// ============================================
+// GET /chat/sessions/:id/messages — Load messages for a session
+// ============================================
+
+helperRoutes.get('/chat/sessions/:id/messages', async (c) => {
+  const device = c.get('helperDevice');
+  const sessionId = c.req.param('id');
+
+  // Verify the session belongs to this device
+  const [session] = await db
+    .select({ id: aiSessions.id })
+    .from(aiSessions)
+    .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.deviceId, device.id)))
+    .limit(1);
+
+  if (!session) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+
+  const messages = await db
+    .select({
+      id: aiMessages.id,
+      role: aiMessages.role,
+      content: aiMessages.content,
+      toolName: aiMessages.toolName,
+      createdAt: aiMessages.createdAt,
+    })
+    .from(aiMessages)
+    .where(eq(aiMessages.sessionId, sessionId))
+    .orderBy(asc(aiMessages.createdAt));
+
+  return c.json(messages);
+});
+
+// ============================================
 // DELETE /chat/sessions/:id — Close session
 // ============================================
 
@@ -499,3 +580,58 @@ helperRoutes.delete('/chat/sessions/:id', async (c) => {
 
   return c.json({ success: true });
 });
+
+// ============================================
+// POST /chat/sessions/:id/approve/:executionId — Approve or reject tool
+// ============================================
+
+helperRoutes.post(
+  '/chat/sessions/:id/approve/:executionId',
+  zValidator('json', approveToolSchema),
+  async (c) => {
+    const device = c.get('helperDevice');
+    const sessionId = c.req.param('id');
+    const executionId = c.req.param('executionId');
+    const { approved } = c.req.valid('json');
+
+    // Verify session belongs to this device
+    const [session] = await db
+      .select({ id: aiSessions.id })
+      .from(aiSessions)
+      .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.deviceId, device.id)))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    // Verify execution belongs to session and is pending
+    const [execution] = await db
+      .select({ id: aiToolExecutions.id, status: aiToolExecutions.status })
+      .from(aiToolExecutions)
+      .where(and(
+        eq(aiToolExecutions.id, executionId),
+        eq(aiToolExecutions.sessionId, sessionId),
+      ))
+      .limit(1);
+
+    if (!execution) {
+      return c.json({ error: 'Execution not found' }, 404);
+    }
+
+    if (execution.status !== 'pending') {
+      return c.json({ error: 'Execution already processed' }, 409);
+    }
+
+    await db
+      .update(aiToolExecutions)
+      .set({
+        status: approved ? 'approved' : 'rejected',
+        approvedBy: null, // device context, not a user FK
+        approvedAt: new Date(),
+      })
+      .where(eq(aiToolExecutions.id, executionId));
+
+    return c.json({ success: true, approved });
+  },
+);

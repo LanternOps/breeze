@@ -169,6 +169,7 @@ function flattenEntry(row: DbRow) {
       role: log.actorType,
       department: ''
     },
+    initiatedBy: log.initiatedBy ?? null,
     changes: {
       before: {},
       after: details ?? {}
@@ -199,6 +200,7 @@ function toFullEntry(row: DbRow) {
     result: log.result,
     ipAddress: log.ipAddress ?? '',
     userAgent: log.userAgent ?? '',
+    initiatedBy: log.initiatedBy ?? null,
     details: details ?? {}
   };
 }

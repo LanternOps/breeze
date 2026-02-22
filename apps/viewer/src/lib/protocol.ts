@@ -8,8 +8,17 @@ export interface ConnectionParams {
   apiUrl: string;
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+function isPrivateHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '[::1]' ||
+    hostname === '::1' ||
+    hostname.startsWith('10.') ||
+    hostname.startsWith('192.168.') ||
+    hostname.startsWith('100.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+  );
 }
 
 function joinPaths(basePath: string, path: string): string {
@@ -41,12 +50,12 @@ export function parseDeepLink(url: string): ConnectionParams | null {
       return null;
     }
 
-    // Validate apiUrl and require https except for localhost/loopback (dev).
+    // Validate apiUrl — require https, or allow http for private/loopback (dev/LAN).
     const api = new URL(apiUrl.trim());
     if (api.protocol !== 'https:' && api.protocol !== 'http:') {
       return null;
     }
-    if (api.protocol === 'http:' && !isLoopbackHost(api.hostname)) {
+    if (api.protocol === 'http:' && !isPrivateHost(api.hostname)) {
       return null;
     }
 

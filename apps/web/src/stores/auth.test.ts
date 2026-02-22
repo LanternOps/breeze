@@ -25,6 +25,7 @@ describe('auth store fetchWithAuth', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
     useAuthStore.setState({
       user: null,
       tokens: null,
@@ -95,7 +96,7 @@ describe('auth store fetchWithAuth', () => {
     expect(refreshCall[0]).toBe('/api/v1/auth/refresh');
     expect(refreshCall[1].method).toBe('POST');
     expect(refreshCall[1].body).toBe(JSON.stringify({}));
-    expect(new Headers(refreshCall[1].headers).get('x-breeze-csrf')).toBe('1');
+    expect(new Headers(refreshCall[1].headers).get('x-breeze-csrf')).toBe('csrf-test-token');
 
     const retryCall = fetchMock.mock.calls[2] as [string, RequestInit];
     const retryHeaders = retryCall[1].headers as Headers;
@@ -199,6 +200,7 @@ describe('auth API helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
     useAuthStore.setState({
       user: null,
       tokens: null,

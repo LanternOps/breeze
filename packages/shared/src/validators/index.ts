@@ -11,6 +11,8 @@ import {
   NOTIFICATION_CHANNEL_TYPES
 } from '../constants';
 
+export * from './reliability';
+
 // ============================================
 // Common Validators
 // ============================================
@@ -238,6 +240,67 @@ export const orgHelperSettingsSchema = z.object({
 });
 
 // ============================================
+// Log Forwarding Settings Validators
+// ============================================
+
+export const orgLogForwardingSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  elasticsearchUrl: z.string().trim().optional(),
+  elasticsearchApiKey: z.string().trim().optional(),
+  elasticsearchUsername: z.string().trim().optional(),
+  elasticsearchPassword: z.string().optional(),
+  indexPrefix: z.string().min(1).max(100).default('breeze-logs'),
+}).superRefine((data, ctx) => {
+  if (!data.enabled) {
+    return;
+  }
+
+  if (!data.elasticsearchUrl) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['elasticsearchUrl'],
+      message: 'Elasticsearch URL is required when log forwarding is enabled',
+    });
+  } else {
+    try {
+      const parsed = new URL(data.elasticsearchUrl);
+      if (parsed.protocol !== 'https:') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['elasticsearchUrl'],
+          message: 'Elasticsearch URL must use HTTPS',
+        });
+      }
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['elasticsearchUrl'],
+        message: 'Elasticsearch URL must be a valid URL',
+      });
+    }
+  }
+
+  const hasApiKey = Boolean(data.elasticsearchApiKey);
+  const hasBasicUser = Boolean(data.elasticsearchUsername);
+  const hasBasicPassword = Boolean(data.elasticsearchPassword);
+  const hasBasic = hasBasicUser || hasBasicPassword;
+
+  if (hasApiKey && hasBasic) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Choose either API key or username+password auth, not both',
+    });
+  }
+
+  if (!hasApiKey && !(hasBasicUser && hasBasicPassword)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Either API key or username+password required for Elasticsearch auth',
+    });
+  }
+});
+
+// ============================================
 // Agent Validators
 // ============================================
 
@@ -264,6 +327,13 @@ export const agentHeartbeatSchema = z.object({
     ramUsedMb: z.number().min(0),
     diskPercent: z.number().min(0).max(100),
     diskUsedGb: z.number().min(0),
+    diskActivityAvailable: z.boolean().optional(),
+    diskReadBytes: z.number().int().min(0).optional(),
+    diskWriteBytes: z.number().int().min(0).optional(),
+    diskReadBps: z.number().int().min(0).optional(),
+    diskWriteBps: z.number().int().min(0).optional(),
+    diskReadOps: z.number().int().min(0).optional(),
+    diskWriteOps: z.number().int().min(0).optional(),
     networkInBytes: z.number().optional(),
     networkOutBytes: z.number().optional(),
     bandwidthInBps: z.number().int().min(0).optional(),
@@ -333,13 +403,24 @@ export const updateConfigPolicySchema = z.object({
 });
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy']),
   featurePolicyId: z.string().uuid().optional(),
   inlineSettings: z.record(z.unknown()).optional(),
 }).refine(
   (data) => data.featurePolicyId || data.inlineSettings,
   { message: 'At least one of featurePolicyId or inlineSettings is required' }
 );
+
+export const eventLogInlineSettingsSchema = z.object({
+  retentionDays: z.number().int().min(7).max(365).default(30),
+  maxEventsPerCycle: z.number().int().min(10).max(500).default(100),
+  collectCategories: z.array(z.enum(['security', 'hardware', 'application', 'system'])).min(1).default(['security', 'hardware', 'application', 'system']),
+  minimumLevel: z.enum(['info', 'warning', 'error', 'critical']).default('info'),
+  collectionIntervalMinutes: z.number().int().min(1).max(60).default(5),
+  rateLimitPerHour: z.number().int().min(100).max(100000).default(12000),
+  enableFullTextSearch: z.boolean().default(true),
+  enableCorrelation: z.boolean().default(true),
+});
 
 export const updateFeatureLinkSchema = z.object({
   featurePolicyId: z.string().uuid().nullable().optional(),

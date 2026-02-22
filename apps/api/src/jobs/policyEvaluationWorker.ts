@@ -17,6 +17,15 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+/** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
+function isRelationNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const cause = (error as { cause?: { code?: string } }).cause;
+  return cause?.code === '42P01';
+}
+
+let _configPolicyTableWarningLogged = false;
+
 const POLICY_EVALUATION_QUEUE = 'policy-evaluation';
 const SCAN_INTERVAL_MS = 60 * 1000;
 
@@ -136,11 +145,22 @@ async function processConfigPolicyComplianceScan(): Promise<{
   rulesScanned: number;
   devicesEvaluated: number;
 }> {
-  const result = await scanAndEvaluateConfigPolicyCompliance();
-  return {
-    rulesScanned: result.rulesScanned,
-    devicesEvaluated: result.devicesEvaluated,
-  };
+  try {
+    const result = await scanAndEvaluateConfigPolicyCompliance();
+    return {
+      rulesScanned: result.rulesScanned,
+      devicesEvaluated: result.devicesEvaluated,
+    };
+  } catch (error: unknown) {
+    if (isRelationNotFoundError(error)) {
+      if (!_configPolicyTableWarningLogged) {
+        _configPolicyTableWarningLogged = true;
+        console.warn('[PolicyEvaluationWorker] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping compliance scan.');
+      }
+      return { rulesScanned: 0, devicesEvaluated: 0 };
+    }
+    throw error;
+  }
 }
 
 export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> {

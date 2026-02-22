@@ -11,6 +11,7 @@ import {
   date,
   uniqueIndex
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -126,6 +127,14 @@ export const patchPolicies = pgTable('patch_policies', {
   preInstallScript: uuid('pre_install_script_id').references(() => scripts.id),
   postInstallScript: uuid('post_install_script_id').references(() => scripts.id),
   notifyOnComplete: boolean('notify_on_complete').notNull().default(false),
+  // Update Ring fields
+  ringOrder: integer('ring_order').notNull().default(0),
+  deferralDays: integer('deferral_days').notNull().default(0),
+  deadlineDays: integer('deadline_days'),
+  gracePeriodHours: integer('grace_period_hours').notNull().default(4),
+  categories: text('categories').array().notNull().default([]),
+  excludeCategories: text('exclude_categories').array().notNull().default([]),
+  categoryRules: jsonb('category_rules').notNull().default([]),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
@@ -136,6 +145,7 @@ export const patchApprovals = pgTable('patch_approvals', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   patchId: uuid('patch_id').notNull().references(() => patches.id),
   policyId: uuid('policy_id').references(() => patchPolicies.id),
+  ringId: uuid('ring_id').references(() => patchPolicies.id),
   status: patchApprovalStatusEnum('status').notNull().default('pending'),
   approvedBy: uuid('approved_by').references(() => users.id),
   approvedAt: timestamp('approved_at'),
@@ -144,7 +154,12 @@ export const patchApprovals = pgTable('patch_approvals', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  orgPatchUnique: uniqueIndex('patch_approvals_org_patch_unique').on(table.orgId, table.patchId)
+  // Ring-scoped: one approval per (org, patch, ring). NULL ring = org-wide legacy.
+  orgPatchRingUnique: uniqueIndex('patch_approvals_org_patch_ring_unique').on(
+    table.orgId,
+    table.patchId,
+    sql`COALESCE(${table.ringId}, '00000000-0000-0000-0000-000000000000')`
+  )
 }));
 
 export const devicePatches = pgTable('device_patches', {
@@ -168,6 +183,7 @@ export const patchJobs = pgTable('patch_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   policyId: uuid('policy_id').references(() => patchPolicies.id),
+  ringId: uuid('ring_id').references(() => patchPolicies.id),
   configPolicyId: uuid('config_policy_id'),
   name: varchar('name', { length: 255 }).notNull(),
   patches: jsonb('patches').notNull().default({}),
@@ -218,6 +234,7 @@ export const patchRollbacks = pgTable('patch_rollbacks', {
 export const patchComplianceSnapshots = pgTable('patch_compliance_snapshots', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  ringId: uuid('ring_id').references(() => patchPolicies.id),
   snapshotDate: date('snapshot_date').notNull(),
   totalDevices: integer('total_devices').notNull().default(0),
   compliantDevices: integer('compliant_devices').notNull().default(0),

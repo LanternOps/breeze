@@ -100,7 +100,7 @@ func handleNotifyUser(h *Heartbeat, cmd Command) tools.CommandResult {
 	var result ipc.NotifyResult
 	if resp != nil && resp.Payload != nil {
 		if err := json.Unmarshal(resp.Payload, &result); err != nil {
-			log.Warn("failed to unmarshal notify result", "error", err)
+			log.Warn("failed to unmarshal notify result", "error", err.Error())
 		}
 	}
 
@@ -156,7 +156,7 @@ func handleTrayUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 				continue
 			}
 			if err := session.SendNotify(cmd.ID, ipc.TypeTrayUpdate, update); err != nil {
-				log.Warn("tray update failed for session", "uid", info.UID, "error", err)
+				log.Warn("tray update failed for session", "uid", info.UID, "error", err.Error())
 			} else {
 				sent++
 			}

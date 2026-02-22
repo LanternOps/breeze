@@ -54,6 +54,7 @@ jobs:
           # Clean up any stale branch from a previous failed run
           git push origin --delete "$BRANCH" 2>/dev/null || true
 
+
           git checkout -b "$BRANCH"
           git add apps/docs/
           git commit -m "docs: auto-update from PR #${PR_NUMBER}"

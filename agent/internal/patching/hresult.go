@@ -37,6 +37,7 @@ var knownHResults = map[int]hresultInfo{
 	0x80072F8F: {"WININET_E_DECODING_FAILED", "a security error occurred (certificate problem)"},
 
 	// Download-specific
+	0x80246007: {"WU_E_DM_NOTDOWNLOADED", "the update has not been downloaded"},
 	0x80246008: {"WU_E_DM_FAILTOCONNECTTOBITS", "a download manager operation could not be completed because the download manager was unable to connect the Background Intelligent Transfer Service (BITS)"},
 }
 

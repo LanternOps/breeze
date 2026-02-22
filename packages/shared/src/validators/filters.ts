@@ -66,7 +66,16 @@ export const filterValueSchema = z.union([
 // ============================================
 
 export const filterConditionSchema = z.object({
-  field: z.string().min(1),
+  field: z
+    .string()
+    .min(1)
+    .refine((field) => {
+      if (field.startsWith('custom.')) {
+        const customKey = field.slice('custom.'.length);
+        return /^[a-z][a-z0-9_]*$/.test(customKey);
+      }
+      return /^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*$/.test(field);
+    }, 'Invalid filter field key format'),
   operator: filterOperatorSchema,
   value: filterValueSchema.optional()
 });

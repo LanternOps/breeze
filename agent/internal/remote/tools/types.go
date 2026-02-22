@@ -49,10 +49,12 @@ const (
 
 	// Software inventory
 	CmdCollectSoftware = "collect_software"
+	CmdSoftwareUninstall = "software_uninstall"
 
 	// Boot performance
-	CmdCollectBootPerformance = "collect_boot_performance"
-	CmdManageStartupItem      = "manage_startup_item"
+	CmdCollectBootPerformance    = "collect_boot_performance"
+	CmdManageStartupItem         = "manage_startup_item"
+	CmdCollectReliabilityMetrics = "collect_reliability_metrics"
 
 	// File transfer
 	CmdFileTransfer   = "file_transfer"
@@ -103,7 +105,12 @@ const (
 	CmdFileDelete         = "file_delete"
 	CmdFileMkdir          = "file_mkdir"
 	CmdFileRename         = "file_rename"
+	CmdFileCopy           = "file_copy"
+	CmdFileTrashList      = "file_trash_list"
+	CmdFileTrashRestore   = "file_trash_restore"
+	CmdFileTrashPurge     = "file_trash_purge"
 	CmdFilesystemAnalysis = "filesystem_analysis"
+	CmdFileListDrives     = "file_list_drives"
 
 	// Network discovery
 	CmdNetworkDiscovery = "network_discovery"
@@ -333,6 +340,38 @@ type FileEntry struct {
 type FileListResponse struct {
 	Path    string      `json:"path"`
 	Entries []FileEntry `json:"entries"`
+}
+
+// TrashMetadata stores info about a trashed item for restore/audit purposes.
+type TrashMetadata struct {
+	OriginalPath string `json:"originalPath"`
+	TrashID      string `json:"trashId"`
+	DeletedAt    string `json:"deletedAt"`
+	DeletedBy    string `json:"deletedBy,omitempty"`
+	IsDirectory  bool   `json:"isDirectory"`
+	SizeBytes    int64  `json:"sizeBytes"`
+}
+
+// TrashListResponse is the response for listing trash contents.
+type TrashListResponse struct {
+	Items []TrashMetadata `json:"items"`
+	Path  string          `json:"path"`
+}
+
+// DriveInfo represents a logical drive (Windows) or mount point (Unix).
+type DriveInfo struct {
+	Letter     string `json:"letter,omitempty"`     // e.g. "C:" (Windows only)
+	MountPoint string `json:"mountPoint"`           // e.g. "C:\\" or "/"
+	Label      string `json:"label,omitempty"`      // volume label
+	FileSystem string `json:"fileSystem,omitempty"` // e.g. "NTFS", "ext4"
+	TotalBytes int64  `json:"totalBytes"`
+	FreeBytes  int64  `json:"freeBytes"`
+	DriveType  string `json:"driveType,omitempty"` // "fixed", "removable", "network", "cdrom", "unknown"
+}
+
+// DriveListResponse is the response for listing drives/mount points.
+type DriveListResponse struct {
+	Drives []DriveInfo `json:"drives"`
 }
 
 // FilesystemLargestFile captures one large file candidate.

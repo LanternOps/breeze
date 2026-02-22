@@ -106,41 +106,6 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
     );
   }
 
-  if (device.status !== 'online') {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-4">
-          <button
-            type="button"
-            onClick={handleBack}
-            className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <div>
-            <h1 className="text-2xl font-bold">Remote Terminal</h1>
-            <p className="text-muted-foreground">{device.displayName || device.hostname}</p>
-          </div>
-        </div>
-
-        <div className="flex flex-col items-center justify-center min-h-[400px] gap-4 rounded-lg border bg-card p-8">
-          <AlertCircle className="h-12 w-12 text-yellow-500" />
-          <h2 className="text-lg font-semibold">Device Offline</h2>
-          <p className="text-muted-foreground text-center max-w-md">
-            The device is currently {device.status}. Remote terminal access is only available when the device is online.
-          </p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
-          >
-            Refresh Status
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
@@ -158,6 +123,15 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
           </p>
         </div>
       </div>
+
+      {device.status !== 'online' && (
+        <div className="flex items-start gap-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-4 py-3">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
+          <p className="text-sm text-yellow-800">
+            Device status is currently <span className="font-medium">{device.status}</span>. Attempting to connect anyway.
+          </p>
+        </div>
+      )}
 
       <RemoteTerminal
         deviceId={deviceId}

@@ -33,7 +33,7 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	pendingItems, installedItems, err := h.collectPatchInventory()
 	if err != nil && len(pendingItems) == 0 && len(installedItems) == 0 {
-		log.Error("patch scan failed", "source", source, "error", err)
+		log.Error("patch scan failed", "source", source, "error", err.Error())
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
@@ -47,7 +47,7 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 			"source", source,
 			"pendingCount", len(pendingItems),
 			"installedCount", len(installedItems),
-			"error", err,
+			"error", err.Error(),
 		)
 	} else {
 		log.Info("patch scan completed",

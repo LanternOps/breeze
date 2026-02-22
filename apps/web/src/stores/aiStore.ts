@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiPageContext, AiStreamEvent } from '@breeze/shared';
+import type { AiPageContext, AiStreamEvent, AiApprovalMode, ActionPlanStep, ActionPlan } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 
 interface AiMessage {
@@ -16,11 +16,20 @@ interface AiMessage {
   createdAt: Date;
 }
 
+interface DeviceContext {
+  hostname: string;
+  displayName?: string;
+  status: string;
+  lastSeenAt?: string;
+  activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }>;
+}
+
 interface PendingApproval {
   executionId: string;
   toolName: string;
   input: Record<string, unknown>;
   description: string;
+  deviceContext?: DeviceContext;
 }
 
 interface SearchResult {
@@ -28,6 +37,18 @@ interface SearchResult {
   title: string | null;
   matchedContent: string;
   createdAt: string;
+}
+
+interface PendingPlan {
+  planId: string;
+  steps: ActionPlanStep[];
+}
+
+interface ActivePlan {
+  planId: string;
+  steps: ActionPlanStep[];
+  currentStepIndex: number;
+  status: 'executing' | 'completed' | 'aborted';
 }
 
 interface AiState {
@@ -39,11 +60,17 @@ interface AiState {
   error: string | null;
   pageContext: AiPageContext | null;
   pendingApproval: PendingApproval | null;
+  pendingPlan: PendingPlan | null;
+  activePlan: ActivePlan | null;
+  approvalMode: AiApprovalMode;
+  isPaused: boolean;
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
   showHistory: boolean;
   searchResults: SearchResult[];
   isSearching: boolean;
   isInterrupting: boolean;
+  isFlagged: boolean;
+  flagReason: string | null;
 
   // Actions
   toggle: () => void;
@@ -55,12 +82,17 @@ interface AiState {
   loadSessions: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   approveExecution: (executionId: string, approved: boolean) => Promise<void>;
+  approvePlan: (approved: boolean) => Promise<void>;
+  abortPlan: () => Promise<void>;
+  pauseAi: (paused: boolean) => Promise<void>;
   closeSession: () => Promise<void>;
   clearError: () => void;
   toggleHistory: () => void;
   interruptResponse: () => Promise<void>;
   searchConversations: (query: string) => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
+  flagSession: (reason?: string) => Promise<void>;
+  unflagSession: () => Promise<void>;
 }
 
 function mapMessagesFromApi(rawMessages: Record<string, unknown>[]): AiMessage[] {
@@ -87,11 +119,17 @@ export const useAiStore = create<AiState>()(
   error: null,
   pageContext: null,
   pendingApproval: null,
+  pendingPlan: null,
+  activePlan: null,
+  approvalMode: 'per_step' as AiApprovalMode,
+  isPaused: false,
   sessions: [],
   showHistory: false,
   searchResults: [],
   isSearching: false,
   isInterrupting: false,
+  isFlagged: false,
+  flagReason: null,
 
   toggle: () => set((s) => ({ isOpen: !s.isOpen })),
   open: () => set({ isOpen: true }),
@@ -113,7 +151,7 @@ export const useAiStore = create<AiState>()(
         throw new Error(data.error || 'Failed to create session');
       }
       const data = await res.json();
-      set({ sessionId: data.id, messages: [], isLoading: false });
+      set({ sessionId: data.id, messages: [], isLoading: false, isFlagged: false, flagReason: null });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
@@ -143,7 +181,13 @@ export const useAiStore = create<AiState>()(
 
       const messages = mapMessagesFromApi(data.messages || []);
 
-      set({ sessionId, messages, isLoading: false });
+      set({
+        sessionId,
+        messages,
+        isLoading: false,
+        isFlagged: !!data.session.flaggedAt,
+        flagReason: data.session.flagReason ?? null,
+      });
     } catch (err) {
       set({
         sessionId: null,
@@ -288,6 +332,83 @@ export const useAiStore = create<AiState>()(
     }
   },
 
+  approvePlan: async (approved: boolean) => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/approve-plan`, {
+        method: 'POST',
+        body: JSON.stringify({ approved })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
+        set({ error: data.error || 'Failed to process plan approval' });
+        return;
+      }
+      if (approved) {
+        const plan = get().pendingPlan;
+        if (plan) {
+          set({
+            pendingPlan: null,
+            activePlan: {
+              planId: plan.planId,
+              steps: plan.steps,
+              currentStepIndex: 0,
+              status: 'executing',
+            },
+          });
+        }
+      } else {
+        set({ pendingPlan: null });
+      }
+    } catch (err) {
+      console.error('[AI] Plan approval failed:', err);
+      set({ error: 'Failed to process plan approval' });
+    }
+  },
+
+  abortPlan: async () => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/abort-plan`, {
+        method: 'POST'
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
+        set({ error: data.error || 'Failed to abort plan' });
+        return;
+      }
+      set({ activePlan: null });
+    } catch (err) {
+      console.error('[AI] Plan abort failed:', err);
+      set({ error: 'Failed to abort plan' });
+    }
+  },
+
+  pauseAi: async (paused: boolean) => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/pause`, {
+        method: 'POST',
+        body: JSON.stringify({ paused })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
+        set({ error: data.error || 'Failed to pause AI' });
+        return;
+      }
+      set({ isPaused: paused });
+    } catch (err) {
+      console.error('[AI] Pause failed:', err);
+      set({ error: 'Failed to pause AI' });
+    }
+  },
+
   closeSession: async () => {
     const { sessionId } = get();
     if (!sessionId) return;
@@ -356,14 +477,57 @@ export const useAiStore = create<AiState>()(
 
       const messages = mapMessagesFromApi(data.messages || []);
 
-      set({ sessionId, messages, isLoading: false });
+      set({
+        sessionId,
+        messages,
+        isLoading: false,
+        isFlagged: !!data.session?.flaggedAt,
+        flagReason: data.session?.flagReason ?? null,
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to load session',
         isLoading: false
       });
     }
-  }
+  },
+
+  flagSession: async (reason?: string) => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'Failed to flag session' }));
+        set({ error: data.error || 'Failed to flag session' });
+        return;
+      }
+      set({ isFlagged: true, flagReason: reason ?? null });
+    } catch (err) {
+      console.error('Failed to flag session:', err);
+      set({ error: 'Failed to flag session' });
+    }
+  },
+
+  unflagSession: async () => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'Failed to unflag session' }));
+        set({ error: data.error || 'Failed to unflag session' });
+        return;
+      }
+      set({ isFlagged: false, flagReason: null });
+    } catch (err) {
+      console.error('Failed to unflag session:', err);
+      set({ error: 'Failed to unflag session' });
+    }
+  },
     }),
     {
       name: 'breeze-ai-chat',
@@ -440,7 +604,8 @@ function processStreamEvent(
           executionId: event.executionId,
           toolName: event.toolName,
           input: event.input,
-          description: event.description
+          description: event.description,
+          deviceContext: event.deviceContext,
         }
       }));
       return currentAssistantId;
@@ -467,6 +632,67 @@ function processStreamEvent(
     case 'error':
       set(() => ({ error: event.message, isStreaming: false }));
       return currentAssistantId;
+
+    case 'plan_approval_required':
+      set(() => ({
+        pendingPlan: {
+          planId: event.planId,
+          steps: event.steps,
+        },
+      }));
+      return currentAssistantId;
+
+    case 'plan_step_start': {
+      set((s) => ({
+        activePlan: s.activePlan ? { ...s.activePlan, currentStepIndex: event.stepIndex } : s.activePlan,
+      }));
+      return currentAssistantId;
+    }
+
+    case 'plan_step_complete': {
+      set((s) => {
+        if (!s.activePlan) return {};
+        const steps = s.activePlan.steps.map((step, i) =>
+          i === event.stepIndex ? { ...step, status: event.isError ? 'failed' as const : 'completed' as const } : step
+        );
+        return { activePlan: { ...s.activePlan, steps, currentStepIndex: event.stepIndex + 1 } };
+      });
+      return currentAssistantId;
+    }
+
+    case 'plan_complete': {
+      const completedPlanId = event.planId;
+      set((s) => ({
+        activePlan: s.activePlan ? { ...s.activePlan, status: event.status } : null,
+      }));
+      // Clear activePlan after a brief delay so UI can show final state
+      setTimeout(() => {
+        const state = get();
+        if (state.activePlan?.planId === completedPlanId) {
+          set(() => ({ activePlan: null }));
+        }
+      }, 3000);
+      return currentAssistantId;
+    }
+
+    case 'plan_screenshot': {
+      // Insert inline screenshot as a special message
+      const screenshotMsg: AiMessage = {
+        id: `plan-screenshot-${event.planId}-${event.stepIndex}`,
+        role: 'tool_result',
+        content: '',
+        toolName: 'plan_screenshot',
+        toolOutput: { imageBase64: event.imageBase64, stepIndex: event.stepIndex },
+        createdAt: new Date(),
+      };
+      set((s) => ({ messages: [...s.messages, screenshotMsg] }));
+      return currentAssistantId;
+    }
+
+    case 'approval_mode_changed': {
+      set(() => ({ approvalMode: event.mode, isPaused: event.mode === 'per_step' }));
+      return currentAssistantId;
+    }
 
     case 'done':
       set(() => ({ isStreaming: false }));

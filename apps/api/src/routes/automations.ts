@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
@@ -783,12 +783,25 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Automation is not configured for webhook triggering' }, 400);
   }
 
-  const providedSecret = c.req.header('x-automation-secret')
-    ?? c.req.header('x-webhook-secret')
-    ?? c.req.query('secret');
+  const headerSecret = c.req.header('x-automation-secret')
+    ?? c.req.header('x-webhook-secret');
+  const querySecret = c.req.query('secret');
 
-  if (trigger.secret && providedSecret !== trigger.secret) {
-    return c.json({ error: 'Invalid webhook secret' }, 401);
+  if (querySecret && !headerSecret) {
+    console.warn(`[webhook] Automation ${automationId}: secret passed via query string is deprecated. Use x-automation-secret header instead.`);
+  }
+
+  const providedSecret = headerSecret ?? querySecret;
+
+  if (trigger.secret) {
+    if (!providedSecret) {
+      return c.json({ error: 'Invalid webhook secret' }, 401);
+    }
+    const expected = Buffer.from(trigger.secret, 'utf8');
+    const provided = Buffer.from(providedSecret, 'utf8');
+    if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
+      return c.json({ error: 'Invalid webhook secret' }, 401);
+    }
   }
 
   const payload = await c.req.json().catch(() => ({}));

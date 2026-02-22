@@ -8,12 +8,13 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { db } from '../../db';
 import {
   configPolicyFeatureLinks,
-  configPolicyPatchSettings,
+  patchPolicies,
   patchJobs,
   devices,
 } from '../../db/schema';
-import { resolvePatchConfigForDevice, checkDeviceMaintenanceWindow } from '../../services/featureConfigResolver';
+import { checkDeviceMaintenanceWindow } from '../../services/featureConfigResolver';
 import { getConfigPolicy } from '../../services/configurationPolicy';
+import { enqueuePatchJob } from '../../jobs/patchJobExecutor';
 
 export const patchJobRoutes = new Hono();
 
@@ -35,17 +36,27 @@ const createPatchJobFromConfigPolicySchema = z.object({
 // Helper: Load patch settings for a configuration policy
 // ============================================
 
-async function loadConfigPolicyPatchSettings(configPolicyId: string) {
-  const [result] = await db
-    .select({
-      patchSettings: configPolicyPatchSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-    })
+type PatchDeploymentSettings = {
+  scheduleFrequency: string;
+  scheduleTime: string;
+  scheduleDayOfWeek?: string;
+  scheduleDayOfMonth?: number;
+  rebootPolicy: string;
+};
+
+type ResolvedPatchConfig = {
+  ringId: string | null;
+  ringName: string | null;
+  categoryRules: unknown[];
+  autoApprove: unknown;
+  deployment: PatchDeploymentSettings;
+};
+
+async function loadConfigPolicyPatchSettings(configPolicyId: string): Promise<ResolvedPatchConfig | null> {
+  // 1. Find the feature link for the patch feature type
+  const [featureLink] = await db
+    .select()
     .from(configPolicyFeatureLinks)
-    .innerJoin(
-      configPolicyPatchSettings,
-      eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
     .where(
       and(
         eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
@@ -54,20 +65,50 @@ async function loadConfigPolicyPatchSettings(configPolicyId: string) {
     )
     .limit(1);
 
-  return result?.patchSettings ?? null;
-}
+  if (!featureLink) return null;
 
-function getPatchSettingsSignature(settings: typeof configPolicyPatchSettings.$inferSelect): string {
-  return JSON.stringify({
-    sources: settings.sources,
-    autoApprove: settings.autoApprove,
-    autoApproveSeverities: settings.autoApproveSeverities ?? [],
-    rebootPolicy: settings.rebootPolicy,
-    scheduleFrequency: settings.scheduleFrequency,
-    scheduleTime: settings.scheduleTime,
-    scheduleDayOfWeek: settings.scheduleDayOfWeek ?? null,
-    scheduleDayOfMonth: settings.scheduleDayOfMonth ?? null,
-  });
+  // 2. Extract deployment settings (schedule + reboot) from inlineSettings
+  const inline = (featureLink.inlineSettings ?? {}) as Record<string, unknown>;
+  const deployment: PatchDeploymentSettings = {
+    scheduleFrequency: (inline.scheduleFrequency as string) ?? 'weekly',
+    scheduleTime: (inline.scheduleTime as string) ?? '02:00',
+    scheduleDayOfWeek: (inline.scheduleDayOfWeek as string) ?? 'sun',
+    scheduleDayOfMonth: (inline.scheduleDayOfMonth as number) ?? 1,
+    rebootPolicy: (inline.rebootPolicy as string) ?? 'if_required',
+  };
+
+  // 3. If linked to an Update Ring, load approval rules from the ring
+  if (featureLink.featurePolicyId) {
+    const [ring] = await db
+      .select({
+        id: patchPolicies.id,
+        name: patchPolicies.name,
+        categoryRules: patchPolicies.categoryRules,
+        autoApprove: patchPolicies.autoApprove,
+      })
+      .from(patchPolicies)
+      .where(eq(patchPolicies.id, featureLink.featurePolicyId))
+      .limit(1);
+
+    if (ring) {
+      return {
+        ringId: ring.id,
+        ringName: ring.name,
+        categoryRules: Array.isArray(ring.categoryRules) ? ring.categoryRules : [],
+        autoApprove: ring.autoApprove,
+        deployment,
+      };
+    }
+  }
+
+  // 4. No ring linked — manual approvals only
+  return {
+    ringId: null,
+    ringName: null,
+    categoryRules: [],
+    autoApprove: {},
+    deployment,
+  };
 }
 
 // ============================================
@@ -139,25 +180,20 @@ patchJobRoutes.post(
     const devicePatchConfigs: Array<{
       deviceId: string;
       orgId: string;
-      resolvedSettings: typeof configPolicyPatchSettings.$inferSelect;
     }> = [];
 
     const maintenanceSuppressedDeviceIds: string[] = [];
 
     for (const device of accessibleDevices) {
-      // Check if patching is suppressed by a maintenance window
       const maintenanceStatus = await checkDeviceMaintenanceWindow(device.id);
       if (maintenanceStatus.active && maintenanceStatus.suppressPatching) {
         maintenanceSuppressedDeviceIds.push(device.id);
         continue;
       }
 
-      const resolved = await resolvePatchConfigForDevice(device.id);
-      // If the device has no resolved config, fall back to the policy-level settings
       devicePatchConfigs.push({
         deviceId: device.id,
         orgId: device.orgId,
-        resolvedSettings: resolved ?? patchSettings,
       });
     }
 
@@ -168,71 +204,62 @@ patchJobRoutes.post(
       }, 409);
     }
 
-    // 5. Group devices by org and resolved settings to avoid mixing
-    // different effective patch configs into a single job.
-    const orgGroups = new Map<
-      string,
-      Map<string, { settings: typeof configPolicyPatchSettings.$inferSelect; deviceIds: string[] }>
-    >();
+    // 5. Group devices by org
+    const orgGroups = new Map<string, string[]>();
     for (const config of devicePatchConfigs) {
-      const settingsKey = getPatchSettingsSignature(config.resolvedSettings);
-      const settingsGroups = orgGroups.get(config.orgId) ?? new Map<string, { settings: typeof configPolicyPatchSettings.$inferSelect; deviceIds: string[] }>();
-      const existing = settingsGroups.get(settingsKey);
-      if (existing) {
-        existing.deviceIds.push(config.deviceId);
-      } else {
-        settingsGroups.set(settingsKey, {
-          settings: config.resolvedSettings,
-          deviceIds: [config.deviceId],
-        });
-      }
-      orgGroups.set(config.orgId, settingsGroups);
+      const existing = orgGroups.get(config.orgId) ?? [];
+      existing.push(config.deviceId);
+      orgGroups.set(config.orgId, existing);
     }
 
-    // 6. Create patch jobs (one per org/settings group for correct config fidelity)
+    // 6. Create patch jobs (one per org)
     const createdJobs: Array<{ jobId: string; orgId: string; deviceCount: number }> = [];
 
-    for (const [orgId, settingsGroups] of orgGroups) {
-      for (const { settings, deviceIds } of settingsGroups.values()) {
-        const jobName = data.name ?? `Config Policy Patch Job - ${policy.name}`;
+    for (const [orgId, deviceIds] of orgGroups) {
+      const jobName = data.name ?? `Config Policy Patch Job - ${policy.name}`;
 
-        const [job] = await db
-          .insert(patchJobs)
-          .values({
-            orgId,
-            policyId: null, // Not a legacy patch policy
+      const [job] = await db
+        .insert(patchJobs)
+        .values({
+          orgId,
+          policyId: null,
+          configPolicyId,
+          ringId: patchSettings.ringId,
+          name: jobName,
+          patches: {
+            ringId: patchSettings.ringId,
+            ringName: patchSettings.ringName,
+            categoryRules: patchSettings.categoryRules,
+            autoApprove: patchSettings.autoApprove,
+          },
+          targets: {
+            deviceIds,
             configPolicyId,
-            name: jobName,
-            patches: {
-              sources: settings.sources,
-              autoApprove: settings.autoApprove,
-              autoApproveSeverities: settings.autoApproveSeverities,
-              rebootPolicy: settings.rebootPolicy,
-              scheduleFrequency: settings.scheduleFrequency,
-              scheduleTime: settings.scheduleTime,
-              scheduleDayOfWeek: settings.scheduleDayOfWeek,
-              scheduleDayOfMonth: settings.scheduleDayOfMonth,
-            },
-            targets: {
-              deviceIds,
-              configPolicyId,
-              configPolicyName: policy.name,
-            },
-            status: 'scheduled',
-            scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
-            devicesTotal: deviceIds.length,
-            devicesPending: deviceIds.length,
-            createdBy: auth.user.id,
-          })
-          .returning();
+            configPolicyName: policy.name,
+            deployment: patchSettings.deployment,
+          },
+          status: 'scheduled',
+          scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
+          devicesTotal: deviceIds.length,
+          devicesPending: deviceIds.length,
+          createdBy: auth.user.id,
+        })
+        .returning();
 
-        if (job) {
-          createdJobs.push({
-            jobId: job.id,
-            orgId,
-            deviceCount: deviceIds.length,
-          });
-        }
+      if (job) {
+        createdJobs.push({
+          jobId: job.id,
+          orgId,
+          deviceCount: deviceIds.length,
+        });
+
+        // Enqueue for execution — delay if scheduledAt is in the future
+        const delayMs = data.scheduledAt
+          ? Math.max(0, new Date(data.scheduledAt).getTime() - Date.now())
+          : 0;
+        enqueuePatchJob(job.id, delayMs || undefined).catch((err) =>
+          console.error(`[PatchJobs] Failed to enqueue job ${job.id}:`, err)
+        );
       }
     }
 
@@ -247,11 +274,9 @@ patchJobRoutes.post(
         jobCount: createdJobs.length,
         totalDevices: devicePatchConfigs.length,
         jobs: createdJobs,
-        patchSettingsId: patchSettings.id,
-        sources: patchSettings.sources,
-        autoApprove: patchSettings.autoApprove,
-        rebootPolicy: patchSettings.rebootPolicy,
-        scheduleFrequency: patchSettings.scheduleFrequency,
+        ringId: patchSettings.ringId,
+        ringName: patchSettings.ringName,
+        deployment: patchSettings.deployment,
         missingDeviceIds,
         inaccessibleDeviceIds,
         maintenanceSuppressedDeviceIds,
@@ -262,16 +287,12 @@ patchJobRoutes.post(
       success: true,
       configPolicyId,
       configPolicyName: policy.name,
-      patchSettings: {
-        sources: patchSettings.sources,
-        autoApprove: patchSettings.autoApprove,
-        autoApproveSeverities: patchSettings.autoApproveSeverities,
-        scheduleFrequency: patchSettings.scheduleFrequency,
-        scheduleTime: patchSettings.scheduleTime,
-        scheduleDayOfWeek: patchSettings.scheduleDayOfWeek,
-        scheduleDayOfMonth: patchSettings.scheduleDayOfMonth,
-        rebootPolicy: patchSettings.rebootPolicy,
+      approvalRing: {
+        ringId: patchSettings.ringId,
+        ringName: patchSettings.ringName,
+        categoryRules: patchSettings.categoryRules,
       },
+      deployment: patchSettings.deployment,
       jobs: createdJobs,
       totalDevices: devicePatchConfigs.length,
       skipped: {
@@ -310,19 +331,13 @@ patchJobRoutes.get(
     return c.json({
       configPolicyId,
       configPolicyName: policy.name,
-      patchSettings: {
-        id: patchSettings.id,
-        sources: patchSettings.sources,
+      approvalRing: {
+        ringId: patchSettings.ringId,
+        ringName: patchSettings.ringName,
+        categoryRules: patchSettings.categoryRules,
         autoApprove: patchSettings.autoApprove,
-        autoApproveSeverities: patchSettings.autoApproveSeverities,
-        scheduleFrequency: patchSettings.scheduleFrequency,
-        scheduleTime: patchSettings.scheduleTime,
-        scheduleDayOfWeek: patchSettings.scheduleDayOfWeek,
-        scheduleDayOfMonth: patchSettings.scheduleDayOfMonth,
-        rebootPolicy: patchSettings.rebootPolicy,
-        createdAt: patchSettings.createdAt,
-        updatedAt: patchSettings.updatedAt,
       },
+      deployment: patchSettings.deployment,
     });
   }
 );
@@ -330,8 +345,8 @@ patchJobRoutes.get(
 /**
  * GET /:id/resolve-patch-config/:deviceId
  *
- * Resolves the effective patch configuration for a specific device through the
- * configuration policy hierarchy. Returns the winning patch settings row.
+ * Returns the effective patch configuration that this configuration policy
+ * would apply to a specific device: approval ring settings + deployment schedule.
  */
 patchJobRoutes.get(
   '/:id/resolve-patch-config/:deviceId',
@@ -362,13 +377,13 @@ patchJobRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    const resolved = await resolvePatchConfigForDevice(deviceId);
+    const resolved = await loadConfigPolicyPatchSettings(configPolicyId);
     if (!resolved) {
       return c.json({
         configPolicyId,
         deviceId,
         resolved: null,
-        message: 'No patch configuration found for this device in the policy hierarchy',
+        message: 'No patch configuration found for this configuration policy',
       });
     }
 
@@ -376,15 +391,13 @@ patchJobRoutes.get(
       configPolicyId,
       deviceId,
       resolved: {
-        id: resolved.id,
-        sources: resolved.sources,
-        autoApprove: resolved.autoApprove,
-        autoApproveSeverities: resolved.autoApproveSeverities,
-        scheduleFrequency: resolved.scheduleFrequency,
-        scheduleTime: resolved.scheduleTime,
-        scheduleDayOfWeek: resolved.scheduleDayOfWeek,
-        scheduleDayOfMonth: resolved.scheduleDayOfMonth,
-        rebootPolicy: resolved.rebootPolicy,
+        approvalRing: {
+          ringId: resolved.ringId,
+          ringName: resolved.ringName,
+          categoryRules: resolved.categoryRules,
+          autoApprove: resolved.autoApprove,
+        },
+        deployment: resolved.deployment,
       },
     });
   }

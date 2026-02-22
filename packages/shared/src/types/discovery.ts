@@ -14,7 +14,7 @@ export type DiscoveryMethod = 'arp' | 'ping' | 'port_scan' | 'snmp' | 'wmi' | 's
 
 export type DiscoverySchedule =
   | { type: 'manual' }
-  | { type: 'cron'; cron: string }
+  | { type: 'cron'; cron: string; timezone?: string }
   | { type: 'interval'; intervalMinutes: number };
 
 export interface DiscoveryProfile {
@@ -87,4 +87,27 @@ export interface NetworkTopologyEdge {
   connectionType: string;
   bandwidth: number | null;
   latency: number | null;
+}
+
+// ============================================
+// Network Baseline Types
+// ============================================
+
+export const NETWORK_EVENT_TYPES = [
+  'new_device', 'device_disappeared', 'device_changed', 'rogue_device'
+] as const;
+
+export type NetworkEventType = typeof NETWORK_EVENT_TYPES[number];
+
+export interface NetworkBaselineScanSchedule {
+  enabled: boolean;
+  intervalHours: number;
+  nextScanAt: string;
+}
+
+export interface NetworkBaselineAlertSettings {
+  newDevice: boolean;
+  disappeared: boolean;
+  changed: boolean;
+  rogueDevice: boolean;
 }

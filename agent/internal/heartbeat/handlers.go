@@ -55,11 +55,13 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdLock:     handleLock,
 
 	// Software inventory
-	tools.CmdCollectSoftware: handleCollectSoftware,
+	tools.CmdCollectSoftware:   handleCollectSoftware,
+	tools.CmdSoftwareUninstall: handleSoftwareUninstall,
 
 	// Boot performance
-	tools.CmdCollectBootPerformance: handleCollectBootPerformance,
-	tools.CmdManageStartupItem:      handleManageStartupItem,
+	tools.CmdCollectBootPerformance:    handleCollectBootPerformance,
+	tools.CmdManageStartupItem:         handleManageStartupItem,
+	tools.CmdCollectReliabilityMetrics: handleCollectReliabilityMetrics,
 
 	// File operations
 	tools.CmdFileList:           handleFileList,
@@ -68,7 +70,12 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdFileDelete:         handleFileDelete,
 	tools.CmdFileMkdir:          handleFileMkdir,
 	tools.CmdFileRename:         handleFileRename,
+	tools.CmdFileCopy:           handleFileCopy,
+	tools.CmdFileTrashList:      handleFileTrashList,
+	tools.CmdFileTrashRestore:   handleFileTrashRestore,
+	tools.CmdFileTrashPurge:     handleFileTrashPurge,
 	tools.CmdFilesystemAnalysis: handleFilesystemAnalysis,
+	tools.CmdFileListDrives:     handleFileListDrives,
 
 	// Terminal commands
 	tools.CmdTerminalStart:  handleTerminalStart,
@@ -220,6 +227,10 @@ func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(software, time.Since(start).Milliseconds())
 }
 
+func handleSoftwareUninstall(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.UninstallSoftware(cmd.Payload)
+}
+
 func handleFileList(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.ListFiles(cmd.Payload)
 }
@@ -244,8 +255,28 @@ func handleFileRename(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.RenameFile(cmd.Payload)
 }
 
+func handleFileCopy(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.CopyFile(cmd.Payload)
+}
+
+func handleFileTrashList(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.TrashList(cmd.Payload)
+}
+
+func handleFileTrashRestore(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.TrashRestore(cmd.Payload)
+}
+
+func handleFileTrashPurge(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.TrashPurge(cmd.Payload)
+}
+
 func handleFilesystemAnalysis(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.AnalyzeFilesystem(cmd.Payload)
+}
+
+func handleFileListDrives(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.ListDrives(cmd.Payload)
 }
 
 func handleTerminalStart(h *Heartbeat, cmd Command) tools.CommandResult {
@@ -282,15 +313,15 @@ func handleManageStartupItem(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 	if name == "" || action == "" {
 		return tools.CommandResult{
-			Status: "failed",
-			Error:  "missing required fields: itemName and action",
+			Status:     "failed",
+			Error:      "missing required fields: itemName and action",
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
 	if action != "disable" && action != "enable" {
 		return tools.CommandResult{
-			Status: "failed",
-			Error:  "action must be 'disable' or 'enable'",
+			Status:     "failed",
+			Error:      "action must be 'disable' or 'enable'",
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
@@ -302,4 +333,18 @@ func handleManageStartupItem(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(map[string]string{
 		"message": fmt.Sprintf("Startup item '%s' %sd successfully", name, action),
 	}, time.Since(start).Milliseconds())
+}
+
+func handleCollectReliabilityMetrics(h *Heartbeat, _ Command) tools.CommandResult {
+	start := time.Now()
+	if h.reliabilityCol == nil {
+		return tools.NewErrorResult(fmt.Errorf("reliability collector unavailable"), time.Since(start).Milliseconds())
+	}
+
+	metrics, err := h.reliabilityCol.Collect()
+	if err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	return tools.NewSuccessResult(metrics, time.Since(start).Milliseconds())
 }

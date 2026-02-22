@@ -26,6 +26,7 @@ type RemoteToolsPageProps = {
   deviceId: string;
   deviceName: string;
   deviceOs: 'windows' | 'macos' | 'linux' | 'darwin';
+  initialTab?: ToolTab;
   onClose?: () => void;
   showClose?: boolean;
 };
@@ -380,10 +381,11 @@ export default function RemoteToolsPage({
   deviceId,
   deviceName,
   deviceOs,
+  initialTab = 'processes',
   onClose,
   showClose = false
 }: RemoteToolsPageProps) {
-  const [activeTab, setActiveTab] = useState<ToolTab>('processes');
+  const [activeTab, setActiveTab] = useState<ToolTab>(initialTab);
   const [resolvedDeviceName, setResolvedDeviceName] = useState(deviceName);
   const [resolvedDeviceOs, setResolvedDeviceOs] = useState<DeviceOs>(normalizeDeviceOs(deviceOs));
 
@@ -780,7 +782,7 @@ export default function RemoteToolsPage({
       </div>
 
       {/* Tool Content */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className={`flex-1 min-h-0 flex flex-col p-6 ${activeTab === 'files' ? '' : 'overflow-auto'}`}>
         {activeTab === 'processes' && (
           <ProcessManager
             deviceId={deviceId}
