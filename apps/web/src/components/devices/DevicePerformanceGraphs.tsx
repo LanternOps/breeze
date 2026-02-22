@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowDown, ArrowUp } from 'lucide-react';
+import { Activity, ArrowDown, ArrowUp, HardDrive } from 'lucide-react';
 import {
   AreaChart,
   Area,
@@ -21,6 +21,11 @@ type MetricPoint = {
   cpu: number;
   ram: number;
   disk: number;
+  diskActivityAvailable: boolean;
+  diskReadBps: number;
+  diskWriteBps: number;
+  diskReadOps: number;
+  diskWriteOps: number;
   bandwidthInBps: number;
   bandwidthOutBps: number;
 };
@@ -30,6 +35,13 @@ function formatBandwidth(bps: number): string {
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
   if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} Kbps`;
   return `${Math.round(bps)} bps`;
+}
+
+function formatBytesPerSec(bps: number): string {
+  if (bps >= 1_000_000_000) return `${(bps / 1_000_000_000).toFixed(1)} GB/s`;
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} KB/s`;
+  return `${Math.round(bps)} B/s`;
 }
 
 type DevicePerformanceGraphsProps = {
@@ -94,6 +106,11 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             cpu: Number(point.cpu ?? point.cpuPercent ?? 0),
             ram: Number(point.ram ?? point.ramPercent ?? 0),
             disk: Number(point.disk ?? point.diskPercent ?? 0),
+            diskActivityAvailable: Boolean(point.diskActivityAvailable ?? false),
+            diskReadBps: Number(point.diskReadBps ?? 0),
+            diskWriteBps: Number(point.diskWriteBps ?? 0),
+            diskReadOps: Number(point.diskReadOps ?? 0),
+            diskWriteOps: Number(point.diskWriteOps ?? 0),
             bandwidthInBps: Number(point.bandwidthInBps ?? 0),
             bandwidthOutBps: Number(point.bandwidthOutBps ?? 0)
           }))
@@ -112,6 +129,10 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
 
   const latest = useMemo(() => data[data.length - 1], [data]);
   const hasBandwidth = useMemo(() => data.some(d => d.bandwidthInBps > 0 || d.bandwidthOutBps > 0), [data]);
+  const hasDiskActivity = useMemo(
+    () => data.some(d => d.diskActivityAvailable || d.diskReadBps > 0 || d.diskWriteBps > 0 || d.diskReadOps > 0 || d.diskWriteOps > 0),
+    [data]
+  );
 
   const bandwidthDomain = useMemo(() => {
     if (!hasBandwidth) return [0, 1000];
@@ -120,6 +141,14 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
     );
     return [0, Math.ceil(maxVal * 1.1)];
   }, [data, hasBandwidth]);
+
+  const diskActivityDomain = useMemo(() => {
+    if (!hasDiskActivity) return [0, 1000];
+    const maxVal = Math.max(
+      ...data.map(d => Math.max(d.diskReadBps, d.diskWriteBps))
+    );
+    return [0, Math.ceil(maxVal * 1.1)];
+  }, [data, hasDiskActivity]);
 
   function formatBandwidthTick(value: number): string {
     if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(0)}G`;
@@ -315,6 +344,99 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                   <span className="text-sm font-medium">Upload (latest)</span>
                 </div>
                 <div className="mt-1 text-2xl font-bold">{formatBandwidth(latest.bandwidthOutBps)}</div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Disk Activity Chart */}
+      {hasDiskActivity && (
+        <>
+          <div className={compact ? 'mt-4' : 'mt-8'}>
+            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Disk Activity</h4>
+          </div>
+          <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data}>
+                <defs>
+                  <linearGradient id="diskReadGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#16a34a" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#16a34a" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="diskWriteGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis
+                  dataKey="timestamp"
+                  tickFormatter={(value) => formatTimestamp(value, timeRange)}
+                  tick={{ fontSize: 12 }}
+                  className="text-muted-foreground"
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  domain={diskActivityDomain}
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={formatBandwidthTick}
+                  className="text-muted-foreground"
+                  width={50}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--card))',
+                    border: '1px solid hsl(var(--border))',
+                    borderRadius: '0.5rem'
+                  }}
+                  labelFormatter={(value) => new Date(value).toLocaleString()}
+                  formatter={(value: number, name: string) => [formatBytesPerSec(value), name]}
+                />
+                {!compact && <Legend />}
+                <Area
+                  type="monotone"
+                  dataKey="diskReadBps"
+                  stroke="#16a34a"
+                  strokeWidth={2}
+                  fill="url(#diskReadGrad)"
+                  name="Read throughput"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="diskWriteBps"
+                  stroke="#0ea5e9"
+                  strokeWidth={2}
+                  fill="url(#diskWriteGrad)"
+                  name="Write throughput"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {!compact && latest && (
+            <div className="mt-4 grid gap-4 sm:grid-cols-4">
+              <div className="rounded-md border p-4">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="h-3.5 w-3.5 text-emerald-600" />
+                  <span className="text-sm font-medium">Read throughput</span>
+                </div>
+                <div className="mt-1 text-2xl font-bold">{formatBytesPerSec(latest.diskReadBps)}</div>
+              </div>
+              <div className="rounded-md border p-4">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="h-3.5 w-3.5 text-sky-600" />
+                  <span className="text-sm font-medium">Write throughput</span>
+                </div>
+                <div className="mt-1 text-2xl font-bold">{formatBytesPerSec(latest.diskWriteBps)}</div>
+              </div>
+              <div className="rounded-md border p-4">
+                <div className="text-xs text-muted-foreground">Read ops (latest)</div>
+                <div className="mt-1 text-2xl font-bold">{Math.round(latest.diskReadOps)}</div>
+              </div>
+              <div className="rounded-md border p-4">
+                <div className="text-xs text-muted-foreground">Write ops (latest)</div>
+                <div className="mt-1 text-2xl font-bold">{Math.round(latest.diskWriteOps)}</div>
               </div>
             </div>
           )}

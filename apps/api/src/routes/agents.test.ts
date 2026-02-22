@@ -283,8 +283,9 @@ describe('agent routes', () => {
         })
       } as any);
 
+      const insertValues = vi.fn().mockResolvedValue(undefined);
       vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockResolvedValue(undefined)
+        values: insertValues
       } as any);
 
       const res = await app.request('/agents/agent-123/heartbeat', {
@@ -296,7 +297,14 @@ describe('agent routes', () => {
             ramPercent: 20,
             ramUsedMb: 1024,
             diskPercent: 30,
-            diskUsedGb: 100
+            diskUsedGb: 100,
+            diskActivityAvailable: true,
+            diskReadBytes: 2048,
+            diskWriteBytes: 1024,
+            diskReadBps: 512,
+            diskWriteBps: 256,
+            diskReadOps: 12,
+            diskWriteOps: 6
           },
           status: 'ok',
           agentVersion: '2.0'
@@ -307,6 +315,15 @@ describe('agent routes', () => {
       const body = await res.json();
       expect(body.commands).toHaveLength(1);
       expect(body.commands[0].id).toBe('cmd-1');
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        diskActivityAvailable: true,
+        diskReadBytes: BigInt(2048),
+        diskWriteBytes: BigInt(1024),
+        diskReadBps: BigInt(512),
+        diskWriteBps: BigInt(256),
+        diskReadOps: BigInt(12),
+        diskWriteOps: BigInt(6),
+      }));
     });
 
     it('returns deduplicated policy probe config updates', async () => {
