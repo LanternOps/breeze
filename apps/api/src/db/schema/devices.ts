@@ -234,7 +234,14 @@ export const deviceConnections = pgTable('device_connections', {
   pid: integer('pid'),
   processName: varchar('process_name', { length: 255 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  devicePortStateIdx: index('device_connections_device_port_state_idx').on(
+    table.deviceId,
+    table.localPort,
+    table.state
+  ),
+  deviceUpdatedIdx: index('device_connections_device_updated_idx').on(table.deviceId, table.updatedAt)
+}));
 
 // Boot performance metrics - stores boot time history and startup item analysis per device
 export interface BootStartupItem {
