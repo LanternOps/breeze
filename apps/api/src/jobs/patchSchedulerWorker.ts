@@ -28,6 +28,15 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+/** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
+function isRelationNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const cause = (error as { cause?: { code?: string } }).cause;
+  return cause?.code === '42P01';
+}
+
+let _configPolicyTableWarningLogged = false;
+
 // ============================================
 // Queue
 // ============================================
@@ -358,7 +367,18 @@ function createSchedulerWorker(): Worker {
     QUEUE_NAME,
     async (_job: Job) => {
       return runWithSystemDbAccess(async () => {
-        return scanAndCreateJobs();
+        try {
+          return await scanAndCreateJobs();
+        } catch (error: unknown) {
+          if (isRelationNotFoundError(error)) {
+            if (!_configPolicyTableWarningLogged) {
+              _configPolicyTableWarningLogged = true;
+              console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
+            }
+            return { created: 0, scanned: 0 };
+          }
+          throw error;
+        }
       });
     },
     {
