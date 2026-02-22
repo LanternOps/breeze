@@ -20,6 +20,7 @@ import { nanoid } from 'nanoid';
 import { ENABLE_2FA, loginSchema } from './schemas';
 import {
   getClientIP,
+  getClientRateLimitKey,
   setRefreshTokenCookie,
   clearRefreshTokenCookie,
   resolveRefreshToken,
@@ -41,6 +42,7 @@ export const loginRoutes = new Hono();
 loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   const { email, password } = c.req.valid('json');
   const ip = getClientIP(c);
+  const rateLimitClient = getClientRateLimitKey(c);
   const normalizedEmail = email.toLowerCase();
 
   // Rate limit by IP + email combination - fail closed for security
@@ -48,7 +50,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   if (!redis) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
-  const rateKey = `login:${ip}:${normalizedEmail}`;
+  const rateKey = `login:${rateLimitClient}:${normalizedEmail}`;
   const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
 
   if (!rateCheck.allowed) {

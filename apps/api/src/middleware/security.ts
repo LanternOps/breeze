@@ -23,19 +23,23 @@ interface SecurityMiddlewareOptions {
   forceHttps?: string;
   /** Override CSP_REPORT_URI for testing. Defaults to process.env.CSP_REPORT_URI */
   cspReportUri?: string;
+  /** Override CSP_ALLOW_UNSAFE_INLINE for testing. Defaults to process.env.CSP_ALLOW_UNSAFE_INLINE */
+  allowUnsafeInline?: string;
 }
 
 export function securityMiddleware(options?: SecurityMiddlewareOptions): MiddlewareHandler {
   const forceHttps = options?.forceHttps ?? process.env.FORCE_HTTPS;
   const cspReportUri = options?.cspReportUri ?? process.env.CSP_REPORT_URI;
+  const allowUnsafeInline = options?.allowUnsafeInline ?? process.env.CSP_ALLOW_UNSAFE_INLINE;
   const normalized = forceHttps?.trim().toLowerCase();
   const isForceHttps = normalized === 'true' || normalized === '1';
+  const isUnsafeInlineAllowed = allowUnsafeInline?.trim().toLowerCase() === 'true' || allowUnsafeInline === '1';
 
   // Pre-build the CSP header value (it doesn't change per-request)
   const cspDirectives = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
+    isUnsafeInlineAllowed ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'",
+    isUnsafeInlineAllowed ? "style-src 'self' 'unsafe-inline'" : "style-src 'self'",
     "img-src 'self' data: blob:",
     "font-src 'self'",
     "connect-src 'self' ws: wss:",

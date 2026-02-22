@@ -1,6 +1,8 @@
 import { db } from '../db';
 import { auditLogs } from '../db/schema';
 
+export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'schedule' | 'agent' | 'integration';
+
 export interface CreateAuditLogParams {
   orgId: string;
   actorType?: 'user' | 'api_key' | 'agent' | 'system';
@@ -15,6 +17,7 @@ export interface CreateAuditLogParams {
   userAgent?: string;
   result: 'success' | 'failure' | 'denied';
   errorMessage?: string;
+  initiatedBy?: InitiatedByType;
 }
 
 export async function createAuditLog(params: CreateAuditLogParams): Promise<void> {

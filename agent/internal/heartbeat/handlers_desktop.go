@@ -33,7 +33,7 @@ func (h *Heartbeat) handleSASFromHelper(session *sessionbroker.Session, env *ipc
 	}
 
 	if err := session.SendNotify(env.ID, ipc.TypeSASResponse, resp); err != nil {
-		log.Warn("failed to send SAS response to helper", "error", err)
+		log.Warn("failed to send SAS response to helper", "error", err.Error())
 	}
 }
 

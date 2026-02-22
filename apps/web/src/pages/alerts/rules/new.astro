@@ -1,8 +1,3 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import AlertRuleEditPage from '../../../components/alerts/AlertRuleEditPage';
+return Astro.redirect('/configuration-policies', 301);
 ---
-
-<DashboardLayout title="New Alert Rule">
-  <AlertRuleEditPage isNew={true} client:load />
-</DashboardLayout>

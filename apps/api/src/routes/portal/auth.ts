@@ -31,8 +31,8 @@ import {
   portalResetTokens,
   normalizeEmail,
   getClientIp,
-  buildPortalSessionCookie,
-  buildClearPortalSessionCookie,
+  setPortalSessionCookies,
+  clearPortalSessionCookies,
   getCookieValue,
   capMapByOldest,
   sweepPortalState,
@@ -43,6 +43,7 @@ import {
 } from './helpers';
 
 export const authRoutes = new Hono();
+const ALLOW_IN_MEMORY_PORTAL_STATE = !PORTAL_USE_REDIS;
 
 // ============================================
 // Auth middleware
@@ -82,7 +83,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
     }
   }
 
-  if (!sessionData) {
+  if (!sessionData && ALLOW_IN_MEMORY_PORTAL_STATE) {
     const session = portalSessions.get(token);
     if (session && session.expiresAt.getTime() > Date.now()) {
       sessionData = { portalUserId: session.portalUserId, orgId: session.orgId };
@@ -93,7 +94,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
 
   if (!sessionData) {
     if (cookieToken) {
-      c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+      clearPortalSessionCookies(c);
     }
     return c.json({ error: 'Invalid or expired session' }, 401);
   }
@@ -116,15 +117,45 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       const redis = getRedis();
       if (redis) await redis.del(PORTAL_REDIS_KEYS.session(token));
     }
-    portalSessions.delete(token);
+    if (ALLOW_IN_MEMORY_PORTAL_STATE) {
+      portalSessions.delete(token);
+    }
     if (cookieToken) {
-      c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+      clearPortalSessionCookies(c);
     }
     return c.json({ error: 'Portal user not found' }, 401);
   }
 
   if (user.status !== 'active') {
     return c.json({ error: 'Account is not active' }, 403);
+  }
+
+  // Sliding session timeout: any authenticated activity pushes expiry forward.
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (redis) {
+      try {
+        await redis
+          .multi()
+          .expire(PORTAL_REDIS_KEYS.session(token), SESSION_TTL_SECONDS)
+          .expire(PORTAL_REDIS_KEYS.userSessions(user.id), SESSION_TTL_SECONDS * 2)
+          .exec();
+      } catch (error) {
+        console.error('[portal] Failed to extend Redis session TTL:', error);
+      }
+    }
+  }
+
+  if (ALLOW_IN_MEMORY_PORTAL_STATE) {
+    const session = portalSessions.get(token);
+    if (session) {
+      session.expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+      portalSessions.set(token, session);
+    }
+  }
+
+  if (authMethod === 'cookie') {
+    setPortalSessionCookies(c, token);
   }
 
   c.set('portalAuth', { user, token, authMethod });
@@ -195,7 +226,11 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
 
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
-    if (redis) {
+    if (!redis) {
+      if (!ALLOW_IN_MEMORY_PORTAL_STATE) {
+        return c.json({ error: 'Service temporarily unavailable' }, 503);
+      }
+    } else {
       const sessionPayload = JSON.stringify({
         portalUserId: user.id,
         orgId: user.orgId,
@@ -221,14 +256,16 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
     }
   }
 
-  portalSessions.set(token, {
-    token,
-    portalUserId: user.id,
-    orgId: user.orgId,
-    createdAt: now,
-    expiresAt
-  });
-  capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
+  if (ALLOW_IN_MEMORY_PORTAL_STATE) {
+    portalSessions.set(token, {
+      token,
+      portalUserId: user.id,
+      orgId: user.orgId,
+      createdAt: now,
+      expiresAt
+    });
+    capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
+  }
 
   await db
     .update(portalUsers)
@@ -238,7 +275,7 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   const resolvedAccountRateKey = `portal:login:account:${user.orgId}:${normalizedEmail}`;
   await clearRateLimitKeys([ipRateKey, accountRateKey, resolvedAccountRateKey]);
 
-  c.header('Set-Cookie', buildPortalSessionCookie(token), { append: true });
+  setPortalSessionCookies(c, token);
 
   return c.json({
     user: buildPortalUserPayload(user),
@@ -268,6 +305,11 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
     }
   }
 
+  const redis = PORTAL_USE_REDIS ? getRedis() : null;
+  if (PORTAL_USE_REDIS && !redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
   const [user] = await db
     .select({ id: portalUsers.id, email: portalUsers.email, orgId: portalUsers.orgId })
     .from(portalUsers)
@@ -284,17 +326,16 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
     const expiresAt = new Date(Date.now() + RESET_TTL_MS);
 
     if (PORTAL_USE_REDIS) {
-      const redis = getRedis();
-      if (redis) {
-        await redis.setex(
-          PORTAL_REDIS_KEYS.resetToken(tokenHash),
-          RESET_TTL_SECONDS,
-          JSON.stringify({ userId: user.id })
-        );
-      }
+      await redis!.setex(
+        PORTAL_REDIS_KEYS.resetToken(tokenHash),
+        RESET_TTL_SECONDS,
+        JSON.stringify({ userId: user.id })
+      );
     }
-    portalResetTokens.set(tokenHash, { userId: user.id, expiresAt, createdAt: new Date() });
-    capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
+    if (ALLOW_IN_MEMORY_PORTAL_STATE) {
+      portalResetTokens.set(tokenHash, { userId: user.id, expiresAt, createdAt: new Date() });
+      capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
+    }
 
     const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
     const orgQuery = orgId ? `&orgId=${encodeURIComponent(orgId)}` : '';
@@ -344,7 +385,11 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
 
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
-    if (redis) {
+    if (!redis) {
+      if (!ALLOW_IN_MEMORY_PORTAL_STATE) {
+        return c.json({ error: 'Service temporarily unavailable' }, 503);
+      }
+    } else {
       const raw = await redis.get(PORTAL_REDIS_KEYS.resetToken(tokenHash));
       if (raw) {
         try {
@@ -358,7 +403,7 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
     }
   }
 
-  if (!storedUserId) {
+  if (!storedUserId && ALLOW_IN_MEMORY_PORTAL_STATE) {
     const stored = portalResetTokens.get(tokenHash);
     if (stored && stored.expiresAt.getTime() > Date.now()) {
       storedUserId = stored.userId;
@@ -392,9 +437,11 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
     }
   }
 
-  for (const [sessionToken, session] of portalSessions.entries()) {
-    if (session.portalUserId === storedUserId) {
-      portalSessions.delete(sessionToken);
+  if (ALLOW_IN_MEMORY_PORTAL_STATE) {
+    for (const [sessionToken, session] of portalSessions.entries()) {
+      if (session.portalUserId === storedUserId) {
+        portalSessions.delete(sessionToken);
+      }
     }
   }
 
@@ -409,13 +456,15 @@ authRoutes.post('/auth/logout', portalAuthMiddleware, async (c) => {
 
   const auth = c.get('portalAuth');
 
-  portalSessions.delete(auth.token);
-  c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+  if (ALLOW_IN_MEMORY_PORTAL_STATE) {
+    portalSessions.delete(auth.token);
+  }
+  clearPortalSessionCookies(c);
 
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
     if (!redis) {
-      console.warn('[portal] Redis unavailable during logout, in-memory session cleared for user:', auth.user.id);
+      console.warn('[portal] Redis unavailable during logout; cannot clear distributed portal session state for user:', auth.user.id);
       return c.json({ success: true });
     }
     await redis.del(PORTAL_REDIS_KEYS.session(auth.token));

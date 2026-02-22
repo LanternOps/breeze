@@ -61,6 +61,25 @@ docs
 # Claude/AI
 .claude
 
+# Apps not needed in Docker (API + web only)
+apps/helper
+apps/viewer
+apps/mobile
+apps/docs
+apps/portal
+apps/agent
+
+# Go agent (not needed in Docker)
+agent
+
+# Testing & tooling
+e2e-tests
+load-tests
+backups
+monitoring
+scripts
+internal
+
 # Misc
 *.tgz
 *.tar.gz

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,32 +21,45 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 	lastCollect := c.lastCollectTime
 	c.mu.Unlock()
 
+	categories, minLevel, maxEvents := c.readConfig()
+
+	type catCollector struct {
+		category string
+		fn       func(since time.Time) ([]EventLogEntry, error)
+	}
+
+	all := []catCollector{
+		{"security", c.collectSecurityEvents},
+		{"hardware", c.collectHardwareErrors},
+		{"application", c.collectCrashReports},
+		{"system", c.collectPowerEvents},
+	}
+
+	// Filter to only enabled categories
+	var active []catCollector
+	for _, cc := range all {
+		if categoryEnabled(categories, cc.category) {
+			active = append(active, cc)
+		}
+	}
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var allEvents []EventLogEntry
 
-	type collectorFunc func(since time.Time) ([]EventLogEntry, error)
-
-	collectors := []collectorFunc{
-		c.collectSecurityEvents,
-		c.collectHardwareErrors,
-		c.collectCrashReports,
-		c.collectPowerEvents,
-	}
-
-	wg.Add(len(collectors))
-	for _, fn := range collectors {
-		go func(f collectorFunc) {
+	wg.Add(len(active))
+	for _, cc := range active {
+		go func(f func(since time.Time) ([]EventLogEntry, error)) {
 			defer wg.Done()
 			events, err := f(lastCollect)
 			if err != nil {
-				fmt.Printf("Event log sub-collector error: %v\n", err)
+				slog.Warn("event log sub-collector error", "error", err.Error())
 				return
 			}
 			mu.Lock()
 			allEvents = append(allEvents, events...)
 			mu.Unlock()
-		}(fn)
+		}(cc.fn)
 	}
 	wg.Wait()
 
@@ -53,9 +67,12 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 	c.lastCollectTime = time.Now()
 	c.mu.Unlock()
 
+	// Filter by minimum level
+	allEvents = filterByLevel(allEvents, minLevel)
+
 	// Cap to maxEvents
-	if len(allEvents) > c.maxEvents {
-		allEvents = allEvents[:c.maxEvents]
+	if len(allEvents) > maxEvents {
+		allEvents = allEvents[:maxEvents]
 	}
 
 	return allEvents, nil

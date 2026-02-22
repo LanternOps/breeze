@@ -810,22 +810,30 @@ export async function buildBe9Recommendations(
     threats.filter((threat) => threat.status === 'active').map((threat) => threat.deviceId)
   );
 
+  const affectedCounts = {
+    antivirus: 0,
+    firewall: 0,
+    encryption: 0,
+    password_policy: 0,
+    admin_accounts: 0,
+    patch_compliance: 0,
+    vulnerability_management: 0
+  };
+
   const vulnerabilityDevices = new Set(activeThreatDevices);
   for (const item of posture) {
+    if (item.factors.av_health.score < 80) affectedCounts.antivirus++;
+    if (item.factors.firewall.score < 90) affectedCounts.firewall++;
+    if (item.factors.encryption.score < 90) affectedCounts.encryption++;
+    if (item.factors.password_policy.score < 85) affectedCounts.password_policy++;
+    if (item.factors.admin_exposure.score < 85) affectedCounts.admin_accounts++;
+    if (item.factors.patch_compliance.score < 90) affectedCounts.patch_compliance++;
+
     if (item.factors.open_ports.score < 70 || item.factors.os_currency.score < 70) {
       vulnerabilityDevices.add(item.deviceId);
     }
   }
-
-  const affectedCounts = {
-    antivirus: countFactorBelow(posture, 'av_health', 80),
-    firewall: countFactorBelow(posture, 'firewall', 90),
-    encryption: countFactorBelow(posture, 'encryption', 90),
-    password_policy: countFactorBelow(posture, 'password_policy', 85),
-    admin_accounts: countFactorBelow(posture, 'admin_exposure', 85),
-    patch_compliance: countFactorBelow(posture, 'patch_compliance', 90),
-    vulnerability_management: vulnerabilityDevices.size
-  };
+  affectedCounts.vulnerability_management = vulnerabilityDevices.size;
 
   const definitions: Array<{
     id: string;

@@ -1,0 +1,336 @@
+---
+title: Antivirus Exceptions
+description: Required antivirus and security software exclusions for the Breeze agent when using unsigned binaries.
+sidebar:
+  order: 6
+  label: Antivirus Exceptions
+---
+
+import { Tabs, TabItem, Steps, Aside } from '@astrojs/starlight/components';
+
+When deploying the Breeze agent **without code-signed binaries**, endpoint protection software may flag, quarantine, or block the agent. This guide covers the exclusions needed for each platform.
+
+<Aside type="caution">
+  Unsigned binaries are common during development, self-hosted builds, and early deployments. For production fleets, consider signing your binaries to avoid the need for broad AV exclusions. See [Building from Source](/agents/building/) for build instructions.
+</Aside>
+
+## Why Exclusions Are Needed
+
+The Breeze agent is a single Go binary that:
+
+- Runs as a **system service** with elevated privileges
+- Opens **persistent WebSocket connections** to your Breeze server
+- Executes **scripts and commands** on behalf of remote administrators
+- Spawns **child processes** (terminal sessions, user helper, discovery scans)
+- Reads **hardware and software inventory** from the system
+
+These behaviors overlap with patterns that heuristic-based antivirus engines flag as suspicious. Without code signing, there is no publisher reputation to offset the heuristic score.
+
+## Paths to Exclude
+
+### Agent Binary
+
+| OS | Default Path |
+|---|---|
+| Linux | `/usr/local/bin/breeze-agent` |
+| macOS | `/usr/local/bin/breeze-agent` |
+| Windows | `C:\Program Files\Breeze\breeze-agent.exe` |
+
+### Configuration Directory
+
+| OS | Path |
+|---|---|
+| Linux | `/etc/breeze/` |
+| macOS | `/Library/Application Support/Breeze/` |
+| Windows | `C:\ProgramData\Breeze\` |
+
+### Log Directory
+
+| OS | Path |
+|---|---|
+| Linux | `/var/log/breeze/` |
+| macOS | `/Library/Application Support/Breeze/logs/` |
+| Windows | `C:\ProgramData\Breeze\logs\` |
+
+### User Helper (if installed)
+
+| OS | Path |
+|---|---|
+| Linux | `/usr/local/bin/breeze-helper` |
+| macOS | `/usr/local/bin/breeze-helper` |
+| Windows | `C:\Program Files\Breeze\breeze-helper.exe` |
+
+## Windows
+
+### Microsoft Defender
+
+<Tabs>
+  <TabItem label="PowerShell">
+    Run as Administrator:
+
+    ```powershell
+    # Process exclusions
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-agent.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-helper.exe"
+
+    # Path exclusions (config, logs, working directories)
+    Add-MpPreference -ExclusionPath "C:\Program Files\Breeze"
+    Add-MpPreference -ExclusionPath "C:\ProgramData\Breeze"
+
+    # Verify
+    Get-MpPreference | Select-Object -ExpandProperty ExclusionProcess
+    Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+    ```
+  </TabItem>
+  <TabItem label="Group Policy">
+    For fleet deployment via GPO:
+
+    <Steps>
+      1. Open **Group Policy Management** and create or edit a GPO linked to the target OU.
+      2. Navigate to **Computer Configuration → Administrative Templates → Windows Components → Microsoft Defender Antivirus → Exclusions**.
+      3. Under **Path Exclusions**, add:
+         - `C:\Program Files\Breeze`
+         - `C:\ProgramData\Breeze`
+      4. Under **Process Exclusions**, add:
+         - `C:\Program Files\Breeze\breeze-agent.exe`
+         - `C:\Program Files\Breeze\breeze-helper.exe`
+      5. Run `gpupdate /force` on target machines or wait for the next policy refresh.
+    </Steps>
+  </TabItem>
+  <TabItem label="Intune">
+    For Microsoft Intune-managed devices:
+
+    <Steps>
+      1. Go to **Endpoint security → Antivirus → Create policy**.
+      2. Select **Windows 10/11** and **Microsoft Defender Antivirus exclusions**.
+      3. Add the following exclusions:
+
+         | Type | Value |
+         |---|---|
+         | Process | `C:\Program Files\Breeze\breeze-agent.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-helper.exe` |
+         | Folder | `C:\Program Files\Breeze` |
+         | Folder | `C:\ProgramData\Breeze` |
+
+      4. Assign the policy to the appropriate device groups.
+    </Steps>
+  </TabItem>
+</Tabs>
+
+### Windows SmartScreen
+
+SmartScreen may block the initial download or execution of an unsigned `.exe`. To bypass for a single file:
+
+1. Right-click the binary → **Properties** → check **Unblock** → **OK**
+2. Or run from an elevated PowerShell: `Unblock-File "C:\Program Files\Breeze\breeze-agent.exe"`
+
+For MSI deployments via GPO/SCCM/Intune, SmartScreen does not interfere since the installer runs silently under SYSTEM.
+
+### Third-Party Antivirus (Windows)
+
+For products like CrowdStrike, SentinelOne, Sophos, Bitdefender, etc., add **both process and path exclusions**:
+
+| Exclusion Type | Value |
+|---|---|
+| Process / Application | `C:\Program Files\Breeze\breeze-agent.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-helper.exe` |
+| Directory | `C:\Program Files\Breeze\` |
+| Directory | `C:\ProgramData\Breeze\` |
+
+<Aside>
+  Some EDR products (CrowdStrike Falcon, SentinelOne) require exclusions configured in their **cloud console**, not locally. Check your vendor's documentation for the correct procedure.
+</Aside>
+
+#### CrowdStrike Falcon
+
+1. In the Falcon console, go to **Configuration → Prevention Policies**.
+2. Select the relevant policy → **Machine Learning Exclusions**.
+3. Add a pattern: `C:\Program Files\Breeze\**`
+4. Under **IOA Exclusions**, add the process path for `breeze-agent.exe`.
+
+#### SentinelOne
+
+1. In the management console, go to **Sentinels → Exclusions**.
+2. Add a **Path** exclusion: `C:\Program Files\Breeze\`
+3. Add a **Signer Identity** or **Hash** exclusion if the binary hash is stable across your builds.
+
+#### Sophos
+
+1. In Sophos Central, go to **Global Settings → General → Global Exclusions**.
+2. Add exclusions for the process and directory paths listed above.
+
+## macOS
+
+### Gatekeeper
+
+macOS Gatekeeper blocks unsigned binaries downloaded from the internet. See the [installation guide](/agents/installation/) for the `xattr` command to remove the quarantine flag.
+
+For MDM-managed fleets, deploy the binary via your MDM profile to bypass Gatekeeper entirely.
+
+### XProtect
+
+XProtect performs signature-based malware checks. It does not typically flag custom Go binaries, but if it does:
+
+```bash
+# Check if the binary is quarantined
+xattr -l /usr/local/bin/breeze-agent
+
+# Remove all extended attributes
+sudo xattr -c /usr/local/bin/breeze-agent
+```
+
+### Third-Party Antivirus (macOS)
+
+For products like CrowdStrike, SentinelOne, or Jamf Protect, add these exclusions:
+
+| Exclusion Type | Value |
+|---|---|
+| Process | `/usr/local/bin/breeze-agent` |
+| Process | `/usr/local/bin/breeze-helper` |
+| Directory | `/Library/Application Support/Breeze/` |
+| Directory | `/etc/breeze/` (if symlinked) |
+
+### MDM Configuration Profile
+
+For managed fleets, deploy a configuration profile to suppress Gatekeeper and TCC prompts:
+
+```xml
+<!-- Gatekeeper: allow identified developers + unsigned -->
+<key>AllowIdentifiedDevelopers</key>
+<true/>
+<key>EnableAssessment</key>
+<false/>
+```
+
+<Aside type="tip">
+  A better approach is to deploy a **PPPC (Privacy Preferences Policy Control)** profile that pre-approves the Breeze binary. See the [macOS Permissions section](/agents/installation/#macos-permissions) of the installation guide.
+</Aside>
+
+## Linux
+
+Linux antivirus is less common but increasingly used in enterprise environments.
+
+### SELinux
+
+If SELinux is in **enforcing** mode, the agent may be blocked from binding sockets, executing scripts, or accessing certain paths. Create a custom policy module:
+
+```bash
+# Generate a policy from audit denials
+sudo ausearch -m avc -ts recent | audit2allow -M breeze-agent
+
+# Install the module
+sudo semodule -i breeze-agent.pp
+
+# Verify
+sudo semodule -l | grep breeze
+```
+
+Alternatively, label the binary with an appropriate SELinux type:
+
+```bash
+sudo semanage fcontext -a -t bin_t "/usr/local/bin/breeze-agent"
+sudo restorecon -v /usr/local/bin/breeze-agent
+```
+
+### AppArmor
+
+On Ubuntu/Debian systems with AppArmor, create a permissive profile if the agent is blocked:
+
+```bash
+# Create a basic profile
+sudo aa-autodep /usr/local/bin/breeze-agent
+
+# Set to complain mode (log but don't block)
+sudo aa-complain /usr/local/bin/breeze-agent
+
+# After verifying logs, enforce if desired
+# sudo aa-enforce /usr/local/bin/breeze-agent
+```
+
+### ClamAV
+
+If ClamAV's on-access scanner flags the binary:
+
+```bash
+# Add to /etc/clamav/clamd.conf
+ExcludePath ^/usr/local/bin/breeze-agent$
+ExcludePath ^/etc/breeze/
+ExcludePath ^/var/log/breeze/
+```
+
+Restart the ClamAV daemon after changes: `sudo systemctl restart clamav-daemon`
+
+### Third-Party EDR (Linux)
+
+For CrowdStrike, SentinelOne, or similar:
+
+| Exclusion Type | Value |
+|---|---|
+| Process | `/usr/local/bin/breeze-agent` |
+| Directory | `/etc/breeze/` |
+| Directory | `/var/log/breeze/` |
+
+## Verifying Exclusions
+
+After configuring exclusions, verify the agent runs without interference:
+
+```bash
+# Check agent service status
+sudo breeze-agent service status
+
+# Watch logs for AV-related errors
+# Linux
+sudo journalctl -u breeze-agent -f
+
+# macOS
+sudo tail -f "/Library/Application Support/Breeze/logs/agent.log"
+
+# Windows (PowerShell)
+Get-Content "C:\ProgramData\Breeze\logs\agent.log" -Wait
+```
+
+Common symptoms of AV interference:
+
+| Symptom | Likely Cause |
+|---|---|
+| Agent binary deleted or moved to quarantine | Real-time scan flagging the unsigned binary |
+| Agent service starts then stops immediately | On-execution scan blocking the process |
+| Intermittent WebSocket disconnections | Network inspection blocking persistent connections |
+| Script execution failures | Behavior-based detection blocking child processes |
+| High CPU usage from agent process | On-access scanning of agent I/O operations |
+
+<Aside type="tip">
+  If the agent is repeatedly quarantined before you can add exclusions, temporarily disable real-time protection, install the agent, add the exclusions, then re-enable protection.
+</Aside>
+
+## Minimum Exclusion Summary
+
+For quick reference, here are the minimum exclusions needed per platform:
+
+<Tabs>
+  <TabItem label="Windows">
+    **Processes:**
+    - `C:\Program Files\Breeze\breeze-agent.exe`
+    - `C:\Program Files\Breeze\breeze-helper.exe`
+
+    **Directories:**
+    - `C:\Program Files\Breeze\`
+    - `C:\ProgramData\Breeze\`
+  </TabItem>
+  <TabItem label="macOS">
+    **Processes:**
+    - `/usr/local/bin/breeze-agent`
+    - `/usr/local/bin/breeze-helper`
+
+    **Directories:**
+    - `/Library/Application Support/Breeze/`
+  </TabItem>
+  <TabItem label="Linux">
+    **Processes:**
+    - `/usr/local/bin/breeze-agent`
+
+    **Directories:**
+    - `/etc/breeze/`
+    - `/var/log/breeze/`
+  </TabItem>
+</Tabs>

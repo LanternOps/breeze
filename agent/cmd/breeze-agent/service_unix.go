@@ -2,13 +2,23 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // isWindowsService always returns false on non-Windows platforms.
 func isWindowsService() bool { return false }
 
-// hasConsole returns true on non-Windows platforms (always have a TTY or pipe).
-func hasConsole() bool { return true }
+// hasConsole reports whether stdout is connected to a terminal.
+// Returns false when running as a launchd daemon or systemd service.
+func hasConsole() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
 
 // runAsService is a no-op stub on non-Windows platforms.
 func runAsService(_ func() (*agentComponents, error)) error {

@@ -33,6 +33,7 @@ func BuildTLSConfig(certPEM, keyPEM string) (*tls.Config, error) {
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{*cert},
+		MinVersion:   tls.VersionTLS12,
 	}, nil
 }
 

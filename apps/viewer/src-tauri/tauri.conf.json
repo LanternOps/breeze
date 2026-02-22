@@ -10,7 +10,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https: wss: http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* http://[::1]:* ws://[::1]:*; img-src 'self' blob: data:; style-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' https: http: wss: ws:; img-src 'self' blob: data:; style-src 'self'"
     },
     "windows": [
       {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle,
   AlertTriangle,
@@ -9,16 +9,20 @@ import {
   Server,
   Loader2,
   RefreshCw,
+  CloudDownload,
+  Download,
   type LucideIcon
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
+import PatchInstallHistory from '../patches/PatchInstallHistory';
 
 type PatchItem = {
   id?: string;
   name?: string;
   title?: string;
   kb?: string;
+  kbNumber?: string;
   externalId?: string;
   description?: string;
   severity?: string;
@@ -29,6 +33,7 @@ type PatchItem = {
   releasedAt?: string;
   installedAt?: string;
   requiresReboot?: boolean;
+  isDownloaded?: boolean;
 };
 
 type PatchPayload = {
@@ -82,6 +87,14 @@ const severityBadges: Record<string, { label: string; className: string }> = {
   medium: { label: 'Medium', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
   low: { label: 'Low', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
   unknown: { label: 'Unknown', className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300' }
+};
+
+const sourceBadges: Record<string, { label: string; className: string }> = {
+  microsoft: { label: 'WU', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
+  apple: { label: 'Apple', className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300' },
+  linux: { label: 'Pkg', className: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' },
+  third_party: { label: '3rd Party', className: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300' },
+  custom: { label: 'Custom', className: 'bg-slate-100 text-slate-600 dark:bg-slate-900/30 dark:text-slate-400' }
 };
 
 type PatchDisplayCopy = {
@@ -283,7 +296,7 @@ function formatDate(value?: string, timezone?: string, fallback = 'Not reported'
 }
 
 function normalizePatchName(patch: PatchItem) {
-  return patch.title || patch.name || patch.kb || 'Unnamed patch';
+  return patch.title || patch.name || patch.kb || patch.kbNumber || 'Unnamed patch';
 }
 
 function getSeverityBadge(severity?: string) {
@@ -302,14 +315,53 @@ function getSeverityBadge(severity?: string) {
 }
 
 function getKbLabel(patch: PatchItem): string | null {
+  // Check explicit kbNumber field first (agent sends this)
+  const explicitKbNumber = (patch.kbNumber || '').trim();
+  if (explicitKbNumber) {
+    return explicitKbNumber.toUpperCase().startsWith('KB') ? explicitKbNumber.toUpperCase() : `KB${explicitKbNumber}`;
+  }
+
   const explicitKb = (patch.kb || '').trim();
   if (explicitKb) {
     return explicitKb.toUpperCase().startsWith('KB') ? explicitKb.toUpperCase() : `KB${explicitKb}`;
   }
 
+  // Try to extract from externalId (agent maps kbNumber to externalId)
+  const extId = (patch.externalId || '').trim();
+  if (extId && /^kb\d{4,8}$/i.test(extId)) {
+    return extId.toUpperCase();
+  }
+
   const name = patch.title || patch.name || '';
   const match = name.match(/kb\d{4,8}/i);
   return match ? match[0].toUpperCase() : null;
+}
+
+function getSourceBadge(patch: PatchItem): { label: string; className: string } | null {
+  const source = (patch.source || '').toLowerCase();
+  const category = (patch.category || '').toLowerCase();
+  const externalId = (patch.externalId || '').toLowerCase();
+
+  // Detect winget from externalId pattern (e.g. "winget:Publisher.App:1.0")
+  if (externalId.startsWith('winget:')) {
+    return { label: 'winget', className: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' };
+  }
+
+  // Detect chocolatey from externalId
+  if (externalId.startsWith('chocolatey:')) {
+    return { label: 'choco', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' };
+  }
+
+  // Homebrew categories
+  if (category === 'homebrew' || category === 'homebrew-cask') {
+    return { label: 'brew', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' };
+  }
+
+  if (sourceBadges[source]) {
+    return sourceBadges[source];
+  }
+
+  return null;
 }
 
 function getReleaseLabel(patch: PatchItem, timezone?: string): string | null {
@@ -395,6 +447,12 @@ function getHomebrewUrl(patch: PatchItem, osType: OSType): string | null {
   return `${baseUrl}${baseName}`;
 }
 
+// ---------------------------------------------------------------------------
+// Poll interval / duration constants for post-install auto-refresh
+// ---------------------------------------------------------------------------
+const INSTALL_POLL_INTERVAL_MS = 5_000;
+const INSTALL_POLL_MAX_DURATION_MS = 90_000;
+
 export default function DevicePatchStatusTab({ deviceId, timezone, osType }: DevicePatchStatusTabProps) {
   const [payload, setPayload] = useState<PatchPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -403,13 +461,24 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   const [controlAction, setControlAction] = useState<
     'install-native' | 'scan-native' | 'scan-third-party' | 'install-third-party' | null
   >(null);
-  const [controlNotice, setControlNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [controlNotice, setControlNotice] = useState<{ kind: 'success' | 'error' | 'info'; message: string } | null>(null);
+
+  // Track per-patch install in progress: patchId -> true
+  const [installingPatchIds, setInstallingPatchIds] = useState<Set<string>>(new Set());
+
+  // Track polling state after install
+  const [isPolling, setIsPolling] = useState(false);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollStartRef = useRef<number>(0);
+  const priorPendingCountRef = useRef<number>(-1);
 
   // Use provided timezone, fetched siteTimezone, or browser default
   const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  const fetchPatchStatus = useCallback(async () => {
-    setLoading(true);
+  const fetchPatchStatus = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+    }
     setError(undefined);
     try {
       const response = await fetchWithAuth(`/devices/${deviceId}/patches`);
@@ -420,16 +489,32 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       if (json?.timezone || json?.siteTimezone) {
         setSiteTimezone(json.timezone ?? json.siteTimezone);
       }
+      return data as PatchPayload;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch patch status');
+      if (!silent) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch patch status');
+      }
+      return null;
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [deviceId]);
 
   useEffect(() => {
     fetchPatchStatus();
   }, [fetchPatchStatus]);
+
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const normalizedOsType: OSType = osType ?? 'macos';
   const displayCopy = useMemo(() => getPatchDisplayCopy(normalizedOsType), [normalizedOsType]);
@@ -475,6 +560,58 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
 
   const nativePendingIds = useMemo(() => readPatchIds(pendingNative), [pendingNative]);
   const thirdPartyPendingIds = useMemo(() => readPatchIds(pendingOther), [pendingOther]);
+
+  // -------------------------------------------------------------------------
+  // Post-install polling: poll every 5s for up to 90s watching pending count
+  // -------------------------------------------------------------------------
+  const startInstallPolling = useCallback((initialPendingCount: number) => {
+    // Stop any existing poll
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+    }
+
+    priorPendingCountRef.current = initialPendingCount;
+    pollStartRef.current = Date.now();
+    setIsPolling(true);
+    setControlNotice({ kind: 'info', message: 'Installing patches... Polling for updates.' });
+
+    pollTimerRef.current = setInterval(async () => {
+      const elapsed = Date.now() - pollStartRef.current;
+      if (elapsed >= INSTALL_POLL_MAX_DURATION_MS) {
+        // Timeout -- stop polling
+        if (pollTimerRef.current) {
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+        setIsPolling(false);
+        setInstallingPatchIds(new Set());
+        setControlNotice({ kind: 'info', message: 'Install may still be in progress. Refresh later to see updated status.' });
+        await fetchPatchStatus(true);
+        return;
+      }
+
+      const freshData = await fetchPatchStatus(true);
+      if (!freshData) return;
+
+      const freshPending = freshData.pending ?? freshData.pendingPatches ?? freshData.available ?? [];
+      const currentPendingCount = freshPending.length;
+
+      if (currentPendingCount < priorPendingCountRef.current) {
+        // Pending count went down -- install completed (at least partially)
+        if (pollTimerRef.current) {
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+        setIsPolling(false);
+        setInstallingPatchIds(new Set());
+        const installed = priorPendingCountRef.current - currentPendingCount;
+        setControlNotice({
+          kind: 'success',
+          message: `${installed} patch${installed !== 1 ? 'es' : ''} installed successfully. ${currentPendingCount} still pending.`
+        });
+      }
+    }, INSTALL_POLL_INTERVAL_MS);
+  }, [fetchPatchStatus]);
 
   const queuePatchScan = useCallback(async (
     action: 'scan-native' | 'scan-third-party',
@@ -528,6 +665,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       return;
     }
 
+    const currentPendingCount = pendingNative.length + pendingOther.length;
     setControlAction(action);
     setControlNotice(null);
     try {
@@ -547,6 +685,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         kind: 'success',
         message: `${label} queued for ${patchCount} patches${commandSuffix}${dispatchSuffix}.`
       });
+
+      // Start polling for completion
+      startInstallPolling(currentPendingCount);
     } catch (err) {
       setControlNotice({
         kind: 'error',
@@ -555,7 +696,45 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     } finally {
       setControlAction(null);
     }
-  }, [deviceId]);
+  }, [deviceId, pendingNative.length, pendingOther.length, startInstallPolling]);
+
+  // Single-patch install handler
+  const queueSinglePatchInstall = useCallback(async (patchId: string, patchName: string) => {
+    if (!patchId) return;
+
+    const currentPendingCount = pendingNative.length + pendingOther.length;
+    setInstallingPatchIds(prev => new Set(prev).add(patchId));
+    setControlNotice(null);
+    try {
+      const response = await fetchWithAuth(`/devices/${deviceId}/patches/install`, {
+        method: 'POST',
+        body: JSON.stringify({ patchIds: [patchId] })
+      });
+      const body = await response.json().catch(() => ({})) as PatchInstallResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(body.error || `Failed to install ${patchName}`);
+      }
+
+      const dispatchSuffix = body.commandStatus === 'sent' ? ' and dispatched' : '';
+      setControlNotice({
+        kind: 'success',
+        message: `Install queued for "${patchName}"${dispatchSuffix}.`
+      });
+
+      // Start polling for completion
+      startInstallPolling(currentPendingCount);
+    } catch (err) {
+      setInstallingPatchIds(prev => {
+        const next = new Set(prev);
+        next.delete(patchId);
+        return next;
+      });
+      setControlNotice({
+        kind: 'error',
+        message: err instanceof Error ? err.message : `Failed to install ${patchName}`
+      });
+    }
+  }, [deviceId, pendingNative.length, pendingOther.length, startInstallPolling]);
 
   if (loading) {
     return (
@@ -574,7 +753,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchPatchStatus}
+          onClick={() => fetchPatchStatus()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           Retry
@@ -583,8 +762,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     );
   }
 
+  const isBusy = controlAction !== null || isPolling;
+
   return (
     <div className="space-y-6">
+      {/* ================================================================ */}
+      {/* Patch Controls                                                   */}
+      {/* ================================================================ */}
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -593,12 +777,12 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           </div>
           <button
             type="button"
-            onClick={fetchPatchStatus}
-            disabled={controlAction !== null}
+            onClick={() => fetchPatchStatus()}
+            disabled={isBusy}
             className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${controlAction === null ? '' : 'animate-spin'}`} />
-            Refresh patch data
+            <RefreshCw className={`h-3.5 w-3.5 ${isPolling ? 'animate-spin' : ''}`} />
+            {isPolling ? 'Polling...' : 'Refresh patch data'}
           </button>
         </div>
 
@@ -606,7 +790,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <button
             type="button"
             onClick={() => queuePatchInstall('install-native', nativePendingIds, `Install pending ${nativeProviderLabel} patches`)}
-            disabled={controlAction !== null || nativePendingIds.length === 0}
+            disabled={isBusy || nativePendingIds.length === 0}
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'install-native' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4 text-green-500" />}
@@ -616,7 +800,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <button
             type="button"
             onClick={() => queuePatchScan('scan-native', nativeSource, `Run ${nativeProviderLabel} patch scan`)}
-            disabled={controlAction !== null}
+            disabled={isBusy}
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'scan-native' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 text-muted-foreground" />}
@@ -626,7 +810,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <button
             type="button"
             onClick={() => queuePatchScan('scan-third-party', 'third_party', 'Run third-party patch scan')}
-            disabled={controlAction !== null}
+            disabled={isBusy}
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'scan-third-party' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 text-muted-foreground" />}
@@ -636,7 +820,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <button
             type="button"
             onClick={() => queuePatchInstall('install-third-party', thirdPartyPendingIds, 'Install pending third-party patches')}
-            disabled={controlAction !== null || thirdPartyPendingIds.length === 0}
+            disabled={isBusy || thirdPartyPendingIds.length === 0}
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'install-third-party' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Package className="h-4 w-4 text-blue-500" />}
@@ -647,10 +831,15 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         {controlNotice && (
           <div className={`mt-4 rounded-md border px-3 py-2 text-sm ${
             controlNotice.kind === 'success'
-              ? 'border-green-400/50 bg-green-500/10 text-green-700'
-              : 'border-destructive/40 bg-destructive/10 text-destructive'
+              ? 'border-green-400/50 bg-green-500/10 text-green-700 dark:text-green-400'
+              : controlNotice.kind === 'info'
+                ? 'border-blue-400/50 bg-blue-500/10 text-blue-700 dark:text-blue-400'
+                : 'border-destructive/40 bg-destructive/10 text-destructive'
           }`}>
-            {controlNotice.message}
+            <span className="inline-flex items-center gap-1.5">
+              {isPolling && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {controlNotice.message}
+            </span>
           </div>
         )}
 
@@ -661,6 +850,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         )}
       </div>
 
+      {/* ================================================================ */}
+      {/* Patch Compliance                                                 */}
+      {/* ================================================================ */}
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -684,6 +876,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
+        {/* ============================================================== */}
+        {/* Pending Native OS Updates                                       */}
+        {/* ============================================================== */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <NativeIcon className="h-4 w-4 text-gray-600" />
@@ -700,13 +895,16 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3">{displayCopy.pendingNativePrimaryColumn}</th>
+                    {normalizedOsType === 'windows' && <th className="px-4 py-3">KB#</th>}
+                    <th className="px-4 py-3">Source</th>
                     <th className="px-4 py-3">Category</th>
+                    <th className="w-16 px-2 py-3" />
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {pendingNative.length === 0 ? (
                     <tr>
-                      <td colSpan={2} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      <td colSpan={normalizedOsType === 'windows' ? 5 : 4} className="px-4 py-6 text-center text-sm text-muted-foreground">
                         {displayCopy.pendingNativeEmpty}
                       </td>
                     </tr>
@@ -716,19 +914,31 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const severityBadge = getSeverityBadge(patch.severity);
                       const kbLabel = getKbLabel(patch);
                       const releaseLabel = getReleaseLabel(patch, effectiveTimezone);
+                      const srcBadge = getSourceBadge(patch);
+                      const patchId = patch.id;
+                      const isInstalling = patchId ? installingPatchIds.has(patchId) : false;
+                      const notDownloaded = patch.isDownloaded === false;
                       return (
-                        <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-apple'}-${index}`} className="text-sm">
+                        <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-native'}-${index}`} className="text-sm">
                           <td className="px-4 py-3">
                             <div className="space-y-1">
-                              <p className="font-medium">{normalizePatchName(patch)}</p>
-                              {(severityBadge || kbLabel || releaseLabel || patch.requiresReboot) && (
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-medium">{normalizePatchName(patch)}</p>
+                                {notDownloaded && (
+                                  <span title="Not yet downloaded -- install will take longer" className="inline-flex items-center text-muted-foreground">
+                                    <CloudDownload className="h-3.5 w-3.5" />
+                                  </span>
+                                )}
+                              </div>
+                              {(severityBadge || (normalizedOsType !== 'windows' && kbLabel) || releaseLabel || patch.requiresReboot) && (
                                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                                   {severityBadge && (
                                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${severityBadge.className}`}>
                                       {severityBadge.label}
                                     </span>
                                   )}
-                                  {kbLabel && (
+                                  {/* Show KB inline badge only when there is no dedicated KB column */}
+                                  {normalizedOsType !== 'windows' && kbLabel && (
                                     <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
                                       {kbLabel}
                                     </span>
@@ -743,6 +953,26 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               )}
                             </div>
                           </td>
+                          {normalizedOsType === 'windows' && (
+                            <td className="px-4 py-3">
+                              {kbLabel ? (
+                                <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                  {kbLabel}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">--</span>
+                              )}
+                            </td>
+                          )}
+                          <td className="px-4 py-3">
+                            {srcBadge ? (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${srcBadge.className}`}>
+                                {srcBadge.label}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">--</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3">
                             {badge ? (
                               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
@@ -752,6 +982,23 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               <span className="text-xs text-muted-foreground capitalize">
                                 {patch.category || 'Uncategorized'}
                               </span>
+                            )}
+                          </td>
+                          <td className="px-2 py-3">
+                            {patchId && (
+                              <button
+                                type="button"
+                                title={`Install ${normalizePatchName(patch)}`}
+                                disabled={isBusy || isInstalling}
+                                onClick={() => queueSinglePatchInstall(patchId, normalizePatchName(patch))}
+                                className="inline-flex items-center justify-center rounded-md border p-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isInstalling ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+                                ) : (
+                                  <Download className="h-3.5 w-3.5 text-green-600" />
+                                )}
+                              </button>
                             )}
                           </td>
                         </tr>
@@ -764,6 +1011,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           </div>
         </div>
 
+        {/* ============================================================== */}
+        {/* Pending Third-Party Updates                                     */}
+        {/* ============================================================== */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
@@ -780,13 +1030,15 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3">{displayCopy.pendingThirdPartyPrimaryColumn}</th>
+                    <th className="px-4 py-3">Source</th>
                     <th className="px-4 py-3">{displayCopy.pendingThirdPartySecondaryColumn}</th>
+                    <th className="w-16 px-2 py-3" />
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {pendingOther.length === 0 ? (
                     <tr>
-                      <td colSpan={2} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
                         {displayCopy.pendingThirdPartyEmpty}
                       </td>
                     </tr>
@@ -798,23 +1050,34 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const severityBadge = getSeverityBadge(patch.severity);
                       const kbLabel = getKbLabel(patch);
                       const releaseLabel = getReleaseLabel(patch, effectiveTimezone);
+                      const srcBadge = getSourceBadge(patch);
+                      const patchId = patch.id;
+                      const isInstalling = patchId ? installingPatchIds.has(patchId) : false;
+                      const notDownloaded = patch.isDownloaded === false;
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-other'}-${index}`} className="text-sm">
                           <td className="px-4 py-3">
                             <div className="space-y-1">
-                              <div className="font-medium">
-                                {brewUrl ? (
-                                  <a
-                                    href={brewUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
-                                  >
-                                    {normalizePatchName(patch)}
-                                    <ExternalLink className="h-3 w-3" />
-                                  </a>
-                                ) : (
-                                  normalizePatchName(patch)
+                              <div className="flex items-center gap-1.5">
+                                <div className="font-medium">
+                                  {brewUrl ? (
+                                    <a
+                                      href={brewUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                                    >
+                                      {normalizePatchName(patch)}
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  ) : (
+                                    normalizePatchName(patch)
+                                  )}
+                                </div>
+                                {notDownloaded && (
+                                  <span title="Not yet downloaded -- install will take longer" className="inline-flex items-center text-muted-foreground">
+                                    <CloudDownload className="h-3.5 w-3.5" />
+                                  </span>
                                 )}
                               </div>
                               {(severityBadge || kbLabel || releaseLabel || patch.requiresReboot) && (
@@ -845,6 +1108,15 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                             </div>
                           </td>
                           <td className="px-4 py-3">
+                            {srcBadge ? (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${srcBadge.className}`}>
+                                {srcBadge.label}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">--</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
                             {brewDetails ? (
                               <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
                                 {brewDetails.packageType}
@@ -859,6 +1131,23 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               </span>
                             )}
                           </td>
+                          <td className="px-2 py-3">
+                            {patchId && (
+                              <button
+                                type="button"
+                                title={`Install ${normalizePatchName(patch)}`}
+                                disabled={isBusy || isInstalling}
+                                onClick={() => queueSinglePatchInstall(patchId, normalizePatchName(patch))}
+                                className="inline-flex items-center justify-center rounded-md border p-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isInstalling ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+                                ) : (
+                                  <Download className="h-3.5 w-3.5 text-green-600" />
+                                )}
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       );
                     })
@@ -869,6 +1158,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           </div>
         </div>
 
+        {/* ============================================================== */}
+        {/* Installed Native OS Updates                                     */}
+        {/* ============================================================== */}
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
@@ -882,6 +1174,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3">{displayCopy.installedNativePrimaryColumn}</th>
+                    {normalizedOsType === 'windows' && <th className="px-4 py-3">KB#</th>}
                     <th className="px-4 py-3">Category</th>
                     <th className="px-4 py-3">Installed</th>
                   </tr>
@@ -889,16 +1182,28 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 <tbody className="divide-y">
                   {installedNative.length === 0 ? (
                     <tr>
-                      <td colSpan={3} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      <td colSpan={normalizedOsType === 'windows' ? 4 : 3} className="px-4 py-6 text-center text-sm text-muted-foreground">
                         {displayCopy.installedNativeEmpty}
                       </td>
                     </tr>
                   ) : (
                     installedNative.map((patch, index) => {
                       const badge = getCategoryBadge(patch, normalizedOsType);
+                      const kbLabel = getKbLabel(patch);
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'apple'}-${index}`} className="text-sm">
                           <td className="px-4 py-3 font-medium">{normalizePatchName(patch)}</td>
+                          {normalizedOsType === 'windows' && (
+                            <td className="px-4 py-3">
+                              {kbLabel ? (
+                                <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                  {kbLabel}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">--</span>
+                              )}
+                            </td>
+                          )}
                           <td className="px-4 py-3">
                             {badge ? (
                               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
@@ -922,6 +1227,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         </div>
       </div>
 
+      {/* ================================================================ */}
+      {/* Installed Third-Party Updates                                     */}
+      {/* ================================================================ */}
       {installedThirdParty.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <div className="flex items-center gap-2">
@@ -936,12 +1244,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3">Software</th>
+                    <th className="px-4 py-3">Source</th>
                     <th className="px-4 py-3">Installed</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {installedThirdParty.map((patch, index) => {
                     const brewUrl = normalizedOsType === 'macos' ? getHomebrewUrl(patch, normalizedOsType) : null;
+                    const srcBadge = getSourceBadge(patch);
                     return (
                       <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'thirdparty'}-${index}`} className="text-sm">
                         <td className="px-4 py-3 font-medium">
@@ -959,6 +1269,15 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                             normalizePatchName(patch)
                           )}
                         </td>
+                        <td className="px-4 py-3">
+                          {srcBadge ? (
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${srcBadge.className}`}>
+                              {srcBadge.label}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">--</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone)}</td>
                       </tr>
                     );
@@ -969,6 +1288,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           </div>
         </div>
       )}
+
+      <PatchInstallHistory deviceId={deviceId} />
     </div>
   );
 }

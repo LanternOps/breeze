@@ -42,6 +42,7 @@ e2e-tests/doc-verify/assertions.json
 # Go
 agent/breeze-agent
 agent/bin/
+viewer/bin/
 agent/*.exe
 agent/agent.yaml
 

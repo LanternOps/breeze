@@ -163,6 +163,11 @@ func (c *SessionCollector) refreshSessions(now time.Time) {
 	defer c.mu.Unlock()
 
 	for _, detected := range sessions {
+		// Skip sessions with empty usernames (e.g. Windows Session 0 / services);
+		// the API requires username to be non-empty.
+		if strings.TrimSpace(detected.Username) == "" {
+			continue
+		}
 		key := sessionKey(detected.Username, inferSessionType(detected), detected.Session)
 		existing, hasExisting := c.sessions[key]
 
@@ -187,6 +192,12 @@ func (c *SessionCollector) refreshSessions(now time.Time) {
 }
 
 func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time.Time) {
+	// Skip events with empty usernames (e.g. Windows Session 0 / services);
+	// the API requires username to be non-empty.
+	if strings.TrimSpace(event.Username) == "" {
+		return
+	}
+
 	sessionType := inferSessionTypeFromEvent(event)
 	key := sessionKey(event.Username, sessionType, event.Session)
 

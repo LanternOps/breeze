@@ -6,18 +6,20 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
 import { parseDeepLink, type ConnectionParams } from './lib/protocol';
 import { checkForUpdate, type UpdateInfo } from './lib/version';
-import { Monitor, ArrowDownCircle, X } from 'lucide-react';
+import { Monitor, ArrowDownCircle, AlertTriangle } from 'lucide-react';
 
 const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
 const UpdateIcon = ArrowDownCircle as unknown as ComponentType<{ className?: string }>;
-const XIcon = X as unknown as ComponentType<{ className?: string; onClick?: () => void }>;
+const AlertIcon = AlertTriangle as unknown as ComponentType<{ className?: string }>;
+
+type UpdateStatus = 'checking' | 'current' | 'outdated' | 'error';
 
 export default function App() {
   const [params, setParams] = useState<ConnectionParams | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [manualUrl, setManualUrl] = useState('');
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('checking');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [updateDismissed, setUpdateDismissed] = useState(false);
   const lastDeepLinkRef = useRef<{ key: string; at: number } | null>(null);
   const windowLabelRef = useRef<string>('main');
 
@@ -31,23 +33,19 @@ export default function App() {
     }
   }, []);
 
-  // Check for updates on mount (welcome screen only, non-blocking)
+  // Check for updates on mount — blocks the app if outdated
   useEffect(() => {
-    const cached = sessionStorage.getItem('breeze-update-check');
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as UpdateInfo;
-        setUpdateInfo(parsed);
-      } catch { /* ignore */ }
-      return;
-    }
-
     checkForUpdate().then((info) => {
       if (info) {
         setUpdateInfo(info);
-        sessionStorage.setItem('breeze-update-check', JSON.stringify(info));
+        setUpdateStatus('outdated');
+      } else {
+        setUpdateStatus('current');
       }
-    }).catch(() => { /* silently ignore version check failures */ });
+    }).catch(() => {
+      // Can't reach GitHub — allow usage rather than bricking offline
+      setUpdateStatus('error');
+    });
   }, []);
 
   // Apply a parsed deep link, deduplicating burst delivery
@@ -135,15 +133,61 @@ export default function App() {
   }, [manualUrl]);
 
   const handleOpenDownload = useCallback(async () => {
-    if (!updateInfo?.releaseUrl) return;
+    const url = updateInfo?.downloadUrl || updateInfo?.releaseUrl;
+    if (!url) return;
     try {
       const { open } = await import('@tauri-apps/plugin-shell');
-      await open(updateInfo.releaseUrl);
+      await open(url);
     } catch {
-      // Fallback: try window.open
-      window.open(updateInfo.releaseUrl, '_blank');
+      window.open(url, '_blank');
     }
   }, [updateInfo]);
+
+  // Forced update gate — blocks everything when outdated
+  if (updateStatus === 'outdated' && updateInfo) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-900">
+        <div className="text-center max-w-md px-6">
+          <div className="flex items-center justify-center w-16 h-16 bg-amber-600/20 rounded-2xl mx-auto mb-6">
+            <AlertIcon className="w-8 h-8 text-amber-400" />
+          </div>
+          <h1 className="text-2xl font-semibold text-white mb-2">Update Required</h1>
+          <p className="text-gray-400 mb-2">
+            A new version of Breeze Viewer is available. Please update to continue.
+          </p>
+          <div className="mb-8 p-3 bg-gray-800/50 rounded-lg">
+            <p className="text-gray-300 text-sm">
+              Installed: <span className="font-mono text-amber-400">v{updateInfo.currentVersion}</span>
+              <span className="mx-2 text-gray-600">&rarr;</span>
+              Latest: <span className="font-mono text-green-400">v{updateInfo.latestVersion}</span>
+            </p>
+          </div>
+          <button
+            onClick={handleOpenDownload}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium transition"
+          >
+            <UpdateIcon className="w-5 h-5" />
+            Download Update
+          </button>
+          <p className="text-gray-600 text-xs mt-4">
+            Install the update and relaunch the viewer.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show a brief loading screen while checking for updates
+  if (updateStatus === 'checking') {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-900">
+        <div className="text-center">
+          <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-gray-400 text-sm">Checking for updates...</p>
+        </div>
+      </div>
+    );
+  }
 
   // Show viewer if connected
   if (params) {
@@ -160,31 +204,6 @@ export default function App() {
   return (
     <div className="flex items-center justify-center h-screen bg-gray-900">
       <div className="text-center max-w-md px-6">
-        {/* Update banner */}
-        {updateInfo && !updateDismissed && (
-          <div className="mb-6 p-3 bg-blue-900/30 border border-blue-700 rounded-lg flex items-center gap-3">
-            <UpdateIcon className="w-5 h-5 text-blue-400 flex-shrink-0" />
-            <div className="flex-1 text-left">
-              <p className="text-blue-200 text-sm">
-                Update available: <span className="font-semibold">v{updateInfo.latestVersion}</span>
-                <span className="text-blue-400"> (you have v{updateInfo.currentVersion})</span>
-              </p>
-            </div>
-            <button
-              onClick={handleOpenDownload}
-              className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs text-white font-medium flex-shrink-0"
-            >
-              Download
-            </button>
-            <button
-              onClick={() => setUpdateDismissed(true)}
-              className="p-1 text-blue-400 hover:text-blue-200 flex-shrink-0"
-            >
-              <XIcon className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
         <div className="flex items-center justify-center w-16 h-16 bg-blue-600/20 rounded-2xl mx-auto mb-6">
           <MonitorIcon className="w-8 h-8 text-blue-400" />
         </div>

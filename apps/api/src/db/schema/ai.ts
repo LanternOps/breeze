@@ -10,6 +10,12 @@ import { devices } from './devices';
 export const aiSessionStatusEnum = pgEnum('ai_session_status', ['active', 'closed', 'expired']);
 export const aiMessageRoleEnum = pgEnum('ai_message_role', ['user', 'assistant', 'system', 'tool_use', 'tool_result']);
 export const aiToolStatusEnum = pgEnum('ai_tool_status', ['pending', 'approved', 'executing', 'completed', 'failed', 'rejected']);
+export const aiApprovalModeEnum = pgEnum('ai_approval_mode', [
+  'per_step', 'action_plan', 'auto_approve', 'hybrid_plan',
+]);
+export const aiPlanStatusEnum = pgEnum('ai_plan_status', [
+  'pending', 'approved', 'rejected', 'executing', 'completed', 'aborted',
+]);
 
 // ============================================
 // AI Sessions
@@ -33,11 +39,15 @@ export const aiSessions = pgTable('ai_sessions', {
   sdkSessionId: varchar('sdk_session_id', { length: 255 }),
   lastActivityAt: timestamp('last_activity_at').defaultNow().notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  flaggedAt: timestamp('flagged_at'),
+  flaggedBy: uuid('flagged_by').references(() => users.id),
+  flagReason: text('flag_reason'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
-  statusIdx: index('ai_sessions_status_idx').on(table.status)
+  statusIdx: index('ai_sessions_status_idx').on(table.status),
+  // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
 }));
 
 // ============================================
@@ -120,9 +130,30 @@ export const aiBudgets = pgTable('ai_budgets', {
   allowedModels: jsonb('allowed_models').default(['claude-sonnet-4-5-20250929']),
   messagesPerMinutePerUser: integer('messages_per_minute_per_user').notNull().default(20),
   messagesPerHourPerOrg: integer('messages_per_hour_per_org').notNull().default(200),
+  approvalMode: aiApprovalModeEnum('approval_mode').notNull().default('per_step'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// ============================================
+// AI Action Plans (multi-step approval)
+// ============================================
+
+export const aiActionPlans = pgTable('ai_action_plans', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  sessionId: uuid('session_id').notNull().references(() => aiSessions.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  status: aiPlanStatusEnum('status').notNull().default('pending'),
+  steps: jsonb('steps').notNull(),           // Array<ActionPlanStep>
+  currentStepIndex: integer('current_step_index').notNull().default(0),
+  approvedBy: uuid('approved_by').references(() => users.id),
+  approvedAt: timestamp('approved_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  sessionIdIdx: index('ai_action_plans_session_id_idx').on(table.sessionId),
+  statusIdx: index('ai_action_plans_status_idx').on(table.status),
+}));
 
 // ============================================
 // AI Screenshots (temporary storage for vision analysis)

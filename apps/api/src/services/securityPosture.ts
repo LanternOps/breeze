@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -109,7 +109,10 @@ type DeviceInput = {
     installedCriticalAndImportant: number;
   };
   activeThreats: number;
-  listeningPorts: number[];
+  portStats: {
+    listeningPortCount: number;
+    riskyPortCount: number;
+  };
 };
 
 type DeviceSnapshotRecord = typeof securityPostureSnapshots.$inferSelect;
@@ -245,9 +248,13 @@ function scoreFirewall(input: DeviceInput): FactorResult {
 }
 
 const riskyPorts = new Set([22, 23, 445, 3389, 5900, 3306, 5432, 6379, 27017]);
+const riskyPortValues = Array.from(riskyPorts.values());
 
 function scoreOpenPorts(input: DeviceInput): FactorResult {
-  if (input.listeningPorts.length === 0) {
+  const portCount = input.portStats.listeningPortCount;
+  const riskyCount = input.portStats.riskyPortCount;
+
+  if (portCount === 0) {
     return {
       score: input.deviceStatus === 'online' ? 60 : 75,
       confidence: 0.35,
@@ -256,8 +263,6 @@ function scoreOpenPorts(input: DeviceInput): FactorResult {
     };
   }
 
-  const portCount = input.listeningPorts.length;
-  const riskyCount = input.listeningPorts.filter((port) => riskyPorts.has(port)).length;
   const basePenalty = Math.max(0, portCount - 12) * 3;
   const riskyPenalty = riskyCount * 10;
 
@@ -574,12 +579,12 @@ async function loadDeviceInputsForOrg(orgId: string): Promise<DeviceInput[]> {
     db
       .select({
         deviceId: deviceConnections.deviceId,
-        localPort: deviceConnections.localPort,
-        state: deviceConnections.state,
-        remoteAddr: deviceConnections.remoteAddr
+        listeningPortCount: sql<number>`count(distinct ${deviceConnections.localPort}) filter (where ${deviceConnections.remoteAddr} is null or coalesce(lower(${deviceConnections.state}), '') like 'listen%')`,
+        riskyPortCount: sql<number>`count(distinct ${deviceConnections.localPort}) filter (where (${deviceConnections.remoteAddr} is null or coalesce(lower(${deviceConnections.state}), '') like 'listen%') and ${deviceConnections.localPort} in (${sql.join(riskyPortValues.map((port) => sql`${port}`), sql`, `)}))`
       })
       .from(deviceConnections)
       .where(inArray(deviceConnections.deviceId, deviceIds))
+      .groupBy(deviceConnections.deviceId)
   ]);
 
   const patchMap = new Map<string, { totalCriticalAndImportant: number; installedCriticalAndImportant: number }>();
@@ -599,14 +604,12 @@ async function loadDeviceInputsForOrg(orgId: string): Promise<DeviceInput[]> {
     threatMap.set(row.deviceId, Number(row.count ?? 0));
   }
 
-  const listeningPortsMap = new Map<string, Set<number>>();
+  const portStatsMap = new Map<string, { listeningPortCount: number; riskyPortCount: number }>();
   for (const row of portRows) {
-    const state = (row.state ?? '').toLowerCase();
-    const isListening = state.includes('listen') || row.remoteAddr === null;
-    if (!isListening) continue;
-    const existing = listeningPortsMap.get(row.deviceId) ?? new Set<number>();
-    existing.add(row.localPort);
-    listeningPortsMap.set(row.deviceId, existing);
+    portStatsMap.set(row.deviceId, {
+      listeningPortCount: Number(row.listeningPortCount ?? 0),
+      riskyPortCount: Number(row.riskyPortCount ?? 0)
+    });
   }
 
   return baseRows.map((row) => ({
@@ -628,22 +631,60 @@ async function loadDeviceInputsForOrg(orgId: string): Promise<DeviceInput[]> {
     },
     patchStats: patchMap.get(row.deviceId) ?? { totalCriticalAndImportant: 0, installedCriticalAndImportant: 0 },
     activeThreats: threatMap.get(row.deviceId) ?? 0,
-    listeningPorts: Array.from(listeningPortsMap.get(row.deviceId) ?? new Set<number>())
+    portStats: portStatsMap.get(row.deviceId) ?? { listeningPortCount: 0, riskyPortCount: 0 }
   }));
 }
 
 async function getLatestDeviceSnapshotsForOrg(orgId: string): Promise<Map<string, DeviceSnapshotRecord>> {
-  const rows = await db
-    .select()
+  const rankedSnapshots = db
+    .select({
+      id: securityPostureSnapshots.id,
+      orgId: securityPostureSnapshots.orgId,
+      deviceId: securityPostureSnapshots.deviceId,
+      capturedAt: securityPostureSnapshots.capturedAt,
+      overallScore: securityPostureSnapshots.overallScore,
+      riskLevel: securityPostureSnapshots.riskLevel,
+      patchComplianceScore: securityPostureSnapshots.patchComplianceScore,
+      encryptionScore: securityPostureSnapshots.encryptionScore,
+      avHealthScore: securityPostureSnapshots.avHealthScore,
+      firewallScore: securityPostureSnapshots.firewallScore,
+      openPortsScore: securityPostureSnapshots.openPortsScore,
+      passwordPolicyScore: securityPostureSnapshots.passwordPolicyScore,
+      osCurrencyScore: securityPostureSnapshots.osCurrencyScore,
+      adminExposureScore: securityPostureSnapshots.adminExposureScore,
+      factorDetails: securityPostureSnapshots.factorDetails,
+      recommendations: securityPostureSnapshots.recommendations,
+      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`
+    })
     .from(securityPostureSnapshots)
     .where(eq(securityPostureSnapshots.orgId, orgId))
-    .orderBy(desc(securityPostureSnapshots.capturedAt));
+    .as('ranked_security_posture_snapshots');
+
+  const rows = await db
+    .select({
+      id: rankedSnapshots.id,
+      orgId: rankedSnapshots.orgId,
+      deviceId: rankedSnapshots.deviceId,
+      capturedAt: rankedSnapshots.capturedAt,
+      overallScore: rankedSnapshots.overallScore,
+      riskLevel: rankedSnapshots.riskLevel,
+      patchComplianceScore: rankedSnapshots.patchComplianceScore,
+      encryptionScore: rankedSnapshots.encryptionScore,
+      avHealthScore: rankedSnapshots.avHealthScore,
+      firewallScore: rankedSnapshots.firewallScore,
+      openPortsScore: rankedSnapshots.openPortsScore,
+      passwordPolicyScore: rankedSnapshots.passwordPolicyScore,
+      osCurrencyScore: rankedSnapshots.osCurrencyScore,
+      adminExposureScore: rankedSnapshots.adminExposureScore,
+      factorDetails: rankedSnapshots.factorDetails,
+      recommendations: rankedSnapshots.recommendations
+    })
+    .from(rankedSnapshots)
+    .where(eq(rankedSnapshots.rn, 1));
 
   const latest = new Map<string, DeviceSnapshotRecord>();
   for (const row of rows) {
-    if (!latest.has(row.deviceId)) {
-      latest.set(row.deviceId, row);
-    }
+    latest.set(row.deviceId, row as DeviceSnapshotRecord);
   }
   return latest;
 }
@@ -872,14 +913,14 @@ function hydratePostureRows(rows: LatestPostureRow[], deviceRows: Array<{
 
 export async function listLatestSecurityPosture(filter: SecurityPostureFilter): Promise<SecurityPostureItem[]> {
   const maxLimit = Math.min(Math.max(Number(filter.limit ?? 500), 1), 2000);
-  const conditions = [];
+  const scopeConditions: SQL[] = [];
   if (filter.orgId) {
-    conditions.push(eq(securityPostureSnapshots.orgId, filter.orgId));
+    scopeConditions.push(eq(securityPostureSnapshots.orgId, filter.orgId));
   } else if (filter.orgIds && filter.orgIds.length > 0) {
-    conditions.push(inArray(securityPostureSnapshots.orgId, filter.orgIds));
+    scopeConditions.push(inArray(securityPostureSnapshots.orgId, filter.orgIds));
   }
 
-  const rows = await db
+  const rankedSnapshots = db
     .select({
       id: securityPostureSnapshots.id,
       orgId: securityPostureSnapshots.orgId,
@@ -896,55 +937,87 @@ export async function listLatestSecurityPosture(filter: SecurityPostureFilter): 
       osCurrencyScore: securityPostureSnapshots.osCurrencyScore,
       adminExposureScore: securityPostureSnapshots.adminExposureScore,
       factorDetails: securityPostureSnapshots.factorDetails,
-      recommendations: securityPostureSnapshots.recommendations
+      recommendations: securityPostureSnapshots.recommendations,
+      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`
     })
     .from(securityPostureSnapshots)
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(securityPostureSnapshots.capturedAt))
-    .limit(maxLimit * 20);
+    .where(scopeConditions.length > 0 ? and(...scopeConditions) : undefined)
+    .as('ranked_security_posture_snapshots');
 
-  const latestByDevice = new Map<string, LatestPostureRow>();
-  for (const row of rows) {
-    if (!latestByDevice.has(row.deviceId)) {
-      latestByDevice.set(row.deviceId, row);
-    }
-    if (latestByDevice.size >= maxLimit) {
-      break;
-    }
+  const latestConditions: SQL[] = [eq(rankedSnapshots.rn, 1)];
+  if (typeof filter.minScore === 'number') {
+    latestConditions.push(gte(rankedSnapshots.overallScore, filter.minScore));
+  }
+  if (typeof filter.maxScore === 'number') {
+    latestConditions.push(lte(rankedSnapshots.overallScore, filter.maxScore));
+  }
+  if (filter.riskLevel) {
+    latestConditions.push(eq(rankedSnapshots.riskLevel, filter.riskLevel));
+  }
+  if (filter.search) {
+    latestConditions.push(ilike(devices.hostname, `%${filter.search}%`));
   }
 
-  const latestRows = Array.from(latestByDevice.values());
-  if (latestRows.length === 0) return [];
-
-  const deviceRows = await db
+  const rows = await db
     .select({
-      id: devices.id,
-      orgId: devices.orgId,
+      id: rankedSnapshots.id,
+      orgId: rankedSnapshots.orgId,
+      deviceId: rankedSnapshots.deviceId,
+      capturedAt: rankedSnapshots.capturedAt,
+      overallScore: rankedSnapshots.overallScore,
+      riskLevel: rankedSnapshots.riskLevel,
+      patchComplianceScore: rankedSnapshots.patchComplianceScore,
+      encryptionScore: rankedSnapshots.encryptionScore,
+      avHealthScore: rankedSnapshots.avHealthScore,
+      firewallScore: rankedSnapshots.firewallScore,
+      openPortsScore: rankedSnapshots.openPortsScore,
+      passwordPolicyScore: rankedSnapshots.passwordPolicyScore,
+      osCurrencyScore: rankedSnapshots.osCurrencyScore,
+      adminExposureScore: rankedSnapshots.adminExposureScore,
+      factorDetails: rankedSnapshots.factorDetails,
+      recommendations: rankedSnapshots.recommendations,
+      idForDevice: devices.id,
+      orgIdForDevice: devices.orgId,
       hostname: devices.hostname,
       osType: devices.osType,
       status: devices.status
     })
-    .from(devices)
-    .where(inArray(devices.id, latestRows.map((row) => row.deviceId)));
+    .from(rankedSnapshots)
+    .innerJoin(devices, eq(devices.id, rankedSnapshots.deviceId))
+    .where(and(...latestConditions))
+    .orderBy(asc(rankedSnapshots.overallScore), desc(rankedSnapshots.capturedAt))
+    .limit(maxLimit);
 
-  let items = hydratePostureRows(latestRows, deviceRows);
+  if (rows.length === 0) return [];
 
-  if (typeof filter.minScore === 'number') {
-    items = items.filter((item) => item.overallScore >= filter.minScore!);
-  }
-  if (typeof filter.maxScore === 'number') {
-    items = items.filter((item) => item.overallScore <= filter.maxScore!);
-  }
-  if (filter.riskLevel) {
-    items = items.filter((item) => item.riskLevel === filter.riskLevel);
-  }
-  if (filter.search) {
-    const term = filter.search.toLowerCase();
-    items = items.filter((item) => item.deviceName.toLowerCase().includes(term));
-  }
+  const latestRows: LatestPostureRow[] = rows.map((row) => ({
+    id: row.id,
+    orgId: row.orgId,
+    deviceId: row.deviceId,
+    capturedAt: row.capturedAt,
+    overallScore: row.overallScore,
+    riskLevel: row.riskLevel,
+    patchComplianceScore: row.patchComplianceScore,
+    encryptionScore: row.encryptionScore,
+    avHealthScore: row.avHealthScore,
+    firewallScore: row.firewallScore,
+    openPortsScore: row.openPortsScore,
+    passwordPolicyScore: row.passwordPolicyScore,
+    osCurrencyScore: row.osCurrencyScore,
+    adminExposureScore: row.adminExposureScore,
+    factorDetails: row.factorDetails,
+    recommendations: row.recommendations
+  }));
 
-  items.sort((a, b) => a.overallScore - b.overallScore);
-  return items.slice(0, maxLimit);
+  const deviceRows = rows.map((row) => ({
+    id: row.idForDevice,
+    orgId: row.orgIdForDevice,
+    hostname: row.hostname,
+    osType: row.osType,
+    status: row.status
+  }));
+
+  return hydratePostureRows(latestRows, deviceRows);
 }
 
 export async function getLatestSecurityPostureForDevice(deviceId: string): Promise<SecurityPostureItem | null> {
@@ -1020,6 +1093,7 @@ export async function getSecurityPostureTrend(params: {
     .where(and(...conditions))
     .orderBy(desc(securityPostureOrgSnapshots.capturedAt));
 
+  type TrendRow = typeof rows[number];
   const grouped = new Map<string, Array<typeof rows[number]>>();
   for (const row of rows) {
     const day = row.capturedAt.toISOString().slice(0, 10);
@@ -1030,29 +1104,68 @@ export async function getSecurityPostureTrend(params: {
 
   const points = Array.from(grouped.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([timestamp, entries]) => {
-      const avg = (key: keyof typeof entries[number]) =>
-        clampScore(entries.reduce((sum, entry) => sum + Number(entry[key] ?? 0), 0) / entries.length);
-      const overall = avg('overallScore');
-      const antivirus = avg('avHealthScore');
-      const firewall = avg('firewallScore');
-      const encryption = avg('encryptionScore');
-      const passwordPolicy = avg('passwordPolicyScore');
-      const adminAccounts = avg('adminExposureScore');
-      const patchCompliance = avg('patchComplianceScore');
-      const vulnerabilityManagement = clampScore((antivirus + patchCompliance) / 2);
-      return {
-        timestamp,
-        overall,
-        antivirus,
-        firewall,
-        encryption,
-        password_policy: passwordPolicy,
-        admin_accounts: adminAccounts,
-        patch_compliance: patchCompliance,
-        vulnerability_management: vulnerabilityManagement
-      };
-    });
+    .map(([timestamp, entries]) => computeTrendPoint(timestamp, entries as TrendRow[]));
 
   return points;
+}
+
+export function computeTrendPoint(
+  timestamp: string,
+  entries: Array<{
+    overallScore: number;
+    patchComplianceScore: number;
+    encryptionScore: number;
+    avHealthScore: number;
+    firewallScore: number;
+    openPortsScore: number;
+    passwordPolicyScore: number;
+    osCurrencyScore: number;
+    adminExposureScore: number;
+  }>
+): Record<string, string | number> {
+  if (entries.length === 0) {
+    return {
+      timestamp,
+      overall: 0,
+      antivirus: 0,
+      firewall: 0,
+      encryption: 0,
+      open_ports: 0,
+      password_policy: 0,
+      os_currency: 0,
+      admin_accounts: 0,
+      patch_compliance: 0,
+      vulnerability_management: 0
+    };
+  }
+
+  const avg = (
+    key: keyof (typeof entries)[number]
+  ) => clampScore(entries.reduce((sum, entry) => sum + Number(entry[key] ?? 0), 0) / entries.length);
+
+  const overall = avg('overallScore');
+  const antivirus = avg('avHealthScore');
+  const firewall = avg('firewallScore');
+  const encryption = avg('encryptionScore');
+  const openPorts = avg('openPortsScore');
+  const passwordPolicy = avg('passwordPolicyScore');
+  const osCurrency = avg('osCurrencyScore');
+  const adminAccounts = avg('adminExposureScore');
+  const patchCompliance = avg('patchComplianceScore');
+  // Keep vulnerability trend aligned with recommendation logic: exposure + OS currency.
+  const vulnerabilityManagement = clampScore((openPorts + osCurrency) / 2);
+
+  return {
+    timestamp,
+    overall,
+    antivirus,
+    firewall,
+    encryption,
+    open_ports: openPorts,
+    password_policy: passwordPolicy,
+    os_currency: osCurrency,
+    admin_accounts: adminAccounts,
+    patch_compliance: patchCompliance,
+    vulnerability_management: vulnerabilityManagement
+  };
 }

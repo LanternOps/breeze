@@ -1,4 +1,4 @@
-export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation';
+export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy';
 
 export type FeatureLink = {
   id: string;
@@ -24,7 +24,7 @@ export const FEATURE_META: Record<FeatureType, {
   fetchUrl: string | null;
   description: string;
 }> = {
-  patch:        { label: 'Patches',      fetchUrl: '/patch-policies',      description: 'Patch management settings' },
+  patch:        { label: 'Patches',      fetchUrl: '/update-rings',        description: 'Patch management settings' },
   alert_rule:   { label: 'Alerts',       fetchUrl: '/alerts/rules',        description: 'Alert rule configuration' },
   backup:       { label: 'Backup',       fetchUrl: '/backup/configs',      description: 'Backup schedule and retention' },
   security:     { label: 'Security',     fetchUrl: '/security/policies',   description: 'Security policy settings' },
@@ -32,4 +32,6 @@ export const FEATURE_META: Record<FeatureType, {
   maintenance:  { label: 'Maintenance',  fetchUrl: '/maintenance/windows', description: 'Maintenance window settings' },
   compliance:   { label: 'Compliance',   fetchUrl: '/policies',            description: 'Compliance rules and enforcement' },
   automation:   { label: 'Automations',  fetchUrl: '/automations',         description: 'Automated tasks and responses' },
+  event_log:    { label: 'Event Logs',   fetchUrl: null,                   description: 'Event log collection and retention' },
+  software_policy: { label: 'Software Policy', fetchUrl: '/software-policies', description: 'Allowlist/blocklist software rules' },
 };

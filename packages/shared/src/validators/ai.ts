@@ -52,6 +52,16 @@ export const approveToolSchema = z.object({
   approved: z.boolean()
 });
 
+export const approvePlanSchema = z.object({
+  approved: z.boolean()
+});
+
+export const aiApprovalModeSchema = z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']);
+
+export const pauseAiSchema = z.object({
+  paused: z.boolean()
+});
+
 // ============================================
 // Query Validators
 // ============================================

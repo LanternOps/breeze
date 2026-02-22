@@ -5,6 +5,7 @@ export { default as RemoteTerminalPage } from './RemoteTerminalPage';
 export { default as RemoteFilesPage } from './RemoteFilesPage';
 export { default as SessionHistoryPage } from './SessionHistoryPage';
 export { default as RemoteToolsPage } from './RemoteToolsPage';
+export { default as FileActivityPanel } from './FileActivityPanel';
 
 // System management tools
 export { default as ProcessManager } from './ProcessManager';
@@ -21,6 +22,7 @@ export type { ProcessManagerProps, Process } from './ProcessManager';
 export type { ServicesManagerProps, WindowsService, ServiceStatus, StartupType } from './ServicesManager';
 export type { RegistryEditorProps, RegistryValue, RegistryKey, RegistryValueType, RegistryHive } from './RegistryEditor';
 export type { EventViewerProps, EventLog, EventLogEntry, EventLevel, EventFilter } from './EventViewer';
+export type { FileActivity, FileActivityPanelProps } from './FileActivityPanel';
 export type {
   TaskStatus,
   TaskTrigger,

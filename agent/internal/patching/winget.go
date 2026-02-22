@@ -21,14 +21,28 @@ const (
 // validWingetPkgID matches valid winget package identifiers (e.g. "Mozilla.Firefox", "Google.Chrome").
 var validWingetPkgID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,255}$`)
 
+// HelperAvailableFunc reports whether at least one user helper session is connected.
+// When it returns false, read-only operations (Scan, GetInstalled) return empty
+// results with no error, while mutating operations (Install, Uninstall) return
+// an error since winget requires user-context execution via IPC.
+type HelperAvailableFunc func() bool
+
 // WingetProvider integrates with Windows Package Manager (winget) via user-context IPC.
 type WingetProvider struct {
-	exec UserExecFunc
+	exec           UserExecFunc
+	helperAvailable HelperAvailableFunc
 }
 
 // NewWingetProvider creates a new WingetProvider that dispatches commands via the given executor.
-func NewWingetProvider(exec UserExecFunc) *WingetProvider {
-	return &WingetProvider{exec: exec}
+// The optional helperAvailable function, if non-nil, is checked before each operation;
+// when it returns false, scan/list operations return empty results, while install/uninstall
+// operations return an error.
+func NewWingetProvider(exec UserExecFunc, helperAvailable ...HelperAvailableFunc) *WingetProvider {
+	p := &WingetProvider{exec: exec}
+	if len(helperAvailable) > 0 && helperAvailable[0] != nil {
+		p.helperAvailable = helperAvailable[0]
+	}
+	return p
 }
 
 // ID returns the provider identifier.
@@ -41,8 +55,20 @@ func (w *WingetProvider) Name() string {
 	return "winget (Windows Package Manager)"
 }
 
+// hasHelper reports whether a user helper is connected.
+// Returns true if no check function was provided (assume available).
+func (w *WingetProvider) hasHelper() bool {
+	if w.helperAvailable == nil {
+		return true
+	}
+	return w.helperAvailable()
+}
+
 // Scan returns available upgrades from winget.
 func (w *WingetProvider) Scan() ([]AvailablePatch, error) {
+	if !w.hasHelper() {
+		return nil, nil
+	}
 	stdout, stderr, exitCode, err := w.exec("winget", []string{
 		"upgrade",
 		"--include-unknown",
@@ -63,6 +89,9 @@ func (w *WingetProvider) Scan() ([]AvailablePatch, error) {
 
 // Install installs a package by winget ID.
 func (w *WingetProvider) Install(patchID string) (InstallResult, error) {
+	if !w.hasHelper() {
+		return InstallResult{}, fmt.Errorf("winget install requires a connected user helper session")
+	}
 	if !validWingetPkgID.MatchString(patchID) {
 		return InstallResult{}, fmt.Errorf("invalid winget package ID: %q", patchID)
 	}
@@ -100,6 +129,9 @@ func (w *WingetProvider) Install(patchID string) (InstallResult, error) {
 
 // Uninstall removes a package by winget ID.
 func (w *WingetProvider) Uninstall(patchID string) error {
+	if !w.hasHelper() {
+		return fmt.Errorf("winget uninstall requires a connected user helper session")
+	}
 	if !validWingetPkgID.MatchString(patchID) {
 		return fmt.Errorf("invalid winget package ID: %q", patchID)
 	}
@@ -126,6 +158,9 @@ func (w *WingetProvider) Uninstall(patchID string) error {
 
 // GetInstalled returns installed packages from winget.
 func (w *WingetProvider) GetInstalled() ([]InstalledPatch, error) {
+	if !w.hasHelper() {
+		return nil, nil
+	}
 	stdout, stderr, exitCode, err := w.exec("winget", []string{
 		"list",
 		"--accept-source-agreements",

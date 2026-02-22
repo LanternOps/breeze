@@ -158,7 +158,7 @@ export default function DashboardGrid({
 
   return (
     <div
-      className={cn('grid w-full auto-rows-max', className)}
+      className={cn('grid w-full overflow-hidden', className)}
       style={{
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
         gridAutoRows: `${rowHeight}px`,
@@ -172,8 +172,8 @@ export default function DashboardGrid({
           <div
             key={item.i}
             className={cn(
-              'group relative rounded-lg border bg-card shadow-sm transition',
-              dragId === item.i ? 'ring-2 ring-primary/40' : 'hover:border-primary/30'
+              'group relative min-w-0 overflow-hidden transition',
+              dragId === item.i ? 'ring-2 ring-primary/40' : ''
             )}
             style={{
               gridColumnStart: item.x + 1,
@@ -208,7 +208,7 @@ export default function DashboardGrid({
                 Drag
               </div>
             )}
-            <div className="h-full w-full p-4">
+            <div className="h-full w-full">
               {renderItem(item)}
             </div>
           </div>

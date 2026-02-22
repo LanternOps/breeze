@@ -8,6 +8,7 @@ import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
+import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
 import { authRoutes } from './routes/auth';
@@ -25,6 +26,7 @@ import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { reportRoutes } from './routes/reports';
 import { searchRoutes } from './routes/search';
+import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { enrollmentKeyRoutes } from './routes/enrollmentKeys';
@@ -37,23 +39,29 @@ import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches';
 import { patchPolicyRoutes } from './routes/patchPolicies';
+import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
 import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
+import { networkBaselineRoutes } from './routes/networkBaselines';
+import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
+import { reliabilityRoutes } from './routes/reliability';
 import { snmpRoutes } from './routes/snmp';
 import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
 import { softwareRoutes } from './routes/software';
+import { softwarePoliciesRoutes } from './routes/softwarePolicies';
 import { systemToolsRoutes } from './routes/systemTools';
 import { notificationRoutes } from './routes/notifications';
 import { metricsRoutes } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
+import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
 import { filterRoutes } from './routes/filters';
@@ -67,6 +75,11 @@ import { aiRoutes } from './routes/ai';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
+import { playbookRoutes } from './routes/playbooks';
+import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
+import { changesRoutes } from './routes/changes';
+import { dnsSecurityRoutes } from './routes/dnsSecurity';
+import { softwareInventoryRoutes } from './routes/softwareInventory';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -74,14 +87,27 @@ import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offli
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
+import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
+import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
+import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
+import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
+import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
+import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
+import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/reliabilityWorker';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
+import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
+import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
+import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
+import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
+import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
+import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -157,6 +183,10 @@ app.use(
   })
 );
 app.use('*', securityMiddleware());
+app.use('*', bodyLimit({
+  maxSize: 1024 * 1024, // 1MB default for all routes
+  onError: (c) => c.json({ error: 'Request body too large' }, 413),
+}));
 app.use('*', prettyJSON());
 app.use(
   '*',
@@ -257,14 +287,17 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/analytics',
   '/alert-templates',
   '/software',
+  '/software-policies',
   '/maintenance',
   '/psa',
   '/mobile',
   '/discovery',
   '/monitors',
   '/monitoring',
+  '/network',
   '/sso',
   '/reports',
+  '/logs',
   '/filters',
   '/ai',
   '/notifications',
@@ -276,7 +309,10 @@ const FALLBACK_AUDIT_PREFIXES = [
   '/viewers',
   '/devices',
   '/security',
-  '/system-tools'
+  '/system-tools',
+  '/playbooks',
+  '/dns-security',
+  '/software-inventory'
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -291,7 +327,9 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/agents\/[^/]+\/software$/,
   /^\/api\/v1\/agents\/[^/]+\/disks$/,
   /^\/api\/v1\/agents\/[^/]+\/network$/,
+  /^\/api\/v1\/agents\/[^/]+\/changes$/,
   /^\/api\/v1\/agents\/[^/]+\/connections$/,
+  /^\/api\/v1\/agents\/[^/]+\/reliability$/,
   /^\/api\/v1\/agents\/[^/]+\/registry-state$/,
   /^\/api\/v1\/agents\/[^/]+\/config-state$/,
   /^\/api\/v1\/security\/recommendations\/[^/]+\/(complete|dismiss)$/,
@@ -558,6 +596,7 @@ api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
 api.route('/search', searchRoutes);
+api.route('/logs', logsRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
 api.route('/remote', remoteRoutes);
@@ -572,23 +611,29 @@ api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
+api.route('/update-rings', updateRingRoutes);
 api.route('/mobile', mobileRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/discovery', discoveryRoutes);
+api.route('/network/baselines', networkBaselineRoutes);
+api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
+api.route('/reliability', reliabilityRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
 api.route('/software', softwareRoutes);
+api.route('/software-policies', softwarePoliciesRoutes);
 api.route('/system-tools', systemToolsRoutes);
 api.route('/notifications', notificationRoutes);
 api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
 api.route('/partner', partnerRoutes);
+api.route('/partner/known-guests', networkKnownGuestsRoutes);
 api.route('/tags', tagRoutes);
 api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
@@ -601,6 +646,10 @@ api.route('/ai', aiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
+api.route('/playbooks', playbookRoutes);
+api.route('/changes', changesRoutes);
+api.route('/dns-security', dnsSecurityRoutes);
+api.route('/software-inventory', softwareInventoryRoutes);
 
 app.route('/api/v1', api);
 
@@ -784,16 +833,29 @@ async function initializeWorkers(): Promise<void> {
     ['notificationDispatcher', initializeNotificationDispatcher],
     ['webhookDelivery', initializeWebhookDeliveryWorker],
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
+    ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
+    ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
     ['automationWorker', initializeAutomationWorker],
     ['securityPostureWorker', initializeSecurityPostureWorker],
+    ['reliabilityWorker', initializeReliabilityWorker],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
+    ['logCorrelationWorker', initializeLogCorrelationWorker],
     ['agentLogRetention', initializeAgentLogRetention],
+    ['ipHistoryRetention', initializeIPHistoryRetention],
+    ['reliabilityRetention', initializeReliabilityRetention],
+    ['changeLogRetention', initializeChangeLogRetention],
+    ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
+    ['networkBaselineWorker', initializeNetworkBaselineWorker],
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
+    ['dnsSyncWorker', initializeDnsSyncJob],
+    ['logForwardingWorker', initializeLogForwardingWorker],
+    ['patchJobWorker', initializePatchJobWorkers],
+    ['patchSchedulerWorker', initializePatchSchedulerWorker],
   ];
 
   await Promise.allSettled(
@@ -877,15 +939,28 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   getWebhookWorker().stop();
 
   const shutdownTasks: Array<() => Promise<void>> = [
+    shutdownLogForwardingWorker,
+    shutdownPatchJobWorkers,
+    shutdownPatchSchedulerWorker,
     shutdownPatchComplianceReportWorker,
+    shutdownDnsSyncJob,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,
+    shutdownNetworkBaselineWorker,
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
+    shutdownLogCorrelationWorker,
     shutdownAgentLogRetention,
+    shutdownIPHistoryRetention,
+    shutdownReliabilityRetention,
+    shutdownChangeLogRetention,
+    shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
+    shutdownReliabilityWorker,
     shutdownAutomationWorker,
+    shutdownSoftwareRemediationWorker,
+    shutdownSoftwareComplianceWorker,
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
@@ -942,6 +1017,19 @@ async function bootstrap(): Promise<void> {
   // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to disable)
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      await seedBuiltInPlaybooks();
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('relation "playbook_definitions" does not exist')) {
+      console.warn('[startup] Playbook table not yet created — skipping seed (run migrations first)');
+    } else {
+      console.error('[startup] Failed to seed built-in playbooks:', err);
+    }
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

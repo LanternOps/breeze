@@ -324,6 +324,12 @@ coreRoutes.get(
     // Convert BigInt fields to numbers for JSON serialization
     const recentMetrics = recentMetricsRaw.map(m => ({
       ...m,
+      diskReadBytes: m.diskReadBytes != null ? Number(m.diskReadBytes) : null,
+      diskWriteBytes: m.diskWriteBytes != null ? Number(m.diskWriteBytes) : null,
+      diskReadBps: m.diskReadBps != null ? Number(m.diskReadBps) : null,
+      diskWriteBps: m.diskWriteBps != null ? Number(m.diskWriteBps) : null,
+      diskReadOps: m.diskReadOps != null ? Number(m.diskReadOps) : null,
+      diskWriteOps: m.diskWriteOps != null ? Number(m.diskWriteOps) : null,
       networkInBytes: m.networkInBytes != null ? Number(m.networkInBytes) : null,
       networkOutBytes: m.networkOutBytes != null ? Number(m.networkOutBytes) : null,
       bandwidthInBps: m.bandwidthInBps != null ? Number(m.bandwidthInBps) : null,

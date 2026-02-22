@@ -15,6 +15,8 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
 RUN pnpm --filter @breeze/web build
+# Create a self-contained deployment (resolves pnpm symlinks)
+RUN pnpm --filter @breeze/web deploy --prod /deployed
 
 FROM base AS runner
 WORKDIR /app
@@ -23,10 +25,13 @@ ENV HOST=0.0.0.0
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 astro
-USER astro
 
-COPY --from=builder --chown=astro:nodejs /app/apps/web/dist ./dist
-COPY --from=builder --chown=astro:nodejs /app/apps/web/package.json ./
+# Copy the self-contained deployment (flat node_modules, no symlinks)
+COPY --from=builder --chown=astro:nodejs /deployed/node_modules ./node_modules
+COPY --from=builder --chown=astro:nodejs /deployed/dist ./dist
+COPY --from=builder --chown=astro:nodejs /deployed/package.json ./
+
+USER astro
 
 EXPOSE 4321
 CMD ["node", "./dist/server/entry.mjs"]

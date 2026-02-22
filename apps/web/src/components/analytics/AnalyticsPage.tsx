@@ -757,7 +757,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         gap={16}
         renderItem={item => {
           if (isInitialLoading) {
-            return <div className="h-full w-full animate-pulse rounded-md bg-muted/40" />;
+            return <div className="h-full w-full animate-pulse rounded-lg border bg-muted/40" />;
           }
           if (item.i === 'executive') {
             return <ExecutiveSummary {...executiveSummary} />;

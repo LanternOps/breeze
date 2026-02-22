@@ -120,10 +120,10 @@ const QUICK_ACTIONS: Array<{
     icon: Terminal
   },
   {
-    key: 'action:create-alert-rule',
-    title: 'Create alert rule',
-    description: 'Build a new alert rule',
-    href: '/alerts/rules/new',
+    key: 'action:manage-config-policies',
+    title: 'Configuration policies',
+    description: 'Manage alert rules in Configuration Policies',
+    href: '/configuration-policies',
     icon: Bell
   }
 ];

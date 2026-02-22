@@ -12,7 +12,7 @@ import {
 } from '../../services';
 import { acceptInviteSchema } from './schemas';
 import {
-  getClientIP,
+  getClientRateLimitKey,
   resolveCurrentUserTokenContext,
   resolveUserAuditOrgId,
   writeAuthAudit,
@@ -29,7 +29,7 @@ export const inviteRoutes = new Hono();
 
 inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), async (c) => {
   const { token, password } = c.req.valid('json');
-  const ip = getClientIP(c);
+  const rateLimitClient = getClientRateLimitKey(c);
 
   const redis = getRedis();
   if (!redis) {
@@ -37,7 +37,7 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
   }
 
   // Rate limit by IP
-  const rateCheck = await rateLimiter(redis, `accept-invite:${ip}`, 10, 3600);
+  const rateCheck = await rateLimiter(redis, `accept-invite:${rateLimitClient}`, 10, 3600);
   if (!rateCheck.allowed) {
     return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
   }

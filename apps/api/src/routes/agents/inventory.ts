@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
@@ -18,7 +19,7 @@ import {
 
 export const inventoryRoutes = new Hono();
 
-inventoryRoutes.put('/:id/hardware', zValidator('json', updateHardwareSchema), async (c) => {
+inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateHardwareSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
 
@@ -50,7 +51,7 @@ inventoryRoutes.put('/:id/hardware', zValidator('json', updateHardwareSchema), a
   return c.json({ success: true });
 });
 
-inventoryRoutes.put('/:id/software', zValidator('json', updateSoftwareSchema), async (c) => {
+inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateSoftwareSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
 
@@ -80,6 +81,8 @@ inventoryRoutes.put('/:id/software', zValidator('json', updateSoftwareSchema), a
           installDate: item.installDate || null,
           installLocation: item.installLocation || null,
           uninstallString: item.uninstallString || null,
+          fileHash: item.fileHash || null,
+          hashAlgorithm: item.hashAlgorithm || null,
           lastSeen: now
         }))
       );
@@ -89,7 +92,7 @@ inventoryRoutes.put('/:id/software', zValidator('json', updateSoftwareSchema), a
   return c.json({ success: true, count: data.software.length });
 });
 
-inventoryRoutes.put('/:id/disks', zValidator('json', updateDisksSchema), async (c) => {
+inventoryRoutes.put('/:id/disks', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateDisksSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
 
@@ -130,7 +133,7 @@ inventoryRoutes.put('/:id/disks', zValidator('json', updateDisksSchema), async (
   return c.json({ success: true, count: data.disks.length });
 });
 
-inventoryRoutes.put('/:id/network', zValidator('json', updateNetworkSchema), async (c) => {
+inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateNetworkSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
 

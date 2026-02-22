@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { db } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -9,11 +9,21 @@ import {
   deviceDisks,
   deviceFilesystemSnapshots,
   automationPolicies,
+  softwareComplianceStatus,
+  softwarePolicies,
   securityStatus,
   securityThreats,
   securityScans,
   organizations,
+  deviceGroupMemberships,
+  configPolicyAssignments,
+  configurationPolicies,
+  configPolicyFeatureLinks,
+  configPolicyEventLogSettings,
 } from '../../db/schema';
+import { getRedis } from '../../services/redis';
+import { scheduleSoftwareComplianceCheck } from '../../jobs/softwareComplianceWorker';
+import { recordSoftwareRemediationDecision } from '../metrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import {
   getFilesystemScanState,
@@ -24,6 +34,7 @@ import {
   saveFilesystemSnapshot,
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
+import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import {
   type SecurityProviderValue,
@@ -574,6 +585,145 @@ export async function handleSecurityCommandResult(
 }
 
 // ============================================
+// Software Remediation
+// ============================================
+
+const softwareUninstallCommandType = 'software_uninstall';
+
+export async function handleSoftwareRemediationCommandResult(
+  command: typeof deviceCommands.$inferSelect,
+  resultData: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  if (command.type !== softwareUninstallCommandType) {
+    return;
+  }
+
+  const payload = isObject(command.payload) ? command.payload : {};
+  const policyId = readTrimmedString(payload.policyId);
+  if (!policyId || !isUuid(policyId)) {
+    console.warn(
+      `[agents/helpers] software_uninstall command ${command.id} for device ${command.deviceId} ` +
+      `has missing or invalid policyId — cannot update compliance status`
+    );
+    return;
+  }
+
+  const softwareName = readTrimmedString(payload.name) ?? 'unknown';
+  const softwareVersion = readTrimmedString(payload.version);
+  const [policy] = await db
+    .select({
+      id: softwarePolicies.id,
+      orgId: softwarePolicies.orgId,
+      name: softwarePolicies.name,
+    })
+    .from(softwarePolicies)
+    .where(eq(softwarePolicies.id, policyId))
+    .limit(1);
+
+  if (!policy) {
+    return;
+  }
+
+  const [compliance] = await db
+    .select({
+      id: softwareComplianceStatus.id,
+      remediationErrors: softwareComplianceStatus.remediationErrors,
+    })
+    .from(softwareComplianceStatus)
+    .where(and(
+      eq(softwareComplianceStatus.policyId, policyId),
+      eq(softwareComplianceStatus.deviceId, command.deviceId),
+    ))
+    .limit(1);
+
+  if (!compliance) {
+    return;
+  }
+
+  if (resultData.status !== 'completed') {
+    const existingErrors = Array.isArray(compliance.remediationErrors)
+      ? compliance.remediationErrors
+      : [];
+    const entry = {
+      commandId: command.id,
+      softwareName,
+      softwareVersion: softwareVersion ?? null,
+      message: resultData.error ?? resultData.stderr ?? 'Uninstall command failed',
+      status: resultData.status,
+      exitCode: resultData.exitCode ?? null,
+      failedAt: new Date().toISOString(),
+    };
+    const nextErrors = [...existingErrors, entry].slice(-25);
+
+    await db
+      .update(softwareComplianceStatus)
+      .set({
+        remediationStatus: 'failed',
+        lastRemediationAttempt: new Date(),
+        remediationErrors: nextErrors,
+      })
+      .where(eq(softwareComplianceStatus.id, compliance.id));
+
+    recordSoftwarePolicyAudit({
+      orgId: policy.orgId,
+      policyId: policy.id,
+      deviceId: command.deviceId,
+      action: 'remediation_command_failed',
+      actor: 'system',
+      details: {
+        commandId: command.id,
+        policyName: policy.name,
+        softwareName,
+        softwareVersion: softwareVersion ?? null,
+        commandStatus: resultData.status,
+        exitCode: resultData.exitCode ?? null,
+        error: resultData.error ?? null,
+      },
+    }).catch((err) => {
+      console.error('[agents/helpers] Audit write failed for remediation_command_failed:', err);
+    });
+    recordSoftwareRemediationDecision('command_result_failed');
+    return;
+  }
+
+  await db
+    .update(softwareComplianceStatus)
+    .set({
+      // Mark the current remediation attempt as completed and trigger a verification scan.
+      // If violations remain after verification, the next evaluation can queue remediation again.
+      remediationStatus: 'completed',
+      lastRemediationAttempt: new Date(),
+      remediationErrors: null,
+    })
+    .where(eq(softwareComplianceStatus.id, compliance.id));
+
+  let verificationJobId: string | undefined;
+  try {
+    verificationJobId = await scheduleSoftwareComplianceCheck(policy.id, [command.deviceId]);
+  } catch (err) {
+    console.error('[agents/helpers] Failed to schedule verification scan after remediation:', err);
+  }
+
+  recordSoftwarePolicyAudit({
+    orgId: policy.orgId,
+    policyId: policy.id,
+    deviceId: command.deviceId,
+    action: 'software_uninstalled',
+    actor: 'system',
+    details: {
+      commandId: command.id,
+      policyName: policy.name,
+      softwareName,
+      softwareVersion: softwareVersion ?? null,
+      verificationJobId: verificationJobId ?? 'schedule_failed',
+    },
+  }).catch((err) => {
+    console.error('[agents/helpers] Audit write failed for software_uninstalled:', err);
+  });
+  recordSoftwareRemediationDecision('command_result_completed');
+}
+
+// ============================================
 // Filesystem Analysis
 // ============================================
 
@@ -792,6 +942,217 @@ export function extractHotDirectoriesFromSnapshotPayload(payload: Record<string,
     })
     .filter((path): path is string => path !== null && path !== rootPath);
   return Array.from(new Set(paths)).slice(0, limit);
+}
+
+// ============================================
+// Event Log Policy Settings
+// ============================================
+
+export type EventLogLevel = 'info' | 'warning' | 'error' | 'critical';
+export type EventLogCategory = 'security' | 'hardware' | 'application' | 'system';
+
+export interface EventLogSettings {
+  retentionDays: number;
+  maxEventsPerCycle: number;
+  collectCategories: EventLogCategory[];
+  minimumLevel: EventLogLevel;
+  collectionIntervalMinutes: number;
+  rateLimitPerHour: number;
+  enableFullTextSearch: boolean;
+  enableCorrelation: boolean;
+}
+
+export const EVENT_LOG_DEFAULTS: EventLogSettings = {
+  retentionDays: 30,
+  maxEventsPerCycle: 100,
+  collectCategories: ['security', 'hardware', 'application', 'system'],
+  minimumLevel: 'info',
+  collectionIntervalMinutes: 5,
+  rateLimitPerHour: 12000,
+  enableFullTextSearch: true,
+  enableCorrelation: true,
+};
+
+const LEVEL_PRIORITY: Record<string, number> = {
+  device: 5,
+  device_group: 4,
+  site: 3,
+  organization: 2,
+  partner: 1,
+};
+
+async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
+  // 1. Load device
+  const [device] = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) return EVENT_LOG_DEFAULTS;
+
+  // 2. Load org (for partnerId)
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+
+  // 3. Load device group memberships
+  const groupRows = await db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const groupIds = groupRows.map((r) => r.groupId);
+
+  // 4. Build target match conditions
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
+    and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
+  ];
+  if (groupIds.length > 0) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groupIds))!
+    );
+  }
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  // 5. Single query: assignments → active policies → event_log feature link → settings
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      retentionDays: configPolicyEventLogSettings.retentionDays,
+      maxEventsPerCycle: configPolicyEventLogSettings.maxEventsPerCycle,
+      collectCategories: configPolicyEventLogSettings.collectCategories,
+      minimumLevel: configPolicyEventLogSettings.minimumLevel,
+      collectionIntervalMinutes: configPolicyEventLogSettings.collectionIntervalMinutes,
+      rateLimitPerHour: configPolicyEventLogSettings.rateLimitPerHour,
+      enableFullTextSearch: configPolicyEventLogSettings.enableFullTextSearch,
+      enableCorrelation: configPolicyEventLogSettings.enableCorrelation,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyFeatureLinks, and(
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyFeatureLinks.featureType, 'event_log'),
+    ))
+    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(and(
+      eq(configurationPolicies.status, 'active'),
+      or(...targetConditions),
+    ));
+
+  if (rows.length === 0) return EVENT_LOG_DEFAULTS;
+
+  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
+  rows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  const winner = rows[0];
+  if (!winner) return EVENT_LOG_DEFAULTS;
+  return {
+    retentionDays: winner.retentionDays,
+    maxEventsPerCycle: winner.maxEventsPerCycle,
+    collectCategories: winner.collectCategories as EventLogCategory[],
+    minimumLevel: winner.minimumLevel as EventLogLevel,
+    collectionIntervalMinutes: winner.collectionIntervalMinutes,
+    rateLimitPerHour: winner.rateLimitPerHour,
+    enableFullTextSearch: winner.enableFullTextSearch,
+    enableCorrelation: winner.enableCorrelation,
+  };
+}
+
+const EVENT_LOG_CACHE_TTL_SECONDS = 120; // 2 minutes
+
+/**
+ * Resolve event_log policy settings for a device via full hierarchy.
+ * Uses Redis cache with 2-min TTL. Falls back to defaults if no policy found.
+ */
+export async function getDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
+  const redis = getRedis();
+  const cacheKey = `eventlog:settings:device:${deviceId}`;
+
+  // Try cache first
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached) as EventLogSettings;
+      }
+    } catch (cacheErr) {
+      console.warn(`[eventlog] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  // Resolve via full hierarchy: device → device_group → site → org → partner
+  const settings = await resolveDeviceEventLogSettings(deviceId);
+
+  // Cache the result
+  if (redis) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(settings), 'EX', EVENT_LOG_CACHE_TTL_SECONDS);
+    } catch (cacheErr) {
+      console.warn(`[eventlog] Redis cache write failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+
+  return settings;
+}
+
+/**
+ * Build event_log config update payload for heartbeat response.
+ * Returns agent-facing settings, including defaults when no policy is assigned.
+ * This ensures stale non-default agent settings get reset after policy removal.
+ */
+export async function buildEventLogConfigUpdate(deviceId: string): Promise<{
+  max_events_per_cycle: number;
+  collect_categories: string[];
+  minimum_level: string;
+  collection_interval_minutes: number;
+}> {
+  const settings = await getDeviceEventLogSettings(deviceId);
+
+  return {
+    max_events_per_cycle: settings.maxEventsPerCycle,
+    collect_categories: settings.collectCategories,
+    minimum_level: settings.minimumLevel,
+    collection_interval_minutes: settings.collectionIntervalMinutes,
+  };
+}
+
+/**
+ * Org-level retention lookup for the retention worker.
+ * Returns the retention days from the highest-priority org-level event_log policy,
+ * or 30 days if none is configured.
+ */
+export async function getOrgEventLogRetentionDays(orgId: string): Promise<number> {
+  const [row] = await db
+    .select({ retentionDays: configPolicyEventLogSettings.retentionDays })
+    .from(configPolicyAssignments)
+    .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+    .innerJoin(configPolicyFeatureLinks, and(
+      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyFeatureLinks.featureType, 'event_log'),
+    ))
+    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(and(
+      eq(configPolicyAssignments.level, 'organization'),
+      eq(configPolicyAssignments.targetId, orgId),
+      eq(configurationPolicies.status, 'active'),
+    ))
+    .orderBy(configPolicyAssignments.priority)
+    .limit(1);
+
+  return row?.retentionDays ?? 30;
 }
 
 // ============================================

@@ -294,10 +294,10 @@ export default function NotificationChannelsPage() {
         </div>
         <div className="flex items-center gap-3">
           <a
-            href="/alerts/rules"
+            href="/configuration-policies"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
-            Alert Rules
+            Configuration Policies
           </a>
           <button
             type="button"

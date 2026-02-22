@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import KnownGuestsSettings from './KnownGuestsSettings';
 import type { PartnerSettings, BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule } from '@breeze/shared';
 
 type Partner = {
@@ -490,6 +491,9 @@ export default function PartnerSettingsPage() {
           </div>
         </div>
       </section>
+
+      {/* Known Guests */}
+      <KnownGuestsSettings />
     </div>
   );
 }

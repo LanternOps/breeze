@@ -24,7 +24,7 @@ var sysctlBoottimeRegex = regexp.MustCompile(`sec\s*=\s*(\d+)`)
 var shellMetacharRegex = regexp.MustCompile(`[;&|$` + "`" + `\\!<>(){}'"*?~#\n\r]`)
 
 // Collect gathers boot performance metrics on macOS.
-// It retrieves boot timestamp, calculates uptime-based boot time, enumerates
+// It retrieves boot timestamp, estimates boot-to-desktop timing, enumerates
 // startup items (LaunchAgents, LaunchDaemons, Login Items), and estimates
 // per-process performance impact from early-boot processes.
 func (c *BootPerformanceCollector) Collect() (*BootPerformanceMetrics, error) {
@@ -39,29 +39,12 @@ func (c *BootPerformanceCollector) Collect() (*BootPerformanceMetrics, error) {
 	}
 	metrics.BootTimestamp = bootTime
 
-	// Total boot time = time from boot timestamp to now (uptime).
-	// This is the best approximation on macOS since BIOS timing is unavailable.
-	uptime := time.Since(bootTime).Seconds()
-	metrics.TotalBootSeconds = uptime
-
-	// BIOS time is not available on macOS (EFI firmware timing not exposed).
-	metrics.BiosSeconds = 0
-
-	// Try to determine desktop-ready time from unified log.
+	// macOS does not expose BIOS/loader phase timings directly.
+	// We treat time-to-loginwindow as the boot duration proxy when available,
+	// otherwise fall back to uptime as a coarse estimate.
+	uptimeSeconds := time.Since(bootTime).Seconds()
 	desktopReady := getDesktopReadyTime(bootTime)
-	if desktopReady > 0 {
-		metrics.DesktopReadySeconds = desktopReady
-		// OsLoader = total uptime - desktop ready. On macOS this is approximate since
-		// TotalBootSeconds reflects total uptime rather than true boot duration.
-		metrics.OsLoaderSeconds = metrics.TotalBootSeconds - desktopReady
-		if metrics.OsLoaderSeconds < 0 {
-			metrics.OsLoaderSeconds = 0
-		}
-	} else {
-		// Fallback: use total boot time as desktop-ready since we cannot split it.
-		metrics.DesktopReadySeconds = metrics.TotalBootSeconds
-		metrics.OsLoaderSeconds = 0
-	}
+	applyDarwinBootTiming(metrics, desktopReady, uptimeSeconds)
 
 	// --- Enumerate startup items ---
 	var items []StartupItem
@@ -91,6 +74,26 @@ func (c *BootPerformanceCollector) Collect() (*BootPerformanceMetrics, error) {
 	metrics.StartupItemCount = len(items)
 
 	return metrics, nil
+}
+
+func applyDarwinBootTiming(metrics *BootPerformanceMetrics, desktopReady, uptimeSeconds float64) {
+	metrics.BiosSeconds = 0
+	metrics.OsLoaderSeconds = 0
+
+	if desktopReady > 0 {
+		metrics.DesktopReadySeconds = desktopReady
+		metrics.TotalBootSeconds = desktopReady
+		return
+	}
+
+	// If log-based desktop-ready timing is unavailable, avoid reporting a zero-second
+	// boot by falling back to uptime as a coarse estimate.
+	metrics.DesktopReadySeconds = 0
+	if uptimeSeconds > 0 {
+		metrics.TotalBootSeconds = uptimeSeconds
+		return
+	}
+	metrics.TotalBootSeconds = 0
 }
 
 // getBootTimestamp retrieves the system boot time from sysctl kern.boottime.

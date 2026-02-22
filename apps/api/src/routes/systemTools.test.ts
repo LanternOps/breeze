@@ -31,8 +31,20 @@ vi.mock('../services/commandQueue', () => ({
     EVENT_LOGS_LIST: 'EVENT_LOGS_LIST',
     EVENT_LOGS_QUERY: 'EVENT_LOGS_QUERY',
     EVENT_LOG_GET: 'EVENT_LOG_GET',
-    FILE_READ: 'FILE_READ'
+    FILE_READ: 'FILE_READ',
+    FILE_COPY: 'file_copy',
+    FILE_LIST: 'file_list',
+    FILE_WRITE: 'file_write',
+    FILE_DELETE: 'file_delete',
+    FILE_RENAME: 'file_rename',
+    FILE_TRASH_LIST: 'file_trash_list',
+    FILE_TRASH_RESTORE: 'file_trash_restore',
+    FILE_TRASH_PURGE: 'file_trash_purge',
   }
+}));
+
+vi.mock('../services/auditService', () => ({
+  createAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../db', () => ({
@@ -683,5 +695,238 @@ describe('system tools routes', () => {
     expect(res.headers.get('content-disposition')).toContain('example.txt');
     const content = Buffer.from(await res.arrayBuffer()).toString('utf8');
     expect(content).toBe('hello from device');
+  });
+
+  describe('POST /files/copy', () => {
+    it('returns 404 when device not found', async () => {
+      mockDeviceSelect(null as any);
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/copy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ sourcePath: '/tmp/a.txt', destPath: '/tmp/b.txt' }]
+        })
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns results for successful copy', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ success: true })
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/copy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ sourcePath: '/tmp/a.txt', destPath: '/tmp/b.txt' }]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toHaveLength(1);
+      expect(body.results[0].status).toBe('success');
+      expect(body.results[0].sourcePath).toBe('/tmp/a.txt');
+      expect(body.results[0].destPath).toBe('/tmp/b.txt');
+    });
+
+    it('handles failed copy operation', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'failed',
+        error: 'Permission denied'
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/copy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ sourcePath: '/tmp/a.txt', destPath: '/tmp/b.txt' }]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toHaveLength(1);
+      expect(body.results[0].status).toBe('failure');
+      expect(body.results[0].error).toBe('Permission denied');
+    });
+  });
+
+  describe('POST /files/move', () => {
+    it('returns 404 when device not found', async () => {
+      mockDeviceSelect(null as any);
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ sourcePath: '/tmp/old.txt', destPath: '/tmp/new.txt' }]
+        })
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns results for successful move', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ success: true })
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ sourcePath: '/tmp/old.txt', destPath: '/tmp/new.txt' }]
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toHaveLength(1);
+      expect(body.results[0].status).toBe('success');
+      expect(body.results[0].sourcePath).toBe('/tmp/old.txt');
+      expect(body.results[0].destPath).toBe('/tmp/new.txt');
+    });
+  });
+
+  describe('POST /files/delete', () => {
+    it('returns 404 when device not found', async () => {
+      mockDeviceSelect(null as any);
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paths: ['/tmp/delete-me.txt']
+        })
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns results for successful delete', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ success: true })
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paths: ['/tmp/delete-me.txt']
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toHaveLength(1);
+      expect(body.results[0].status).toBe('success');
+      expect(body.results[0].path).toBe('/tmp/delete-me.txt');
+    });
+  });
+
+  describe('GET /files/trash', () => {
+    it('returns 404 when device not found', async () => {
+      mockDeviceSelect(null as any);
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/trash`);
+      expect(res.status).toBe(404);
+    });
+
+    it('returns trash items', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({
+          items: [
+            { trashId: 'trash-1', originalPath: '/tmp/deleted.txt', deletedAt: '2026-02-08T10:00:00.000Z', size: 1024 },
+            { trashId: 'trash-2', originalPath: '/tmp/old.log', deletedAt: '2026-02-07T08:00:00.000Z', size: 512 }
+          ]
+        })
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/trash`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      expect(body.data[0].trashId).toBe('trash-1');
+      expect(body.data[1].originalPath).toBe('/tmp/old.log');
+    });
+  });
+
+  describe('POST /files/trash/restore', () => {
+    it('returns 404 when device not found', async () => {
+      mockDeviceSelect(null as any);
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/trash/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trashIds: ['trash-1']
+        })
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns results for successful restore', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ restoredPath: '/tmp/restored.txt' })
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/trash/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trashIds: ['trash-1']
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toHaveLength(1);
+      expect(body.results[0].status).toBe('success');
+      expect(body.results[0].trashId).toBe('trash-1');
+      expect(body.results[0].restoredPath).toBe('/tmp/restored.txt');
+    });
+  });
+
+  describe('POST /files/trash/purge', () => {
+    it('returns 404 when device not found', async () => {
+      mockDeviceSelect(null as any);
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/trash/purge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trashIds: ['trash-1']
+        })
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns success for purge', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ purged: 3 })
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/files/trash/purge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trashIds: ['trash-1', 'trash-2', 'trash-3']
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.purged).toBe(3);
+    });
   });
 });

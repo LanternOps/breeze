@@ -10,7 +10,7 @@ import {
 } from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
 import type { RequestLike } from '../../services/auditEvents';
-import { createHash } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
 import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
@@ -19,6 +19,8 @@ import {
   REFRESH_COOKIE_PATH,
   REFRESH_COOKIE_MAX_AGE_SECONDS,
   CSRF_HEADER_NAME,
+  CSRF_COOKIE_NAME,
+  CSRF_COOKIE_PATH,
   ANONYMOUS_ACTOR_ID
 } from './schemas';
 
@@ -37,26 +39,93 @@ export function getClientIP(c: RequestLike): string {
   return getTrustedClientIp(c);
 }
 
+export function getClientRateLimitKey(c: RequestLike): string {
+  const trustedIp = getClientIP(c);
+  if (trustedIp && trustedIp !== 'unknown') {
+    return `ip:${trustedIp}`;
+  }
+
+  const read = (name: string) => c.req.header(name) ?? c.req.header(name.toLowerCase()) ?? '';
+  const fingerprintSource = [
+    read('user-agent'),
+    read('accept-language'),
+    read('origin'),
+    read('x-forwarded-for'),
+    read('x-real-ip'),
+    read('cf-connecting-ip')
+  ].join('|');
+
+  const digest = createHash('sha256')
+    .update(fingerprintSource || 'no-client-fingerprint')
+    .digest('hex')
+    .slice(0, 24);
+
+  return `fp:${digest}`;
+}
+
 export function isSecureCookieEnvironment(): boolean {
   return process.env.NODE_ENV === 'production';
 }
 
+type SameSiteValue = 'Lax' | 'Strict' | 'None';
+
+function normalizeSameSite(raw: string | undefined): SameSiteValue {
+  const value = raw?.trim().toLowerCase();
+  if (value === 'strict') return 'Strict';
+  if (value === 'none') return 'None';
+  return 'Lax';
+}
+
+function resolveAuthCookieSameSite(): SameSiteValue {
+  return normalizeSameSite(process.env.AUTH_COOKIE_SAME_SITE ?? process.env.COOKIE_SAME_SITE);
+}
+
+function shouldSetSecureCookie(sameSite: SameSiteValue): boolean {
+  if (sameSite === 'None') {
+    // Browsers require Secure when SameSite=None.
+    return true;
+  }
+  const forceSecure = (process.env.AUTH_COOKIE_FORCE_SECURE ?? process.env.COOKIE_FORCE_SECURE)?.trim().toLowerCase();
+  if (forceSecure === '1' || forceSecure === 'true') {
+    return true;
+  }
+  return isSecureCookieEnvironment();
+}
+
+function buildCookieSecuritySuffix(sameSite: SameSiteValue): string {
+  const secure = shouldSetSecureCookie(sameSite) ? '; Secure' : '';
+  return `; SameSite=${sameSite}${secure}`;
+}
+
 export function buildRefreshTokenCookie(refreshToken: string): string {
-  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
-  return `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}; Path=${REFRESH_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}${secure}`;
+  const sameSite = resolveAuthCookieSameSite();
+  return `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
+}
+
+export function buildCsrfTokenCookie(csrfToken: string): string {
+  const sameSite = resolveAuthCookieSameSite();
+  return `${CSRF_COOKIE_NAME}=${encodeURIComponent(csrfToken)}; Path=${CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
 }
 
 export function buildClearRefreshTokenCookie(): string {
-  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
-  return `${REFRESH_COOKIE_NAME}=; Path=${REFRESH_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+  const sameSite = resolveAuthCookieSameSite();
+  return `${REFRESH_COOKIE_NAME}=; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite)}; Max-Age=0`;
+}
+
+export function buildClearCsrfTokenCookie(): string {
+  const sameSite = resolveAuthCookieSameSite();
+  return `${CSRF_COOKIE_NAME}=; Path=${CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite)}; Max-Age=0`;
 }
 
 export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
+  const csrfToken = randomBytes(32).toString('hex');
   c.header('Set-Cookie', buildRefreshTokenCookie(refreshToken), { append: true });
+  c.header('Set-Cookie', buildCsrfTokenCookie(csrfToken), { append: true });
 }
 
 export function clearRefreshTokenCookie(c: Context): void {
   c.header('Set-Cookie', buildClearRefreshTokenCookie(), { append: true });
+  c.header('Set-Cookie', buildClearCsrfTokenCookie(), { append: true });
 }
 
 export function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
@@ -116,9 +185,25 @@ export function isAllowedOrigin(origin: string): boolean {
 }
 
 export function validateCookieCsrfRequest(c: Context): string | null {
-  const csrfHeader = c.req.header(CSRF_HEADER_NAME);
-  if (!csrfHeader || csrfHeader.trim().length === 0) {
+  const csrfHeader = c.req.header(CSRF_HEADER_NAME)?.trim();
+  if (!csrfHeader || csrfHeader.length === 0) {
     return 'Missing CSRF header';
+  }
+
+  const csrfCookie = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
+  if (!csrfCookie) {
+    // Backward compatibility for non-browser clients that do not expose cookie APIs.
+    // Browsers are still protected by Origin/Sec-Fetch-Site checks below.
+    const hasOrigin = Boolean(c.req.header('origin'));
+    const fetchSite = c.req.header('sec-fetch-site');
+    const isBrowserSignal = hasOrigin || Boolean(fetchSite);
+    if (csrfHeader === '1' && !isBrowserSignal) {
+      return null;
+    }
+    return 'Missing CSRF cookie';
+  }
+  if (!safeCompareTokens(csrfHeader, csrfCookie)) {
+    return 'Invalid CSRF token';
   }
 
   const origin = c.req.header('origin');
@@ -136,6 +221,15 @@ export function validateCookieCsrfRequest(c: Context): string | null {
   }
 
   return null;
+}
+
+function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
+  const headerBuffer = Buffer.from(headerToken, 'utf8');
+  const cookieBuffer = Buffer.from(cookieToken, 'utf8');
+  if (headerBuffer.length !== cookieBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(headerBuffer, cookieBuffer);
 }
 
 // ============================================

@@ -47,6 +47,11 @@ export const CommandTypes = {
   FILE_MKDIR: 'file_mkdir',
   FILE_RENAME: 'file_rename',
   FILESYSTEM_ANALYSIS: 'filesystem_analysis',
+  FILE_COPY: 'file_copy',
+  FILE_TRASH_LIST: 'file_trash_list',
+  FILE_TRASH_RESTORE: 'file_trash_restore',
+  FILE_TRASH_PURGE: 'file_trash_purge',
+  FILE_LIST_DRIVES: 'file_list_drives',
 
   // Terminal
   TERMINAL_START: 'terminal_start',
@@ -57,10 +62,14 @@ export const CommandTypes = {
   // Script execution
   SCRIPT: 'script',
 
+  // Software management
+  SOFTWARE_UNINSTALL: 'software_uninstall',
+
   // Patch management
   PATCH_SCAN: 'patch_scan',
   INSTALL_PATCHES: 'install_patches',
   ROLLBACK_PATCHES: 'rollback_patches',
+  COLLECT_RELIABILITY_METRICS: 'collect_reliability_metrics',
 
   // Security
   SECURITY_COLLECT_STATUS: 'security_collect_status',
@@ -77,6 +86,10 @@ export const CommandTypes = {
 
   // Computer control (AI Computer Use)
   COMPUTER_ACTION: 'computer_action',
+
+  // Boot performance
+  COLLECT_BOOT_PERFORMANCE: 'collect_boot_performance',
+  MANAGE_STARTUP_ITEM: 'manage_startup_item',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -130,17 +143,22 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.FILE_DELETE,
   CommandTypes.FILE_MKDIR,
   CommandTypes.FILE_RENAME,
+  CommandTypes.FILE_COPY,
+  CommandTypes.FILE_TRASH_RESTORE,
+  CommandTypes.FILE_TRASH_PURGE,
   CommandTypes.TERMINAL_START,
   CommandTypes.SCRIPT,
   CommandTypes.PATCH_SCAN,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,
+  CommandTypes.SOFTWARE_UNINSTALL,
   CommandTypes.SECURITY_SCAN,
   CommandTypes.SECURITY_THREAT_QUARANTINE,
   CommandTypes.SECURITY_THREAT_REMOVE,
   CommandTypes.SECURITY_THREAT_RESTORE,
   CommandTypes.TAKE_SCREENSHOT,
   CommandTypes.COMPUTER_ACTION,
+  CommandTypes.MANAGE_STARTUP_ITEM,
 ]);
 
 /**
@@ -185,7 +203,12 @@ export async function queueCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log:', err));
+        .catch((err) => console.error('Failed to write audit log', {
+          commandId: command.id,
+          deviceId,
+          type,
+          error: err,
+        }));
     }
   }
 
@@ -350,6 +373,11 @@ export async function executeCommand(
   // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
   //    INSERT commits immediately and is visible to the WS handler.
   return runOutsideDbContext(async () => {
+    // Validate userId for FK constraint: device_commands.created_by references users.id.
+    // Helper sessions use a synthetic auth where auth.user.id is actually the device ID
+    // (no real user record exists). Detect this by checking if userId equals deviceId.
+    const safeUserId = userId && userId !== deviceId ? userId : null;
+
     // Insert command (device_commands — no RLS)
     const [command] = await db
       .insert(deviceCommands)
@@ -358,7 +386,7 @@ export async function executeCommand(
         type,
         payload,
         status: 'pending',
-        createdBy: userId || null,
+        createdBy: safeUserId,
       })
       .returning();
 
@@ -372,8 +400,8 @@ export async function executeCommand(
       db.insert(auditLogs)
         .values({
           orgId: device.orgId,
-          actorType: userId ? 'user' : 'system',
-          actorId: userId || '00000000-0000-0000-0000-000000000000',
+          actorType: safeUserId ? 'user' : 'system',
+          actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
           action: `agent.command.${type}`,
           resourceType: 'device',
           resourceId: deviceId,
@@ -382,7 +410,13 @@ export async function executeCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log:', err));
+        .catch((err) => console.error('Failed to write audit log', {
+          commandId: command.id,
+          deviceId,
+          type,
+          orgId: device.orgId,
+          error: err,
+        }));
     }
 
     // Dispatch via WebSocket

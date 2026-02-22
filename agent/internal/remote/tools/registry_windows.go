@@ -26,11 +26,16 @@ func listRegistryKeysOS(hive, path string, startTime time.Time) CommandResult {
 
 	var keys []RegistryKey
 	for _, name := range subkeys {
-		subkey, err := openRegistryKey(hive, path+"\\"+name, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE)
+		childPath := name
+		if path != "" {
+			childPath = path + "\\" + name
+		}
+
+		subkey, err := openRegistryKey(hive, childPath, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE)
 		if err != nil {
 			keys = append(keys, RegistryKey{
 				Name: name,
-				Path: path + "\\" + name,
+				Path: childPath,
 			})
 			continue
 		}
@@ -45,7 +50,7 @@ func listRegistryKeysOS(hive, path string, startTime time.Time) CommandResult {
 
 		keys = append(keys, RegistryKey{
 			Name:        name,
-			Path:        path + "\\" + name,
+			Path:        childPath,
 			SubKeyCount: subkeyCount,
 			ValueCount:  valueCount,
 		})

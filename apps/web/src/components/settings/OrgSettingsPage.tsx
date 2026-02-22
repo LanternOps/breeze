@@ -5,12 +5,14 @@ import {
   Building2,
   CheckCircle2,
   Paintbrush,
+  ScrollText,
   Shield
 } from 'lucide-react';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
+import OrgEventLogSettings from './OrgEventLogSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -38,6 +40,12 @@ const tabs = [
     label: 'Security',
     description: 'Access policies and MFA',
     icon: Shield
+  },
+  {
+    id: 'event-logs',
+    label: 'Event Logs',
+    description: 'Forwarding and retention',
+    icon: ScrollText
   }
 ] as const;
 
@@ -102,6 +110,14 @@ type OrgDetails = {
     mtls?: {
       certLifetimeDays?: number;
       expiredCertPolicy?: 'auto_reissue' | 'quarantine';
+    };
+    logForwarding?: {
+      enabled?: boolean;
+      elasticsearchUrl?: string;
+      elasticsearchApiKey?: string;
+      elasticsearchUsername?: string;
+      elasticsearchPassword?: string;
+      indexPrefix?: string;
     };
   };
   billingContact?: {
@@ -286,6 +302,12 @@ export default function OrgSettingsPage() {
             mtls={orgDetails?.settings?.mtls}
             onDirty={handleDirty}
             onSave={(data) => handleSave('security', data)}
+          />
+        );
+      case 'event-logs':
+        return (
+          <OrgEventLogSettings
+            onDirty={handleDirty}
           />
         );
       case 'general':

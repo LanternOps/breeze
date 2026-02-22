@@ -117,7 +117,7 @@ describe('runPreFlightChecks', () => {
     mockCheckAiRateLimit.mockResolvedValue(null);
     mockCheckBudget.mockResolvedValue(null);
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
-    mockBuildSystemPrompt.mockReturnValue('system prompt');
+    mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
   });
 
@@ -302,7 +302,7 @@ describe('runPreFlightChecks', () => {
     const pageContext = { type: 'device', id: 'dev-1', hostname: 'test' } as any;
     const sanitizedCtx = { type: 'device', id: 'dev-1', hostname: 'sanitized' } as any;
     mockSanitizePageContext.mockReturnValue(sanitizedCtx);
-    mockBuildSystemPrompt.mockReturnValue('contextual prompt');
+    mockBuildSystemPrompt.mockResolvedValue('contextual prompt');
 
     const result = await runPreFlightChecks('session-1', 'hello', auth, pageContext);
 
@@ -328,7 +328,7 @@ describe('runPreFlightChecks', () => {
 
   it('calls buildSystemPrompt(auth) when no page context and no stored systemPrompt', async () => {
     mockGetSession.mockResolvedValue(makeSession({ systemPrompt: null }));
-    mockBuildSystemPrompt.mockReturnValue('default prompt');
+    mockBuildSystemPrompt.mockResolvedValue('default prompt');
 
     const result = await runPreFlightChecks('session-1', 'hello', auth);
 

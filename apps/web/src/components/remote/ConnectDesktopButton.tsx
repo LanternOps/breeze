@@ -7,6 +7,8 @@ interface Props {
   deviceId: string;
   className?: string;
   compact?: boolean;
+  iconOnly?: boolean;
+  disabled?: boolean;
 }
 
 /**
@@ -22,7 +24,7 @@ function tryDeepLink(url: string) {
   setTimeout(() => a.remove(), 100);
 }
 
-export default function ConnectDesktopButton({ deviceId, className = '', compact = false }: Props) {
+export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false }: Props) {
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -187,6 +189,30 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       </div>
     </div>
   ) : null;
+
+  if (iconOnly) {
+    return (
+      <div className={`relative ${className}`}>
+        <button
+          type="button"
+          onClick={handleConnect}
+          disabled={disabled || status === 'creating' || status === 'launching'}
+          title="Connect Desktop"
+          className="flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {status === 'creating' || status === 'launching' ? (
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          ) : (
+            <Monitor className="h-4 w-4" />
+          )}
+        </button>
+        {error && (
+          <p className="absolute left-0 top-full mt-1 whitespace-nowrap text-xs text-red-500">{error}</p>
+        )}
+        {fallbackContent}
+      </div>
+    );
+  }
 
   if (compact) {
     return (

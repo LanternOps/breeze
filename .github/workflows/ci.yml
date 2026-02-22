@@ -51,6 +51,9 @@ jobs:
       - name: Run ESLint
         run: pnpm lint
 
+      - name: Check migration coverage
+        run: ./scripts/check-migration-coverage.sh
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest

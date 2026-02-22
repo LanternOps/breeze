@@ -520,6 +520,53 @@ describe('security routes', () => {
     });
   });
 
+  describe('GET /security/trends', () => {
+    it('should include exposure factors and vulnerability management trend points', async () => {
+      vi.mocked(getSecurityPostureTrend).mockResolvedValue([
+        {
+          timestamp: '2026-02-20',
+          overall: 70,
+          antivirus: 78,
+          firewall: 80,
+          encryption: 82,
+          open_ports: 65,
+          password_policy: 76,
+          os_currency: 75,
+          admin_accounts: 79,
+          patch_compliance: 73,
+          vulnerability_management: 70
+        },
+        {
+          timestamp: '2026-02-21',
+          overall: 72,
+          antivirus: 79,
+          firewall: 81,
+          encryption: 83,
+          open_ports: 68,
+          password_policy: 77,
+          os_currency: 78,
+          admin_accounts: 80,
+          patch_compliance: 74,
+          vulnerability_management: 73
+        }
+      ] as any);
+
+      const res = await app.request('/security/trends?period=30d', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.dataPoints).toHaveLength(2);
+      expect(body.data.dataPoints[0].open_ports).toBe(65);
+      expect(body.data.dataPoints[0].os_currency).toBe(75);
+      expect(body.data.dataPoints[0].vulnerability_management).toBe(70);
+      expect(body.data.summary.previous).toBe(70);
+      expect(body.data.summary.current).toBe(72);
+    });
+  });
+
   describe('GET /security/password-policy', () => {
     it('should use ingested password policy telemetry for compliance and checks', async () => {
       mockStatusSelect([

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
-import { eq, asc, inArray, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceBootMetrics } from '../../db/schema';
+import { normalizeStartupItems } from '../../services/startupItems';
 
 export const bootPerformanceRoutes = new Hono();
 
@@ -38,8 +39,8 @@ bootPerformanceRoutes.post('/:id/boot-performance', async (c) => {
     const biosSeconds = typeof body.biosSeconds === 'number' ? body.biosSeconds : null;
     const osLoaderSeconds = typeof body.osLoaderSeconds === 'number' ? body.osLoaderSeconds : null;
     const desktopReadySeconds = typeof body.desktopReadySeconds === 'number' ? body.desktopReadySeconds : null;
-    const startupItems = Array.isArray(body.startupItems) ? body.startupItems : [];
-    const startupItemCount = typeof body.startupItemCount === 'number' ? body.startupItemCount : startupItems.length;
+    const startupItems = normalizeStartupItems(Array.isArray(body.startupItems) ? body.startupItems : []);
+    const startupItemCount = startupItems.length;
 
     await db.insert(deviceBootMetrics).values({
       deviceId: device.id,
@@ -51,32 +52,38 @@ bootPerformanceRoutes.post('/:id/boot-performance', async (c) => {
       totalBootSeconds,
       startupItemCount,
       startupItems,
+    }).onConflictDoUpdate({
+      target: [deviceBootMetrics.deviceId, deviceBootMetrics.bootTimestamp],
+      set: {
+        orgId: device.orgId,
+        biosSeconds,
+        osLoaderSeconds,
+        desktopReadySeconds,
+        totalBootSeconds,
+        startupItemCount,
+        startupItems,
+      },
     });
 
     // Retention: keep only the most recent N boot records per device.
-    // Delete the oldest records if we exceed the limit.
-    const countResult = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(deviceBootMetrics)
-      .where(eq(deviceBootMetrics.deviceId, device.id));
-
-    const totalRecords = countResult[0]?.count ?? 0;
-    if (totalRecords > MAX_BOOT_RECORDS_PER_DEVICE) {
-      const excess = totalRecords - MAX_BOOT_RECORDS_PER_DEVICE;
-      const oldestRecords = await db
-        .select({ id: deviceBootMetrics.id })
-        .from(deviceBootMetrics)
-        .where(eq(deviceBootMetrics.deviceId, device.id))
-        .orderBy(asc(deviceBootMetrics.bootTimestamp))
-        .limit(excess);
-
-      if (oldestRecords.length > 0) {
-        const idsToDelete = oldestRecords.map(r => r.id);
-        await db
-          .delete(deviceBootMetrics)
-          .where(inArray(deviceBootMetrics.id, idsToDelete));
-      }
-    }
+    // Single SQL pass with row_number avoids count+scan races.
+    await db.execute(sql`
+      DELETE FROM device_boot_metrics
+      WHERE id IN (
+        SELECT id
+        FROM (
+          SELECT
+            id,
+            ROW_NUMBER() OVER (
+              PARTITION BY device_id
+              ORDER BY boot_timestamp DESC, created_at DESC
+            ) AS rn
+          FROM device_boot_metrics
+          WHERE device_id = ${device.id}
+        ) ranked
+        WHERE ranked.rn > ${MAX_BOOT_RECORDS_PER_DEVICE}
+      )
+    `);
 
     return c.json({ success: true }, 201);
   } catch (err) {

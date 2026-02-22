@@ -62,6 +62,9 @@ export function buildHelperSystemPrompt(ctx: HelperContext): string {
   if (tools.includes('get_security_posture')) {
     capabilities.push('- You can check the security posture of this device');
   }
+  if (tools.includes('get_fleet_health')) {
+    capabilities.push('- You can compare this device reliability against the rest of the fleet');
+  }
   if (tools.includes('computer_control')) {
     capabilities.push('- You can control the mouse and keyboard to help fix issues');
   }

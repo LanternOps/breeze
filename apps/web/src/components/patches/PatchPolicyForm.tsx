@@ -9,7 +9,7 @@ import type { PatchSeverity } from './PatchList';
 type TargetType = 'all' | 'sites' | 'groups' | 'tags';
 type SourceType = 'os' | 'third_party' | 'firmware' | 'drivers';
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
-type RebootPolicy = 'never' | 'if_required' | 'always';
+type RebootPolicy = 'never' | 'if_required' | 'always' | 'maintenance_window';
 
 const policySchema = z
   .object({
@@ -24,7 +24,7 @@ const policySchema = z
     scheduleTime: z.string().min(1, 'Select a time'),
     scheduleDayOfWeek: z.string().optional(),
     scheduleDayOfMonth: z.coerce.number().int().min(1).max(28).optional(),
-    rebootPolicy: z.enum(['never', 'if_required', 'always'])
+    rebootPolicy: z.enum(['never', 'if_required', 'always', 'maintenance_window'])
   })
   .superRefine((values, ctx) => {
     if (values.autoApprove && (!values.autoApproveSeverities || values.autoApproveSeverities.length === 0)) {
@@ -74,7 +74,8 @@ const scheduleOptions: { value: ScheduleFrequency; label: string }[] = [
 const rebootOptions: { value: RebootPolicy; label: string; description: string }[] = [
   { value: 'never', label: 'Never reboot', description: 'Do not reboot devices automatically.' },
   { value: 'if_required', label: 'If required', description: 'Reboot only when the patch requires it.' },
-  { value: 'always', label: 'Always reboot', description: 'Always reboot after patching.' }
+  { value: 'always', label: 'Always reboot', description: 'Always reboot after patching.' },
+  { value: 'maintenance_window', label: 'During maintenance window', description: 'Only reboot during a scheduled maintenance window.' },
 ];
 
 const dayOfWeekOptions = [
@@ -350,7 +351,7 @@ export default function PatchPolicyForm({
           <RefreshCcw className="h-5 w-5 text-primary" />
           <h2 className="text-lg font-semibold">Reboot Policy</h2>
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
           {rebootOptions.map(option => (
             <label
               key={option.value}

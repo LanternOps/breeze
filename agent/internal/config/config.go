@@ -81,8 +81,8 @@ type Config struct {
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
 
-	// IsService is a runtime flag set when the agent is running as a Windows SCM service.
-	// It is not persisted to config.
+	// IsService is a runtime flag set when the agent is running as a system service
+	// (Windows SCM, macOS launchd, Linux systemd). It is not persisted to config.
 	IsService bool `mapstructure:"-"`
 }
 
@@ -151,6 +151,30 @@ func Load(cfgFile string) (*Config, error) {
 		return nil, err
 	}
 
+	// Merge secrets from the separate secrets file if it exists.
+	// Old-format configs with inline secrets still work via the unmarshal
+	// above; the secrets file values take precedence when present.
+	secretsPath := secretsFilePath()
+	if _, err := os.Stat(secretsPath); err == nil {
+		sv := viper.New()
+		sv.SetConfigFile(secretsPath)
+		if err := sv.ReadInConfig(); err != nil {
+			return nil, fmt.Errorf("reading secrets file: %w", err)
+		}
+		if v := sv.GetString("auth_token"); v != "" {
+			cfg.AuthToken = v
+		}
+		if v := sv.GetString("mtls_cert_pem"); v != "" {
+			cfg.MtlsCertPEM = v
+		}
+		if v := sv.GetString("mtls_key_pem"); v != "" {
+			cfg.MtlsKeyPEM = v
+		}
+		if v := sv.GetString("mtls_cert_expires"); v != "" {
+			cfg.MtlsCertExpires = v
+		}
+	}
+
 	// Validate config: fatals block startup, warnings are logged and continue.
 	result := cfg.ValidateTiered()
 	for _, err := range result.Warnings {
@@ -173,12 +197,6 @@ func Save(cfg *Config) error {
 func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("agent_id", cfg.AgentID)
 	viper.Set("server_url", cfg.ServerURL)
-	// Only overwrite auth_token if non-empty. At runtime the token is cleared
-	// from the config struct for security; writing "" would wipe the persisted
-	// token from disk and break the agent on next startup.
-	if cfg.AuthToken != "" {
-		viper.Set("auth_token", cfg.AuthToken)
-	}
 	viper.Set("org_id", cfg.OrgID)
 	viper.Set("site_id", cfg.SiteID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
@@ -189,22 +207,24 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("log_level", cfg.LogLevel)
 	viper.Set("log_shipping_level", cfg.LogShippingLevel)
 	viper.Set("auto_update", cfg.AutoUpdate)
-	viper.Set("mtls_cert_pem", cfg.MtlsCertPEM)
-	viper.Set("mtls_key_pem", cfg.MtlsKeyPEM)
-	viper.Set("mtls_cert_expires", cfg.MtlsCertExpires)
+	// Write auth_token to agent.yaml so the Breeze Helper (which may not
+	// have root privileges to read secrets.yaml) can discover the token.
+	if cfg.AuthToken != "" {
+		viper.Set("auth_token", cfg.AuthToken)
+	}
 
 	var cfgPath string
 	if cfgFile != "" {
 		cfgPath = cfgFile
 		dir := filepath.Dir(cfgPath)
 		if dir != "." {
-			if err := os.MkdirAll(dir, 0700); err != nil {
+			if err := os.MkdirAll(dir, 0755); err != nil {
 				return err
 			}
 		}
 	} else {
 		cfgPath = filepath.Join(configDir(), "agent.yaml")
-		if err := os.MkdirAll(configDir(), 0700); err != nil {
+		if err := os.MkdirAll(configDir(), 0755); err != nil {
 			return err
 		}
 	}
@@ -213,8 +233,35 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		return err
 	}
 
-	// Restrict config file to owner-only access (contains auth token)
-	return os.Chmod(cfgPath, 0600)
+	// Allow the Breeze Helper (running as the logged-in user) to read the
+	// main config file. Secrets are stored separately in secrets.yaml with
+	// root-only permissions.
+	_ = os.Chmod(filepath.Dir(cfgPath), 0755)
+	if err := os.Chmod(cfgPath, 0644); err != nil {
+		return err
+	}
+
+	// Write secrets to a separate root-only file.
+	secretsPath := secretsFilePath()
+	sv := viper.New()
+	// Only overwrite auth_token if non-empty. At runtime the token may be
+	// cleared from the config struct for security; writing "" would wipe
+	// the persisted token and break the agent on next startup.
+	if cfg.AuthToken != "" {
+		sv.Set("auth_token", cfg.AuthToken)
+	}
+	sv.Set("mtls_cert_pem", cfg.MtlsCertPEM)
+	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)
+	sv.Set("mtls_cert_expires", cfg.MtlsCertExpires)
+
+	if err := sv.WriteConfigAs(secretsPath); err != nil {
+		return fmt.Errorf("writing secrets file: %w", err)
+	}
+	if err := os.Chmod(secretsPath, 0600); err != nil {
+		return fmt.Errorf("setting secrets file permissions: %w", err)
+	}
+
+	return nil
 }
 
 // GetDataDir returns the platform-specific data directory for the agent
@@ -227,6 +274,37 @@ func GetDataDir() string {
 	default:
 		return "/var/lib/breeze"
 	}
+}
+
+// FixConfigPermissions loosens the config directory and file permissions so
+// the Breeze Helper (running as the logged-in user) can read the main config.
+// The secrets file is kept root-only (0600).
+// Safe to call on every startup — it is a no-op if permissions are already
+// correct or the paths don't exist yet.
+func FixConfigPermissions() {
+	dir := configDir()
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		if err := os.Chmod(dir, 0755); err != nil {
+			log.Warn("Failed to fix config directory permissions", "dir", dir, "error", err.Error())
+		}
+	}
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if _, err := os.Stat(cfgPath); err == nil {
+		if err := os.Chmod(cfgPath, 0644); err != nil {
+			log.Warn("Failed to fix config file permissions", "path", cfgPath, "error", err.Error())
+		}
+	}
+	// Secrets file must remain root-only.
+	sPath := secretsFilePath()
+	if _, err := os.Stat(sPath); err == nil {
+		if err := os.Chmod(sPath, 0600); err != nil {
+			log.Warn("Failed to fix secrets file permissions", "path", sPath, "error", err.Error())
+		}
+	}
+}
+
+func secretsFilePath() string {
+	return filepath.Join(configDir(), "secrets.yaml")
 }
 
 func configDir() string {

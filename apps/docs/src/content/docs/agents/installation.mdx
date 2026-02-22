@@ -35,10 +35,9 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       --server https://breeze.yourdomain.com \
       --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    # Install as a systemd service
-    sudo cp breeze-agent /usr/local/bin/breeze-agent
-    sudo systemctl enable breeze-agent
-    sudo systemctl start breeze-agent
+    # Install as a systemd service and start
+    sudo ./breeze-agent service install
+    sudo breeze-agent service start
     ```
   </TabItem>
   <TabItem label="macOS">
@@ -48,15 +47,22 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       https://breeze.yourdomain.com/api/v1/agents/download/darwin/arm64
     chmod +x breeze-agent
 
+    # Remove Gatekeeper quarantine attribute (unsigned binary)
+    sudo xattr -d com.apple.quarantine breeze-agent
+
     # Enroll with your enrollment key
     sudo ./breeze-agent enroll YOUR_ENROLLMENT_KEY \
       --server https://breeze.yourdomain.com \
       --enrollment-secret YOUR_ENROLLMENT_SECRET
 
-    # Copy to system path and start via launchd
-    sudo cp breeze-agent /usr/local/bin/breeze-agent
-    sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist
+    # Install as a launchd service and start
+    sudo ./breeze-agent service install
+    sudo breeze-agent service start
     ```
+
+    <Aside type="tip">
+      macOS Gatekeeper blocks unsigned binaries downloaded from the internet. The `xattr -d com.apple.quarantine` command removes the quarantine flag so the binary can execute. Alternatively, right-click the binary in Finder → Open to bypass Gatekeeper on a per-file basis. For MDM-managed fleets, deploy the binary via your MDM to avoid quarantine entirely.
+    </Aside>
   </TabItem>
   <TabItem label="Windows">
     ```powershell
@@ -87,16 +93,14 @@ During enrollment, the agent:
 1. Collects system information (hostname, OS, architecture, hardware details)
 2. Sends an enrollment request with the enrollment key and secret
 3. Receives a unique `brz_` bearer token, device ID, org ID, and site ID
-4. Stores configuration in a YAML file with `0600` permissions (owner-only)
-5. Creates the config directory with `0700` permissions
+4. Stores non-secret configuration in `agent.yaml` (`0644`, readable by the Breeze Helper) and secrets (auth token, mTLS keys) in `secrets.yaml` (`0600`, root-only)
+5. Creates the config directory with `0755` permissions
 
 ## Verifying Installation
 
 ```bash
-# Check service status
-sudo systemctl status breeze-agent   # Linux
-sudo launchctl list | grep breeze    # macOS
-Get-Service BreezeAgent              # Windows (PowerShell)
+# Check service status (all platforms)
+sudo breeze-agent service status
 
 # Check agent version
 breeze-agent version
@@ -106,7 +110,7 @@ breeze-agent status
 
 # View agent logs
 sudo journalctl -u breeze-agent -f                    # Linux
-sudo tail -f /Library/Logs/Breeze/agent.log            # macOS
+sudo tail -f "/Library/Application Support/Breeze/logs/agent.log"  # macOS
 Get-Content "$env:ProgramData\Breeze\logs\agent.log"   # Windows
 ```
 
@@ -123,9 +127,9 @@ After enrollment, the agent stores its configuration at:
 | Windows | `C:\ProgramData\Breeze\agent.yaml` |
 
 ```yaml
+# agent.yaml — readable by the Breeze Helper (0644)
 agent_id: "uuid-..."
 server_url: "https://breeze.yourdomain.com"
-auth_token: "brz_..."
 org_id: "uuid-..."
 site_id: "uuid-..."
 heartbeat_interval_seconds: 60
@@ -135,35 +139,83 @@ enabled_collectors:
   - software
   - metrics
   - network
+# Auth token and mTLS keys are stored separately in secrets.yaml (0600)
 ```
 
 <Aside type="danger">
-  The config file contains the agent's bearer token. Its permissions are set to `0600` (owner-only read/write). Do not change this.
+  The agent's bearer token and mTLS keys are stored in `secrets.yaml` with `0600` permissions (root-only). Do not change these permissions. The main `agent.yaml` file is `0644` so the Breeze Helper can read it.
 </Aside>
 
 ## Service Management
 
-<Tabs>
-  <TabItem label="Linux">
-    ```bash
-    sudo systemctl start breeze-agent    # Start
-    sudo systemctl stop breeze-agent     # Stop
-    sudo systemctl restart breeze-agent  # Restart
-    sudo systemctl enable breeze-agent   # Enable on boot
-    sudo systemctl disable breeze-agent  # Disable on boot
-    ```
-  </TabItem>
-  <TabItem label="macOS">
-    ```bash
-    sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist     # Start
-    sudo launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist   # Stop
-    ```
-  </TabItem>
-  <TabItem label="Windows">
-    ```powershell
-    breeze-agent.exe service start       # Start
-    breeze-agent.exe service stop        # Stop
-    breeze-agent.exe service uninstall   # Remove service
-    ```
-  </TabItem>
-</Tabs>
+The `service` subcommand provides a unified interface across all platforms:
+
+```bash
+sudo breeze-agent service install      # Install as a system service
+sudo breeze-agent service start        # Start the service
+sudo breeze-agent service stop         # Stop the service
+sudo breeze-agent service status       # Show service status
+sudo breeze-agent service uninstall    # Remove the service
+```
+
+Under the hood this uses **systemd** on Linux, **launchd** on macOS, and the **Windows Service Control Manager** on Windows.
+
+### User helper (optional)
+
+The agent includes an optional per-user desktop helper that runs in the logged-in user's GUI session and provides screen capture, tray icon, notifications, and clipboard access for remote desktop. To install it alongside the main agent:
+
+```bash
+sudo breeze-agent service install --with-user-helper
+```
+
+<Aside>
+  The user helper communicates with the root daemon via a local IPC socket. It has no direct network access except for log shipping (forwarding diagnostic logs to the Breeze server under the agent's identity).
+</Aside>
+
+## macOS Permissions
+
+macOS requires explicit user consent for certain agent capabilities via **System Settings → Privacy & Security**.
+
+### Screen & System Audio Recording
+
+Required for **Remote Desktop** sessions. Without this permission, the agent cannot capture the screen.
+
+- Navigate to **System Settings → Privacy & Security → Screen & System Audio Recording**
+- Add `/usr/local/bin/breeze-agent` (or your terminal app if running the agent directly from the terminal during development)
+
+### Full Disk Access (optional)
+
+Required if you need the agent to read files outside its own directories (e.g., for file transfer or backup features).
+
+- Navigate to **System Settings → Privacy & Security → Full Disk Access**
+- Add `/usr/local/bin/breeze-agent`
+
+### MDM Deployment
+
+For managed fleets, deploy a **PPPC (Privacy Preferences Policy Control)** configuration profile via your MDM to pre-approve these permissions silently. The profile should grant `ScreenCapture` and optionally `SystemPolicyAllFiles` to the agent binary.
+
+<Aside type="caution">
+  On macOS, TCC permissions can only be pre-approved via MDM configuration profiles. Without MDM, each machine requires manual approval through System Settings.
+</Aside>
+
+## Logging
+
+When running as a system service (launchd, systemd, or Windows SCM), the agent writes logs to a rotating log file only — it does not write to stdout since there is no console attached. When running interactively from a terminal, logs are written to both stdout and the log file.
+
+| OS | Log file path |
+|---|---|
+| Linux | `/var/log/breeze/agent.log` |
+| macOS | `/Library/Application Support/Breeze/logs/agent.log` |
+| Windows | `C:\ProgramData\Breeze\logs\agent.log` |
+
+Log rotation is configured via `agent.yaml`:
+
+```yaml
+log_level: info           # debug, info, warn, error
+log_format: text           # text or json
+log_file: /path/to/agent.log
+log_max_size_mb: 50        # rotate after 50 MB
+log_max_backups: 3         # keep 3 rotated files
+```
+
+Additionally, the agent ships `warn`-level (and above) logs to the Breeze server for centralized diagnostics. This threshold is configurable via `log_shipping_level` in `agent.yaml`.

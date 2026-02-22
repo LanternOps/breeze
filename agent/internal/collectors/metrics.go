@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,14 +13,21 @@ import (
 )
 
 type SystemMetrics struct {
-	CPUPercent      float64 `json:"cpuPercent"`
-	RAMPercent      float64 `json:"ramPercent"`
-	RAMUsedMB       uint64  `json:"ramUsedMb"`
-	DiskPercent     float64 `json:"diskPercent"`
-	DiskUsedGB      float64 `json:"diskUsedGb"`
-	NetworkInBytes  uint64  `json:"networkInBytes,omitempty"`
-	NetworkOutBytes uint64  `json:"networkOutBytes,omitempty"`
-	ProcessCount    int     `json:"processCount,omitempty"`
+	CPUPercent            float64 `json:"cpuPercent"`
+	RAMPercent            float64 `json:"ramPercent"`
+	RAMUsedMB             uint64  `json:"ramUsedMb"`
+	DiskPercent           float64 `json:"diskPercent"`
+	DiskUsedGB            float64 `json:"diskUsedGb"`
+	DiskActivityAvailable bool    `json:"diskActivityAvailable,omitempty"`
+	DiskReadBytes         uint64  `json:"diskReadBytes,omitempty"`
+	DiskWriteBytes        uint64  `json:"diskWriteBytes,omitempty"`
+	DiskReadBps           uint64  `json:"diskReadBps,omitempty"`
+	DiskWriteBps          uint64  `json:"diskWriteBps,omitempty"`
+	DiskReadOps           uint64  `json:"diskReadOps,omitempty"`
+	DiskWriteOps          uint64  `json:"diskWriteOps,omitempty"`
+	NetworkInBytes        uint64  `json:"networkInBytes,omitempty"`
+	NetworkOutBytes       uint64  `json:"networkOutBytes,omitempty"`
+	ProcessCount          int     `json:"processCount,omitempty"`
 
 	// Bandwidth: computed rates in bytes/sec
 	BandwidthInBps  uint64               `json:"bandwidthInBps,omitempty"`
@@ -55,6 +63,13 @@ type cachedSpeed struct {
 	at    time.Time
 }
 
+type diskSnapshot struct {
+	readBytes  uint64
+	writeBytes uint64
+	readOps    uint64
+	writeOps   uint64
+}
+
 type MetricsCollector struct {
 	lastNetIn  uint64
 	lastNetOut uint64
@@ -63,14 +78,24 @@ type MetricsCollector struct {
 	// per-interface tracking
 	lastIface  map[string]ifaceSnapshot
 	speedCache map[string]cachedSpeed
+	lastDisk   map[string]diskSnapshot
 }
 
 const speedCacheTTL = 5 * time.Minute
+
+var (
+	macDiskPartitionPattern   = regexp.MustCompile(`^(disk\d+)s\d+$`)
+	nvmeDiskPartitionPattern  = regexp.MustCompile(`^(nvme\d+n\d+)p\d+$`)
+	mmcDiskPartitionPattern   = regexp.MustCompile(`^(mmcblk\d+)p\d+$`)
+	raidDiskPartitionPattern  = regexp.MustCompile(`^(md\d+)p\d+$`)
+	genericDiskPartitionRegex = regexp.MustCompile(`^([a-z]+)\d+$`)
+)
 
 func NewMetricsCollector() *MetricsCollector {
 	return &MetricsCollector{
 		lastIface:  make(map[string]ifaceSnapshot),
 		speedCache: make(map[string]cachedSpeed),
+		lastDisk:   make(map[string]diskSnapshot),
 	}
 }
 
@@ -109,6 +134,9 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 
 	// Elapsed time since last collection (shared by both aggregate and per-interface)
 	elapsed := now.Sub(c.lastTime).Seconds()
+
+	// Disk activity (cross-platform deltas/rates)
+	c.collectDiskActivity(metrics, elapsed)
 
 	// Network — aggregate totals (backward-compatible)
 	netIO, err := net.IOCounters(false)
@@ -198,14 +226,141 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 	return metrics, nil
 }
 
+func (c *MetricsCollector) collectDiskActivity(metrics *SystemMetrics, elapsed float64) {
+	diskIO, err := disk.IOCounters()
+	if err != nil || len(diskIO) == 0 {
+		return
+	}
+
+	selected := selectDiskCounters(diskIO)
+	if len(selected) == 0 {
+		return
+	}
+
+	metrics.DiskActivityAvailable = true
+	hasHistory := !c.lastTime.IsZero() && elapsed > 1 && elapsed < 300
+
+	if hasHistory {
+		readBytes, writeBytes, readOps, writeOps := calculateDiskDeltas(selected, c.lastDisk)
+		metrics.DiskReadBytes = readBytes
+		metrics.DiskWriteBytes = writeBytes
+		metrics.DiskReadOps = readOps
+		metrics.DiskWriteOps = writeOps
+		if elapsed > 0 {
+			metrics.DiskReadBps = uint64(float64(readBytes) / elapsed)
+			metrics.DiskWriteBps = uint64(float64(writeBytes) / elapsed)
+		}
+	}
+
+	nextSnapshot := make(map[string]diskSnapshot, len(selected))
+	for name, stat := range selected {
+		nextSnapshot[name] = diskSnapshot{
+			readBytes:  stat.ReadBytes,
+			writeBytes: stat.WriteBytes,
+			readOps:    stat.ReadCount,
+			writeOps:   stat.WriteCount,
+		}
+	}
+	c.lastDisk = nextSnapshot
+}
+
+func calculateDiskDeltas(current map[string]disk.IOCountersStat, previous map[string]diskSnapshot) (uint64, uint64, uint64, uint64) {
+	var totalReadBytes uint64
+	var totalWriteBytes uint64
+	var totalReadOps uint64
+	var totalWriteOps uint64
+
+	for name, stat := range current {
+		prev, ok := previous[name]
+		if !ok {
+			continue
+		}
+		// Counter reset/overflow protection.
+		if stat.ReadBytes < prev.readBytes || stat.WriteBytes < prev.writeBytes ||
+			stat.ReadCount < prev.readOps || stat.WriteCount < prev.writeOps {
+			continue
+		}
+
+		totalReadBytes += stat.ReadBytes - prev.readBytes
+		totalWriteBytes += stat.WriteBytes - prev.writeBytes
+		totalReadOps += stat.ReadCount - prev.readOps
+		totalWriteOps += stat.WriteCount - prev.writeOps
+	}
+
+	return totalReadBytes, totalWriteBytes, totalReadOps, totalWriteOps
+}
+
+func selectDiskCounters(raw map[string]disk.IOCountersStat) map[string]disk.IOCountersStat {
+	selected := make(map[string]disk.IOCountersStat)
+	for name, stat := range raw {
+		if skipDiskDevice(name) {
+			continue
+		}
+		selected[name] = stat
+	}
+
+	for name := range selected {
+		parent := diskParentName(name)
+		if parent == "" {
+			continue
+		}
+		for candidate := range selected {
+			if strings.EqualFold(candidate, parent) {
+				delete(selected, name)
+				break
+			}
+		}
+	}
+
+	return selected
+}
+
+func diskParentName(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+
+	if match := macDiskPartitionPattern.FindStringSubmatch(lower); len(match) == 2 {
+		return match[1]
+	}
+	if match := nvmeDiskPartitionPattern.FindStringSubmatch(lower); len(match) == 2 {
+		return match[1]
+	}
+	if match := mmcDiskPartitionPattern.FindStringSubmatch(lower); len(match) == 2 {
+		return match[1]
+	}
+	if match := raidDiskPartitionPattern.FindStringSubmatch(lower); len(match) == 2 {
+		return match[1]
+	}
+	if match := genericDiskPartitionRegex.FindStringSubmatch(lower); len(match) == 2 {
+		return match[1]
+	}
+
+	return ""
+}
+
+func skipDiskDevice(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return true
+	}
+	prefixes := []string{
+		"loop", "ram", "zram", "fd", "sr", "nbd", "zd",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // skipInterface returns true for virtual/loopback interfaces that shouldn't be tracked.
 func skipInterface(name string) bool {
 	if name == "lo" || name == "lo0" {
 		return true
 	}
 	prefixes := []string{
-		"veth", "docker", "br-",       // Linux container/bridge
-		"vEther", "isatap", "Teredo",  // Windows virtual
+		"veth", "docker", "br-", // Linux container/bridge
+		"vEther", "isatap", "Teredo", // Windows virtual
 	}
 	for _, p := range prefixes {
 		if strings.HasPrefix(name, p) {

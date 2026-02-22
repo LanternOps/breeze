@@ -6,6 +6,11 @@ const { queueDeliveryMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(()
   validateWebhookUrlSafetyWithDnsMock: vi.fn()
 }));
 
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false }
+}));
+
 vi.mock('../workers/webhookDelivery', () => ({
   getWebhookWorker: vi.fn(() => ({
     queueDelivery: queueDeliveryMock
@@ -59,7 +64,19 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  })
 }));
 
 import { db } from '../db';
@@ -115,6 +132,8 @@ describe('webhook routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
 
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -337,5 +356,39 @@ describe('webhook routes', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe('Only failed deliveries can be retried');
+  });
+
+  it('rejects webhook mutations when permission check fails', async () => {
+    permissionGate.deny = true;
+
+    const res = await app.request('/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Device Alerts',
+        url: 'https://example.com/webhooks/device',
+        secret: 'secret-123',
+        events: ['device.created']
+      })
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects webhook mutations when MFA check fails', async () => {
+    mfaGate.deny = true;
+
+    const res = await app.request('/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Device Alerts',
+        url: 'https://example.com/webhooks/device',
+        secret: 'secret-123',
+        events: ['device.created']
+      })
+    });
+
+    expect(res.status).toBe(403);
   });
 });

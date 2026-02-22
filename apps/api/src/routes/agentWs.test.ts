@@ -84,7 +84,7 @@ function selectAgentDevice(rows: unknown[]) {
 
 describe('agent websocket command results', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it('rejects cross-device command result updates', async () => {
@@ -98,7 +98,8 @@ describe('agent websocket command results', () => {
         agentTokenHash: tokenHash,
         status: 'online'
       }]) as any)
-      .mockReturnValueOnce(selectOwnedCommandResult([]) as any);
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any);
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue(undefined)
@@ -111,7 +112,7 @@ describe('agent websocket command results', () => {
     await handlers.onMessage({
       data: JSON.stringify({
         type: 'command_result',
-        commandId: 'cmd-1',
+        commandId: '11111111-1111-4111-8111-111111111111',
         status: 'completed',
         exitCode: 0
       })
@@ -155,7 +156,7 @@ describe('agent websocket command results', () => {
     await handlers.onMessage({
       data: JSON.stringify({
         type: 'command_result',
-        commandId: 'cmd-1',
+        commandId: '22222222-2222-4222-8222-222222222222',
         status: 'completed',
         exitCode: 0,
         stdout: 'ok'
@@ -163,6 +164,33 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.update).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('bypasses device_commands lookup for non-UUID command IDs', async () => {
+    const token = 'brz_test_agent_token';
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectAgentDevice([{
+        id: 'device-123',
+        orgId: 'org-123',
+        agentTokenHash: tokenHash,
+        status: 'online'
+      }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', token);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'dev-push-test-123',
+        status: 'completed'
+      })
+    } as any, ws as any);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 });

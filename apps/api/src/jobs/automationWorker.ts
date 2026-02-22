@@ -36,6 +36,22 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+/** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
+function isRelationNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const cause = (error as { cause?: { code?: string } }).cause;
+  return cause?.code === '42P01';
+}
+
+const _missingTableWarned = new Set<string>();
+function logMissingTableWarning(worker: string, feature: string): void {
+  const key = `${worker}:${feature}`;
+  if (!_missingTableWarned.has(key)) {
+    _missingTableWarned.add(key);
+    console.warn(`[${worker}] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping ${feature} scan.`);
+  }
+}
+
 const AUTOMATION_QUEUE = 'automations';
 const SCHEDULE_SCAN_INTERVAL_MS = 60 * 1000;
 
@@ -364,9 +380,14 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
         },
       );
     }
-  } catch (error) {
-    console.error('[AutomationWorker] Failed to scan config policy automations:', error);
-    throw error; // Propagate so BullMQ can retry the job
+  } catch (error: unknown) {
+    // If config policy tables don't exist yet (migration not run), log once and skip
+    if (isRelationNotFoundError(error)) {
+      logMissingTableWarning('AutomationWorker', 'config policy automations');
+    } else {
+      console.error('[AutomationWorker] Failed to scan config policy automations:', error);
+      throw error; // Propagate so BullMQ can retry the job
+    }
   }
 
   return { due };
@@ -782,9 +803,13 @@ async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): 
         );
       }
     }
-  } catch (error) {
-    console.error('[AutomationWorker] Failed to queue config policy event triggers:', error);
-    throw error; // Propagate so failures are visible to BullMQ
+  } catch (error: unknown) {
+    if (isRelationNotFoundError(error)) {
+      logMissingTableWarning('AutomationWorker', 'config policy event triggers');
+    } else {
+      console.error('[AutomationWorker] Failed to queue config policy event triggers:', error);
+      throw error; // Propagate so failures are visible to BullMQ
+    }
   }
 }
 

@@ -17,13 +17,14 @@ var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 var hexIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{32,128}$`)
 
 var knownCollectors = map[string]bool{
-	"hardware": true,
-	"software": true,
-	"metrics":  true,
-	"network":  true,
-	"disks":    true,
-	"patches":  true,
-	"events":   true,
+	"hardware":    true,
+	"software":    true,
+	"metrics":     true,
+	"network":     true,
+	"disks":       true,
+	"patches":     true,
+	"events":      true,
+	"reliability": true,
 }
 
 var validLogLevels = map[string]bool{

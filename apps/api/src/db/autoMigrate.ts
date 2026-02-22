@@ -5,6 +5,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import crypto from 'node:crypto';
 import { seed } from './seed';
+import { runManualSqlMigrations } from './migrations/run';
 
 /**
  * Runs Drizzle schema migrations and seeds the database on first boot.
@@ -43,9 +44,17 @@ export async function autoMigrate(): Promise<void> {
       await baselineMigrations(client, migrationsFolder);
     }
 
-    console.log('[auto-migrate] Applying pending migrations...');
+    console.log('[auto-migrate] Applying pending Drizzle migrations...');
     await migrate(migrationDb, { migrationsFolder });
-    console.log('[auto-migrate] Migrations complete');
+    console.log('[auto-migrate] Drizzle migrations complete');
+
+    // Run manual SQL migrations (config policies, RLS, TimescaleDB, etc.)
+    try {
+      console.log('[auto-migrate] Applying manual SQL migrations...');
+      await runManualSqlMigrations();
+    } catch (err) {
+      console.warn('[auto-migrate] Manual SQL migrations failed (non-fatal):', err instanceof Error ? err.message : err);
+    }
 
     // Auto-seed when the database is empty (first boot)
     const result = await client`SELECT id FROM users LIMIT 1`;

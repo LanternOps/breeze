@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, DollarSign, MessageSquare, Zap, Save, Loader2 } from 'lucide-react';
+import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
 interface UsageData {
@@ -11,6 +11,7 @@ interface UsageData {
     dailyBudgetCents: number | null;
     monthlyUsedCents: number;
     dailyUsedCents: number;
+    approvalMode: string;
   } | null;
 }
 
@@ -22,8 +23,13 @@ interface SessionRow {
   turnCount: number;
   totalCostCents: number;
   status: string;
+  flaggedAt: string | null;
+  flaggedBy: string | null;
+  flagReason: string | null;
   createdAt: string;
 }
+
+type ApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
 
 interface BudgetForm {
   enabled: boolean;
@@ -32,6 +38,7 @@ interface BudgetForm {
   maxTurnsPerSession: string;
   messagesPerMinutePerUser: string;
   messagesPerHourPerOrg: string;
+  approvalMode: ApprovalMode;
 }
 
 export default function AiUsagePage() {
@@ -41,21 +48,26 @@ export default function AiUsagePage() {
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [budget, setBudget] = useState<BudgetForm>({
     enabled: true,
     monthlyBudgetDollars: '',
     dailyBudgetDollars: '',
     maxTurnsPerSession: '50',
     messagesPerMinutePerUser: '20',
-    messagesPerHourPerOrg: '200'
+    messagesPerHourPerOrg: '200',
+    approvalMode: 'per_step',
   });
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
+      const sessionsUrl = showFlaggedOnly
+        ? '/ai/admin/sessions?limit=50&flagged=true'
+        : '/ai/admin/sessions?limit=50';
       const [usageRes, sessionsRes] = await Promise.all([
         fetchWithAuth('/ai/usage'),
-        fetchWithAuth('/ai/admin/sessions?limit=50')
+        fetchWithAuth(sessionsUrl)
       ]);
 
       if (usageRes.ok) {
@@ -68,7 +80,8 @@ export default function AiUsagePage() {
             dailyBudgetDollars: data.budget.dailyBudgetCents ? (data.budget.dailyBudgetCents / 100).toFixed(2) : '',
             maxTurnsPerSession: '50',
             messagesPerMinutePerUser: '20',
-            messagesPerHourPerOrg: '200'
+            messagesPerHourPerOrg: '200',
+            approvalMode: data.budget.approvalMode || 'per_step',
           });
         }
       }
@@ -82,7 +95,7 @@ export default function AiUsagePage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showFlaggedOnly]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -98,7 +111,8 @@ export default function AiUsagePage() {
           dailyBudgetCents: budget.dailyBudgetDollars ? Math.round(parseFloat(budget.dailyBudgetDollars) * 100) : null,
           maxTurnsPerSession: parseInt(budget.maxTurnsPerSession) || 50,
           messagesPerMinutePerUser: parseInt(budget.messagesPerMinutePerUser) || 20,
-          messagesPerHourPerOrg: parseInt(budget.messagesPerHourPerOrg) || 200
+          messagesPerHourPerOrg: parseInt(budget.messagesPerHourPerOrg) || 200,
+          approvalMode: budget.approvalMode,
         })
       });
       if (!res.ok) throw new Error('Failed to save budget');
@@ -178,6 +192,25 @@ export default function AiUsagePage() {
             </select>
           </label>
           <label className="block">
+            <span className="text-sm text-muted-foreground">Approval Mode</span>
+            <select
+              value={budget.approvalMode}
+              onChange={(e) => setBudget({ ...budget, approvalMode: e.target.value as ApprovalMode })}
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+            >
+              <option value="per_step">Per Step (default)</option>
+              <option value="action_plan">Action Plan</option>
+              <option value="auto_approve">Auto Approve</option>
+              <option value="hybrid_plan">Hybrid Plan + Abort</option>
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {budget.approvalMode === 'per_step' && 'Each tool requiring approval blocks until the user approves or rejects.'}
+              {budget.approvalMode === 'action_plan' && 'AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.'}
+              {budget.approvalMode === 'auto_approve' && 'All tools auto-execute with audit logging. A Pause button reverts to per-step.'}
+              {budget.approvalMode === 'hybrid_plan' && 'Like Action Plan, plus live screenshots between steps and a persistent Stop button.'}
+            </p>
+          </label>
+          <label className="block">
             <span className="text-sm text-muted-foreground">Monthly Budget ($)</span>
             <input
               type="number"
@@ -242,8 +275,17 @@ export default function AiUsagePage() {
 
       {/* Session history */}
       <div className="rounded-lg border bg-card">
-        <div className="border-b px-6 py-4">
+        <div className="border-b px-6 py-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Recent Sessions</h2>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showFlaggedOnly}
+              onChange={(e) => setShowFlaggedOnly(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Show flagged only
+          </label>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -254,12 +296,13 @@ export default function AiUsagePage() {
                 <th className="px-4 py-2 text-right font-medium text-muted-foreground">Turns</th>
                 <th className="px-4 py-2 text-right font-medium text-muted-foreground">Cost</th>
                 <th className="px-4 py-2 text-left font-medium text-muted-foreground">Status</th>
+                <th className="px-4 py-2 text-left font-medium text-muted-foreground">Flagged</th>
                 <th className="px-4 py-2 text-left font-medium text-muted-foreground">Created</th>
               </tr>
             </thead>
             <tbody>
               {sessions.map((s) => (
-                <tr key={s.id} className="border-b last:border-0 hover:bg-muted/20">
+                <tr key={s.id} className={`border-b last:border-0 hover:bg-muted/20 ${s.flaggedAt ? 'border-l-2 border-l-amber-500' : ''}`}>
                   <td className="px-4 py-2.5 truncate max-w-[200px]">{s.title || 'Untitled'}</td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">{s.model.split('-').slice(0, 2).join(' ')}</td>
                   <td className="px-4 py-2.5 text-right">{s.turnCount}</td>
@@ -273,6 +316,17 @@ export default function AiUsagePage() {
                       {s.status}
                     </span>
                   </td>
+                  <td className="px-4 py-2.5">
+                    {s.flaggedAt ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-xs text-amber-400"
+                        title={s.flagReason || 'Flagged'}
+                      >
+                        <Flag className="h-3 w-3" />
+                        Flagged
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">
                     {new Date(s.createdAt).toLocaleString()}
                   </td>
@@ -280,7 +334,7 @@ export default function AiUsagePage() {
               ))}
               {sessions.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
                     No AI sessions yet
                   </td>
                 </tr>

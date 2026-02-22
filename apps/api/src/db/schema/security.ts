@@ -88,7 +88,8 @@ export const securityThreats = pgTable('security_threats', {
   details: jsonb('details')
 }, (table) => ({
   deviceDetectedIdx: index('security_threats_device_detected_idx').on(table.deviceId, table.detectedAt),
-  statusIdx: index('security_threats_status_idx').on(table.status)
+  statusIdx: index('security_threats_status_idx').on(table.status),
+  deviceStatusDetectedIdx: index('security_threats_device_status_detected_idx').on(table.deviceId, table.status, table.detectedAt)
 }));
 
 export const securityScans = pgTable('security_scans', {
@@ -138,7 +139,8 @@ export const securityPostureSnapshots = pgTable('security_posture_snapshots', {
 }, (table) => ({
   orgCapturedIdx: index('security_posture_snapshots_org_captured_idx').on(table.orgId, table.capturedAt),
   deviceCapturedIdx: index('security_posture_snapshots_device_captured_idx').on(table.deviceId, table.capturedAt),
-  orgScoreIdx: index('security_posture_snapshots_org_score_idx').on(table.orgId, table.overallScore)
+  orgScoreIdx: index('security_posture_snapshots_org_score_idx').on(table.orgId, table.overallScore),
+  orgDeviceCapturedIdx: index('security_posture_snapshots_org_device_captured_idx').on(table.orgId, table.deviceId, table.capturedAt)
 }));
 
 export const securityPostureOrgSnapshots = pgTable('security_posture_org_snapshots', {

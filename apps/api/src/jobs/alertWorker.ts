@@ -23,6 +23,15 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+/** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
+function isRelationNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const cause = (error as { cause?: { code?: string } }).cause;
+  return cause?.code === '42P01';
+}
+
+let _configPolicyTableWarningLogged = false;
+
 // Queue name
 const ALERT_QUEUE = 'alert-evaluation';
 
@@ -175,7 +184,21 @@ async function processEvaluateDevice(data: EvaluateDeviceJobData): Promise<{
 
   try {
     const legacyAlertIds = await evaluateDeviceAlerts(data.deviceId);
-    const configPolicyAlertIds = await evaluateDeviceAlertsFromPolicy(data.deviceId);
+
+    let configPolicyAlertIds: string[] = [];
+    try {
+      configPolicyAlertIds = await evaluateDeviceAlertsFromPolicy(data.deviceId);
+    } catch (cpError: unknown) {
+      if (isRelationNotFoundError(cpError)) {
+        if (!_configPolicyTableWarningLogged) {
+          _configPolicyTableWarningLogged = true;
+          console.warn('[AlertWorker] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping config policy alert evaluation.');
+        }
+      } else {
+        throw cpError;
+      }
+    }
+
     const alertIds = [...legacyAlertIds, ...configPolicyAlertIds];
 
     if (alertIds.length > 0) {

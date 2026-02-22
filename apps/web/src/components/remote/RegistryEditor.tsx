@@ -130,16 +130,12 @@ type TreeNodeProps = {
   hive?: RegistryHive;
   keyData?: RegistryKey;
   level: number;
-  isExpanded: boolean;
-  isSelected: boolean;
-  isLoading: boolean;
-  children?: RegistryKey[];
   expandedKeys: Set<string>;
   selectedPath: string;
   loadingPath: string | null;
+  keyCache: Record<string, RegistryKey[]>;
   onToggle: (path: string) => void;
   onSelect: (hive: string, path: string) => void;
-  onLoadChildren: (hive: string, path: string) => Promise<RegistryKey[]>;
   currentHive: string;
 };
 
@@ -147,22 +143,22 @@ function TreeNode({
   hive,
   keyData,
   level,
-  isExpanded,
-  isSelected,
-  isLoading,
-  children,
   expandedKeys,
   selectedPath,
   loadingPath,
+  keyCache,
   onToggle,
   onSelect,
-  onLoadChildren,
   currentHive,
 }: TreeNodeProps) {
   const path = hive ? hive.path : keyData?.path || '';
   const name = hive ? hive.name : keyData?.name || '';
   const fullPath = hive ? hive.path : currentHive + '\\' + path;
   const hasChildren = hive ? true : keyData?.hasChildren ?? false;
+  const isExpanded = expandedKeys.has(fullPath);
+  const isSelected = selectedPath === fullPath;
+  const isLoading = loadingPath === fullPath;
+  const children = keyCache[fullPath] || [];
 
   const handleToggle = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -212,29 +208,22 @@ function TreeNode({
           <span className="text-xs text-muted-foreground ml-1">({hive.shortName})</span>
         )}
       </div>
-      {isExpanded && children && (
+      {isExpanded && children.length > 0 && (
         <div>
-          {children.map((child) => {
-            const childFullPath = currentHive + '\\' + child.path;
-            return (
-              <TreeNode
-                key={child.path}
-                keyData={child}
-                level={level + 1}
-                isExpanded={expandedKeys.has(childFullPath)}
-                isSelected={selectedPath === childFullPath}
-                isLoading={loadingPath === childFullPath}
-                children={undefined}
-                expandedKeys={expandedKeys}
-                selectedPath={selectedPath}
-                loadingPath={loadingPath}
-                onToggle={onToggle}
-                onSelect={onSelect}
-                onLoadChildren={onLoadChildren}
-                currentHive={currentHive}
-              />
-            );
-          })}
+          {children.map((child) => (
+            <TreeNode
+              key={child.path}
+              keyData={child}
+              level={level + 1}
+              expandedKeys={expandedKeys}
+              selectedPath={selectedPath}
+              loadingPath={loadingPath}
+              keyCache={keyCache}
+              onToggle={onToggle}
+              onSelect={onSelect}
+              currentHive={currentHive}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -964,56 +953,20 @@ export default function RegistryEditor({
         {/* Tree View (30%) */}
         <div className="w-[30%] border-r overflow-auto">
           <div className="py-2">
-            {REGISTRY_HIVES.map((hive) => {
-              const hivePath = hive.path;
-              const isExpanded = expandedKeys.has(hivePath);
-              const isSelected = currentHive === hive.path && !currentPath;
-              const children = keyCache[hivePath] || [];
-
-              return (
-                <div key={hive.path}>
-                  <TreeNode
-                    hive={hive}
-                    level={0}
-                    isExpanded={isExpanded}
-                    isSelected={isSelected}
-                    isLoading={loadingPath === hivePath}
-                    children={isExpanded ? children : undefined}
-                    expandedKeys={expandedKeys}
-                    selectedPath={fullPath}
-                    loadingPath={loadingPath}
-                    onToggle={handleToggle}
-                    onSelect={handleSelect}
-                    onLoadChildren={loadKeys}
-                    currentHive={hive.path}
-                  />
-                  {isExpanded && children.map((child) => {
-                    const childFullPath = hive.path + '\\' + child.path;
-                    const childIsExpanded = expandedKeys.has(childFullPath);
-                    const childChildren = keyCache[childFullPath] || [];
-
-                    return (
-                      <TreeNode
-                        key={child.path}
-                        keyData={child}
-                        level={1}
-                        isExpanded={childIsExpanded}
-                        isSelected={fullPath === childFullPath}
-                        isLoading={loadingPath === childFullPath}
-                        children={childIsExpanded ? childChildren : undefined}
-                        expandedKeys={expandedKeys}
-                        selectedPath={fullPath}
-                        loadingPath={loadingPath}
-                        onToggle={handleToggle}
-                        onSelect={handleSelect}
-                        onLoadChildren={loadKeys}
-                        currentHive={hive.path}
-                      />
-                    );
-                  })}
-                </div>
-              );
-            })}
+            {REGISTRY_HIVES.map((hive) => (
+              <TreeNode
+                key={hive.path}
+                hive={hive}
+                level={0}
+                expandedKeys={expandedKeys}
+                selectedPath={fullPath}
+                loadingPath={loadingPath}
+                keyCache={keyCache}
+                onToggle={handleToggle}
+                onSelect={handleSelect}
+                currentHive={hive.path}
+              />
+            ))}
           </div>
         </div>
 

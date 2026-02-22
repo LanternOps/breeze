@@ -4,6 +4,9 @@ import remarkGfm from 'remark-gfm';
 import { Bot, User } from 'lucide-react';
 import AiToolCallCard from './AiToolCallCard';
 import AiApprovalDialog from './AiApprovalDialog';
+import AiPlanReviewCard from './AiPlanReviewCard';
+import AiPlanProgressBar from './AiPlanProgressBar';
+import type { ActionPlanStep } from '@breeze/shared';
 
 interface Message {
   id: string;
@@ -22,6 +25,7 @@ interface PendingApproval {
   toolName: string;
   input: Record<string, unknown>;
   description: string;
+  deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> };
 }
 
 const QUICK_ACTIONS = [
@@ -33,15 +37,37 @@ const QUICK_ACTIONS = [
   { label: 'Recent activity', prompt: 'Show me the most recent audit log entries — what actions were taken in the last few hours?' }
 ];
 
+interface PendingPlan {
+  planId: string;
+  steps: ActionPlanStep[];
+}
+
+interface ActivePlan {
+  planId: string;
+  steps: ActionPlanStep[];
+  currentStepIndex: number;
+  status: 'executing' | 'completed' | 'aborted';
+}
+
 interface AiChatMessagesProps {
   messages: Message[];
   pendingApproval: PendingApproval | null;
+  pendingPlan?: PendingPlan | null;
+  activePlan?: ActivePlan | null;
+  approvalMode?: string;
+  isPaused?: boolean;
   onApprove: (executionId: string) => void;
   onReject: (executionId: string) => void;
+  onApprovePlan?: (approved: boolean) => void;
+  onAbortPlan?: () => void;
+  onPauseAi?: (paused: boolean) => void;
   onSendQuickAction?: (prompt: string) => void;
 }
 
-export default function AiChatMessages({ messages, pendingApproval, onApprove, onReject, onSendQuickAction }: AiChatMessagesProps) {
+export default function AiChatMessages({
+  messages, pendingApproval, pendingPlan, activePlan, approvalMode, isPaused,
+  onApprove, onReject, onApprovePlan, onAbortPlan, onPauseAi, onSendQuickAction,
+}: AiChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -150,9 +176,38 @@ export default function AiChatMessages({ messages, pendingApproval, onApprove, o
           toolName={pendingApproval.toolName}
           description={pendingApproval.description}
           input={pendingApproval.input}
+          deviceContext={pendingApproval.deviceContext}
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
         />
+      )}
+
+      {pendingPlan && onApprovePlan && (
+        <AiPlanReviewCard
+          steps={pendingPlan.steps}
+          onApprove={() => onApprovePlan(true)}
+          onReject={() => onApprovePlan(false)}
+        />
+      )}
+
+      {activePlan && (
+        <AiPlanProgressBar
+          steps={activePlan.steps}
+          currentStepIndex={activePlan.currentStepIndex}
+          status={activePlan.status}
+          onAbort={onAbortPlan}
+        />
+      )}
+
+      {approvalMode === 'auto_approve' && !isPaused && onPauseAi && (
+        <div className="sticky bottom-0 flex justify-center py-2">
+          <button
+            onClick={() => onPauseAi(true)}
+            className="rounded-full bg-red-600/90 px-4 py-1.5 text-xs font-medium text-white shadow-lg transition-colors hover:bg-red-500"
+          >
+            Pause AI
+          </button>
+        </div>
       )}
 
       <div ref={bottomRef} />

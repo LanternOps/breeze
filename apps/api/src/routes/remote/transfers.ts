@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
@@ -381,6 +382,10 @@ transferRoutes.post(
 // POST /remote/transfers/:id/chunks - Upload a chunk (from agent, multipart)
 transferRoutes.post(
   '/transfers/:id/chunks',
+  bodyLimit({
+    maxSize: 50 * 1024 * 1024, // 50MB for file transfer chunks
+    onError: (c) => c.json({ error: 'Request body too large' }, 413),
+  }),
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');

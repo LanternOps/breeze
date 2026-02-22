@@ -162,6 +162,7 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
         deviceId={deviceId}
         deviceHostname={device.displayName || device.hostname}
         initialPath={getInitialPath()}
+        osType={device.osType}
         onError={handleError}
         className="min-h-[600px]"
       />

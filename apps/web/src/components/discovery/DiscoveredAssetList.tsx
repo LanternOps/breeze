@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { EyeOff, Info, Signal, CheckCircle2, Trash2 } from 'lucide-react';
+import { Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 
-export type DiscoveredAssetStatus = 'new' | 'identified' | 'managed' | 'ignored' | 'offline';
+export type DiscoveredAssetApprovalStatus = 'pending' | 'approved' | 'dismissed';
 export type DiscoveredAssetType =
   | 'workstation'
   | 'server'
@@ -25,8 +25,10 @@ export type DiscoveredAsset = {
   ip: string;
   mac: string;
   hostname: string;
+  label?: string | null;
   type: DiscoveredAssetType;
-  status: DiscoveredAssetStatus;
+  approvalStatus: DiscoveredAssetApprovalStatus;
+  isOnline: boolean;
   manufacturer: string;
   lastSeen?: string;
   openPorts?: OpenPortEntry[];
@@ -37,13 +39,17 @@ export type DiscoveredAsset = {
   linkedDeviceName?: string;
   monitoringEnabled?: boolean;
   discoveryMethods?: string[];
+  notes?: string | null;
+  tags?: string[];
 };
 
 type ApiDiscoveryAsset = {
   id: string;
   assetType?: string;
-  status: DiscoveredAssetStatus;
+  approvalStatus?: DiscoveredAssetApprovalStatus;
+  isOnline?: boolean;
   hostname?: string | null;
+  label?: string | null;
   ipAddress?: string | null;
   macAddress?: string | null;
   manufacturer?: string | null;
@@ -55,6 +61,8 @@ type ApiDiscoveryAsset = {
   linkedDeviceName?: string | null;
   monitoringEnabled?: boolean;
   discoveryMethods?: string[] | null;
+  notes?: string | null;
+  tags?: string[] | null;
   lastSeenAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -77,12 +85,10 @@ export const typeConfig: Record<DiscoveredAssetType, { label: string; color: str
   unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-muted' }
 };
 
-export const statusConfig: Record<DiscoveredAssetStatus, { label: string; color: string }> = {
-  new: { label: 'New', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  identified: { label: 'Identified', color: 'bg-purple-500/20 text-purple-700 border-purple-500/40' },
-  managed: { label: 'Managed', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  ignored: { label: 'Ignored', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  offline: { label: 'Offline', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+export const approvalStatusConfig: Record<DiscoveredAssetApprovalStatus, { label: string; color: string }> = {
+  pending:   { label: 'Pending',   color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
+  approved:  { label: 'Approved',  color: 'bg-green-500/20 text-green-700 border-green-500/40' },
+  dismissed: { label: 'Dismissed', color: 'bg-muted text-muted-foreground border-muted' }
 };
 
 const assetTypeMap: Record<string, DiscoveredAssetType> = {
@@ -134,8 +140,10 @@ function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     ip: asset.ipAddress ?? '—',
     mac: asset.macAddress ?? '—',
     hostname: asset.hostname ?? '',
+    label: asset.label ?? null,
     type: assetTypeMap[(asset.assetType ?? 'unknown').toLowerCase()] ?? 'unknown',
-    status: asset.status,
+    approvalStatus: asset.approvalStatus ?? 'pending',
+    isOnline: asset.isOnline ?? false,
     manufacturer: asset.manufacturer ?? '—',
     lastSeen: asset.lastSeenAt ?? asset.updatedAt ?? asset.createdAt,
     openPorts: normalizeOpenPorts(asset.openPorts),
@@ -145,7 +153,9 @@ function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     linkedDeviceId: asset.linkedDeviceId,
     linkedDeviceName: asset.linkedDeviceName ?? undefined,
     monitoringEnabled: asset.monitoringEnabled ?? false,
-    discoveryMethods: asset.discoveryMethods ?? undefined
+    discoveryMethods: asset.discoveryMethods ?? undefined,
+    notes: asset.notes ?? null,
+    tags: asset.tags ?? undefined
   };
 }
 
@@ -169,18 +179,17 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [selectedAsset, setSelectedAsset] = useState<AssetDetail | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [approvalFilter, setApprovalFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
-  const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
-  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkActing, setBulkActing] = useState(false);
 
   const fetchAssets = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
       const params = new URLSearchParams();
-      if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (approvalFilter !== 'all') params.set('approvalStatus', approvalFilter);
       if (typeFilter !== 'all') params.set('assetType', typeFilter);
       const qs = params.toString();
       const response = await fetchWithAuth(`/discovery/assets${qs ? `?${qs}` : ''}`);
@@ -198,7 +207,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, typeFilter]);
+  }, [approvalFilter, typeFilter]);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -208,7 +217,8 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         return;
       }
       const data = await response.json();
-      setDevices(data.devices ?? data.data ?? data ?? []);
+      const raw: any[] = data.devices ?? data.data ?? data ?? [];
+      setDevices(raw.map((d: any) => ({ id: d.id, name: d.displayName || d.hostname || d.id })));
     } catch (err) {
       console.warn('[DiscoveredAssetList] Failed to fetch devices:', err);
     }
@@ -219,51 +229,33 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     fetchDevices();
   }, [fetchAssets, fetchDevices]);
 
-  const handleIgnore = async (asset: DiscoveredAsset) => {
+  const handleApprove = async (asset: DiscoveredAsset) => {
     try {
       setError(undefined);
-      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/ignore`, {
-        method: 'POST',
-        body: JSON.stringify({})
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/approve`, {
+        method: 'PATCH'
       });
-
       if (!response.ok) {
-        throw new Error('Failed to ignore asset');
+        throw new Error('Failed to approve asset');
       }
-
       await fetchAssets();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     }
   };
 
-  const handleDelete = async (asset: DiscoveredAsset) => {
-    const name = asset.hostname || asset.ip;
-    if (!confirm(`Delete discovered asset "${name}"?`)) {
-      return;
-    }
-
+  const handleDismiss = async (asset: DiscoveredAsset) => {
     try {
       setError(undefined);
-      setDeletingAssetId(asset.id);
-      const response = await fetchWithAuth(`/discovery/assets/${asset.id}`, {
-        method: 'DELETE'
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/dismiss`, {
+        method: 'PATCH'
       });
-
       if (!response.ok) {
-        throw new Error('Failed to delete asset');
+        throw new Error('Failed to dismiss asset');
       }
-
-      setSelectedAssetIds(prev => {
-        const next = new Set(prev);
-        next.delete(asset.id);
-        return next;
-      });
       await fetchAssets();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setDeletingAssetId(null);
     }
   };
 
@@ -294,37 +286,47 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     });
   };
 
-  const handleBulkDelete = async () => {
-    const selectedIds = assets
-      .filter(asset => selectedAssetIds.has(asset.id))
-      .map(asset => asset.id);
-
-    if (selectedIds.length === 0) return;
-    if (!confirm(`Delete ${selectedIds.length} discovered asset(s)?`)) return;
-
+  const handleBulkApprove = async () => {
+    const ids = [...selectedAssetIds];
+    if (ids.length === 0) return;
     try {
-      setBulkDeleting(true);
+      setBulkActing(true);
       setError(undefined);
-
-      const results = await Promise.allSettled(
-        selectedIds.map(async (assetId) => {
-          const response = await fetchWithAuth(`/discovery/assets/${assetId}`, { method: 'DELETE' });
-          if (!response.ok) throw new Error(assetId);
-        })
-      );
-
-      const failedCount = results.filter(result => result.status === 'rejected').length;
-      if (failedCount > 0) {
-        const deletedCount = selectedIds.length - failedCount;
-        setError(`Deleted ${deletedCount} asset(s), failed to delete ${failedCount}.`);
+      const response = await fetchWithAuth('/discovery/assets/bulk-approve', {
+        method: 'POST',
+        body: JSON.stringify({ assetIds: ids })
+      });
+      if (!response.ok) {
+        throw new Error('Failed to approve selected assets');
       }
-
       setSelectedAssetIds(new Set());
       await fetchAssets();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
-      setBulkDeleting(false);
+      setBulkActing(false);
+    }
+  };
+
+  const handleBulkDismiss = async () => {
+    const ids = [...selectedAssetIds];
+    if (ids.length === 0) return;
+    try {
+      setBulkActing(true);
+      setError(undefined);
+      const response = await fetchWithAuth('/discovery/assets/bulk-dismiss', {
+        method: 'POST',
+        body: JSON.stringify({ assetIds: ids })
+      });
+      if (!response.ok) {
+        throw new Error('Failed to dismiss selected assets');
+      }
+      setSelectedAssetIds(new Set());
+      await fetchAssets();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setBulkActing(false);
     }
   };
 
@@ -369,14 +371,14 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <select
-          value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value)}
+          value={approvalFilter}
+          onChange={e => setApprovalFilter(e.target.value)}
           className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         >
           <option value="all">All statuses</option>
-          {(Object.keys(statusConfig) as DiscoveredAssetStatus[]).map(key => (
-            <option key={key} value={key}>{statusConfig[key].label}</option>
-          ))}
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="dismissed">Dismissed</option>
         </select>
         <select
           value={typeFilter}
@@ -388,10 +390,10 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
             <option key={key} value={key}>{typeConfig[key].label}</option>
           ))}
         </select>
-        {(statusFilter !== 'all' || typeFilter !== 'all') && (
+        {(approvalFilter !== 'all' || typeFilter !== 'all') && (
           <button
             type="button"
-            onClick={() => { setStatusFilter('all'); setTypeFilter('all'); }}
+            onClick={() => { setApprovalFilter('all'); setTypeFilter('all'); }}
             className="h-9 rounded-md border px-3 text-sm text-muted-foreground hover:text-foreground"
           >
             Clear filters
@@ -417,11 +419,19 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         </button>
         <button
           type="button"
-          onClick={handleBulkDelete}
-          disabled={selectedCount === 0 || bulkDeleting}
-          className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={handleBulkApprove}
+          disabled={selectedCount === 0 || bulkActing}
+          className="h-8 rounded-md border border-green-500/40 px-3 text-xs font-medium text-green-700 hover:bg-green-500/10 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {bulkDeleting ? 'Deleting selected...' : `Delete selected (${selectedCount})`}
+          {bulkActing ? 'Approving...' : `Approve selected (${selectedCount})`}
+        </button>
+        <button
+          type="button"
+          onClick={handleBulkDismiss}
+          disabled={selectedCount === 0 || bulkActing}
+          className="h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {bulkActing ? 'Dismissing...' : `Dismiss selected (${selectedCount})`}
         </button>
       </div>
 
@@ -438,14 +448,9 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                   className="h-4 w-4 rounded border-muted-foreground/40"
                 />
               </th>
-              <th className="px-4 py-3">IP Address</th>
-              <th className="px-4 py-3">MAC</th>
-              <th className="px-4 py-3">Hostname</th>
+              <th className="px-4 py-3">Host</th>
               <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Ping</th>
-              <th className="px-4 py-3">Monitoring</th>
-              <th className="px-4 py-3">Manufacturer</th>
+              <th className="px-4 py-3">Approval</th>
               <th className="px-4 py-3">Last Seen</th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
@@ -453,7 +458,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           <tbody className="divide-y">
             {assets.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No assets discovered yet.
                 </td>
               </tr>
@@ -462,82 +467,101 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                 <tr
                   key={asset.id}
                   onClick={() => setSelectedAsset(toDetail(asset))}
-                  className="cursor-pointer transition hover:bg-muted/40"
+                  className={`cursor-pointer transition hover:bg-muted/40 ${asset.approvalStatus === 'pending' ? 'border-l-2 border-l-amber-400' : ''}`}
                 >
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 align-top">
                     <input
                       type="checkbox"
                       aria-label={`Select asset ${asset.hostname || asset.ip}`}
                       checked={selectedAssetIds.has(asset.id)}
                       onClick={event => event.stopPropagation()}
                       onChange={() => toggleAssetSelection(asset.id)}
-                      className="h-4 w-4 rounded border-muted-foreground/40"
+                      className="mt-0.5 h-4 w-4 rounded border-muted-foreground/40"
                     />
                   </td>
-                  <td className="px-4 py-3 text-sm font-medium">{asset.ip}</td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{asset.mac}</td>
-                  <td className="px-4 py-3 text-sm">{asset.hostname || '—'}</td>
                   <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${asset.isOnline ? 'bg-green-500' : 'bg-muted-foreground/40'}`} title={asset.isOnline ? 'Online' : 'Offline'} />
+                      <div className="min-w-0">
+                        {asset.label && (
+                          <div className="text-sm font-semibold truncate">{asset.label}</div>
+                        )}
+                        <div className="flex items-baseline gap-2">
+                          <span className={`text-sm ${asset.label ? 'text-muted-foreground' : 'font-medium'} truncate`}>{asset.hostname || asset.ip}</span>
+                          {asset.hostname && <span className="text-xs text-muted-foreground font-mono">{asset.ip}</span>}
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                          {asset.mac !== '—' && <span className="font-mono">{asset.mac}</span>}
+                          {asset.manufacturer !== '—' && <span>{asset.manufacturer}</span>}
+                          {asset.responseTimeMs != null && (
+                            <span className={`font-mono ${pingColor(asset.responseTimeMs)}`}>{formatPing(asset.responseTimeMs)}</span>
+                          )}
+                          {asset.monitoringEnabled && (
+                            <span className="inline-flex items-center gap-0.5 text-green-600">
+                              <Signal className="h-3 w-3" />
+                              Monitored
+                            </span>
+                          )}
+                          {asset.linkedDeviceName && (
+                            <span className="inline-flex items-center gap-0.5 text-green-700">
+                              <CheckCircle2 className="h-3 w-3" />
+                              {asset.linkedDeviceName}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 align-top">
                     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${typeConfig[asset.type].color}`}>
                       {typeConfig[asset.type].label}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusConfig[asset.status].color}`}>
-                      {statusConfig[asset.status].label}
+                  <td className="px-4 py-3 align-top">
+                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
+                      {approvalStatusConfig[asset.approvalStatus].label}
                     </span>
                   </td>
-                  <td className={`px-4 py-3 text-xs font-mono ${pingColor(asset.responseTimeMs)}`}>
-                    {formatPing(asset.responseTimeMs)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Signal className={`h-4 w-4 ${asset.monitoringEnabled ? 'text-green-600' : 'text-muted-foreground/40'}`} />
-                  </td>
-                  <td className="px-4 py-3 text-sm">{asset.manufacturer}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{formatLastSeen(asset.lastSeen, timezone)}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 align-top text-xs text-muted-foreground whitespace-nowrap">{formatLastSeen(asset.lastSeen, timezone)}</td>
+                  <td className="px-4 py-3 align-top">
                     <div className="flex items-center justify-end gap-2">
-                      {asset.linkedDeviceId ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-green-700" title={asset.linkedDeviceName || asset.linkedDeviceId}>
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          {asset.linkedDeviceName || 'Linked'}
-                        </span>
-                      ) : (
+                      <button
+                        type="button"
+                        onClick={event => {
+                          event.stopPropagation();
+                          setSelectedAsset(toDetail(asset));
+                        }}
+                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+                        title="View details"
+                      >
+                        <Info className="h-4 w-4" />
+                      </button>
+                      {asset.approvalStatus !== 'approved' && (
                         <button
                           type="button"
                           onClick={event => {
                             event.stopPropagation();
-                            setSelectedAsset(toDetail(asset));
+                            void handleApprove(asset);
                           }}
-                          className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                          title="View details"
+                          className="flex h-8 w-8 items-center justify-center rounded-md border border-green-500/40 text-green-700 hover:bg-green-500/10"
+                          title="Approve"
                         >
-                          <Info className="h-4 w-4" />
+                          <CheckCircle2 className="h-4 w-4" />
                         </button>
                       )}
-                      <button
-                        type="button"
-                        onClick={event => {
-                          event.stopPropagation();
-                          handleIgnore(asset);
-                        }}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border border-muted text-muted-foreground hover:bg-muted"
-                        title="Ignore asset"
-                      >
-                        <EyeOff className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={event => {
-                          event.stopPropagation();
-                          void handleDelete(asset);
-                        }}
-                        disabled={deletingAssetId === asset.id || bulkDeleting}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
-                        title="Delete asset"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {asset.approvalStatus !== 'dismissed' && (
+                        <button
+                          type="button"
+                          onClick={event => {
+                            event.stopPropagation();
+                            void handleDismiss(asset);
+                          }}
+                          className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+                          title="Dismiss"
+                        >
+                          <XCircle className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -558,6 +582,9 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         }}
         onDeleted={async () => {
           setSelectedAsset(null);
+          await fetchAssets();
+        }}
+        onUpdated={async () => {
           await fetchAssets();
         }}
       />

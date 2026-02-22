@@ -68,6 +68,7 @@ const envSchema = z
     // -- Production-required -------------------------------------------------
     CORS_ALLOWED_ORIGINS: z.string().optional(),
     FORCE_HTTPS: z.string().optional(),
+    TRUST_PROXY_HEADERS: z.string().optional(),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
@@ -102,6 +103,17 @@ const envSchema = z
           path: ['CORS_ALLOWED_ORIGINS'],
           message:
             'CORS_ALLOWED_ORIGINS must be set to specific origins in production (wildcard * is not allowed).',
+        });
+      }
+
+      const trustProxyHeaders = (data.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase();
+      const validTrustProxyValues = new Set(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']);
+      if (!validTrustProxyValues.has(trustProxyHeaders)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['TRUST_PROXY_HEADERS'],
+          message:
+            'TRUST_PROXY_HEADERS must be explicitly set in production to true/false (or 1/0, yes/no, on/off).',
         });
       }
     }
@@ -205,6 +217,7 @@ export function validateConfig(): AppConfig {
     MFA_ENCRYPTION_KEY: env.MFA_ENCRYPTION_KEY,
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
     FORCE_HTTPS: env.FORCE_HTTPS,
+    TRUST_PROXY_HEADERS: env.TRUST_PROXY_HEADERS,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     NODE_ENV: env.NODE_ENV,

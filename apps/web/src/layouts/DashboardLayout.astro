@@ -3,6 +3,7 @@ import Layout from './Layout.astro';
 import Sidebar from '../components/layout/Sidebar';
 import Header from '../components/layout/Header';
 import AuthOverlay from '../components/auth/AuthOverlay';
+import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AiChatSidebar from '../components/ai/AiChatSidebar';
 
 interface Props {
@@ -15,6 +16,7 @@ const currentPath = Astro.url.pathname;
 
 <Layout title={title}>
   <AuthOverlay client:load />
+  <AdminSessionManager client:load />
   <div class="flex h-screen overflow-hidden">
     <Sidebar currentPath={currentPath} client:load />
     <div class="flex flex-1 flex-col overflow-hidden">

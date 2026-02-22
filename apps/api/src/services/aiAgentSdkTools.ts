@@ -9,9 +9,14 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
+import { db, withSystemDbAccessContext } from '../db';
+import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
-import type { AiToolTier } from '@breeze/shared/types/ai';
+import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import type { ActiveSession } from './streamingSessionManager';
+import { waitForPlanApproval } from './aiAgent';
+import { aiActionPlans } from '../db/schema';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -46,15 +51,19 @@ export const TOOL_TIERS = {
   get_active_users: 1,
   get_user_experience_metrics: 1,
   manage_alerts: 1, // Base tier; action-level escalation handled in guardrails
+  get_dns_security: 1,
+  manage_dns_policy: 2,
   execute_command: 3,
   run_script: 3,
   manage_services: 3,
   security_scan: 3,
   get_security_posture: 1,
+  get_fleet_health: 1,
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
   query_audit_log: 1,
+  query_change_log: 1,
   network_discovery: 3,
   take_screenshot: 2,
   analyze_screen: 2,
@@ -78,12 +87,21 @@ export const TOOL_TIERS = {
   // Agent log tools
   search_agent_logs: 1,
   set_agent_log_level: 2,
+  // Event log tools
+  search_logs: 1,
+  get_log_trends: 1,
+  detect_log_correlations: 2,
   // Configuration policy tools
   list_configuration_policies: 1,
   get_effective_configuration: 1,
   preview_configuration_change: 1,
   apply_configuration_policy: 2,
   remove_configuration_policy_assignment: 2,
+  // Playbook tools
+  list_playbooks: 1,
+  execute_playbook: 3,
+  get_playbook_history: 1,
+  propose_action_plan: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -138,16 +156,19 @@ function makeHandler(
     }
     try {
       const auth = getAuth();
+      // Tool handlers query RLS-protected tables (e.g. devices via verifyDeviceAccess).
+      // The background processor runs outside the request's DB context, so we must
+      // wrap execution in withSystemDbAccessContext for RLS to pass.
       const result = await withTimeout(
-        executeTool(toolName, args, auth),
+        withSystemDbAccessContext(() => executeTool(toolName, args, auth)),
         TOOL_EXECUTION_TIMEOUT_MS,
         toolName,
       );
       const compactResult = compactToolResultForChat(toolName, result);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
-      // Claude's vision API requires image data in structured content blocks (type: 'image'
-      // with base64 source). Returning the image as plain text would not trigger visual analysis.
+      // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
+      // flat { type: 'image', data, mimeType }, NOT Anthropic's nested source format.
       if (toolName === 'take_screenshot' || toolName === 'analyze_screen' || toolName === 'computer_control') {
         try {
           const parsed = JSON.parse(result);
@@ -160,14 +181,12 @@ function makeHandler(
               try { await onPostToolUse(toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs); }
               catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
             }
-            const contentBlocks: Array<{ type: string; source?: { type: string; media_type: string; data: string }; text?: string }> = [
+            // MCP ImageContent format: { type: 'image', data: base64, mimeType: string }
+            const contentBlocks: Array<{ type: string; data?: string; mimeType?: string; text?: string }> = [
               {
                 type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: 'image/jpeg',
-                  data: imageBase64,
-                },
+                data: imageBase64,
+                mimeType: `image/${parsed.format || 'jpeg'}`,
               },
             ];
             // For analyze_screen, include device context as text
@@ -239,6 +258,7 @@ export function createBreezeMcpServer(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => ActiveSession,
 ) {
   const uuid = z.string().uuid();
 
@@ -315,6 +335,35 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'get_dns_security',
+      'Get DNS security statistics: blocked domains, threat categories, and top offending devices.',
+      {
+        timeRange: z.object({
+          start: z.string().datetime({ offset: true }),
+          end: z.string().datetime({ offset: true }),
+        }),
+        deviceId: uuid.optional(),
+        integrationId: uuid.optional(),
+        action: z.enum(['allowed', 'blocked', 'redirected']).optional(),
+        category: z.string().max(100).optional(),
+        topN: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_dns_security', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_dns_policy',
+      'Add or remove domains from DNS blocklist/allowlist and synchronize with the provider.',
+      {
+        integrationId: uuid,
+        action: z.enum(['add_block', 'remove_block', 'add_allow', 'remove_allow']),
+        domains: z.array(z.string().min(1).max(500)).min(1).max(500),
+        reason: z.string().max(2000).optional(),
+      },
+      makeHandler('manage_dns_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'execute_command',
       'Execute a system command on a device. Requires user approval.',
       {
@@ -379,6 +428,20 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'get_fleet_health',
+      'Query fleet reliability scores to identify devices that need attention first.',
+      {
+        orgId: uuid.optional(),
+        siteId: uuid.optional(),
+        scoreRange: z.enum(['critical', 'poor', 'fair', 'good']).optional(),
+        trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
+        issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'file_operations',
       'Perform file operations on a device. Read/list are safe; write/delete require approval.',
       {
@@ -434,6 +497,20 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('query_audit_log', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_change_log',
+      'Search device configuration changes (software, services, startup, network, scheduled tasks, and user accounts).',
+      {
+        deviceId: uuid.optional(),
+        startTime: z.string().datetime({ offset: true }).optional(),
+        endTime: z.string().datetime({ offset: true }).optional(),
+        changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account']).optional(),
+        changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('query_change_log', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -692,6 +769,9 @@ export function createBreezeMcpServer(
       {
         deviceId: uuid,
         itemName: z.string().min(1).max(255),
+        itemId: z.string().max(512).optional(),
+        itemType: z.string().max(64).optional(),
+        itemPath: z.string().max(2048).optional(),
         action: z.enum(['disable', 'enable']),
         reason: z.string().max(500).optional(),
       },
@@ -724,6 +804,64 @@ export function createBreezeMcpServer(
         durationMinutes: z.number().int().min(1).max(1440).optional(),
       },
       makeHandler('set_agent_log_level', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Event log tools
+
+    tool(
+      'search_logs',
+      'Search event logs across devices in the organization. Supports full-text, time range, and filter-based search.',
+      {
+        query: z.string().max(500).optional(),
+        timeRange: z.object({
+          start: z.string().datetime({ offset: true }),
+          end: z.string().datetime({ offset: true }),
+        }).optional(),
+        level: z.array(z.enum(['info', 'warning', 'error', 'critical'])).max(4).optional(),
+        category: z.array(z.enum(['security', 'hardware', 'application', 'system'])).max(4).optional(),
+        source: z.string().max(255).optional(),
+        deviceIds: z.array(uuid).max(500).optional(),
+        siteIds: z.array(uuid).max(500).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+        offset: z.number().int().min(0).optional(),
+        cursor: z.string().max(1024).optional(),
+        countMode: z.enum(['exact', 'estimated', 'none']).optional(),
+        sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
+        sortOrder: z.enum(['asc', 'desc']).optional(),
+      },
+      makeHandler('search_logs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_log_trends',
+      'Analyze event log trends: level distribution, top sources/devices, error timeline, and spike detection.',
+      {
+        timeRange: z.object({
+          start: z.string().datetime({ offset: true }),
+          end: z.string().datetime({ offset: true }),
+        }).optional(),
+        groupBy: z.enum(['level', 'source', 'device', 'category']).optional(),
+        minLevel: z.enum(['info', 'warning', 'error', 'critical']).optional(),
+        source: z.string().max(255).optional(),
+        deviceIds: z.array(uuid).max(500).optional(),
+        siteIds: z.array(uuid).max(500).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_log_trends', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'detect_log_correlations',
+      'Detect log patterns that appear across multiple devices within a short window.',
+      {
+        orgId: uuid.optional(),
+        pattern: z.string().min(1).max(1000),
+        isRegex: z.boolean().optional(),
+        timeWindow: z.number().int().min(30).max(86_400).optional(),
+        minDevices: z.number().int().min(1).max(200).optional(),
+        minOccurrences: z.number().int().min(1).max(50_000).optional(),
+      },
+      makeHandler('detect_log_correlations', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Configuration policy tools
@@ -782,6 +920,156 @@ export function createBreezeMcpServer(
         assignmentId: uuid,
       },
       makeHandler('remove_configuration_policy_assignment', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Playbook tools
+
+    tool(
+      'list_playbooks',
+      'List available self-healing playbooks. Playbooks are multi-step remediation templates with verification loops.',
+      {
+        category: z.enum(['disk', 'service', 'memory', 'patch', 'security', 'all']).optional(),
+      },
+      makeHandler('list_playbooks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'execute_playbook',
+      'Create a playbook execution record for a target device. This is approval-gated and used to start audited execution.',
+      {
+        playbookId: uuid,
+        deviceId: uuid,
+        variables: z.record(z.unknown()).optional(),
+        context: z.record(z.unknown()).optional(),
+      },
+      makeHandler('execute_playbook', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_playbook_history',
+      'Query historical playbook execution runs for auditing and analysis.',
+      {
+        deviceId: uuid.optional(),
+        playbookId: uuid.optional(),
+        status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_playbook_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Action Plan tool (for action_plan and hybrid_plan modes)
+    tool(
+      'propose_action_plan',
+      'Propose a multi-step action plan for user approval. Use this when the approval mode requires it and you need to execute multiple operations. The user will review all steps before any are executed.',
+      {
+        title: z.string().min(1).max(255),
+        steps: z.array(z.object({
+          toolName: z.string(),
+          input: z.record(z.unknown()),
+          reasoning: z.string().max(500),
+        })).min(1).max(20),
+      },
+      async (args: { title: string; steps: Array<{ toolName: string; input: Record<string, unknown>; reasoning: string }> }) => {
+        const session = getActiveSession?.();
+        if (!session) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No active session' }) }], isError: true };
+        }
+
+        // Validate all step tool names exist
+        for (const step of args.steps) {
+          if (!TOOL_TIERS[step.toolName]) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: `Unknown tool in plan: ${step.toolName}` }) }],
+              isError: true,
+            };
+          }
+        }
+
+        // Build plan steps with indexes
+        const planSteps: ActionPlanStep[] = args.steps.map((s) => ({
+          toolName: s.toolName,
+          input: s.input,
+          reasoning: s.reasoning,
+          status: 'pending' as const,
+        }));
+
+        // Guard: partner-scoped users may not have orgId
+        const orgId = session.auth.orgId;
+        if (!orgId) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Action plans require an organization context' }) }], isError: true };
+        }
+
+        // Insert plan record
+        let planId: string;
+        try {
+          const [row] = await withSystemDbAccessContext(() =>
+            db.insert(aiActionPlans).values({
+              sessionId: session.breezeSessionId,
+              orgId,
+              status: 'pending',
+              steps: planSteps,
+            }).returning({ id: aiActionPlans.id })
+          );
+          if (!row) {
+            return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Failed to create action plan record' }) }], isError: true };
+          }
+          planId = row.id;
+        } catch (err) {
+          console.error('[AI-SDK] Failed to create action plan:', err);
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Failed to create action plan' }) }], isError: true };
+        }
+
+        // Set active plan ID on session before emitting event
+        session.activePlanId = planId;
+
+        // Emit plan_approval_required event
+        session.eventBus.publish({
+          type: 'plan_approval_required',
+          planId,
+          steps: planSteps,
+        });
+
+        // Block until user approves or rejects (10-min timeout)
+        const approved = await waitForPlanApproval(planId, session);
+
+        if (!approved) {
+          session.activePlanId = null;
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              result: 'rejected',
+              message: 'The action plan was rejected by the user. Ask them what changes they would like.',
+            }) }],
+          };
+        }
+
+        // Populate approved plan steps map on the session
+        session.approvedPlanSteps.clear();
+        session.currentPlanStepIndex = 0;
+        for (let i = 0; i < planSteps.length; i++) {
+          const step = planSteps[i]!;
+          session.approvedPlanSteps.set(i, { toolName: step.toolName, input: step.input });
+        }
+
+        // Update DB status to executing
+        try {
+          await withSystemDbAccessContext(() =>
+            db.update(aiActionPlans)
+              .set({ status: 'executing' })
+              .where(eq(aiActionPlans.id, planId))
+          );
+        } catch (err) {
+          console.error('[AI-SDK] Failed to update plan status to executing:', err);
+        }
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            result: 'approved',
+            planId,
+            stepCount: planSteps.length,
+            message: 'Plan approved. Execute the steps in order now.',
+          }) }],
+        };
+      }
     ),
   ];
 

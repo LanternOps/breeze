@@ -13,7 +13,7 @@ import {
 import { ENABLE_REGISTRATION, registerSchema, registerPartnerSchema } from './schemas';
 import {
   runWithSystemDbAccess,
-  getClientIP,
+  getClientRateLimitKey,
   setRefreshTokenCookie,
   toPublicTokens,
   resolveCurrentUserTokenContext,
@@ -31,7 +31,7 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
   }
 
   const { email, password, name } = c.req.valid('json');
-  const ip = getClientIP(c);
+  const rateLimitClient = getClientRateLimitKey(c);
   const normalizedEmail = email.toLowerCase();
 
   const redis = getRedis();
@@ -39,7 +39,7 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  const rateCheck = await rateLimiter(redis, `register:${ip}`, 5, 3600);
+  const rateCheck = await rateLimiter(redis, `register:${rateLimitClient}`, 5, 3600);
   if (!rateCheck.allowed) {
     return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
   }
@@ -115,7 +115,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
   }
 
   const { companyName, email, password, name, acceptTerms } = c.req.valid('json');
-  const ip = getClientIP(c);
+  const rateLimitClient = getClientRateLimitKey(c);
 
   return runWithSystemDbAccess(async () => {
 
@@ -124,7 +124,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     if (!redis) {
       return c.json({ error: 'Service temporarily unavailable' }, 503);
     }
-    const rateCheck = await rateLimiter(redis, `register-partner:${ip}`, 3, 3600);
+    const rateCheck = await rateLimiter(redis, `register-partner:${rateLimitClient}`, 3, 3600);
     if (!rateCheck.allowed) {
       return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
     }

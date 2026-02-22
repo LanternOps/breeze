@@ -1,4 +1,4 @@
-import { createAuditLogAsync } from './auditService';
+import { createAuditLogAsync, type InitiatedByType } from './auditService';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 
 const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
@@ -39,6 +39,7 @@ export interface AuditEventInput {
   actorType?: AuditActorType;
   actorId?: string | null;
   actorEmail?: string | null;
+  initiatedBy?: InitiatedByType;
 }
 
 function isUuid(value: string | null | undefined): value is string {
@@ -69,9 +70,22 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
     details.rawResourceId = rawResourceId;
   }
 
+  const resolvedActorType = event.actorType ?? (event.actorId ? 'user' : 'system');
+
+  // Auto-derive initiatedBy from actorType when not explicitly set
+  let initiatedBy: InitiatedByType | undefined = event.initiatedBy;
+  if (!initiatedBy) {
+    switch (resolvedActorType) {
+      case 'agent': initiatedBy = 'agent'; break;
+      case 'api_key': initiatedBy = 'integration'; break;
+      case 'system': initiatedBy = 'schedule'; break;
+      default: initiatedBy = 'manual'; break;
+    }
+  }
+
   createAuditLogAsync({
     orgId: event.orgId,
-    actorType: event.actorType ?? (event.actorId ? 'user' : 'system'),
+    actorType: resolvedActorType,
     actorId,
     actorEmail: event.actorEmail ?? undefined,
     action: event.action,
@@ -82,7 +96,8 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
     ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: event.result ?? 'success',
-    errorMessage: event.errorMessage
+    errorMessage: event.errorMessage,
+    initiatedBy,
   });
 }
 
@@ -98,6 +113,7 @@ export interface RouteAuditInput {
   resourceName?: string | null;
   details?: Record<string, unknown>;
   result?: AuditResult;
+  initiatedBy?: InitiatedByType;
 }
 
 export type AuthContext = RequestLike & {

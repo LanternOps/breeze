@@ -18,6 +18,15 @@ type ReportBuilderPageProps = {
 
 const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps = {}) {
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [previewData, setPreviewData] = useState<ReportData | null>(null);
@@ -128,30 +137,37 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
         // PDF export - generate HTML content and open print dialog
         const reportTitle = previewData.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         const generatedAt = new Date().toLocaleString([], { timeZone: effectiveTimezone });
+        const escapedReportTitle = escapeHtml(reportTitle);
+        const escapedGeneratedAt = escapeHtml(generatedAt);
 
         let tableHtml = '<p>No data available</p>';
         if (rows.length > 0) {
           const headers = Object.keys(rows[0] as Record<string, unknown>);
-          const headerRow = headers.map(h => `<th>${h}</th>`).join('');
+          const headerRow = headers.map(h => `<th>${escapeHtml(h)}</th>`).join('');
           const bodyRows = rows.map(row => {
             const record = row as Record<string, unknown>;
-            return `<tr>${Object.values(record).map(v => `<td>${v ?? ''}</td>`).join('')}</tr>`;
+            return `<tr>${headers.map((header) => {
+              const value = record[header];
+              return `<td>${escapeHtml(value === null || value === undefined ? '' : String(value))}</td>`;
+            }).join('')}</tr>`;
           }).join('');
           tableHtml = `<table><thead><tr>${headerRow}</tr></thead><tbody>${bodyRows}</tbody></table>`;
         }
 
-        const htmlContent = `<!DOCTYPE html><html><head><title>${reportTitle} Report</title><style>body{font-family:system-ui,sans-serif;padding:20px}h1{font-size:18px;margin-bottom:10px}p{color:#666;font-size:12px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f5f5f5;font-weight:600}tr:nth-child(even){background-color:#fafafa}</style></head><body><h1>${reportTitle} Report</h1><p>Generated: ${generatedAt}</p>${tableHtml}</body></html>`;
+        const htmlContent = `<!DOCTYPE html><html><head><title>${escapedReportTitle} Report</title><style>body{font-family:system-ui,sans-serif;padding:20px}h1{font-size:18px;margin-bottom:10px}p{color:#666;font-size:12px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f5f5f5;font-weight:600}tr:nth-child(even){background-color:#fafafa}</style></head><body><h1>${escapedReportTitle} Report</h1><p>Generated: ${escapedGeneratedAt}</p>${tableHtml}</body></html>`;
 
         // Create blob URL and open in new window for printing
         const blob = new Blob([htmlContent], { type: 'text/html' });
         const url = URL.createObjectURL(blob);
         const printWindow = window.open(url, '_blank');
-        if (printWindow) {
-          printWindow.onload = () => {
-            printWindow.print();
-            URL.revokeObjectURL(url);
-          };
+        if (!printWindow) {
+          URL.revokeObjectURL(url);
+          throw new Error('Unable to open print preview');
         }
+        printWindow.onload = () => {
+          printWindow.print();
+          URL.revokeObjectURL(url);
+        };
       }
     } catch (err) {
       console.error('Export failed:', err);

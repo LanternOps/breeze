@@ -502,6 +502,7 @@ export default function DevicesPage() {
           orgs={orgs}
           sites={sites}
           onSelect={handleSelectDevice}
+          onAction={handleDeviceAction}
           onBulkAction={handleBulkAction}
           serverFilter={advancedFilter}
         />

@@ -5,11 +5,12 @@ import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { db } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { PERMISSIONS } from '../services/permissions';
 
 export const webhookRoutes = new Hono();
 
@@ -320,6 +321,8 @@ webhookRoutes.get(
 webhookRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', createWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
@@ -410,6 +413,8 @@ webhookRoutes.get(
 webhookRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
@@ -472,6 +477,8 @@ webhookRoutes.patch(
 webhookRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');
@@ -553,6 +560,8 @@ webhookRoutes.get(
 webhookRoutes.post(
   '/:id/test',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', testWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
@@ -648,6 +657,8 @@ webhookRoutes.post(
 webhookRoutes.post(
   '/:id/retry/:deliveryId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
     const webhookId = c.req.param('id');

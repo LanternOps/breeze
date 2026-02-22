@@ -1,4 +1,5 @@
 import type { Context } from 'hono';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
@@ -9,6 +10,8 @@ import {
   PORTAL_SESSION_COOKIE_PATH,
   SESSION_TTL_SECONDS,
   CSRF_HEADER_NAME,
+  PORTAL_CSRF_COOKIE_NAME,
+  PORTAL_CSRF_COOKIE_PATH,
   PORTAL_SESSION_CAP,
   PORTAL_RESET_TOKEN_CAP,
   PORTAL_RATE_BUCKET_CAP,
@@ -56,14 +59,64 @@ export function isSecureCookieEnvironment(): boolean {
   return process.env.NODE_ENV === 'production';
 }
 
+type SameSiteValue = 'Lax' | 'Strict' | 'None';
+
+function normalizeSameSite(raw: string | undefined): SameSiteValue {
+  const value = raw?.trim().toLowerCase();
+  if (value === 'strict') return 'Strict';
+  if (value === 'none') return 'None';
+  return 'Lax';
+}
+
+function resolvePortalCookieSameSite(): SameSiteValue {
+  return normalizeSameSite(process.env.PORTAL_COOKIE_SAME_SITE ?? process.env.COOKIE_SAME_SITE);
+}
+
+function shouldSetSecureCookie(sameSite: SameSiteValue): boolean {
+  if (sameSite === 'None') {
+    // Browsers require Secure when SameSite=None.
+    return true;
+  }
+  const forceSecure = (process.env.PORTAL_COOKIE_FORCE_SECURE ?? process.env.COOKIE_FORCE_SECURE)?.trim().toLowerCase();
+  if (forceSecure === '1' || forceSecure === 'true') {
+    return true;
+  }
+  return isSecureCookieEnvironment();
+}
+
+function buildCookieSecuritySuffix(sameSite: SameSiteValue): string {
+  const secure = shouldSetSecureCookie(sameSite) ? '; Secure' : '';
+  return `; SameSite=${sameSite}${secure}`;
+}
+
 export function buildPortalSessionCookie(token: string): string {
-  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
-  return `${PORTAL_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=${PORTAL_SESSION_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`;
+  const sameSite = resolvePortalCookieSameSite();
+  return `${PORTAL_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=${PORTAL_SESSION_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite)}; Max-Age=${SESSION_TTL_SECONDS}`;
+}
+
+export function buildPortalCsrfCookie(token: string): string {
+  const sameSite = resolvePortalCookieSameSite();
+  return `${PORTAL_CSRF_COOKIE_NAME}=${encodeURIComponent(token)}; Path=${PORTAL_CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite)}; Max-Age=${SESSION_TTL_SECONDS}`;
 }
 
 export function buildClearPortalSessionCookie(): string {
-  const secure = isSecureCookieEnvironment() ? '; Secure' : '';
-  return `${PORTAL_SESSION_COOKIE_NAME}=; Path=${PORTAL_SESSION_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+  const sameSite = resolvePortalCookieSameSite();
+  return `${PORTAL_SESSION_COOKIE_NAME}=; Path=${PORTAL_SESSION_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite)}; Max-Age=0`;
+}
+
+export function buildClearPortalCsrfCookie(): string {
+  const sameSite = resolvePortalCookieSameSite();
+  return `${PORTAL_CSRF_COOKIE_NAME}=; Path=${PORTAL_CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite)}; Max-Age=0`;
+}
+
+export function setPortalSessionCookies(c: Context, sessionToken: string): void {
+  c.header('Set-Cookie', buildPortalSessionCookie(sessionToken), { append: true });
+  c.header('Set-Cookie', buildPortalCsrfCookie(randomBytes(32).toString('hex')), { append: true });
+}
+
+export function clearPortalSessionCookies(c: Context): void {
+  c.header('Set-Cookie', buildClearPortalSessionCookie(), { append: true });
+  c.header('Set-Cookie', buildClearPortalCsrfCookie(), { append: true });
 }
 
 export function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
@@ -325,9 +378,17 @@ export function validatePortalCookieCsrfRequest(c: Context): string | null {
     return null;
   }
 
-  const csrfHeader = c.req.header(CSRF_HEADER_NAME);
-  if (!csrfHeader || csrfHeader.trim().length === 0) {
+  const csrfHeader = c.req.header(CSRF_HEADER_NAME)?.trim();
+  if (!csrfHeader || csrfHeader.length === 0) {
     return 'Missing CSRF header';
+  }
+
+  const csrfCookie = getCookieValue(c.req.header('cookie'), PORTAL_CSRF_COOKIE_NAME);
+  if (!csrfCookie) {
+    return 'Missing CSRF cookie';
+  }
+  if (!safeCompareTokens(csrfHeader, csrfCookie)) {
+    return 'Invalid CSRF token';
   }
 
   const origin = c.req.header('origin');
@@ -335,5 +396,22 @@ export function validatePortalCookieCsrfRequest(c: Context): string | null {
     return 'Invalid request origin';
   }
 
+  const fetchSite = c.req.header('sec-fetch-site');
+  if (fetchSite) {
+    const normalized = fetchSite.toLowerCase();
+    if (normalized !== 'same-origin' && normalized !== 'same-site') {
+      return 'Cross-site request blocked';
+    }
+  }
+
   return null;
+}
+
+function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
+  const headerBuffer = Buffer.from(headerToken, 'utf8');
+  const cookieBuffer = Buffer.from(cookieToken, 'utf8');
+  if (headerBuffer.length !== cookieBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(headerBuffer, cookieBuffer);
 }

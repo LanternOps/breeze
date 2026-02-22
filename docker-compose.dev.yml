@@ -83,6 +83,8 @@ services:
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?MFA_ENCRYPTION_KEY is required - set in .env}
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-REDACTED_DEV_TOKEN}
       PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:3001}
+      BINARY_SOURCE: ${BINARY_SOURCE:-github}
+      BREEZE_VERSION: ${BREEZE_VERSION:-latest}
     ports:
       - "3001:3001"
     volumes:
@@ -95,6 +97,9 @@ services:
       - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
       - ./packages/shared/package.json:/app/packages/shared/package.json:ro
       - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
+      # Mount agent and viewer binaries for download endpoints
+      - ./agent/bin:/app/apps/api/agent/bin:ro
+      - ./viewer/bin:/app/apps/api/viewer/bin:ro
       # Exclude node_modules (use container's)
       - /app/node_modules
       - /app/apps/api/node_modules
@@ -119,7 +124,7 @@ services:
       HOST: 0.0.0.0
       PORT: 4321
       API_URL: http://api:3001
-      PUBLIC_API_URL: http://localhost:3001
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:3001}
     ports:
       - "4321:4321"
     volumes:

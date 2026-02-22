@@ -12,7 +12,7 @@ import {
   organizationUsers,
   roles
 } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   generateState,
   generateNonce,
@@ -31,6 +31,7 @@ import { createTokenPair, createSession } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { PERMISSIONS } from '../services/permissions';
 
 export const ssoRoutes = new Hono();
 
@@ -335,7 +336,14 @@ ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'pa
 });
 
 // Create SSO provider
-ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('json', createProviderSchema), async (c) => {
+ssoRoutes.post(
+  '/providers',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('json', createProviderSchema),
+  async (c) => {
   const auth = c.get('auth') as AuthContext;
   const body = c.req.valid('json');
   const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
@@ -406,12 +414,20 @@ ssoRoutes.post('/providers', authMiddleware, requireScope('organization', 'partn
     details: { type: provider.type, status: provider.status }
   });
 
-  const { clientSecret, ...safeProvider } = provider;
-  return c.json({ data: { ...safeProvider, hasClientSecret: !!clientSecret } }, 201);
-});
+    const { clientSecret, ...safeProvider } = provider;
+    return c.json({ data: { ...safeProvider, hasClientSecret: !!clientSecret } }, 201);
+  }
+);
 
 // Update SSO provider
-ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('json', updateProviderSchema), async (c) => {
+ssoRoutes.patch(
+  '/providers/:id',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('json', updateProviderSchema),
+  async (c) => {
   const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
   const body = c.req.valid('json');
@@ -458,12 +474,19 @@ ssoRoutes.patch('/providers/:id', authMiddleware, requireScope('organization', '
     details: { changedFields: Object.keys(body) }
   });
 
-  const { clientSecret, ...safeProvider } = updated;
-  return c.json({ data: { ...safeProvider, hasClientSecret: !!clientSecret } });
-});
+    const { clientSecret, ...safeProvider } = updated;
+    return c.json({ data: { ...safeProvider, hasClientSecret: !!clientSecret } });
+  }
+);
 
 // Delete SSO provider
-ssoRoutes.delete('/providers/:id', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+ssoRoutes.delete(
+  '/providers/:id',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  async (c) => {
   const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
 
@@ -502,11 +525,19 @@ ssoRoutes.delete('/providers/:id', authMiddleware, requireScope('organization', 
     resourceName: deleted.name
   });
 
-  return c.json({ success: true });
-});
+    return c.json({ success: true });
+  }
+);
 
 // Activate/Deactivate provider
-ssoRoutes.post('/providers/:id/status', authMiddleware, requireScope('organization', 'partner', 'system'), zValidator('json', z.object({ status: z.enum(['active', 'inactive', 'testing']) })), async (c) => {
+ssoRoutes.post(
+  '/providers/:id/status',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('json', z.object({ status: z.enum(['active', 'inactive', 'testing']) })),
+  async (c) => {
   const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
   const { status } = c.req.valid('json');
@@ -544,11 +575,18 @@ ssoRoutes.post('/providers/:id/status', authMiddleware, requireScope('organizati
     details: { status }
   });
 
-  return c.json({ data: updated });
-});
+    return c.json({ data: updated });
+  }
+);
 
 // Test provider configuration
-ssoRoutes.post('/providers/:id/test', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
+ssoRoutes.post(
+  '/providers/:id/test',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  async (c) => {
   const auth = c.get('auth') as AuthContext;
   const providerId = c.req.param('id');
 
@@ -608,7 +646,8 @@ ssoRoutes.post('/providers/:id/test', authMiddleware, requireScope('organization
       error: error.message || 'Configuration test failed'
     }, 400);
   }
-});
+  }
+);
 
 // ============================================
 // SSO Login Flow (Public)

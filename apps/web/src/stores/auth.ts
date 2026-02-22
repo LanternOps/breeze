@@ -78,7 +78,6 @@ export const useAuthStore = create<AuthState>()(
       name: 'breeze-auth',
       partialize: (state) => ({
         user: state.user,
-        tokens: state.tokens,
         isAuthenticated: state.isAuthenticated,
       }),
       onRehydrateStorage: () => (state) => {
@@ -97,7 +96,62 @@ export const useAuthStore = create<AuthState>()(
 // reverse proxy (Caddy), leave it empty so requests use relative paths (/api/v1/...).
 const API_HOST = import.meta.env.PUBLIC_API_URL || '';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
-const CSRF_HEADER_VALUE = '1';
+const CSRF_COOKIE_NAME = 'breeze_csrf_token';
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const target = `${name}=`;
+  const parts = document.cookie.split(';');
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(target)) {
+      const value = trimmed.slice(target.length);
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+function resolveApiHost(): string {
+  if (!API_HOST) {
+    return '';
+  }
+
+  if (typeof window === 'undefined') {
+    return API_HOST;
+  }
+
+  try {
+    const parsed = new URL(API_HOST, window.location.origin);
+    const windowHostname = window.location.hostname;
+
+    // Keep localhost dev sessions same-site even when PUBLIC_API_URL points to
+    // a different host (for example a LAN/Tailscale IP).
+    if (isLoopbackHostname(windowHostname) && parsed.hostname !== windowHostname) {
+      parsed.hostname = windowHostname;
+      return parsed.origin;
+    }
+
+    if (isLoopbackHostname(parsed.hostname) && parsed.hostname !== window.location.hostname) {
+      parsed.hostname = window.location.hostname;
+    }
+    return parsed.origin;
+  } catch {
+    return API_HOST;
+  }
+}
 
 // Helper to build full API URL - converts /path to /api/v1/path
 function buildApiUrl(path: string): string {
@@ -117,16 +171,20 @@ function buildApiUrl(path: string): string {
       ? normalizedPath.slice(4)
       : normalizedPath;
 
-  return `${API_HOST}/api/v1${cleanPath}`;
+  const apiHost = resolveApiHost();
+  return `${apiHost}/api/v1${cleanPath}`;
 }
 
 async function requestTokenRefresh(): Promise<Tokens | null> {
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) {
+    headers.set(CSRF_HEADER_NAME, csrfToken);
+  }
+
   const refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE
-    },
+    headers,
     credentials: 'include',
     body: JSON.stringify({})
   });

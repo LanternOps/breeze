@@ -1,5 +1,6 @@
 import { generateSecret, generateURI, verify } from 'otplib';
 import QRCode from 'qrcode';
+import { randomInt } from 'crypto';
 
 export function generateMFASecret(): string {
   return generateSecret({ length: 20 });
@@ -38,11 +39,13 @@ export async function generateQRCode(otpAuthUrl: string): Promise<string> {
 }
 
 export function generateRecoveryCodes(count: number = 10): string[] {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   const codes: string[] = [];
   for (let i = 0; i < count; i++) {
-    const code = Array.from({ length: 8 }, () =>
-      Math.random().toString(36).charAt(2)
-    ).join('').toUpperCase();
+    const code = Array.from(
+      { length: 8 },
+      () => alphabet[randomInt(alphabet.length)]
+    ).join('');
     codes.push(`${code.slice(0, 4)}-${code.slice(4)}`);
   }
   return codes;

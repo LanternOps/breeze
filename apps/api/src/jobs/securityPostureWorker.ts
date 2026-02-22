@@ -16,6 +16,21 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 const SECURITY_POSTURE_QUEUE = 'security-posture';
 const SCAN_INTERVAL_MS = 60 * 60 * 1000;
 
+function parsePositiveIntEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(`[SecurityPostureWorker] Invalid ${name}="${raw}", using default ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
+const SCORE_CHANGE_EVENT_LIMIT = parsePositiveIntEnv('SECURITY_SCORE_CHANGE_EVENT_LIMIT', 200);
+const SCORE_CHANGE_PUBLISH_CONCURRENCY = parsePositiveIntEnv('SECURITY_SCORE_CHANGE_PUBLISH_CONCURRENCY', 8);
+const SECURITY_POSTURE_WORKER_CONCURRENCY = parsePositiveIntEnv('SECURITY_POSTURE_WORKER_CONCURRENCY', 3);
+
 type ScanOrgsJobData = {
   type: 'scan-orgs';
   queuedAt: string;
@@ -31,6 +46,87 @@ type SecurityPostureJobData = ScanOrgsJobData | ComputeOrgJobData;
 
 let securityPostureQueue: Queue<SecurityPostureJobData> | null = null;
 let securityPostureWorker: Worker<SecurityPostureJobData> | null = null;
+
+export async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) return;
+
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        await worker(items[index]!);
+      }
+    })
+  );
+}
+
+export type SecurityScoreChangeEvent = {
+  orgId: string;
+  deviceId: string;
+  previousScore: number | null;
+  currentScore: number;
+  delta: number;
+  previousRiskLevel: 'low' | 'medium' | 'high' | 'critical' | null;
+  currentRiskLevel: 'low' | 'medium' | 'high' | 'critical';
+  changedFactors: string[];
+};
+
+export async function publishSecurityScoreChangedEvents(
+  changedDevices: SecurityScoreChangeEvent[],
+  capturedAt: string,
+  options?: {
+    limit?: number;
+    concurrency?: number;
+  }
+): Promise<{ attempted: number; published: number; failed: number }> {
+  const limit = Math.max(1, options?.limit ?? SCORE_CHANGE_EVENT_LIMIT);
+  const concurrency = Math.max(1, options?.concurrency ?? SCORE_CHANGE_PUBLISH_CONCURRENCY);
+  const changedEvents = changedDevices.slice(0, limit);
+
+  let published = 0;
+  let failed = 0;
+
+  await runWithConcurrency(changedEvents, concurrency, async (item) => {
+    try {
+      await publishEvent(
+        'security.score_changed',
+        item.orgId,
+        {
+          deviceId: item.deviceId,
+          previousScore: item.previousScore,
+          currentScore: item.currentScore,
+          delta: item.delta,
+          previousRiskLevel: item.previousRiskLevel,
+          currentRiskLevel: item.currentRiskLevel,
+          changedFactors: item.changedFactors,
+          capturedAt
+        },
+        'security-posture-worker'
+      );
+      published++;
+    } catch (error) {
+      failed++;
+      console.error(
+        `[SecurityPostureWorker] Failed to publish security.score_changed for device ${item.deviceId}:`,
+        error
+      );
+    }
+  });
+
+  return {
+    attempted: changedEvents.length,
+    published,
+    failed
+  };
+}
 
 export function getSecurityPostureQueue(): Queue<SecurityPostureJobData> {
   if (!securityPostureQueue) {
@@ -77,33 +173,19 @@ async function processComputeOrg(data: ComputeOrgJobData): Promise<{
   orgId: string;
   devicesAudited: number;
   changedEventsPublished: number;
+  changedEventsFailed: number;
 }> {
   const result = await computeAndPersistOrgSecurityPosture(data.orgId);
-
-  let changedEventsPublished = 0;
-  for (const item of result.changedDevices.slice(0, 200)) {
-    await publishEvent(
-      'security.score_changed',
-      item.orgId,
-      {
-        deviceId: item.deviceId,
-        previousScore: item.previousScore,
-        currentScore: item.currentScore,
-        delta: item.delta,
-        previousRiskLevel: item.previousRiskLevel,
-        currentRiskLevel: item.currentRiskLevel,
-        changedFactors: item.changedFactors,
-        capturedAt: result.capturedAt
-      },
-      'security-posture-worker'
-    );
-    changedEventsPublished++;
-  }
+  const published = await publishSecurityScoreChangedEvents(
+    result.changedDevices,
+    result.capturedAt
+  );
 
   return {
     orgId: data.orgId,
     devicesAudited: result.summary.devicesAudited,
-    changedEventsPublished
+    changedEventsPublished: published.published,
+    changedEventsFailed: published.failed
   };
 }
 
@@ -120,7 +202,7 @@ export function createSecurityPostureWorker(): Worker<SecurityPostureJobData> {
     },
     {
       connection: getRedisConnection(),
-      concurrency: 3
+      concurrency: SECURITY_POSTURE_WORKER_CONCURRENCY
     }
   );
 }

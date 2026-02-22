@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2 } from 'lucide-react';
+import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2, Flag } from 'lucide-react';
 import { useAiStore } from '@/stores/aiStore';
 import AiChatMessages from './AiChatMessages';
 import AiChatInput from './AiChatInput';
@@ -17,6 +17,10 @@ export default function AiChatSidebar() {
     error,
     pageContext,
     pendingApproval,
+    pendingPlan,
+    activePlan,
+    approvalMode,
+    isPaused,
     sessionId,
     showHistory,
     sessions,
@@ -24,6 +28,9 @@ export default function AiChatSidebar() {
     isSearching,
     sendMessage,
     approveExecution,
+    approvePlan,
+    abortPlan,
+    pauseAi,
     createSession,
     closeSession,
     clearError,
@@ -33,7 +40,10 @@ export default function AiChatSidebar() {
     searchConversations,
     switchSession,
     interruptResponse,
-    isInterrupting
+    isInterrupting,
+    isFlagged,
+    flagSession,
+    unflagSession
   } = useAiStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -139,6 +149,19 @@ export default function AiChatSidebar() {
                 <Plus className="h-4 w-4" />
               </button>
             )}
+            {!showHistory && sessionId && (
+              <button
+                onClick={() => isFlagged ? unflagSession() : flagSession()}
+                className={`rounded p-1.5 transition-colors ${
+                  isFlagged
+                    ? 'text-amber-400 hover:bg-gray-800 hover:text-amber-300'
+                    : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                }`}
+                title={isFlagged ? 'Unflag conversation' : 'Flag conversation for review'}
+              >
+                <Flag className="h-4 w-4" fill={isFlagged ? 'currentColor' : 'none'} />
+              </button>
+            )}
             <button
               onClick={close}
               className="rounded p-1.5 text-gray-400 transition-colors hover:bg-gray-800 hover:text-gray-200"
@@ -207,7 +230,7 @@ export default function AiChatSidebar() {
           /* Chat panel */
           <>
             {/* Cost indicator */}
-            <AiCostIndicator />
+            <AiCostIndicator enabled={isOpen} />
 
             {/* Context badge */}
             {pageContext && (
@@ -233,8 +256,15 @@ export default function AiChatSidebar() {
             <AiChatMessages
               messages={messages}
               pendingApproval={pendingApproval}
+              pendingPlan={pendingPlan}
+              activePlan={activePlan}
+              approvalMode={approvalMode}
+              isPaused={isPaused}
               onApprove={(id) => approveExecution(id, true)}
               onReject={(id) => approveExecution(id, false)}
+              onApprovePlan={approvePlan}
+              onAbortPlan={abortPlan}
+              onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
             />
 

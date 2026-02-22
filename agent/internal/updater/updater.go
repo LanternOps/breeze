@@ -345,7 +345,7 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 }
 
 // downloadFromURL downloads a binary directly from the given URL to a temp file.
-// The URL host must match the configured ServerURL to prevent credential leakage.
+// The URL origin (host and scheme) must match the configured ServerURL to prevent credential leakage.
 func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -355,8 +355,22 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid server URL: %w", err)
 	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return "", fmt.Errorf("unsupported download URL scheme: %q", parsed.Scheme)
+	}
+	if serverParsed.Scheme != "https" && serverParsed.Scheme != "http" {
+		return "", fmt.Errorf("unsupported server URL scheme: %q", serverParsed.Scheme)
+	}
 	if parsed.Host != serverParsed.Host {
 		return "", fmt.Errorf("download URL host %q does not match server %q", parsed.Host, serverParsed.Host)
+	}
+	// Never downgrade from an HTTPS control plane to HTTP binary downloads.
+	if serverParsed.Scheme == "https" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("insecure download URL scheme %q for HTTPS server", parsed.Scheme)
+	}
+	// Keep protocol aligned to avoid credential scope surprises.
+	if parsed.Scheme != serverParsed.Scheme && !(serverParsed.Scheme == "http" && parsed.Scheme == "https") {
+		return "", fmt.Errorf("download URL scheme %q does not match server scheme %q", parsed.Scheme, serverParsed.Scheme)
 	}
 
 	req, err := http.NewRequest("GET", rawURL, nil)

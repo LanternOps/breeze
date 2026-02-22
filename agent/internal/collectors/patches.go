@@ -19,6 +19,7 @@ type PatchInfo struct {
 type InstalledPatchInfo struct {
 	Name        string `json:"name"`
 	Version     string `json:"version"`
+	KBNumber    string `json:"kbNumber,omitempty"` // Windows KB number
 	Category    string `json:"category"`
 	Source      string `json:"source"`
 	InstalledAt string `json:"installedAt"` // ISO 8601 timestamp

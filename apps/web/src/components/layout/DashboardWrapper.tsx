@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { useAuthStore } from '../../stores/auth';
+import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import Header from './Header';
@@ -12,6 +12,8 @@ interface DashboardWrapperProps {
 export default function DashboardWrapper({ children, currentPath }: DashboardWrapperProps) {
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
+  const [isRecovering, setIsRecovering] = useState(false);
+  const [recoverAttempted, setRecoverAttempted] = useState(false);
 
   useEffect(() => {
     // Give the store time to rehydrate from localStorage
@@ -23,7 +25,29 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (!isChecking && !isLoading) {
+      if (isAuthenticated && !tokens?.accessToken && !recoverAttempted) {
+        setRecoverAttempted(true);
+        setIsRecovering(true);
+
+        void restoreAccessTokenFromCookie().finally(() => {
+          if (!cancelled) {
+            setIsRecovering(false);
+          }
+        });
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      if (isRecovering) {
+        return () => {
+          cancelled = true;
+        };
+      }
+
       // Check if we have valid auth
       const hasValidAuth = isAuthenticated && tokens?.accessToken;
 
@@ -35,10 +59,13 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
         window.location.href = '/login';
       }
     }
-  }, [isAuthenticated, isLoading, isChecking, tokens, currentPath]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, isLoading, isChecking, tokens, currentPath, recoverAttempted, isRecovering]);
 
   // Show loading while checking auth
-  if (isChecking || isLoading) {
+  if (isChecking || isLoading || isRecovering) {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="text-center">

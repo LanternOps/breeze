@@ -4,5 +4,5 @@ export default defineConfig({
   entry: ['src/index.ts'],
   format: ['cjs'],
   dts: true,
-  noExternal: ['@breeze/shared'],
+  noExternal: ['@breeze/shared', 'dotenv'],
 });

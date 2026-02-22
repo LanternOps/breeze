@@ -13,6 +13,7 @@ import {
   Link2,
   HardDrive,
   Shield,
+  ScrollText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -25,6 +26,8 @@ import SecurityTab from './featureTabs/SecurityTab';
 import MaintenanceTab from './featureTabs/MaintenanceTab';
 import ComplianceTab from './featureTabs/ComplianceTab';
 import AutomationTab from './featureTabs/AutomationTab';
+import EventLogTab from './featureTabs/EventLogTab';
+import SoftwarePolicyTab from './featureTabs/SoftwarePolicyTab';
 
 type Tab = 'overview' | FeatureType | 'assignments';
 
@@ -70,9 +73,11 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   maintenance: <Wrench className="h-4 w-4" />,
   compliance: <ClipboardCheck className="h-4 w-4" />,
   automation: <Zap className="h-4 w-4" />,
+  event_log: <ScrollText className="h-4 w-4" />,
+  software_policy: <PackageCheck className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'maintenance', 'compliance', 'automation'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -346,6 +351,8 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       case 'maintenance': return <MaintenanceTab {...props} />;
       case 'compliance': return <ComplianceTab {...props} />;
       case 'automation': return <AutomationTab {...props} />;
+      case 'event_log': return <EventLogTab {...props} />;
+      case 'software_policy': return <SoftwarePolicyTab {...props} />;
     }
   };
 

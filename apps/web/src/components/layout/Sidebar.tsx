@@ -24,7 +24,9 @@ import {
   BarChart3,
   BrainCircuit,
   Activity,
-  Layers
+  Layers,
+  ScrollText,
+  Download
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -56,12 +58,14 @@ const monitoringNav = [
 ];
 
 const operationsNav = [
+  { name: 'Updates', href: '/patches', icon: Download },
   { name: 'Backup', href: '/backup', icon: HardDrive },
-  { name: 'Audit Logs', href: '/audit', icon: FileText }
+  { name: 'Audit Logs', href: '/audit', icon: FileText },
+  { name: 'Event Logs', href: '/logs', icon: ScrollText }
 ];
 
 const managementNav = [
-  { name: 'Software', href: '/software', icon: Package },
+  { name: 'Software', href: '/software-inventory', icon: Package },
   { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
   { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
   { name: 'Users', href: '/settings/users', icon: Users },
@@ -86,12 +90,18 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     ...navigation, ...monitoringNav, ...operationsNav,
     ...integrationsNav, ...managementNav, ...settingsNav,
   ];
+  // Paths that should highlight a different nav item
+  const pathAliases: Record<string, string> = {
+    '/software-policies': '/software-inventory',
+  };
+  const resolvedPath = pathAliases[currentPath] ?? currentPath;
+
   const activeHref = (() => {
     let best: string | null = null;
     for (const item of allNavItems) {
       const matches = item.href === '/'
-        ? currentPath === '/'
-        : currentPath === item.href || currentPath.startsWith(item.href + '/');
+        ? resolvedPath === '/'
+        : resolvedPath === item.href || resolvedPath.startsWith(item.href + '/');
       if (matches && (!best || item.href.length > best.length)) {
         best = item.href;
       }
