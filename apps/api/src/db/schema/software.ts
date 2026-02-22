@@ -103,9 +103,12 @@ export const softwareInventory = pgTable('software_inventory', {
   installLocation: text('install_location'),
   uninstallString: text('uninstall_string'),
   isManaged: boolean('is_managed').notNull().default(false),
-  lastSeen: timestamp('last_seen')
+  lastSeen: timestamp('last_seen'),
+  fileHash: varchar('file_hash', { length: 128 }),
+  hashAlgorithm: varchar('hash_algorithm', { length: 10 }),
 }, (table) => ({
   deviceIdx: index('software_inventory_device_id_idx').on(table.deviceId),
   catalogIdx: index('software_inventory_catalog_id_idx').on(table.catalogId),
-  nameIdx: index('software_inventory_name_idx').on(table.name)
+  nameIdx: index('software_inventory_name_idx').on(table.name),
+  nameVendorIdx: index('software_inventory_name_vendor_idx').on(table.name, table.vendor),
 }));

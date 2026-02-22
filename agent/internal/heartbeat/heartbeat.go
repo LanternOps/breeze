@@ -382,7 +382,7 @@ func (h *Heartbeat) Start() {
 			if shouldSendInventory {
 				h.lastInventoryUpdate = now
 			}
-			shouldSendEventLogs := now.Sub(h.lastEventLogUpdate) > 5*time.Minute
+			shouldSendEventLogs := now.Sub(h.lastEventLogUpdate) > time.Duration(h.eventLogCol.IntervalMinutes())*time.Minute
 			if shouldSendEventLogs {
 				h.lastEventLogUpdate = now
 			}
@@ -638,7 +638,7 @@ func (h *Heartbeat) sendConfigurationChanges() {
 
 	changes, err := h.changeTrackerCol.CollectChanges()
 	if err != nil {
-		log.Error("failed to collect configuration changes", "error", err)
+		log.Error("failed to collect configuration changes", "error", err.Error())
 		return
 	}
 
@@ -852,6 +852,15 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		return
 	}
 
+	// Apply event_log_settings if present
+	elRaw, hasEL := update["event_log_settings"]
+	if !hasEL {
+		elRaw, hasEL = update["eventLogSettings"]
+	}
+	if hasEL {
+		h.applyEventLogConfig(elRaw)
+	}
+
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {
 		registryRaw, hasRegistry = update["policyRegistryStateProbes"]
@@ -915,6 +924,89 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 			"policyRegistryStateProbes", registryCount,
 			"policyConfigStateProbes", configCount,
 		)
+	}
+}
+
+func (h *Heartbeat) applyEventLogConfig(raw any) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		log.Warn("ignoring invalid event_log_settings payload: not an object")
+		return
+	}
+
+	// JSON numbers are float64 in Go
+	asInt := func(key string) int {
+		if v, ok := m[key]; ok {
+			switch n := v.(type) {
+			case float64:
+				return int(n)
+			case int:
+				return n
+			}
+		}
+		return 0
+	}
+
+	asString := func(key string) string {
+		if v, ok := m[key].(string); ok {
+			return v
+		}
+		return ""
+	}
+
+	asStringSlice := func(key string) []string {
+		arr, ok := m[key].([]any)
+		if !ok {
+			return nil
+		}
+		var result []string
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+
+	maxEvents := asInt("max_events_per_cycle")
+	if maxEvents == 0 {
+		maxEvents = asInt("maxEventsPerCycle")
+	}
+	categories := asStringSlice("collect_categories")
+	if len(categories) == 0 {
+		categories = asStringSlice("collectCategories")
+	}
+	minLevel := asString("minimum_level")
+	if minLevel == "" {
+		minLevel = asString("minimumLevel")
+	}
+	interval := asInt("collection_interval_minutes")
+	if interval == 0 {
+		interval = asInt("collectionIntervalMinutes")
+	}
+
+	if maxEvents > 0 || len(categories) > 0 || minLevel != "" || interval > 0 {
+		h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
+		logFields := []any{}
+		if maxEvents > 0 {
+			logFields = append(logFields, "maxEventsPerCycle", maxEvents)
+		}
+		if len(categories) > 0 {
+			logFields = append(logFields, "collectCategories", categories)
+		}
+		if minLevel != "" {
+			logFields = append(logFields, "minimumLevel", minLevel)
+		}
+		if interval > 0 {
+			logFields = append(logFields, "collectionIntervalMinutes", interval)
+		}
+		log.Info("applied event log config update", logFields...)
+	} else if len(m) > 0 {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		log.Warn("event_log_settings received but no recognized fields found", "keys", keys)
 	}
 }
 
@@ -1278,13 +1370,13 @@ func (h *Heartbeat) sendReliabilityMetrics() {
 
 	metrics, err := h.reliabilityCol.Collect()
 	if err != nil {
-		log.Error("failed to collect reliability metrics", "error", err)
+		log.Error("failed to collect reliability metrics", "error", err.Error())
 		return
 	}
 
 	body, err := json.Marshal(metrics)
 	if err != nil {
-		log.Error("failed to marshal reliability metrics", "error", err)
+		log.Error("failed to marshal reliability metrics", "error", err.Error())
 		return
 	}
 
@@ -1299,7 +1391,7 @@ func (h *Heartbeat) sendReliabilityMetrics() {
 
 	resp, err := httputil.Do(ctx, h.client, "POST", url, body, headers, h.retryCfg)
 	if err != nil {
-		log.Error("failed to send reliability metrics", "error", err)
+		log.Error("failed to send reliability metrics", "error", err.Error())
 		return
 	}
 	defer resp.Body.Close()

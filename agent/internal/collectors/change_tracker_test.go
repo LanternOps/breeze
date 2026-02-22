@@ -192,6 +192,120 @@ func driftedSnapshot() *Snapshot {
 	}
 }
 
+// TestSoftwareKey_StableAcrossInstallLocationVariants verifies that the same
+// software entry produces the same snapshot key even when InstallLocation or
+// UninstallString differs between collection runs.  This is the regression test
+// for the Windows false-positive remove/add cycle caused by non-deterministic
+// registry subkey enumeration returning different metadata for the same product.
+func TestSoftwareKey_StableAcrossInstallLocationVariants(t *testing.T) {
+	withUninstall := SoftwareItem{
+		Name:            "Microsoft Visual C++ 2012 x86 Additional Runtime - 11.0.61030",
+		Version:         "11.0.61030",
+		Vendor:          "Microsoft Corporation",
+		UninstallString: `MsiExec.exe /X{EA8A9D62-5D82-3AD9-B1C7-D4DB73BE5791}`,
+	}
+	withLocation := SoftwareItem{
+		Name:            "Microsoft Visual C++ 2012 x86 Additional Runtime - 11.0.61030",
+		Version:         "11.0.61030",
+		Vendor:          "Microsoft Corporation",
+		InstallLocation: `C:\Windows\System32`,
+	}
+	withNeither := SoftwareItem{
+		Name:    "Microsoft Visual C++ 2012 x86 Additional Runtime - 11.0.61030",
+		Version: "11.0.61030",
+		Vendor:  "Microsoft Corporation",
+	}
+
+	keyA := softwareKey(withUninstall)
+	keyB := softwareKey(withLocation)
+	keyC := softwareKey(withNeither)
+
+	if keyA != keyB || keyB != keyC {
+		t.Fatalf("softwareKey produced different keys for the same software:\n  withUninstall=%q\n  withLocation=%q\n  withNeither=%q",
+			keyA, keyB, keyC)
+	}
+}
+
+// TestSoftwareKey_DifferentProductsDifferentKeys ensures distinct products
+// still get distinct keys so they don't collide in the snapshot map.
+func TestSoftwareKey_DifferentProductsDifferentKeys(t *testing.T) {
+	chrome := SoftwareItem{Name: "Google Chrome", Version: "121.0.0", Vendor: "Google LLC"}
+	firefox := SoftwareItem{Name: "Mozilla Firefox", Version: "121.0.0", Vendor: "Mozilla Corporation"}
+
+	if softwareKey(chrome) == softwareKey(firefox) {
+		t.Fatalf("expected different keys for Chrome and Firefox, got %q for both", softwareKey(chrome))
+	}
+}
+
+// TestSoftwareKey_SameNameDifferentVendorDifferentKeys ensures that two
+// products sharing a name but from different vendors are not conflated.
+func TestSoftwareKey_SameNameDifferentVendorDifferentKeys(t *testing.T) {
+	legit := SoftwareItem{Name: "Backup Tool", Vendor: "Acme Corp"}
+	clone := SoftwareItem{Name: "Backup Tool", Vendor: "Rogue Inc"}
+
+	if softwareKey(legit) == softwareKey(clone) {
+		t.Fatalf("expected different keys for different vendors, got %q for both", softwareKey(legit))
+	}
+}
+
+// TestChangeTrackerCollectChanges_NoFalsePositiveOnMetadataFluctuation verifies
+// that when the same software is collected twice with different InstallLocation /
+// UninstallString values (simulating non-deterministic Windows registry ordering),
+// no spurious removed/added events are emitted.
+func TestChangeTrackerCollectChanges_NoFalsePositiveOnMetadataFluctuation(t *testing.T) {
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	collector := NewChangeTrackerCollector(snapshotPath)
+
+	callCount := 0
+	collector.gatherSnapshot = func() (*Snapshot, error) {
+		callCount++
+		sw1 := SoftwareItem{
+			Name:    "Microsoft Visual C++ 2012 x86 Additional Runtime - 11.0.61030",
+			Version: "11.0.61030",
+			Vendor:  "Microsoft Corporation",
+		}
+		sw2 := sw1
+		if callCount == 1 {
+			sw1.UninstallString = `MsiExec.exe /X{EA8A9D62-5D82-3AD9-B1C7-D4DB73BE5791}`
+		} else {
+			sw2.InstallLocation = `C:\Windows\System32`
+		}
+		item := sw1
+		if callCount > 1 {
+			item = sw2
+		}
+		return &Snapshot{
+			Timestamp: time.Now().UTC(),
+			Software: map[string]SoftwareItem{
+				softwareKey(item): item,
+			},
+			Services:        map[string]ServiceInfo{},
+			StartupItems:    map[string]TrackedStartupItem{},
+			NetworkAdapters: map[string]NetworkAdapterInfo{},
+			ScheduledTasks:  map[string]TrackedScheduledTask{},
+			UserAccounts:    map[string]TrackedUserAccount{},
+		}, nil
+	}
+
+	// First call establishes the baseline.
+	if _, err := collector.CollectChanges(); err != nil {
+		t.Fatalf("baseline CollectChanges returned error: %v", err)
+	}
+
+	// Second call simulates the same software with different metadata.
+	changes, err := collector.CollectChanges()
+	if err != nil {
+		t.Fatalf("second CollectChanges returned error: %v", err)
+	}
+
+	for _, ch := range changes {
+		if ch.ChangeType == ChangeTypeSoftware {
+			t.Errorf("got spurious software change %s/%s for %q (metadata-only fluctuation should not produce changes)",
+				ch.ChangeType, ch.ChangeAction, ch.Subject)
+		}
+	}
+}
+
 func expectChange(t *testing.T, changes []ChangeRecord, changeType ChangeType, action ChangeAction, subject string) {
 	t.Helper()
 	for _, change := range changes {

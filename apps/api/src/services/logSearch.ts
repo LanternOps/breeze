@@ -933,6 +933,9 @@ export async function persistCorrelationForRule(
         id: logCorrelations.id,
         alertId: logCorrelations.alertId,
       });
+    if (!inserted) {
+      throw new Error('Failed to create correlation record');
+    }
 
     correlationId = inserted.id;
     alertId = inserted.alertId;

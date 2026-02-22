@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { ssoRoutes } from './sso';
 
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false }
+}));
+
 vi.mock('../services/sso', () => ({
   generateState: vi.fn().mockReturnValue('state'),
   generateNonce: vi.fn().mockReturnValue('nonce'),
@@ -119,6 +124,18 @@ vi.mock('../middleware/auth', () => ({
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
+  }),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
   })
 }));
 
@@ -151,6 +168,8 @@ describe('sso routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     setAuthContext();
     app = new Hono();
     app.route('/sso', ssoRoutes);
@@ -438,5 +457,41 @@ describe('sso routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+  });
+
+  it('rejects provider mutation when permission check fails', async () => {
+    permissionGate.deny = true;
+
+    const res = await app.request('/sso/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Okta',
+        type: 'oidc',
+        issuer: 'https://issuer.example.com',
+        clientId: 'client-id',
+        clientSecret: 'client-secret'
+      })
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects provider mutation when MFA check fails', async () => {
+    mfaGate.deny = true;
+
+    const res = await app.request('/sso/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Okta',
+        type: 'oidc',
+        issuer: 'https://issuer.example.com',
+        clientId: 'client-id',
+        clientSecret: 'client-secret'
+      })
+    });
+
+    expect(res.status).toBe(403);
   });
 });

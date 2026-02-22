@@ -122,6 +122,31 @@ describe('rate-limit service', () => {
       expect(result.resetAt.getTime()).toBeGreaterThanOrEqual(now);
     });
 
+    it('should account for weighted request cost', async () => {
+      const now = Date.now();
+      mockMulti.exec.mockResolvedValue([
+        [null, 0],
+        [null, 3],
+        [null, 3],
+        [null, ['member', now.toString()]],
+        [null, 1]
+      ]);
+
+      const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60, 3);
+
+      expect(result.allowed).toBe(true);
+      expect(result.remaining).toBe(2);
+      expect(mockMulti.zadd).toHaveBeenCalledWith(
+        'test-key',
+        expect.any(Number),
+        expect.any(String),
+        expect.any(Number),
+        expect.any(String),
+        expect.any(Number),
+        expect.any(String)
+      );
+    });
+
     it('should call Redis with correct commands', async () => {
       const now = Date.now();
       mockMulti.exec.mockResolvedValue([

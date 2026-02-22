@@ -26,6 +26,7 @@ type RemoteToolsPageProps = {
   deviceId: string;
   deviceName: string;
   deviceOs: 'windows' | 'macos' | 'linux' | 'darwin';
+  initialTab?: ToolTab;
   onClose?: () => void;
   showClose?: boolean;
 };
@@ -380,10 +381,11 @@ export default function RemoteToolsPage({
   deviceId,
   deviceName,
   deviceOs,
+  initialTab = 'processes',
   onClose,
   showClose = false
 }: RemoteToolsPageProps) {
-  const [activeTab, setActiveTab] = useState<ToolTab>('processes');
+  const [activeTab, setActiveTab] = useState<ToolTab>(initialTab);
   const [resolvedDeviceName, setResolvedDeviceName] = useState(deviceName);
   const [resolvedDeviceOs, setResolvedDeviceOs] = useState<DeviceOs>(normalizeDeviceOs(deviceOs));
 

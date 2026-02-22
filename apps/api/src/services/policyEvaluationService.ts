@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automationPolicies,
@@ -1389,6 +1389,32 @@ export type ConfigPolicyEvaluationResult = {
   remediationTriggered: boolean;
 };
 
+type EvaluateConfigPolicyComplianceOptions = {
+  ruleIds?: string[];
+};
+
+export function __isComplianceCheckDue(
+  lastCheckedAt: Date | null | undefined,
+  checkIntervalMinutes: number,
+  nowMs = Date.now()
+): boolean {
+  if (!lastCheckedAt) {
+    return true;
+  }
+
+  const lastCheckedAtMs = lastCheckedAt.getTime();
+  if (Number.isNaN(lastCheckedAtMs)) {
+    return true;
+  }
+
+  const safeIntervalMinutes = Number.isFinite(checkIntervalMinutes)
+    ? Math.max(1, Math.floor(checkIntervalMinutes))
+    : 60;
+  const intervalMs = safeIntervalMinutes * 60 * 1000;
+
+  return nowMs - lastCheckedAtMs >= intervalMs;
+}
+
 /**
  * Evaluates a single config policy compliance rule against a device's telemetry context.
  * Parses the `rules` JSONB field (same structure as automationPolicies.rules)
@@ -1428,9 +1454,21 @@ export function evaluateConfigPolicyComplianceRule(
  * If enforcement is 'enforce' and non-compliant, queues remediation if remediationScriptId is set.
  */
 export async function evaluateDeviceComplianceFromConfigPolicy(
-  deviceId: string
+  deviceId: string,
+  options: EvaluateConfigPolicyComplianceOptions = {}
 ): Promise<ConfigPolicyEvaluationResult[]> {
-  const complianceRules = await resolveComplianceRulesForDevice(deviceId);
+  const resolvedRules = await resolveComplianceRulesForDevice(deviceId);
+  if (resolvedRules.length === 0) {
+    return [];
+  }
+
+  const selectedRuleIds = Array.isArray(options.ruleIds) && options.ruleIds.length > 0
+    ? new Set(options.ruleIds)
+    : null;
+  const complianceRules = selectedRuleIds
+    ? resolvedRules.filter((rule) => selectedRuleIds.has(rule.id))
+    : resolvedRules;
+
   if (complianceRules.length === 0) {
     return [];
   }
@@ -1840,25 +1878,61 @@ export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
     return { rulesScanned: 0, devicesEvaluated: 0, results: [] };
   }
 
-  // Expand each check's assignment target into device IDs, deduplicate
-  const deviceIdSet = new Set<string>();
+  const nowMs = Date.now();
+  const dueRuleIdsByDeviceId = new Map<string, Set<string>>();
 
   for (const check of dueChecks) {
     const deviceIds = await resolveDevicesForAssignmentTarget(
       check.assignmentLevel,
       check.assignmentTargetId
     );
-    for (const id of deviceIds) {
-      deviceIdSet.add(id);
+    if (deviceIds.length === 0) {
+      continue;
+    }
+
+    const existingRows = await db
+      .select({
+        deviceId: automationPolicyCompliance.deviceId,
+        lastCheckedAt: automationPolicyCompliance.lastCheckedAt,
+      })
+      .from(automationPolicyCompliance)
+      .where(
+        and(
+          isNull(automationPolicyCompliance.policyId),
+          eq(automationPolicyCompliance.configPolicyId, check.complianceRule.featureLinkId),
+          eq(automationPolicyCompliance.configItemName, check.complianceRule.name),
+          inArray(automationPolicyCompliance.deviceId, deviceIds)
+        )
+      );
+
+    const lastCheckedByDeviceId = new Map<string, Date | null>();
+    for (const row of existingRows) {
+      lastCheckedByDeviceId.set(row.deviceId, row.lastCheckedAt ?? null);
+    }
+
+    for (const deviceId of deviceIds) {
+      const isDue = __isComplianceCheckDue(
+        lastCheckedByDeviceId.get(deviceId),
+        check.complianceRule.checkIntervalMinutes,
+        nowMs
+      );
+      if (!isDue) {
+        continue;
+      }
+
+      const dueRuleIds = dueRuleIdsByDeviceId.get(deviceId) ?? new Set<string>();
+      dueRuleIds.add(check.complianceRule.id);
+      dueRuleIdsByDeviceId.set(deviceId, dueRuleIds);
     }
   }
 
-  const allDeviceIds = Array.from(deviceIdSet);
+  const allDeviceIds = Array.from(dueRuleIdsByDeviceId.keys());
   const allResults: ConfigPolicyEvaluationResult[] = [];
 
   for (const deviceId of allDeviceIds) {
     try {
-      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId);
+      const dueRuleIds = Array.from(dueRuleIdsByDeviceId.get(deviceId) ?? []);
+      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds });
       allResults.push(...deviceResults);
     } catch (error) {
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);

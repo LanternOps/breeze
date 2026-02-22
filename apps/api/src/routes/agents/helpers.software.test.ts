@@ -261,11 +261,11 @@ describe('handleSoftwareRemediationCommandResult', () => {
 
     const setCalls = mockSet.mock.calls;
     expect(setCalls.length).toBe(1);
-    expect(setCalls[0][0]).toMatchObject({
+    expect(setCalls[0]![0]).toMatchObject({
       remediationStatus: 'completed',
       remediationErrors: null,
     });
-    expect(setCalls[0][0].lastRemediationAttempt).toBeInstanceOf(Date);
+    expect(setCalls[0]![0].lastRemediationAttempt).toBeInstanceOf(Date);
   });
 
   it('schedules a verification compliance check on success', async () => {
@@ -343,14 +343,14 @@ describe('handleSoftwareRemediationCommandResult', () => {
 
     const setCalls = mockSet.mock.calls;
     expect(setCalls.length).toBe(1);
-    expect(setCalls[0][0].remediationStatus).toBe('failed');
-    expect(setCalls[0][0].lastRemediationAttempt).toBeInstanceOf(Date);
+    expect(setCalls[0]![0].remediationStatus).toBe('failed');
+    expect(setCalls[0]![0].lastRemediationAttempt).toBeInstanceOf(Date);
 
     // The error entry should be appended
-    const errors = setCalls[0][0].remediationErrors;
+    const errors = setCalls[0]![0].remediationErrors;
     expect(Array.isArray(errors)).toBe(true);
     expect(errors.length).toBe(1);
-    expect(errors[0]).toMatchObject({
+    expect(errors[0]!).toMatchObject({
       commandId: COMMAND_ID,
       softwareName: 'BadApp',
       message: 'Access denied',
@@ -426,8 +426,8 @@ describe('handleSoftwareRemediationCommandResult', () => {
     );
 
     const setCalls = mockSet.mock.calls;
-    const errors = setCalls[0][0].remediationErrors;
-    expect(errors[0].message).toBe('stderr message');
+    const errors = setCalls[0]![0].remediationErrors;
+    expect(errors[0]!.message).toBe('stderr message');
   });
 
   it('falls back to default message when neither error nor stderr is present', async () => {
@@ -441,8 +441,8 @@ describe('handleSoftwareRemediationCommandResult', () => {
     );
 
     const setCalls = mockSet.mock.calls;
-    const errors = setCalls[0][0].remediationErrors;
-    expect(errors[0].message).toBe('Uninstall command failed');
+    const errors = setCalls[0]![0].remediationErrors;
+    expect(errors[0]!.message).toBe('Uninstall command failed');
   });
 
   it('appends to existing remediation errors', async () => {
@@ -468,10 +468,10 @@ describe('handleSoftwareRemediationCommandResult', () => {
     );
 
     const setCalls = mockSet.mock.calls;
-    const errors = setCalls[0][0].remediationErrors;
+    const errors = setCalls[0]![0].remediationErrors;
     expect(errors.length).toBe(2);
-    expect(errors[0]).toEqual(existingError);
-    expect(errors[1].message).toBe('New failure');
+    expect(errors[0]!).toEqual(existingError);
+    expect(errors[1]!.message).toBe('New failure');
   });
 
   // -----------------------------------------------------------------------
@@ -489,7 +489,7 @@ describe('handleSoftwareRemediationCommandResult', () => {
     );
 
     const setCalls = mockSet.mock.calls;
-    expect(setCalls[0][0].remediationStatus).toBe('failed');
+    expect(setCalls[0]![0].remediationStatus).toBe('failed');
     expect(mockScheduleSoftwareComplianceCheck).not.toHaveBeenCalled();
     expect(mockRecordSoftwareRemediationDecision).toHaveBeenCalledWith(
       'command_result_failed',

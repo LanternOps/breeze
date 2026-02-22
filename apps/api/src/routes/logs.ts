@@ -20,6 +20,7 @@ import {
   resolveSingleOrgId,
   runCorrelationRules,
   searchFleetLogs,
+  type LogSearchInput,
   updateSavedSearchRunStats,
 } from '../services/logSearch';
 
@@ -169,7 +170,7 @@ logsRoutes.post(
     const auth = c.get('auth');
     const payload = c.req.valid('json');
     const { savedQueryId, ...inlineFilters } = payload;
-    let filters = inlineFilters;
+    let filters: LogSearchInput = inlineFilters;
 
     try {
       if (savedQueryId) {

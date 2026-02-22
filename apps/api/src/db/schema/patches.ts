@@ -134,6 +134,7 @@ export const patchPolicies = pgTable('patch_policies', {
   gracePeriodHours: integer('grace_period_hours').notNull().default(4),
   categories: text('categories').array().notNull().default([]),
   excludeCategories: text('exclude_categories').array().notNull().default([]),
+  categoryRules: jsonb('category_rules').notNull().default([]),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()

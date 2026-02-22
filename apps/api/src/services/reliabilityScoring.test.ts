@@ -60,16 +60,17 @@ describe('reliabilityScoringInternals', () => {
     const map = new Map<string, any>();
     reliabilityScoringInternals.mergeRowsIntoDailyBuckets(map, rows as any);
     const [bucket] = reliabilityScoringInternals.sortDailyBuckets(map);
+    expect(bucket).toBeDefined();
 
-    expect(bucket.sampleCount).toBe(2);
-    expect(bucket.uptimeSecondsMax).toBe(1200);
-    expect(bucket.crashCount).toBe(2);
-    expect(bucket.hangCount).toBe(1);
-    expect(bucket.unresolvedHangCount).toBe(1);
-    expect(bucket.serviceFailureCount).toBe(1);
-    expect(bucket.recoveredServiceCount).toBe(1);
-    expect(bucket.hardwareCriticalCount).toBe(1);
-    expect(bucket.lastCrashAt).toBe('2026-02-20T12:01:00.000Z');
+    expect(bucket!.sampleCount).toBe(2);
+    expect(bucket!.uptimeSecondsMax).toBe(1200);
+    expect(bucket!.crashCount).toBe(2);
+    expect(bucket!.hangCount).toBe(1);
+    expect(bucket!.unresolvedHangCount).toBe(1);
+    expect(bucket!.serviceFailureCount).toBe(1);
+    expect(bucket!.recoveredServiceCount).toBe(1);
+    expect(bucket!.hardwareCriticalCount).toBe(1);
+    expect(bucket!.lastCrashAt).toBe('2026-02-20T12:01:00.000Z');
   });
 
   it('builds trend points only for observed days (no default-100 gaps)', () => {

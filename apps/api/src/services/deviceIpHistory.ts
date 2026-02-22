@@ -153,7 +153,7 @@ export async function processDeviceIPHistoryUpdate(
   update: DeviceIPHistoryUpdateInput
 ): Promise<void> {
   const removedIPs = dedupeEntries(update.removedIPs);
-  const changedIPs = dedupeEntries(update.changedIPs);
+  let changedIPs = dedupeEntries(update.changedIPs);
   const currentIPs = dedupeEntries(update.currentIPs);
 
   if (removedIPs.length === 0 && changedIPs.length === 0 && currentIPs.length === 0) {
@@ -184,6 +184,13 @@ export async function processDeviceIPHistoryUpdate(
     for (const row of activeRows) {
       const key = `${row.interfaceName}|${row.ipAddress}|${row.ipType}`;
       activeByExactKey.set(key, row);
+    }
+
+    // Bootstrap: if the DB has no active records but the agent reports currentIPs,
+    // treat all currentIPs as new so initial records get seeded.
+    if (activeByExactKey.size === 0 && currentIPs.length > 0 && changedIPs.length === 0) {
+      console.log(`[IPHistory] Bootstrap: seeding ${currentIPs.length} initial IP record(s) for device ${deviceId}`);
+      changedIPs = currentIPs;
     }
 
     const deactivateIds = new Set<string>();

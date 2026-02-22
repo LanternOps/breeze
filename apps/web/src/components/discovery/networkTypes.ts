@@ -26,8 +26,9 @@ export type NetworkChangeEvent = {
   id: string;
   orgId: string;
   siteId: string;
-  baselineId: string;
+  baselineId: string | null;
   baselineSubnet: string | null;
+  profileId: string | null;
   eventType: NetworkEventType;
   ipAddress: string;
   macAddress: string | null;
@@ -151,13 +152,14 @@ export function mapNetworkChangeEvent(raw: unknown): NetworkChangeEvent | null {
   const orgId = asString(row.orgId);
   const siteId = asString(row.siteId);
   const baselineId = asString(row.baselineId);
+  const profileId = asString(row.profileId);
   const eventType = normalizeEventType(row.eventType);
   const ipAddress = asString(row.ipAddress);
   const detectedAt = asString(row.detectedAt);
   const createdAt = asString(row.createdAt);
   const acknowledged = asBoolean(row.acknowledged);
 
-  if (!id || !orgId || !siteId || !baselineId || !eventType || !ipAddress || !detectedAt || !createdAt || acknowledged === null) {
+  if (!id || !orgId || !siteId || !eventType || !ipAddress || !detectedAt || !createdAt || acknowledged === null) {
     return null;
   }
 
@@ -167,6 +169,7 @@ export function mapNetworkChangeEvent(raw: unknown): NetworkChangeEvent | null {
     siteId,
     baselineId,
     baselineSubnet: asString(row.baselineSubnet),
+    profileId,
     eventType,
     ipAddress,
     macAddress: asString(row.macAddress),

@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceCommands } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { commandResultSchema, securityCommandTypes, filesystemAnalysisCommandType } from './schemas';
+import { commandResultSchema, securityCommandTypes, filesystemAnalysisCommandType, uuidRegex } from './schemas';
 import {
   handleSecurityCommandResult,
   handleFilesystemAnalysisCommandResult,
@@ -27,8 +27,9 @@ commandsRoutes.post(
       return c.json({ error: 'Agent context not found' }, 401);
     }
 
-    // Ephemeral commands (terminal/desktop) have non-UUID IDs and no DB record.
-    if (commandId.startsWith('term-') || commandId.startsWith('desk-')) {
+    // Commands dispatched directly over WebSocket can use non-UUID IDs and
+    // intentionally have no device_commands row.
+    if (!uuidRegex.test(commandId)) {
       return c.json({ success: true });
     }
 

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, sql, inArray } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import {
@@ -92,12 +93,32 @@ const listProfilesSchema = z.object({
 const scheduleSchema = z.object({
   type: z.enum(['manual', 'cron', 'interval']),
   cron: z.string().min(1).optional(),
-  intervalMinutes: z.number().int().positive().optional()
+  intervalMinutes: z.number().int().positive().optional(),
+  timezone: z.string().min(1).optional()
 }).refine((data) => {
   if (data.type === 'cron') return Boolean(data.cron);
   if (data.type === 'interval') return Boolean(data.intervalMinutes);
   return true;
-}, { message: 'Schedule details required for selected type' });
+}, { message: 'Schedule details required for selected type' }).superRefine((data, ctx) => {
+  if (data.type !== 'cron' || !data.timezone) return;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: data.timezone });
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid schedule timezone',
+      path: ['timezone']
+    });
+  }
+});
+
+const alertSettingsSchema = z.object({
+  enabled: z.boolean(),
+  alertOnNew: z.boolean(),
+  alertOnDisappeared: z.boolean(),
+  alertOnChanged: z.boolean(),
+  changeRetentionDays: z.number().int().min(1).max(365)
+}).optional();
 
 const createProfileSchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -133,7 +154,8 @@ const updateProfileSchema = z.object({
   identifyOS: z.boolean().optional(),
   resolveHostnames: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
-  concurrency: z.number().int().positive().optional()
+  concurrency: z.number().int().positive().optional(),
+  alertSettings: alertSettingsSchema
 });
 
 const scanSchema = z.object({
@@ -147,8 +169,7 @@ const listJobsSchema = z.object({
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
-  // TODO(Task 3): replace with approvalStatus filter
-  // status: z.enum(['new', 'identified', 'managed', 'ignored', 'offline']).optional(),
+  approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
   assetType: z.enum([
     'workstation', 'server', 'printer', 'router', 'switch',
     'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
@@ -159,12 +180,22 @@ const linkAssetSchema = z.object({
   deviceId: z.string().uuid()
 });
 
-const ignoreAssetSchema = z.object({
-  reason: z.string().max(1000).optional()
-});
-
 const topologyQuerySchema = z.object({
   orgId: z.string().uuid().optional()
+});
+
+const bulkApproveSchema = z.object({
+  assetIds: z.array(z.string().uuid()).min(1).max(200)
+});
+
+const bulkDismissSchema = z.object({
+  assetIds: z.array(z.string().uuid()).min(1).max(200)
+});
+
+const updateAssetSchema = z.object({
+  label: z.string().max(255).optional(),
+  notes: z.string().nullish(),
+  tags: z.string().array().optional()
 });
 
 // --- Routes ---
@@ -308,6 +339,7 @@ discoveryRoutes.patch(
     if (updates.resolveHostnames !== undefined) setValues.resolveHostnames = updates.resolveHostnames;
     if (updates.timeout !== undefined) setValues.timeout = updates.timeout;
     if (updates.concurrency !== undefined) setValues.concurrency = updates.concurrency;
+    if (updates.alertSettings !== undefined) setValues.alertSettings = updates.alertSettings;
 
     const [updated] = await db.update(discoveryProfiles)
       .set(setValues)
@@ -584,10 +616,9 @@ discoveryRoutes.get(
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: SQL[] = [];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
-    // TODO(Task 3): filter by approvalStatus instead of old status
-    // if (query.status) conditions.push(eq(discoveredAssets.approvalStatus, query.status));
+    if (query.approvalStatus) conditions.push(eq(discoveredAssets.approvalStatus, query.approvalStatus));
     if (query.assetType) conditions.push(eq(discoveredAssets.assetType, query.assetType));
 
     const where = conditions.length ? and(...conditions) : undefined;
@@ -626,6 +657,7 @@ discoveryRoutes.get(
           approvalStatus: a.approvalStatus,
           isOnline: a.isOnline,
           hostname: a.hostname,
+          label: a.label,
           ipAddress: a.ipAddress,
           macAddress: a.macAddress,
           manufacturer: a.manufacturer,
@@ -638,6 +670,8 @@ discoveryRoutes.get(
           networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
           monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
           discoveryMethods: a.discoveryMethods,
+          notes: a.notes,
+          tags: a.tags,
           firstSeenAt: a.firstSeenAt.toISOString(),
           lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
           createdAt: a.createdAt.toISOString(),
@@ -645,6 +679,106 @@ discoveryRoutes.get(
         };
       })
     });
+  }
+);
+
+// POST /assets/bulk-approve — MUST be before /assets/:id routes
+discoveryRoutes.post(
+  '/assets/bulk-approve',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', bulkApproveSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { assetIds } = c.req.valid('json');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const updated = await db
+      .update(discoveredAssets)
+      .set({
+        approvalStatus: 'approved',
+        approvedBy: auth.user?.id ?? null,
+        approvedAt: new Date()
+      })
+      .where(and(...conditions))
+      .returning({ id: discoveredAssets.id });
+
+    return c.json({ approvedCount: updated.length });
+  }
+);
+
+// POST /assets/bulk-dismiss — MUST be before /assets/:id routes
+discoveryRoutes.post(
+  '/assets/bulk-dismiss',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', bulkDismissSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { assetIds } = c.req.valid('json');
+    const orgResult = resolveOrgId(auth);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const updated = await db
+      .update(discoveredAssets)
+      .set({
+        approvalStatus: 'dismissed',
+        dismissedBy: auth.user?.id ?? null,
+        dismissedAt: new Date()
+      })
+      .where(and(...conditions))
+      .returning({ id: discoveredAssets.id });
+
+    return c.json({ dismissedCount: updated.length });
+  }
+);
+
+// PATCH /assets/:id — Update label, notes, tags
+discoveryRoutes.patch(
+  '/assets/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('json', updateAssetSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const assetId = c.req.param('id');
+    const updates = c.req.valid('json');
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    if (Object.keys(updates).length === 0) {
+      return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const setValues: Record<string, unknown> = { updatedAt: new Date() };
+    if (updates.label !== undefined) setValues.label = updates.label;
+    if (updates.notes !== undefined) setValues.notes = updates.notes;
+    if (updates.tags !== undefined) setValues.tags = updates.tags;
+
+    const [updated] = await db.update(discoveredAssets)
+      .set(setValues)
+      .where(and(...conditions))
+      .returning();
+
+    if (!updated) return c.json({ error: 'Asset not found' }, 404);
+
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'discovery.asset.update',
+      resourceType: 'discovered_asset',
+      resourceId: updated.id,
+      resourceName: updated.label ?? updated.hostname ?? updated.ipAddress ?? undefined,
+      details: { changedFields: Object.keys(updates) }
+    });
+
+    return c.json(updated);
   }
 );
 
@@ -688,47 +822,59 @@ discoveryRoutes.post(
   }
 );
 
-discoveryRoutes.post(
-  '/assets/:id/ignore',
+// PATCH /assets/:id/approve
+discoveryRoutes.patch(
+  '/assets/:id/approve',
   requireScope('organization', 'partner', 'system'),
-  zValidator('json', ignoreAssetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const assetId = c.req.param('id');
-    const body = c.req.valid('json');
-    const orgResult = await resolveOrgIdForAsset(auth, assetId);
+    const id = c.req.param('id');
+    const orgResult = await resolveOrgIdForAsset(auth, id);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const conditions: ReturnType<typeof eq>[] = [eq(discoveredAssets.id, assetId)];
+    const conditions: SQL[] = [eq(discoveredAssets.id, id)];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
 
-    const [existing] = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
-      .where(and(...conditions)).limit(1);
-    if (!existing) return c.json({ error: 'Asset not found' }, 404);
-
-    const [updated] = await db.update(discoveredAssets)
+    const updated = await db
+      .update(discoveredAssets)
       .set({
-        // TODO(Task 3): replaced by dismiss endpoint
-        approvalStatus: 'dismissed',
-        linkedDeviceId: null,
-        notes: body.reason ?? null,
-        dismissedBy: auth.user?.id ?? null,
-        dismissedAt: new Date(),
-        updatedAt: new Date()
+        approvalStatus: 'approved',
+        approvedBy: auth.user?.id ?? null,
+        approvedAt: new Date()
       })
-      .where(eq(discoveredAssets.id, assetId))
-      .returning();
+      .where(and(...conditions))
+      .returning({ id: discoveredAssets.id });
 
-    writeRouteAudit(c, {
-      orgId: updated?.orgId ?? orgResult.orgId,
-      action: 'discovery.asset.ignore',
-      resourceType: 'discovered_asset',
-      resourceId: updated?.id ?? assetId,
-      resourceName: updated?.hostname ?? updated?.ipAddress ?? undefined,
-      details: { reason: body.reason ?? null }
-    });
+    if (updated.length === 0) return c.json({ error: 'Not found' }, 404);
+    return c.json({ success: true });
+  }
+);
 
-    return c.json(updated);
+// PATCH /assets/:id/dismiss
+discoveryRoutes.patch(
+  '/assets/:id/dismiss',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id');
+    const orgResult = await resolveOrgIdForAsset(auth, id);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: SQL[] = [eq(discoveredAssets.id, id)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const updated = await db
+      .update(discoveredAssets)
+      .set({
+        approvalStatus: 'dismissed',
+        dismissedBy: auth.user?.id ?? null,
+        dismissedAt: new Date()
+      })
+      .where(and(...conditions))
+      .returning({ id: discoveredAssets.id });
+
+    if (updated.length === 0) return c.json({ error: 'Not found' }, 404);
+    return c.json({ success: true });
   }
 );
 
@@ -807,9 +953,9 @@ discoveryRoutes.get(
     const nodes = assets.map((a) => ({
       id: a.id,
       type: a.assetType,
-      label: a.hostname ?? a.ipAddress ?? a.id,
+      label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
+      status: a.isOnline ? 'online' : 'offline',
       approvalStatus: a.approvalStatus,
-      isOnline: a.isOnline,
       ipAddress: a.ipAddress,
       macAddress: a.macAddress
     }));
@@ -818,11 +964,11 @@ discoveryRoutes.get(
       nodes,
       edges: edges.map((e) => ({
         id: e.id,
-        sourceId: e.sourceId,
-        targetId: e.targetId,
+        source: e.sourceId,
+        target: e.targetId,
+        type: e.connectionType,
         sourceType: e.sourceType,
         targetType: e.targetType,
-        connectionType: e.connectionType,
         bandwidth: e.bandwidth,
         latency: e.latency
       }))

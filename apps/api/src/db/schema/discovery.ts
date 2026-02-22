@@ -110,6 +110,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   ipAddress: inet('ip_address').notNull(),
   macAddress: varchar('mac_address', { length: 17 }),
   hostname: varchar('hostname', { length: 255 }),
+  label: varchar('label', { length: 255 }),
   netbiosName: varchar('netbios_name', { length: 255 }),
   assetType: discoveredAssetTypeEnum('asset_type').notNull().default('unknown'),
   approvalStatus: discoveredAssetApprovalStatusEnum('approval_status').notNull().default('pending'),

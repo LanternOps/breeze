@@ -2,14 +2,16 @@
  * Event Log Retention Worker
  *
  * BullMQ worker that prunes old event log entries.
- * Default retention: 30 days.
+ * Resolves per-org retention from event_log configuration policies.
+ * Skips orgs on failure to avoid premature data deletion.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { deviceEventLogs } from '../db/schema';
-import { lt } from 'drizzle-orm';
+import { and, eq, lt } from 'drizzle-orm';
 import { getRedisConnection } from '../services/redis';
+import { getOrgEventLogRetentionDays } from '../routes/agents/helpers';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -18,7 +20,6 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const QUEUE_NAME = 'event-log-retention';
-const DEFAULT_RETENTION_DAYS = 30;
 
 let retentionQueue: Queue | null = null;
 
@@ -41,17 +42,38 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const startTime = Date.now();
-        const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
-        const result = await db
-          .delete(deviceEventLogs)
-          .where(lt(deviceEventLogs.timestamp, cutoff));
+        // Get distinct org IDs from event logs
+        const orgRows = await db
+          .selectDistinct({ orgId: deviceEventLogs.orgId })
+          .from(deviceEventLogs);
+
+        for (const { orgId } of orgRows) {
+          let retentionDays: number;
+          try {
+            retentionDays = await getOrgEventLogRetentionDays(orgId);
+          } catch (err) {
+            console.error(`[EventLogRetention] Failed to resolve retention for org ${orgId}, SKIPPING org to avoid premature data deletion:`, err);
+            continue; // Skip this org — better to retain too much than too little
+          }
+
+          const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+          try {
+            await db
+              .delete(deviceEventLogs)
+              .where(and(
+                eq(deviceEventLogs.orgId, orgId),
+                lt(deviceEventLogs.timestamp, cutoff),
+              ));
+          } catch (err) {
+            console.error(`[EventLogRetention] Failed to prune events for org ${orgId}:`, err);
+          }
+        }
 
         const durationMs = Date.now() - startTime;
-        console.log(`[EventLogRetention] Pruned events older than ${retentionDays} days in ${durationMs}ms`);
+        console.log(`[EventLogRetention] Processed ${orgRows.length} orgs with per-org retention in ${durationMs}ms`);
 
-        return { durationMs };
+        return { durationMs, orgsProcessed: orgRows.length };
       });
     },
     {
@@ -82,7 +104,7 @@ export async function initializeEventLogRetention(): Promise<void> {
     // Schedule daily cleanup at midnight
     await queue.add(
       'cleanup',
-      { retentionDays: DEFAULT_RETENTION_DAYS },
+      {},
       {
         repeat: {
           every: 24 * 60 * 60 * 1000 // Every 24 hours

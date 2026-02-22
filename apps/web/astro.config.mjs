@@ -28,7 +28,7 @@ export default defineConfig({
           target: process.env.API_URL || 'http://localhost:3001',
           changeOrigin: true,
           ws: true,
-          rewrite: (path) => path.replace(/^\/api/, '/api/v1')
+          rewrite: (path) => (path.startsWith('/api/v1') ? path : path.replace(/^\/api/, '/api/v1'))
         }
       }
     }

@@ -50,6 +50,7 @@ describe('validateConfig', () => {
       ...validEnv,
       NODE_ENV: 'production',
       CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
@@ -101,6 +102,7 @@ describe('validateConfig', () => {
       NODE_ENV: 'production',
       JWT_SECRET: 'changeme',
       CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
     }, () => {
       expect(() => validateConfig()).toThrow('insecure');
     });
@@ -112,6 +114,7 @@ describe('validateConfig', () => {
       NODE_ENV: 'production',
       JWT_SECRET: 'your-super-secret-jwt-key-change-in-production-must-be-at-least-32-chars',
       CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
     }, () => {
       expect(() => validateConfig()).toThrow('insecure');
     });
@@ -144,6 +147,7 @@ describe('validateConfig', () => {
       ...validEnv,
       NODE_ENV: 'production',
       CORS_ALLOWED_ORIGINS: '*',
+      TRUST_PROXY_HEADERS: 'true',
     }, () => {
       expect(() => validateConfig()).toThrow('CORS_ALLOWED_ORIGINS');
     });
@@ -153,8 +157,19 @@ describe('validateConfig', () => {
     withEnv({
       ...validEnv,
       NODE_ENV: 'production',
+      TRUST_PROXY_HEADERS: 'true',
     }, () => {
       expect(() => validateConfig()).toThrow('CORS_ALLOWED_ORIGINS');
+    });
+  });
+
+  it('requires explicit TRUST_PROXY_HEADERS in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+    }, () => {
+      expect(() => validateConfig()).toThrow('TRUST_PROXY_HEADERS');
     });
   });
 
@@ -211,6 +226,7 @@ describe('validateConfig', () => {
       ...validEnv,
       NODE_ENV: 'production',
       CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
     }, () => {
       validateConfig();
       expect(warnSpy).toHaveBeenCalledWith(

@@ -13,13 +13,12 @@ import {
   getSoftwareInventoryByDeviceIds,
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
-  resolveEffectivePolicyDeviceIds,
-  resolveTargetDeviceIdsForPolicy,
   upsertSoftwareComplianceStatuses,
   withStableViolationTimestamps,
   type SoftwarePolicyComplianceStatus,
   type SoftwarePolicyRemediationStatus,
 } from '../services/softwarePolicyService';
+import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
 import { scheduleSoftwareRemediation } from './softwareRemediationWorker';
 import { captureException } from '../services/sentry';
 
@@ -72,6 +71,26 @@ type ExistingComplianceState = {
   lastRemediationAttempt: Date | null;
 };
 
+function parseComplianceStatus(value: unknown): SoftwarePolicyComplianceStatus {
+  if (value === 'compliant' || value === 'violation' || value === 'unknown') {
+    return value;
+  }
+  return 'unknown';
+}
+
+function parseRemediationStatus(value: unknown): SoftwarePolicyRemediationStatus | null {
+  if (
+    value === 'none'
+    || value === 'pending'
+    || value === 'in_progress'
+    || value === 'completed'
+    || value === 'failed'
+  ) {
+    return value;
+  }
+  return null;
+}
+
 async function readComplianceStateByDevice(
   policyId: string,
   deviceIds: string[]
@@ -100,7 +119,13 @@ async function readComplianceStateByDevice(
       ));
 
     for (const row of rows) {
-      byDevice.set(row.deviceId, row);
+      byDevice.set(row.deviceId, {
+        deviceId: row.deviceId,
+        status: parseComplianceStatus(row.status),
+        violations: row.violations,
+        remediationStatus: parseRemediationStatus(row.remediationStatus),
+        lastRemediationAttempt: row.lastRemediationAttempt,
+      });
     }
   }
 
@@ -269,11 +294,12 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     };
   }
 
-  const targetDeviceIds = await resolveTargetDeviceIdsForPolicy(policy);
-  let deviceIds = targetDeviceIds;
+  // Resolve devices via config policy hierarchy ("closest wins")
+  const resolvedDeviceIds = await resolveDeviceIdsForSoftwarePolicy(policy.id);
+  let deviceIds = resolvedDeviceIds;
   if (Array.isArray(data.deviceIds) && data.deviceIds.length > 0) {
     const requested = new Set(data.deviceIds);
-    deviceIds = targetDeviceIds.filter((id) => requested.has(id));
+    deviceIds = resolvedDeviceIds.filter((id) => requested.has(id));
   }
 
   if (deviceIds.length === 0) {
@@ -287,42 +313,15 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
   const normalizedRules = normalizeSoftwarePolicyRules(policy.rules);
   const remediationOptions = readRemediationOptions(policy.remediationOptions);
-  const { effectiveDeviceIds, shadowedByDeviceId } = await resolveEffectivePolicyDeviceIds(policy, deviceIds);
-  const allImpactedDeviceIds = Array.from(new Set([...effectiveDeviceIds, ...Array.from(shadowedByDeviceId.keys())]));
-  const existingByDevice = await readComplianceStateByDevice(policy.id, allImpactedDeviceIds);
-  const inventoryByDevice = await getSoftwareInventoryByDeviceIds(effectiveDeviceIds);
+  const existingByDevice = await readComplianceStateByDevice(policy.id, deviceIds);
+  const inventoryByDevice = await getSoftwareInventoryByDeviceIds(deviceIds);
 
   let violations = 0;
   const remediationTargets = new Set<string>();
   const complianceUpserts: Parameters<typeof upsertSoftwareComplianceStatuses>[0] = [];
   const now = new Date();
 
-  for (const deviceId of shadowedByDeviceId.keys()) {
-    complianceUpserts.push({
-      deviceId,
-      policyId: policy.id,
-      status: 'unknown',
-      violations: [],
-      checkedAt: now,
-      remediationStatus: 'none',
-    });
-    recordSoftwarePolicyEvaluation(policy.mode, 'unknown', 0, 'shadowed');
-  }
-
-  if (shadowedByDeviceId.size > 0) {
-    fireAudit({
-      orgId: policy.orgId,
-      policyId: policy.id,
-      action: 'policy_precedence_applied',
-      actor: 'system',
-      details: {
-        shadowedDevices: shadowedByDeviceId.size,
-        shadowingPolicyIds: Array.from(new Set(shadowedByDeviceId.values())),
-      },
-    });
-  }
-
-  for (const deviceId of effectiveDeviceIds) {
+  for (const deviceId of deviceIds) {
     const startedAt = Date.now();
     try {
       const existing = existingByDevice.get(deviceId);
@@ -468,7 +467,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
   return {
     policyId: policy.id,
-    devicesEvaluated: effectiveDeviceIds.length,
+    devicesEvaluated: deviceIds.length,
     violations,
     remediationQueued,
   };

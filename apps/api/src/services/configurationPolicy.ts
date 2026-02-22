@@ -8,6 +8,7 @@ import {
   configPolicyComplianceRules,
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
+  configPolicyEventLogSettings,
   devices,
   organizations,
   deviceGroupMemberships,
@@ -17,15 +18,17 @@ import {
   securityPolicies,
   automationPolicies,
   maintenanceWindows,
+  softwarePolicies,
 } from '../db/schema';
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { eventLogInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 
 // ============================================
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -305,6 +308,15 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'event_log': {
+      const parsed = eventLogInlineSettingsSchema.parse(s);
+      await tx.insert(configPolicyEventLogSettings).values({
+        featureLinkId: linkId,
+        ...parsed,
+      });
+      break;
+    }
+
     default:
       // monitoring, backup, security — no normalized tables yet
       break;
@@ -335,6 +347,9 @@ async function deleteNormalizedRows(
       break;
     case 'maintenance':
       await tx.delete(configPolicyMaintenanceSettings).where(eq(configPolicyMaintenanceSettings.featureLinkId, linkId));
+      break;
+    case 'event_log':
+      await tx.delete(configPolicyEventLogSettings).where(eq(configPolicyEventLogSettings.featureLinkId, linkId));
       break;
     default:
       break;
@@ -452,6 +467,25 @@ async function assembleInlineSettings(
         notifyBeforeMinutes: row.notifyBeforeMinutes,
         notifyOnStart: row.notifyOnStart,
         notifyOnEnd: row.notifyOnEnd,
+      };
+    }
+
+    case 'event_log': {
+      const [row] = await db
+        .select()
+        .from(configPolicyEventLogSettings)
+        .where(eq(configPolicyEventLogSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        retentionDays: row.retentionDays,
+        maxEventsPerCycle: row.maxEventsPerCycle,
+        collectCategories: row.collectCategories,
+        minimumLevel: row.minimumLevel,
+        collectionIntervalMinutes: row.collectionIntervalMinutes,
+        rateLimitPerHour: row.rateLimitPerHour,
+        enableFullTextSearch: row.enableFullTextSearch,
+        enableCorrelation: row.enableCorrelation,
       };
     }
 
@@ -853,6 +887,7 @@ const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCo
   security: { table: securityPolicies, orgIdCol: securityPolicies.orgId },
   compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
+  software_policy: { table: softwarePolicies, orgIdCol: softwarePolicies.orgId },
 };
 
 export async function validateFeaturePolicyExists(
@@ -860,10 +895,10 @@ export async function validateFeaturePolicyExists(
   featurePolicyId: string | undefined | null,
   orgId: string
 ): Promise<{ valid: boolean; error?: string }> {
-  if (featureType === 'monitoring') {
-    // Monitoring has no policy table — requires inlineSettings
+  if (featureType === 'monitoring' || featureType === 'event_log') {
+    // Monitoring and event_log have no policy table — requires inlineSettings
     if (featurePolicyId) {
-      return { valid: false, error: 'monitoring feature type does not support featurePolicyId; use inlineSettings instead' };
+      return { valid: false, error: `${featureType} feature type does not support featurePolicyId; use inlineSettings instead` };
     }
     return { valid: true };
   }

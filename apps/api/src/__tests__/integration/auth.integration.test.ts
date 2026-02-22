@@ -258,14 +258,25 @@ describe('Auth Integration Tests', () => {
       if (!refreshCookieValue) {
         throw new Error('Expected refresh cookie value');
       }
+      const csrfCookie = cookieHeader
+        .split(',')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith('breeze_csrf_token='));
+      const csrfCookieValue = csrfCookie?.split(';')[0];
+      expect(csrfCookieValue).toBeDefined();
+      if (!csrfCookieValue) {
+        throw new Error('Expected CSRF cookie value');
+      }
+      const csrfHeaderValue = decodeURIComponent(csrfCookieValue.split('=')[1] ?? '');
+      expect(csrfHeaderValue.length).toBeGreaterThan(0);
 
       // Now refresh
       const refreshRes = await app.request('/auth/refresh', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: refreshCookieValue
+          'x-breeze-csrf': csrfHeaderValue,
+          Cookie: `${refreshCookieValue}; ${csrfCookieValue}`
         },
         body: JSON.stringify({})
       });
@@ -283,8 +294,8 @@ describe('Auth Integration Tests', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: 'breeze_refresh_token=invalid-refresh-token'
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=invalid-refresh-token; breeze_csrf_token=test-csrf-token'
         },
         body: JSON.stringify({})
       });

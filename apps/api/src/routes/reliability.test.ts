@@ -158,6 +158,8 @@ describe('public reliability routes', () => {
         poorDevices: 1,
         fairDevices: 2,
         goodDevices: 1,
+        degradingDevices: 1,
+        topIssues: [],
       };
       vi.mocked(getOrgReliabilitySummary).mockResolvedValue(summary);
       vi.mocked(listReliabilityDevices).mockResolvedValue({ total: 0, rows: [] });

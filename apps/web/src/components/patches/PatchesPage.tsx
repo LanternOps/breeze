@@ -12,7 +12,6 @@ import PatchComplianceDashboard from './PatchComplianceDashboard';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
-import DevicePatchStatus, { type DevicePatch } from './DevicePatchStatus';
 import { fetchWithAuth } from '../../stores/auth';
 
 const severityMap: Record<string, PatchSeverity> = {
@@ -100,25 +99,12 @@ function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
     deferralDays: Number(raw.deferralDays ?? 0),
     deadlineDays: raw.deadlineDays != null ? Number(raw.deadlineDays) : null,
     gracePeriodHours: Number(raw.gracePeriodHours ?? 4),
-    categories: Array.isArray(raw.categories) ? raw.categories.map(String) : [],
+    categoryRules: Array.isArray(raw.categoryRules) ? raw.categoryRules as UpdateRingItem['categoryRules'] : [],
     updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
   };
 }
 
-function formatDeviceOs(device: Record<string, unknown>): string {
-  const osValue = device.osType ?? device.os ?? device.platform ?? '';
-  const label = normalizeOs(osValue ? String(osValue) : undefined);
-  const version = device.osVersion ?? device.os_version ?? device.osBuild ?? device.os_build;
-  return version ? `${label} ${version}` : label;
-}
-
 type TabKey = 'rings' | 'patches' | 'compliance';
-
-type DeviceSnapshot = {
-  id: string;
-  name: string;
-  os: string;
-};
 
 export default function PatchesPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('rings');
@@ -127,6 +113,7 @@ export default function PatchesPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [ringModalOpen, setRingModalOpen] = useState(false);
   const [ringSubmitting, setRingSubmitting] = useState(false);
+  const [editingRing, setEditingRing] = useState<UpdateRingItem | null>(null);
 
   // Data
   const [rings, setRings] = useState<UpdateRingItem[]>([]);
@@ -137,9 +124,6 @@ export default function PatchesPage() {
   const [patchesError, setPatchesError] = useState<string>();
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string>();
-  const [deviceSnapshot, setDeviceSnapshot] = useState<DeviceSnapshot | null>(null);
-  const [deviceLoading, setDeviceLoading] = useState(true);
-  const [deviceError, setDeviceError] = useState<string>();
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
 
   const tabs = useMemo(
@@ -215,39 +199,9 @@ export default function PatchesPage() {
     }
   }, [selectedRingId]);
 
-  const fetchDeviceSnapshot = useCallback(async () => {
-    try {
-      setDeviceLoading(true);
-      setDeviceError(undefined);
-      const response = await fetchWithAuth('/devices?limit=1');
-      if (!response.ok) {
-        if (response.status === 401) { window.location.href = '/login'; return; }
-        throw new Error('Failed to fetch device data');
-      }
-      const data = await response.json();
-      const devices = data.devices ?? data.data ?? data.items ?? data ?? [];
-      if (Array.isArray(devices) && devices.length > 0) {
-        const device = devices[0] as Record<string, unknown>;
-        const name = device.displayName ?? device.hostname ?? device.name ?? 'Unknown device';
-        setDeviceSnapshot({
-          id: String(device.id ?? device.deviceId ?? 'device-0'),
-          name: String(name),
-          os: formatDeviceOs(device)
-        });
-      } else {
-        setDeviceSnapshot(null);
-      }
-    } catch (err) {
-      setDeviceError(err instanceof Error ? err.message : 'Failed to load device status');
-    } finally {
-      setDeviceLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     fetchRings();
-    fetchDeviceSnapshot();
-  }, [fetchRings, fetchDeviceSnapshot]);
+  }, [fetchRings]);
 
   useEffect(() => {
     fetchPatches();
@@ -304,9 +258,11 @@ export default function PatchesPage() {
 
   const handleRingSubmit = async (values: UpdateRingFormValues) => {
     setRingSubmitting(true);
+    const isEditing = !!editingRing;
     try {
-      const response = await fetchWithAuth('/update-rings', {
-        method: 'POST',
+      const url = isEditing ? `/update-rings/${editingRing.id}` : '/update-rings';
+      const response = await fetchWithAuth(url, {
+        method: isEditing ? 'PATCH' : 'POST',
         body: JSON.stringify({
           name: values.name,
           description: values.description,
@@ -314,28 +270,18 @@ export default function PatchesPage() {
           deferralDays: values.deferralDays,
           deadlineDays: values.deadlineDays,
           gracePeriodHours: values.gracePeriodHours,
-          categories: values.categories,
-          autoApprove: {
-            enabled: values.autoApprove,
-            severities: values.autoApproveSeverities,
-          },
-          schedule: {
-            frequency: values.scheduleFrequency,
-            time: values.scheduleTime,
-            dayOfWeek: values.scheduleDayOfWeek,
-            dayOfMonth: values.scheduleDayOfMonth,
-          },
-          rebootPolicy: { policy: values.rebootPolicy },
+          categoryRules: values.categoryRules,
         })
       });
       if (!response.ok) {
         if (response.status === 401) { window.location.href = '/login'; return; }
-        throw new Error('Failed to create update ring');
+        throw new Error(isEditing ? 'Failed to update ring' : 'Failed to create update ring');
       }
       await fetchRings();
       setRingModalOpen(false);
+      setEditingRing(null);
     } catch (err) {
-      setRingsError(err instanceof Error ? err.message : 'Failed to create update ring');
+      setRingsError(err instanceof Error ? err.message : (isEditing ? 'Failed to update ring' : 'Failed to create update ring'));
     } finally {
       setRingSubmitting(false);
     }
@@ -354,46 +300,7 @@ export default function PatchesPage() {
     }
   };
 
-  const handleRingDeploy = async (ring: UpdateRingItem) => {
-    try {
-      const response = await fetchWithAuth(`/update-rings/${ring.id}/deploy`, {
-        method: 'POST',
-        body: JSON.stringify({})
-      });
-      if (!response.ok) {
-        if (response.status === 401) { window.location.href = '/login'; return; }
-        throw new Error('Failed to trigger deployment');
-      }
-    } catch (err) {
-      setRingsError(err instanceof Error ? err.message : 'Failed to trigger deployment');
-    }
-  };
-
   // ---- Derived ----
-
-  const devicePatchItems: DevicePatch[] = useMemo(
-    () =>
-      patches.slice(0, 4).map(patch => ({
-        id: patch.id,
-        title: patch.title,
-        severity: patch.severity,
-        status: 'available'
-      })),
-    [patches]
-  );
-
-  const installedCount = useMemo(
-    () => patches.filter(p => p.approvalStatus === 'approved').length,
-    [patches]
-  );
-  const failedCount = useMemo(
-    () => patches.filter(p => p.approvalStatus === 'declined').length,
-    [patches]
-  );
-  const availableCount = useMemo(
-    () => Math.max(patches.length - installedCount - failedCount, 0),
-    [patches, installedCount, failedCount]
-  );
 
   return (
     <div className="space-y-6">
@@ -415,6 +322,7 @@ export default function PatchesPage() {
           <button
             type="button"
             onClick={() => {
+              setEditingRing(null);
               setRingsError(undefined);
               setRingModalOpen(true);
             }}
@@ -505,9 +413,12 @@ export default function PatchesPage() {
           ) : (
             <UpdateRingList
               rings={rings}
-              onEdit={() => {/* TODO: open edit modal */}}
+              onEdit={(ring) => {
+                setEditingRing(ring);
+                setRingsError(undefined);
+                setRingModalOpen(true);
+              }}
               onDelete={handleRingDelete}
-              onDeploy={handleRingDeploy}
               onSelect={(ring) => {
                 setSelectedRingId(ring.id);
                 setActiveTab('patches');
@@ -519,51 +430,13 @@ export default function PatchesPage() {
 
       {/* Patches tab */}
       {activeTab === 'patches' && (
-        <div className="grid gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2">
-            <PatchList
-              patches={patches}
-              loading={patchesLoading}
-              error={patchesError}
-              onRetry={fetchPatches}
-              onReview={handleReview}
-            />
-          </div>
-          <div className="space-y-6">
-            {deviceLoading ? (
-              <div className="flex items-center justify-center rounded-lg border bg-card p-6 shadow-sm">
-                <div className="text-center">
-                  <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
-                  <p className="mt-3 text-sm text-muted-foreground">Loading device status...</p>
-                </div>
-              </div>
-            ) : deviceError ? (
-              <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-                <p className="text-sm text-destructive">{deviceError}</p>
-                <button
-                  type="button"
-                  onClick={fetchDeviceSnapshot}
-                  className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-                >
-                  Try again
-                </button>
-              </div>
-            ) : deviceSnapshot ? (
-              <DevicePatchStatus
-                deviceName={deviceSnapshot.name}
-                os={deviceSnapshot.os}
-                availableCount={availableCount}
-                installedCount={installedCount}
-                failedCount={failedCount}
-                patches={devicePatchItems}
-              />
-            ) : (
-              <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">
-                No device patch status available.
-              </div>
-            )}
-          </div>
-        </div>
+        <PatchList
+          patches={patches}
+          loading={patchesLoading}
+          error={patchesError}
+          onRetry={fetchPatches}
+          onReview={handleReview}
+        />
       )}
 
       {/* Compliance tab */}
@@ -581,25 +454,35 @@ export default function PatchesPage() {
         onSubmit={handleApprovalSubmit}
       />
 
-      {/* Create Ring modal */}
+      {/* Create / Edit Ring modal */}
       {ringModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
           <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Create Update Ring</h2>
+              <h2 className="text-lg font-semibold">{editingRing ? 'Edit Update Ring' : 'Create Update Ring'}</h2>
               <button
                 type="button"
-                onClick={() => setRingModalOpen(false)}
+                onClick={() => { setRingModalOpen(false); setEditingRing(null); }}
                 className="h-8 w-8 rounded-md hover:bg-muted flex items-center justify-center"
               >
                 &times;
               </button>
             </div>
             <UpdateRingForm
+              key={editingRing?.id ?? 'new'}
               onSubmit={handleRingSubmit}
-              onCancel={() => setRingModalOpen(false)}
-              submitLabel={ringSubmitting ? 'Creating...' : 'Create Ring'}
+              onCancel={() => { setRingModalOpen(false); setEditingRing(null); }}
+              submitLabel={ringSubmitting ? (editingRing ? 'Saving...' : 'Creating...') : (editingRing ? 'Save Changes' : 'Create Ring')}
               loading={ringSubmitting}
+              defaultValues={editingRing ? {
+                name: editingRing.name,
+                description: editingRing.description ?? undefined,
+                ringOrder: editingRing.ringOrder,
+                deferralDays: editingRing.deferralDays,
+                deadlineDays: editingRing.deadlineDays,
+                gracePeriodHours: editingRing.gracePeriodHours,
+                categoryRules: editingRing.categoryRules,
+              } : undefined}
             />
           </div>
         </div>

@@ -1,8 +1,8 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import ComplianceDashboard from '../../components/software/ComplianceDashboard';
+import SoftwarePage from '../../components/software/SoftwarePage';
 ---
 
-<DashboardLayout title="Software Policies">
-  <ComplianceDashboard client:load />
+<DashboardLayout title="Software">
+  <SoftwarePage client:load defaultTab="policies" />
 </DashboardLayout>

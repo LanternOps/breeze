@@ -5,7 +5,7 @@
 :80 {
 	encode zstd gzip
 
-	@api path /api/* /health /ready /metrics/*
+	@api path /api/* /health /ready /metrics /metrics/*
 	handle @api {
 		reverse_proxy host.docker.internal:3001
 	}

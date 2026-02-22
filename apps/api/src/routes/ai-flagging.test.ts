@@ -155,7 +155,8 @@ describe('AI flagging routes', () => {
         flagReason: 'Inappropriate response',
       })
     );
-    expect(mockSet.mock.calls[0][0].flaggedAt).toBeInstanceOf(Date);
+    expect(mockSet.mock.calls.length).toBeGreaterThan(0);
+    expect(mockSet.mock.calls[0]![0].flaggedAt).toBeInstanceOf(Date);
     expect(writeRouteAudit).toHaveBeenCalled();
   });
 

@@ -5,4 +5,5 @@ export { default as SoftwareCatalog } from './SoftwareCatalog';
 export { default as ComplianceDashboard } from './ComplianceDashboard';
 export { default as SoftwareComplianceReport } from './SoftwareComplianceReport';
 export { default as SoftwareInventoryView } from './SoftwareInventoryView';
+export { default as SoftwarePage } from './SoftwarePage';
 export { default as SoftwareVersionManager } from './SoftwareVersionManager';

@@ -16,6 +16,7 @@ import { users } from './users';
 import { alertSeverityEnum } from './alerts';
 import { automationOnFailureEnum, policyEnforcementEnum } from './automations';
 import { scripts } from './scripts';
+import { eventLogLevelEnum } from './eventLogs';
 
 export const configPolicyStatusEnum = pgEnum('config_policy_status', [
   'active',
@@ -32,6 +33,8 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'maintenance',
   'compliance',
   'automation',
+  'event_log',
+  'software_policy',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -175,6 +178,22 @@ export const configPolicyMaintenanceSettings = pgTable('config_policy_maintenanc
   notifyBeforeMinutes: integer('notify_before_minutes').default(15),
   notifyOnStart: boolean('notify_on_start').notNull().default(true),
   notifyOnEnd: boolean('notify_on_end').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Single-item: one row per feature link (event log settings)
+export const configPolicyEventLogSettings = pgTable('config_policy_event_log_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  retentionDays: integer('retention_days').notNull().default(30),
+  maxEventsPerCycle: integer('max_events_per_cycle').notNull().default(100),
+  collectCategories: text('collect_categories').array().notNull().default(['security', 'hardware', 'application', 'system']),
+  minimumLevel: eventLogLevelEnum('minimum_level').notNull().default('info'),
+  collectionIntervalMinutes: integer('collection_interval_minutes').notNull().default(5),
+  rateLimitPerHour: integer('rate_limit_per_hour').notNull().default(12000),
+  enableFullTextSearch: boolean('enable_full_text_search').notNull().default(true),
+  enableCorrelation: boolean('enable_correlation').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

@@ -5,10 +5,8 @@ import NetworkChangeDetailModal from './NetworkChangeDetailModal';
 import {
   eventTypeConfig,
   formatDateTime,
-  mapNetworkBaseline,
   mapNetworkChangeEvent,
   type DeviceOption,
-  type NetworkBaseline,
   type NetworkChangeEvent,
   type NetworkEventType
 } from './networkTypes';
@@ -18,17 +16,21 @@ type SiteOption = {
   name: string;
 };
 
+type ProfileOption = {
+  id: string;
+  name: string;
+};
+
 type NetworkChangesPanelProps = {
   currentOrgId: string | null;
   currentSiteId: string | null;
   siteOptions: SiteOption[];
-  baselineFilterId?: string | null;
   timezone?: string;
 };
 
 type FilterState = {
   siteId: string;
-  baselineId: string;
+  profileId: string;
   eventType: 'all' | NetworkEventType;
   acknowledged: 'all' | 'true' | 'false';
   since: string;
@@ -37,7 +39,7 @@ type FilterState = {
 function createDefaultFilters(currentSiteId: string | null): FilterState {
   return {
     siteId: currentSiteId ?? 'all',
-    baselineId: 'all',
+    profileId: 'all',
     eventType: 'all',
     acknowledged: 'false',
     since: ''
@@ -81,11 +83,10 @@ export default function NetworkChangesPanel({
   currentOrgId,
   currentSiteId,
   siteOptions,
-  baselineFilterId,
   timezone
 }: NetworkChangesPanelProps) {
   const [changes, setChanges] = useState<NetworkChangeEvent[]>([]);
-  const [baselines, setBaselines] = useState<NetworkBaseline[]>([]);
+  const [profiles, setProfiles] = useState<ProfileOption[]>([]);
   const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [filters, setFilters] = useState<FilterState>(() => createDefaultFilters(currentSiteId));
   const [loading, setLoading] = useState(true);
@@ -99,24 +100,17 @@ export default function NetworkChangesPanel({
   const [detailEventId, setDetailEventId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!baselineFilterId) return;
-    setFilters((previous) => ({ ...previous, baselineId: baselineFilterId }));
-  }, [baselineFilterId]);
-
-  useEffect(() => {
-    if (baselineFilterId) return;
     setFilters((previous) => ({ ...previous, siteId: currentSiteId ?? previous.siteId }));
-  }, [baselineFilterId, currentSiteId]);
+  }, [currentSiteId]);
 
-  const fetchBaselines = useCallback(async () => {
+  const fetchProfiles = useCallback(async () => {
     const params = new URLSearchParams();
     if (currentOrgId) params.set('orgId', currentOrgId);
-    params.set('limit', '200');
     const query = params.toString();
 
-    const response = await fetchWithAuth(`/network/baselines${query ? `?${query}` : ''}`);
+    const response = await fetchWithAuth(`/discovery/profiles${query ? `?${query}` : ''}`);
     if (!response.ok) {
-      throw new Error(await extractError(response, 'Failed to load baseline filters'));
+      throw new Error(await extractError(response, 'Failed to load profile filters'));
     }
 
     const payload = await response.json();
@@ -126,11 +120,16 @@ export default function NetworkChangesPanel({
         ? payload
         : [];
 
-    const mapped = items
-      .map((row: unknown) => mapNetworkBaseline(row))
-      .filter((row: NetworkBaseline | null): row is NetworkBaseline => row !== null);
+    const mapped: ProfileOption[] = items
+      .map((row: Record<string, unknown>) => {
+        const id = typeof row.id === 'string' ? row.id : null;
+        const name = typeof row.name === 'string' ? row.name : null;
+        if (!id || !name) return null;
+        return { id, name };
+      })
+      .filter((row: ProfileOption | null): row is ProfileOption => row !== null);
 
-    setBaselines(mapped);
+    setProfiles(mapped);
   }, [currentOrgId]);
 
   const fetchDevices = useCallback(async () => {
@@ -164,7 +163,7 @@ export default function NetworkChangesPanel({
       const params = new URLSearchParams();
       if (currentOrgId) params.set('orgId', currentOrgId);
       if (filters.siteId !== 'all') params.set('siteId', filters.siteId);
-      if (filters.baselineId !== 'all') params.set('baselineId', filters.baselineId);
+      if (filters.profileId !== 'all') params.set('profileId', filters.profileId);
       if (filters.eventType !== 'all') params.set('eventType', filters.eventType);
       if (filters.acknowledged !== 'all') params.set('acknowledged', filters.acknowledged);
       if (filters.since.trim()) {
@@ -204,18 +203,18 @@ export default function NetworkChangesPanel({
   }, [currentOrgId, filters]);
 
   useEffect(() => {
-    Promise.all([fetchBaselines(), fetchDevices()]).catch((fetchError) => {
+    Promise.all([fetchProfiles(), fetchDevices()]).catch((fetchError) => {
       setError(fetchError instanceof Error ? fetchError.message : 'Failed to load network metadata');
     });
-  }, [fetchBaselines, fetchDevices]);
+  }, [fetchProfiles, fetchDevices]);
 
   useEffect(() => {
     fetchChanges();
   }, [fetchChanges]);
 
-  const baselineById = useMemo(
-    () => new Map(baselines.map((baseline) => [baseline.id, baseline])),
-    [baselines]
+  const profileById = useMemo(
+    () => new Map(profiles.map((profile) => [profile.id, profile])),
+    [profiles]
   );
 
   const deviceById = useMemo(
@@ -352,7 +351,7 @@ export default function NetworkChangesPanel({
           <div>
             <h2 className="text-lg font-semibold">Network Changes</h2>
             <p className="text-sm text-muted-foreground">
-              Review and triage baseline change events across managed subnets.
+              Review and triage network change events across discovery profiles.
             </p>
           </div>
           <button
@@ -383,16 +382,16 @@ export default function NetworkChangesPanel({
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Baseline</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Profile</label>
             <select
-              value={filters.baselineId}
-              onChange={(event) => setFilters((previous) => ({ ...previous, baselineId: event.target.value }))}
+              value={filters.profileId}
+              onChange={(event) => setFilters((previous) => ({ ...previous, profileId: event.target.value }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="all">All baselines</option>
-              {baselines.map((baseline) => (
-                <option key={baseline.id} value={baseline.id}>
-                  {baseline.subnet}
+              <option value="all">All profiles</option>
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name}
                 </option>
               ))}
             </select>
@@ -505,7 +504,7 @@ export default function NetworkChangesPanel({
                   />
                 </th>
                 <th className="px-4 py-3">Event</th>
-                <th className="px-4 py-3">Subnet</th>
+                <th className="px-4 py-3">Profile</th>
                 <th className="px-4 py-3">Detected</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Linked Device</th>
@@ -528,7 +527,7 @@ export default function NetworkChangesPanel({
               ) : (
                 changes.map((change) => {
                   const type = eventTypeConfig[change.eventType];
-                  const subnet = change.baselineSubnet ?? baselineById.get(change.baselineId)?.subnet ?? 'Unknown';
+                  const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? 'Unknown') : 'Unknown';
                   const linkedDeviceLabel = change.linkedDeviceId
                     ? (deviceById.get(change.linkedDeviceId)?.label ?? change.linkedDeviceId)
                     : 'Not linked';
@@ -555,7 +554,7 @@ export default function NetworkChangesPanel({
                           {change.hostname ?? 'Unknown host'} • {change.macAddress ?? 'No MAC'}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-sm">{subnet}</td>
+                      <td className="px-4 py-3 text-sm">{profileName}</td>
                       <td className="px-4 py-3 text-sm">{formatDateTime(change.detectedAt, timezone)}</td>
                       <td className="px-4 py-3">
                         <span

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateConfigPolicyComplianceRule } from './policyEvaluationService';
+import { __isComplianceCheckDue, evaluateConfigPolicyComplianceRule } from './policyEvaluationService';
 
 // Helper to build a minimal complianceRule object.
 // Cast as `any` to satisfy the Drizzle inferred type.
@@ -442,5 +442,29 @@ describe('evaluateConfigPolicyComplianceRule', () => {
       const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
       expect(result.status).toBe('compliant');
     });
+  });
+});
+
+describe('__isComplianceCheckDue', () => {
+  it('returns true when there is no prior evaluation timestamp', () => {
+    expect(__isComplianceCheckDue(null, 60, Date.parse('2026-02-21T12:00:00Z'))).toBe(true);
+  });
+
+  it('returns false when interval has not elapsed yet', () => {
+    const nowMs = Date.parse('2026-02-21T12:00:00Z');
+    const lastCheckedAt = new Date('2026-02-21T11:45:01Z');
+    expect(__isComplianceCheckDue(lastCheckedAt, 15, nowMs)).toBe(false);
+  });
+
+  it('returns true when interval has elapsed', () => {
+    const nowMs = Date.parse('2026-02-21T12:00:00Z');
+    const lastCheckedAt = new Date('2026-02-21T11:45:00Z');
+    expect(__isComplianceCheckDue(lastCheckedAt, 15, nowMs)).toBe(true);
+  });
+
+  it('clamps invalid intervals to a safe minimum', () => {
+    const nowMs = Date.parse('2026-02-21T12:00:00Z');
+    const lastCheckedAt = new Date('2026-02-21T11:59:30Z');
+    expect(__isComplianceCheckDue(lastCheckedAt, 0, nowMs)).toBe(false);
   });
 });

@@ -5,12 +5,18 @@ import {
   ChevronRight,
   Pencil,
   Trash2,
-  Rocket,
   Layers,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type UpdateRingStatus = 'active' | 'disabled';
+
+export type CategoryRule = {
+  category: string;
+  autoApprove: boolean;
+  autoApproveSeverities?: Array<'critical' | 'important' | 'moderate' | 'low'>;
+  deferralDaysOverride?: number | null;
+};
 
 export type UpdateRingItem = {
   id: string;
@@ -21,7 +27,7 @@ export type UpdateRingItem = {
   deferralDays: number;
   deadlineDays?: number | null;
   gracePeriodHours: number;
-  categories: string[];
+  categoryRules?: CategoryRule[];
   compliancePercent?: number;
   deviceCount?: number;
   updatedAt?: string;
@@ -31,7 +37,6 @@ type UpdateRingListProps = {
   rings: UpdateRingItem[];
   onEdit?: (ring: UpdateRingItem) => void;
   onDelete?: (ring: UpdateRingItem) => void;
-  onDeploy?: (ring: UpdateRingItem) => void;
   onSelect?: (ring: UpdateRingItem) => void;
   pageSize?: number;
 };
@@ -69,7 +74,6 @@ export default function UpdateRingList({
   rings,
   onEdit,
   onDelete,
-  onDeploy,
   onSelect,
   pageSize = 8,
 }: UpdateRingListProps) {
@@ -183,14 +187,6 @@ export default function UpdateRingList({
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onDeploy?.(ring)}
-                        className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium hover:bg-muted"
-                      >
-                        <Rocket className="h-3.5 w-3.5" />
-                        Deploy
-                      </button>
                       <button
                         type="button"
                         onClick={() => onEdit?.(ring)}

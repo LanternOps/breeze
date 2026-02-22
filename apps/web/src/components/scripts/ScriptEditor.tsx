@@ -10,6 +10,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
 import type { ScriptLanguage, OSType } from './ScriptList';
 
 type ParameterType = 'string' | 'number' | 'boolean' | 'dropdown' | 'filePath';
@@ -235,7 +236,7 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch(`/api/scripts/${scriptId}`);
+      const response = await fetchWithAuth(`/scripts/${scriptId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch script');
       }
@@ -274,10 +275,11 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
   const loadDevices = useCallback(async () => {
     try {
       setDevicesLoading(true);
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        const deviceList: Device[] = data.devices ?? data ?? [];
+        const rawDeviceList = data.data ?? data.devices ?? data.items ?? (Array.isArray(data) ? data : []);
+        const deviceList: Device[] = Array.isArray(rawDeviceList) ? rawDeviceList : [];
         setDevices(deviceList);
         if (deviceList.length > 0) {
           setSelectedDeviceId(prev => prev || deviceList[0].id);
@@ -332,7 +334,7 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
 
     const poll = async () => {
       try {
-        const response = await fetch(`/api/scripts/executions/${activeExecutionId}`);
+        const response = await fetchWithAuth(`/scripts/executions/${activeExecutionId}`);
         if (!response.ok) {
           throw new Error('Failed to fetch execution output');
         }
@@ -471,9 +473,8 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
     setSaving(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/scripts/${scriptId}`, {
+      const response = await fetchWithAuth(`/scripts/${scriptId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -525,9 +526,8 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
     setSaveAsLoading(true);
     setSaveAsError(undefined);
     try {
-      const response = await fetch('/api/scripts', {
+      const response = await fetchWithAuth('/scripts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -562,9 +562,8 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
     setConsoleEvents([`Starting test on ${deviceLabel}`]);
 
     try {
-      const response = await fetch(`/api/scripts/${script.id}/execute`, {
+      const response = await fetchWithAuth(`/scripts/${script.id}/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           deviceIds: [selectedDeviceId],
           parameters: testParameters

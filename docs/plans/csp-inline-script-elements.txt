@@ -1,0 +1,1 @@
+/Users/toddhebebrand/breeze/apps/portal/src/pages/index.astro:12:    <script>

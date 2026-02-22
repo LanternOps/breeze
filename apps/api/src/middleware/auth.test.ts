@@ -549,8 +549,8 @@ describe('requirePermission', () => {
     const res = await app.request('/test');
 
     expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.message).toBe('No permissions found');
+    const body = await res.text();
+    expect(body).toBe('No permissions found');
   });
 
   it('rejects when user lacks the required permission', async () => {
@@ -568,8 +568,8 @@ describe('requirePermission', () => {
     const res = await app.request('/test');
 
     expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.message).toBe('Permission denied');
+    const body = await res.text();
+    expect(body).toBe('Permission denied');
   });
 
   it('allows when user has the exact required permission', async () => {
@@ -661,8 +661,8 @@ describe('requireMfa', () => {
     const res = await app.request('/test');
 
     expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.message).toBe('MFA required');
+    const body = await res.text();
+    expect(body).toBe('MFA required');
   });
 
   it('allows when token.mfa is true', async () => {
@@ -709,8 +709,8 @@ describe('requireOrg', () => {
     const res = await app.request('/test');
 
     expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.message).toBe('Organization context required');
+    const body = await res.text();
+    expect(body).toBe('Organization context required');
   });
 
   it('allows when auth has an orgId', async () => {
@@ -757,8 +757,8 @@ describe('requirePartner', () => {
     const res = await app.request('/test');
 
     expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.message).toBe('Partner context required');
+    const body = await res.text();
+    expect(body).toBe('Partner context required');
   });
 
   it('allows when auth has a partnerId', async () => {
@@ -813,8 +813,8 @@ describe('requireOrgAccess', () => {
     const res = await app.request('/test');
 
     expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.message).toBe('Organization ID required');
+    const body = await res.text();
+    expect(body).toBe('Organization ID required');
   });
 
   it('rejects when user cannot access the requested org', async () => {
@@ -823,7 +823,7 @@ describe('requireOrgAccess', () => {
       c.set('auth', baseAuth);
       await next();
     });
-    app.use(requireOrgAccess());
+    app.use('/test/:orgId', requireOrgAccess());
     app.get('/test/:orgId', (c) => c.json({ ok: true }));
 
     vi.mocked(getUserPermissions).mockResolvedValue(mockPermsForOrg);
@@ -832,8 +832,8 @@ describe('requireOrgAccess', () => {
     const res = await app.request('/test/other-org-456');
 
     expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.message).toBe('Access to this organization denied');
+    const body = await res.text();
+    expect(body).toBe('Access to this organization denied');
   });
 
   it('allows when user can access the requested org', async () => {
@@ -842,7 +842,7 @@ describe('requireOrgAccess', () => {
       c.set('auth', baseAuth);
       await next();
     });
-    app.use(requireOrgAccess());
+    app.use('/test/:orgId', requireOrgAccess());
     app.get('/test/:orgId', (c) => c.json({ ok: true }));
 
     vi.mocked(getUserPermissions).mockResolvedValue(mockPermsForOrg);

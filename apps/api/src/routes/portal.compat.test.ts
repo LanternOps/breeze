@@ -92,6 +92,57 @@ describe('portal compatibility routes', () => {
     app.route('/portal', portalRoutes);
   });
 
+  it('extends cookie session expiry on authenticated activity', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+    try {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([portalUser])) // login lookup
+        .mockReturnValueOnce(mockSelectLimit([portalUser])) // auth middleware on first profile call
+        .mockReturnValueOnce(mockSelectLimit([portalUser])); // auth middleware on second profile call
+      vi.mocked(db.update).mockReturnValueOnce(mockUpdateWhere());
+
+      const loginRes = await app.request('/portal/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'portal@example.com',
+          password: 'password123'
+        })
+      });
+      expect(loginRes.status).toBe(200);
+
+      const cookie = loginRes.headers
+        .get('set-cookie')
+        ?.split(';')[0];
+      expect(cookie).toBeTruthy();
+      if (!cookie) {
+        throw new Error('Expected portal session cookie');
+      }
+
+      // Touch the session near the original expiry to trigger sliding extension.
+      vi.setSystemTime(new Date('2026-01-01T23:59:00.000Z'));
+      const profileRes1 = await app.request('/portal/profile', {
+        method: 'GET',
+        headers: { Cookie: cookie }
+      });
+      expect(profileRes1.status).toBe(200);
+      expect(profileRes1.headers.get('set-cookie')).toContain('breeze_portal_session=');
+
+      // Past the original 24h expiry, the session should still be valid because it was active.
+      vi.setSystemTime(new Date('2026-01-02T00:01:00.000Z'));
+      const profileRes2 = await app.request('/portal/profile', {
+        method: 'GET',
+        headers: { Cookie: cookie }
+      });
+      expect(profileRes2.status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('POST /portal/auth/login accepts optional orgId and returns compatibility tokens', async () => {
     vi.mocked(verifyPassword).mockResolvedValue(true);
     vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([portalUser]));
@@ -185,4 +236,3 @@ describe('portal compatibility routes', () => {
     expect(profileRes.status).toBe(401);
   });
 });
-

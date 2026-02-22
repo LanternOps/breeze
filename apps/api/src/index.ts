@@ -8,6 +8,7 @@ import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
+import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
 import { authRoutes } from './routes/auth';
@@ -105,6 +106,8 @@ import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } 
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
+import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
+import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -180,6 +183,10 @@ app.use(
   })
 );
 app.use('*', securityMiddleware());
+app.use('*', bodyLimit({
+  maxSize: 1024 * 1024, // 1MB default for all routes
+  onError: (c) => c.json({ error: 'Request body too large' }, 413),
+}));
 app.use('*', prettyJSON());
 app.use(
   '*',
@@ -847,6 +854,8 @@ async function initializeWorkers(): Promise<void> {
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
     ['logForwardingWorker', initializeLogForwardingWorker],
+    ['patchJobWorker', initializePatchJobWorkers],
+    ['patchSchedulerWorker', initializePatchSchedulerWorker],
   ];
 
   await Promise.allSettled(
@@ -931,6 +940,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
 
   const shutdownTasks: Array<() => Promise<void>> = [
     shutdownLogForwardingWorker,
+    shutdownPatchJobWorkers,
+    shutdownPatchSchedulerWorker,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownSnmpRetention,

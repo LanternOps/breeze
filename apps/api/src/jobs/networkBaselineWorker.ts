@@ -1,10 +1,11 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, lt, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   discoveryJobs,
   discoveryProfiles,
-  networkBaselines
+  networkBaselines,
+  networkChangeEvents
 } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
@@ -39,10 +40,15 @@ interface CompareBaselineJobData {
   hosts: DiscoveredHostResult[];
 }
 
+interface PruneChangeEventsJobData {
+  type: 'prune-change-events';
+}
+
 type NetworkBaselineJobData =
   | ScheduleBaselineScansJobData
   | ExecuteBaselineScanJobData
-  | CompareBaselineJobData;
+  | CompareBaselineJobData
+  | PruneChangeEventsJobData;
 
 let networkBaselineQueue: Queue | null = null;
 let networkBaselineWorkerInstance: Worker<NetworkBaselineJobData> | null = null;
@@ -68,6 +74,8 @@ function createNetworkBaselineWorker(): Worker<NetworkBaselineJobData> {
             return processExecuteScan(job.data);
           case 'compare-baseline':
             return processCompareBaseline(job.data);
+          case 'prune-change-events':
+            return handlePruneChangeEvents();
           default:
             throw new Error(`Unknown network baseline job type: ${(job.data as { type: string }).type}`);
         }
@@ -269,6 +277,32 @@ async function processCompareBaseline(data: CompareBaselineJobData) {
     jobId: data.jobId,
     hosts: data.hosts ?? []
   });
+}
+
+/**
+ * Prune expired change events based on each profile's changeRetentionDays setting.
+ */
+async function handlePruneChangeEvents(): Promise<{ totalDeleted: number }> {
+  const profiles = await db
+    .select({ id: discoveryProfiles.id, alertSettings: discoveryProfiles.alertSettings })
+    .from(discoveryProfiles)
+    .where(sql`${discoveryProfiles.alertSettings}->>'enabled' = 'true'`);
+
+  let totalDeleted = 0;
+  for (const profile of profiles) {
+    const settings = profile.alertSettings as { changeRetentionDays?: number } | null;
+    const days = settings?.changeRetentionDays ?? 90;
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const deleted = await db.delete(networkChangeEvents).where(
+      and(
+        eq(networkChangeEvents.profileId, profile.id),
+        lt(networkChangeEvents.detectedAt, cutoff)
+      )
+    ).returning({ id: networkChangeEvents.id });
+    totalDeleted += deleted.length;
+  }
+  console.log(`[NetworkBaselineWorker] Pruned ${totalDeleted} expired change events`);
+  return { totalDeleted };
 }
 
 async function scheduleRecurringScanPlanner(): Promise<void> {

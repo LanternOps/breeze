@@ -15,6 +15,7 @@ import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function normalizeMonitorStatus(raw: string | undefined): 'online' | 'offline' | 'degraded' {
   if (raw && VALID_MONITOR_STATUSES.has(raw)) return raw as 'online' | 'offline' | 'degraded';
@@ -166,67 +167,6 @@ async function processOrphanedCommandResult(
   agentId: string,
   result: z.infer<typeof commandResultSchema>
 ): Promise<void> {
-  // Check if this is a discovery job result
-  const [discoveryJob] = await db
-    .select({ id: discoveryJobs.id, orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
-    .from(discoveryJobs)
-    .where(eq(discoveryJobs.id, result.commandId))
-    .limit(1);
-
-  if (discoveryJob) {
-    console.log(`[AgentWs] Processing discovery result for job ${discoveryJob.id} from agent ${agentId}`);
-    try {
-      const discoveryData = result.result as {
-        jobId?: string;
-        hosts?: DiscoveredHostResult[];
-        hostsScanned?: number;
-        hostsDiscovered?: number;
-      } | undefined;
-
-      if (result.status !== 'completed' || !discoveryData?.hosts) {
-        const errorMsg = result.error || result.stderr || `Agent returned status: ${result.status}`;
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            errors: { message: errorMsg },
-            updatedAt: new Date()
-          })
-          .where(eq(discoveryJobs.id, discoveryJob.id));
-        console.warn(`[AgentWs] Discovery job ${discoveryJob.id} failed: ${errorMsg}`);
-        return;
-      }
-
-      if (isRedisAvailable()) {
-        await enqueueDiscoveryResults(
-          discoveryJob.id,
-          discoveryJob.orgId,
-          discoveryJob.siteId,
-          discoveryData.hosts,
-          discoveryData.hostsScanned ?? 0,
-          discoveryData.hostsDiscovered ?? 0
-        );
-      } else {
-        console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryJob.id}`);
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
-            hostsScanned: discoveryData.hostsScanned ?? 0,
-            errors: { message: 'Results received but could not be processed: job queue unavailable' },
-            updatedAt: new Date()
-          })
-          .where(eq(discoveryJobs.id, discoveryJob.id));
-      }
-    } catch (err) {
-      console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
-    }
-    return;
-  }
-
   // Check if this is an SNMP poll result
   const snmpData = result.result as {
     deviceId?: string;
@@ -303,6 +243,78 @@ async function processOrphanedCommandResult(
     return;
   }
 
+  // Ignore non-persistent command IDs that are expected to have no DB row.
+  if (result.commandId.startsWith('dev-push-')) {
+    return;
+  }
+
+  // Discovery jobs use UUID IDs; skip lookup for non-UUID command IDs.
+  if (!UUID_REGEX.test(result.commandId)) {
+    console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands or discovery jobs for agent ${agentId}`);
+    return;
+  }
+
+  // Check if this is a discovery job result
+  const [discoveryJob] = await db
+    .select({ id: discoveryJobs.id, orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
+    .from(discoveryJobs)
+    .where(eq(discoveryJobs.id, result.commandId))
+    .limit(1);
+
+  if (discoveryJob) {
+    console.log(`[AgentWs] Processing discovery result for job ${discoveryJob.id} from agent ${agentId}`);
+    try {
+      const discoveryData = result.result as {
+        jobId?: string;
+        hosts?: DiscoveredHostResult[];
+        hostsScanned?: number;
+        hostsDiscovered?: number;
+      } | undefined;
+
+      if (result.status !== 'completed' || !discoveryData?.hosts) {
+        const errorMsg = result.error || result.stderr || `Agent returned status: ${result.status}`;
+        await db
+          .update(discoveryJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            errors: { message: errorMsg },
+            updatedAt: new Date()
+          })
+          .where(eq(discoveryJobs.id, discoveryJob.id));
+        console.warn(`[AgentWs] Discovery job ${discoveryJob.id} failed: ${errorMsg}`);
+        return;
+      }
+
+      if (isRedisAvailable()) {
+        await enqueueDiscoveryResults(
+          discoveryJob.id,
+          discoveryJob.orgId,
+          discoveryJob.siteId,
+          discoveryData.hosts,
+          discoveryData.hostsScanned ?? 0,
+          discoveryData.hostsDiscovered ?? 0
+        );
+      } else {
+        console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryJob.id}`);
+        await db
+          .update(discoveryJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
+            hostsScanned: discoveryData.hostsScanned ?? 0,
+            errors: { message: 'Results received but could not be processed: job queue unavailable' },
+            updatedAt: new Date()
+          })
+          .where(eq(discoveryJobs.id, discoveryJob.id));
+      }
+    } catch (err) {
+      console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+    }
+    return;
+  }
+
   console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands or discovery jobs for agent ${agentId}`);
 }
 
@@ -314,6 +326,13 @@ async function processCommandResult(
   result: z.infer<typeof commandResultSchema>
 ): Promise<void> {
   try {
+    // Non-UUID command IDs (for example mon-* and snmp-*) are dispatched directly
+    // over WebSocket and do not have a device_commands row.
+    if (!UUID_REGEX.test(result.commandId)) {
+      await processOrphanedCommandResult(agentId, result);
+      return;
+    }
+
     const [ownedCommand] = await db
       .select({
         command: deviceCommands,

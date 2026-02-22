@@ -14,7 +14,7 @@ export type DiscoveryMethod = 'arp' | 'ping' | 'port_scan' | 'snmp' | 'wmi' | 's
 
 export type DiscoverySchedule =
   | { type: 'manual' }
-  | { type: 'cron'; cron: string }
+  | { type: 'cron'; cron: string; timezone?: string }
   | { type: 'interval'; intervalMinutes: number };
 
 export interface DiscoveryProfile {

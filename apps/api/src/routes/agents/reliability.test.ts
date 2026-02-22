@@ -50,8 +50,10 @@ function buildApp(): Hono {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
+      deviceId: 'device-1',
       orgId: 'org-1',
       agentId: 'agent-123',
+      siteId: 'site-1',
     });
     await next();
   });

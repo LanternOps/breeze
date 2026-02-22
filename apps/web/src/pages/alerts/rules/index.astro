@@ -1,8 +1,3 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import AlertRulesPage from '../../../components/alerts/AlertRulesPage';
+return Astro.redirect('/configuration-policies', 301);
 ---
-
-<DashboardLayout title="Alert Rules">
-  <AlertRulesPage client:load />
-</DashboardLayout>

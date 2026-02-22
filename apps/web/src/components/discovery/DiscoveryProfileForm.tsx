@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent, useCallback } from 'react';
 
 export type DiscoverySchedule = {
-  cadence: 'daily' | 'weekly' | 'monthly';
+  cadence: 'hourly' | 'interval' | 'daily' | 'weekly' | 'monthly';
+  intervalHours?: number;
+  intervalMinutes?: number;
   time: string;
   dayOfWeek?: string;
   dayOfMonth?: string;
@@ -21,6 +23,22 @@ export type SnmpSettings = {
   privacyPassphrase: string;
 };
 
+export type ProfileAlertSettings = {
+  enabled: boolean;
+  alertOnNew: boolean;
+  alertOnDisappeared: boolean;
+  alertOnChanged: boolean;
+  changeRetentionDays: number;
+};
+
+export const defaultAlertSettings: ProfileAlertSettings = {
+  enabled: false,
+  alertOnNew: true,
+  alertOnDisappeared: true,
+  alertOnChanged: true,
+  changeRetentionDays: 90
+};
+
 export type DiscoveryProfileFormValues = {
   name: string;
   siteId: string;
@@ -28,6 +46,7 @@ export type DiscoveryProfileFormValues = {
   methods: string[];
   schedule: DiscoverySchedule;
   snmp: SnmpSettings;
+  alertSettings: ProfileAlertSettings;
 };
 
 type SiteOption = {
@@ -42,6 +61,7 @@ type DiscoveryProfileFormProps = {
   onCancel?: () => void;
   submitLabel?: string;
   disabled?: boolean;
+  error?: string;
 };
 
 const methodOptions = [
@@ -52,6 +72,7 @@ const methodOptions = [
 ];
 
 const dayOptions = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const hourlyIntervalOptions = [1, 2, 3, 4, 6, 8, 12, 24];
 
 const CIDR_REGEX = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,3}$/;
 const IP_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
@@ -93,6 +114,8 @@ const defaultValues: DiscoveryProfileFormValues = {
   methods: ['ping', 'snmp'],
   schedule: {
     cadence: 'daily',
+    intervalHours: 1,
+    intervalMinutes: 60,
     time: '02:00',
     dayOfWeek: 'Monday',
     dayOfMonth: '1',
@@ -109,7 +132,8 @@ const defaultValues: DiscoveryProfileFormValues = {
     authPassphrase: '',
     privacyProtocol: 'aes',
     privacyPassphrase: ''
-  }
+  },
+  alertSettings: { ...defaultAlertSettings }
 };
 
 export default function DiscoveryProfileForm({
@@ -118,7 +142,8 @@ export default function DiscoveryProfileForm({
   onSubmit,
   onCancel,
   submitLabel = 'Save Profile',
-  disabled = false
+  disabled = false,
+  error
 }: DiscoveryProfileFormProps) {
   const [formValues, setFormValues] = useState<DiscoveryProfileFormValues>(initialValues ?? defaultValues);
   const [subnetsText, setSubnetsText] = useState((initialValues?.subnets ?? []).join('\n'));
@@ -127,7 +152,10 @@ export default function DiscoveryProfileForm({
   useEffect(() => {
     setSubnetErrors([]);
     if (initialValues) {
-      setFormValues(initialValues);
+      setFormValues({
+        ...initialValues,
+        alertSettings: initialValues.alertSettings ?? defaultAlertSettings
+      });
       setSubnetsText(initialValues.subnets.join('\n'));
       return;
     }
@@ -212,14 +240,26 @@ export default function DiscoveryProfileForm({
             <label className="text-sm font-medium">Schedule cadence</label>
             <select
               value={formValues.schedule.cadence}
-              onChange={event =>
+              onChange={event => {
+                const cadence = event.target.value as DiscoverySchedule['cadence'];
                 setFormValues(prev => ({
                   ...prev,
-                  schedule: { ...prev.schedule, cadence: event.target.value as DiscoverySchedule['cadence'] }
-                }))
-              }
+                  schedule: {
+                    ...prev.schedule,
+                    cadence,
+                    intervalHours: cadence === 'hourly'
+                      ? (prev.schedule.intervalHours && prev.schedule.intervalHours > 0 ? prev.schedule.intervalHours : 1)
+                      : prev.schedule.intervalHours,
+                    intervalMinutes: cadence === 'interval'
+                      ? (prev.schedule.intervalMinutes && prev.schedule.intervalMinutes > 0 ? prev.schedule.intervalMinutes : 30)
+                      : prev.schedule.intervalMinutes
+                  }
+                }));
+              }}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
+              <option value="hourly">Hourly</option>
+              <option value="interval">Custom interval</option>
               <option value="daily">Daily</option>
               <option value="weekly">Weekly</option>
               <option value="monthly">Monthly</option>
@@ -272,39 +312,83 @@ export default function DiscoveryProfileForm({
         <p className="text-sm text-muted-foreground">Set when discovery jobs should run.</p>
 
         <div className="mt-4 grid gap-4 md:grid-cols-3">
-          <div>
-            <label className="text-sm font-medium">Time</label>
-            <input
-              type="time"
-              value={formValues.schedule.time}
-              onChange={event =>
-                setFormValues(prev => ({
-                  ...prev,
-                  schedule: { ...prev.schedule, time: event.target.value }
-                }))
-              }
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Timezone</label>
-            <select
-              value={formValues.schedule.timezone}
-              onChange={event =>
-                setFormValues(prev => ({
-                  ...prev,
-                  schedule: { ...prev.schedule, timezone: event.target.value }
-                }))
-              }
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="UTC">UTC</option>
-              <option value="America/New_York">America/New_York</option>
-              <option value="America/Chicago">America/Chicago</option>
-              <option value="America/Denver">America/Denver</option>
-              <option value="America/Los_Angeles">America/Los_Angeles</option>
-            </select>
-          </div>
+          {formValues.schedule.cadence === 'hourly' ? (
+            <div>
+              <label className="text-sm font-medium">Repeat every</label>
+              <select
+                value={formValues.schedule.intervalHours ?? 1}
+                onChange={event =>
+                  setFormValues(prev => ({
+                    ...prev,
+                    schedule: { ...prev.schedule, intervalHours: Math.max(1, Number(event.target.value) || 1) }
+                  }))
+                }
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {hourlyIntervalOptions.map(hours => (
+                  <option key={hours} value={hours}>
+                    {hours === 1 ? 'Every hour' : `Every ${hours} hours`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : formValues.schedule.cadence === 'interval' ? (
+            <div>
+              <label className="text-sm font-medium">Repeat every (minutes)</label>
+              <input
+                type="number"
+                min={1}
+                max={10080}
+                value={formValues.schedule.intervalMinutes ?? 30}
+                onChange={event =>
+                  setFormValues(prev => ({
+                    ...prev,
+                    schedule: {
+                      ...prev.schedule,
+                      intervalMinutes: Math.max(1, Number(event.target.value) || 1)
+                    }
+                  }))
+                }
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="text-sm font-medium">Time</label>
+                <input
+                  type="time"
+                  value={formValues.schedule.time}
+                  onChange={event =>
+                    setFormValues(prev => ({
+                      ...prev,
+                      schedule: { ...prev.schedule, time: event.target.value }
+                    }))
+                  }
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Timezone</label>
+                <select
+                  value={formValues.schedule.timezone}
+                  onChange={event =>
+                    setFormValues(prev => ({
+                      ...prev,
+                      schedule: { ...prev.schedule, timezone: event.target.value }
+                    }))
+                  }
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="UTC">UTC</option>
+                  <option value="America/New_York">America/New_York</option>
+                  <option value="America/Chicago">America/Chicago</option>
+                  <option value="America/Denver">America/Denver</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles</option>
+                </select>
+              </div>
+            </>
+          )}
           {formValues.schedule.cadence === 'weekly' && (
             <div>
               <label className="text-sm font-medium">Day of week</label>
@@ -507,7 +591,63 @@ export default function DiscoveryProfileForm({
         </div>
       </div>
 
+      <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <h2 className="text-lg font-semibold">Network Alerting</h2>
+        <p className="text-sm text-muted-foreground">Alert when new or changed devices are detected on this subnet.</p>
+
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={formValues.alertSettings.enabled}
+            onChange={e => setFormValues(prev => ({
+              ...prev,
+              alertSettings: { ...prev.alertSettings, enabled: e.target.checked }
+            }))}
+            className="h-4 w-4 rounded border"
+          />
+          Enable network alerting
+        </label>
+
+        {formValues.alertSettings.enabled && (
+          <div className="mt-3 rounded-md border p-3 space-y-2 text-sm">
+            {(['alertOnNew', 'alertOnDisappeared', 'alertOnChanged'] as const).map(key => (
+              <label key={key} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formValues.alertSettings[key]}
+                  onChange={e => setFormValues(prev => ({
+                    ...prev,
+                    alertSettings: { ...prev.alertSettings, [key]: e.target.checked }
+                  }))}
+                  className="h-4 w-4 rounded border"
+                />
+                {{ alertOnNew: 'New device detected', alertOnDisappeared: 'Device disappeared', alertOnChanged: 'Device MAC changed' }[key]}
+              </label>
+            ))}
+            <div className="pt-1">
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Retain change log (days)</label>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={formValues.alertSettings.changeRetentionDays}
+                onChange={e => setFormValues(prev => ({
+                  ...prev,
+                  alertSettings: { ...prev.alertSettings, changeRetentionDays: Number(e.target.value) || 90 }
+                }))}
+                className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="flex items-center justify-end gap-3">
+        {error && (
+          <p className="mr-auto rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </p>
+        )}
         {onCancel && (
           <button
             type="button"

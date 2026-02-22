@@ -485,8 +485,8 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: 'breeze_refresh_token=valid-refresh-token'
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=valid-refresh-token; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -509,8 +509,8 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: 'breeze_refresh_token=invalid-token'
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=invalid-token; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -533,8 +533,8 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: 'breeze_refresh_token=access-token-not-refresh'
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=access-token-not-refresh; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -560,8 +560,8 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: 'breeze_refresh_token=revoked-refresh-token'
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=revoked-refresh-token; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -623,8 +623,8 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: 'breeze_refresh_token=refresh-token-live-context'
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=refresh-token-live-context; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -939,9 +939,9 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
+          'x-breeze-csrf': 'test-csrf-token',
           'sec-fetch-site': 'cross-site',
-          Cookie: 'breeze_refresh_token=some-token'
+          Cookie: 'breeze_refresh_token=some-token; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -955,9 +955,9 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
+          'x-breeze-csrf': 'test-csrf-token',
           'sec-fetch-site': 'none',
-          Cookie: 'breeze_refresh_token=some-token'
+          Cookie: 'breeze_refresh_token=some-token; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -1010,9 +1010,9 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
+          'x-breeze-csrf': 'test-csrf-token',
           'sec-fetch-site': 'same-origin',
-          Cookie: 'breeze_refresh_token=valid-refresh-token'
+          Cookie: 'breeze_refresh_token=valid-refresh-token; breeze_csrf_token=test-csrf-token'
         }
       });
 
@@ -1063,8 +1063,8 @@ describe('auth routes', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-breeze-csrf': '1',
-          Cookie: 'breeze_refresh_token=valid-refresh-token'
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=valid-refresh-token; breeze_csrf_token=test-csrf-token'
         }
       });
 

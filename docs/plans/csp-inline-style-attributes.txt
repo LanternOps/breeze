@@ -1,0 +1,75 @@
+/Users/toddhebebrand/breeze/apps/portal/src/pages/index.astro:32:    <div style="display: flex; justify-content: center; align-items: center; height: 100vh;">
+/Users/toddhebebrand/breeze/apps/web/src/components/remote/ScheduledTasks.tsx:273:        style={{ paddingLeft: level * 12 + 8 + 'px' }}
+/Users/toddhebebrand/breeze/apps/web/src/components/backup/BackupJobProgress.tsx:66:            <div className="h-2 rounded-full bg-primary" style={{ width: '62%' }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/remote/RemoteTerminal.tsx:504:        style={{ padding: '8px' }}
+/Users/toddhebebrand/breeze/apps/web/src/components/backup/SnapshotBrowser.tsx:133:          style={{ marginLeft: depth * 14 }}
+/Users/toddhebebrand/breeze/apps/web/src/components/remote/RegistryEditor.tsx:181:        style={{ paddingLeft: level * 16 + 8 + 'px' }}
+/Users/toddhebebrand/breeze/apps/web/src/components/remote/ProcessManager.tsx:414:                              style={{ width: Math.min(proc.cpuPercent, 100) + '%' }}
+/Users/toddhebebrand/breeze/apps/web/src/components/automations/ComplianceDashboard.tsx:411:                          style={{ width: `${policyPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/backup/BackupPolicyAssignment.tsx:112:          style={{ marginLeft: depth * 16 }}
+/Users/toddhebebrand/breeze/apps/web/src/components/remote/FileManager.tsx:1494:                        style={{ width: `${transfer.progress}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/remote/FileManager.tsx:1544:          style={{ left: contextMenu.x, top: contextMenu.y }}
+/Users/toddhebebrand/breeze/apps/web/src/components/backup/BackupJobList.tsx:269:                              style={{ width: `${job.progress ?? 0}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/backup/BackupDashboard.tsx:286:                style={{ backgroundColor: providerStrokeMap[provider.toLowerCase()] ?? '#2563eb' }}
+/Users/toddhebebrand/breeze/apps/web/src/components/backup/BackupDashboard.tsx:630:                      <div className={cn('h-2 rounded-full', color)} style={{ width: `${percent}%` }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/integrations/IntegrationsPage.tsx:223:              style={{ width: `${(healthSummary.connected / healthSummary.total) * 100}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/scripts/ScriptCategoryTree.tsx:357:          style={{ paddingLeft: depth * 16 }}
+/Users/toddhebebrand/breeze/apps/web/src/components/scripts/ScriptCategoryTree.tsx:539:          style={{ left: contextMenu.x, top: contextMenu.y }}
+/Users/toddhebebrand/breeze/apps/web/src/components/discovery/DiscoveryJobList.tsx:324:                              style={{ width: `${job.progress}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/devices/DevicePatchStatusTab.tsx:869:            <div className="h-full rounded-full bg-primary" style={{ width: `${compliancePercent}%` }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/integrations/WebhookList.tsx:218:                          style={{ width: `${webhook.successRate}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/scripts/ScriptTagManager.tsx:327:                        style={{ backgroundColor: tag.color }}
+/Users/toddhebebrand/breeze/apps/web/src/components/scripts/ScriptTagManager.tsx:420:                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/discovery/NetworkTopologyMap.tsx:513:            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: statusStroke.online }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/discovery/NetworkTopologyMap.tsx:517:            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: statusStroke.warning }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/discovery/NetworkTopologyMap.tsx:521:            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: statusStroke.offline }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/discovery/NetworkTopologyMap.tsx:534:        <svg ref={svgRef} className="h-full w-full" style={{ height }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/discovery/NetworkTopologyMap.tsx:538:            style={{ left: tooltip.x, top: tooltip.y }}
+/Users/toddhebebrand/breeze/apps/web/src/components/discovery/NetworkTopologyMap.tsx:547:                style={{ color: statusStroke[tooltip.node.status] }}
+/Users/toddhebebrand/breeze/apps/web/src/components/fleet/FleetOrchestrationPage.tsx:551:          style={{ width: `${pct}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/devices/DeviceList.tsx:433:                          style={{ width: `${device.cpuPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/devices/DeviceList.tsx:444:                          style={{ width: `${device.ramPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/patches/PatchJobList.tsx:268:                          <div className="h-2 rounded-full bg-primary" style={{ width: `${progress}%` }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/patches/PatchComplianceDashboard.tsx:134:          <div className={cn('h-2 rounded-full', barClass)} style={{ width: `${progress}%` }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/security/ScoreDetailPage.tsx:164:                          style={{ width: `${comp.score}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/dashboard/DashboardCustomizer.tsx:774:                  style={{
+/Users/toddhebebrand/breeze/apps/web/src/components/ai/AiPlanProgressBar.tsx:54:          style={{ width: `${progressPct}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/ai/AiApprovalDialog.tsx:157:          style={{ width: `${progressPct}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/SecurityDashboard.tsx:654:                    style={{ width: `${overview.securityScore}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/SecurityDashboard.tsx:783:                    style={{ width: `${antivirusProtectedPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/SecurityDashboard.tsx:827:                    style={{ width: `${firewallEnabledPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/SecurityDashboard.tsx:867:                    style={{ width: `${encryptionPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/SecurityDashboard.tsx:901:                    style={{ width: `${passwordCompliance}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/ai/AiCostIndicator.tsx:84:            style={{ width: `${percentage}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/patches/PatchRollbackHistory.tsx:245:                              style={{ width: `${progressPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/FirewallPage.tsx:121:        <div className="h-3 rounded-full bg-sky-500" style={{ width: `${summary.coveragePercent}%` }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/ai/AiPlanReviewCard.tsx:72:          style={{ width: `${progressPct}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/BrandingEditor.tsx:626:                  style={{ backgroundColor: resolvedPrimary, color: primaryText }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/BrandingEditor.tsx:656:                      style={{ backgroundColor: resolvedSecondary, color: secondaryText }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/BrandingEditor.tsx:676:                  style={{ borderColor: resolvedPrimary }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/BrandingEditor.tsx:711:                    style={{ backgroundColor: resolvedSecondary, color: secondaryText }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/BrandingEditor.tsx:718:                  <div className="rounded-md border p-3" style={{ borderColor: resolvedSecondary }}>
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/ReportBuilder.tsx:1304:                  style={{
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/ReportBuilder.tsx:1365:            style={{ background: `conic-gradient(${slices.join(', ')})` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/ReportBuilder.tsx:1372:                  style={{ backgroundColor: chartColors[index % chartColors.length] }}
+/Users/toddhebebrand/breeze/apps/web/src/components/auth/PartnerRegisterForm.tsx:178:              style={{ width: `${strength.percent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/DashboardWidgets.tsx:345:                  style={{ width: `${compliance.complianceScore}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/DashboardWidgets.tsx:408:                          style={{ width: `${device.value}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/DashboardWidgets.tsx:438:                          style={{ width: `${device.value}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/DashboardWidgets.tsx:468:                          style={{ width: `${device.value}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/ReportTemplates.tsx:396:            style={{ height: `${height}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/TrendsPage.tsx:222:                style={{ backgroundColor: lineColors[key] }}
+/Users/toddhebebrand/breeze/apps/web/src/components/auth/RegisterForm.tsx:171:              style={{ width: `${strength.percent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/security/AntivirusPage.tsx:174:                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/analytics/ChartWidget.tsx:75:      <div className="flex-1" style={{ minHeight: height }}>
+/Users/toddhebebrand/breeze/apps/web/src/components/analytics/DashboardGrid.tsx:162:      style={{
+/Users/toddhebebrand/breeze/apps/web/src/components/analytics/DashboardGrid.tsx:178:            style={{
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/ReportPreview.tsx:370:                              style={{ width: `${percentage}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/reports/ReportPreview.tsx:485:                            style={{ width: `${device.value}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/analytics/CapacityForecast.tsx:60:      <div className="flex-1" style={{ minHeight: 240 }}>
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/OrgBrandingEditor.tsx:310:                  style={{ backgroundColor: primaryColor, color: '#ffffff' }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/OrgBrandingEditor.tsx:337:                      style={{ backgroundColor: secondaryColor }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/AccessReviewPage.tsx:711:                      style={{ width: `${progressPercent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/settings/ChangePasswordForm.tsx:173:              style={{ width: `${strength.percent}%` }}
+/Users/toddhebebrand/breeze/apps/web/src/components/software/DeploymentProgress.tsx:89:          <div className="h-3 rounded-full bg-primary" style={{ width: `${stats.progress}%` }} />
+/Users/toddhebebrand/breeze/apps/web/src/components/software/DeploymentList.tsx:224:                              <div className="h-2 rounded-full bg-primary" style={{ width: `${item.progress}%` }} />

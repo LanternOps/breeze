@@ -278,11 +278,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             {alert.ruleName && (
               <div>
                 <p className="text-xs text-muted-foreground">Alert Rule</p>
-                <a
-                  href={`/alerts/rules/${alert.ruleId}`}
-                  className="flex items-center gap-1 text-sm font-medium hover:underline"
-                >
-                  {alert.ruleName}
+                <p className="text-sm font-medium">{alert.ruleName}</p>
+                <a href="/configuration-policies" className="mt-1 flex items-center gap-1 text-xs hover:underline">
+                  Managed in Configuration Policies
                   <ExternalLink className="h-3 w-3" />
                 </a>
               </div>

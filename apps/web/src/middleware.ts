@@ -1,5 +1,14 @@
 import { defineMiddleware } from 'astro:middleware';
 
+function readFlag(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === '1' || raw === 'true';
+}
+
+function isProductionEnvironment(): boolean {
+  return (process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
+}
+
 function resolveConnectSrcDirective(): string {
   const sources = new Set<string>(["'self'", 'https:', 'ws:', 'wss:']);
   const configuredApiUrl = process.env.PUBLIC_API_URL;
@@ -27,17 +36,36 @@ function resolveConnectSrcDirective(): string {
 }
 
 const cspDirectives = [
+  // Keep development usable by default; enforce strict CSP defaults in production.
+  // Operators can still override per-directive behavior with explicit env flags.
+  (() => {
+    const isProduction = isProductionEnvironment();
+    const allowInlineScript = readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT') || !isProduction;
+    const allowInlineStyle = readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE') || !isProduction;
+    return {
+      allowInlineScript,
+      allowInlineStyle
+    };
+  })(),
+].flatMap((mode) => [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https:",
+  mode.allowInlineScript
+    ? "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
+    : "script-src 'self' https://cdn.jsdelivr.net",
+  mode.allowInlineStyle
+    ? "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
+    : "style-src 'self' https://cdn.jsdelivr.net",
+  mode.allowInlineStyle ? null : "style-src-attr 'unsafe-inline'",
+  "script-src-attr 'none'",
+  "worker-src 'self' blob:",
+  "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   resolveConnectSrcDirective()
-].join('; ');
+]).filter(Boolean).join('; ');
 
 export const onRequest = defineMiddleware(async (_context, next) => {
   const response = await next();

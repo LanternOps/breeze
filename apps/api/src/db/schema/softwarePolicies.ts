@@ -72,7 +72,7 @@ export const softwarePolicies = pgTable('software_policies', {
   description: text('description'),
   mode: softwarePolicyModeEnum('mode').notNull(),
   rules: jsonb('rules').notNull().$type<SoftwarePolicyRulesDefinition>(),
-  targetType: varchar('target_type', { length: 50 }).notNull(),
+  targetType: varchar('target_type', { length: 50 }),
   targetIds: jsonb('target_ids').$type<string[]>(),
   priority: integer('priority').notNull().default(50),
   isActive: boolean('is_active').notNull().default(true),

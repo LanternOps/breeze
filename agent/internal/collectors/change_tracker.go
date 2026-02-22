@@ -382,11 +382,15 @@ func (c *ChangeTrackerCollector) saveSnapshot() error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		fallback := filepath.Join(os.TempDir(), "breeze", "change_tracker_snapshot.json")
+		slog.Warn("snapshot directory unavailable, using temporary fallback",
+			"originalPath", dir,
+			"fallbackPath", fallback,
+			"error", err.Error())
 		if mkdirErr := os.MkdirAll(filepath.Dir(fallback), 0700); mkdirErr != nil {
 			return fmt.Errorf("create snapshot directory: %w", err)
 		}
 		path = fallback
-		c.snapshotPath = fallback
+		// Do NOT mutate c.snapshotPath — retry original path next time
 	}
 
 	tmpPath := path + ".tmp"
@@ -891,21 +895,19 @@ func parseChangeIgnoreRules(raw string) []changeIgnoreRule {
 }
 
 func softwareKey(item SoftwareItem) string {
-	name := normalizeString(item.Name)
-	vendor := normalizeString(item.Vendor)
-	installLocation := normalizeString(item.InstallLocation)
-	uninstall := normalizeString(item.UninstallString)
-
-	identity := []string{name, vendor}
-	switch {
-	case installLocation != "":
-		identity = append(identity, installLocation)
-	case uninstall != "":
-		identity = append(identity, uninstall)
-	default:
-		identity = append(identity, "_default")
-	}
-	return strings.Join(identity, "|")
+	// Use only Name and Vendor — both are stable across collection runs.
+	// InstallLocation and UninstallString are intentionally excluded: on Windows
+	// the registry can have multiple subkeys with the same DisplayName+DisplayVersion
+	// but different values for those fields, and ReadSubKeyNames returns them in
+	// non-deterministic order.  Including unstable fields in the key causes the
+	// same software to appear as removed+added on consecutive runs with no real
+	// change ("metadata churn").  Version is kept out of the key so that a
+	// version upgrade is detected as an "updated" event rather than a
+	// remove+add pair.
+	return strings.Join([]string{
+		normalizeString(item.Name),
+		normalizeString(item.Vendor),
+	}, "|")
 }
 
 func serviceKey(item ServiceInfo) string {

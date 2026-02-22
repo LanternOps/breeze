@@ -15,10 +15,11 @@ import {
   type DnsIntegrationConfig,
   type DnsPolicyDomain
 } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
+import { PERMISSIONS } from '../services/permissions';
 
 const dnsSecurityRoutes = new Hono();
 
@@ -254,6 +255,8 @@ dnsSecurityRoutes.get(
 dnsSecurityRoutes.post(
   '/integrations',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', createIntegrationSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -323,6 +326,8 @@ dnsSecurityRoutes.post(
 dnsSecurityRoutes.delete(
   '/integrations/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const integrationId = c.req.param('id');
@@ -365,6 +370,7 @@ dnsSecurityRoutes.delete(
 dnsSecurityRoutes.post(
   '/integrations/:id/sync',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
     const integrationId = c.req.param('id');
@@ -831,6 +837,7 @@ dnsSecurityRoutes.get(
 dnsSecurityRoutes.post(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -920,6 +927,7 @@ dnsSecurityRoutes.post(
 dnsSecurityRoutes.patch(
   '/policies/:id/domains',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   zValidator('json', patchPolicyDomainsSchema),
   async (c) => {
     const auth = c.get('auth');

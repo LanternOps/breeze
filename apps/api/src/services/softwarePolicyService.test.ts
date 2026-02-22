@@ -6,6 +6,7 @@ import {
   normalizeSoftwarePolicyRules,
   withStableViolationTimestamps,
 } from './softwarePolicyService';
+import type { SoftwarePolicyViolation } from '../db/schema';
 
 describe('softwarePolicyService', () => {
   it('compares semantic-like versions correctly', () => {
@@ -70,14 +71,14 @@ describe('softwarePolicyService', () => {
 
   it('preserves detectedAt timestamps for repeated violations', () => {
     const previousDetectedAt = '2026-01-01T10:00:00.000Z';
-    const previousViolations = [{
+    const previousViolations: SoftwarePolicyViolation[] = [{
       type: 'unauthorized',
       software: { name: 'TeamViewer Host', version: '15.2' },
       severity: 'critical',
       detectedAt: previousDetectedAt,
     }];
 
-    const nextViolations = [{
+    const nextViolations: SoftwarePolicyViolation[] = [{
       type: 'unauthorized',
       software: { name: 'TeamViewer Host', version: '15.2' },
       severity: 'critical',
@@ -154,8 +155,8 @@ describe('evaluateSoftwareInventory audit mode', () => {
     const result = evaluateSoftwareInventory('audit', rules, inventory);
 
     expect(result).toHaveLength(1);
-    expect(result[0].type).toBe('unauthorized');
-    expect(result[0].severity).toBe('medium');
+    expect(result[0]?.type).toBe('unauthorized');
+    expect(result[0]?.severity).toBe('medium');
   });
 
   it('does not produce missing violations in audit mode', () => {

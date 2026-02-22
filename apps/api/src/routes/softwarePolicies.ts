@@ -49,11 +49,8 @@ const remediationOptionsSchema = z.object({
   maintenanceWindowOnly: z.boolean().optional(),
 });
 
-const targetTypeSchema = z.enum(['organization', 'site', 'device_group', 'devices']);
-
 const listPoliciesQuerySchema = z.object({
   mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
-  targetType: targetTypeSchema.optional(),
   isActive: z.enum(['true', 'false']).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
@@ -65,9 +62,6 @@ const createPolicySchema = z.object({
   description: z.string().max(4000).optional(),
   mode: z.enum(['allowlist', 'blocklist', 'audit']),
   rules: softwareRulesSchema,
-  targetType: targetTypeSchema,
-  targetIds: z.array(z.string().uuid()).optional(),
-  priority: z.number().int().min(0).max(100).optional(),
   enforceMode: z.boolean().optional(),
   remediationOptions: remediationOptionsSchema.optional(),
 });
@@ -77,9 +71,6 @@ const updatePolicySchema = z.object({
   description: z.string().max(4000).optional(),
   mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
   rules: softwareRulesSchema.optional(),
-  targetType: targetTypeSchema.optional(),
-  targetIds: z.array(z.string().uuid()).optional(),
-  priority: z.number().int().min(0).max(100).optional(),
   isActive: z.boolean().optional(),
   enforceMode: z.boolean().optional(),
   remediationOptions: remediationOptionsSchema.optional(),
@@ -127,25 +118,6 @@ export function resolveOrgIdForWrite(
   return { error: 'orgId is required for this scope' };
 }
 
-function normalizeTargetIds(
-  targetType: z.infer<typeof targetTypeSchema>,
-  targetIds?: string[] | null
-): { targetIds: string[] | null; error?: string } {
-  const normalized = Array.isArray(targetIds)
-    ? Array.from(new Set(targetIds.filter((id) => typeof id === 'string' && id.length > 0)))
-    : [];
-
-  if (targetType === 'organization') {
-    return { targetIds: null };
-  }
-
-  if (normalized.length === 0) {
-    return { targetIds: null, error: `targetIds are required for targetType "${targetType}"` };
-  }
-
-  return { targetIds: normalized };
-}
-
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(softwarePolicies.id, policyId)];
   const orgCondition = auth.orgCondition(softwarePolicies.orgId);
@@ -171,7 +143,6 @@ softwarePoliciesRoutes.get(
     const orgCondition = auth.orgCondition(softwarePolicies.orgId);
     if (orgCondition) conditions.push(orgCondition);
     if (query.mode) conditions.push(eq(softwarePolicies.mode, query.mode));
-    if (query.targetType) conditions.push(eq(softwarePolicies.targetType, query.targetType));
     if (query.isActive !== undefined) conditions.push(eq(softwarePolicies.isActive, query.isActive === 'true'));
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -187,7 +158,7 @@ softwarePoliciesRoutes.get(
       .select()
       .from(softwarePolicies)
       .where(where)
-      .orderBy(desc(softwarePolicies.priority), desc(softwarePolicies.updatedAt))
+      .orderBy(desc(softwarePolicies.updatedAt))
       .limit(limit)
       .offset(offset);
 
@@ -214,11 +185,6 @@ softwarePoliciesRoutes.post(
       return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
     }
 
-    const target = normalizeTargetIds(payload.targetType, payload.targetIds);
-    if (target.error) {
-      return c.json({ error: target.error }, 400);
-    }
-
     const rules = normalizeSoftwarePolicyRules(payload.rules);
     if (rules.software.length === 0) {
       return c.json({ error: 'At least one software rule is required' }, 400);
@@ -232,14 +198,14 @@ softwarePoliciesRoutes.post(
         description: payload.description ?? null,
         mode: payload.mode,
         rules,
-        targetType: payload.targetType,
-        targetIds: target.targetIds,
-        priority: payload.priority ?? 50,
         enforceMode: payload.enforceMode ?? false,
         remediationOptions: payload.remediationOptions ?? null,
         createdBy: auth.user.id,
       })
       .returning();
+    if (!policy) {
+      return c.json({ error: 'Failed to create policy' }, 500);
+    }
 
     let scheduleWarning: string | undefined;
     try {
@@ -258,7 +224,6 @@ softwarePoliciesRoutes.post(
       actorId: auth.user.id,
       details: {
         mode: policy.mode,
-        targetType: policy.targetType,
       },
     }).catch((err) => {
       console.error('[softwarePolicies] Audit write failed for policy_created:', err);
@@ -272,7 +237,6 @@ softwarePoliciesRoutes.post(
       resourceName: policy.name,
       details: {
         mode: policy.mode,
-        targetType: policy.targetType,
         enforceMode: policy.enforceMode,
         rules: rules.software.length,
         scheduleWarning,
@@ -406,7 +370,6 @@ softwarePoliciesRoutes.patch(
     if (payload.name !== undefined) updates.name = payload.name;
     if (payload.description !== undefined) updates.description = payload.description;
     if (payload.mode !== undefined) updates.mode = payload.mode;
-    if (payload.priority !== undefined) updates.priority = payload.priority;
     if (payload.isActive !== undefined) updates.isActive = payload.isActive;
     if (payload.enforceMode !== undefined) updates.enforceMode = payload.enforceMode;
     if (payload.remediationOptions !== undefined) updates.remediationOptions = payload.remediationOptions;
@@ -417,17 +380,6 @@ softwarePoliciesRoutes.patch(
         return c.json({ error: 'At least one software rule is required' }, 400);
       }
       updates.rules = normalizedRules;
-    }
-
-    if (payload.targetType !== undefined || payload.targetIds !== undefined) {
-      const nextTargetType = payload.targetType ?? (policy.targetType as z.infer<typeof targetTypeSchema>);
-      const nextTargetIds = payload.targetIds ?? (Array.isArray(policy.targetIds) ? policy.targetIds : undefined);
-      const target = normalizeTargetIds(nextTargetType, nextTargetIds);
-      if (target.error) {
-        return c.json({ error: target.error }, 400);
-      }
-      updates.targetType = nextTargetType;
-      updates.targetIds = target.targetIds;
     }
 
     const [updated] = await db

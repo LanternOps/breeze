@@ -3336,21 +3336,12 @@ registerTool({
     }
 
     if (action === 'create') {
-      if (typeof input.name !== 'string' || typeof input.mode !== 'string' || typeof input.targetType !== 'string') {
-        return JSON.stringify({ error: 'name, mode, and targetType are required for create' });
+      if (typeof input.name !== 'string' || typeof input.mode !== 'string') {
+        return JSON.stringify({ error: 'name and mode are required for create' });
       }
 
       const orgResolution = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' ? input.orgId : undefined);
       if (!orgResolution.orgId) return JSON.stringify({ error: orgResolution.error });
-
-      const targetType = input.targetType as 'organization' | 'site' | 'device_group' | 'devices';
-      const targetIds = Array.isArray(input.targetIds)
-        ? Array.from(new Set((input.targetIds as string[]).filter((id) => typeof id === 'string' && id.length > 0)))
-        : [];
-
-      if (targetType !== 'organization' && targetIds.length === 0) {
-        return JSON.stringify({ error: `targetIds are required for targetType "${targetType}"` });
-      }
 
       const rules = normalizeSoftwarePolicyRules({
         software: Array.isArray(input.software) ? input.software : [],
@@ -3368,14 +3359,14 @@ registerTool({
           description: (input.description as string) ?? null,
           mode: input.mode as 'allowlist' | 'blocklist' | 'audit',
           rules,
-          targetType,
-          targetIds: targetType === 'organization' ? null : targetIds,
-          priority: Math.min(100, Math.max(0, Number(input.priority) || 50)),
           enforceMode: input.enforceMode === true,
           remediationOptions: (input.remediationOptions as Record<string, unknown>) ?? null,
           createdBy: auth.user.id,
         })
         .returning();
+      if (!policy) {
+        return JSON.stringify({ error: 'Failed to create policy' });
+      }
 
       let scheduleWarning: string | undefined;
       try {
@@ -3401,7 +3392,6 @@ registerTool({
       if (typeof input.name === 'string') updates.name = input.name;
       if (typeof input.description === 'string') updates.description = input.description;
       if (typeof input.mode === 'string') updates.mode = input.mode as 'allowlist' | 'blocklist' | 'audit';
-      if (typeof input.priority === 'number') updates.priority = Math.min(100, Math.max(0, Number(input.priority)));
       if (typeof input.enforceMode === 'boolean') updates.enforceMode = input.enforceMode;
       if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
       if (input.remediationOptions && typeof input.remediationOptions === 'object') {
@@ -3420,22 +3410,6 @@ registerTool({
           return JSON.stringify({ error: 'At least one software rule is required' });
         }
         updates.rules = rules;
-      }
-
-      if (typeof input.targetType === 'string' || Array.isArray(input.targetIds)) {
-        const targetType = (input.targetType as 'organization' | 'site' | 'device_group' | 'devices') ?? existing.targetType;
-        const targetIds = Array.isArray(input.targetIds)
-          ? Array.from(new Set((input.targetIds as string[]).filter((id) => typeof id === 'string' && id.length > 0)))
-          : Array.isArray(existing.targetIds)
-            ? existing.targetIds
-            : [];
-
-        if (targetType !== 'organization' && targetIds.length === 0) {
-          return JSON.stringify({ error: `targetIds are required for targetType "${targetType}"` });
-        }
-
-        updates.targetType = targetType;
-        updates.targetIds = targetType === 'organization' ? null : targetIds;
       }
 
       const [updated] = await db

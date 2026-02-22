@@ -115,6 +115,7 @@ export async function runPreFlightChecks(
         resourceId: sessionId,
         actorId: auth.user.id,
         actorEmail: auth.user.email,
+        initiatedBy: 'ai',
         details: {
           flags: sanitizeFlags,
           originalLength: content.length,
@@ -140,6 +141,7 @@ export async function runPreFlightChecks(
         resourceId: sessionId,
         actorId: auth.user.id,
         actorEmail: auth.user.email,
+        initiatedBy: 'ai',
         result: 'failure' as const,
         errorMessage: err instanceof Error ? err.message : 'Unknown sanitization error',
       });
@@ -544,6 +546,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         resourceId: sessionId,
         actorId: session.auth.user.id,
         actorEmail: session.auth.user.email,
+        initiatedBy: 'ai',
         ...(isError ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 500) } : {}),
         details: {
           sessionId,

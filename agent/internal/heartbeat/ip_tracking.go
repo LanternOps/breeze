@@ -399,6 +399,15 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 		return nil, nil
 	}
 
+	// Ensure non-nil slices so JSON serializes as [] instead of null.
+	// Zod's .optional() accepts undefined but rejects null.
+	if changedIPs == nil {
+		changedIPs = []IPHistoryEntry{}
+	}
+	if removedIPs == nil {
+		removedIPs = []IPHistoryEntry{}
+	}
+
 	return &IPHistoryUpdate{
 		CurrentIPs: currentIPs,
 		ChangedIPs: changedIPs,
@@ -427,14 +436,14 @@ func (h *Heartbeat) loadPreviousIPState() []IPHistoryEntry {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Warn("failed to read ip history state", "path", path, "error", err)
+			log.Warn("failed to read ip history state", "path", path, "error", err.Error())
 		}
 		return []IPHistoryEntry{}
 	}
 
 	var entries []IPHistoryEntry
 	if err := json.Unmarshal(raw, &entries); err != nil {
-		log.Warn("failed to decode ip history state", "path", path, "error", err)
+		log.Warn("failed to decode ip history state", "path", path, "error", err.Error())
 		return []IPHistoryEntry{}
 	}
 

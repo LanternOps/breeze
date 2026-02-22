@@ -10,7 +10,8 @@ ALTER TABLE patch_policies
   ADD COLUMN IF NOT EXISTS deadline_days    integer,
   ADD COLUMN IF NOT EXISTS grace_period_hours integer NOT NULL DEFAULT 4,
   ADD COLUMN IF NOT EXISTS categories       text[]   NOT NULL DEFAULT '{}',
-  ADD COLUMN IF NOT EXISTS exclude_categories text[] NOT NULL DEFAULT '{}';
+  ADD COLUMN IF NOT EXISTS exclude_categories text[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS category_rules  jsonb    NOT NULL DEFAULT '[]';
 
 -- 2. Add ringId to patch_approvals for ring-scoped approvals
 ALTER TABLE patch_approvals

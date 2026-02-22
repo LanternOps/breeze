@@ -3,6 +3,7 @@ import { organizations } from './orgs';
 
 export const actorTypeEnum = pgEnum('actor_type', ['user', 'api_key', 'agent', 'system']);
 export const auditResultEnum = pgEnum('audit_result', ['success', 'failure', 'denied']);
+export const initiatedByEnum = pgEnum('initiated_by_type', ['manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration']);
 
 export const auditLogs = pgTable('audit_logs', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -20,7 +21,8 @@ export const auditLogs = pgTable('audit_logs', {
   userAgent: text('user_agent'),
   result: auditResultEnum('result').notNull(),
   errorMessage: text('error_message'),
-  checksum: varchar('checksum', { length: 128 })
+  checksum: varchar('checksum', { length: 128 }),
+  initiatedBy: initiatedByEnum('initiated_by'),
 });
 
 export const auditRetentionPolicies = pgTable('audit_retention_policies', {

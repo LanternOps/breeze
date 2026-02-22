@@ -61,7 +61,8 @@ export const heartbeatSchema = z.object({
       speed: z.number().int().min(0).optional()
     })).max(100).optional(),
     processCount: z.number().int().optional()
-  }),
+  }).optional(),
+  metricsAvailable: z.boolean().optional(),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   ipHistoryUpdate: z.object({
@@ -81,7 +82,7 @@ export const heartbeatSchema = z.object({
       subnetMask: z.string().max(45).optional(),
       gateway: z.string().max(45).optional(),
       dnsServers: z.array(z.string().max(45)).max(8).optional()
-    })).max(100).optional(),
+    })).max(100).nullish(),
     changedIPs: z.array(z.object({
       interfaceName: z.string().min(1).max(100),
       ipAddress: z.string().trim().max(45).refine(
@@ -97,7 +98,7 @@ export const heartbeatSchema = z.object({
       subnetMask: z.string().max(45).optional(),
       gateway: z.string().max(45).optional(),
       dnsServers: z.array(z.string().max(45)).max(8).optional()
-    })).max(100).optional(),
+    })).max(100).nullish(),
     removedIPs: z.array(z.object({
       interfaceName: z.string().min(1).max(100),
       ipAddress: z.string().trim().max(45).refine(
@@ -113,7 +114,7 @@ export const heartbeatSchema = z.object({
       subnetMask: z.string().max(45).optional(),
       gateway: z.string().max(45).optional(),
       dnsServers: z.array(z.string().max(45)).max(8).optional()
-    })).max(100).optional(),
+    })).max(100).nullish(),
     detectedAt: z.string().datetime({ offset: true }).optional()
   }).optional(),
   pendingReboot: z.boolean().optional(),
@@ -250,7 +251,9 @@ export const updateSoftwareSchema = z.object({
     vendor: z.string().optional(),
     installDate: z.string().optional(),
     installLocation: z.string().optional(),
-    uninstallString: z.string().optional()
+    uninstallString: z.string().optional(),
+    fileHash: z.string().max(128).optional(),
+    hashAlgorithm: z.string().max(10).optional(),
   }))
 });
 

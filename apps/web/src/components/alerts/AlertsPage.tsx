@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Plus } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
@@ -266,14 +265,10 @@ export default function AlertsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Alerts</h1>
-          <p className="text-muted-foreground">Monitor and manage alerts across your devices.</p>
+          <p className="text-muted-foreground">
+            Monitor alerts across your devices. Rule configuration is managed in Configuration Policies.
+          </p>
         </div>
-        <a
-          href="/alerts/rules"
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
-        >
-          Manage Rules
-        </a>
       </div>
 
       {error && (

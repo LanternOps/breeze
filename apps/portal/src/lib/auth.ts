@@ -8,7 +8,28 @@ import { persist } from 'zustand/middleware';
 import { buildPortalApiUrl } from './api';
 
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
-const CSRF_HEADER_VALUE = '1';
+const CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const target = `${name}=`;
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(target)) {
+      const value = trimmed.slice(target.length);
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
 
 export interface PortalUser {
   id: string;
@@ -158,12 +179,15 @@ export async function portalLogout(): Promise<void> {
   const { logout } = usePortalAuth.getState();
 
   try {
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    const csrfToken = readCookie(CSRF_COOKIE_NAME);
+    if (csrfToken) {
+      headers.set(CSRF_HEADER_NAME, csrfToken);
+    }
+
     await fetch(buildPortalApiUrl('/portal/auth/logout'), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE
-      },
+      headers,
       credentials: 'include'
     });
   } catch {

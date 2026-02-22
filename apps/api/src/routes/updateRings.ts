@@ -81,6 +81,7 @@ async function ensureDefaultRing(orgId: string, userId?: string): Promise<string
       autoApprove: {},
       schedule: {},
       rebootPolicy: {},
+      categoryRules: [],
       ringOrder: 0,
       deferralDays: 0,
       deadlineDays: null,
@@ -102,6 +103,13 @@ const listRingsSchema = z.object({
   orgId: z.string().uuid().optional(),
 });
 
+const categoryRuleSchema = z.object({
+  category: z.string().max(100),
+  autoApprove: z.boolean(),
+  autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
+  deferralDaysOverride: z.number().int().min(0).max(365).nullable().optional(),
+});
+
 const createRingSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
@@ -113,10 +121,9 @@ const createRingSchema = z.object({
   gracePeriodHours: z.number().int().min(0).max(168).optional(),
   categories: z.array(z.string().max(100)).optional(),
   excludeCategories: z.array(z.string().max(100)).optional(),
+  categoryRules: z.array(categoryRuleSchema).optional(),
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
   autoApprove: z.record(z.unknown()).optional(),
-  schedule: z.record(z.unknown()).optional(),
-  rebootPolicy: z.record(z.unknown()).optional(),
   targets: z.record(z.unknown()).optional(),
 });
 
@@ -130,10 +137,9 @@ const updateRingSchema = z.object({
   gracePeriodHours: z.number().int().min(0).max(168).optional(),
   categories: z.array(z.string().max(100)).optional(),
   excludeCategories: z.array(z.string().max(100)).optional(),
+  categoryRules: z.array(categoryRuleSchema).optional(),
   sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
   autoApprove: z.record(z.unknown()).optional(),
-  schedule: z.record(z.unknown()).optional(),
-  rebootPolicy: z.record(z.unknown()).optional(),
   targets: z.record(z.unknown()).optional(),
 });
 
@@ -146,12 +152,6 @@ const ringPatchesQuerySchema = z.object({
   limit: z.string().optional(),
   source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
   severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
-});
-
-const deploySchema = z.object({
-  deviceIds: z.array(z.string().uuid()).min(1).max(500).optional(),
-  name: z.string().min(1).max(255).optional(),
-  scheduledAt: z.string().datetime().optional(),
 });
 
 // ============================================
@@ -188,8 +188,7 @@ updateRingRoutes.get(
         excludeCategories: patchPolicies.excludeCategories,
         sources: patchPolicies.sources,
         autoApprove: patchPolicies.autoApprove,
-        schedule: patchPolicies.schedule,
-        rebootPolicy: patchPolicies.rebootPolicy,
+        categoryRules: patchPolicies.categoryRules,
         targets: patchPolicies.targets,
         createdAt: patchPolicies.createdAt,
         updatedAt: patchPolicies.updatedAt,
@@ -230,8 +229,7 @@ updateRingRoutes.post(
         excludeCategories: data.excludeCategories ?? [],
         sources: data.sources ?? null,
         autoApprove: data.autoApprove ?? {},
-        schedule: data.schedule ?? {},
-        rebootPolicy: data.rebootPolicy ?? {},
+        categoryRules: data.categoryRules ?? [],
         targets: data.targets ?? {},
         createdBy: auth.user.id,
       })
@@ -339,8 +337,7 @@ updateRingRoutes.patch(
     if (data.excludeCategories !== undefined) updateFields.excludeCategories = data.excludeCategories;
     if (data.sources !== undefined) updateFields.sources = data.sources;
     if (data.autoApprove !== undefined) updateFields.autoApprove = data.autoApprove;
-    if (data.schedule !== undefined) updateFields.schedule = data.schedule;
-    if (data.rebootPolicy !== undefined) updateFields.rebootPolicy = data.rebootPolicy;
+    if (data.categoryRules !== undefined) updateFields.categoryRules = data.categoryRules;
     if (data.targets !== undefined) updateFields.targets = data.targets;
 
     const [updated] = await db
@@ -393,102 +390,6 @@ updateRingRoutes.delete(
     });
 
     return c.json({ success: true });
-  }
-);
-
-// POST /update-rings/:id/deploy — Trigger deployment job for ring
-updateRingRoutes.post(
-  '/:id/deploy',
-  requireScope('organization', 'partner', 'system'),
-  zValidator('param', ringIdParamSchema),
-  zValidator('json', deploySchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const { id } = c.req.valid('param');
-    const data = c.req.valid('json');
-
-    const [ring] = await db
-      .select()
-      .from(patchPolicies)
-      .where(eq(patchPolicies.id, id))
-      .limit(1);
-
-    if (!ring) return c.json({ error: 'Update ring not found' }, 404);
-    if (!auth.canAccessOrg(ring.orgId)) return c.json({ error: 'Access denied' }, 403);
-
-    // Get approved patches for this ring
-    const approvedPatches = await db
-      .select({ patchId: patchApprovals.patchId })
-      .from(patchApprovals)
-      .where(
-        and(
-          eq(patchApprovals.orgId, ring.orgId),
-          eq(patchApprovals.ringId, id),
-          eq(patchApprovals.status, 'approved')
-        )
-      );
-
-    const patchIds = approvedPatches.map((a) => a.patchId);
-
-    // Get target devices
-    let targetDeviceIds: string[] = [];
-    if (data.deviceIds) {
-      targetDeviceIds = data.deviceIds;
-    } else {
-      // Default: all org devices
-      const orgDevices = await db
-        .select({ id: devices.id })
-        .from(devices)
-        .where(eq(devices.orgId, ring.orgId))
-        .limit(500);
-      targetDeviceIds = orgDevices.map((d) => d.id);
-    }
-
-    if (targetDeviceIds.length === 0) {
-      return c.json({ error: 'No target devices found' }, 400);
-    }
-
-    const [job] = await db
-      .insert(patchJobs)
-      .values({
-        orgId: ring.orgId,
-        policyId: ring.id,
-        ringId: id,
-        name: data.name ?? `${ring.name} Ring Deployment`,
-        patches: { patchIds, ringId: id, ringName: ring.name },
-        targets: { deviceIds: targetDeviceIds },
-        status: 'scheduled',
-        scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : new Date(),
-        devicesTotal: targetDeviceIds.length,
-        devicesPending: targetDeviceIds.length,
-        createdBy: auth.user.id,
-      })
-      .returning();
-
-    writeRouteAudit(c, {
-      orgId: ring.orgId,
-      action: 'update_ring.deploy',
-      resourceType: 'update_ring',
-      resourceId: id,
-      resourceName: ring.name,
-      details: {
-        jobId: job!.id,
-        patchCount: patchIds.length,
-        deviceCount: targetDeviceIds.length,
-      },
-    });
-
-    return c.json(
-      {
-        success: true,
-        jobId: job!.id,
-        ringId: id,
-        ringName: ring.name,
-        patchCount: patchIds.length,
-        deviceCount: targetDeviceIds.length,
-      },
-      201
-    );
   }
 );
 

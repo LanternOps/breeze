@@ -7,7 +7,8 @@
  * Usage:
  *   npm start                    # Start server on default port 3100
  *   PORT=3200 npm start          # Start on custom port
- *   AUTH_TOKEN=secret npm start  # Require bearer token auth
+ *   AUTH_TOKEN=secret npm start  # Required bearer token auth
+ *   MCP_EXECUTABLE=/path/to/claude-code-mcp npm start  # Required pinned MCP binary
  */
 
 // Type declarations for express (outside workspace, types loaded at runtime)
@@ -49,15 +50,26 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = parseInt(process.env.PORT || '3100', 10);
-const AUTH_TOKEN = process.env.AUTH_TOKEN;
+const HOST = (process.env.HOST || '127.0.0.1').trim();
+const AUTH_TOKEN = (process.env.AUTH_TOKEN || '').trim();
+const MCP_EXECUTABLE = (process.env.MCP_EXECUTABLE || '').trim();
+const MCP_EXECUTABLE_ARGS = (process.env.MCP_EXECUTABLE_ARGS || '')
+  .split(/\s+/)
+  .map((arg) => arg.trim())
+  .filter((arg) => arg.length > 0);
+
+if (!AUTH_TOKEN) {
+  console.error('[startup] AUTH_TOKEN is required. Refusing to start an unauthenticated MCP server.');
+  process.exit(1);
+}
+
+if (!MCP_EXECUTABLE) {
+  console.error('[startup] MCP_EXECUTABLE is required. Configure an explicitly installed MCP binary path.');
+  process.exit(1);
+}
 
 // Bearer token authentication middleware
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if (!AUTH_TOKEN) {
-    next();
-    return;
-  }
-
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Missing or invalid Authorization header' });
@@ -128,8 +140,8 @@ async function forwardToMcp(request: unknown): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const timeout = 120000; // 2 minute timeout for Claude operations
 
-    // Spawn claude-code-mcp process
-    const mcpProcess: ChildProcess = spawn('npx', ['-y', '@steipete/claude-code-mcp'], {
+    // Spawn pre-installed MCP process (no runtime package downloads).
+    const mcpProcess: ChildProcess = spawn(MCP_EXECUTABLE, MCP_EXECUTABLE_ARGS, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -222,13 +234,15 @@ process.on('SIGINT', () => {
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, HOST, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║           Breeze Remote MCP Server                        ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Port: ${PORT.toString().padEnd(49)}║
-║  Auth: ${AUTH_TOKEN ? 'Enabled (Bearer token)'.padEnd(49) : 'Disabled'.padEnd(49)}║
+║  Host: ${HOST.padEnd(49)}║
+║  Auth: ${'Enabled (Bearer token)'.padEnd(49)}║
+║  MCP Executable: ${MCP_EXECUTABLE.padEnd(39)}║
 ║  Node: ${(process.env.NODE_NAME || 'Not set').padEnd(49)}║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Endpoints:                                               ║

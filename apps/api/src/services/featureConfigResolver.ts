@@ -11,6 +11,7 @@ import {
   devices,
   organizations,
   deviceGroupMemberships,
+  softwarePolicies,
 } from '../db/schema';
 import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -458,6 +459,191 @@ export async function resolveComplianceRulesForDevice(
   return sorted
     .filter((r) => r.assignmentId === winningAssignmentId)
     .map((r) => r.complianceRule);
+}
+
+/**
+ * Resolves the winning software policy ID for a device via config policy hierarchy.
+ * Returns the featurePolicyId from the closest config policy assignment, or null.
+ */
+export async function resolveSoftwarePolicyForDevice(
+  deviceId: string
+): Promise<string | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return null;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+      assignmentId: configPolicyAssignments.id,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyFeatureLinks.featureType, 'software_policy')
+      )
+    )
+    .where(sql`(${sql.join(targetConditions, sql` OR `)})`)
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return null;
+
+  const sorted = sortByHierarchy(rows);
+  return sorted[0]!.featurePolicyId;
+}
+
+/**
+ * Batch resolver: finds all device IDs that should be governed by a given software policy
+ * via config policy assignments. Used by the compliance worker.
+ *
+ * Steps:
+ * 1. Find all config policies that link to this software policy
+ * 2. Get all assignments for those config policies
+ * 3. Resolve each assignment to device IDs based on level/targetId
+ * 4. For each device, verify this software policy is the "winning" one
+ *    (closest wins — if a device has a closer assignment linking to a different policy, exclude it)
+ */
+export async function resolveDeviceIdsForSoftwarePolicy(
+  softwarePolicyId: string
+): Promise<string[]> {
+  // 1. Find config policies linking to this software policy
+  const links = await db
+    .select({
+      configPolicyId: configPolicyFeatureLinks.configPolicyId,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .where(
+      and(
+        eq(configPolicyFeatureLinks.featureType, 'software_policy'),
+        eq(configPolicyFeatureLinks.featurePolicyId, softwarePolicyId)
+      )
+    );
+
+  if (links.length === 0) return [];
+
+  const configPolicyIds = links.map((l) => l.configPolicyId);
+
+  // 2. Get all assignments for those config policies
+  const assignments = await db
+    .select({
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+    })
+    .from(configPolicyAssignments)
+    .where(inArray(configPolicyAssignments.configPolicyId, configPolicyIds));
+
+  if (assignments.length === 0) return [];
+
+  // 3. Resolve each assignment to device IDs
+  const candidateDeviceIds = new Set<string>();
+
+  for (const assignment of assignments) {
+    let assignedDeviceIds: string[];
+
+    switch (assignment.level) {
+      case 'device': {
+        assignedDeviceIds = [assignment.targetId];
+        break;
+      }
+      case 'device_group': {
+        const rows = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, assignment.targetId));
+        assignedDeviceIds = rows.map((r) => r.deviceId);
+        break;
+      }
+      case 'site': {
+        const rows = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(eq(devices.siteId, assignment.targetId));
+        assignedDeviceIds = rows.map((r) => r.id);
+        break;
+      }
+      case 'organization': {
+        const rows = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(eq(devices.orgId, assignment.targetId));
+        assignedDeviceIds = rows.map((r) => r.id);
+        break;
+      }
+      case 'partner': {
+        const orgs = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, assignment.targetId));
+        if (orgs.length === 0) {
+          assignedDeviceIds = [];
+        } else {
+          const rows = await db
+            .select({ id: devices.id })
+            .from(devices)
+            .where(inArray(devices.orgId, orgs.map((o) => o.id)));
+          assignedDeviceIds = rows.map((r) => r.id);
+        }
+        break;
+      }
+      default:
+        assignedDeviceIds = [];
+    }
+
+    for (const id of assignedDeviceIds) {
+      candidateDeviceIds.add(id);
+    }
+  }
+
+  if (candidateDeviceIds.size === 0) return [];
+
+  // 4. Verify each candidate — the winning software policy must be this one.
+  // For efficiency, batch-check: resolve the winning policy for each candidate device.
+  // A device is included only if its closest config policy points to this software policy.
+  const verifiedDeviceIds: string[] = [];
+  const candidates = Array.from(candidateDeviceIds);
+
+  // Process in batches to avoid excessive parallel DB queries
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+    const batch = candidates.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (deviceId) => {
+        const winningPolicyId = await resolveSoftwarePolicyForDevice(deviceId);
+        return { deviceId, winningPolicyId };
+      })
+    );
+    for (const { deviceId, winningPolicyId } of results) {
+      if (winningPolicyId === softwarePolicyId) {
+        verifiedDeviceIds.push(deviceId);
+      }
+    }
+  }
+
+  return verifiedDeviceIds;
 }
 
 // ============================================
