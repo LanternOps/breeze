@@ -106,10 +106,13 @@ export const useOrgStore = create<OrgState>()(
             isLoading: false
           });
 
-          // Auto-select first partner if none selected
+          // Auto-select first partner if none selected or cached partner no longer exists
           const { currentPartnerId } = get();
-          if (!currentPartnerId && partners.length > 0) {
+          const cachedPartnerExists = currentPartnerId && partners.some((p: Partner) => p.id === currentPartnerId);
+          if ((!currentPartnerId || !cachedPartnerExists) && partners.length > 0) {
             get().setPartner(partners[0].id);
+          } else if (currentPartnerId && !cachedPartnerExists) {
+            get().clearOrgContext();
           }
         } catch (error) {
           set({
@@ -142,10 +145,13 @@ export const useOrgStore = create<OrgState>()(
             isLoading: false
           });
 
-          // Auto-select first organization if none selected
+          // Auto-select first organization if none selected or cached org no longer exists
           const { currentOrgId } = get();
-          if (!currentOrgId && organizations.length > 0) {
+          const cachedOrgExists = currentOrgId && organizations.some((o: Organization) => o.id === currentOrgId);
+          if ((!currentOrgId || !cachedOrgExists) && organizations.length > 0) {
             get().setOrganization(organizations[0].id);
+          } else if (currentOrgId && !cachedOrgExists) {
+            set({ currentOrgId: null, currentSiteId: null, sites: [] });
           }
         } catch (error) {
           set({
