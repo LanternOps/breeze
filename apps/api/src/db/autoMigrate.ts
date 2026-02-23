@@ -8,13 +8,16 @@ import { seed } from './seed';
 import { runManualSqlMigrations } from './migrations/run';
 
 /**
- * Runs Drizzle schema migrations and seeds the database on first boot.
+ * Runs schema migrations and seeds the database on first boot.
  *
  * Handles three scenarios:
- * 1. Fresh database — applies all migrations, then seeds default data.
- * 2. Existing database from `drizzle-kit push` — baselines current migrations
- *    so they aren't re-applied, then applies any new ones.
- * 3. Previously migrated database — applies only pending migrations.
+ * 1. Fresh database — applies the full schema dump (complete DDL) then seeds.
+ * 2. Existing database from `drizzle-kit push` — baselines current Drizzle
+ *    migrations so they aren't re-applied, then applies any new ones.
+ * 3. Previously migrated database — applies only pending Drizzle migrations.
+ *
+ * The full-schema.sql approach ensures fresh deployments always get the
+ * complete current schema, avoiding gaps from incomplete Drizzle migrations.
  */
 export async function autoMigrate(): Promise<void> {
   const connectionString =
@@ -28,27 +31,45 @@ export async function autoMigrate(): Promise<void> {
     const migrationsFolder = path.join(process.cwd(), 'drizzle');
     const metaFolder = path.join(migrationsFolder, 'meta');
 
-    if (!existsSync(metaFolder)) {
-      console.log('[auto-migrate] No migration files found, skipping');
-      return;
-    }
-
-    // Detect existing databases created via `drizzle-kit push` (has tables but
-    // no Drizzle migration tracking schema). Baseline them so the initial
-    // migration isn't re-applied.
     const hasSchema = await tableExists(client, 'users');
     const hasMigrationTracking = await schemaExists(client, 'drizzle');
 
-    if (hasSchema && !hasMigrationTracking) {
-      console.log('[auto-migrate] Existing database detected, baselining...');
-      await baselineMigrations(client, migrationsFolder);
+    if (!hasSchema) {
+      // Fresh database — apply the full schema dump which contains all DDL
+      console.log('[auto-migrate] Fresh database detected');
+      const applied = await applyFullSchema(client);
+      if (applied) {
+        // Baseline Drizzle migrations so they aren't re-applied on next boot
+        if (existsSync(metaFolder)) {
+          await baselineMigrations(client, migrationsFolder);
+        }
+      } else if (existsSync(metaFolder)) {
+        // Fallback: no full-schema.sql found, use Drizzle migrations
+        console.log('[auto-migrate] Falling back to Drizzle migrations...');
+        await migrate(migrationDb, { migrationsFolder });
+        console.log('[auto-migrate] Drizzle migrations complete');
+      } else {
+        console.log('[auto-migrate] No migration files found, skipping');
+        return;
+      }
+    } else {
+      // Existing database — use incremental Drizzle migrations
+      if (!existsSync(metaFolder)) {
+        console.log('[auto-migrate] No migration files found, skipping');
+        return;
+      }
+
+      if (!hasMigrationTracking) {
+        console.log('[auto-migrate] Existing database detected, baselining...');
+        await baselineMigrations(client, migrationsFolder);
+      }
+
+      console.log('[auto-migrate] Applying pending Drizzle migrations...');
+      await migrate(migrationDb, { migrationsFolder });
+      console.log('[auto-migrate] Drizzle migrations complete');
     }
 
-    console.log('[auto-migrate] Applying pending Drizzle migrations...');
-    await migrate(migrationDb, { migrationsFolder });
-    console.log('[auto-migrate] Drizzle migrations complete');
-
-    // Run manual SQL migrations (config policies, RLS, TimescaleDB, etc.)
+    // Run manual SQL migrations (config policies, RLS, etc.)
     try {
       console.log('[auto-migrate] Applying manual SQL migrations...');
       await runManualSqlMigrations();
@@ -68,6 +89,46 @@ export async function autoMigrate(): Promise<void> {
   } finally {
     await client.end();
   }
+}
+
+/**
+ * Applies the full schema dump (pg_dump --schema-only output) to bootstrap
+ * a fresh database with the complete current schema in one shot.
+ * Returns true if the schema was applied, false if the file wasn't found.
+ */
+async function applyFullSchema(client: postgres.Sql): Promise<boolean> {
+  // In Docker the CWD is /app, so full-schema.sql lands at /app/db/full-schema.sql
+  // In dev, it's relative to the api package root
+  const candidates = [
+    path.join(process.cwd(), 'db', 'full-schema.sql'),
+    path.join(process.cwd(), 'src', 'db', 'full-schema.sql'),
+  ];
+
+  let schemaPath: string | undefined;
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      schemaPath = p;
+      break;
+    }
+  }
+
+  if (!schemaPath) {
+    console.warn('[auto-migrate] full-schema.sql not found, cannot apply full schema');
+    return false;
+  }
+
+  console.log(`[auto-migrate] Applying full schema from ${schemaPath}...`);
+  const sql = readFileSync(schemaPath, 'utf8');
+
+  // Filter out psql meta-commands (lines starting with \) that pg_dump may include
+  const cleanedSql = sql
+    .split('\n')
+    .filter((line) => !line.startsWith('\\'))
+    .join('\n');
+
+  await client.unsafe(cleanedSql);
+  console.log('[auto-migrate] Full schema applied successfully');
+  return true;
 }
 
 async function tableExists(

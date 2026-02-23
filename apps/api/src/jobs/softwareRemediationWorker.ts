@@ -392,7 +392,7 @@ export async function scheduleSoftwareRemediation(
   const queue = getSoftwareRemediationQueue();
   let queued = 0;
   for (const deviceId of uniqueDeviceIds) {
-    const jobId = `software-remediation:${policyId}:${deviceId}`;
+    const jobId = `software-remediation-${policyId}-${deviceId}`;
     const existing = await queue.getJob(jobId);
     if (existing) {
       const state = await existing.getState();
