@@ -357,7 +357,7 @@ jobs:
 
       # Download the real API production build
       - name: Download API artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: api-dist
           path: apps/api/dist
