@@ -279,42 +279,15 @@ app.route('/metrics', metricsRoutes);
 // API routes
 const api = new Hono();
 
-const FALLBACK_AUDIT_PREFIXES = [
-  '/alerts',
-  '/snmp',
-  '/agents',
-  '/backup',
-  '/script-library',
-  '/portal',
-  '/analytics',
-  '/alert-templates',
-  '/software',
-  '/software-policies',
-  '/maintenance',
-  '/psa',
-  '/mobile',
-  '/discovery',
-  '/monitors',
-  '/monitoring',
-  '/network',
-  '/sso',
-  '/reports',
-  '/logs',
-  '/filters',
-  '/ai',
-  '/notifications',
-  '/custom-fields',
-  '/access-reviews',
-  '/mcp',
-  '/audit-logs',
-  '/agent-versions',
-  '/viewers',
-  '/devices',
-  '/security',
-  '/system-tools',
-  '/playbooks',
-  '/dns-security',
-  '/software-inventory'
+// Blocklist: routes that should NOT get fallback audit events.
+// Everything else under /api/v1/ with a mutating method WILL be audited.
+const FALLBACK_AUDIT_EXCLUDE_PREFIXES = [
+  '/docs',          // read-only OpenAPI docs
+  '/search',        // read-only search
+  '/metrics',       // read-only Prometheus metrics
+  '/agent-ws',      // WebSocket upgrade (not HTTP mutations)
+  '/desktop-ws',    // WebSocket upgrade
+  '/dev',           // local dev-only push routes
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -338,7 +311,9 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/processes\/[^/]+\/kill$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/value$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/key$/,
-  /^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/
+  /^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/,
+  // AI chat streaming is high-volume — exclude from fallback audit
+  /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages$/,
 ];
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -386,8 +361,13 @@ function fallbackAuditEligible(path: string): boolean {
   if (FALLBACK_AUDIT_EXCLUDE_PATHS.some((pattern) => pattern.test(path))) {
     return false;
   }
-
-  return FALLBACK_AUDIT_PREFIXES.some((prefix) => path.startsWith(`/api/v1${prefix}`));
+  if (FALLBACK_AUDIT_EXCLUDE_PREFIXES.some((pfx) => {
+    const full = `/api/v1${pfx}`;
+    return path === full || path.startsWith(`${full}/`);
+  })) {
+    return false;
+  }
+  return path.startsWith('/api/v1/');
 }
 
 async function resolveFallbackOrgId(c: Context, path: string): Promise<string | null> {
