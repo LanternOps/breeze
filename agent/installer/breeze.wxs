@@ -34,13 +34,11 @@
       DowngradeErrorMessage="A newer version of Breeze Agent is already installed."
       Schedule="afterInstallExecute" />
 
-    <Condition Message="Breeze Agent requires 64-bit Windows.">VersionNT64</Condition>
-    <Condition Message="SERVER_URL and ENROLLMENT_KEY must be provided together."><![CDATA[(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)]]></Condition>
+    <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
+    <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
 
     <Property Id="SERVER_URL" Secure="yes" />
-    <Property Id="ENROLLMENT_KEY" Secure="yes" />
-    <Property Id="MsiHiddenProperties" Value="ENROLLMENT_KEY" />
-    <Property Id="SecureCustomProperties" Value="SERVER_URL;ENROLLMENT_KEY" />
+    <Property Id="ENROLLMENT_KEY" Secure="yes" Hidden="yes" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Value="[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" />
 
@@ -92,16 +90,16 @@
 
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="ProgramDataBreezeDir" Name="Breeze">
-        <Component Id="cmpProgramDataRoot" Guid="*" Permanent="yes">
+        <Component Id="cmpProgramDataRoot" Guid="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}" Permanent="yes">
           <CreateFolder />
         </Component>
         <Directory Id="ProgramDataBreezeDataDir" Name="data">
-          <Component Id="cmpProgramDataData" Guid="*" Permanent="yes">
+          <Component Id="cmpProgramDataData" Guid="{B2C3D4E5-F6A7-8901-BCDE-F12345678901}" Permanent="yes">
             <CreateFolder />
           </Component>
         </Directory>
         <Directory Id="ProgramDataBreezeLogsDir" Name="logs">
-          <Component Id="cmpProgramDataLogs" Guid="*" Permanent="yes">
+          <Component Id="cmpProgramDataLogs" Guid="{C3D4E5F6-A7B8-9012-CDEF-123456789012}" Permanent="yes">
             <CreateFolder />
           </Component>
         </Directory>
