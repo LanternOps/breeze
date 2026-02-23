@@ -1,8 +1,8 @@
 ---
-const raw = import.meta.env.PUBLIC_ENABLE_REGISTRATION;
-const enabled = raw === undefined || raw === '' || ['1','true','yes','on'].includes(raw.trim().toLowerCase());
-if (!enabled) {
-  return Astro.redirect('/login', 302);
+import { ENABLE_REGISTRATION } from '../lib/featureFlags';
+
+if (!ENABLE_REGISTRATION) {
+  return Astro.redirect('/login?reason=registration-disabled', 302);
 }
 
 // Redirect to partner registration — standalone registration is not supported

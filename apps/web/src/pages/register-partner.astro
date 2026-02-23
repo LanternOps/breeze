@@ -1,11 +1,10 @@
 ---
 import AuthLayout from '../layouts/AuthLayout.astro';
 import PartnerRegisterPage from '../components/auth/PartnerRegisterPage';
+import { ENABLE_REGISTRATION } from '../lib/featureFlags';
 
-const raw = import.meta.env.PUBLIC_ENABLE_REGISTRATION;
-const enabled = raw === undefined || raw === '' || ['1','true','yes','on'].includes(raw.trim().toLowerCase());
-if (!enabled) {
-  return Astro.redirect('/login', 302);
+if (!ENABLE_REGISTRATION) {
+  return Astro.redirect('/login?reason=registration-disabled', 302);
 }
 ---
 
