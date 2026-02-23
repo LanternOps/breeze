@@ -313,7 +313,7 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/key$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/,
   // AI chat streaming is high-volume — exclude from fallback audit
-  /^\/api\/v1\/helper\/sessions\/[^/]+\/messages$/,
+  /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages$/,
 ];
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -361,7 +361,10 @@ function fallbackAuditEligible(path: string): boolean {
   if (FALLBACK_AUDIT_EXCLUDE_PATHS.some((pattern) => pattern.test(path))) {
     return false;
   }
-  if (FALLBACK_AUDIT_EXCLUDE_PREFIXES.some((pfx) => path.startsWith(`/api/v1${pfx}`))) {
+  if (FALLBACK_AUDIT_EXCLUDE_PREFIXES.some((pfx) => {
+    const full = `/api/v1${pfx}`;
+    return path === full || path.startsWith(`${full}/`);
+  })) {
     return false;
   }
   return path.startsWith('/api/v1/');
