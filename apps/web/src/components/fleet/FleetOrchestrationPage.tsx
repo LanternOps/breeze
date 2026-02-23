@@ -73,7 +73,7 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
     { name: 'patches', path: '/patches/compliance' },
     { name: 'alerts', path: '/alerts/summary' },
     { name: 'automations', path: '/automations' },
-    { name: 'maintenance', path: '/maintenance' },
+    { name: 'maintenance', path: '/maintenance/windows' },
     { name: 'groups', path: '/groups' },
     { name: 'reports', path: '/reports' },
   ] as const;

@@ -790,6 +790,44 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
   };
 }
 
+// In-memory sliding window rate limiter for agent WS connections.
+// Tracks recent connection timestamps per agentId; rejects upgrades that exceed the limit.
+const WS_RATE_WINDOW_MS = 60_000; // 1 minute window
+const WS_RATE_MAX_CONNECTIONS = 6; // max 6 connections per agent per minute
+const wsConnTimestamps = new Map<string, number[]>();
+
+function isAgentWsRateLimited(agentId: string): boolean {
+  const now = Date.now();
+  const cutoff = now - WS_RATE_WINDOW_MS;
+  let timestamps = wsConnTimestamps.get(agentId);
+
+  if (timestamps) {
+    // Evict expired entries
+    timestamps = timestamps.filter(t => t > cutoff);
+  } else {
+    timestamps = [];
+  }
+
+  if (timestamps.length >= WS_RATE_MAX_CONNECTIONS) {
+    wsConnTimestamps.set(agentId, timestamps);
+    return true;
+  }
+
+  timestamps.push(now);
+  wsConnTimestamps.set(agentId, timestamps);
+  return false;
+}
+
+// Periodic cleanup of stale entries (agents that stopped connecting)
+setInterval(() => {
+  const cutoff = Date.now() - WS_RATE_WINDOW_MS * 2;
+  for (const [agentId, timestamps] of wsConnTimestamps) {
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1]! < cutoff) {
+      wsConnTimestamps.delete(agentId);
+    }
+  }
+}, 120_000);
+
 /**
  * Create the agent WebSocket routes
  * The upgradeWebSocket function must be passed from the main app
@@ -801,6 +839,13 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/agent-ws/:id/ws with Authorization: Bearer <agent-token>
   app.get(
     '/:id/ws',
+    (c, next) => {
+      const agentId = c.req.param('id');
+      if (isAgentWsRateLimited(agentId)) {
+        return c.json({ error: 'Too many connection attempts' }, 429);
+      }
+      return next();
+    },
     upgradeWebSocket((c: { req: { param: (key: string) => string; header: (key: string) => string | undefined } }) => {
       const agentId = c.req.param('id');
       const authHeader = c.req.header('Authorization');

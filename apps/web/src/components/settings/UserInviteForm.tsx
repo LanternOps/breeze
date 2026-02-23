@@ -6,27 +6,16 @@ import { zodResolver } from '@hookform/resolvers/zod';
 const inviteSchema = z
   .object({
     email: z.string().email('Enter a valid email address'),
-    role: z.string().min(1, 'Select a role'),
-    accessLevel: z.enum(['all', 'specific']).optional(),
-    orgs: z.string().optional()
+    name: z.string().min(1, 'Name is required').max(255),
+    roleId: z.string().min(1, 'Select a role'),
+    orgAccess: z.enum(['all', 'selected', 'none']).optional(),
+    orgIds: z.string().optional()
   })
   .superRefine((data, ctx) => {
-    if (data.role.toLowerCase() !== 'partner') {
-      return;
-    }
-
-    if (!data.accessLevel) {
+    if (data.orgAccess === 'selected' && !data.orgIds?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['accessLevel'],
-        message: 'Select an access level for partner users'
-      });
-    }
-
-    if (data.accessLevel === 'specific' && !data.orgs?.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['orgs'],
+        path: ['orgIds'],
         message: 'Provide at least one organization'
       });
     }
@@ -34,9 +23,15 @@ const inviteSchema = z
 
 type InviteFormValues = z.infer<typeof inviteSchema>;
 
+export type RoleOption = {
+  id: string;
+  name: string;
+  scope: string;
+};
+
 type UserInviteFormProps = {
   isOpen?: boolean;
-  roles?: string[];
+  roles?: RoleOption[];
   onSubmit?: (values: InviteFormValues) => void | Promise<void>;
   onCancel?: () => void;
   errorMessage?: string;
@@ -44,20 +39,20 @@ type UserInviteFormProps = {
   loading?: boolean;
   title?: string;
   description?: string;
+  showOrgAccess?: boolean;
 };
-
-const defaultRoles = ['Admin', 'Member', 'Partner', 'Viewer'];
 
 export default function UserInviteForm({
   isOpen = true,
-  roles = defaultRoles,
+  roles = [],
   onSubmit,
   onCancel,
   errorMessage,
   submitLabel = 'Send invite',
   loading,
   title = 'Invite user',
-  description = 'Send an invitation with the right access for their role.'
+  description = 'Send an invitation with the right access for their role.',
+  showOrgAccess = false
 }: UserInviteFormProps) {
   const {
     register,
@@ -68,15 +63,16 @@ export default function UserInviteForm({
     resolver: zodResolver(inviteSchema),
     defaultValues: {
       email: '',
-      role: roles[0] ?? '',
-      accessLevel: 'all',
-      orgs: ''
+      name: '',
+      roleId: roles[0]?.id ?? '',
+      orgAccess: 'all',
+      orgIds: ''
     }
   });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
-  const roleValue = watch('role');
-  const showPartnerSettings = roleValue?.toLowerCase() === 'partner';
+  const orgAccessValue = watch('orgAccess');
+  const showOrgSettings = showOrgAccess && orgAccessValue !== undefined;
 
   if (!isOpen) {
     return null;
@@ -96,21 +92,40 @@ export default function UserInviteForm({
           })}
           className="mt-6 space-y-5"
         >
-          <div className="space-y-2">
-            <label htmlFor="invite-email" className="text-sm font-medium">
-              Email
-            </label>
-            <input
-              id="invite-email"
-              type="email"
-              autoComplete="email"
-              placeholder="name@company.com"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              {...register('email')}
-            />
-            {errors.email && (
-              <p className="text-sm text-destructive">{errors.email.message}</p>
-            )}
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label htmlFor="invite-name" className="text-sm font-medium">
+                Name
+              </label>
+              <input
+                id="invite-name"
+                type="text"
+                autoComplete="name"
+                placeholder="Jane Smith"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                {...register('name')}
+              />
+              {errors.name && (
+                <p className="text-sm text-destructive">{errors.name.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="invite-email" className="text-sm font-medium">
+                Email
+              </label>
+              <input
+                id="invite-email"
+                type="email"
+                autoComplete="email"
+                placeholder="name@company.com"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                {...register('email')}
+              />
+              {errors.email && (
+                <p className="text-sm text-destructive">{errors.email.message}</p>
+              )}
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -120,18 +135,18 @@ export default function UserInviteForm({
             <select
               id="invite-role"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              {...register('role')}
+              {...register('roleId')}
             >
               {roles.map(role => (
-                <option key={role} value={role}>
-                  {role}
+                <option key={role.id} value={role.id}>
+                  {role.name}
                 </option>
               ))}
             </select>
-            {errors.role && <p className="text-sm text-destructive">{errors.role.message}</p>}
+            {errors.roleId && <p className="text-sm text-destructive">{errors.roleId.message}</p>}
           </div>
 
-          {showPartnerSettings && (
+          {showOrgSettings && (
             <div className="space-y-3 rounded-md border bg-muted/30 p-4">
               <div>
                 <h3 className="text-sm font-semibold">Organization access</h3>
@@ -146,33 +161,33 @@ export default function UserInviteForm({
                 <select
                   id="invite-access"
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  {...register('accessLevel')}
+                  {...register('orgAccess')}
                 >
                   <option value="all">All organizations</option>
-                  <option value="specific">Specific organizations</option>
+                  <option value="selected">Specific organizations</option>
+                  <option value="none">No organization access</option>
                 </select>
-                {errors.accessLevel && (
-                  <p className="text-sm text-destructive">{errors.accessLevel.message}</p>
+                {errors.orgAccess && (
+                  <p className="text-sm text-destructive">{errors.orgAccess.message}</p>
                 )}
               </div>
-              <div className="space-y-2">
-                <label htmlFor="invite-orgs" className="text-sm font-medium">
-                  Organizations
-                </label>
-                <input
-                  id="invite-orgs"
-                  type="text"
-                  placeholder="Org names or IDs (comma separated)"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  {...register('orgs')}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Leave blank for full access or list the allowed organizations.
-                </p>
-                {errors.orgs && (
-                  <p className="text-sm text-destructive">{errors.orgs.message}</p>
-                )}
-              </div>
+              {orgAccessValue === 'selected' && (
+                <div className="space-y-2">
+                  <label htmlFor="invite-orgs" className="text-sm font-medium">
+                    Organization IDs
+                  </label>
+                  <input
+                    id="invite-orgs"
+                    type="text"
+                    placeholder="Organization IDs (comma separated)"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    {...register('orgIds')}
+                  />
+                  {errors.orgIds && (
+                    <p className="text-sm text-destructive">{errors.orgIds.message}</p>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
