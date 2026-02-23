@@ -1,12 +1,46 @@
 import { Hono } from 'hono';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, devices } from '../db/schema';
+import { organizations, devices, partners, partnerUsers } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 
 export const partnerRoutes = new Hono();
 
 partnerRoutes.use('*', authMiddleware);
+
+// GET /partner/me — return the current user's partner
+partnerRoutes.get('/me', async (c) => {
+  const auth = c.get('auth');
+
+  // If the token already carries a partnerId, look it up directly
+  let partnerId = auth.partnerId;
+
+  // For system-scoped users, resolve via partner_users table
+  if (!partnerId) {
+    const [assoc] = await db
+      .select({ partnerId: partnerUsers.partnerId })
+      .from(partnerUsers)
+      .where(eq(partnerUsers.userId, auth.user.id))
+      .limit(1);
+    partnerId = assoc?.partnerId ?? null;
+  }
+
+  if (!partnerId) {
+    return c.json({ error: 'No partner association' }, 404);
+  }
+
+  const [partner] = await db
+    .select({ id: partners.id, name: partners.name, slug: partners.slug })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+
+  if (!partner) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  return c.json(partner);
+});
 
 partnerRoutes.get('/dashboard', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth');
