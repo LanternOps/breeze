@@ -25,7 +25,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.49",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.50",
     "@anthropic-ai/sdk": "^0.78.0",
     "@aws-sdk/client-s3": "^3.750.0",
     "@aws-sdk/s3-request-presigner": "^3.750.0",
