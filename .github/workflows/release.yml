@@ -333,6 +333,115 @@ jobs:
           path: dist/breeze-agent.msi
           retention-days: 30
 
+  build-macos-agent:
+    name: Sign + Notarize macOS Agent
+    if: vars.ENABLE_MACOS_SIGNING == 'true'
+    runs-on: macos-latest
+    needs: [build-agent]
+    steps:
+      - name: Download darwin/amd64 artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: breeze-agent-darwin-amd64
+          path: staging/
+
+      - name: Download darwin/arm64 artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: breeze-agent-darwin-arm64
+          path: staging/
+
+      - name: Import certificate into keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$CERT_PATH"
+
+      - name: Create universal binary
+        run: |
+          chmod +x staging/breeze-agent-darwin-amd64
+          chmod +x staging/breeze-agent-darwin-arm64
+          lipo -create \
+            staging/breeze-agent-darwin-amd64 \
+            staging/breeze-agent-darwin-arm64 \
+            -output staging/breeze-agent-darwin-universal
+
+      - name: Sign binaries
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          for bin in staging/breeze-agent-darwin-*; do
+            codesign --force --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
+            codesign --verify --verbose "$bin"
+            echo "Signed: $bin"
+          done
+
+      - name: Notarize binaries
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for bin in staging/breeze-agent-darwin-*; do
+            ZIP_PATH="${bin}.zip"
+            ditto -c -k --keepParent "$bin" "$ZIP_PATH"
+
+            echo "Submitting $(basename "$bin") for notarization..."
+            xcrun notarytool submit "$ZIP_PATH" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 10m
+
+            rm -f "$ZIP_PATH"
+            echo "Notarized: $(basename "$bin")"
+          done
+
+      - name: Upload signed darwin/amd64
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-agent-darwin-amd64
+          path: staging/breeze-agent-darwin-amd64
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed darwin/arm64
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-agent-darwin-arm64
+          path: staging/breeze-agent-darwin-arm64
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload universal binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-agent-darwin-universal
+          path: staging/breeze-agent-darwin-universal
+          retention-days: 30
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
   build-viewer:
     name: Build Viewer
     strategy:
@@ -414,6 +523,12 @@ jobs:
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm tauri build --target ${{ matrix.target }}
 
       - name: Find and rename artifact
@@ -518,6 +633,12 @@ jobs:
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm tauri build --target ${{ matrix.target }}
 
       - name: Find and rename artifact
@@ -541,11 +662,145 @@ jobs:
           path: apps/helper/${{ matrix.asset_name }}
           retention-days: 30
 
+  sign-windows-tauri:
+    name: Sign Windows Tauri Artifacts
+    if: vars.ENABLE_WINDOWS_SIGNING == 'true'
+    runs-on: windows-latest
+    needs: [build-viewer, build-helper]
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+    steps:
+      - name: Download viewer Windows MSI
+        uses: actions/download-artifact@v7
+        with:
+          name: breeze-viewer-windows.msi
+          path: staging/
+
+      - name: Download helper Windows MSI
+        uses: actions/download-artifact@v7
+        with:
+          name: breeze-helper-windows.msi
+          path: staging/
+
+      - name: Validate signing configuration
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+        run: |
+          $required = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT_NAME")
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              throw "Missing required signing secret: $name"
+            }
+          }
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Sign viewer MSI (stable profile)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          files: staging/breeze-viewer-windows.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign viewer MSI (prerelease profile)
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+          files: staging/breeze-viewer-windows.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign helper MSI (stable profile)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          files: staging/breeze-helper-windows.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign helper MSI (prerelease profile)
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+          files: staging/breeze-helper-windows.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $targets = @(
+            (Join-Path $env:GITHUB_WORKSPACE "staging\breeze-viewer-windows.msi"),
+            (Join-Path $env:GITHUB_WORKSPACE "staging\breeze-helper-windows.msi")
+          )
+          foreach ($target in $targets) {
+            $sig = Get-AuthenticodeSignature -FilePath $target
+            if ($sig.Status -ne "Valid") {
+              throw "Signature validation failed for $target. Status: $($sig.Status)"
+            }
+            Write-Host "Verified: $target — $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Upload signed viewer MSI
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-viewer-windows.msi
+          path: staging/breeze-viewer-windows.msi
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed helper MSI
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-helper-windows.msi
+          path: staging/breeze-helper-windows.msi
+          overwrite: true
+          retention-days: 30
+
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-viewer, build-helper]
-    if: ${{ !cancelled() && !(github.event_name == 'workflow_dispatch' && inputs.skip_release) }}
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper]
+    if: >-
+      !cancelled()
+      && needs.build-api.result == 'success'
+      && needs.build-web.result == 'success'
+      && needs.build-agent.result == 'success'
+      && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
+      && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
+      && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
+      && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
+      && (needs.build-helper.result == 'success' || needs.build-helper.result == 'skipped')
+      && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)
     permissions:
       contents: write
     steps:
@@ -621,8 +876,15 @@ jobs:
   build-binaries-image:
     name: Build & Push Binaries Init Image
     runs-on: ubuntu-latest
-    needs: [build-agent, build-viewer, build-helper]
-    if: ${{ !cancelled() && needs.build-agent.result == 'success' && needs.build-viewer.result == 'success' && needs.build-helper.result == 'success' }}
+    needs: [build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper]
+    if: >-
+      !cancelled()
+      && needs.build-agent.result == 'success'
+      && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
+      && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
+      && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
+      && needs.build-viewer.result == 'success'
+      && needs.build-helper.result == 'success'
     permissions:
       contents: read
       packages: write
