@@ -127,6 +127,8 @@ async function applyFullSchema(client: postgres.Sql): Promise<boolean> {
     .join('\n');
 
   await client.unsafe(cleanedSql);
+  // pg_dump sets search_path to '' — restore it so subsequent queries find public tables
+  await client`SELECT pg_catalog.set_config('search_path', 'public', false)`;
   console.log('[auto-migrate] Full schema applied successfully');
   return true;
 }
