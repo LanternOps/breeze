@@ -70,7 +70,7 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
         queuedAt: data.queuedAt,
       },
       opts: {
-        jobId: `reliability:${row.orgId}:${slotKey}`,
+        jobId: `reliability-${row.orgId}-${slotKey}`,
         removeOnComplete: { count: 50 },
         removeOnFail: { count: 200 },
       },

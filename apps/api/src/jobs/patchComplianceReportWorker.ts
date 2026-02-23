@@ -264,7 +264,7 @@ export async function enqueuePatchComplianceReport(
         reportId
       },
       {
-        jobId: `patch-compliance-report:${reportId}`,
+        jobId: `patch-compliance-report-${reportId}`,
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 500 }
       }

@@ -92,7 +92,7 @@ async function processScanDuePolicies(): Promise<{ queued: number }> {
         policyId: policy.id,
       },
       opts: {
-        jobId: `policy-evaluate:${policy.id}`,
+        jobId: `policy-evaluate-${policy.id}`,
         removeOnComplete: true,
         removeOnFail: { count: 100 },
       },

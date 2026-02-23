@@ -55,7 +55,7 @@ export async function enqueueLogForwarding(data: LogForwardingJobData): Promise<
   }
 
   await q.add('forward-events', data, {
-    jobId: `fwd:${data.deviceId}:${Date.now()}`,
+    jobId: `fwd-${data.deviceId}-${Date.now()}`,
   });
 }
 

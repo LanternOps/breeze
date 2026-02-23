@@ -286,7 +286,7 @@ export async function scheduleDnsEventSync(integrationId?: string): Promise<stri
       queue,
       'sync-integration',
       { type: 'sync-integration', integrationId },
-      `sync-integration:${integrationId}`,
+      `sync-integration-${integrationId}`,
       { removeOnComplete: true, removeOnFail: true }
     );
   }
@@ -295,7 +295,7 @@ export async function scheduleDnsEventSync(integrationId?: string): Promise<stri
     queue,
     'sync-all',
     { type: 'sync-all' },
-    'sync-all:manual',
+    'sync-all-manual',
     { removeOnComplete: true, removeOnFail: true }
   );
 }
@@ -353,7 +353,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
       queue,
       'sync-integration',
       { type: 'sync-integration', integrationId: integration.id },
-      `sync-integration:${integration.id}`,
+      `sync-integration-${integration.id}`,
       { removeOnComplete: true, removeOnFail: true }
     ))
   );

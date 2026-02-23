@@ -34,6 +34,8 @@ COPY --from=builder --chown=hono:nodejs /deployed/package.json ./
 COPY --from=builder --chown=hono:nodejs /app/apps/api/drizzle ./drizzle
 # Copy manual SQL migration files
 COPY --from=builder --chown=hono:nodejs /app/apps/api/src/db/migrations ./db/migrations
+# Copy full schema dump for fresh database bootstrap
+COPY --from=builder --chown=hono:nodejs /app/apps/api/src/db/full-schema.sql ./db/full-schema.sql
 
 USER hono
 

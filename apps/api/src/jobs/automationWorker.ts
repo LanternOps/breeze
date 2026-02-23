@@ -347,7 +347,7 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
         scanAt: scanDate.toISOString(),
       },
       {
-        jobId: `automation:schedule:${automation.id}:${slotKey}`,
+        jobId: `automation-schedule-${automation.id}-${slotKey}`,
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 500 },
       },
@@ -374,7 +374,7 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
           scanAt: scanDate.toISOString(),
         },
         {
-          jobId: `cp-automation:schedule:${dispatch.configPolicyAutomationId}:${slotKey}`,
+          jobId: `cp-automation-schedule-${dispatch.configPolicyAutomationId}-${slotKey}`,
           removeOnComplete: { count: 200 },
           removeOnFail: { count: 500 },
         },
@@ -751,7 +751,7 @@ async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): 
         eventTimestamp: event.metadata.timestamp,
       },
       {
-        jobId: `automation:event:${automation.id}:${event.id}`,
+        jobId: `automation-event-${automation.id}-${event.id}`,
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 500 },
       },
@@ -796,7 +796,7 @@ async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): 
             triggeredBy: `config-policy-event:${event.type}`,
           },
           {
-            jobId: `cp-automation:event:${cpAutomation.id}:${deviceId}:${event.id}`,
+            jobId: `cp-automation-event-${cpAutomation.id}-${deviceId}-${event.id}`,
             removeOnComplete: { count: 200 },
             removeOnFail: { count: 500 },
           },

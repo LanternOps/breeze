@@ -255,7 +255,7 @@ async function processScanPolicies(): Promise<{ queued: number }> {
         policyId: policy.id,
       },
       opts: {
-        jobId: `software-compliance:${policy.id}:${slot}`,
+        jobId: `software-compliance-${policy.id}-${slot}`,
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 300 },
         attempts: 3,

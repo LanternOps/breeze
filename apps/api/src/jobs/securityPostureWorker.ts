@@ -159,7 +159,7 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
         queuedAt: data.queuedAt
       },
       opts: {
-        jobId: `security-posture:${row.orgId}:${slotKey}`,
+        jobId: `security-posture-${row.orgId}-${slotKey}`,
         removeOnComplete: { count: 50 },
         removeOnFail: { count: 200 }
       }
