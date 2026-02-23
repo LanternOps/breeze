@@ -11,7 +11,7 @@ systemRoutes.use('*', authMiddleware);
 // GET /system/config-status — read-only view of env-driven feature status (no secrets)
 systemRoutes.get('/config-status', async (c) => {
   const auth = c.get('auth');
-  if (auth.scope !== 'partner') {
+  if (auth.scope !== 'partner' && auth.scope !== 'system') {
     return c.json({ error: 'Forbidden' }, 403);
   }
 
