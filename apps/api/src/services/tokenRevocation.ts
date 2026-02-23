@@ -68,12 +68,15 @@ export async function revokeAllUserTokens(userId: string): Promise<void> {
     throw new Error('[token-revocation] Redis unavailable — cannot revoke user tokens');
   }
 
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  // Subtract 1 so tokens minted in the same second as the revocation (e.g.
+  // an immediate re-login after password change) are treated as valid.
+  // Specific token JTI revocation still covers the exact old token.
+  const cutoff = Math.floor(Date.now() / 1000) - 1;
   try {
     await redis
       .multi()
       .setex(getRevokedAccessKey(userId), ACCESS_TOKEN_REVOCATION_TTL_SECONDS, '1')
-      .setex(getRevokedAfterKey(userId), USER_REVOCATION_TTL_SECONDS, String(nowSeconds))
+      .setex(getRevokedAfterKey(userId), USER_REVOCATION_TTL_SECONDS, String(cutoff))
       .exec();
   } catch (error) {
     console.error('[token-revocation] Failed to revoke user tokens:', error);

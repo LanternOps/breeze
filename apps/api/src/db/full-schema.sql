@@ -1513,7 +1513,7 @@ CREATE TABLE public.asset_checkouts (
 
 CREATE TABLE public.audit_logs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    org_id uuid NOT NULL,
+    org_id uuid,
     "timestamp" timestamp without time zone DEFAULT now() NOT NULL,
     actor_type public.actor_type NOT NULL,
     actor_id uuid NOT NULL,
