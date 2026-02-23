@@ -5,6 +5,7 @@ import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode } from '../../s
 import type { MfaMethod } from '../../stores/auth';
 
 function getRegistrationDisabledNotice(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
   const params = new URLSearchParams(window.location.search);
   if (params.get('reason') === 'registration-disabled') {
     return 'New registrations are currently disabled. Please contact your administrator.';
@@ -48,7 +49,7 @@ export default function LoginPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      window.location.href = '/';
+      window.location.href = result.requiresSetup ? '/setup' : '/';
     }
 
     setLoading(false);
@@ -70,7 +71,7 @@ export default function LoginPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      window.location.href = '/';
+      window.location.href = result.requiresSetup ? '/setup' : '/';
     }
 
     setLoading(false);

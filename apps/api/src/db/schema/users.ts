@@ -21,6 +21,7 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   lastLoginAt: timestamp('last_login_at'),
   passwordChangedAt: timestamp('password_changed_at'),
+  setupCompletedAt: timestamp('setup_completed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

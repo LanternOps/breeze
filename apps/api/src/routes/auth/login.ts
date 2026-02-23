@@ -31,7 +31,8 @@ import {
   revokeCurrentRefreshTokenJti,
   resolveCurrentUserTokenContext,
   auditUserLoginFailure,
-  auditLogin
+  auditLogin,
+  userRequiresSetup
 } from './helpers';
 
 const { db } = dbModule;
@@ -150,13 +151,11 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, user.id));
 
-  if (orgId) {
-    auditLogin(c, { orgId, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
-  } else {
-    console.warn('[audit] Skipping login audit for non-org-scoped user', { userId: user.id, scope });
-  }
+  auditLogin(c, { orgId: orgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
 
   setRefreshTokenCookie(c, tokens.refreshToken);
+
+  const requiresSetup = userRequiresSetup(user);
 
   return c.json({
     user: {
@@ -167,7 +166,8 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       avatarUrl: user.avatarUrl
     },
     tokens: toPublicTokens(tokens),
-    mfaRequired: false
+    mfaRequired: false,
+    requiresSetup
   });
 });
 
@@ -182,22 +182,18 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     console.error('[auth] Failed to revoke tokens during logout — clearing cookie anyway:', error);
   }
 
-  if (auth.orgId) {
-    createAuditLogAsync({
-      orgId: auth.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'user.logout',
-      resourceType: 'user',
-      resourceId: auth.user.id,
-      resourceName: auth.user.name,
-      ipAddress: getClientIP(c),
-      userAgent: c.req.header('user-agent'),
-      result: 'success'
-    });
-  } else {
-    console.warn('[audit] Skipping logout audit for non-org-scoped user', { userId: auth.user.id, scope: auth.scope });
-  }
+  createAuditLogAsync({
+    orgId: auth.orgId ?? undefined,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'user.logout',
+    resourceType: 'user',
+    resourceId: auth.user.id,
+    resourceName: auth.user.name,
+    ipAddress: getClientIP(c),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
 
   clearRefreshTokenCookie(c);
   return c.json({ success: true });

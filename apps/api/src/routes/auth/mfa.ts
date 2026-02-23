@@ -31,7 +31,8 @@ import {
   resolveUserAuditOrgId,
   writeAuthAudit,
   auditUserLoginFailure,
-  auditLogin
+  auditLogin,
+  userRequiresSetup
 } from './helpers';
 
 const { db } = dbModule;
@@ -196,13 +197,11 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       .set({ lastLoginAt: new Date() })
       .where(eq(users.id, user.id));
 
-    if (mfaOrgId) {
-      auditLogin(c, { orgId: mfaOrgId, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
-    } else {
-      console.warn('[audit] Skipping MFA login audit for non-org-scoped user', { userId: user.id, scope: mfaScope });
-    }
+    auditLogin(c, { orgId: mfaOrgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
 
     setRefreshTokenCookie(c, tokens.refreshToken);
+
+    const requiresSetup = userRequiresSetup(user);
 
     return c.json({
       user: {
@@ -212,7 +211,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         mfaEnabled: true
       },
       tokens: toPublicTokens(tokens),
-      mfaRequired: false
+      mfaRequired: false,
+      requiresSetup
     });
   }
 
@@ -250,16 +250,14 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
   if (!valid) {
     const orgId = await resolveUserAuditOrgId(payload.sub);
-    if (orgId) {
-      writeAuthAudit(c, {
-        orgId,
-        action: 'auth.mfa.setup.failed',
-        result: 'failure',
-        reason: 'invalid_mfa_code',
-        userId: payload.sub,
-        details: { phase: 'setup_confirmation' }
-      });
-    }
+    writeAuthAudit(c, {
+      orgId: orgId ?? undefined,
+      action: 'auth.mfa.setup.failed',
+      result: 'failure',
+      reason: 'invalid_mfa_code',
+      userId: payload.sub,
+      details: { phase: 'setup_confirmation' }
+    });
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
@@ -276,15 +274,13 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     .where(eq(users.id, payload.sub));
 
   const setupOrgId = await resolveUserAuditOrgId(payload.sub);
-  if (setupOrgId) {
-    writeAuthAudit(c, {
-      orgId: setupOrgId,
-      action: 'auth.mfa.setup',
-      result: 'success',
-      userId: payload.sub,
-      details: { method: 'totp' }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: setupOrgId ?? undefined,
+    action: 'auth.mfa.setup',
+    result: 'success',
+    userId: payload.sub,
+    details: { method: 'totp' }
+  });
 
   // Clear setup data
   await redis.del(`mfa:setup:${payload.sub}`);
@@ -348,17 +344,15 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySchem
       return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
     }
     if (!result.valid) {
-      if (auth.orgId) {
-        writeAuthAudit(c, {
-          orgId: auth.orgId,
-          action: 'auth.mfa.disable.failed',
-          result: 'failure',
-          reason: 'invalid_sms_code',
-          userId: auth.user.id,
-          email: auth.user.email,
-          details: { method: 'sms' }
-        });
-      }
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.mfa.disable.failed',
+        result: 'failure',
+        reason: 'invalid_sms_code',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { method: 'sms' }
+      });
       return c.json({ error: 'Invalid verification code' }, 401);
     }
   } else {
@@ -369,17 +363,15 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySchem
     }
     const valid = await verifyMFAToken(decryptedMfaSecret, code);
     if (!valid) {
-      if (auth.orgId) {
-        writeAuthAudit(c, {
-          orgId: auth.orgId,
-          action: 'auth.mfa.disable.failed',
-          result: 'failure',
-          reason: 'invalid_mfa_code',
-          userId: auth.user.id,
-          email: auth.user.email,
-          details: { method: 'totp' }
-        });
-      }
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.mfa.disable.failed',
+        result: 'failure',
+        reason: 'invalid_mfa_code',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { method: 'totp' }
+      });
       return c.json({ error: 'Invalid MFA code' }, 401);
     }
   }
@@ -397,16 +389,14 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySchem
     })
     .where(eq(users.id, auth.user.id));
 
-  if (auth.orgId) {
-    writeAuthAudit(c, {
-      orgId: auth.orgId,
-      action: 'auth.mfa.disable',
-      result: 'success',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { method: currentMethod }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: auth.orgId ?? undefined,
+    action: 'auth.mfa.disable',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { method: currentMethod }
+  });
 
   return c.json({ success: true, message: 'MFA disabled successfully' });
 });
@@ -449,17 +439,15 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema
   const valid = await verifyMFAToken(secret, code);
   if (!valid) {
     const orgId = await resolveUserAuditOrgId(auth.user.id);
-    if (orgId) {
-      writeAuthAudit(c, {
-        orgId,
-        action: 'auth.mfa.setup.failed',
-        result: 'failure',
-        reason: 'invalid_mfa_code',
-        userId: auth.user.id,
-        email: auth.user.email,
-        details: { phase: 'setup_confirmation' }
-      });
-    }
+    writeAuthAudit(c, {
+      orgId: orgId ?? undefined,
+      action: 'auth.mfa.setup.failed',
+      result: 'failure',
+      reason: 'invalid_mfa_code',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { phase: 'setup_confirmation' }
+    });
     const message = 'Invalid MFA code';
     return c.json({ error: message, message }, 401);
   }
@@ -478,16 +466,14 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema
   await redis.del(`mfa:setup:${auth.user.id}`);
 
   const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
-  if (setupOrgId) {
-    writeAuthAudit(c, {
-      orgId: setupOrgId,
-      action: 'auth.mfa.setup',
-      result: 'success',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { method: 'totp' }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: setupOrgId ?? undefined,
+    action: 'auth.mfa.setup',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { method: 'totp' }
+  });
 
   return c.json({ success: true, recoveryCodes, message: 'MFA enabled successfully' });
 });
@@ -521,16 +507,14 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, async (c) => {
     .where(eq(users.id, auth.user.id));
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
-  if (orgId) {
-    writeAuthAudit(c, {
-      orgId,
-      action: 'auth.mfa.recovery_codes.rotate',
-      result: 'success',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { count: recoveryCodes.length }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.mfa.recovery_codes.rotate',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { count: recoveryCodes.length }
+  });
 
   return c.json({ success: true, recoveryCodes, message: 'Recovery codes generated successfully' });
 });

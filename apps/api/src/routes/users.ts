@@ -12,7 +12,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { getEmailService } from '../services/email';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey } from './auth/helpers';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, userRequiresSetup } from './auth/helpers';
 
 export const userRoutes = new Hono();
 
@@ -279,12 +279,9 @@ function writeUserAudit(
   }
 ): void {
   const orgId = resolveAuditOrgId(auth, scopeContext);
-  if (!orgId) {
-    return;
-  }
 
   createAuditLogAsync({
-    orgId,
+    orgId: orgId ?? undefined,
     actorId: auth.user.id,
     actorEmail: auth.user.email,
     action: event.action,
@@ -313,7 +310,9 @@ userRoutes.get('/me', async (c) => {
       status: users.status,
       mfaEnabled: users.mfaEnabled,
       createdAt: users.createdAt,
-      lastLoginAt: users.lastLoginAt
+      lastLoginAt: users.lastLoginAt,
+      setupCompletedAt: users.setupCompletedAt,
+      passwordChangedAt: users.passwordChangedAt
     })
     .from(users)
     .where(eq(users.id, auth.user.id))
@@ -323,11 +322,14 @@ userRoutes.get('/me', async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
+  const requiresSetup = userRequiresSetup(user);
+
   return c.json({
     ...user,
     partnerId: auth.partnerId,
     orgId: auth.orgId,
-    scope: auth.scope
+    scope: auth.scope,
+    requiresSetup
   });
 });
 
@@ -336,7 +338,7 @@ userRoutes.patch('/me', async (c) => {
   const auth = c.get('auth');
   const body = await c.req.json();
 
-  const updates: { name?: string; avatarUrl?: string; updatedAt: Date } = {
+  const updates: { name?: string; email?: string; avatarUrl?: string; updatedAt: Date } = {
     updatedAt: new Date()
   };
 
@@ -346,6 +348,24 @@ userRoutes.patch('/me', async (c) => {
 
   if (body.avatarUrl !== undefined) {
     updates.avatarUrl = body.avatarUrl;
+  }
+
+  if (body.email && typeof body.email === 'string') {
+    const normalizedEmail = body.email.toLowerCase().trim().slice(0, 255);
+    // Basic email format validation
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return c.json({ error: 'Invalid email format' }, 400);
+    }
+    // Check uniqueness
+    const [existing] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1);
+    if (existing && existing.id !== auth.user.id) {
+      return c.json({ error: 'Email already in use' }, 409);
+    }
+    updates.email = normalizedEmail;
   }
 
   if (Object.keys(updates).length === 1) {

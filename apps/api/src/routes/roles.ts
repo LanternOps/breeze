@@ -112,12 +112,9 @@ function writeRoleAudit(
   }
 ): void {
   const orgId = resolveAuditOrgId(auth, scopeContext);
-  if (!orgId) {
-    return;
-  }
 
   createAuditLogAsync({
-    orgId,
+    orgId: orgId ?? undefined,
     actorId: auth.user.id,
     actorEmail: auth.user.email,
     action: event.action,

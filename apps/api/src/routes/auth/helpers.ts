@@ -452,7 +452,7 @@ export async function resolveUserAuditOrgId(userId: string): Promise<string | nu
 export function writeAuthAudit(
   c: RequestLike,
   opts: {
-    orgId: string;
+    orgId?: string;
     action: string;
     result: 'success' | 'failure' | 'denied';
     reason?: string;
@@ -493,12 +493,9 @@ export async function auditUserLoginFailure(
   }
 ): Promise<void> {
   const orgId = await resolveUserAuditOrgId(opts.userId);
-  if (!orgId) {
-    return;
-  }
 
   writeAuthAudit(c, {
-    orgId,
+    orgId: orgId ?? undefined,
     action: 'user.login.failed',
     result: opts.result ?? 'failure',
     reason: opts.reason,
@@ -511,10 +508,10 @@ export async function auditUserLoginFailure(
 
 export function auditLogin(
   c: RequestLike,
-  opts: { orgId: string; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string }
+  opts: { orgId: string | null; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string }
 ): void {
   createAuditLogAsync({
-    orgId: opts.orgId,
+    orgId: opts.orgId ?? undefined,
     actorId: opts.userId,
     actorEmail: opts.email,
     action: 'user.login',
@@ -526,4 +523,16 @@ export function auditLogin(
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
+}
+
+/**
+ * Check if a user requires the first-login setup wizard.
+ * Only triggers for the seeded admin before they complete setup or change their password.
+ */
+export function userRequiresSetup(user: {
+  setupCompletedAt: Date | string | null;
+  passwordChangedAt: Date | string | null;
+  email: string;
+}): boolean {
+  return !user.setupCompletedAt && !user.passwordChangedAt && user.email === 'admin@breeze.local';
 }
