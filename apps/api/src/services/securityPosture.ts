@@ -654,7 +654,7 @@ async function getLatestDeviceSnapshotsForOrg(orgId: string): Promise<Map<string
       adminExposureScore: securityPostureSnapshots.adminExposureScore,
       factorDetails: securityPostureSnapshots.factorDetails,
       recommendations: securityPostureSnapshots.recommendations,
-      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`
+      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`.as('rn')
     })
     .from(securityPostureSnapshots)
     .where(eq(securityPostureSnapshots.orgId, orgId))
@@ -938,7 +938,7 @@ export async function listLatestSecurityPosture(filter: SecurityPostureFilter): 
       adminExposureScore: securityPostureSnapshots.adminExposureScore,
       factorDetails: securityPostureSnapshots.factorDetails,
       recommendations: securityPostureSnapshots.recommendations,
-      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`
+      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`.as('rn')
     })
     .from(securityPostureSnapshots)
     .where(scopeConditions.length > 0 ? and(...scopeConditions) : undefined)

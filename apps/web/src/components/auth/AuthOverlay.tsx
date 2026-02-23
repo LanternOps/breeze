@@ -7,13 +7,12 @@ export default function AuthOverlay() {
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
-  const [shouldShow, setShouldShow] = useState(true);
 
   useEffect(() => {
     // Give the store time to rehydrate from localStorage
     const timer = setTimeout(() => {
       setIsChecking(false);
-    }, 100);
+    }, 50);
 
     return () => clearTimeout(timer);
   }, []);
@@ -21,57 +20,47 @@ export default function AuthOverlay() {
   useEffect(() => {
     let cancelled = false;
 
-    if (!isChecking && !isLoading) {
-      if (isAuthenticated && !tokens?.accessToken && !recoverAttempted) {
-        setRecoverAttempted(true);
-        setIsRecovering(true);
+    if (isChecking || isLoading) return;
 
-        void restoreAccessTokenFromCookie().then((restored) => {
-          if (cancelled) return;
-          setIsRecovering(false);
-
-          if (restored) {
-            setShouldShow(false);
-          }
-        });
-
-        return () => {
-          cancelled = true;
-        };
-      }
-
-      if (isRecovering) {
-        return () => {
-          cancelled = true;
-        };
-      }
-
-      const hasValidAuth = isAuthenticated && tokens?.accessToken;
-
-      if (!hasValidAuth) {
-        // Store the current URL to redirect back after login
-        const currentPath = window.location.pathname + window.location.search;
-        if (currentPath !== '/login' && currentPath !== '/register') {
-          sessionStorage.setItem('redirectAfterLogin', currentPath);
-        }
-        window.location.href = '/login';
-      } else {
-        // Authenticated - hide the overlay
-        setShouldShow(false);
-      }
+    // Fast path: tokens were rehydrated from localStorage — no network needed
+    if (isAuthenticated && tokens?.accessToken) {
+      return;
     }
 
-    return () => {
-      cancelled = true;
-    };
+    // Slow path: authenticated but no token (e.g. first load after login on another tab)
+    if (isAuthenticated && !tokens?.accessToken && !recoverAttempted) {
+      setRecoverAttempted(true);
+      setIsRecovering(true);
+
+      void restoreAccessTokenFromCookie().then((restored) => {
+        if (cancelled) return;
+        setIsRecovering(false);
+
+        if (!restored) {
+          redirectToLogin();
+        }
+      });
+
+      return () => { cancelled = true; };
+    }
+
+    if (isRecovering) {
+      return () => { cancelled = true; };
+    }
+
+    if (!isAuthenticated) {
+      redirectToLogin();
+    }
+
+    return () => { cancelled = true; };
   }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering]);
 
-  // Don't render anything if authenticated
-  if (!shouldShow) {
+  // Authenticated with token — render nothing, page is visible immediately
+  if (!isChecking && !isLoading && isAuthenticated && tokens?.accessToken) {
     return null;
   }
 
-  // Show overlay while checking or redirecting
+  // Still initializing or recovering — show overlay
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
       <div className="text-center">
@@ -82,4 +71,12 @@ export default function AuthOverlay() {
       </div>
     </div>
   );
+}
+
+function redirectToLogin() {
+  const currentPath = window.location.pathname + window.location.search;
+  if (currentPath !== '/login' && currentPath !== '/register') {
+    sessionStorage.setItem('redirectAfterLogin', currentPath);
+  }
+  window.location.href = '/login';
 }

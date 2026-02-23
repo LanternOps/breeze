@@ -1,19 +1,21 @@
 import { useState, useEffect, useCallback } from 'react';
 import UserList, { type User } from './UserList';
-import UserInviteForm from './UserInviteForm';
+import UserInviteForm, { type RoleOption } from './UserInviteForm';
 import { fetchWithAuth } from '../../stores/auth';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
 
 type InviteFormValues = {
   email: string;
-  role: string;
-  accessLevel?: 'all' | 'specific';
-  orgs?: string;
+  name: string;
+  roleId: string;
+  orgAccess?: 'all' | 'selected' | 'none';
+  orgIds?: string;
 };
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
@@ -51,9 +53,27 @@ export default function UsersPage() {
     }
   }, []);
 
+  const fetchRoles = useCallback(async () => {
+    try {
+      const response = await fetchWithAuth('/users/roles');
+      if (!response.ok) return;
+      const data = await response.json();
+      setRoles(
+        (data.data ?? []).map((r: Record<string, unknown>) => ({
+          id: r.id as string,
+          name: r.name as string,
+          scope: r.scope as string
+        }))
+      );
+    } catch {
+      // roles will remain empty; form still works
+    }
+  }, []);
+
   useEffect(() => {
     fetchUsers();
-  }, [fetchUsers]);
+    fetchRoles();
+  }, [fetchUsers, fetchRoles]);
 
   const handleInvite = () => {
     setSelectedUser(null);
@@ -78,13 +98,31 @@ export default function UsersPage() {
   const handleInviteSubmit = async (values: InviteFormValues) => {
     setSubmitting(true);
     try {
+      const payload: Record<string, unknown> = {
+        email: values.email,
+        name: values.name,
+        roleId: values.roleId
+      };
+
+      if (values.orgAccess) {
+        payload.orgAccess = values.orgAccess;
+      }
+
+      if (values.orgAccess === 'selected' && values.orgIds) {
+        payload.orgIds = values.orgIds
+          .split(',')
+          .map(id => id.trim())
+          .filter(Boolean);
+      }
+
       const response = await fetchWithAuth('/users/invite', {
         method: 'POST',
-        body: JSON.stringify(values)
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
-        throw new Error('Failed to send invitation');
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || 'Failed to send invitation');
       }
 
       await fetchUsers();
@@ -191,6 +229,8 @@ export default function UsersPage() {
       {modalMode === 'invite' && (
         <UserInviteForm
           isOpen
+          roles={roles}
+          showOrgAccess={roles.some(r => r.scope === 'partner')}
           onSubmit={handleInviteSubmit}
           onCancel={handleCloseModal}
           loading={submitting}
@@ -216,7 +256,8 @@ export default function UsersPage() {
                 const formData = new FormData(e.currentTarget);
                 await handleEditSubmit({
                   email: selectedUser.email,
-                  role: formData.get('role') as string
+                  name: selectedUser.name,
+                  roleId: formData.get('roleId') as string
                 });
               }}
               className="mt-6 space-y-5"
@@ -240,14 +281,15 @@ export default function UsersPage() {
                 </label>
                 <select
                   id="edit-role"
-                  name="role"
-                  defaultValue={selectedUser.role}
+                  name="roleId"
+                  defaultValue={roles.find(r => r.name === selectedUser.role)?.id ?? ''}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
-                  <option value="Admin">Admin</option>
-                  <option value="Member">Member</option>
-                  <option value="Partner">Partner</option>
-                  <option value="Viewer">Viewer</option>
+                  {roles.map(role => (
+                    <option key={role.id} value={role.id}>
+                      {role.name}
+                    </option>
+                  ))}
                 </select>
               </div>
 

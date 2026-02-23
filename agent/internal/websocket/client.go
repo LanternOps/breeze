@@ -201,14 +201,19 @@ func (c *Client) reconnectLoop() {
 			continue
 		}
 
-		// Reset backoff on successful connection
-		backoff = initialBackoff
-
-		// Run read/write pumps
-		done := make(chan struct{})
-		go c.writePump(done)
+		// Run read/write pumps — track how long the connection lasted
+		connStart := time.Now()
+		pumpDone := make(chan struct{})
+		go c.writePump(pumpDone)
 		c.readPump()
-		close(done)
+		close(pumpDone)
+
+		// Only reset backoff if connection was stable (lasted > 30s).
+		// Immediate disconnects (e.g. auth rejection) keep exponential backoff
+		// so a misconfigured agent doesn't flood the server.
+		if time.Since(connStart) > 30*time.Second {
+			backoff = initialBackoff
+		}
 
 		// Check if we should stop
 		c.runningMu.RLock()

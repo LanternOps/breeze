@@ -78,13 +78,18 @@ export const useAuthStore = create<AuthState>()(
       name: 'breeze-auth',
       partialize: (state) => ({
         user: state.user,
+        tokens: state.tokens,
         isAuthenticated: state.isAuthenticated,
       }),
       onRehydrateStorage: () => (state) => {
-        // Set isLoading to false after rehydration completes
+        // Set isLoading to false after rehydration completes.
+        // When rehydration fails, state is null — fall back to the raw store API
+        // so isLoading is always cleared and the app never hangs on "Loading...".
         if (state) {
           state.setUser(state.user);
           state.setLoading(false);
+        } else {
+          useAuthStore.getState().setLoading(false);
         }
       }
     }
@@ -182,12 +187,23 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
     headers.set(CSRF_HEADER_NAME, csrfToken);
   }
 
-  const refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
-    method: 'POST',
-    headers,
-    credentials: 'include',
-    body: JSON.stringify({})
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  let refreshResponse: Response;
+  try {
+    refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify({}),
+      signal: controller.signal,
+    });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!refreshResponse.ok) {
     return null;

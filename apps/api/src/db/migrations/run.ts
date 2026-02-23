@@ -17,6 +17,16 @@ function hashSql(sql: string): string {
   return createHash('sha256').update(sql).digest('hex');
 }
 
+/** Resolve the directory containing .sql migration files (works in both ESM and CJS bundles). */
+function resolveMigrationsDir(): string {
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    // CJS bundle: import.meta.url is undefined — use well-known Docker path
+    return path.join(process.cwd(), 'db', 'migrations');
+  }
+}
+
 export async function runManualSqlMigrations(): Promise<void> {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -28,8 +38,7 @@ export async function runManualSqlMigrations(): Promise<void> {
 
   const client = new Client({ connectionString });
 
-  const currentFile = fileURLToPath(import.meta.url);
-  const migrationsDir = path.dirname(currentFile);
+  const migrationsDir = resolveMigrationsDir();
 
   try {
     await client.connect();
@@ -107,9 +116,14 @@ export async function runManualSqlMigrations(): Promise<void> {
   }
 }
 
-const isDirectExecution = process.argv[1]
-  ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-  : false;
+let isDirectExecution = false;
+try {
+  isDirectExecution = process.argv[1]
+    ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+    : false;
+} catch {
+  // CJS bundle: import.meta.url unavailable — not a direct execution
+}
 
 if (isDirectExecution) {
   runManualSqlMigrations().catch((error) => {

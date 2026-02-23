@@ -11,6 +11,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
+import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
 import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
@@ -187,6 +188,7 @@ app.use('*', bodyLimit({
   maxSize: 1024 * 1024, // 1MB default for all routes
   onError: (c) => c.json({ error: 'Request body too large' }, 413),
 }));
+app.use('*', globalRateLimit());
 app.use('*', prettyJSON());
 app.use(
   '*',

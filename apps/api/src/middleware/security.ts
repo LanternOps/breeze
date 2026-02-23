@@ -33,7 +33,8 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
   const allowUnsafeInline = options?.allowUnsafeInline ?? process.env.CSP_ALLOW_UNSAFE_INLINE;
   const normalized = forceHttps?.trim().toLowerCase();
   const isForceHttps = normalized === 'true' || normalized === '1';
-  const isUnsafeInlineAllowed = allowUnsafeInline?.trim().toLowerCase() === 'true' || allowUnsafeInline === '1';
+  // TODO: Default to true until all inline scripts/styles are migrated to external files
+  const isUnsafeInlineAllowed = allowUnsafeInline?.trim().toLowerCase() !== 'false';
 
   // Pre-build the CSP header value (it doesn't change per-request)
   const cspDirectives = [
