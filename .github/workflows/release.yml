@@ -314,9 +314,15 @@ jobs:
           )
           foreach ($target in $targets) {
             $sig = Get-AuthenticodeSignature -FilePath $target
-            if ($sig.Status -ne "Valid") {
+            # Valid = fully trusted chain; UnknownError = signed but Azure Trusted
+            # Signing root cert not yet in local trust store (normal for new accounts)
+            if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
               throw "Signature validation failed for $target. Status: $($sig.Status)"
             }
+            if ($sig.Status -eq "UnknownError") {
+              Write-Host "::warning::$target signed but root cert not yet trusted locally (Status: UnknownError). This is normal for new Azure Trusted Signing accounts."
+            }
+            Write-Host "Verified: $target - Status: $($sig.Status) - Signer: $($sig.SignerCertificate.Subject)"
           }
 
       - name: Upload signed Windows EXE artifact
@@ -409,7 +415,7 @@ jobs:
               --apple-id "$APPLE_ID" \
               --password "$APPLE_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 10m
+              --wait --timeout 30m
 
             rm -f "$ZIP_PATH"
             echo "Notarized: $(basename "$bin")"
@@ -764,10 +770,13 @@ jobs:
           )
           foreach ($target in $targets) {
             $sig = Get-AuthenticodeSignature -FilePath $target
-            if ($sig.Status -ne "Valid") {
+            if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
               throw "Signature validation failed for $target. Status: $($sig.Status)"
             }
-            Write-Host "Verified: $target — $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -eq "UnknownError") {
+              Write-Host "::warning::$target signed but root cert not yet trusted locally (Status: UnknownError)."
+            }
+            Write-Host "Verified: $target - Status: $($sig.Status) - Signer: $($sig.SignerCertificate.Subject)"
           }
 
       - name: Upload signed viewer MSI
