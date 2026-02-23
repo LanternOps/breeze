@@ -72,6 +72,7 @@ CLAUDE.md
 *.png
 !docs/assets/breeze-logo.png
 !apps/viewer/src-tauri/icons/**/*.png
+!apps/helper/src-tauri/icons/**/*.png
 .worktrees/
 
 # Monitoring secrets (keep .gitkeep only)
