@@ -17,6 +17,7 @@ type UserListProps = {
   onInvite?: () => void;
   onEdit?: (user: User) => void;
   onRemove?: (user: User) => void;
+  onResendInvite?: (user: User) => void;
 };
 
 const statusStyles: Record<string, string> = {
@@ -26,7 +27,7 @@ const statusStyles: Record<string, string> = {
   pending: 'bg-muted text-muted-foreground'
 };
 
-export default function UserList({ users, onInvite, onEdit, onRemove }: UserListProps) {
+export default function UserList({ users, onInvite, onEdit, onRemove, onResendInvite }: UserListProps) {
   const [query, setQuery] = useState('');
 
   const filteredUsers = useMemo(() => {
@@ -110,6 +111,18 @@ export default function UserList({ users, onInvite, onEdit, onRemove }: UserList
                 <td className="px-4 py-3 text-muted-foreground">{user.lastLogin}</td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex items-center justify-end gap-2">
+                    {user.status === 'invited' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onResendInvite?.(user)}
+                          className="text-sm font-medium text-primary hover:underline"
+                        >
+                          Resend invite
+                        </button>
+                        <span className="text-muted-foreground">|</span>
+                      </>
+                    )}
                     <button
                       type="button"
                       onClick={() => onEdit?.(user)}
