@@ -7,6 +7,7 @@ export interface User {
   name: string;
   mfaEnabled: boolean;
   avatarUrl?: string;
+  requiresSetup?: boolean;
 }
 
 export interface Tokens {
@@ -298,6 +299,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   phoneLast4?: string;
   user?: User;
   tokens?: Tokens;
+  requiresSetup?: boolean;
   error?: string;
 }> {
   try {
@@ -324,10 +326,13 @@ export async function apiLogin(email: string, password: string): Promise<{
       };
     }
 
+    const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
+
     return {
       success: true,
-      user: data.user,
-      tokens: data.tokens
+      user,
+      tokens: data.tokens,
+      requiresSetup: !!data.requiresSetup
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -338,6 +343,7 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
   success: boolean;
   user?: User;
   tokens?: Tokens;
+  requiresSetup?: boolean;
   error?: string;
 }> {
   try {
@@ -354,10 +360,13 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
       return { success: false, error: data.error || 'MFA verification failed' };
     }
 
+    const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
+
     return {
       success: true,
-      user: data.user,
-      tokens: data.tokens
+      user,
+      tokens: data.tokens,
+      requiresSetup: !!data.requiresSetup
     };
   } catch {
     return { success: false, error: 'Network error' };

@@ -4,7 +4,7 @@ import { auditLogs } from '../db/schema';
 export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'schedule' | 'agent' | 'integration';
 
 export interface CreateAuditLogParams {
-  orgId: string;
+  orgId?: string | null;
   actorType?: 'user' | 'api_key' | 'agent' | 'system';
   actorId: string;
   actorEmail?: string;

@@ -7,7 +7,7 @@ export const initiatedByEnum = pgEnum('initiated_by_type', ['manual', 'ai', 'aut
 
 export const auditLogs = pgTable('audit_logs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
   timestamp: timestamp('timestamp').defaultNow().notNull(),
   actorType: actorTypeEnum('actor_type').notNull(),
   actorId: uuid('actor_id').notNull(),

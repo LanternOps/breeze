@@ -20,7 +20,9 @@ import { createHash } from 'crypto';
 import { ENABLE_2FA, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema } from './schemas';
 import {
   getClientRateLimitKey,
-  revokeCurrentRefreshTokenJti
+  revokeCurrentRefreshTokenJti,
+  resolveUserAuditOrgId,
+  writeAuthAudit
 } from './helpers';
 
 const { db } = dbModule;
@@ -135,6 +137,15 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
     console.error('[auth] Failed to revoke tokens after password reset:', error);
   }
 
+  // Audit log
+  const auditOrgId = await resolveUserAuditOrgId(userId);
+  writeAuthAudit(c, {
+    orgId: auditOrgId ?? undefined,
+    action: 'user.password.reset',
+    result: 'success',
+    userId,
+  });
+
   return c.json({ success: true, message: 'Password reset successfully' });
 });
 
@@ -183,6 +194,16 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   } catch (error) {
     console.error('[auth] Failed to revoke tokens after password change:', error);
   }
+
+  // Audit log
+  const changeAuditOrgId = await resolveUserAuditOrgId(auth.user.id);
+  writeAuthAudit(c, {
+    orgId: changeAuditOrgId ?? undefined,
+    action: 'user.password.change',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+  });
 
   return c.json({ success: true, message: 'Password changed successfully' });
 });

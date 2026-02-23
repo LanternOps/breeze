@@ -99,18 +99,24 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     return c.json({ error: 'Failed to activate account. Please try again.' }, 500);
   }
 
-  // Audit log
+  // Audit logs
   const auditOrgId = await resolveUserAuditOrgId(userId);
-  if (auditOrgId) {
-    writeAuthAudit(c, {
-      orgId: auditOrgId,
-      action: 'user.invite.accepted',
-      result: 'success',
-      userId: user.id,
-      email: user.email,
-      name: user.name,
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: auditOrgId ?? undefined,
+    action: 'user.invite.accepted',
+    result: 'success',
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+  });
+  writeAuthAudit(c, {
+    orgId: auditOrgId ?? undefined,
+    action: 'user.password.set',
+    result: 'success',
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+  });
 
   // Auto-login: resolve context and create tokens
   try {

@@ -118,7 +118,7 @@ export class EmailService {
         throw new Error('Resend transport is not initialized');
       }
 
-      await this.resend.emails.send({
+      const { error } = await this.resend.emails.send({
         from: sender,
         to,
         subject,
@@ -126,6 +126,9 @@ export class EmailService {
         text,
         reply_to: replyTo
       });
+      if (error) {
+        throw new Error(`Resend error: ${error.message}`);
+      }
       return;
     }
 

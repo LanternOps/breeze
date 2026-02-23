@@ -77,16 +77,14 @@ phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerify
   }
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
-  if (orgId) {
-    writeAuthAudit(c, {
-      orgId,
-      action: 'auth.phone.verify.requested',
-      result: 'success',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { phoneLast4: phoneNumber.slice(-4) }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.phone.verify.requested',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { phoneLast4: phoneNumber.slice(-4) }
+  });
 
   return c.json({ success: true, message: 'Verification code sent' });
 });
@@ -129,17 +127,15 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   const orgId = await resolveUserAuditOrgId(auth.user.id);
 
   if (!result.valid) {
-    if (orgId) {
-      writeAuthAudit(c, {
-        orgId,
-        action: 'auth.phone.verify.failed',
-        result: 'failure',
-        reason: 'invalid_code',
-        userId: auth.user.id,
-        email: auth.user.email,
-        details: { phoneLast4: phoneNumber.slice(-4) }
-      });
-    }
+    writeAuthAudit(c, {
+      orgId: orgId ?? undefined,
+      action: 'auth.phone.verify.failed',
+      result: 'failure',
+      reason: 'invalid_code',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { phoneLast4: phoneNumber.slice(-4) }
+    });
     return c.json({ error: 'Invalid verification code' }, 401);
   }
 
@@ -153,16 +149,14 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     })
     .where(eq(users.id, auth.user.id));
 
-  if (orgId) {
-    writeAuthAudit(c, {
-      orgId,
-      action: 'auth.phone.verify.confirmed',
-      result: 'success',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { phoneLast4: phoneNumber.slice(-4) }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.phone.verify.confirmed',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { phoneLast4: phoneNumber.slice(-4) }
+  });
 
   return c.json({ success: true, message: 'Phone number verified' });
 });
@@ -227,16 +221,14 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, async (c) => {
     .where(eq(users.id, auth.user.id));
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
-  if (orgId) {
-    writeAuthAudit(c, {
-      orgId,
-      action: 'auth.mfa.setup',
-      result: 'success',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { method: 'sms' }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.mfa.setup',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { method: 'sms' }
+  });
 
   return c.json({ success: true, recoveryCodes, message: 'SMS MFA enabled successfully' });
 });
@@ -312,15 +304,13 @@ phoneRoutes.post('/mfa/sms/send', zValidator('json', smsSendSchema), async (c) =
   }
 
   const orgId = await resolveUserAuditOrgId(userId);
-  if (orgId) {
-    writeAuthAudit(c, {
-      orgId,
-      action: 'auth.mfa.sms.sent',
-      result: 'success',
-      userId,
-      details: { phoneLast4: phoneNumber.slice(-4) }
-    });
-  }
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.mfa.sms.sent',
+    result: 'success',
+    userId,
+    details: { phoneLast4: phoneNumber.slice(-4) }
+  });
 
   return c.json({ success: true, message: 'SMS code sent' });
 });

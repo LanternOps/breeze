@@ -47,12 +47,6 @@ function isUuid(value: string | null | undefined): value is string {
 }
 
 export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
-  if (!event.orgId) {
-    if (process.env.NODE_ENV !== 'test') {
-      console.warn('[audit] Dropped event (no orgId):', event.action, event.resourceType);
-    }
-    return;
-  }
 
   const details = (event.details && typeof event.details === 'object')
     ? { ...event.details }
@@ -84,7 +78,7 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
   }
 
   createAuditLogAsync({
-    orgId: event.orgId,
+    orgId: event.orgId ?? undefined,
     actorType: resolvedActorType,
     actorId,
     actorEmail: event.actorEmail ?? undefined,
