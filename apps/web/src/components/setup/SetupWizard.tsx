@@ -20,8 +20,16 @@ export default function SetupWizard() {
   const [currentStep, setCurrentStep] = useState(0);
   const [stepsVisited, setStepsVisited] = useState([false, false, false]);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [isHydrated, setIsHydrated] = useState(false);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isLoading = useAuthStore((s) => s.isLoading);
   const user = useAuthStore((s) => s.user);
+
+  // Wait for zustand to rehydrate from localStorage before checking auth
+  useEffect(() => {
+    const timer = setTimeout(() => setIsHydrated(true), 100);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Restore step from localStorage
   useEffect(() => {
@@ -49,6 +57,8 @@ export default function SetupWizard() {
 
   // Auth guard: redirect non-setup users away
   useEffect(() => {
+    if (!isHydrated || isLoading) return;
+
     if (!isAuthenticated) {
       window.location.href = '/login';
       return;
@@ -74,7 +84,7 @@ export default function SetupWizard() {
     };
 
     checkSetup();
-  }, [isAuthenticated]);
+  }, [isHydrated, isLoading, isAuthenticated]);
 
   const goToNext = (stepIndex: number) => {
     setStepsVisited((prev) => {
