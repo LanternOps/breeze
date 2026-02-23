@@ -1,6 +1,11 @@
 ---
 import AuthLayout from '../layouts/AuthLayout.astro';
 import PartnerRegisterPage from '../components/auth/PartnerRegisterPage';
+import { ENABLE_REGISTRATION } from '../lib/featureFlags';
+
+if (!ENABLE_REGISTRATION) {
+  return Astro.redirect('/login?reason=registration-disabled', 302);
+}
 ---
 
 <AuthLayout title="Register Your Company">

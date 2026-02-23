@@ -4,8 +4,16 @@ import MFAVerifyForm from './MFAVerifyForm';
 import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode } from '../../stores/auth';
 import type { MfaMethod } from '../../stores/auth';
 
+function getRegistrationDisabledNotice(): string | undefined {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('reason') === 'registration-disabled') {
+    return 'New registrations are currently disabled. Please contact your administrator.';
+  }
+}
+
 export default function LoginPage() {
   const [error, setError] = useState<string>();
+  const registrationNotice = getRegistrationDisabledNotice();
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string>();
@@ -101,10 +109,17 @@ export default function LoginPage() {
   }
 
   return (
-    <LoginForm
-      onSubmit={handleLogin}
-      errorMessage={error}
-      loading={loading}
-    />
+    <>
+      {registrationNotice && (
+        <div className="mb-4 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200">
+          {registrationNotice}
+        </div>
+      )}
+      <LoginForm
+        onSubmit={handleLogin}
+        errorMessage={error}
+        loading={loading}
+      />
+    </>
   );
 }

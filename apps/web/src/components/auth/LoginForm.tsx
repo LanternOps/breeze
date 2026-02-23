@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { ENABLE_REGISTRATION } from '../../lib/featureFlags';
 
 const loginSchema = z.object({
   email: z.string().email('Enter a valid email address'),
@@ -97,14 +98,16 @@ export default function LoginForm({
         {isLoading ? 'Signing in...' : submitLabel}
       </button>
 
-      <div className="space-y-2 text-center text-sm text-muted-foreground">
-        <p>
-          New here?{' '}
-          <a href="/register-partner" className="font-medium text-primary hover:underline">
-            Register your company
-          </a>
-        </p>
-      </div>
+      {ENABLE_REGISTRATION && (
+        <div className="space-y-2 text-center text-sm text-muted-foreground">
+          <p>
+            New here?{' '}
+            <a href="/register-partner" className="font-medium text-primary hover:underline">
+              Register your company
+            </a>
+          </p>
+        </div>
+      )}
     </form>
   );
 }

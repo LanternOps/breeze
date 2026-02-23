@@ -1,4 +1,10 @@
 ---
+import { ENABLE_REGISTRATION } from '../lib/featureFlags';
+
+if (!ENABLE_REGISTRATION) {
+  return Astro.redirect('/login?reason=registration-disabled', 302);
+}
+
 // Redirect to partner registration — standalone registration is not supported
 return Astro.redirect('/register-partner', 301);
 ---
