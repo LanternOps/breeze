@@ -66,6 +66,10 @@ COPY --from=builder --chown=hono:nodejs /app/packages ./packages
 
 # Copy Drizzle migration files for auto-migrate on startup
 COPY --from=builder --chown=hono:nodejs /app/apps/api/drizzle ./apps/api/drizzle
+# Copy manual SQL migration files
+COPY --from=builder --chown=hono:nodejs /app/apps/api/src/db/migrations ./apps/api/db/migrations
+# Copy full schema dump for fresh database bootstrap
+COPY --from=builder --chown=hono:nodejs /app/apps/api/src/db/full-schema.sql ./apps/api/db/full-schema.sql
 
 # Run the API from its workspace path so module resolution uses apps/api/node_modules first.
 WORKDIR /app/apps/api
