@@ -13,6 +13,13 @@ type InviteFormValues = {
   orgIds?: string;
 };
 
+type Toast = {
+  id: string;
+  type: 'success' | 'warning' | 'error';
+  message: string;
+  inviteUrl?: string;
+};
+
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
@@ -21,6 +28,15 @@ export default function UsersPage() {
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const addToast = useCallback((type: Toast['type'], message: string, inviteUrl?: string) => {
+    setToasts(prev => [...prev, { id: Date.now().toString(), type, message, inviteUrl }]);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -90,6 +106,34 @@ export default function UsersPage() {
     setModalMode('remove');
   };
 
+  const handleResendInvite = async (user: User) => {
+    try {
+      const response = await fetchWithAuth('/users/resend-invite', {
+        method: 'POST',
+        body: JSON.stringify({ userId: user.id })
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || 'Failed to resend invitation');
+      }
+
+      const body = await response.json().catch(() => null);
+
+      if (body?.inviteEmailSent === false) {
+        addToast(
+          'warning',
+          `Invite resent for ${user.email} but the email could not be sent. Copy the invite link to share manually.`,
+          body.inviteUrl
+        );
+      } else {
+        addToast('success', `Invitation resent to ${user.email}`);
+      }
+    } catch (err) {
+      addToast('error', err instanceof Error ? err.message : 'Failed to resend invitation');
+    }
+  };
+
   const handleCloseModal = () => {
     setModalMode('closed');
     setSelectedUser(null);
@@ -125,10 +169,22 @@ export default function UsersPage() {
         throw new Error(body?.error || 'Failed to send invitation');
       }
 
+      const body = await response.json().catch(() => null);
+
       await fetchUsers();
       handleCloseModal();
+
+      if (body?.inviteEmailSent === false) {
+        addToast(
+          'warning',
+          `Invite created for ${values.email} but the email could not be sent. Copy the invite link to share manually.`,
+          body.inviteUrl
+        );
+      } else {
+        addToast('success', `Invitation sent to ${values.email}`);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      addToast('error', err instanceof Error ? err.message : 'Failed to send invitation');
     } finally {
       setSubmitting(false);
     }
@@ -223,6 +279,7 @@ export default function UsersPage() {
         onInvite={handleInvite}
         onEdit={handleEdit}
         onRemove={handleRemove}
+        onResendInvite={handleResendInvite}
       />
 
       {/* Invite Modal */}
@@ -341,6 +398,65 @@ export default function UsersPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Toast notifications */}
+      {toasts.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-md">
+          {toasts.map(toast => (
+            <div
+              key={toast.id}
+              className={`relative rounded-lg px-4 py-3 pr-10 shadow-lg ${
+                toast.type === 'success'
+                  ? 'bg-green-600 text-white'
+                  : toast.type === 'warning'
+                    ? 'border border-yellow-500/40 bg-yellow-50 text-yellow-900 dark:bg-yellow-950 dark:text-yellow-100'
+                    : 'bg-destructive text-destructive-foreground'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => dismissToast(toast.id)}
+                className={`absolute top-2 right-2 rounded p-1 transition hover:opacity-70 ${
+                  toast.type === 'warning'
+                    ? 'text-yellow-700 dark:text-yellow-300'
+                    : 'text-current'
+                }`}
+                aria-label="Dismiss"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                  <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                </svg>
+              </button>
+              <p className="text-sm font-medium">{toast.message}</p>
+              {toast.inviteUrl && (
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={toast.inviteUrl}
+                    className="min-w-0 flex-1 rounded border border-yellow-400/50 bg-white/80 px-2 py-1 text-xs text-yellow-900 dark:bg-black/20 dark:text-yellow-100"
+                    onFocus={e => e.target.select()}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(toast.inviteUrl!);
+                        const btn = document.getElementById(`copy-btn-${toast.id}`);
+                        if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy link'; }, 2000); }
+                      } catch { /* clipboard not available */ }
+                    }}
+                    id={`copy-btn-${toast.id}`}
+                    className="shrink-0 rounded bg-yellow-600 px-2 py-1 text-xs font-medium text-white transition hover:bg-yellow-700"
+                  >
+                    Copy link
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
