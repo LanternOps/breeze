@@ -1,4 +1,10 @@
 ---
+const raw = import.meta.env.PUBLIC_ENABLE_REGISTRATION;
+const enabled = raw === undefined || raw === '' || ['1','true','yes','on'].includes(raw.trim().toLowerCase());
+if (!enabled) {
+  return Astro.redirect('/login', 302);
+}
+
 // Redirect to partner registration — standalone registration is not supported
 return Astro.redirect('/register-partner', 301);
 ---

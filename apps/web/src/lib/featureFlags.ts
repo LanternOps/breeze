@@ -8,3 +8,8 @@ export const ENABLE_ENDPOINT_AV_FEATURES = parseBoolean(
   import.meta.env.PUBLIC_ENABLE_ENDPOINT_AV_FEATURES,
   false
 );
+
+export const ENABLE_REGISTRATION = parseBoolean(
+  import.meta.env.PUBLIC_ENABLE_REGISTRATION,
+  true
+);

@@ -1,6 +1,12 @@
 ---
 import AuthLayout from '../layouts/AuthLayout.astro';
 import PartnerRegisterPage from '../components/auth/PartnerRegisterPage';
+
+const raw = import.meta.env.PUBLIC_ENABLE_REGISTRATION;
+const enabled = raw === undefined || raw === '' || ['1','true','yes','on'].includes(raw.trim().toLowerCase());
+if (!enabled) {
+  return Astro.redirect('/login', 302);
+}
 ---
 
 <AuthLayout title="Register Your Company">
