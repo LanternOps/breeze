@@ -10,6 +10,11 @@ systemRoutes.use('*', authMiddleware);
 
 // GET /system/config-status — read-only view of env-driven feature status (no secrets)
 systemRoutes.get('/config-status', async (c) => {
+  const auth = c.get('auth');
+  if (auth.scope !== 'partner') {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+
   const env = process.env;
 
   // Email provider detection
@@ -54,10 +59,15 @@ systemRoutes.get('/config-status', async (c) => {
 systemRoutes.post('/setup-complete', async (c) => {
   const auth = c.get('auth');
 
-  await db
-    .update(users)
-    .set({ setupCompletedAt: new Date(), updatedAt: new Date() })
-    .where(eq(users.id, auth.user.id));
+  try {
+    await db
+      .update(users)
+      .set({ setupCompletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, auth.user.id));
 
-  return c.json({ success: true });
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('[system] Failed to mark setup complete:', error);
+    return c.json({ error: 'Failed to complete setup' }, 500);
+  }
 });

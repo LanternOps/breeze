@@ -66,7 +66,9 @@ export default function SetupWizard() {
           }
         }
       } catch {
-        // If check fails, let them continue
+        // API check failed — redirect to home rather than allowing unauthorized wizard access
+        window.location.href = '/';
+        return;
       }
       setCheckingAuth(false);
     };
@@ -86,13 +88,13 @@ export default function SetupWizard() {
   const handleSkipAll = async () => {
     try {
       await fetchWithAuth('/system/setup-complete', { method: 'POST' });
-    } catch {
-      // ignore
+    } catch (err) {
+      console.warn('[SetupWizard] Failed to mark setup complete:', err);
     }
     try {
       localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.warn('[SetupWizard] Failed to clear localStorage:', err);
     }
     window.location.href = '/';
   };

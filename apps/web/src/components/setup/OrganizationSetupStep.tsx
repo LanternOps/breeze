@@ -30,27 +30,43 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
   const loadOrgData = async () => {
     setLoading(true);
     try {
+      const warnings: string[] = [];
+
       // Fetch partner info
       const partnerRes = await fetchWithAuth('/partner/me');
       let partner: OrgData['partner'];
       if (partnerRes.ok) {
-        partner = await partnerRes.json();
+        try { partner = await partnerRes.json(); } catch { warnings.push('Failed to parse partner data'); }
+      } else {
+        warnings.push('Could not load partner info');
       }
 
       // Fetch organizations
       const orgsRes = await fetchWithAuth('/orgs/organizations');
       let organizations: OrgData['organizations'] = [];
       if (orgsRes.ok) {
-        const orgsData = await orgsRes.json();
-        organizations = orgsData.data || orgsData || [];
+        try {
+          const orgsData = await orgsRes.json();
+          organizations = orgsData.data || orgsData || [];
+        } catch { warnings.push('Failed to parse organization data'); }
+      } else {
+        warnings.push('Could not load organizations');
       }
 
       // Fetch sites
       const sitesRes = await fetchWithAuth('/orgs/sites');
       let sites: OrgData['sites'] = [];
       if (sitesRes.ok) {
-        const sitesData = await sitesRes.json();
-        sites = sitesData.data || sitesData || [];
+        try {
+          const sitesData = await sitesRes.json();
+          sites = sitesData.data || sitesData || [];
+        } catch { warnings.push('Failed to parse site data'); }
+      } else {
+        warnings.push('Could not load sites');
+      }
+
+      if (warnings.length > 0) {
+        setError(`Some data could not be loaded: ${warnings.join('; ')}`);
       }
 
       setOrgData({ partner, organizations, sites });
@@ -78,8 +94,9 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           body: JSON.stringify({ name: partnerName })
         });
         if (!res.ok) {
-          const data = await res.json();
-          setError(data.error || 'Failed to update partner name');
+          let msg = 'Failed to update partner name';
+          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+          setError(msg);
           setSaving(false);
           return;
         }
@@ -93,8 +110,9 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           body: JSON.stringify({ name: orgName })
         });
         if (!res.ok) {
-          const data = await res.json();
-          setError(data.error || 'Failed to update organization name');
+          let msg = 'Failed to update organization name';
+          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+          setError(msg);
           setSaving(false);
           return;
         }
@@ -108,8 +126,9 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           body: JSON.stringify({ name: siteName })
         });
         if (!res.ok) {
-          const data = await res.json();
-          setError(data.error || 'Failed to update site name');
+          let msg = 'Failed to update site name';
+          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+          setError(msg);
           setSaving(false);
           return;
         }

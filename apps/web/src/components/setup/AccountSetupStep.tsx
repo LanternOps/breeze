@@ -43,11 +43,14 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
           body: JSON.stringify({ email })
         });
         if (!emailRes.ok) {
-          const data = await emailRes.json();
-          setError(data.error || 'Failed to update email');
+          let msg = 'Failed to update email';
+          try { const data = await emailRes.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+          setError(msg);
           setLoading(false);
           return;
         }
+        // Update auth store so downstream requests use new email
+        useAuthStore.getState().updateUser({ email });
       }
 
       // Change password if provided
@@ -57,8 +60,9 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
           body: JSON.stringify({ currentPassword, newPassword })
         });
         if (!pwRes.ok) {
-          const data = await pwRes.json();
-          setError(data.error || 'Failed to change password');
+          let msg = 'Failed to change password';
+          try { const data = await pwRes.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+          setError(msg);
           setLoading(false);
           return;
         }
@@ -85,6 +89,7 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
   };
 
   const hasChanges = !!(email || (currentPassword && newPassword));
+  const partialPassword = !!(currentPassword ? !newPassword : newPassword);
 
   return (
     <div className="space-y-6">
@@ -166,6 +171,12 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
             </button>
           </div>
         </div>
+
+        {partialPassword && (
+          <div className="rounded-md border border-yellow-500/50 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-400">
+            Both current and new password are required to change your password.
+          </div>
+        )}
 
         {error && (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">

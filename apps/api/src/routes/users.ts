@@ -12,7 +12,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { getEmailService } from '../services/email';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey } from './auth/helpers';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, userRequiresSetup } from './auth/helpers';
 
 export const userRoutes = new Hono();
 
@@ -322,7 +322,7 @@ userRoutes.get('/me', async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
-  const requiresSetup = !user.setupCompletedAt && !user.passwordChangedAt && user.email === 'admin@breeze.local';
+  const requiresSetup = userRequiresSetup(user);
 
   return c.json({
     ...user,
@@ -351,7 +351,7 @@ userRoutes.patch('/me', async (c) => {
   }
 
   if (body.email && typeof body.email === 'string') {
-    const normalizedEmail = body.email.toLowerCase().trim();
+    const normalizedEmail = body.email.toLowerCase().trim().slice(0, 255);
     // Basic email format validation
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return c.json({ error: 'Invalid email format' }, 400);
@@ -360,7 +360,7 @@ userRoutes.patch('/me', async (c) => {
     const [existing] = await db
       .select({ id: users.id })
       .from(users)
-      .where(and(eq(users.email, normalizedEmail)))
+      .where(eq(users.email, normalizedEmail))
       .limit(1);
     if (existing && existing.id !== auth.user.id) {
       return c.json({ error: 'Email already in use' }, 409);

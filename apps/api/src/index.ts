@@ -81,7 +81,6 @@ import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
-import { systemRoutes } from './routes/system';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -280,15 +279,42 @@ app.route('/metrics', metricsRoutes);
 // API routes
 const api = new Hono();
 
-// Blocklist: routes that should NOT get fallback audit events.
-// Everything else under /api/v1/ with a mutating method WILL be audited.
-const FALLBACK_AUDIT_EXCLUDE_PREFIXES = [
-  '/docs',          // read-only OpenAPI docs
-  '/search',        // read-only search
-  '/metrics',       // read-only Prometheus metrics
-  '/agent-ws',      // WebSocket upgrade (not HTTP mutations)
-  '/desktop-ws',    // WebSocket upgrade
-  '/dev',           // local dev-only push routes
+const FALLBACK_AUDIT_PREFIXES = [
+  '/alerts',
+  '/snmp',
+  '/agents',
+  '/backup',
+  '/script-library',
+  '/portal',
+  '/analytics',
+  '/alert-templates',
+  '/software',
+  '/software-policies',
+  '/maintenance',
+  '/psa',
+  '/mobile',
+  '/discovery',
+  '/monitors',
+  '/monitoring',
+  '/network',
+  '/sso',
+  '/reports',
+  '/logs',
+  '/filters',
+  '/ai',
+  '/notifications',
+  '/custom-fields',
+  '/access-reviews',
+  '/mcp',
+  '/audit-logs',
+  '/agent-versions',
+  '/viewers',
+  '/devices',
+  '/security',
+  '/system-tools',
+  '/playbooks',
+  '/dns-security',
+  '/software-inventory'
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
@@ -312,9 +338,7 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/processes\/[^/]+\/kill$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/value$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/key$/,
-  /^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/,
-  // AI chat streaming is high-volume — exclude from fallback audit
-  /^\/api\/v1\/helper\/sessions\/[^/]+\/messages$/,
+  /^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/
 ];
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -362,10 +386,8 @@ function fallbackAuditEligible(path: string): boolean {
   if (FALLBACK_AUDIT_EXCLUDE_PATHS.some((pattern) => pattern.test(path))) {
     return false;
   }
-  if (FALLBACK_AUDIT_EXCLUDE_PREFIXES.some((pfx) => path.startsWith(`/api/v1${pfx}`))) {
-    return false;
-  }
-  return path.startsWith('/api/v1/');
+
+  return FALLBACK_AUDIT_PREFIXES.some((prefix) => path.startsWith(`/api/v1${prefix}`));
 }
 
 async function resolveFallbackOrgId(c: Context, path: string): Promise<string | null> {
@@ -523,6 +545,10 @@ api.use('*', async (c, next) => {
   }
 
   const orgId = await resolveFallbackOrgId(c, path);
+  if (!orgId) {
+    return;
+  }
+
   const auth = c.get('auth') as { user?: { id?: string; email?: string }; orgId?: string | null } | undefined;
   const status = c.res.status;
 
@@ -626,7 +652,6 @@ api.route('/playbooks', playbookRoutes);
 api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
-api.route('/system', systemRoutes);
 
 app.route('/api/v1', api);
 

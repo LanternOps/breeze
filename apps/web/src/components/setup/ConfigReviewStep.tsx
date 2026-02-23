@@ -74,10 +74,10 @@ export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
       if (res.ok) {
         setConfig(await res.json());
       } else {
-        setError('Failed to load configuration status');
+        setError(`Failed to load configuration (HTTP ${res.status})`);
       }
     } catch {
-      setError('Failed to load configuration status');
+      setError('Unable to reach the server. Check your connection.');
     } finally {
       setLoading(false);
     }

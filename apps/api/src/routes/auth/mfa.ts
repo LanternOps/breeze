@@ -31,7 +31,8 @@ import {
   resolveUserAuditOrgId,
   writeAuthAudit,
   auditUserLoginFailure,
-  auditLogin
+  auditLogin,
+  userRequiresSetup
 } from './helpers';
 
 const { db } = dbModule;
@@ -200,7 +201,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
     setRefreshTokenCookie(c, tokens.refreshToken);
 
-    const requiresSetup = !user.setupCompletedAt && !user.passwordChangedAt && user.email === 'admin@breeze.local';
+    const requiresSetup = userRequiresSetup(user);
 
     return c.json({
       user: {

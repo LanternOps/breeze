@@ -19,11 +19,13 @@ export default function SetupSummaryStep({ stepsVisited }: SetupSummaryStepProps
     try {
       const res = await fetchWithAuth('/system/setup-complete', { method: 'POST' });
       if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || 'Failed to complete setup');
+        let msg = 'Failed to complete setup';
+        try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
+        setError(msg);
         setLoading(false);
         return;
       }
+      try { localStorage.removeItem('breeze-setup-step'); } catch { /* ignore */ }
       window.location.href = '/';
     } catch {
       setError('An unexpected error occurred');

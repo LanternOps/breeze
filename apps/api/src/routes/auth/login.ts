@@ -31,7 +31,8 @@ import {
   revokeCurrentRefreshTokenJti,
   resolveCurrentUserTokenContext,
   auditUserLoginFailure,
-  auditLogin
+  auditLogin,
+  userRequiresSetup
 } from './helpers';
 
 const { db } = dbModule;
@@ -154,7 +155,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
 
   setRefreshTokenCookie(c, tokens.refreshToken);
 
-  const requiresSetup = !user.setupCompletedAt && !user.passwordChangedAt && user.email === 'admin@breeze.local';
+  const requiresSetup = userRequiresSetup(user);
 
   return c.json({
     user: {
