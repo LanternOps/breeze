@@ -45,7 +45,7 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Breeze">
         <Component Id="cmpBreezeAgentExe" Guid="*">
-          <File Id="filBreezeAgentExe" Source="$(var.AgentExePath)" KeyPath="yes" />
+          <File Id="filBreezeAgentExe" Name="breeze-agent.exe" Source="$(var.AgentExePath)" KeyPath="yes" />
           <ServiceInstall
             Id="svcInstallBreezeAgent"
             Name="BreezeAgent"

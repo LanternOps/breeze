@@ -1,0 +1,172 @@
+---
+title: First-Login Setup Wizard
+description: Guided setup wizard that walks new administrators through initial platform configuration on first login.
+sidebar:
+  order: 30
+  label: Setup Wizard
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The first-login setup wizard guides new Breeze administrators through essential platform configuration immediately after their initial login. It is a four-step interactive workflow that covers account security, organizational naming, environment review, and a completion summary. The wizard only appears for the seeded default admin account (`admin@breeze.local`) before they have changed their password or explicitly completed setup. Once finished, the user is redirected to the main dashboard and the wizard never appears again.
+
+The wizard is implemented as a React client-side component rendered at the `/setup` route. It communicates with the API to update the admin account, rename the default partner/organization/site, and read environment configuration status. All steps are individually skippable, and the entire wizard can be dismissed at any point.
+
+---
+
+## When the Wizard Appears
+
+The setup wizard is triggered by a specific set of conditions checked on every login and on the `/users/me` endpoint. The API evaluates the `userRequiresSetup` function, which returns `true` only when **all three** of the following are true:
+
+| Condition | Field | Value |
+|-----------|-------|-------|
+| Setup has not been completed | `setupCompletedAt` | `null` |
+| Password has never been changed | `passwordChangedAt` | `null` |
+| User is the seeded admin | `email` | `admin@breeze.local` |
+
+When a login response includes `requiresSetup: true`, the frontend redirects the user to `/setup`. The wizard component performs an additional server-side check via `GET /users/me` to confirm the flag before rendering.
+
+<Aside type="tip">
+  The wizard is exclusively for the initial seeded admin account. Users created through partner registration, invitations, or the user management API will never see the setup wizard, even on their first login.
+</Aside>
+
+---
+
+## Setup Steps
+
+The wizard presents four sequential steps. Each step (except the summary) has both a **Save & Continue** action and a **Skip** button.
+
+<Steps>
+1. **Account Security** -- Change the default admin email address and password. The form validates password strength (minimum 8 characters) and requires both the current and new password to process a change. If the password is changed, the wizard transparently re-authenticates the session. Updating the email calls `PATCH /users/me`; changing the password calls `POST /auth/change-password`.
+
+2. **Organization Naming** -- Rename the default partner (MSP), organization, and site that were created during initial seeding. The step loads current names from `GET /partner/me`, `GET /orgs/organizations`, and `GET /orgs/sites`, then issues `PATCH` requests for any names that differ from the defaults. This step customizes the multi-tenant hierarchy to match the administrator's actual company structure.
+
+3. **Configuration Review** -- A read-only dashboard that displays the current environment configuration by calling `GET /system/config-status`. This step does not modify any settings. It shows status indicators across four categories:
+
+   | Category | Checks |
+   |----------|--------|
+   | Email | Provider configured (Resend, SMTP, or Mailgun), sender address |
+   | Domain | Public URL set, Breeze domain configured, CORS origins |
+   | Security | HTTPS forced, MFA enabled, registration open/closed |
+   | Integrations | SMS (Twilio), AI (Anthropic/OpenAI), mTLS (Cloudflare), Storage (S3), Sentry |
+
+   Each item displays a green checkmark or yellow warning badge indicating whether the feature is configured.
+
+4. **Summary** -- Lists all previous steps with their completion status (completed or skipped). Clicking **Go to Dashboard** calls `POST /system/setup-complete`, which sets the `setupCompletedAt` timestamp on the user record, clears the localStorage progress key, and redirects to `/`.
+</Steps>
+
+---
+
+## Prerequisites
+
+The setup wizard requires the following to be in place before it can run:
+
+- **Seeded admin account** -- The default `admin@breeze.local` user must exist in the database. This is created during initial database seeding.
+- **Default partner, organization, and site** -- The Organization step expects at least one partner, one organization, and one site to already exist. These are created by the seed script that runs on first deployment.
+- **API server running** -- The wizard communicates with the API for all data loading and mutations.
+- **Redis available** -- Required for rate limiting on the password change endpoint.
+- **Authentication** -- The user must be logged in. Unauthenticated visitors to `/setup` are redirected to `/login`.
+
+<Aside type="caution">
+  If the API is unreachable during the Configuration Review step, the wizard displays an error message but still allows the user to continue. The review step is purely informational and does not block progress.
+</Aside>
+
+---
+
+## Skipping and Resuming
+
+### Skipping Individual Steps
+
+Every step except the Summary has a **Skip** button that advances to the next step without making any API calls. Skipped steps are tracked internally and displayed as "Skipped" on the Summary page. No data is modified when a step is skipped.
+
+### Skipping the Entire Wizard
+
+A **Skip Setup** link appears below the step card on all steps except the Summary. Clicking it calls `POST /system/setup-complete` to mark setup as done, clears the localStorage progress key, and redirects to the dashboard. The wizard will not appear again.
+
+### Resuming After Interruption
+
+The wizard persists the current step index to `localStorage` under the key `breeze-setup-step`. If the browser is closed or the user navigates away, reopening `/setup` restores the last active step. This state is cleared when the wizard is completed or skipped.
+
+<Aside>
+  If the user logs out before completing the wizard, they will be redirected to `/setup` again on their next login as long as `requiresSetup` is still `true`. The localStorage key ensures they resume from where they left off.
+</Aside>
+
+---
+
+## API Reference
+
+The setup wizard uses the following API endpoints:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/users/me` | Check `requiresSetup` flag to determine if wizard should render |
+| `PATCH` | `/users/me` | Update the admin email address (Account step) |
+| `POST` | `/auth/change-password` | Change the admin password (Account step) |
+| `POST` | `/auth/login` | Re-authenticate after password change (Account step, transparent) |
+| `GET` | `/partner/me` | Load current partner name (Organization step) |
+| `GET` | `/orgs/organizations` | Load current organization names (Organization step) |
+| `GET` | `/orgs/sites` | Load current site names (Organization step) |
+| `PATCH` | `/orgs/partners/:id` | Rename the partner (Organization step) |
+| `PATCH` | `/orgs/organizations/:id` | Rename the organization (Organization step) |
+| `PATCH` | `/orgs/sites/:id` | Rename the site (Organization step) |
+| `GET` | `/system/config-status` | Read environment configuration status (Config Review step) |
+| `POST` | `/system/setup-complete` | Mark setup as finished, sets `setupCompletedAt` on user record |
+
+### `POST /system/setup-complete`
+
+Sets `setupCompletedAt` and `updatedAt` timestamps on the authenticated user's record. Requires JWT authentication. Returns `{ success: true }` on success or `{ error: "Failed to complete setup" }` with a `500` status on failure.
+
+### `GET /system/config-status`
+
+Returns a JSON object describing environment-driven feature status. Requires `partner` scope. No secrets are exposed -- only boolean flags and non-sensitive identifiers (e.g., email provider name, domain, whether integrations are configured).
+
+**Response shape:**
+
+```json
+{
+  "email": {
+    "configured": true,
+    "provider": "resend",
+    "from": "noreply@example.com"
+  },
+  "domain": {
+    "breezeDomain": "breeze.example.com",
+    "publicUrl": "https://app.example.com",
+    "corsOrigins": "https://app.example.com"
+  },
+  "security": {
+    "httpsForced": true,
+    "mfaEnabled": true,
+    "registrationEnabled": false
+  },
+  "integrations": {
+    "sms": false,
+    "ai": true,
+    "mtls": false,
+    "storage": true,
+    "sentry": false
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+**The wizard does not appear after first login.**
+The wizard only activates for the seeded `admin@breeze.local` account that has never changed its password and has not completed setup. If you logged in with a different user account, or if the admin password was changed via a database migration or API call before the first interactive login, the wizard will not trigger. Verify the user record: `setupCompletedAt` must be `null`, `passwordChangedAt` must be `null`, and `email` must be exactly `admin@breeze.local`.
+
+**The wizard keeps appearing after completion.**
+The `POST /system/setup-complete` call may have failed. Check the API logs for errors on the `/system/setup-complete` endpoint. Verify that the database is writable and that the `setup_completed_at` column exists on the `users` table. You can manually mark setup as complete by running: `UPDATE users SET setup_completed_at = NOW() WHERE email = 'admin@breeze.local';`
+
+**Organization step shows "Some data could not be loaded".**
+The wizard attempts to fetch partner, organization, and site data in parallel. If any of these requests fail (e.g., the user lacks the required scope, or the seed data was not created), warnings are displayed but the step remains usable. Verify that the default partner, organization, and site records exist in the database.
+
+**Configuration Review shows all items as "Not configured".**
+The config review step reads environment variables from the API process. If the API server was started without the expected environment variables (e.g., `RESEND_API_KEY`, `PUBLIC_APP_URL`, `CLOUDFLARE_API_TOKEN`), those features will show as unconfigured. This is expected in development environments. Review the environment variables section in the deployment documentation.
+
+**Password change fails with "Failed to change password".**
+The password change requires both the current password and the new password. Ensure the current password matches the seeded admin password. The new password must be at least 8 characters and pass the password strength check (uppercase, lowercase, digit, and special character are scored but not individually required). If Redis is unavailable, the rate limiter will block the request with a `503` response.
+
+**Browser shows a loading spinner indefinitely.**
+The wizard performs an auth check on mount via `GET /users/me`. If this request hangs (e.g., API server is down or CORS is misconfigured), the spinner will never resolve. Check that the API server is running and that CORS allows requests from the frontend origin. Open the browser developer console for network errors.

@@ -1,6 +1,6 @@
 ---
 title: AI Features
-description: AI Risk Engine, Fleet Orchestration Brain, and AI Device Context Memory.
+description: AI Risk Engine, Fleet Orchestration Brain, AI Device Context Memory, Helper AI Chat, and cost tracking.
 sidebar:
   order: 2
   label: AI Features
@@ -8,11 +8,16 @@ sidebar:
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Breeze includes a built-in AI assistant that can query your fleet, diagnose device issues, and take action on your behalf. Three features extend and govern this capability:
+Breeze includes a built-in AI assistant powered by the Claude Agent SDK that can query your fleet, diagnose device issues, and take action on your behalf. The assistant runs as a managed agent with a query loop — it receives your question, plans a sequence of tool calls, executes them against live fleet data, and returns a synthesized answer. All tool executions are governed by a tiered approval system with full audit logging and per-tool rate limits.
+
+Six capabilities extend and govern this system:
 
 - **AI Risk Engine** — governance dashboard for controlling and auditing AI-assisted operations
 - **Fleet Orchestration Brain** — command center for fleet-scale AI-driven management
 - **AI Device Context Memory** — persistent per-device memory that the AI carries across conversations
+- **Helper AI Chat** — end-user-facing AI assistant in the Breeze Helper tray app
+- **AI Cost Tracking** — per-session and per-organisation usage and cost monitoring
+- **AI Input Sanitization** — guardrails that validate and sanitize all AI inputs before execution
 
 ---
 
@@ -177,6 +182,69 @@ The AI uses three tools internally to manage context:
 <Aside type="note">
   Direct REST endpoints for device context are not yet available. Context is currently managed exclusively through the AI assistant.
 </Aside>
+
+---
+
+## Helper AI Chat
+
+The Breeze Helper tray application includes an AI chat interface designed for end users (not just administrators). When enabled at the organisation level, end users can ask the Helper questions about their device, troubleshoot issues, and request common IT actions — all without opening a support ticket.
+
+### How it works
+
+The Helper AI agent runs on the API server using a filtered tool set. Not all AI tools are available to the Helper — the `helperToolFilter` service restricts access to safe, device-scoped operations appropriate for end users.
+
+| Capability | Description |
+|---|---|
+| Device diagnostics | "Why is my computer slow?" — analyzes CPU, memory, disk, and boot data |
+| Vision troubleshooting | Captures a screenshot and uses AI vision to interpret error dialogs or UI issues |
+| Self-service actions | Common IT tasks like clearing temp files, restarting services, checking updates |
+| Computer control | AI can interact with the desktop to perform guided actions (Tier 3, requires approval) |
+
+### Organisation toggle
+
+Helper chat is controlled per organisation. Administrators can enable or disable it via organisation settings. The toggle is delivered to agents through the heartbeat response — when disabled, the Helper hides its chat interface.
+
+<Aside type="note">
+  Helper AI chat uses the same cost tracking and guardrail infrastructure as the main AI assistant. All tool executions from the Helper are audit-logged with `actorType: 'helper'`.
+</Aside>
+
+---
+
+## AI Cost Tracking
+
+Every AI session tracks token usage and estimated cost. The `aiCostTracker` service records input tokens, output tokens, and total cost per session, per user, and per organisation.
+
+### Viewing costs
+
+Navigate to **Settings → AI Usage** to view:
+
+| Metric | Description |
+|---|---|
+| Total sessions | Number of AI conversations |
+| Total tokens | Combined input + output tokens consumed |
+| Estimated cost | Dollar cost based on Claude API pricing |
+| Per-user breakdown | Token usage grouped by user |
+| Per-session detail | Individual session cost and token counts |
+
+Cost data is stored in the `aiSessions` and `aiMessages` tables alongside the conversation history.
+
+<Aside type="tip">
+  Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat.
+</Aside>
+
+---
+
+## AI Input Sanitization
+
+The `aiInputSanitizer` service validates all user inputs before they reach the AI agent. This layer prevents prompt injection, command injection, and other adversarial inputs from being passed to AI tool calls.
+
+Sanitization includes:
+- Input length limits
+- Pattern detection for known injection techniques
+- Escaping of shell metacharacters in tool arguments
+- Validation against Zod schemas defined in `aiToolSchemas.ts`
+
+All rejected inputs are logged in the security event trail accessible via the Risk Engine dashboard.
 
 ---
 

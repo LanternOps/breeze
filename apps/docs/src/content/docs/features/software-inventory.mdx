@@ -10,7 +10,11 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Software Inventory gives you a centralized view of every application installed across your fleet. It combines three interconnected systems: a **software catalog** that defines the applications your organization manages, **software deployments** that push install, update, and uninstall actions to devices, and a **per-device inventory** that records what is actually installed on each endpoint.
 
-Together, these systems let you answer questions like "which devices are running an outdated version of Chrome?", "who installed Zoom on that Mac?", and "can I silently uninstall 7-Zip from every Windows endpoint in the Seattle site?" -- all from a single API surface.
+Together, these systems let you answer questions like "which devices are running an outdated version of Chrome?", "who installed Zoom on that Mac?", and "can I silently uninstall 7-Zip from every Windows endpoint in the Seattle site?" — all from a single API surface.
+
+<Aside type="tip">
+  For enforcement-based software management (allowlists and blocklists), see [Software Policies](/features/software-policies/). For patching and update management, see [Patch Management](/features/patch-management/).
+</Aside>
 
 <Aside type="caution" title="Implementation Status">
   The **software catalog**, **deployments**, and **inventory** endpoints under `/software/*` currently use an in-memory data store and do not persist across API restarts. The **device-specific endpoint** (`GET /devices/:id/software`) is the exception — it queries the `software_inventory` database table directly via Drizzle ORM and reflects persisted data. The database schema tables documented below are defined but not yet wired to the `/software/*` route handlers.
@@ -539,6 +543,30 @@ All software endpoints require authentication and are scoped to `organization`, 
 | `GET` | `/software/inventory/:deviceId` | Get full software inventory for a specific device. |
 | `POST` | `/software/inventory/:deviceId/:softwareId/uninstall` | Queue an uninstall for a specific software on a specific device. |
 | `GET` | `/devices/:id/software` | Get installed software list for a device (paginated, from database). |
+
+---
+
+## Winget Integration (Windows)
+
+On Windows devices, the Breeze agent can use the **Windows Package Manager (winget)** as a software provider for installations, updates, and uninstalls. Winget operations run through the **user helper IPC** channel because winget requires a user session context — it cannot run directly from a Windows service (Session 0).
+
+### How it works
+
+<Steps>
+
+1. A software deployment targeting a Windows device specifies a winget package ID (e.g., `Google.Chrome`).
+
+2. The agent service sends the operation to the user helper process via IPC.
+
+3. The user helper executes `winget install`, `winget upgrade`, or `winget uninstall` in the user's session.
+
+4. Output and exit codes are relayed back through IPC to the agent, which reports the result to the API.
+
+</Steps>
+
+<Aside type="caution">
+  Winget requires the user helper to be running in an active user session. If no user is logged in, winget operations are deferred until a session becomes available. The agent falls back to direct MSI/EXE-based installation when winget is unavailable.
+</Aside>
 
 ---
 

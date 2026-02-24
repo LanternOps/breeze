@@ -1,0 +1,408 @@
+---
+title: Partner Management
+description: Partner self-registration, multi-tenant partner hierarchy, feature flag controls, and partner administration.
+sidebar:
+  order: 10
+  label: Partner Management
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Partners are the top-level tenants in Breeze's multi-tenant hierarchy. A partner typically represents a Managed Service Provider (MSP), an enterprise IT department, or an internal team. Partners own organizations, which in turn contain sites, device groups, and devices. Breeze supports both administrator-provisioned partners (created by system-scoped users) and self-service partner registration (where MSPs sign up directly through the web interface).
+
+Partner management encompasses the full lifecycle: registration, configuration, user association, organization management, and feature flag controls. This reference covers the self-registration flow, the partner hierarchy model, administrative operations, and the environment variables that govern partner-related features.
+
+---
+
+## Partner Hierarchy
+
+Breeze organizes all managed infrastructure into a strict tenant hierarchy. Partners sit at the top:
+
+```
+Partner (MSP)
+  +-- Organization (Customer)
+        +-- Site (Location)
+              +-- Device Group
+                    +-- Device
+```
+
+Every API query automatically scopes data to the caller's position in this hierarchy. A partner-scoped user can only access organizations they have been granted access to. Organization-scoped users can only see their own organization and its sites. System-scoped users have unrestricted access across all partners.
+
+### Partner Types
+
+| Type | Description |
+|------|-------------|
+| `msp` | Managed Service Provider managing multiple customer organizations. This is the default type assigned during self-registration. |
+| `enterprise` | A single enterprise managing its own infrastructure. |
+| `internal` | Internal IT team or development environment. |
+
+### Plan Tiers
+
+| Plan | Description |
+|------|-------------|
+| `free` | Free tier with default limits. Assigned during self-registration. |
+| `pro` | Professional tier with expanded limits. |
+| `enterprise` | Enterprise tier with advanced features. |
+| `unlimited` | No enforced limits. |
+
+### Organization Access Levels
+
+Partner users are associated with their partner through the `partner_users` table. Each association includes an `orgAccess` field that controls which organizations the user can see:
+
+| Access Level | Behavior |
+|-------------|----------|
+| `all` | User can access every organization under the partner. This is the default for the admin user created during self-registration. |
+| `selected` | User can only access organizations whose IDs are listed in the `orgIds` array on the `partner_users` record. |
+| `none` | User cannot access any organizations. Useful for partner-level users who only manage partner settings. |
+
+---
+
+## Self-Registration
+
+Partner self-registration allows MSPs and IT companies to create their own Breeze account without administrator intervention. The registration flow creates a partner, an admin role, a user account, and links them together in a single operation.
+
+### Registration Flow
+
+<Steps>
+1. **User visits `/register-partner`** -- The frontend checks the `ENABLE_REGISTRATION` feature flag. If registration is disabled, the user is redirected to `/login?reason=registration-disabled`.
+
+2. **User fills out the registration form** -- Required fields are company name (min 2 characters), full name, email address, password (min 8 characters), password confirmation, and terms of service acceptance.
+
+3. **Frontend submits to `POST /auth/register-partner`** -- The API validates the request body against the `registerPartnerSchema` Zod schema.
+
+4. **Rate limit check** -- The API enforces a limit of **3 registration attempts per IP address per hour** using the Redis-backed sliding window rate limiter. If the limit is exceeded, a `429` response is returned.
+
+5. **Password strength validation** -- The password is checked against the server-side strength rules. If it fails, a `400` response with the first error message is returned.
+
+6. **Email uniqueness check** -- The API checks if a user with the same email already exists. If so, it returns a generic success message to prevent email enumeration: `"If registration can proceed, you will receive next steps shortly."`
+
+7. **Slug generation** -- A URL-safe slug is derived from the company name by lowercasing, replacing non-alphanumeric characters with hyphens, and trimming to 50 characters. If the slug already exists, a numeric suffix is appended (up to 100 attempts).
+
+8. **Transaction: create partner, role, user, and association** -- The API creates four records:
+   - A **partner** with type `msp` and plan `free`
+   - A **Partner Admin role** with `scope: partner` and `isSystem: true`
+   - A **user** with the hashed password and `status: active`
+   - A **partner_users** association with `orgAccess: all`
+
+9. **JWT tokens issued** -- Access and refresh tokens are created with `scope: partner` and the new partner ID. The refresh token is set as an HTTP-only cookie.
+
+10. **Redirect to dashboard** -- The frontend stores the tokens and redirects the authenticated user. If this is the first-ever user in the system, the setup wizard may appear.
+</Steps>
+
+<Aside type="caution">
+  The self-registration endpoint does **not** use a database transaction wrapper. If user creation fails after the partner and role have been inserted, the API performs manual cleanup by deleting the role and partner records. In rare failure scenarios, orphaned records may remain and should be cleaned up manually.
+</Aside>
+
+### Registration Form Fields
+
+| Field | Type | Validation | Description |
+|-------|------|------------|-------------|
+| `companyName` | string | min 2, max 255 chars | The partner/company display name |
+| `name` | string | min 1, max 255 chars | The admin user's full name |
+| `email` | string | Valid email format | The admin user's email address |
+| `password` | string | min 8 chars, strength checked | The admin user's password |
+| `confirmPassword` | string | Must match password | Client-side only; not sent to API |
+| `acceptTerms` | boolean | Must be `true` | Terms of service acceptance |
+
+### Password Strength Indicator
+
+The registration form includes a client-side password strength meter that scores passwords on five criteria:
+
+| Criterion | Score |
+|-----------|-------|
+| At least 8 characters | +1 |
+| Contains uppercase letter | +1 |
+| Contains lowercase letter | +1 |
+| Contains digit | +1 |
+| Contains special character | +1 |
+
+| Score | Label |
+|-------|-------|
+| 0-1 | Too weak |
+| 2 | Weak |
+| 3 | Fair |
+| 4 | Good |
+| 5 | Strong |
+
+The server-side password check (`isPasswordStrong`) performs its own validation independently of the client-side indicator.
+
+---
+
+## Feature Flags
+
+### `ENABLE_REGISTRATION` / `ENABLE_PARTNER_REGISTRATION`
+
+Partner self-registration is controlled by an environment variable that can be set on both the API and the frontend.
+
+<Tabs>
+  <TabItem label="API (Server-side)">
+    The API reads `ENABLE_REGISTRATION` from the environment using the `envFlag` utility. When set to `false`, both `POST /auth/register` and `POST /auth/register-partner` return:
+
+    ```json
+    {
+      "error": "Registration is currently disabled",
+      "code": "REGISTRATION_DISABLED"
+    }
+    ```
+
+    **Default:** `true` (registration is enabled unless explicitly disabled).
+
+    ```bash
+    # Disable registration
+    ENABLE_REGISTRATION=false
+
+    # Enable registration (default)
+    ENABLE_REGISTRATION=true
+    ```
+
+    Accepted truthy values: `1`, `true`, `yes`, `on`
+    Accepted falsy values: `0`, `false`, `no`, `off`
+  </TabItem>
+  <TabItem label="Frontend (Client-side)">
+    The frontend reads `PUBLIC_ENABLE_REGISTRATION` via Astro's `import.meta.env`. When `false`, the `/register-partner` page issues a `302` redirect to `/login?reason=registration-disabled` before the page even renders.
+
+    ```bash
+    # Disable registration on the frontend
+    PUBLIC_ENABLE_REGISTRATION=false
+    ```
+
+    **Default:** `true`.
+
+    The login page also conditionally shows or hides the "Register" link based on this flag.
+  </TabItem>
+</Tabs>
+
+<Aside>
+  Both the API and frontend flags should be set consistently. If the frontend allows access to the registration page but the API has registration disabled, the user will see the form but receive an error on submission. Set `ENABLE_REGISTRATION=false` on the API **and** `PUBLIC_ENABLE_REGISTRATION=false` on the frontend for a clean experience.
+</Aside>
+
+---
+
+## Managing Partners
+
+### Creating Partners (System Scope)
+
+System-scoped users can create partners directly via the API. This bypasses self-registration and allows setting fields that self-registration does not expose (type, plan, device limits).
+
+```bash
+curl -X POST https://breeze.example.com/api/v1/orgs/partners \
+  -H "Authorization: Bearer <system-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Acme MSP",
+    "slug": "acme-msp",
+    "type": "msp",
+    "plan": "pro",
+    "maxOrganizations": 50,
+    "maxDevices": 5000,
+    "billingEmail": "billing@acme-msp.com"
+  }'
+```
+
+### Partner Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `uuid` | Auto-generated primary key |
+| `name` | `varchar(255)` | Display name. Required |
+| `slug` | `varchar(100)` | URL-safe unique identifier. Required |
+| `type` | `enum` | `msp`, `enterprise`, or `internal`. Default: `msp` |
+| `plan` | `enum` | `free`, `pro`, `enterprise`, or `unlimited`. Default: `free` |
+| `maxOrganizations` | `integer` | Optional cap on organization count |
+| `maxDevices` | `integer` | Optional cap on total devices across all organizations |
+| `settings` | `jsonb` | Partner-level settings (timezone, business hours, contact info) |
+| `ssoConfig` | `jsonb` | SSO configuration |
+| `billingEmail` | `varchar(255)` | Billing contact email |
+| `createdAt` | `timestamp` | Record creation time |
+| `updatedAt` | `timestamp` | Last modification time |
+| `deletedAt` | `timestamp` | Soft-delete marker. Null when active |
+
+### Updating Partner Settings (Self-Service)
+
+Partner-scoped users can update their own partner's name, billing email, and settings via the `/partners/me` endpoint. Settings are merged on update -- only the keys included in the request are overwritten.
+
+```bash
+curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
+  -H "Authorization: Bearer <partner-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Acme IT Services",
+    "settings": {
+      "timezone": "America/Chicago",
+      "businessHours": { "preset": "business" },
+      "contact": {
+        "name": "Jane Doe",
+        "email": "jane@acme-it.com"
+      }
+    }
+  }'
+```
+
+### Soft Deleting a Partner
+
+Partners use soft deletes. When deleted via `DELETE /partners/:id`, the `deletedAt` timestamp is set. The partner and its data remain in the database but are excluded from all queries.
+
+<Aside type="caution">
+  Soft-deleting a partner does **not** cascade to its organizations, sites, or devices. Those records remain active in the database. Clean them up separately before or after deleting the partner.
+</Aside>
+
+---
+
+## Partner User Association
+
+Users are linked to partners through the `partner_users` join table. Each record contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `partnerId` | `uuid` | FK to the partner |
+| `userId` | `uuid` | FK to the user |
+| `roleId` | `uuid` | FK to a role (determines permissions) |
+| `orgAccess` | `enum` | `all`, `selected`, or `none` |
+| `orgIds` | `uuid[]` | Array of organization IDs when `orgAccess` is `selected` |
+
+When a user authenticates, the API resolves their token context by looking up the `partner_users` record. The JWT includes the `partnerId`, `scope: partner`, and the `roleId`. The `orgAccess` and `orgIds` fields are used at query time to filter which organizations the user can access.
+
+### Inviting Users to a Partner
+
+Partner admins can invite users via the user management endpoints. Invited users receive an email with an invite link that leads to a password-setting form. Upon acceptance, the user is associated with the partner via `partner_users` with the specified role and organization access level.
+
+---
+
+## API Reference
+
+### Self-Registration
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/register-partner` | None | Self-service partner registration. Rate limited to 3/IP/hour |
+
+**Request body:**
+
+```json
+{
+  "companyName": "Acme IT Services",
+  "email": "admin@acme-it.com",
+  "password": "securePassword123!",
+  "name": "Jane Doe",
+  "acceptTerms": true
+}
+```
+
+**Success response (201):**
+
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "admin@acme-it.com",
+    "name": "Jane Doe",
+    "mfaEnabled": false
+  },
+  "partner": {
+    "id": "uuid",
+    "name": "Acme IT Services",
+    "slug": "acme-it-services"
+  },
+  "tokens": {
+    "accessToken": "eyJ...",
+    "expiresInSeconds": 900
+  },
+  "mfaRequired": false
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Validation error (weak password, missing required fields, terms not accepted) |
+| `429` | Rate limit exceeded (3 attempts per IP per hour) |
+| `503` | Redis unavailable (rate limiter cannot function) |
+
+### Partner Administration (System Scope)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/orgs/partners` | List all partners. Supports `page` and `limit` query params (default 50, max 100) |
+| `POST` | `/orgs/partners` | Create a new partner |
+| `GET` | `/orgs/partners/:id` | Get partner by ID. Returns `404` if not found or soft-deleted |
+| `PATCH` | `/orgs/partners/:id` | Update partner fields. Returns `400` if no fields provided |
+| `DELETE` | `/orgs/partners/:id` | Soft-delete partner. Sets `deletedAt` |
+
+### Partner Self-Service (Partner Scope)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/orgs/partners/me` | Get the authenticated user's partner details |
+| `PATCH` | `/orgs/partners/me` | Update partner name, billing email, or settings (merged, not replaced) |
+
+### Organization Management (Partner Scope)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/orgs/organizations` | List organizations accessible to the partner user. Supports pagination |
+| `POST` | `/orgs/organizations` | Create a new organization under the user's partner |
+| `GET` | `/orgs/organizations/:id` | Get organization by ID (access-controlled) |
+| `PATCH` | `/orgs/organizations/:id` | Update organization fields |
+| `DELETE` | `/orgs/organizations/:id` | Soft-delete organization |
+
+<Aside>
+  All partner and organization endpoints require JWT authentication. Organization endpoints enforce access control based on the user's `orgAccess` level. Partner-scoped users with `orgAccess: none` will receive empty results from organization list endpoints.
+</Aside>
+
+---
+
+## Security Considerations
+
+### Rate Limiting
+
+Partner registration is rate-limited to **3 attempts per IP address per hour** using the Redis-backed sliding window rate limiter. This is stricter than the general user registration limit (5 attempts per IP per hour). The rate limit key is derived from the client IP address extracted from the `X-Forwarded-For` header or the direct connection IP.
+
+### Email Enumeration Prevention
+
+When a registration request uses an email that already exists, the API returns a generic success-like response rather than an explicit "email already exists" error:
+
+```json
+{
+  "success": true,
+  "message": "If registration can proceed, you will receive next steps shortly."
+}
+```
+
+This prevents attackers from using the registration endpoint to enumerate valid email addresses.
+
+### Slug Collision Handling
+
+Partner slugs must be unique. The registration flow automatically appends a numeric suffix (`-1`, `-2`, etc.) if the generated slug already exists. This process attempts up to 100 suffixes before returning a `500` error. Slugs are capped at 50 characters from the base company name before the suffix.
+
+### Cleanup on Failure
+
+If user creation fails after the partner and role records have been inserted, the API manually deletes the orphaned role and partner records. This is not wrapped in a database transaction, so in edge cases (e.g., the cleanup query itself fails), orphaned records may remain.
+
+---
+
+## Troubleshooting
+
+**Registration form redirects to `/login?reason=registration-disabled`.**
+The `PUBLIC_ENABLE_REGISTRATION` environment variable is set to `false` on the frontend. To enable registration, set `PUBLIC_ENABLE_REGISTRATION=true` in the frontend environment and restart the web server. Also verify that the API has `ENABLE_REGISTRATION=true` (or unset, since the default is `true`).
+
+**"Too many registration attempts. Try again later." (429).**
+The rate limiter has blocked the IP address after 3 registration attempts within one hour. Wait for the rate limit window to expire, or use a different IP address for testing. In production, verify Redis is running -- if Redis is down, the endpoint returns `503` instead.
+
+**Registration succeeds but user cannot access any organizations.**
+After self-registration, the partner has no organizations yet. The admin user is created with `orgAccess: all`, but there are no organizations to access. Create the first organization via `POST /orgs/organizations` or through the setup wizard.
+
+**"Unable to generate unique company identifier" (500).**
+The slug generation exhausted 100 suffix attempts. This happens if many partners have been registered with very similar names. Provide a more distinctive company name, or create the partner manually via the system API with an explicit slug.
+
+**Partner not appearing in the partner list.**
+Only system-scoped users can list all partners via `GET /orgs/partners`. Partner-scoped users cannot see other partners. Verify the user has `scope: system` in their JWT. Also check whether the partner was soft-deleted -- soft-deleted partners are excluded from all list queries.
+
+**"Service temporarily unavailable" (503) during registration.**
+Redis is not accessible. The rate limiter requires Redis to function. Check that Redis is running and the `REDIS_URL` environment variable is correctly configured on the API server.
+
+**Self-registered partner has `free` plan and `msp` type.**
+This is the default behavior. Self-registration always creates partners with `type: msp` and `plan: free`. To change the plan or type, a system-scoped user must update the partner via `PATCH /orgs/partners/:id`.
+
+**Registration link not visible on the login page.**
+The login page conditionally renders the registration link based on the `PUBLIC_ENABLE_REGISTRATION` feature flag. If the flag is `false` or unset as `false`, the link is hidden. Set `PUBLIC_ENABLE_REGISTRATION=true` to show it.

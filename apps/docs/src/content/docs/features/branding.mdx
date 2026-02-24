@@ -1,0 +1,422 @@
+---
+title: Branding & White-Label
+description: Customize the Breeze dashboard with your organization's logo, colors, and branding for a white-label experience.
+sidebar:
+  order: 37
+  label: Branding & White-Label
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Breeze supports full white-label branding at both the **partner (MSP)** and **organization (customer)** levels. Partners can customize the dashboard, portal, and email templates with their own logos, colors, and styling so that their customers see a branded experience. Organizations can further override branding for their own portal subdomain. All branding assets are stored per-organization in the `portal_branding` table and served through the branding API, which resolves the correct branding configuration based on the request domain.
+
+The branding system covers three surfaces:
+
+| Surface | What Is Customized |
+|---------|--------------------|
+| **Dashboard** | Sidebar logo, header branding, color accents |
+| **End-User Portal** | Full portal appearance -- logo, colors, favicon, welcome message, footer, custom CSS |
+| **Email Templates** | Header logo, primary/secondary colors, support contact |
+
+<Aside>
+  Branding changes take effect immediately after saving. There is no deployment step -- the portal and email templates read branding data from the API at render time.
+</Aside>
+
+---
+
+## Overview
+
+The white-label workflow follows a cascading model:
+
+```
+Partner (MSP) Branding
+  └── Organization Branding (overrides partner defaults)
+        └── Portal Branding (custom domain, full visual control)
+```
+
+Partners set baseline branding that applies to all their managed organizations. Individual organizations can override specific fields (logo, colors, theme) without affecting other organizations under the same partner. The portal branding layer adds domain-specific configuration for the end-user portal, including custom domains, welcome messages, and feature toggles.
+
+---
+
+## Logo Customization
+
+The branding editor supports three logo assets:
+
+| Asset | Purpose | Recommended Format | Recommended Size |
+|-------|---------|-------------------|-----------------|
+| **Light mode logo** | Displayed on light backgrounds in the dashboard, portal header, and email templates | SVG or PNG | 512 x 512 px |
+| **Dark mode logo** | Displayed on dark backgrounds and when the user has dark mode enabled | SVG or PNG | 512 x 512 px |
+| **Favicon** | Browser tab icon and bookmarks | ICO, PNG, or SVG | 32 x 32 px minimum |
+
+### Uploading Logos
+
+<Steps>
+
+1. Navigate to **Settings > Organization > Branding**.
+
+2. In the **Logos** section, click **Upload** next to the logo you want to change, or drag and drop an image file onto the dropzone.
+
+3. A preview appears immediately. The live preview panel on the right shows how the logo will look in email headers, the portal header, and dark mode contexts.
+
+4. Click **Save branding** to persist the changes. Logos are uploaded to the file storage service (S3 or local filesystem, depending on your deployment configuration).
+
+</Steps>
+
+<Aside type="caution">
+  Logo URLs are sanitized before rendering to prevent XSS attacks. Only `https://`, `http://`, and `/` (relative) URL schemes are allowed. Data URIs and `javascript:` URLs are rejected.
+</Aside>
+
+### Logo Upload API
+
+Logos are uploaded via multipart form data:
+
+```bash
+POST /orgs/organizations/:orgId/branding/upload
+Content-Type: multipart/form-data
+Authorization: Bearer <token>
+
+--boundary
+Content-Disposition: form-data; name="logoLight"; filename="logo-light.png"
+Content-Type: image/png
+
+<binary data>
+--boundary
+Content-Disposition: form-data; name="logoDark"; filename="logo-dark.png"
+Content-Type: image/png
+
+<binary data>
+--boundary
+Content-Disposition: form-data; name="favicon"; filename="favicon.ico"
+Content-Type: image/x-icon
+
+<binary data>
+--boundary--
+```
+
+All three fields are optional -- include only the assets you want to update.
+
+### Logo Display Behavior
+
+When no logo is uploaded, the dashboard and portal display a generated avatar using the first two letters of the organization name. For example, an organization named "Acme Corp" shows a circular badge with "AC".
+
+The `BrandingEditor` component automatically generates these initials:
+
+```
+Organization: "Acme Corp" → Initials: "AC"
+Organization: "Breeze"    → Initials: "BR"
+```
+
+---
+
+## Color Customization
+
+Two brand colors control the visual theme across all branded surfaces:
+
+| Color | Default | Usage |
+|-------|---------|-------|
+| **Primary** | `#2563eb` (blue) | Dashboard header, portal header background, email header, link colors, primary buttons |
+| **Secondary** | `#f97316` (orange) at partner level, `#14b8a6` (teal) at org level | Call-to-action buttons, accent borders, secondary highlights |
+
+### Setting Colors
+
+Colors are entered as hex values (3 or 6 digit). The editor provides both a color picker and a text input. Invalid hex values are silently replaced with the default.
+
+<Tabs>
+  <TabItem label="Dashboard UI">
+
+1. Open **Settings > Organization > Branding**.
+2. Use the color pickers or enter hex codes in the **Primary color** and **Secondary color** fields.
+3. The live preview updates in real time to show how colors appear in email templates and the portal.
+4. Click **Save branding**.
+
+  </TabItem>
+  <TabItem label="API">
+
+```bash
+PUT /orgs/organizations/:orgId/branding
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "primaryColor": "#1e40af",
+  "secondaryColor": "#f59e0b",
+  "customCss": ".portal-header { letter-spacing: 0.04em; }"
+}
+```
+
+  </TabItem>
+</Tabs>
+
+### Contrast Calculation
+
+The branding editor automatically calculates text contrast for each color swatch. Text on colored backgrounds uses white (`#f8fafc`) for dark colors and dark (`#0f172a`) for light colors, based on relative luminance:
+
+```
+luminance = (0.299 * R + 0.587 * G + 0.114 * B) / 255
+text color = luminance > 0.6 ? dark : light
+```
+
+This ensures buttons and headers remain readable regardless of the chosen brand colors.
+
+---
+
+## Organization Branding
+
+Each organization has its own branding record in the `portal_branding` table, keyed by `orgId` (unique constraint). Organization-level branding controls the portal and email appearance for that specific organization.
+
+### Branding Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `logoUrl` | text | URL to the primary logo image |
+| `faviconUrl` | text | URL to the favicon |
+| `primaryColor` | varchar(50) | Primary brand color (hex) |
+| `secondaryColor` | varchar(50) | Secondary brand color (hex) |
+| `accentColor` | varchar(50) | Optional accent color (hex) |
+| `customDomain` | varchar(255) | Custom portal domain (e.g., `support.acmecorp.com`) |
+| `domainVerified` | boolean | Whether the custom domain's DNS has been verified |
+| `welcomeMessage` | text | Welcome text displayed on the portal landing page |
+| `supportEmail` | varchar(255) | Support email shown in emails and portal footer |
+| `supportPhone` | varchar(50) | Support phone number |
+| `footerText` | text | Custom footer text for the portal |
+| `customCss` | text | Injected CSS for fine-grained portal styling |
+| `enableTickets` | boolean | Enable the ticket submission feature on the portal |
+| `enableAssetCheckout` | boolean | Enable asset checkout/return on the portal |
+| `enableSelfService` | boolean | Enable self-service tools on the portal |
+| `enablePasswordReset` | boolean | Enable password reset on the portal |
+
+### Org Branding Editor
+
+The organization-level branding editor (`OrgBrandingEditor`) provides a simplified interface compared to the full partner branding editor. It includes:
+
+- **Logo upload** -- single logo (displayed in both light and dark contexts)
+- **Primary and secondary color** pickers
+- **Theme selector** -- `light`, `dark`, or `system` (respects OS preference)
+- **Portal subdomain** -- configures the `<subdomain>.breeze.app` URL
+- **Custom CSS** -- advanced styling overrides
+- **Live preview** -- modal showing how the portal will look with current settings
+
+<Aside>
+  The org branding editor is available under **Settings > Organization** and requires the `organization:write` permission.
+</Aside>
+
+---
+
+## Partner Branding
+
+Partners (MSPs) manage branding at a higher level. Partner branding sets the default visual identity for all organizations under their management. Individual organizations can override any field, but if they do not, the partner's branding is inherited.
+
+### Cascade Behavior
+
+| Field | Resolution Order |
+|-------|-----------------|
+| Logo | Org logo > Partner logo > Breeze default |
+| Primary color | Org color > Partner color > `#2563eb` |
+| Secondary color | Org color > Partner color > `#f97316` |
+| Favicon | Org favicon > Partner favicon > Breeze default |
+| Custom CSS | Org CSS appended after partner CSS |
+| Support email | Org email > Partner email > none |
+
+### Partner Branding Editor
+
+The partner-level `BrandingEditor` component provides the full set of customization options:
+
+- **Light mode and dark mode logos** -- separate uploads for each context
+- **Favicon** -- browser tab icon
+- **Primary and secondary colors** with live contrast preview
+- **Custom CSS** -- injected into portal and email templates
+- **Email template preview** -- shows a mock weekly summary email with partner branding
+- **Portal preview** -- shows the portal header, favicon, and dark mode rendering
+
+Changes to partner branding propagate to all organizations that have not set their own overrides. The save operation sends two requests:
+
+1. `PUT /orgs/organizations/:orgId/branding` -- saves colors and CSS
+2. `POST /orgs/organizations/:orgId/branding/upload` -- uploads logo files (multipart form data)
+
+---
+
+## Custom Domains
+
+Organizations can configure a custom portal domain (e.g., `support.acmecorp.com`) so that end users see a fully branded URL.
+
+<Steps>
+
+1. In the branding settings, enter the custom domain in the **Custom Domain** field.
+
+2. Add a CNAME record pointing your domain to `portal.breeze.app`.
+
+3. The system verifies the CNAME record. Once verified, `domainVerified` is set to `true` and the portal starts serving branded content on the custom domain.
+
+4. The branding API resolves branding by domain: `GET /portal/branding/:domain` or automatically from the `Host` / `X-Forwarded-Host` header.
+
+</Steps>
+
+<Aside type="caution">
+  Custom domains require DNS verification. The branding API will return 404 for unverified domains to prevent domain spoofing.
+</Aside>
+
+---
+
+## Supported Assets
+
+### Image Formats
+
+| Format | Supported For | Notes |
+|--------|--------------|-------|
+| SVG | Logo (light/dark) | Preferred for logos -- scales to any size without pixelation |
+| PNG | Logo (light/dark), Favicon | Use transparent backgrounds for best results |
+| ICO | Favicon | Traditional browser icon format, supports multiple sizes |
+| JPEG | Logo (light/dark) | Supported but not recommended -- no transparency support |
+
+### Size Recommendations
+
+| Asset | Minimum | Recommended | Maximum |
+|-------|---------|-------------|---------|
+| Logo (light/dark) | 64 x 64 px | 512 x 512 px | No hard limit (resized on display) |
+| Favicon | 32 x 32 px | 32 x 32 px or 64 x 64 px | 256 x 256 px |
+
+### Custom CSS
+
+Custom CSS is injected after the base stylesheet. Use it for fine-grained control over portal appearance:
+
+```css
+/* Adjust portal header spacing */
+.portal-header {
+  letter-spacing: 0.04em;
+}
+
+/* Round card corners */
+.portal-card {
+  border-radius: 18px;
+}
+
+/* Custom font */
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+```
+
+<Aside type="caution">
+  Custom CSS is injected as-is with no sanitization beyond length limits. Avoid CSS that breaks layout or hides critical UI elements. Test changes using the live preview before saving.
+</Aside>
+
+---
+
+## API Reference
+
+### Organization Branding
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/orgs/organizations/:orgId/branding` | Get branding settings for an organization |
+| PUT | `/orgs/organizations/:orgId/branding` | Update branding settings (colors, CSS, text fields) |
+| POST | `/orgs/organizations/:orgId/branding/upload` | Upload logo and favicon files (multipart form data) |
+
+### Portal Branding (Public)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/portal/branding/:domain` | Resolve branding by custom domain |
+| GET | `/portal/branding` | Resolve branding from `Host` or `X-Forwarded-Host` header |
+
+<Aside>
+  The `/portal/branding` endpoints are public (no authentication required) because they are called by the portal frontend before the user logs in. Only verified custom domains return branding data -- unverified domains return 404.
+</Aside>
+
+### Request / Response Examples
+
+**Get organization branding:**
+
+```bash
+GET /orgs/organizations/:orgId/branding
+Authorization: Bearer <token>
+```
+
+**Response (200):**
+
+```json
+{
+  "organizationName": "Acme Corp",
+  "portalName": "Acme IT Portal",
+  "portalUrl": "acme.breeze.app",
+  "supportEmail": "it@acmecorp.com",
+  "primaryColor": "#1e40af",
+  "secondaryColor": "#f59e0b",
+  "customCss": ".portal-header { letter-spacing: 0.04em; }",
+  "logoLightUrl": "https://storage.breeze.app/branding/acme/logo-light.png",
+  "logoDarkUrl": "https://storage.breeze.app/branding/acme/logo-dark.png",
+  "faviconUrl": "https://storage.breeze.app/branding/acme/favicon.ico"
+}
+```
+
+**Update branding settings:**
+
+```bash
+PUT /orgs/organizations/:orgId/branding
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "primaryColor": "#1e40af",
+  "secondaryColor": "#f59e0b",
+  "customCss": ".portal-header { letter-spacing: 0.04em; }"
+}
+```
+
+**Resolve portal branding by domain:**
+
+```bash
+GET /portal/branding/support.acmecorp.com
+```
+
+**Response (200):**
+
+```json
+{
+  "branding": {
+    "id": "uuid",
+    "orgId": "uuid",
+    "logoUrl": "https://storage.breeze.app/branding/acme/logo-light.png",
+    "faviconUrl": "https://storage.breeze.app/branding/acme/favicon.ico",
+    "primaryColor": "#1e40af",
+    "secondaryColor": "#f59e0b",
+    "accentColor": null,
+    "customDomain": "support.acmecorp.com",
+    "domainVerified": true,
+    "welcomeMessage": "Welcome to Acme IT Support",
+    "supportEmail": "it@acmecorp.com",
+    "supportPhone": "+1-555-0123",
+    "footerText": "Powered by Acme IT",
+    "customCss": ".portal-header { letter-spacing: 0.04em; }",
+    "enableTickets": true,
+    "enableAssetCheckout": true,
+    "enableSelfService": true,
+    "enablePasswordReset": true
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+**Logo does not appear after uploading.**
+Verify the upload succeeded by checking the API response from `POST /orgs/organizations/:orgId/branding/upload`. If using S3 storage, confirm the bucket policy allows public read access for branding assets. If using local storage, verify the file storage directory is accessible by the API server.
+
+**Custom domain returns 404 for branding.**
+The `domainVerified` flag must be `true` for a custom domain to resolve branding. Add a CNAME record pointing your domain to `portal.breeze.app` and wait for DNS propagation. The branding API normalizes the domain to lowercase before lookup -- ensure the stored `customDomain` value matches exactly.
+
+**Colors look different in email vs. portal.**
+Email clients have limited CSS support. The primary and secondary colors are applied as inline `background-color` styles in email templates, which most clients render correctly. However, some email clients (notably Outlook on Windows) may override colors. The portal uses the same hex values via CSS custom properties and renders consistently across modern browsers.
+
+**Live preview does not match saved branding.**
+The live preview reflects unsaved changes in the editor. If the preview looks correct but the portal does not match, verify that the save operation completed successfully (check for the "Branding settings saved" confirmation). Also confirm you are viewing the portal on the correct domain -- the public branding endpoint resolves by domain, not by organization ID.
+
+**"Failed to fetch branding" error in the editor.**
+This typically indicates an authentication issue. The branding editor calls `GET /orgs/organizations/:orgId/branding` with the user's session token. If the token has expired, the editor redirects to the login page. Ensure the user has the `organization:write` permission to access branding settings.
+
+**Custom CSS has no effect.**
+Custom CSS is injected after the base stylesheet. Verify your selectors match the portal's DOM structure. Use browser developer tools to inspect element classes. If your rules are being overridden by higher-specificity base styles, increase specificity or use `!important` sparingly. CSS is applied as-is -- syntax errors will cause the entire block to be ignored by the browser.
+
+**Partner branding not cascading to organizations.**
+Partner branding cascading is resolved at render time. If an organization has its own branding record, those fields take precedence over the partner defaults. To reset an organization to partner defaults, delete or clear the organization-specific branding fields. Check the `portal_branding` table to confirm whether the org has an entry with overridden values.

@@ -1,0 +1,563 @@
+---
+title: Filesystem Analysis & Disk Cleanup
+description: Deep filesystem scanning, disk usage analysis, and automated cleanup of temporary files, caches, and large files.
+sidebar:
+  order: 34
+  label: Filesystem Analysis
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Filesystem Analysis & Disk Cleanup provides deep visibility into what is consuming disk space across your fleet and gives you safe, auditable tools to reclaim it. The system combines a parallel-scanning agent worker pool, resumable scan state, and a preview-before-execute cleanup workflow to help administrators identify and resolve disk space issues at scale -- without risking accidental data loss.
+
+The feature operates in two phases: **analysis** (scan the filesystem and build a snapshot of what is consuming space) and **cleanup** (preview safe candidates, then execute deletion of approved items). Both phases are available through the REST API, the dashboard UI, and the AI assistant.
+
+<Aside>
+  Filesystem analysis endpoints require authentication with a role that includes the `devices.read` permission for viewing snapshots and `devices.execute` for triggering scans and executing cleanup. All operations are audit-logged with the action type, path, scan mode, and byte counts.
+</Aside>
+
+---
+
+## Overview
+
+Disk space exhaustion is one of the most common and disruptive issues in managed fleets. A single device running out of disk can cause application crashes, failed updates, corrupted databases, and user complaints. Across a fleet of thousands of devices, the problem multiplies -- temp files accumulate silently, browser caches grow unchecked, old downloads pile up, and log files go unrotated.
+
+Filesystem Analysis addresses this by:
+
+- **Scanning deeply** with a parallel worker pool that can traverse millions of filesystem entries efficiently.
+- **Resuming interrupted scans** so that long-running analysis on large volumes is not lost if the agent restarts or the connection drops.
+- **Categorizing disk usage** into actionable groups: largest files, largest directories, temp file accumulation, old downloads, unrotated logs, trash usage, and duplicate candidates.
+- **Providing safe cleanup** with a strict preview-then-execute workflow that only targets known-safe categories.
+
+---
+
+## Deep Filesystem Scan
+
+### How Scanning Works
+
+A filesystem scan is initiated by sending a `POST` request to the scan endpoint with a target path and optional configuration. The API queues a `filesystem_analysis` command to the agent via WebSocket (preferred for immediate dispatch) or the command queue.
+
+The agent-side scanner uses a **worker pool** to parallelize directory traversal. Multiple goroutines walk the filesystem concurrently, each processing a subtree and reporting results back to a coordinator. This is critical for scanning large volumes -- a serial scan of a 2TB disk with millions of files can take over an hour, while a parallelized scan with 8-16 workers can complete in minutes.
+
+### Scan Strategies
+
+The system supports three scan strategies that control how much of the filesystem is traversed:
+
+| Strategy | Behavior | When to Use |
+|----------|----------|-------------|
+| `baseline` | Full recursive scan from the specified path. Scans every directory up to `maxDepth`. | First scan on a device, or when disk usage has changed significantly. |
+| `incremental` | Scans only "hot directories" -- directories that changed significantly since the last baseline. | Routine follow-up scans to detect new accumulation without rescanning the entire volume. |
+| `auto` | The API automatically selects `baseline` or `incremental` based on scan state. | Default. Recommended for most use cases. |
+
+When using `auto` strategy, the API evaluates the following conditions to determine the scan mode:
+
+<Steps>
+
+1. If the scan targets a non-root path (not `C:\` or `/`), a `baseline` scan is always used.
+
+2. If a previous scan was interrupted and checkpoint data exists, a `baseline` scan resumes from the checkpoint.
+
+3. If no baseline has ever been completed for this device, a `baseline` scan is started.
+
+4. If the current disk usage percentage has changed by more than 3% since the last baseline, a `baseline` scan is triggered.
+
+5. If hot directories exist from the previous scan, an `incremental` scan targets only those directories.
+
+</Steps>
+
+### Resumable State
+
+Long-running baseline scans store checkpoint data in the `device_filesystem_scan_state` table. The checkpoint records which directories have been scanned and which are still pending. If a scan is interrupted (agent restart, network drop, timeout), the next scan with `auto` or `baseline` strategy will automatically resume from the checkpoint rather than starting over.
+
+The scan state table tracks:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `deviceId` | UUID | Primary key. One state record per device. |
+| `lastRunMode` | string | `baseline` or `incremental`. |
+| `lastBaselineCompletedAt` | timestamp | When the last full baseline scan finished. |
+| `lastDiskUsedPercent` | real | Disk usage percentage at the time of the last baseline. Used to decide when a full rescan is needed. |
+| `checkpoint` | JSONB | Pending directories and depth information for resume. |
+| `aggregate` | JSONB | Accumulated scan results from completed subtrees. |
+| `hotDirectories` | JSONB | Directories identified as high-churn for incremental scans (up to 24). |
+
+### Scan Configuration
+
+The scan endpoint accepts the following parameters:
+
+```bash
+POST /api/v1/devices/:deviceId/filesystem/scan
+Content-Type: application/json
+
+{
+  "path": "C:\\",
+  "strategy": "auto",
+  "maxDepth": 32,
+  "topFiles": 50,
+  "topDirs": 30,
+  "maxEntries": 5000000,
+  "workers": 8,
+  "timeoutSeconds": 300,
+  "followSymlinks": false
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | -- | Absolute path to scan. Required. Max 2048 characters. |
+| `strategy` | enum | `auto` | Scan strategy: `auto`, `baseline`, or `incremental`. |
+| `maxDepth` | number | -- | Maximum directory depth to traverse (1-64). |
+| `topFiles` | number | -- | Number of largest files to return (1-500). |
+| `topDirs` | number | -- | Number of largest directories to return (1-200). |
+| `maxEntries` | number | -- | Maximum filesystem entries to scan (1,000 to 25,000,000). |
+| `workers` | number | -- | Number of parallel scan workers (1-32). |
+| `timeoutSeconds` | number | 300 (baseline) / 120 (incremental) | Scan timeout in seconds (5-900). |
+| `followSymlinks` | boolean | -- | Whether to follow symbolic links during traversal. |
+
+The response returns a `202 Accepted` with the command ID and scan mode:
+
+```json
+{
+  "success": true,
+  "data": {
+    "commandId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "status": "queued",
+    "createdAt": "2026-02-20T14:30:00.000Z",
+    "scanMode": "baseline",
+    "strategy": "auto"
+  }
+}
+```
+
+---
+
+## Filesystem Snapshots
+
+When a scan completes, the results are saved as a **filesystem snapshot** in the `device_filesystem_snapshots` table. Snapshots are immutable records of the filesystem state at a point in time.
+
+### Snapshot Contents
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique snapshot identifier. |
+| `deviceId` | UUID | The device that was scanned. |
+| `capturedAt` | timestamp | When the snapshot was created. |
+| `trigger` | enum | `on_demand` (user-initiated) or `threshold` (automatic). |
+| `partial` | boolean | `true` if the scan was interrupted or incomplete. |
+| `summary` | JSONB | Aggregate statistics (files scanned, dirs scanned, bytes scanned, max depth, permission denied count). |
+| `largestFiles` | JSONB | Top largest files by size (up to 50). |
+| `largestDirs` | JSONB | Top largest directories by size (up to 30). |
+| `tempAccumulation` | JSONB | Temporary file accumulation by category (bytes per category). |
+| `oldDownloads` | JSONB | Files in download directories that have not been accessed recently (up to 200). |
+| `unrotatedLogs` | JSONB | Log files that have grown large without rotation (up to 200). |
+| `trashUsage` | JSONB | Files in trash/recycle bin (up to 16). |
+| `duplicateCandidates` | JSONB | Files that appear to be duplicates based on size and name (up to 200). |
+| `cleanupCandidates` | JSONB | All items eligible for safe cleanup (up to 1,000). |
+| `errors` | JSONB | Errors encountered during scanning (permission denied, etc., up to 200). |
+
+### Viewing the Latest Snapshot
+
+```bash
+GET /api/v1/devices/:deviceId/filesystem
+```
+
+Returns the most recent snapshot for the device. The response restructures the snapshot data for readability:
+
+```json
+{
+  "data": {
+    "id": "snapshot-uuid",
+    "deviceId": "device-uuid",
+    "capturedAt": "2026-02-20T14:35:00.000Z",
+    "trigger": "on_demand",
+    "partial": false,
+    "scanMode": "baseline",
+    "path": "C:\\",
+    "summary": {
+      "filesScanned": 1250000,
+      "dirsScanned": 85000,
+      "bytesScanned": 450000000000,
+      "maxDepthReached": 24,
+      "permissionDeniedCount": 12
+    },
+    "topLargestFiles": [...],
+    "topLargestDirectories": [...],
+    "tempAccumulation": [
+      { "category": "browser_cache", "bytes": 2500000000 },
+      { "category": "temp_files", "bytes": 1800000000 }
+    ],
+    "oldDownloads": [...],
+    "unrotatedLogs": [...],
+    "trashUsage": [...],
+    "duplicateCandidates": [...],
+    "cleanupCandidates": [...],
+    "errors": []
+  }
+}
+```
+
+### Snapshot Merging
+
+When incremental scans run after a baseline, the results are merged with the existing snapshot data. The merge logic:
+
+- **Accumulates** summary counts (files scanned, dirs scanned, bytes scanned, permission denied count).
+- **Takes the maximum** for max depth reached.
+- **Deduplicates** largest files and directories by path, keeping the entry with the larger size.
+- **Merges** temp accumulation by category, summing byte counts.
+- **Deduplicates** cleanup candidates, old downloads, unrotated logs, and trash entries by path.
+- **Concatenates** error lists up to a cap of 200.
+
+---
+
+## Disk Cleanup
+
+Disk cleanup follows a strict two-phase workflow: **preview** first, then **execute**. This ensures that no files are deleted without explicit review.
+
+### Safe Cleanup Categories
+
+Only items in the following categories are eligible for automated cleanup:
+
+| Category | Description | Examples |
+|----------|-------------|----------|
+| `temp_files` | Operating system and application temporary files. | `%TEMP%`, `/tmp`, app-specific temp directories. |
+| `browser_cache` | Web browser cache files. | Chrome, Firefox, Edge, Safari cache directories. |
+| `package_cache` | Package manager caches. | npm, pip, Homebrew, Chocolatey, NuGet cache directories. |
+| `trash` | Files in the trash or recycle bin. | Windows Recycle Bin, macOS Trash, Linux trash directories. |
+
+<Aside type="caution">
+  Items outside these four categories are never included in cleanup operations, even if they appear in the snapshot's `cleanupCandidates` list. Each candidate must have both `safe: true` and belong to a recognized safe category to be eligible.
+</Aside>
+
+### Preview Phase
+
+The preview builds a cleanup plan from the latest filesystem snapshot without touching any files on the device.
+
+```bash
+POST /api/v1/devices/:deviceId/filesystem/cleanup-preview
+Content-Type: application/json
+
+{
+  "categories": ["temp_files", "browser_cache"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `categories` | array | No | Filter to specific categories. If omitted, all safe categories are included. Max 10 entries. |
+
+The response includes the preview plan and creates a cleanup run record with status `previewed`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "cleanupRunId": "run-uuid",
+    "snapshotId": "snapshot-uuid",
+    "estimatedBytes": 4300000000,
+    "candidateCount": 156,
+    "categories": [
+      { "category": "temp_files", "count": 89, "estimatedBytes": 1800000000 },
+      { "category": "browser_cache", "count": 67, "estimatedBytes": 2500000000 }
+    ],
+    "candidates": [
+      {
+        "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\old_installer.exe",
+        "category": "temp_files",
+        "sizeBytes": 450000000,
+        "safe": true,
+        "reason": "Temporary file older than 30 days",
+        "modifiedAt": "2026-01-15T10:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+### Execute Phase
+
+After reviewing the preview, submit the specific paths you want to delete. Only paths that appear in the latest preview as safe candidates are accepted.
+
+```bash
+POST /api/v1/devices/:deviceId/filesystem/cleanup-execute
+Content-Type: application/json
+
+{
+  "paths": [
+    "C:\\Users\\admin\\AppData\\Local\\Temp\\old_installer.exe",
+    "C:\\Users\\admin\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache"
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `paths` | array | Yes | Paths to delete. Must be from the latest previewable candidates. Min 1, max 200 entries. Max 4096 characters per path. |
+
+The API validates each path against the current snapshot's safe cleanup candidates. Paths not present in the candidate list are silently excluded. For each valid path, a `file_delete` command is dispatched to the agent with `recursive: true`.
+
+The response reports per-path results:
+
+```json
+{
+  "success": true,
+  "data": {
+    "cleanupRunId": "run-uuid",
+    "status": "executed",
+    "bytesReclaimed": 4100000000,
+    "selectedCount": 2,
+    "failedCount": 0,
+    "actions": [
+      {
+        "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\old_installer.exe",
+        "category": "temp_files",
+        "sizeBytes": 450000000,
+        "status": "completed"
+      },
+      {
+        "path": "C:\\Users\\admin\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache",
+        "category": "browser_cache",
+        "sizeBytes": 3650000000,
+        "status": "completed"
+      }
+    ]
+  }
+}
+```
+
+If all cleanup actions fail, the run status is `failed`. If at least one succeeds, the status is `executed`.
+
+---
+
+## AI Integration
+
+The AI assistant provides two tools for filesystem analysis and cleanup.
+
+### analyze_disk_usage (Tier 1)
+
+A read-only tool that retrieves the latest filesystem snapshot for a device and explains what is consuming disk space. It can optionally trigger a fresh scan.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string (UUID) | The device to analyze. Required. |
+| `refresh` | boolean | If `true`, trigger a new scan before returning results. |
+| `path` | string | Root path to scan (default: OS root). |
+| `maxDepth` | number | Maximum scan depth (1-64). |
+| `topFiles` | number | Number of largest files to return (1-500). |
+| `topDirs` | number | Number of largest directories to return (1-200). |
+| `maxEntries` | number | Maximum filesystem entries to scan (1,000-25,000,000). |
+| `workers` | number | Number of parallel scan workers (1-32). |
+| `timeoutSeconds` | number | Scan timeout (5-900 seconds). |
+| `maxCandidates` | number | Maximum cleanup candidates to return (1-200). |
+
+The AI uses this tool to answer questions like "What is using disk space on this device?", "Why is the C: drive full?", and "Show me the largest files on device X."
+
+### disk_cleanup (Tier 1 preview / Tier 3 execute)
+
+A dual-tier tool. Preview mode is Tier 1 (auto-executed, read-only). Execute mode is Tier 3 (requires human approval before deleting files).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string (UUID) | The device to clean up. Required. |
+| `action` | enum | `preview` or `execute`. Required. |
+| `categories` | array | Filter cleanup to specific categories. Optional. |
+| `paths` | array | Specific paths to delete (required for `execute`). Min 1, max 200. |
+| `maxCandidates` | number | Maximum candidates to return in preview (1-200). |
+
+<Aside type="tip">
+  The AI automatically chains these tools: it first calls `analyze_disk_usage` to understand the problem, then uses `disk_cleanup` with `action: "preview"` to show what can be cleaned, and finally (with user approval) calls `disk_cleanup` with `action: "execute"` to perform the cleanup. You can ask it to do this in a single conversation turn.
+</Aside>
+
+---
+
+## Cleanup Targets
+
+The filesystem scanner identifies several categories of reclaimable space. Here is what each category covers and where the scanner looks.
+
+### Temporary Files (`temp_files`)
+
+<Tabs>
+  <TabItem label="Windows">
+    - `%TEMP%` (user temp directory)
+    - `C:\Windows\Temp` (system temp directory)
+    - `C:\Windows\Prefetch` (prefetch cache)
+    - Application-specific temp directories
+  </TabItem>
+  <TabItem label="macOS">
+    - `/tmp` and `/private/tmp`
+    - `~/Library/Caches` (per-user caches)
+    - `/Library/Caches` (system caches)
+  </TabItem>
+  <TabItem label="Linux">
+    - `/tmp` and `/var/tmp`
+    - Application-specific temp directories in `/var/cache`
+  </TabItem>
+</Tabs>
+
+### Browser Caches (`browser_cache`)
+
+Cache directories for all major browsers:
+- **Chrome**: `User Data/Default/Cache`, `Code Cache`, `Service Worker`
+- **Firefox**: `cache2` directory in profile
+- **Edge**: Same structure as Chrome (Chromium-based)
+- **Safari**: `~/Library/Caches/com.apple.Safari`
+
+### Package Manager Caches (`package_cache`)
+
+- **npm**: `~/.npm/_cacache`
+- **pip**: `~/.cache/pip` (Linux/macOS) or `%LOCALAPPDATA%\pip\cache` (Windows)
+- **Homebrew**: `~/Library/Caches/Homebrew`
+- **Chocolatey**: `C:\ProgramData\chocolatey\cache`
+- **NuGet**: `~/.nuget/packages`
+
+### Trash and Recycle Bin (`trash`)
+
+- **Windows**: `C:\$Recycle.Bin` per-user directories
+- **macOS**: `~/.Trash`
+- **Linux**: `~/.local/share/Trash`
+
+### Additional Detected Items (Not Auto-Cleaned)
+
+The scanner also detects the following, which appear in the snapshot but are not eligible for automated cleanup:
+
+- **Old downloads**: Files in download directories older than a configurable threshold.
+- **Unrotated logs**: Log files that have grown beyond expected sizes.
+- **Duplicate candidates**: Files with matching sizes and names in different locations.
+- **Large files**: The top N largest individual files on the volume.
+
+These items require manual review and are surfaced in the snapshot for informational purposes.
+
+---
+
+## Database Schema
+
+### Filesystem Snapshots
+
+Table: `device_filesystem_snapshots`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key. |
+| `device_id` | UUID | Foreign key to `devices`. |
+| `captured_at` | timestamp | When the snapshot was created. |
+| `trigger` | enum | `on_demand` or `threshold`. |
+| `partial` | boolean | Whether the scan was incomplete. |
+| `summary` | JSONB | Aggregate scan statistics. |
+| `largest_files` | JSONB | Top largest files. |
+| `largest_dirs` | JSONB | Top largest directories. |
+| `temp_accumulation` | JSONB | Temp file accumulation by category. |
+| `old_downloads` | JSONB | Old files in download directories. |
+| `unrotated_logs` | JSONB | Large unrotated log files. |
+| `trash_usage` | JSONB | Trash/recycle bin contents. |
+| `duplicate_candidates` | JSONB | Potential duplicate files. |
+| `cleanup_candidates` | JSONB | All safe cleanup candidates. |
+| `errors` | JSONB | Scan errors. |
+| `raw_payload` | JSONB | Complete raw agent response. |
+
+Indexed on `(device_id, captured_at)` for efficient latest-snapshot queries.
+
+### Cleanup Runs
+
+Table: `device_filesystem_cleanup_runs`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key. |
+| `device_id` | UUID | Foreign key to `devices`. |
+| `requested_by` | UUID | Foreign key to `users` (who initiated the cleanup). |
+| `requested_at` | timestamp | When the cleanup was requested. |
+| `approved_at` | timestamp | When the cleanup was approved for execution (null for preview-only runs). |
+| `plan` | JSONB | The cleanup plan (snapshot ID, categories, preview data). |
+| `executed_actions` | JSONB | Per-path execution results. |
+| `bytes_reclaimed` | bigint | Total bytes reclaimed by the cleanup. |
+| `status` | enum | `previewed`, `executed`, or `failed`. |
+| `error` | text | Error message if the run failed. |
+
+Indexed on `(device_id, requested_at)` for history queries.
+
+### Scan State
+
+Table: `device_filesystem_scan_state`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `device_id` | UUID | Primary key. Foreign key to `devices`. One row per device. |
+| `last_run_mode` | text | `baseline` or `incremental`. |
+| `last_baseline_completed_at` | timestamp | When the last full baseline finished. |
+| `last_disk_used_percent` | real | Disk usage at last baseline (for delta detection). |
+| `checkpoint` | JSONB | Pending directories for scan resume. |
+| `aggregate` | JSONB | Accumulated partial results. |
+| `hot_directories` | JSONB | High-churn directories for incremental scans. |
+
+---
+
+## API Reference
+
+All filesystem endpoints are prefixed with `/api/v1/devices/:deviceId`. Replace `:deviceId` with a valid device UUID.
+
+| Method | Path | Description | Permission |
+|--------|------|-------------|------------|
+| `GET` | `/devices/:id/filesystem` | Get latest filesystem analysis snapshot | `devices.read` |
+| `POST` | `/devices/:id/filesystem/scan` | Trigger a filesystem scan | `devices.execute` |
+| `POST` | `/devices/:id/filesystem/cleanup-preview` | Preview safe cleanup candidates | `devices.read` |
+| `POST` | `/devices/:id/filesystem/cleanup-execute` | Execute cleanup on approved paths | `devices.execute` |
+
+---
+
+## Troubleshooting
+
+### "No filesystem analysis available yet" (404)
+
+No snapshot exists for this device. The device has not been scanned yet. Trigger a scan with `POST /devices/:id/filesystem/scan` and wait for it to complete before querying the snapshot.
+
+### "No filesystem snapshot available. Run a scan first." (404 on cleanup-preview)
+
+The cleanup preview requires an existing snapshot to build the candidate list from. Run a filesystem scan first, then retry the preview.
+
+### Scan command returns 502 or times out
+
+Large filesystem scans can exceed the default command timeout. Try:
+
+- Increasing `timeoutSeconds` (up to 900 seconds / 15 minutes).
+- Reducing `maxEntries` to limit the scan scope.
+- Reducing `maxDepth` to avoid deeply nested directory trees.
+- Scanning a subdirectory instead of the root path.
+
+The scan uses resumable state, so a timed-out baseline scan will resume from its checkpoint on the next attempt.
+
+### Cleanup preview returns zero candidates
+
+The preview filters candidates by two criteria: the `safe` flag must be `true` AND the category must be one of the four safe categories (`temp_files`, `browser_cache`, `package_cache`, `trash`). If the snapshot contains cleanup candidates but the preview returns none, the candidates may be in non-safe categories (e.g., old downloads, unrotated logs) that require manual review.
+
+Also verify that the `categories` filter in your request matches the categories present in the snapshot's candidates.
+
+### "No valid cleanup paths selected from latest previewable candidates" (400)
+
+The paths submitted to the execute endpoint do not match any current safe cleanup candidates. This can happen if:
+
+- A new scan ran between the preview and execute, changing the candidate list.
+- The paths were manually constructed rather than copied from a preview response.
+- The candidates' `safe` flag was `false` (items outside safe categories are excluded).
+
+Re-run the preview and use paths from the fresh response.
+
+### Cleanup actions partially failed
+
+The cleanup execute response reports per-path status. Individual paths can fail if:
+
+- The file was already deleted between preview and execute.
+- The agent does not have permission to delete the file (e.g., a file locked by a running process).
+- The path is on a read-only filesystem.
+
+The overall run status is `executed` if at least one path succeeded, or `failed` if every path failed. The `bytesReclaimed` field reflects only the successfully deleted paths.
+
+### Incremental scan returns minimal results
+
+Incremental scans only traverse hot directories identified by the previous baseline. If no hot directories were detected (the disk is relatively stable), the incremental scan has little to scan. This is expected behavior. Run a `baseline` scan to get a comprehensive view.
+
+### Scan shows "partial: true" in the snapshot
+
+The scan was interrupted before completing. This can be caused by agent restart, network disconnection, or timeout. The partial snapshot contains valid data for the portions that were scanned. Run another scan to resume from the checkpoint -- the system will merge results with the partial data.
+
+### Permission denied errors in scan results
+
+The agent process may not have permission to read certain directories (e.g., other users' home directories, system-protected paths). These are logged in the snapshot's `errors` array with the path and error type. Running the agent as root/SYSTEM reduces permission errors but is not always necessary -- the most valuable disk usage data is typically in user-accessible directories.

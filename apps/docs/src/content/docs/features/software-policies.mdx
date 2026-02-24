@@ -1,0 +1,451 @@
+---
+title: Software Policies
+description: Enforce software allowlists and blocklists across your fleet with automated detection and remediation.
+sidebar:
+  order: 36
+  label: Software Policies
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Software Policies let you define what software is permitted or prohibited across your managed devices and automatically detect violations during inventory scans. Policies support three modes -- **allowlist** (only approved software may be installed), **blocklist** (specific software is prohibited), and **audit** (detect violations without enforcement) -- and can be configured to automatically remediate violations by uninstalling unauthorized software or alerting operators for manual review.
+
+The system consists of three layers: **policy definitions** that describe the rules, **compliance checks** that evaluate device inventories against those rules, and **remediation actions** that respond to detected violations. Compliance checks run automatically through BullMQ workers every 15 minutes and can also be triggered on demand. On Windows endpoints, the winget package manager integration enables automated install and uninstall operations through user-context IPC.
+
+---
+
+## Policy Types
+
+### Allowlist
+
+An allowlist policy defines the software that **is** permitted. Any software found on a device that is not matched by at least one rule in the allowlist is flagged as an `unauthorized` violation. This is the most restrictive mode, suitable for locked-down environments such as kiosks, point-of-sale terminals, or compliance-sensitive workstations.
+
+The `allowUnknown` flag (default: not set) controls whether software that does not match any rule is considered a violation. When set to `true`, only software explicitly matched by a deny-style rule is flagged.
+
+### Blocklist
+
+A blocklist policy defines software that is **not** permitted. Any software found on a device that matches a rule in the blocklist is flagged as an `unauthorized` violation. Software not matching any rule is implicitly allowed. This mode is useful for banning known-bad applications (cryptocurrency miners, unauthorized remote access tools, torrent clients) without restricting the full software catalog.
+
+### Audit
+
+Audit mode evaluates the same rules as allowlist or blocklist but does not support automated remediation. Violations are detected and recorded, but no enforcement actions are taken. Use audit mode to understand the current state of your fleet before switching to enforced allowlist or blocklist policies.
+
+<Aside type="tip">
+  Start with an audit policy to understand which devices would be affected before enabling enforcement. You can convert an audit policy to an enforced allowlist or blocklist by updating the `mode` and `enforceMode` fields.
+</Aside>
+
+---
+
+## Creating Policies
+
+### Policy Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | Yes* | Organization ID. Auto-resolved for org-scoped tokens |
+| `name` | string | Yes | Policy name (max 200 characters) |
+| `description` | string | No | Description of the policy's purpose (max 4,000 characters) |
+| `mode` | enum | Yes | `allowlist`, `blocklist`, or `audit` |
+| `rules` | object | Yes | Rule definitions (see below) |
+| `enforceMode` | boolean | No | Enable automated enforcement. Default `false` |
+| `remediationOptions` | object | No | Remediation configuration (see below) |
+
+### Creating a Blocklist Policy
+
+```bash
+POST /software-policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "name": "Prohibited Software",
+  "description": "Block known-bad applications across all endpoints.",
+  "mode": "blocklist",
+  "rules": {
+    "software": [
+      {
+        "name": "BitTorrent",
+        "vendor": "BitTorrent Inc.",
+        "reason": "Unauthorized P2P software"
+      },
+      {
+        "name": "TeamViewer",
+        "reason": "Use Breeze Remote Access instead"
+      },
+      {
+        "name": "CryptoMiner*",
+        "reason": "Cryptocurrency mining software prohibited"
+      }
+    ]
+  },
+  "enforceMode": true,
+  "remediationOptions": {
+    "autoUninstall": true,
+    "gracePeriod": 24,
+    "cooldownMinutes": 120
+  }
+}
+```
+
+### Creating an Allowlist Policy
+
+```bash
+POST /software-policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "name": "Approved Software Only",
+  "description": "Only these applications are permitted on POS terminals.",
+  "mode": "allowlist",
+  "rules": {
+    "software": [
+      {
+        "name": "Google Chrome",
+        "vendor": "Google",
+        "minVersion": "120.0"
+      },
+      {
+        "name": "Microsoft Edge",
+        "vendor": "Microsoft"
+      },
+      {
+        "name": "Breeze Agent",
+        "vendor": "Breeze"
+      }
+    ],
+    "allowUnknown": false
+  },
+  "enforceMode": false
+}
+```
+
+When a policy is created, a compliance check is automatically scheduled through BullMQ. If Redis is unavailable, the policy is still created but a `warning` field is included in the response indicating the check could not be scheduled.
+
+---
+
+## Defining Rules
+
+Each policy contains a `rules` object with a `software` array of individual rule definitions and an optional `allowUnknown` flag.
+
+### Rule Matching Criteria
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Software name pattern to match (max 500 characters) |
+| `vendor` | string | No | Vendor/publisher name to match (max 200 characters) |
+| `minVersion` | string | No | Minimum acceptable version (inclusive) |
+| `maxVersion` | string | No | Maximum acceptable version (inclusive) |
+| `catalogId` | UUID | No | Link to a software catalog item for precise matching |
+| `reason` | string | No | Explanation for the rule (max 1,000 characters, shown in violation reports) |
+
+### Matching Behavior
+
+- **Name matching**: Rules match against the software name as reported by the operating system's package manager or installer registry. The comparison is performed during compliance evaluation by the worker.
+- **Vendor matching**: When a `vendor` field is specified, both the name and vendor must match for the rule to apply.
+- **Version range**: When `minVersion` and/or `maxVersion` are specified, the installed software version must fall within the range. Software outside the version range is flagged.
+- **Catalog linking**: When `catalogId` is provided, the rule is linked to a specific software catalog entry, enabling precise matching by catalog-managed identifier rather than name string matching.
+
+### The `allowUnknown` Flag
+
+For allowlist policies, the `allowUnknown` flag determines how software not covered by any rule is handled:
+
+| `allowUnknown` | Behavior |
+|-----------------|----------|
+| `false` or unset | Any software not matching a rule is flagged as `unauthorized` |
+| `true` | Only software explicitly matched by a blocklist-style rule is flagged |
+
+This flag is only meaningful for allowlist policies. Blocklist policies implicitly allow all software not matched by a rule.
+
+---
+
+## Violation Detection
+
+### Compliance Check Process
+
+<Steps>
+1. **Policy evaluation is scheduled** -- either automatically (every 15 minutes via BullMQ repeatable job) or on-demand via `POST /software-policies/:id/check`.
+
+2. **Target devices are resolved** -- The worker determines which devices are subject to the policy. Devices can be targeted explicitly via `targetIds` or resolved through configuration policy assignments.
+
+3. **Software inventory is loaded** -- For each target device, the worker retrieves the current software inventory from the `software_inventory` database table.
+
+4. **Rules are evaluated** -- Each installed software item is compared against the policy's rules. For blocklist policies, any match is a violation. For allowlist policies, any item not covered by a rule is a violation (unless `allowUnknown` is true).
+
+5. **Compliance status is upserted** -- Results are written to the `software_compliance_status` table. Each device gets a per-policy record with status `compliant` or `violation`, the list of violations, and timestamps.
+
+6. **Auto-remediation is triggered** -- If the policy has `enforceMode: true` and remediation options are configured, devices with new violations are queued for remediation through the software remediation worker.
+</Steps>
+
+### Violation Types
+
+| Type | Description |
+|------|-------------|
+| `unauthorized` | Software is installed that is not permitted by the policy (blocklist match or allowlist miss) |
+| `missing` | Required software defined in an allowlist is not installed on the device |
+
+<Aside>
+  An `outdated` violation type is defined in the schema but not yet emitted by the compliance worker. This will be used in a future release for version-range enforcement.
+</Aside>
+
+### Violation Record Fields
+
+Each violation within a compliance status record contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | enum | `unauthorized` or `missing` |
+| `software.name` | string | Name of the violating software |
+| `software.version` | string | Installed version (if applicable) |
+| `software.vendor` | string | Software vendor (if known) |
+| `rule.name` | string | Name pattern from the matching rule |
+| `rule.minVersion` | string | Minimum version from the rule (if set) |
+| `rule.maxVersion` | string | Maximum version from the rule (if set) |
+| `rule.reason` | string | Reason text from the rule |
+| `severity` | enum | `low`, `medium`, `high`, or `critical` |
+| `detectedAt` | ISO 8601 | When the violation was first detected |
+
+### Compliance Overview
+
+Get a fleet-wide summary of compliance status:
+
+```
+GET /software-policies/compliance/overview
+Authorization: Bearer <token>
+```
+
+Response:
+
+```json
+{
+  "total": 150,
+  "compliant": 142,
+  "violations": 6,
+  "unknown": 2
+}
+```
+
+The overview aggregates per-device worst-case status across all active policies. A device with any `violation` status is counted as a violation, regardless of how many policies it complies with.
+
+### Viewing Violations
+
+List all devices with active violations:
+
+```
+GET /software-policies/violations?policyId=uuid&deviceId=uuid&limit=100
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `policyId` | Filter violations to a specific policy |
+| `deviceId` | Filter violations to a specific device |
+| `limit` | Max results (default 100, max 500) |
+
+The response includes device details (hostname, status, OS type) alongside violation data and remediation status.
+
+---
+
+## Remediation
+
+### Remediation Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `autoUninstall` | boolean | `false` | Automatically uninstall violating software |
+| `notifyUser` | boolean | -- | Notify the device user before remediation (not yet implemented) |
+| `gracePeriod` | integer | -- | Hours to wait before enforcing remediation (max 2,160 hours / 90 days) |
+| `cooldownMinutes` | integer | -- | Minimum minutes between remediation attempts on the same device (max 129,600 / 90 days) |
+| `maintenanceWindowOnly` | boolean | -- | Only remediate during maintenance windows (not yet implemented) |
+
+### Remediation Flow
+
+<Steps>
+1. **Compliance check detects violations** on one or more devices.
+
+2. **If `enforceMode` is true** and `autoUninstall` is enabled, the compliance worker schedules remediation jobs through the software remediation BullMQ worker.
+
+3. **Cooldown check** -- If the device was remediated within the `cooldownMinutes` window, the remediation is deferred.
+
+4. **Grace period check** -- If a `gracePeriod` is configured and the violation was first detected less than `gracePeriod` hours ago, remediation is deferred.
+
+5. **Remediation executes** -- The worker dispatches uninstall commands to the target devices. On Windows, this uses the winget provider through user-context IPC.
+
+6. **Status update** -- The compliance status record is updated with `remediationStatus`, `lastRemediationAttempt`, and any `remediationErrors`.
+</Steps>
+
+### On-Demand Remediation
+
+Trigger remediation manually for a specific policy:
+
+```bash
+POST /software-policies/:id/remediate
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "deviceIds": ["uuid1", "uuid2"]
+}
+```
+
+If `deviceIds` is omitted, remediation targets all devices with active violations for this policy (up to 500 devices per request). The endpoint validates that the requesting user has access to the specified devices and that the policy is not in audit mode.
+
+<Aside type="caution">
+  Remediation is not available for audit-only policies. Change the policy mode to `allowlist` or `blocklist` before requesting remediation. Attempting to remediate an audit policy returns `400 Bad Request`.
+</Aside>
+
+### Remediation Status Values
+
+| Status | Description |
+|--------|-------------|
+| `none` | No remediation has been attempted |
+| `pending` | Remediation is scheduled but has not started |
+| `in_progress` | Remediation is actively running on the device |
+| `completed` | Remediation finished successfully |
+| `failed` | Remediation encountered an error |
+
+---
+
+## Winget Integration
+
+On Windows endpoints, Breeze integrates with the Windows Package Manager (winget) for software management operations. Because winget requires user-context execution (it cannot run in Session 0 where the Breeze service lives), all winget commands are dispatched through IPC to a user helper process.
+
+### How Winget IPC Works
+
+<Steps>
+1. **The Breeze agent service** (running in Session 0) receives a software management command from the API.
+
+2. **The service checks for a connected user helper** session. If no helper is available, read-only operations (scan, list) return empty results, while mutating operations (install, uninstall) return an error.
+
+3. **Commands are dispatched via IPC** to the user helper process, which executes `winget.exe` with the appropriate arguments.
+
+4. **Results are returned** through IPC back to the service, which reports them to the API.
+</Steps>
+
+### Supported Operations
+
+| Operation | Command | Timeout | Description |
+|-----------|---------|---------|-------------|
+| Scan upgrades | `winget upgrade` | 120s | List available upgrades for installed packages |
+| List installed | `winget list` | 120s | Enumerate all winget-managed installed packages |
+| Install | `winget install --exact --id <ID> --silent` | 300s | Install a specific package by winget ID |
+| Uninstall | `winget uninstall --exact --id <ID> --silent` | 300s | Remove a specific package by winget ID |
+
+All winget commands include `--accept-source-agreements`, `--accept-package-agreements`, and `--disable-interactivity` flags to ensure fully unattended operation.
+
+### Package ID Validation
+
+Winget package IDs are validated against the pattern `^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,255}$` before any operation. This prevents command injection and ensures only valid winget identifiers are used in install and uninstall operations.
+
+<Aside>
+  Winget integration requires Windows 10 1809+ or Windows 11, with the App Installer package installed from the Microsoft Store. The winget CLI must be accessible in the user session's PATH.
+</Aside>
+
+### Reboot Detection
+
+After a successful install, the winget provider checks the output for keywords indicating a reboot is required (`restart` or `reboot`). If detected, the result's `RebootRequired` flag is set to `true`, which the API can use to schedule or notify about pending reboots.
+
+---
+
+## Policy Lifecycle
+
+### Activation and Deactivation
+
+Policies have an `isActive` boolean field that controls whether they are evaluated by the compliance worker. Setting `isActive: false` pauses all compliance checks and remediation for the policy without deleting it.
+
+```bash
+PATCH /software-policies/:id
+Content-Type: application/json
+
+{
+  "isActive": false
+}
+```
+
+### Deleting a Policy
+
+```bash
+DELETE /software-policies/:id
+```
+
+Deleting a policy performs two operations in a transaction:
+1. Sets the policy's `isActive` to `false`
+2. Deletes all associated `software_compliance_status` records
+
+The policy record itself is retained (soft delete via `isActive: false`) so that audit trail references remain valid.
+
+### Priority
+
+Each policy has a `priority` field (default: 50) that determines evaluation order when multiple policies target the same device. Higher-priority policies (lower numeric value) take precedence.
+
+### Audit Trail
+
+All policy operations are recorded in two audit systems:
+
+1. **Route audit** -- Standard Breeze audit log entries with action types like `software_policy.create`, `software_policy.update`, `software_policy.delete`, `software_policy.check`, and `software_policy.remediate`.
+
+2. **Policy-specific audit** -- Detailed records in the `software_policy_audit` table with actions like `policy_created`, `policy_updated`, `policy_deleted`, `compliance_check_requested`, and `remediation_requested`. These records include the actor type (`user` or `system`), actor ID, and a details JSONB column.
+
+---
+
+## API Reference
+
+### Policy Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/software-policies` | List policies (`?mode=&isActive=&limit=&offset=`) |
+| `POST` | `/software-policies` | Create a new policy |
+| `GET` | `/software-policies/:id` | Get policy by ID |
+| `PATCH` | `/software-policies/:id` | Update policy fields |
+| `DELETE` | `/software-policies/:id` | Soft-delete policy and clear compliance records |
+
+### Compliance and Violations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/software-policies/compliance/overview` | Fleet-wide compliance summary |
+| `GET` | `/software-policies/violations` | List devices with violations (`?policyId=&deviceId=&limit=`) |
+
+### Actions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/software-policies/:id/check` | Trigger on-demand compliance check (optional `deviceIds` array) |
+| `POST` | `/software-policies/:id/remediate` | Trigger remediation for violating devices (optional `deviceIds` array) |
+
+<Aside>
+  All software policy endpoints require authentication with `organization`, `partner`, or `system` scope. Organization-scoped tokens are automatically restricted to their own organization's policies. Creating a policy schedules an immediate compliance check; if Redis is unavailable, the check is deferred and a warning is returned.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**"orgId is required for this scope" when creating a policy.**
+Partner-scoped tokens that manage multiple organizations must specify `orgId` in the request body. If the partner token has access to exactly one organization, it is auto-resolved. Use an organization-scoped token or explicitly pass the `orgId` field.
+
+**Compliance check shows no violations but unauthorized software is clearly installed.**
+Verify the policy's `mode` matches your intent. A blocklist only flags software that matches a rule; a missing or misspelled rule name will not match. For allowlist policies, check whether `allowUnknown` is set to `true` -- this suppresses violations for unmatched software. Also ensure the policy's `isActive` is `true` and that the device's software inventory has been recently updated by the agent.
+
+**Remediation returns "Remediation is not available for audit-only policies".**
+Audit mode is observation-only. Change the policy mode to `allowlist` or `blocklist` using `PATCH /software-policies/:id` with `{ "mode": "blocklist" }` before triggering remediation.
+
+**Winget install fails with "requires a connected user helper session".**
+Winget cannot run in Session 0 (the Windows service context). The Breeze agent dispatches winget commands through IPC to a user helper process running in an active user session. If no user is logged in or the helper process is not running, winget operations will fail. Verify that a user session is active on the target Windows device and that the Breeze user helper is connected.
+
+**Compliance check was scheduled but never completed.**
+Compliance checks run through BullMQ and require Redis. Verify Redis is accessible. Check the API logs for `[SoftwareComplianceWorker]` messages. If you see "withSystemDbAccessContext unavailable", the worker may not have the database context it needs. Also verify that the policy has target devices -- if no devices match the policy's scope, the worker has nothing to evaluate.
+
+**Policy created successfully but `warning` field appears in the response.**
+The `warning` field indicates that the initial compliance check could not be scheduled, typically because Redis is unavailable. The policy itself was created and persisted. The compliance check will run on the next worker cycle (every 15 minutes) once Redis becomes available, or you can trigger it manually with `POST /software-policies/:id/check`.
+
+**Remediation completes but violations reappear on the next scan.**
+If the user reinstalls the software after remediation, the next compliance check will detect it again. Consider using `cooldownMinutes` in the remediation options to prevent rapid repeated remediation. For persistent violations, investigate why the software is being reinstalled (GPO, user behavior, or another deployment system) and address the root cause.
+
+**On-demand compliance check returns 503 "Failed to schedule compliance check".**
+This indicates BullMQ/Redis is unavailable. The 503 status code is intentional -- the check cannot be queued without the job system. Retry after confirming Redis is running and accessible from the API server.
+
+**Delete returns success but the policy is still visible in the list.**
+Policy deletion is a soft delete -- it sets `isActive: false` and clears compliance records. The policy record remains in the database for audit trail purposes. Filter your list query with `?isActive=true` to exclude deleted policies.

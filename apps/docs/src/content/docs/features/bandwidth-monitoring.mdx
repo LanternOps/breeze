@@ -1,0 +1,297 @@
+---
+title: Bandwidth Monitoring
+description: Per-interface network bandwidth tracking with historical data, utilization metrics, and throughput analysis.
+sidebar:
+  order: 39
+  label: Bandwidth Monitoring
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Bandwidth Monitoring tracks network throughput on every physical and virtual interface of your managed devices. The Breeze agent collects per-interface byte counters on each heartbeat, computes delta-based rates (bytes per second in and out), and reports both aggregate and per-interface statistics to the API. Historical bandwidth data is stored in the `device_metrics` table alongside CPU, RAM, and disk metrics, enabling long-term trending, capacity planning, and threshold-based alerting.
+
+Bandwidth data is collected automatically -- no additional configuration is required. As soon as a device enrolls and begins sending heartbeats, its network interfaces are tracked. The agent filters out loopback, container, and bridge interfaces so that only meaningful physical and virtual adapters appear in the data.
+
+---
+
+## Collected Metrics
+
+### Aggregate Metrics
+
+Aggregate bandwidth metrics represent the total throughput across all tracked interfaces on the device:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `networkInBytes` | bigint | Total bytes received since the last collection interval |
+| `networkOutBytes` | bigint | Total bytes sent since the last collection interval |
+| `bandwidthInBps` | bigint | Aggregate inbound throughput in bytes per second |
+| `bandwidthOutBps` | bigint | Aggregate outbound throughput in bytes per second |
+
+### Per-Interface Metrics
+
+Each tracked interface reports detailed statistics in the `interfaceStats` JSONB column:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Operating system interface name (e.g., `eth0`, `en0`, `Ethernet`) |
+| `inBytesPerSec` | number | Inbound throughput in bytes per second |
+| `outBytesPerSec` | number | Outbound throughput in bytes per second |
+| `inBytes` | number | Cumulative bytes received (absolute counter from OS) |
+| `outBytes` | number | Cumulative bytes sent (absolute counter from OS) |
+| `inPackets` | number | Cumulative packets received |
+| `outPackets` | number | Cumulative packets sent |
+| `inErrors` | number | Cumulative inbound errors (CRC, framing, etc.) |
+| `outErrors` | number | Cumulative outbound errors |
+| `speed` | number | Link speed in bits per second (0 if unknown). Queried from the OS and cached for 5 minutes. |
+
+<Aside>
+  The `inBytes` and `outBytes` fields are cumulative OS counters, not deltas. The agent computes the `inBytesPerSec` and `outBytesPerSec` rates by taking the difference between consecutive collections and dividing by the elapsed time. If the counter wraps (reboot or overflow), the agent skips the rate calculation for that interval to avoid reporting a false spike.
+</Aside>
+
+### Utilization Calculation
+
+Interface utilization can be derived from the per-interface data when the `speed` field is available:
+
+```
+utilization_percent = ((inBytesPerSec + outBytesPerSec) * 8 / speed) * 100
+```
+
+The `speed` field reports the interface's negotiated link speed in bits per second (e.g., `1000000000` for a 1 Gbps link). A value of `0` means the OS could not determine the link speed, which is common for Wi-Fi adapters on some platforms.
+
+---
+
+## Data Collection
+
+### Collection Cycle
+
+Bandwidth data is collected as part of the agent's regular metrics cycle:
+
+<Steps>
+
+1. **Agent heartbeat fires** -- The agent sends a heartbeat to the API at its configured interval (default: 60 seconds).
+
+2. **Metrics collector runs** -- The Go metrics collector (`agent/internal/collectors/metrics.go`) gathers system metrics including network I/O counters.
+
+3. **Aggregate bandwidth computed** -- The collector reads total bytes received and sent via `net.IOCounters(false)`, computes the delta from the previous collection, and divides by elapsed time to produce `bandwidthInBps` and `bandwidthOutBps`.
+
+4. **Per-interface bandwidth computed** -- The collector reads per-interface counters via `net.IOCounters(true)`, computes per-interface deltas and rates, queries link speed from the OS, and builds the `interfaceStats` array.
+
+5. **Data sent to API** -- The heartbeat payload includes all metrics. The API writes a row to `device_metrics` with the aggregate bandwidth columns and the `interface_stats` JSONB column.
+
+</Steps>
+
+### Rate Calculation Guards
+
+The agent applies several safeguards to prevent reporting incorrect bandwidth data:
+
+| Guard | Behavior |
+|-------|----------|
+| **Minimum elapsed time** | Rates are only computed when at least 1 second has elapsed since the last collection. Prevents division by near-zero intervals. |
+| **Maximum elapsed time** | If more than 300 seconds (5 minutes) have elapsed, rates are skipped for that interval. Large gaps produce misleading averages. |
+| **Counter wrap protection** | If the current counter value is less than the previous value (reboot or 32-bit overflow), the rate is set to 0 for that interval. |
+| **First collection** | On the first heartbeat after agent start, no previous data exists. Rates are reported as 0 and absolute counters are recorded for the next interval. |
+
+### Interface Filtering
+
+The agent skips interfaces that would add noise to bandwidth data:
+
+| Filtered Interface | Platform | Reason |
+|-------------------|----------|--------|
+| `lo`, `lo0` | All | Loopback -- internal traffic only |
+| `veth*` | Linux | Virtual Ethernet pairs for containers |
+| `docker*` | Linux | Docker bridge interfaces |
+| `br-*` | Linux | Linux bridge interfaces |
+| `vEther*` | Windows | Hyper-V virtual Ethernet |
+| `isatap*` | Windows | IPv6 transition tunnels |
+| `Teredo*` | Windows | IPv6 Teredo tunnels |
+
+<Aside type="tip">
+  Interfaces that appear and disappear between collections (e.g., VPN adapters) are tracked dynamically. The agent prunes stale interface entries when they are no longer reported by the OS, so disconnected VPN interfaces stop appearing in `interfaceStats` after one collection cycle.
+</Aside>
+
+### Link Speed Detection
+
+Link speed is queried from the OS using platform-specific mechanisms:
+
+| Platform | Method |
+|----------|--------|
+| Linux | Reads `/sys/class/net/<iface>/speed` (returns Mbps, converted to bps) |
+| macOS | Uses `networksetup -getMedia` or IOKit to read negotiated speed |
+| Windows | Queries `Win32_NetworkAdapter` WMI class for `Speed` property |
+
+Link speed values are cached per interface for 5 minutes (`speedCacheTTL`) to avoid repeated system calls on every collection cycle.
+
+---
+
+## Viewing Bandwidth Data
+
+### Device Detail Page
+
+Bandwidth data is displayed on the device detail page in the network section. The UI shows:
+
+- **Aggregate throughput chart** -- Inbound and outbound bytes per second over time, plotted on a time-series graph.
+- **Per-interface breakdown** -- A table listing each tracked interface with its current throughput, cumulative bytes, packet counts, error counts, and link speed.
+- **Historical trending** -- Select time ranges from 1 hour to 30 days to view bandwidth patterns and identify peak usage periods.
+
+### Metrics API
+
+Bandwidth data is returned as part of the standard device metrics endpoint:
+
+```
+GET /devices/:deviceId/metrics?range=24h
+```
+
+The response includes bandwidth fields in each time-series data point:
+
+```json
+{
+  "data": [
+    {
+      "timestamp": "2026-02-23T10:00:00.000Z",
+      "cpu": 24.5,
+      "ram": 67.2,
+      "networkIn": 1048576,
+      "networkOut": 524288,
+      "bandwidthInBps": 17476,
+      "bandwidthOutBps": 8738,
+      "processCount": 142
+    }
+  ],
+  "interval": "5m",
+  "startDate": "2026-02-22T10:00:00.000Z",
+  "endDate": "2026-02-23T10:00:00.000Z",
+  "timezone": "America/Denver"
+}
+```
+
+### Time Range and Aggregation
+
+The metrics endpoint supports multiple time ranges and automatically selects an appropriate aggregation interval:
+
+| Range | Default Interval | Data Points (approx.) |
+|-------|-----------------|----------------------|
+| `1h` | `1m` | 60 |
+| `6h` | `5m` | 72 |
+| `24h` | `5m` | 288 |
+| `7d` | `1h` | 168 |
+| `30d` | `1d` | 30 |
+
+You can override the interval using the `interval` query parameter (`1m`, `5m`, `1h`, `1d`). Within each aggregation bucket:
+
+- `bandwidthInBps` and `bandwidthOutBps` are **averaged** across data points in the bucket.
+- `networkIn` and `networkOut` are **summed** (total bytes transferred in the period).
+
+<Aside>
+  Per-interface `interfaceStats` data is stored in the `device_metrics` table but is not included in the aggregated metrics API response. To access per-interface data, query the raw metrics table directly or use the device detail page in the UI.
+</Aside>
+
+---
+
+## Alerting
+
+Bandwidth metrics can be used with Breeze alert rules to notify you when throughput crosses a threshold. Common alerting scenarios include:
+
+### Bandwidth threshold alerts
+
+Create alert rules that fire when aggregate bandwidth exceeds a defined threshold:
+
+| Alert Scenario | Metric | Condition | Example Threshold |
+|---------------|--------|-----------|-------------------|
+| High inbound traffic | `bandwidthInBps` | Greater than | 100,000,000 (100 MB/s) |
+| High outbound traffic | `bandwidthOutBps` | Greater than | 50,000,000 (50 MB/s) |
+| Sustained high utilization | `bandwidthInBps + bandwidthOutBps` | Greater than for N minutes | 80% of link speed |
+| Interface errors | `interfaceStats[].inErrors` | Greater than | 100 errors per interval |
+
+### Setting up a bandwidth alert
+
+<Steps>
+
+1. **Navigate to Alerts** -- Open the alert rules configuration for your organization.
+
+2. **Create a new rule** -- Select the metric type (device performance metrics) and choose `bandwidthInBps` or `bandwidthOutBps` as the metric.
+
+3. **Set the threshold** -- Define the condition (greater than, less than) and the threshold value in bytes per second.
+
+4. **Configure scope** -- Apply the rule to specific devices, device groups, sites, or the entire organization.
+
+5. **Set notification** -- Choose notification channels (email, Slack, webhook) and severity level.
+
+</Steps>
+
+### Playbook integration
+
+Bandwidth alerts can trigger [Playbooks](/features/playbooks/) for automated remediation. For example, a playbook could:
+
+- Diagnose which process is consuming bandwidth
+- Restart a misbehaving service
+- Apply a QoS policy
+- Notify the network team
+
+Configure the playbook's `triggerConditions.alertTypes` to include your bandwidth alert type and set `autoExecute` based on your confidence in the remediation workflow.
+
+---
+
+## API Reference
+
+Bandwidth data is accessed through the standard device metrics endpoints. There are no separate bandwidth-specific endpoints -- bandwidth is part of the unified metrics pipeline.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/devices/:id/metrics` | Get device metrics including bandwidth data |
+
+### Query Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `range` | string | No | Predefined range: `1h`, `6h`, `24h`, `7d`, `30d` |
+| `startDate` | ISO 8601 | No | Custom range start (overrides `range`) |
+| `endDate` | ISO 8601 | No | Custom range end (defaults to now) |
+| `interval` | string | No | Aggregation interval: `1m`, `5m`, `1h`, `1d` (auto-selected from range if omitted) |
+
+### Response Bandwidth Fields
+
+Each data point in the `data` array includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `networkIn` | number | Total bytes received in the aggregation bucket |
+| `networkOut` | number | Total bytes sent in the aggregation bucket |
+| `bandwidthInBps` | number | Average inbound throughput (bytes/sec) across the bucket |
+| `bandwidthOutBps` | number | Average outbound throughput (bytes/sec) across the bucket |
+
+### Database Schema
+
+Bandwidth data is stored in the `device_metrics` table:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `network_in_bytes` | bigint | Delta bytes received |
+| `network_out_bytes` | bigint | Delta bytes sent |
+| `bandwidth_in_bps` | bigint | Inbound rate in bytes/sec |
+| `bandwidth_out_bps` | bigint | Outbound rate in bytes/sec |
+| `interface_stats` | jsonb | Per-interface `InterfaceBandwidth[]` array |
+
+---
+
+## Troubleshooting
+
+**Bandwidth data shows 0 for the first data point after agent restart.**
+This is expected behavior. The agent needs two consecutive metric collections to compute a delta. On the first collection after startup, absolute counters are recorded but rates cannot be calculated because there is no previous value to subtract from. The next collection (typically 60 seconds later) will report accurate rates.
+
+**Interface not appearing in per-interface data.**
+The agent filters out loopback, container, and bridge interfaces by default. If the interface name starts with `lo`, `veth`, `docker`, `br-`, `vEther`, `isatap`, or `Teredo`, it is excluded. Physical adapters and non-filtered virtual interfaces should appear automatically. Verify the interface is active and has traffic by checking the OS network counters directly on the device.
+
+**Link speed shows 0 for an interface.**
+The `speed` field depends on the OS reporting a negotiated link speed. Wi-Fi adapters on some platforms do not expose speed through the standard system interfaces. On Linux, verify that `/sys/class/net/<iface>/speed` returns a valid value. A speed of `0` means utilization percentage cannot be calculated for that interface, but throughput data (bytes per second) is still collected accurately.
+
+**Large gap in bandwidth data.**
+If the agent was offline or unable to reach the API for more than 300 seconds (5 minutes), the rate calculation is skipped for that interval to avoid reporting misleading averages. The gap appears as missing data points in the chart. Once the agent reconnects and resumes heartbeats, data collection resumes normally.
+
+**Bandwidth spikes at unusual times.**
+Check whether the spike correlates with backup windows, software deployments, or patch installations. Use the per-interface breakdown on the device detail page to identify which interface carried the traffic. Cross-reference with the device's command history and automation run logs to identify automated activities.
+
+**Metrics API returns `bandwidthInBps: 0` but `networkIn` has a value.**
+The `bandwidthInBps` field is an average rate (bytes per second), while `networkIn` is a sum of bytes transferred. At larger aggregation intervals (1 hour, 1 day), the averaged rate can appear low even when total bytes transferred is significant. This is mathematically correct -- a device that transfers 1 GB over an hour averages approximately 291 KB/s. Use the raw `networkIn` / `networkOut` totals for volume analysis and `bandwidthInBps` / `bandwidthOutBps` for throughput analysis.
+
+**Per-interface data not available in metrics API response.**
+The aggregated metrics API endpoint (`GET /devices/:id/metrics`) returns aggregate bandwidth fields but does not include the per-interface `interfaceStats` breakdown in its response. Per-interface data is stored in the `device_metrics` table and is accessible through the device detail page in the UI or by querying the database directly.

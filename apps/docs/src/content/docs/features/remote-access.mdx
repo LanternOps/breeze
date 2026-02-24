@@ -54,6 +54,58 @@ The browser and device negotiate a WebRTC peer-to-peer connection through the Br
 
 Once the P2P connection is active, screen data flows directly between the browser and the agent.
 
+### Windows Session 0 Support
+
+When the Breeze agent runs as a Windows service, it operates in Session 0 — an isolated session with no interactive desktop. Standard screen capture APIs (DXGI, GDI) and input injection all fail in Session 0.
+
+Breeze solves this with a **session broker** architecture:
+
+<Steps>
+
+1. The agent service detects it is running in Session 0 via `config.IsService`.
+
+2. The session broker enumerates active user sessions using the Windows Terminal Services API (WTS).
+
+3. When a remote desktop session is requested, the broker spawns a **SYSTEM-level helper process** into the target user's session using `CreateProcessAsUser` with session ID override.
+
+4. The helper process owns the entire WebRTC pipeline — DXGI screen capture, H264 encoding via Media Foundation, and pion/webrtc for streaming. The service only relays signaling messages (SDP offer/answer) over IPC.
+
+5. When the session ends, the helper process is torn down.
+
+</Steps>
+
+<Aside type="tip">
+  The helper uses a SYSTEM token (not `WTSQueryUserToken`) intentionally. SYSTEM can call `OpenInputDesktop(GENERIC_ALL)` which grants access to the UAC consent desktop and lock screen — something a user-level token cannot do.
+</Aside>
+
+The `list_sessions` command returns available user sessions by merging the WTS session detector output with the broker's helper state, showing which sessions have active remote desktop connections.
+
+### Multi-Display Support
+
+Breeze supports multi-monitor remote desktop. The viewer can switch between displays on the target device. Each display is captured independently using DXGI Desktop Duplication.
+
+<Aside type="caution">
+  DXGI Desktop Duplication is delta-based — a static display with no visual changes produces zero frames. Breeze forces a desktop repaint using `InvalidateRect` and `RedrawWindow` after a monitor switch to ensure the first frame is captured immediately.
+</Aside>
+
+### Adaptive Bitrate
+
+The remote desktop pipeline uses adaptive bitrate control to maintain smooth streaming across varying network conditions. The encoder adjusts the H264 bitrate based on:
+
+- Measured network throughput between viewer and agent
+- Frame delivery latency
+- Packet loss rate
+
+The bitrate ramps up when conditions are good and drops when congestion is detected. A stability threshold of 2 consecutive stable measurements is required before increasing bitrate to prevent oscillation.
+
+### Audio Streaming
+
+Remote desktop sessions can optionally stream system audio from the device to the viewer. Audio is captured from the device's default audio output and transmitted over a separate WebRTC audio track. Audio streaming is enabled by default on Windows.
+
+### Secure Desktop Capture
+
+Breeze can capture the Windows secure desktop (Ctrl+Alt+Del screen, UAC prompts, lock screen). This is possible because the helper process runs as SYSTEM with `GENERIC_ALL` access to the input desktop. Secure desktop capture is automatic — no additional configuration is required.
+
 ---
 
 ## Remote Terminal

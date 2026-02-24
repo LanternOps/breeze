@@ -1,0 +1,382 @@
+---
+title: DNS Security
+description: DNS filtering and threat prevention with policy-based blocking, threat categorization, and integration with third-party DNS providers.
+sidebar:
+  order: 31
+  label: DNS Security
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+DNS Security provides DNS-level threat prevention for your managed fleet by integrating with third-party DNS filtering providers and enforcing allowlist/blocklist policies. The system ingests DNS security events from connected providers, categorizes threats, logs blocked queries, and gives you aggregated statistics to understand threat exposure across your organization.
+
+Integrations connect Breeze to your existing DNS filtering infrastructure. Each integration is scoped to an organization and stores encrypted API credentials for the target provider. Once connected, Breeze periodically syncs DNS security events from the provider and stores them in the `dns_security_events` table, where they can be queried, filtered, and analyzed. Policies define domain-level allowlists and blocklists that are pushed back to the provider through a BullMQ sync pipeline.
+
+---
+
+## Key Concepts
+
+### How DNS Security Works
+
+<Steps>
+1. **Connect a DNS filter provider** by creating an integration with the provider's API credentials. Breeze encrypts all secrets at rest.
+
+2. **Breeze syncs events** from the provider on a configurable interval. Each DNS query event is stored with its action (allowed, blocked, redirected), threat category, source device, and domain.
+
+3. **Create policies** to define allowlists and blocklists. Policies are linked to a specific integration and contain domain entries with optional reasons.
+
+4. **Policies sync to the provider** through BullMQ. When you add or remove domains, a sync job is enqueued to push changes upstream to the DNS provider.
+
+5. **Analyze threat data** using the stats, top-blocked, and events endpoints. Breeze automatically aggregates data for efficient querying over long time ranges.
+</Steps>
+
+### DNS Actions
+
+| Action | Description |
+|--------|-------------|
+| `allowed` | DNS query was resolved normally |
+| `blocked` | DNS query was blocked by the provider's filtering rules |
+| `redirected` | DNS query was redirected to a different address (e.g., a block page or sinkhole) |
+
+### Threat Categories
+
+| Category | Description |
+|----------|-------------|
+| `malware` | Domain associated with malware distribution or command-and-control infrastructure |
+| `phishing` | Domain used in phishing campaigns to harvest credentials or personal data |
+| `botnet` | Domain linked to botnet command-and-control networks |
+| `cryptomining` | Domain associated with unauthorized cryptocurrency mining |
+| `ransomware` | Domain used in ransomware delivery or payment infrastructure |
+| `spam` | Domain associated with spam campaigns |
+| `adware` | Domain serving intrusive advertising or adware payloads |
+| `adult_content` | Domain hosting adult or explicit content |
+| `gambling` | Domain hosting online gambling services |
+| `social_media` | Social media platform (typically used for content filtering policies) |
+| `streaming` | Streaming media platform (typically used for bandwidth management policies) |
+| `unknown` | Category not determined by the provider |
+
+---
+
+## Integration Providers
+
+Breeze supports the following DNS filter providers:
+
+| Provider | Enum Value | Required Config |
+|----------|------------|-----------------|
+| Cisco Umbrella | `umbrella` | `apiKey`, `apiSecret`, `config.organizationId` |
+| Cloudflare Gateway | `cloudflare` | `apiKey`, `config.accountId` |
+| DNSFilter | `dnsfilter` | `apiKey` |
+| Pi-hole | `pihole` | `apiKey`, `config.apiEndpoint` |
+| OpenDNS | `opendns` | `apiKey` |
+| Quad9 | `quad9` | `apiKey` |
+
+<Aside>
+  Breeze also detects DNS filtering tools during management posture assessment. If Cisco Umbrella, DNSFilter, or Netskope agents are installed on a device, they appear in the device's posture report regardless of whether an API integration is configured.
+</Aside>
+
+### Creating an Integration
+
+```bash
+POST /dns-security/integrations
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "provider": "umbrella",
+  "name": "Contoso Umbrella",
+  "description": "Cisco Umbrella for Contoso HQ",
+  "apiKey": "your-api-key",
+  "apiSecret": "your-api-secret",
+  "config": {
+    "organizationId": "umbrella-org-id",
+    "syncInterval": 60,
+    "retentionDays": 90,
+    "categories": ["malware", "phishing", "botnet"]
+  },
+  "isActive": true
+}
+```
+
+<Aside type="caution">
+  API keys and secrets are encrypted at rest using the platform's secret encryption service. They are never returned in API responses. Deleting an integration permanently removes the stored credentials.
+</Aside>
+
+### Integration Configuration Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `orgId` | UUID | Organization ID. Auto-resolved for org-scoped tokens |
+| `provider` | string | DNS provider: `umbrella`, `cloudflare`, `dnsfilter`, `pihole`, `opendns`, `quad9` |
+| `name` | string | Human-readable name (max 200 chars) |
+| `description` | string | Optional description (max 2,000 chars) |
+| `apiKey` | string | Provider API key (required, max 5,000 chars) |
+| `apiSecret` | string | Provider API secret (required for Cisco Umbrella) |
+| `config.organizationId` | string | Provider's organization ID (required for Cisco Umbrella) |
+| `config.accountId` | string | Provider's account ID (required for Cloudflare Gateway) |
+| `config.apiEndpoint` | string | Custom API endpoint URL (required for Pi-hole) |
+| `config.syncInterval` | integer | Event sync interval in minutes (5-1440, default varies by provider) |
+| `config.retentionDays` | integer | Event retention period in days (1-365) |
+| `config.categories` | string[] | Threat categories to sync (max 100 entries) |
+| `config.blocklistId` | string | Provider-specific blocklist identifier for policy sync |
+| `config.allowlistId` | string | Provider-specific allowlist identifier for policy sync |
+| `isActive` | boolean | Whether the integration is active (default `true`) |
+
+### Triggering a Manual Sync
+
+To immediately sync events from a provider instead of waiting for the next scheduled interval:
+
+```bash
+POST /dns-security/integrations/:id/sync
+```
+
+The response includes a `jobId` for tracking the sync task in BullMQ.
+
+### Deleting an Integration
+
+```bash
+DELETE /dns-security/integrations/:id
+```
+
+<Aside type="caution">
+  Deleting an integration removes all associated policies, security events, and aggregations in a single transaction. This action requires MFA verification and the `orgs:write` permission.
+</Aside>
+
+---
+
+## DNS Policies
+
+Policies define domain-level allowlists and blocklists that are enforced through the connected DNS provider. Each policy is tied to a specific integration and organization.
+
+### Creating a Policy
+
+```bash
+POST /dns-security/policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "integrationId": "uuid",
+  "name": "Malware Blocklist",
+  "description": "Block known malicious domains",
+  "type": "blocklist",
+  "domains": [
+    { "domain": "malware-example.com", "reason": "Known C2 domain" },
+    { "domain": "phishing-site.net", "reason": "Reported phishing" }
+  ],
+  "categories": ["malware", "phishing", "botnet"],
+  "isActive": true
+}
+```
+
+### Policy Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `orgId` | UUID | No | Organization ID. Auto-resolved for org-scoped tokens |
+| `integrationId` | UUID | Yes | The DNS filter integration this policy applies to |
+| `name` | string | Yes | Human-readable name (max 200 chars) |
+| `description` | string | No | Optional description (max 2,000 chars) |
+| `type` | string | Yes | `blocklist` or `allowlist` |
+| `domains` | array | No | Domain entries (max 500). Each with `domain` (required) and `reason` (optional) |
+| `categories` | string[] | No | Threat categories to include in this policy (max 50) |
+| `isActive` | boolean | No | Whether the policy is active (default `true`) |
+
+### Policy Sync Status
+
+When a policy is created or updated, its `syncStatus` is set to `pending`. A BullMQ job is enqueued to push the changes to the DNS provider. The status progresses as follows:
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Changes queued, waiting for sync to the provider |
+| `synced` | Policy successfully pushed to the provider |
+| `error` | Sync failed. Check `syncError` for details |
+
+### Updating Policy Domains
+
+Add or remove domains from an existing policy without replacing the entire domain list:
+
+```bash
+PATCH /dns-security/policies/:id/domains
+Content-Type: application/json
+
+{
+  "add": [
+    { "domain": "new-bad-domain.com", "reason": "Reported by threat intel feed" }
+  ],
+  "remove": ["old-domain.net"]
+}
+```
+
+At least one domain must be provided in `add` or `remove`. Domains are normalized to lowercase with trailing dots stripped. Duplicate domains are silently ignored. The response includes the updated domain count and lists of successfully added and removed domains.
+
+<Aside>
+  Domain changes trigger an automatic sync job to push the updates to the DNS provider. If the sync cannot be scheduled (e.g., BullMQ is unavailable), the domains are still saved locally and a `warning` field is returned in the response.
+</Aside>
+
+---
+
+## Security Events
+
+DNS security events are the individual records of DNS queries processed by your DNS filter provider. Each event captures the queried domain, the action taken, the threat category (if applicable), and the source device.
+
+### Querying Events
+
+```bash
+GET /dns-security/events?start=2026-02-01T00:00:00Z&end=2026-02-15T00:00:00Z&action=blocked&category=malware&limit=50
+```
+
+### Event Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start` | ISO 8601 | Start of time window (inclusive) |
+| `end` | ISO 8601 | End of time window (inclusive) |
+| `action` | string | Filter by action: `allowed`, `blocked`, `redirected` |
+| `category` | string | Filter by threat category |
+| `domain` | string | Partial domain match (case-insensitive) |
+| `deviceId` | UUID | Filter events for a specific device |
+| `integrationId` | UUID | Filter events from a specific integration |
+| `limit` | integer | Results per page (1-500, default 100) |
+| `offset` | integer | Pagination offset (default 0) |
+
+<Aside type="caution">
+  The maximum query window is 90 days. Requests with a `start`-to-`end` range exceeding 90 days are rejected with a 400 error.
+</Aside>
+
+### Event Response Fields
+
+Each event in the response includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique event identifier |
+| `orgId` | UUID | Organization ID |
+| `integrationId` | UUID | Source integration |
+| `deviceId` | UUID | Linked device (nullable if device not matched) |
+| `deviceHostname` | string | Hostname of the linked device (from join) |
+| `timestamp` | ISO 8601 | When the DNS query occurred |
+| `domain` | string | Queried domain name |
+| `queryType` | string | DNS query type (e.g., `A`, `AAAA`, `CNAME`) |
+| `action` | string | `allowed`, `blocked`, or `redirected` |
+| `category` | string | Threat category (nullable) |
+| `threatType` | string | Provider-specific threat classification |
+| `sourceIp` | string | IP address of the querying device |
+| `sourceHostname` | string | Hostname of the querying device (from provider) |
+| `providerEventId` | string | Unique event ID from the DNS provider |
+| `metadata` | object | Additional provider-specific data |
+
+---
+
+## Statistics and Analytics
+
+### Summary Statistics
+
+Get aggregated DNS security statistics including total queries, blocked rates, top blocked domains, top categories, and top offending devices:
+
+```bash
+GET /dns-security/stats?start=2026-02-01T00:00:00Z&end=2026-02-15T00:00:00Z&topN=20
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start` | ISO 8601 | Start of time window |
+| `end` | ISO 8601 | End of time window |
+| `integrationId` | UUID | Filter by integration |
+| `deviceId` | UUID | Filter by device |
+| `action` | string | Filter by action type |
+| `category` | string | Filter by threat category |
+| `topN` | integer | Number of top entries to return (1-100, default 10) |
+
+The response includes:
+
+```json
+{
+  "summary": {
+    "totalQueries": 125000,
+    "blockedQueries": 3200,
+    "allowedQueries": 121500,
+    "redirectedQueries": 300,
+    "blockedRate": 2.56
+  },
+  "topBlockedDomains": [...],
+  "topCategories": [...],
+  "topDevices": [...],
+  "source": "aggregated"
+}
+```
+
+<Aside>
+  For time ranges longer than 7 days, Breeze automatically queries pre-computed aggregation tables (`dns_event_aggregations`) instead of scanning raw events. The `source` field in the response indicates whether results came from `raw` event data or `aggregated` summaries.
+</Aside>
+
+### Top Blocked Domains
+
+Get a ranked list of the most frequently blocked domains:
+
+```bash
+GET /dns-security/top-blocked?start=2026-02-01T00:00:00Z&end=2026-02-15T00:00:00Z&limit=20
+```
+
+Each entry includes the domain, its threat category, the block count, and the number of distinct devices that attempted to reach it.
+
+---
+
+## API Reference
+
+### Integrations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/dns-security/integrations` | List all integrations for the organization |
+| POST | `/dns-security/integrations` | Create a new DNS filter integration (requires MFA, `orgs:write`) |
+| DELETE | `/dns-security/integrations/:id` | Delete integration and all associated data (requires MFA, `orgs:write`) |
+| POST | `/dns-security/integrations/:id/sync` | Trigger immediate event sync from the provider |
+
+### Events
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/dns-security/events` | List DNS security events with filtering and pagination |
+
+### Statistics
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/dns-security/stats` | Aggregated statistics: totals, block rates, top domains/categories/devices |
+| GET | `/dns-security/top-blocked` | Ranked list of most frequently blocked domains |
+
+### Policies
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/dns-security/policies` | List all DNS policies for the organization |
+| POST | `/dns-security/policies` | Create a new allowlist or blocklist policy (requires `orgs:write`) |
+| PATCH | `/dns-security/policies/:id/domains` | Add or remove domains from a policy (requires `orgs:write`) |
+
+<Aside>
+  All DNS security endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data. Creating and deleting integrations additionally require MFA verification.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Integration created but events are not appearing.**
+After creating an integration, an initial sync job is enqueued via BullMQ. If the sync scheduling fails, the creation response includes a `warning` field explaining the issue. Verify that Redis and BullMQ workers are running. Check the integration's `lastSyncStatus` and `lastSyncError` fields via `GET /dns-security/integrations` to see if the sync completed or encountered an error. Also confirm that the API key and provider configuration are correct.
+
+**Policy sync stuck in `pending` status.**
+Policy syncs are dispatched through BullMQ. If BullMQ is down or backlogged, the sync will remain in `pending` state. Restart the DNS sync worker and check the `syncError` field on the policy for specific error details. If the provider API returns an authentication error, verify the integration's API credentials.
+
+**Stats endpoint returning unexpected results.**
+For time windows longer than 7 days, statistics are sourced from the `dns_event_aggregations` table rather than raw events. Aggregations are computed periodically and may lag behind real-time data. The `source` field in the response (`raw` or `aggregated`) indicates which data source was used. For the most current data over short periods, use a time window of 7 days or less.
+
+**Time range query rejected with 400 error.**
+The maximum query window for events and statistics is 90 days. If your `start`-to-`end` range exceeds this limit, narrow the time range. Also verify that both `start` and `end` are valid ISO 8601 timestamps and that `start` is before `end`.
+
+**Domains not blocking after adding to a blocklist policy.**
+After adding domains to a policy, verify the `syncStatus` is `synced` (not `pending` or `error`). If the sync failed, check the `syncError` field. Domains are normalized to lowercase with trailing dots removed before storage and sync. If the provider requires a specific domain format, verify it matches the normalized form. Note that DNS caching at the client or resolver level may delay enforcement of new rules.
+
+**MFA required error when creating or deleting integrations.**
+Creating and deleting DNS filter integrations require MFA verification. Ensure the authenticated user has completed MFA for the current session. The `requireMfa()` middleware returns a 403 if MFA has not been verified.

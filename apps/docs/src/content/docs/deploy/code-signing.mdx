@@ -1,0 +1,143 @@
+---
+title: Code Signing
+description: Code signing for Breeze agent, viewer, and helper binaries on Windows and macOS.
+sidebar:
+  order: 7
+  label: Code Signing
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+All Breeze release binaries — the agent, the native viewer, and the Helper tray app — are code-signed to establish authenticity and prevent tampering warnings from operating system gatekeepers and endpoint security tools.
+
+---
+
+## Why Code Signing Matters
+
+Unsigned binaries trigger security warnings on both Windows and macOS that block installation or execution. For an RMM agent that needs to run silently and with elevated privileges, code signing is essential:
+
+| Platform | Without Signing | With Signing |
+|----------|-----------------|--------------|
+| **Windows** | SmartScreen blocks execution; AV products flag as suspicious; Group Policy may reject unsigned MSIs | Trusted publisher; silent installation works; SmartScreen passes |
+| **macOS** | Gatekeeper quarantines the binary; users must manually override in System Settings; notarization fails | Gatekeeper passes; notarization succeeds; MDM deployment works |
+
+---
+
+## Signed Artifacts
+
+The CI/CD release pipeline signs the following artifacts:
+
+| Artifact | Platform | Format | Signing Method |
+|----------|----------|--------|----------------|
+| Breeze Agent | Windows | `.exe`, `.msi` | Azure Code Signing (EV certificate) |
+| Breeze Agent | macOS | `.pkg`, binary | Apple Developer ID + notarization |
+| Breeze Viewer | Windows | `.exe`, `.msi` | Azure Code Signing (EV certificate) |
+| Breeze Viewer | macOS | `.app`, `.dmg` | Apple Developer ID + notarization |
+| Breeze Helper | Windows | `.exe` | Azure Code Signing (EV certificate) |
+| Breeze Helper | macOS | `.app` | Apple Developer ID + notarization |
+
+---
+
+## Windows Code Signing
+
+Windows binaries are signed using **Azure Code Signing** with an Extended Validation (EV) certificate. The signing happens in the GitHub Actions release workflow.
+
+### How it works
+
+<Steps>
+
+1. The release workflow builds the Windows binaries (agent `.exe`, MSI installer, viewer, helper).
+
+2. The `AzureSignTool` utility authenticates to Azure Key Vault using a service principal.
+
+3. Each binary is signed with the EV certificate stored in Azure Key Vault.
+
+4. The MSI installer is signed separately after the inner `.exe` is signed.
+
+5. Signed artifacts are uploaded to the GitHub release.
+
+</Steps>
+
+### WiX v4 MSI Packaging
+
+The Windows agent MSI is built using WiX v4. The MSI bundles the signed agent binary, configures the Windows service, and sets appropriate file permissions. The MSI itself is then signed as a separate step.
+
+<Aside>
+  Azure Code Signing uses HSM-backed keys — the private key never leaves Azure Key Vault. This meets the CA/Browser Forum requirements for EV code signing certificates.
+</Aside>
+
+---
+
+## macOS Code Signing & Notarization
+
+macOS binaries are signed with an **Apple Developer ID Application** certificate and then submitted to Apple's notarization service.
+
+### How it works
+
+<Steps>
+
+1. The release workflow builds the macOS universal binaries (arm64 + amd64).
+
+2. Each binary is signed with `codesign` using the Developer ID certificate from the CI keychain.
+
+3. The signed binary is packaged into a `.pkg` or `.app` bundle.
+
+4. The package is submitted to Apple's notarization service via `notarytool`.
+
+5. The workflow waits for notarization to complete (timeout: 30 minutes).
+
+6. Once notarized, the package is stapled with `stapler` so it can be verified offline.
+
+</Steps>
+
+<Aside type="caution">
+  Notarization can take several minutes. The release workflow uses a 30-minute timeout to accommodate Apple's processing queue. If notarization fails with `UnknownError`, the workflow retries — this status code sometimes appears transiently with newly provisioned certificates.
+</Aside>
+
+### Gatekeeper Verification
+
+End users can verify that a downloaded binary passes Gatekeeper:
+
+```bash
+spctl --assess --verbose /path/to/breeze-agent
+# Expected: accepted, source=Notarized Developer ID
+```
+
+---
+
+## Verifying Signatures
+
+### Windows
+
+```powershell
+# Check digital signature on a binary
+Get-AuthenticodeSignature "C:\Program Files\Breeze\breeze-agent.exe"
+
+# Expected: Status = Valid, SignerCertificate shows LanternOps
+```
+
+### macOS
+
+```bash
+# Verify code signature
+codesign --verify --deep --strict /usr/local/bin/breeze-agent
+
+# Check notarization
+spctl --assess --verbose /usr/local/bin/breeze-agent
+```
+
+---
+
+## Troubleshooting
+
+**Windows SmartScreen still warns after signing.**
+SmartScreen reputation is built over time. Newly signed binaries from a new publisher may still show a warning until enough users have downloaded and run the binary. EV certificates build reputation faster than standard OV certificates. If the warning persists, verify the signature with `Get-AuthenticodeSignature` to confirm the binary is properly signed.
+
+**macOS notarization timeout.**
+Apple's notarization service can be slow during peak times. The workflow allows up to 30 minutes. If it times out, re-run the release workflow — the binary does not need to be rebuilt, only re-submitted.
+
+**"Developer cannot be verified" on macOS.**
+The binary was not notarized, or the stapled ticket is missing. Re-download the binary from the official release page. If installing via MDM, ensure the MDM profile allows the Developer ID. Users can temporarily override Gatekeeper via **System Settings → Privacy & Security** but this should not be necessary for properly signed releases.
+
+**Antivirus flags the agent after signing.**
+Some endpoint security products flag new binaries regardless of signature status. See [Antivirus Exceptions](/deploy/antivirus-exceptions/) for recommended exclusions per platform.

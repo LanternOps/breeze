@@ -1,0 +1,374 @@
+---
+title: Boot & Startup Performance
+description: Collect and analyze device boot times, startup application impact, and identify slow-starting processes.
+sidebar:
+  order: 33
+  label: Boot & Startup Performance
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Boot & Startup Performance gives fleet administrators visibility into how long devices take to boot and which startup applications are delaying readiness. The Breeze agent collects boot phase timings and per-process startup impact data, stores it in a time-series history per device, and surfaces it through both the REST API and the AI assistant. By tracking boot performance over time you can identify regressions, disable high-impact startup items, and verify that optimization changes actually improve user experience.
+
+<Aside>
+  Boot metrics endpoints require authentication with a role that includes the `devices.read` permission for read operations. Triggering on-demand collection and managing startup items require an online device and the `devices.execute` permission. All mutating operations are audit-logged.
+</Aside>
+
+---
+
+## Why Boot Performance Matters
+
+Slow boot times are one of the most common end-user complaints in managed fleets. A device that takes three minutes to reach a usable desktop costs an organization measurable productivity every single day. The problem is compounded when the root cause is invisible -- a startup service added months ago by a software install, a login item that no one remembers enabling, or a degrading disk that inflates OS loader times.
+
+Boot & Startup Performance transforms this from a subjective complaint into quantifiable data:
+
+- **Track boot time trends** across your entire fleet to detect regressions before users report them.
+- **Identify the specific startup items** consuming the most CPU and disk I/O during boot.
+- **Compare boot times** across device groups to evaluate the impact of hardware refreshes, OS upgrades, or policy changes.
+- **Take action directly** by disabling high-impact startup items from the dashboard or through the AI assistant.
+
+---
+
+## Collected Metrics
+
+Each boot record captures timing data broken down by phase, along with a full inventory of startup items and their resource consumption.
+
+### Boot Phase Timings
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bootTimestamp` | timestamp | When the boot occurred (ISO 8601). |
+| `biosSeconds` | number (nullable) | Time spent in BIOS/UEFI firmware initialization before the OS loader starts. |
+| `osLoaderSeconds` | number (nullable) | Time spent in the OS boot loader (kernel initialization, driver loading). |
+| `desktopReadySeconds` | number (nullable) | Time from OS loader handoff to a usable desktop (login screen or user session ready). |
+| `totalBootSeconds` | number | Total boot time from power-on to desktop ready. This is the primary metric. |
+
+### Startup Item Fields
+
+Each startup item detected during boot includes the following:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `itemId` | string | Computed identity key for deduplication (derived from type, path, or name). |
+| `name` | string | Application or service name. |
+| `type` | enum | One of: `service`, `run_key`, `startup_folder`, `login_item`, `launch_agent`, `launch_daemon`, `systemd`, `cron`, `init_d`. |
+| `path` | string | Executable path or registry key for the startup entry. |
+| `enabled` | boolean | Whether the item is currently enabled to run at boot. |
+| `cpuTimeMs` | number | CPU time consumed during startup in milliseconds. |
+| `diskIoBytes` | number | Disk I/O bytes consumed during startup. |
+| `impactScore` | number | Computed impact score (higher values indicate greater boot performance impact). |
+
+<Aside type="tip">
+  The `impactScore` is the best single metric for identifying optimization targets. Sort startup items by descending impact score to find the items that contribute the most to slow boot times. Items with high CPU time but low disk I/O (or vice versa) may have a lower combined impact than items that stress both resources.
+</Aside>
+
+### Summary Statistics
+
+When querying boot history, the API returns summary statistics computed across all returned boot records:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `totalBoots` | number | Number of boot records in the response. |
+| `avgBootTimeSeconds` | number | Mean total boot time across all records. |
+| `fastestBootSeconds` | number (nullable) | Minimum total boot time observed. |
+| `slowestBootSeconds` | number (nullable) | Maximum total boot time observed. |
+
+---
+
+## Platform Support
+
+The Breeze agent uses platform-specific data sources to collect boot timing and startup item information.
+
+<Tabs>
+  <TabItem label="Windows">
+    **Boot Timing**: Event Tracing for Windows (ETW) and the Windows Event Log. The agent reads boot performance events from the `Microsoft-Windows-Diagnostics-Performance/Operational` log and the `System` event log to extract BIOS time, OS loader time, and desktop ready time.
+
+    **Startup Items**: The agent enumerates items from:
+    - Windows services configured for automatic start (`service` type)
+    - `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run` and `HKCU\...\Run` registry keys (`run_key` type)
+    - The common Startup folder (`startup_folder` type)
+
+    Each item's CPU and disk I/O impact is derived from ETW boot trace data when available.
+  </TabItem>
+  <TabItem label="macOS">
+    **Boot Timing**: The `log show` command with the `--predicate` filter targeting kernel boot events. The agent parses timestamps from launchd and kernel log entries to calculate boot phase durations.
+
+    **Startup Items**: The agent enumerates:
+    - Login Items configured in System Settings (`login_item` type)
+    - LaunchAgents from `~/Library/LaunchAgents` and `/Library/LaunchAgents` (`launch_agent` type)
+    - LaunchDaemons from `/Library/LaunchDaemons` and `/System/Library/LaunchDaemons` (`launch_daemon` type)
+  </TabItem>
+  <TabItem label="Linux">
+    **Boot Timing**: The `systemd-analyze` command. The agent runs `systemd-analyze blame` and `systemd-analyze time` to extract per-service and per-phase boot timings. On non-systemd distributions, boot timing data may be limited.
+
+    **Startup Items**: The agent enumerates:
+    - Systemd units enabled for the default target (`systemd` type)
+    - Cron `@reboot` entries (`cron` type)
+    - Init.d scripts if present (`init_d` type)
+  </TabItem>
+</Tabs>
+
+---
+
+## Data Collection
+
+Boot performance data enters the system through two mechanisms.
+
+### Heartbeat Collection
+
+The primary collection path. After the agent detects a reboot (by comparing the current boot timestamp against the last known value), it collects boot metrics and submits them to the API during the next heartbeat cycle. This happens automatically and requires no user intervention.
+
+The agent submits data via `POST /api/v1/agents/:id/boot-performance`. The API validates the payload, normalizes startup items (deduplicating by computed `itemId`), and upserts the record into the `device_boot_metrics` table. If a record with the same `deviceId` and `bootTimestamp` already exists, it is updated rather than duplicated.
+
+### On-Demand Collection
+
+You can trigger an immediate collection from the API or the UI:
+
+```bash
+POST /api/v1/devices/:deviceId/collect-boot-metrics
+```
+
+This dispatches a `collect_boot_performance` command to the agent via the command queue with a 30-second timeout. The device must be online. The response returns the raw command result.
+
+<Aside type="caution">
+  On-demand collection only retrieves data for the most recent boot. It does not retroactively collect historical boot data. If the agent has been running since the last reboot, the data will reflect that boot event.
+</Aside>
+
+### Retention
+
+The system retains the most recent **30 boot records per device**. After each new boot record is ingested, a single SQL pass using `ROW_NUMBER()` deletes any records beyond the retention limit, ordered by boot timestamp descending. This ensures consistent storage growth regardless of how frequently a device reboots.
+
+---
+
+## Viewing Boot Data
+
+### Device Detail Page
+
+Boot performance data is displayed on the device detail page in the dashboard. The boot history section shows:
+
+- A timeline of recent boot times with the phase breakdown (BIOS, OS loader, desktop ready).
+- A sortable list of startup items from the most recent boot, ranked by impact score.
+- Summary statistics (average, fastest, slowest boot times).
+
+### Startup Items View
+
+A dedicated startup items endpoint returns just the items from the most recent boot record:
+
+```bash
+GET /api/v1/devices/:deviceId/startup-items
+```
+
+The response includes:
+
+```json
+{
+  "items": [
+    {
+      "itemId": "service|c:/windows/system32/svchost.exe",
+      "name": "Windows Update",
+      "type": "service",
+      "path": "C:\\Windows\\System32\\svchost.exe",
+      "enabled": true,
+      "cpuTimeMs": 1250,
+      "diskIoBytes": 45000000,
+      "impactScore": 8.7
+    }
+  ],
+  "bootTimestamp": "2026-02-20T08:15:00.000Z",
+  "totalItems": 42
+}
+```
+
+---
+
+## Managing Startup Items
+
+You can enable or disable startup items directly through the API. Both operations require the device to be online and dispatch a `manage_startup_item` command to the agent.
+
+### Disabling a Startup Item
+
+```bash
+POST /api/v1/devices/:deviceId/startup-items/:itemName/disable
+Content-Type: application/json
+
+{
+  "reason": "High impact score - 12.3s CPU time during boot",
+  "itemId": "run_key|hklm/software/microsoft/windows/currentversion/run/onedrive",
+  "itemType": "run_key",
+  "itemPath": "C:\\Users\\admin\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.exe"
+}
+```
+
+| Body Field | Required | Description |
+|------------|----------|-------------|
+| `reason` | No | Explanation for the change. Max 500 characters. Defaults to "No reason provided". |
+| `itemId` | No | Computed identity key for precise matching. |
+| `itemType` | No | Startup item type for disambiguation. |
+| `itemPath` | No | Executable path for disambiguation. |
+
+### Enabling a Startup Item
+
+```bash
+POST /api/v1/devices/:deviceId/startup-items/:itemName/enable
+```
+
+Accepts the same body fields as the disable endpoint.
+
+### Ambiguous Item Resolution
+
+If the `itemName` matches multiple startup items (for example, two services with the same display name but different paths), the API returns a `409 Conflict` response with up to 20 candidates. Provide `itemId`, `itemType`, or `itemPath` to disambiguate:
+
+```json
+{
+  "error": "Startup item selector for \"svchost\" is ambiguous. Provide itemId or itemType+itemPath.",
+  "candidates": [
+    { "itemId": "service|c:/windows/system32/svchost.exe", "name": "svchost", "type": "service", "path": "C:\\Windows\\System32\\svchost.exe", "enabled": true },
+    { "itemId": "service|c:/windows/syswow64/svchost.exe", "name": "svchost", "type": "service", "path": "C:\\Windows\\SysWOW64\\svchost.exe", "enabled": true }
+  ]
+}
+```
+
+---
+
+## Optimization Recommendations
+
+Use boot performance data to drive systematic optimization across your fleet:
+
+<Steps>
+
+1. **Identify slow devices.** Query boot metrics across your fleet and sort by `totalBootSeconds` descending. Devices consistently above your target threshold (e.g., 60 seconds) are candidates for optimization.
+
+2. **Analyze startup item impact.** For each slow device, review the startup items sorted by `impactScore`. Items with high CPU time, high disk I/O, or both are the primary targets.
+
+3. **Disable non-essential items.** Use the disable endpoint or the AI assistant to disable startup items that are not business-critical. Common high-impact candidates include cloud sync clients, updater services, and telemetry agents.
+
+4. **Verify improvement.** After changes, wait for the next reboot and compare the new `totalBootSeconds` against the historical average. The summary statistics endpoint makes this comparison straightforward.
+
+5. **Monitor for regressions.** Set up alerts or periodic AI analysis to detect when boot times increase beyond acceptable thresholds, indicating a new startup item or system change has degraded performance.
+
+</Steps>
+
+---
+
+## AI Integration
+
+The AI assistant provides two tools for boot performance analysis.
+
+### analyze_boot_performance (Tier 1)
+
+A read-only tool that analyzes boot performance history and startup items for a device. The AI can optionally trigger a fresh collection if the device is online.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string (UUID) | The device to analyze. Required. |
+| `bootsBack` | number | Number of recent boots to analyze (default: 10, max: 30). |
+| `triggerCollection` | boolean | If `true` and device is online, collect fresh boot data before analysis. |
+
+The AI receives boot history, summary statistics, and the full startup item list with impact scores. It can identify trends, flag regressions, and recommend specific items to disable.
+
+### manage_startup_items (Tier 3)
+
+A mutating tool that disables or enables startup items. Requires human approval before execution.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string (UUID) | The device to manage. Required. |
+| `itemName` | string | The exact name of the startup item. Required. |
+| `action` | enum | `disable` or `enable`. Required. |
+| `itemId` | string | Computed identity key for precise matching. |
+| `itemType` | string | Startup item type for disambiguation. |
+| `itemPath` | string | Executable path for disambiguation. |
+| `reason` | string | Explanation for the change. |
+
+### get_user_experience_metrics (Tier 1)
+
+A broader tool that includes boot performance data as part of user experience analysis. It can summarize login performance and session behavior trends across devices or for specific users.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string (UUID) | Optional. Scope metrics to a specific device. |
+| `username` | string | Optional. Scope metrics to a specific user. |
+| `daysBack` | number | Number of days to look back (default varies, max: 365). |
+| `limit` | number | Maximum results to return (max: 500). |
+
+---
+
+## API Reference
+
+All boot metrics endpoints are prefixed with `/api/v1/devices/:deviceId`. Replace `:deviceId` with a valid device UUID.
+
+### Device Boot Metrics
+
+| Method | Path | Description | Permission |
+|--------|------|-------------|------------|
+| `GET` | `/devices/:id/boot-metrics` | Get boot performance history with summary | `devices.read` |
+| `POST` | `/devices/:id/collect-boot-metrics` | Trigger on-demand boot data collection | `devices.execute` |
+| `GET` | `/devices/:id/startup-items` | Get startup items from most recent boot | `devices.read` |
+| `POST` | `/devices/:id/startup-items/:itemName/disable` | Disable a startup item | `devices.execute` |
+| `POST` | `/devices/:id/startup-items/:itemName/enable` | Enable a startup item | `devices.execute` |
+
+### Agent Ingestion
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/agents/:id/boot-performance` | Agent submits boot metrics after reboot detection | Agent bearer token |
+
+### Query Parameters
+
+**GET /devices/:id/boot-metrics**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | number | 30 | Number of boot records to return (max: 100). |
+
+---
+
+## Troubleshooting
+
+### No boot performance data available (404)
+
+The device has not yet submitted any boot metrics. This can happen if:
+
+- The device has not rebooted since the agent was installed.
+- The agent version predates the boot performance feature.
+- The agent encountered an error collecting boot data on the current platform.
+
+Trigger an on-demand collection with `POST /devices/:id/collect-boot-metrics` if the device is online, or wait for the next reboot.
+
+### On-demand collection returns empty or null data
+
+The `collect_boot_performance` command completed but the agent could not parse boot timing data from the OS. This is most common on:
+
+- **Linux** distributions without systemd (the agent relies on `systemd-analyze`).
+- **macOS** systems where the `log show` command is restricted by privacy settings.
+- **Windows** systems where the Diagnostics-Performance event log has been cleared or disabled.
+
+Verify that the platform-specific data source is available and accessible by the agent process.
+
+### "Device is not online" error on collection or startup item management
+
+Both on-demand collection and startup item enable/disable require the device to be online with an active WebSocket connection. Check the device status on its detail page. If the device shows as offline, the agent may have disconnected or the heartbeat has lapsed.
+
+### Startup item disable/enable returns 409 (ambiguous selector)
+
+The `itemName` matched multiple startup items. The response includes up to 20 candidates with their `itemId`, `type`, and `path`. Use the `itemId` field from the desired candidate in a subsequent request to disambiguate. This is common for generic service names like `svchost` on Windows.
+
+### Startup item not found (404)
+
+The specified item name does not match any item in the most recent boot record. The response includes up to 20 available items for reference. Possible causes:
+
+- The item name is misspelled or uses a different casing than the agent reported.
+- The item was removed or renamed since the last boot.
+- The startup items list is from a previous boot and does not reflect the current system state. Trigger a fresh boot data collection to update.
+
+### Boot times seem inaccurate or phases do not add up
+
+Individual phase timings (`biosSeconds`, `osLoaderSeconds`, `desktopReadySeconds`) may not sum exactly to `totalBootSeconds`. This is expected because:
+
+- Some phases overlap or have gaps not captured by the data source.
+- The BIOS time may not be available on all firmware implementations (reported as `null`).
+- Virtual machines often report near-zero BIOS time since there is no physical firmware initialization.
+
+### Historical boot records disappear
+
+The system retains a maximum of 30 boot records per device. Older records are automatically pruned after each new ingestion. This is by design to bound storage growth. If you need longer retention, export the data via the API before it is pruned.

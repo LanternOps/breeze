@@ -1,0 +1,512 @@
+---
+title: Breeze Helper
+description: System tray application providing end-user AI chat, vision-based troubleshooting, and self-service tools.
+sidebar:
+  order: 5
+  label: Breeze Helper
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Breeze Helper is a companion application that runs in the end user's desktop session alongside the Breeze agent service. It provides a system tray icon with status indicators, an AI-powered chat interface for self-service troubleshooting, vision-based screen analysis, and computer control capabilities. The Helper bridges the gap between the background agent service (which runs as SYSTEM/root in Session 0) and the interactive user session where display, input, and notification APIs are available.
+
+The Helper is designed for **end users**, not IT administrators. It speaks in simple, non-technical language and uses a filtered subset of AI tools appropriate for the permission level configured by the organization. Destructive operations always require explicit approval before they reach the device.
+
+<Aside>
+  The Helper requires the Breeze agent to be enrolled and connected. It authenticates to the API using the agent's `brz_` token and communicates with the agent service over a local IPC socket.
+</Aside>
+
+---
+
+## Overview
+
+The Helper serves three audiences:
+
+| Audience | Use Case |
+|----------|----------|
+| **End users** | Self-service troubleshooting, AI chat for common IT questions, disk cleanup, service restarts |
+| **IT administrators** | Remote vision-based diagnostics, screenshot capture, computer control for hands-free remediation |
+| **MSPs / Partners** | White-labeled tray presence on customer machines, org-level feature toggles |
+
+Key capabilities:
+
+- **AI Chat** -- conversational interface powered by Claude, scoped to the local device
+- **Vision Troubleshooting** -- screenshot capture and AI analysis of what is on screen
+- **Computer Control** -- AI-driven mouse and keyboard interaction for guided fixes
+- **Self-Service Tools** -- disk cleanup, service management, alert viewing, security posture checks
+- **System Tray** -- persistent status indicator with contextual menu items
+- **Desktop Notifications** -- IT-initiated notifications delivered to the user's session
+
+---
+
+## Installation
+
+The Helper is installed automatically as part of the Breeze agent deployment. On Windows, the agent service (Session 0) spawns the Helper into the user's desktop session via the session broker. On Linux and macOS, it runs as a user-level service.
+
+<Tabs>
+  <TabItem label="Windows">
+
+The Helper is spawned automatically by the Breeze agent service when a user logs in. The session broker (`sessionbroker/spawner_windows.go`) detects active user sessions and launches the Helper process using `CreateProcessAsUser` with a SYSTEM token, targeting the user's desktop session ID.
+
+No manual installation is required. The Helper binary is bundled with the agent installer.
+
+```
+C:\Program Files\Breeze\breeze-helper.exe
+```
+
+  </TabItem>
+  <TabItem label="Linux">
+
+Install the user helper and enable it as a user-level systemd service:
+
+```bash
+sudo make install-user-helper
+systemctl --user enable breeze-agent-user
+systemctl --user start breeze-agent-user
+```
+
+The Helper connects to the agent service via a Unix domain socket at `/var/run/breeze/helper.sock`.
+
+  </TabItem>
+  <TabItem label="macOS">
+
+Install the user helper as a LaunchAgent:
+
+```bash
+sudo make install-user-helper
+# LaunchAgent auto-starts at login
+```
+
+The LaunchAgent plist is installed to `~/Library/LaunchAgents/com.breeze.helper.plist` and starts automatically when the user logs in.
+
+  </TabItem>
+</Tabs>
+
+### Verifying the Helper Is Running
+
+The Helper announces its capabilities to the agent service immediately after authenticating over IPC. Check the agent logs for confirmation:
+
+```
+user helper connected and authenticated agentId=<device-id>
+```
+
+The IPC authentication handshake includes:
+
+| Field | Description |
+|-------|-------------|
+| `ProtocolVersion` | IPC protocol version for compatibility checks |
+| `UID` / `SID` | Unix UID or Windows SID of the logged-in user |
+| `Username` | Current username |
+| `SessionID` | Unique helper session identifier (`helper-<username>-<pid>`) |
+| `DisplayEnv` | Display server: `windows`, `quartz`, `x11:<DISPLAY>`, or `wayland:<WAYLAND_DISPLAY>` |
+| `PID` | Helper process ID |
+| `BinaryHash` | SHA-256 hash of the Helper binary for integrity verification |
+| `WinSessionID` | Windows session ID (for Session 0 routing) |
+
+After authentication, the Helper sends a capabilities message reporting what it can do in the current session:
+
+| Capability | Description |
+|------------|-------------|
+| `CanNotify` | Desktop notifications available (requires display) |
+| `CanTray` | System tray icon available (requires display) |
+| `CanCapture` | Screen capture available (requires display) |
+| `CanClipboard` | Clipboard access available (requires display) |
+| `DisplayServer` | Active display server string |
+
+---
+
+## AI Chat
+
+The Helper provides a conversational AI interface for end users. Chat sessions are powered by Claude and scoped to the single device where the Helper is running. The AI assistant can view device details, analyze performance metrics, check security posture, manage alerts, browse files, and more -- all through natural language.
+
+### Creating a Chat Session
+
+<Steps>
+
+1. Click the Breeze tray icon and select **Chat** (or open the Helper window).
+
+2. The Helper authenticates to the API using the agent's bearer token and creates a new AI session.
+
+3. Type a question or describe an issue. The AI responds using real device data from the tools available at your permission level.
+
+4. Sessions persist for 24 hours. You can resume a previous session or start a new one.
+
+</Steps>
+
+### Session Architecture
+
+```
+User types message
+  → Helper app (Tauri frontend)
+  → POST /helper/chat/sessions/:id/messages
+    Authorization: Bearer brz_<agent-token>
+  → API validates agent token (SHA-256 hash lookup)
+  → Pre-flight: session validity, rate limit, budget check, input sanitization
+  → Streaming session manager invokes Claude with filtered tool set
+  → SSE stream returns AI response chunks + tool execution events
+  → Helper renders response in chat UI
+```
+
+Each session is stored in the `ai_sessions` table with a `contextSnapshot` that records the source as `helper`, the device ID, hostname, OS type, permission level, and optionally the logged-in username (`helperUser`).
+
+### Session Constraints
+
+| Constraint | Value |
+|------------|-------|
+| Maximum session age | 24 hours |
+| Rate limit | 30 messages per 60 seconds per device |
+| Maximum message length | 10,000 characters |
+| Turn limit | Configured per session (default from `ai_sessions.maxTurns`) |
+| Model | `claude-sonnet-4-5-20250929` |
+| Budget | Org-level AI budget applies; sessions are rejected when budget is exhausted |
+
+### Tool Permission Levels
+
+The Helper uses a tiered tool whitelist that controls which AI tools are available. The permission level is set when creating a session and stored in the session's `contextSnapshot`.
+
+| Tool | Basic | Standard | Extended |
+|------|:-----:|:--------:|:--------:|
+| `take_screenshot` | Yes | Yes | Yes |
+| `analyze_screen` | Yes | Yes | Yes |
+| `query_devices` | Yes | Yes | Yes |
+| `get_device_details` | Yes | Yes | Yes |
+| `analyze_metrics` | Yes | Yes | Yes |
+| `get_active_users` | Yes | Yes | Yes |
+| `get_user_experience_metrics` | Yes | Yes | Yes |
+| `get_security_posture` | Yes | Yes | Yes |
+| `get_fleet_health` | Yes | Yes | Yes |
+| `analyze_disk_usage` | Yes | Yes | Yes |
+| `query_audit_log` | Yes | Yes | Yes |
+| `search_logs` | Yes | Yes | Yes |
+| `get_log_trends` | Yes | Yes | Yes |
+| `query_change_log` | Yes | Yes | Yes |
+| `detect_log_correlations` | -- | Yes | Yes |
+| `manage_alerts` | -- | Yes | Yes |
+| `manage_services` | -- | Yes | Yes |
+| `disk_cleanup` | -- | Yes | Yes |
+| `file_operations` | -- | Yes | Yes |
+| `computer_control` | -- | Yes | Yes |
+| `execute_command` | -- | -- | Yes |
+| `security_scan` | -- | -- | Yes |
+| `network_discovery` | -- | -- | Yes |
+
+<Aside type="caution">
+  The **extended** permission level grants access to `execute_command`, `security_scan`, and `network_discovery`. These are Tier 3 tools that require explicit approval before execution. Only enable extended mode for trusted environments where end users should be able to trigger device commands.
+</Aside>
+
+The default permission level is `standard`. Organizations can override this per-device or globally through the Helper configuration endpoint.
+
+---
+
+## Vision Troubleshooting
+
+The Helper can capture the user's screen and send it to the AI for analysis. This is useful when an end user describes a visual problem ("my screen looks weird", "there's an error dialog I don't understand") and the AI needs to see what they see.
+
+### How It Works
+
+<Steps>
+
+1. The AI invokes the `take_screenshot` tool during a chat conversation.
+
+2. The Helper captures the screen using platform-native APIs (DXGI on Windows, Core Graphics on macOS, X11/Wayland on Linux). These APIs are only available in the user session, not in Session 0 -- this is why the Helper exists.
+
+3. The screenshot is uploaded to the API via `POST /helper/screenshots` as a base64-encoded image.
+
+4. The AI receives the screenshot and analyzes it using vision capabilities to identify error dialogs, misconfigurations, or UI anomalies.
+
+5. The AI explains what it sees in plain language and suggests next steps.
+
+</Steps>
+
+### Screenshot Storage
+
+| Field | Description |
+|-------|-------------|
+| `deviceId` | Device the screenshot was captured on |
+| `orgId` | Organization scope |
+| `sessionId` | AI session that triggered the capture (optional) |
+| `capturedBy` | Always `helper` for Helper-initiated screenshots |
+| `retentionHours` | 24 hours (auto-deleted after expiration) |
+| `maxSize` | 2 MB (base64 encoded, ~1.5 MB raw) |
+
+<Aside>
+  Screenshots are stored with a 24-hour retention policy and automatically deleted. They are scoped to the organization and device, and are not accessible outside the originating AI session.
+</Aside>
+
+### Screen Analysis
+
+The `analyze_screen` tool goes beyond simple screenshot capture. It interprets the visual content and provides structured analysis:
+
+- Identifies error dialogs, warning banners, and notification toasts
+- Reads text from UI elements (application titles, status bars, error messages)
+- Recognizes common application states (loading screens, login prompts, crash dialogs)
+- Suggests remediation steps based on what it observes
+
+---
+
+## Computer Control
+
+When enabled (standard and extended permission levels), the AI can interact with the user's desktop by controlling the mouse and keyboard. This allows the AI to perform guided fixes -- clicking buttons, typing commands, navigating menus -- while explaining each step to the user.
+
+Computer control commands are dispatched from the API to the agent service, then forwarded over IPC to the Helper process running in the user's session. The Helper executes the commands using platform-native input APIs (SendInput on Windows, Core Graphics events on macOS, XTest on Linux).
+
+<Aside type="caution">
+  Computer control is a powerful capability. The AI always explains what it intends to do before acting, and destructive operations require user approval. The `computer_control` tool is not available at the `basic` permission level.
+</Aside>
+
+### Supported Actions
+
+| Action | Description |
+|--------|-------------|
+| Mouse move | Move cursor to specific screen coordinates |
+| Mouse click | Left, right, or middle click at coordinates |
+| Mouse double-click | Double-click at coordinates |
+| Keyboard input | Type text or press key combinations |
+| Scroll | Scroll up or down at current position |
+
+### Command Flow
+
+```
+AI decides to click a button
+  → tool call: computer_control { action: "click", x: 450, y: 320 }
+  → API sends command to agent via WebSocket
+  → Agent forwards to Helper via IPC (TypeCommand)
+  → Helper executes ComputerAction in user session
+  → Result returned through IPC → WebSocket → AI
+```
+
+---
+
+## Self-Service Tools
+
+At the **standard** permission level and above, end users can perform common IT tasks through the AI chat without contacting their IT team:
+
+| Task | Tool | What It Does |
+|------|------|-------------|
+| Check disk space | `analyze_disk_usage` | Shows what is consuming disk space with cleanup candidates |
+| Clean up disk | `disk_cleanup` | Previews and removes temp files, browser cache, trash |
+| View alerts | `manage_alerts` | Lists active alerts for this device, acknowledges them |
+| Restart a service | `manage_services` | Lists, starts, stops, or restarts system services |
+| Browse files | `file_operations` | Lists and reads files (write/delete requires extended level) |
+| Check security | `get_security_posture` | Shows device security score and recommendations |
+| View metrics | `analyze_metrics` | Analyzes CPU, RAM, disk, and network trends |
+| Search logs | `search_logs` | Searches agent diagnostic logs |
+
+All self-service actions are scoped to the single device where the Helper is running. The AI uses the device ID from the Helper's authentication context and cannot access other devices in the organization.
+
+---
+
+## Organization Controls
+
+Organizations can enable or disable the Helper chat feature on a per-org basis. The toggle is delivered to agents through the heartbeat response, so changes take effect within 60 seconds without requiring an agent restart.
+
+### Enabling / Disabling Helper Chat
+
+The Helper chat toggle is managed through organization settings. When disabled, the Helper tray icon remains visible but the chat interface is hidden.
+
+```bash
+# Check current helper settings (returned in heartbeat response)
+# The heartbeat response includes:
+{
+  "helperEnabled": true | false
+}
+```
+
+The agent reads `helperEnabled` from each heartbeat response and stores it as an atomic boolean. When the value changes, the Helper is notified to show or hide its chat UI.
+
+### Configuration Endpoint
+
+The Helper retrieves its configuration on startup:
+
+```
+GET /helper/config
+Authorization: Bearer brz_<agent-token>
+```
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Whether the Helper chat is active for this org |
+| `permissionLevel` | string | Default permission level: `basic`, `standard`, or `extended` |
+| `allowScreenCapture` | boolean | Whether screenshot/vision tools are available |
+| `sessionRetentionHours` | number | How long chat sessions are retained (default: 24) |
+
+---
+
+## Architecture
+
+### Process Model
+
+```
+┌─────────────────────────────────┐
+│  Agent Service (Session 0)      │
+│  - Runs as SYSTEM / root        │
+│  - WebSocket to API server      │
+│  - Heartbeat, commands, patching│
+│  - IPC server (Unix socket /    │
+│    named pipe)                  │
+├─────────────┬───────────────────┤
+│             │ IPC               │
+│             ▼                   │
+│  ┌─────────────────────────┐   │
+│  │ Helper (User Session)   │   │
+│  │ - System tray icon      │   │
+│  │ - AI chat UI            │   │
+│  │ - Screen capture (DXGI/ │   │
+│  │   CoreGraphics/X11)     │   │
+│  │ - Input injection       │   │
+│  │ - Desktop notifications │   │
+│  │ - Script execution      │   │
+│  │   (user context)        │   │
+│  └─────────────────────────┘   │
+└─────────────────────────────────┘
+```
+
+### IPC Message Types
+
+The Helper communicates with the agent service over a local IPC connection (Unix domain socket on Linux/macOS, named pipe on Windows). Messages are typed envelopes with JSON payloads.
+
+| Message Type | Direction | Description |
+|-------------|-----------|-------------|
+| `auth_request` | Helper -> Agent | Authentication handshake with user identity and binary hash |
+| `auth_response` | Agent -> Helper | Accepted/rejected with session key and allowed scopes |
+| `capabilities` | Helper -> Agent | Report display, notification, capture, clipboard capabilities |
+| `command` | Agent -> Helper | Execute a command in the user session (scripts, screenshots, computer actions) |
+| `command_result` | Helper -> Agent | Command execution result with status, output, and error |
+| `notify` | Agent -> Helper | Show a desktop notification to the user |
+| `notify_result` | Helper -> Agent | Whether the notification was delivered |
+| `tray_update` | Agent -> Helper | Update tray icon status, tooltip, and menu items |
+| `desktop_start` | Agent -> Helper | Start a remote desktop capture session |
+| `desktop_stop` | Agent -> Helper | Stop a remote desktop capture session |
+| `desktop_input` | Agent -> Helper | Forward mouse/keyboard input to the user's desktop |
+| `clipboard_get` | Agent -> Helper | Read clipboard contents from the user session |
+| `clipboard_set` | Agent -> Helper | Write content to the user session clipboard |
+| `sas_request` | Helper -> Agent | Request Ctrl+Alt+Del (Secure Attention Sequence) via the SCM service |
+| `sas_response` | Agent -> Helper | SAS request result |
+| `ping` / `pong` | Bidirectional | Keepalive (5-second interval) |
+| `disconnect` | Either | Graceful shutdown signal |
+
+### Session Security
+
+- **Authentication**: The Helper sends its UID/SID, username, PID, and a SHA-256 hash of its own binary. The agent service validates these against expected values.
+- **Session key**: After authentication, the agent issues a hex-encoded session key used for subsequent message integrity.
+- **Scoped access**: The agent controls which IPC message types the Helper is allowed to receive via `AllowedScopes`.
+- **API authentication**: Chat requests to the API use the agent's `brz_` bearer token, which is validated by SHA-256 hash lookup against the `devices.agentTokenHash` column.
+- **Org isolation**: All API queries include an organization condition derived from the device's `orgId`, ensuring the Helper cannot access data from other organizations.
+
+---
+
+## API Reference
+
+### Helper Chat
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/helper/chat/sessions` | Create a new AI chat session |
+| GET | `/helper/chat/sessions` | List chat sessions for this device |
+| POST | `/helper/chat/sessions/:id/messages` | Send a message and receive SSE response stream |
+| GET | `/helper/chat/sessions/:id/messages` | Load message history for a session |
+| DELETE | `/helper/chat/sessions/:id` | Close a chat session |
+| POST | `/helper/chat/sessions/:id/approve/:executionId` | Approve or reject a pending tool execution |
+
+### Helper Configuration & Screenshots
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/helper/config` | Get Helper configuration for this device |
+| POST | `/helper/screenshots` | Upload a screenshot for AI analysis |
+
+<Aside>
+  All Helper endpoints require a valid agent bearer token (`Authorization: Bearer brz_...`). The token is validated by hashing with SHA-256 and matching against the `agentTokenHash` column in the `devices` table. Decommissioned and quarantined devices are rejected with 403.
+</Aside>
+
+### Creating a Session
+
+```bash
+POST /helper/chat/sessions
+Content-Type: application/json
+Authorization: Bearer brz_<agent-token>
+
+{
+  "permissionLevel": "standard",
+  "helperUser": "jsmith"
+}
+```
+
+Both fields are optional. `permissionLevel` defaults to `standard`. `helperUser` associates the session with a specific logged-in user for filtering.
+
+**Response (201):**
+
+```json
+{
+  "id": "uuid",
+  "orgId": "uuid"
+}
+```
+
+### Sending a Message
+
+```bash
+POST /helper/chat/sessions/:id/messages
+Content-Type: application/json
+Authorization: Bearer brz_<agent-token>
+
+{
+  "content": "Why is my computer running slowly?"
+}
+```
+
+The response is an SSE stream. Events include:
+
+| Event | Description |
+|-------|-------------|
+| `text_delta` | Incremental text from the AI response |
+| `tool_use` | AI is invoking a tool (includes tool name and parameters) |
+| `tool_result` | Tool execution result |
+| `approval_required` | A Tier 3 tool needs user approval before execution |
+| `title_updated` | Session title was auto-generated from the first message |
+| `done` | Stream complete |
+| `error` | An error occurred during processing |
+
+### Approving a Tool Execution
+
+```bash
+POST /helper/chat/sessions/:id/approve/:executionId
+Content-Type: application/json
+Authorization: Bearer brz_<agent-token>
+
+{
+  "approved": true
+}
+```
+
+Returns `{ "success": true, "approved": true }` on success.
+
+---
+
+## Troubleshooting
+
+**Helper tray icon does not appear.**
+The Helper requires a display server to show the tray icon. On Linux, verify that `DISPLAY` or `WAYLAND_DISPLAY` is set in the user session. On Windows, the Helper is spawned by the session broker -- check agent logs for "starting helper in session" messages. If the agent service is not running, the Helper cannot start.
+
+**"Invalid agent credentials" when Helper tries to chat.**
+The Helper authenticates to the API using the agent's `brz_` token. If the device was re-enrolled or the token was rotated, the Helper's cached token may be stale. Restart the agent service to pick up the new token. Also verify the device is not in `decommissioned` or `quarantined` status.
+
+**AI chat returns "Rate limit exceeded."**
+The Helper enforces a rate limit of 30 messages per 60 seconds per device. Wait for the window to reset before sending another message. If multiple users share a device, they share the same rate limit.
+
+**AI chat returns "Unable to verify budget."**
+The organization's AI budget may be exhausted or the budget service is temporarily unavailable. Contact your IT administrator to check the org AI budget in **Settings > AI Configuration**.
+
+**Screenshot capture fails.**
+Screen capture requires display access. On Windows, DXGI requires the Helper to be running in the user's desktop session (not Session 0). On Linux, the Helper needs access to the X11 or Wayland display. Check that `CanCapture` is `true` in the capabilities message logged at startup.
+
+**Computer control actions have no effect.**
+Input injection requires the Helper to have appropriate permissions. On Windows, the Helper runs with a SYSTEM token that can `OpenInputDesktop(GENERIC_ALL)` for UAC and lock screen access. On Linux, `XTest` extension must be available. On macOS, the Helper needs Accessibility permissions in System Preferences > Privacy & Security > Accessibility.
+
+**Helper chat is not visible despite being installed.**
+The organization may have disabled Helper chat. Check the heartbeat response for `helperEnabled: false`. An administrator can re-enable it through organization settings. The change takes effect within 60 seconds (next heartbeat cycle).
+
+**Session expired after 24 hours.**
+Helper chat sessions have a 24-hour maximum lifetime. Expired sessions cannot receive new messages. Start a new session to continue the conversation. Previous session history is preserved and can be listed via `GET /helper/chat/sessions`.

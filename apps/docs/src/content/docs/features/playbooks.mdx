@@ -1,0 +1,430 @@
+---
+title: Playbooks
+description: Predefined and custom playbooks for automated incident response, remediation workflows, and standard operating procedures.
+sidebar:
+  order: 38
+  label: Playbooks
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Playbooks are structured, multi-step remediation workflows that run against a single device. Each playbook defines an ordered sequence of steps — diagnose, act, wait, verify, rollback — that execute tools on the target device and evaluate the results. Playbooks codify your standard operating procedures so that incident response is consistent, auditable, and repeatable regardless of who triggers it.
+
+Breeze ships with built-in playbooks for common scenarios (disk cleanup, service restart, memory pressure relief). Organizations can also create custom playbooks scoped to their own environment. Playbooks can be triggered manually by administrators, automatically by the AI assistant in response to alerts, or programmatically through the API.
+
+Every execution is recorded with per-step timing, tool input/output, and pass/fail status. If a step fails, the playbook's failure policy determines whether execution stops, continues, or triggers a rollback sequence.
+
+---
+
+## Key Concepts
+
+### Step Types
+
+Each step in a playbook has a `type` that determines its role in the workflow:
+
+| Type | Purpose |
+|------|---------|
+| `diagnose` | Collect baseline data before remediation. Runs a tool and captures current state for later comparison. |
+| `act` | Perform a remediation action. Runs a tool that modifies the device (restart a service, delete files, etc.). |
+| `wait` | Pause execution for a specified number of seconds. Allows the system to stabilize before verification. |
+| `verify` | Check that the remediation achieved the desired result. Evaluates a condition against tool output. |
+| `rollback` | Undo changes if verification fails. Only executed when the failure policy is set to `rollback`. |
+
+### Execution Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Execution record created but no steps have started |
+| `running` | At least one step is actively executing |
+| `waiting` | Execution is paused on a `wait` step |
+| `completed` | All steps finished successfully and verification passed |
+| `failed` | A step failed and the failure policy stopped execution |
+| `rolled_back` | A step failed and the rollback sequence was executed |
+| `cancelled` | Execution was cancelled by a user or system before completion |
+
+### Step Result Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Step has not started yet |
+| `running` | Step is currently executing |
+| `completed` | Step finished successfully |
+| `failed` | Step encountered an error |
+| `skipped` | Step was bypassed (e.g., remaining steps after a failure with `stop` policy) |
+
+### Failure Policies
+
+Each step can define an `onFailure` behavior that controls what happens when it fails:
+
+| Policy | Behavior |
+|--------|----------|
+| `stop` | Abort the playbook immediately. Remaining steps are marked `skipped`. This is the default. |
+| `continue` | Log the failure and proceed to the next step. |
+| `rollback` | Execute any `rollback`-type steps in reverse order, then mark the execution as `rolled_back`. |
+
+---
+
+## Built-in Playbooks
+
+Breeze includes three built-in playbooks that are seeded into the database on startup. Built-in playbooks have `isBuiltIn: true` and a `null` organization ID, making them available to all organizations. They are updated automatically when the API starts — if a built-in playbook's definition changes in a new release, the existing database record is updated via upsert.
+
+### Disk Cleanup
+
+**Category:** `disk`
+**Required permissions:** `devices:read`, `devices:execute`
+
+A four-phase workflow that frees disk space safely:
+
+<Steps>
+
+1. **Capture baseline disk usage** -- Runs the `analyze_disk_usage` tool to collect current disk utilization and identify cleanup candidates.
+
+2. **Preview safe cleanup candidates** -- Runs `disk_cleanup` in preview mode against safe categories: temporary files, browser cache, package cache, and trash. No files are deleted in this step.
+
+3. **Execute cleanup** -- Runs `disk_cleanup` in execute mode, deleting the files identified in the preview step.
+
+4. **Wait for filesystem metrics** -- Pauses for 30 seconds to allow disk metrics to refresh.
+
+5. **Verify disk usage improved** -- Runs `analyze_disk_usage` again and checks that `disk_usage_percent` is below 90%. If verification fails, execution stops.
+
+</Steps>
+
+### Service Restart with Health Check
+
+**Category:** `service`
+**Required permissions:** `devices:read`, `devices:execute`
+**Trigger conditions:** Can be linked to `service_down` alerts (auto-execute is disabled by default)
+
+<Steps>
+
+1. **Check current service status** -- Uses `manage_services` to read the service state before remediation.
+
+2. **Restart target service** -- Restarts the service specified by the `{{serviceName}}` variable.
+
+3. **Wait for service startup** -- Pauses for 10 seconds to allow the service to initialize.
+
+4. **Verify service health** -- Checks that `service_status` equals `running`. If the service is not running after restart, execution stops.
+
+</Steps>
+
+### Memory Pressure Relief
+
+**Category:** `memory`
+**Required permissions:** `devices:read`, `devices:execute`
+
+<Steps>
+
+1. **Capture baseline memory metrics** -- Runs `analyze_metrics` to check RAM utilization over the last hour.
+
+2. **Restart memory-heavy service** -- Restarts the service specified by `{{serviceName}}` to release held memory.
+
+3. **Wait for memory stabilization** -- Pauses for 300 seconds (5 minutes) to allow memory metrics to settle.
+
+4. **Verify memory improved** -- Checks that `ram_usage_percent` is below 85%. If memory usage is still elevated, execution stops.
+
+</Steps>
+
+<Aside>
+  Built-in playbooks use `{{variableName}}` template placeholders for device-specific values like `{{deviceId}}` and `{{serviceName}}`. When executing a built-in playbook, pass the required variables in the `variables` field of the execute request body.
+</Aside>
+
+---
+
+## Custom Playbooks
+
+Organizations can create custom playbooks scoped to their own environment. Custom playbooks have an `orgId` set to the creating organization and are only visible to users with access to that organization.
+
+### Creating a custom playbook
+
+Custom playbooks are created by inserting into the `playbook_definitions` table through the API or directly via the database. Each playbook definition includes:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Human-readable playbook name (max 255 characters) |
+| `description` | text | Yes | Detailed description of what the playbook does |
+| `steps` | PlaybookStep[] | Yes | Ordered array of step definitions |
+| `triggerConditions` | object | No | Conditions under which the playbook can be auto-triggered |
+| `category` | string | No | Grouping category: `disk`, `service`, `memory`, `patch`, or `security` |
+| `requiredPermissions` | string[] | No | Permissions the executing user must have (defaults to `[]`) |
+| `isActive` | boolean | No | Whether the playbook is available for execution (defaults to `true`) |
+
+### Trigger Conditions
+
+Trigger conditions control when a playbook can be automatically activated:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `alertTypes` | string[] | Alert types that can trigger this playbook (e.g., `["service_down", "high_cpu"]`) |
+| `deviceTags` | string[] | Only trigger for devices with these tags |
+| `autoExecute` | boolean | If `true`, execute automatically when conditions match. If `false`, require manual confirmation. |
+| `minSeverity` | string | Minimum alert severity to trigger: `low`, `medium`, `high`, or `critical` |
+
+<Aside type="caution">
+  Setting `autoExecute: true` means the playbook runs without human confirmation when triggered by a matching alert. Use this only for well-tested, low-risk remediation workflows. All built-in playbooks ship with `autoExecute: false` as a safety measure.
+</Aside>
+
+---
+
+## Playbook Steps
+
+Each step in a playbook is defined as a JSON object with the following fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Step type: `diagnose`, `act`, `wait`, `verify`, or `rollback` |
+| `name` | string | Yes | Short name displayed in the execution log |
+| `description` | string | Yes | Detailed explanation of what this step does |
+| `tool` | string | No | Name of the tool to execute (not required for `wait` steps) |
+| `toolInput` | object | No | Key-value pairs passed to the tool. Supports `{{variable}}` template placeholders. |
+| `waitSeconds` | number | No | Number of seconds to pause (only used by `wait` steps) |
+| `verifyCondition` | object | No | Condition to evaluate after tool execution (used by `verify` steps) |
+| `onFailure` | string | No | Failure behavior for this step: `stop`, `continue`, or `rollback` |
+
+### Verification Conditions
+
+Verify steps evaluate a condition against the tool output to determine success:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `metric` | string | The metric name to evaluate from the tool's output |
+| `operator` | string | Comparison operator: `lt` (less than), `gt` (greater than), `eq` (equal), `ne` (not equal), `contains` |
+| `value` | any | The expected value to compare against |
+
+**Example:** Verify disk usage is below 90%:
+
+```json
+{
+  "type": "verify",
+  "name": "Verify disk usage",
+  "description": "Confirm disk usage dropped below threshold",
+  "tool": "analyze_disk_usage",
+  "toolInput": { "deviceId": "{{deviceId}}", "refresh": true },
+  "verifyCondition": {
+    "metric": "disk_usage_percent",
+    "operator": "lt",
+    "value": 90
+  },
+  "onFailure": "stop"
+}
+```
+
+---
+
+## Triggers
+
+Playbooks can be activated through several mechanisms:
+
+### Manual execution
+
+Any user with the required permissions can execute a playbook on a specific device through the API:
+
+```bash
+POST /playbooks/:playbookId/execute
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "deviceId": "device-uuid",
+  "variables": {
+    "serviceName": "nginx"
+  }
+}
+```
+
+The `variables` object provides runtime values for `{{variable}}` placeholders in step `toolInput` fields. The `context` field can pass additional metadata such as an `alertId` or `conversationId` for traceability.
+
+### AI-triggered execution
+
+The Breeze AI assistant can execute playbooks as part of an automated incident response conversation. When the AI identifies a matching playbook for a detected issue, it calls the execute endpoint with `triggeredBy: "ai"` and includes the `conversationId` in the execution context. The AI then monitors execution progress and updates step results as each step completes.
+
+### Alert-triggered execution
+
+Playbooks with `triggerConditions.alertTypes` configured can respond to matching alerts. When an alert fires and its type matches a playbook's trigger conditions:
+
+- If `autoExecute` is `true`, the playbook runs immediately on the affected device.
+- If `autoExecute` is `false`, the playbook is suggested to the operator but requires manual confirmation.
+
+Additional filtering applies: `deviceTags` restricts matching to devices with specific tags, and `minSeverity` sets the minimum alert severity that qualifies.
+
+---
+
+## Execution History
+
+Every playbook run creates an execution record in the `playbook_executions` table. Execution records include:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique execution UUID |
+| `orgId` | Organization the execution belongs to |
+| `deviceId` | Target device UUID |
+| `playbookId` | Playbook definition UUID |
+| `status` | Current execution status |
+| `currentStepIndex` | Index of the step currently executing (0-based) |
+| `steps` | Array of per-step results with timing, tool output, and status |
+| `context` | Execution context including alertId, conversationId, and variables |
+| `errorMessage` | Error description if the execution failed |
+| `rollbackExecuted` | Whether a rollback sequence was triggered |
+| `triggeredBy` | How the execution was initiated (e.g., `ai`, `manual`, `alert`) |
+| `triggeredByUserId` | UUID of the user who triggered the execution (if applicable) |
+| `startedAt` | Timestamp when the first step began |
+| `completedAt` | Timestamp when the execution finished |
+
+### Viewing execution results
+
+List all executions with optional filters:
+
+```
+GET /playbooks/executions?deviceId=&playbookId=&status=&limit=50
+```
+
+Get full detail for a single execution, including the playbook definition and device information:
+
+```
+GET /playbooks/executions/:executionId
+```
+
+The response includes the complete `steps` array with per-step results:
+
+```json
+{
+  "execution": {
+    "id": "exec-uuid",
+    "status": "completed",
+    "currentStepIndex": 4,
+    "steps": [
+      {
+        "stepIndex": 0,
+        "stepName": "Capture baseline disk usage",
+        "status": "completed",
+        "toolUsed": "analyze_disk_usage",
+        "toolInput": { "deviceId": "device-uuid", "refresh": true },
+        "toolOutput": "Disk usage: 94.2%...",
+        "startedAt": "2026-02-23T10:00:00.000Z",
+        "completedAt": "2026-02-23T10:00:03.500Z",
+        "durationMs": 3500
+      }
+    ]
+  },
+  "playbook": { "id": "...", "name": "Disk Cleanup", "category": "disk" },
+  "device": { "id": "...", "hostname": "web-server-01" }
+}
+```
+
+### Updating execution progress
+
+As each step completes, the execution record is updated via PATCH:
+
+```bash
+PATCH /playbooks/executions/:executionId
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "status": "running",
+  "currentStepIndex": 2,
+  "steps": [
+    {
+      "stepIndex": 0,
+      "stepName": "Capture baseline",
+      "status": "completed",
+      "toolUsed": "analyze_disk_usage",
+      "durationMs": 3500
+    }
+  ]
+}
+```
+
+<Aside>
+  The PATCH endpoint uses optimistic locking. If the execution was modified concurrently (e.g., by another API call or the AI assistant), the request returns `409 Conflict` and must be retried with the current state.
+</Aside>
+
+### Status transitions
+
+Execution status transitions are strictly validated. The allowed transitions are:
+
+| From | Allowed transitions |
+|------|---------------------|
+| `pending` | `running`, `cancelled` |
+| `running` | `waiting`, `completed`, `failed`, `rolled_back`, `cancelled` |
+| `waiting` | `running`, `completed`, `failed`, `rolled_back`, `cancelled` |
+| `completed` | (terminal -- no transitions) |
+| `failed` | (terminal -- no transitions) |
+| `rolled_back` | (terminal -- no transitions) |
+| `cancelled` | (terminal -- no transitions) |
+
+---
+
+## API Reference
+
+All playbook endpoints require authentication and scope-based authorization. Organization-scope users see their own organization's playbooks plus all built-in playbooks. Partner-scope users see playbooks across their managed organizations. System-scope users see everything.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/playbooks` | List active playbooks (`?category=disk\|service\|memory\|patch\|security\|all`) |
+| GET | `/playbooks/:id` | Get a single playbook definition by ID |
+| POST | `/playbooks/:id/execute` | Execute a playbook on a device |
+| GET | `/playbooks/executions` | List execution history (`?deviceId=&playbookId=&status=&limit=`) |
+| GET | `/playbooks/executions/:id` | Get full execution detail with playbook and device info |
+| PATCH | `/playbooks/executions/:id` | Update execution progress (status, steps, context) |
+
+### POST /playbooks/:id/execute
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deviceId` | UUID | Yes | Target device to run the playbook against |
+| `variables` | object | No | Runtime values for `{{variable}}` placeholders in step toolInput |
+| `context` | object | No | Additional context (alertId, conversationId, userInput) |
+
+**Response:** Returns the created execution record, the playbook definition (including steps), and the target device.
+
+**Error responses:**
+
+| Status | Reason |
+|--------|--------|
+| 404 | Playbook not found, not active, or access denied |
+| 403 | User lacks required permissions defined by the playbook |
+| 404 | Device not found or access denied |
+| 403 | Playbook and device belong to different organizations |
+| 409 | Referenced resource was deleted concurrently |
+
+### PATCH /playbooks/executions/:id
+
+**Request body (all fields optional, at least one required):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | New execution status (must be a valid transition) |
+| `currentStepIndex` | number | Index of the currently executing step |
+| `steps` | array | Updated step results array |
+| `context` | object | Updated execution context |
+| `errorMessage` | string or null | Error message (set on failure, clear on recovery) |
+| `rollbackExecuted` | boolean | Whether rollback was triggered |
+| `startedAt` | string or null | ISO 8601 timestamp |
+| `completedAt` | string or null | ISO 8601 timestamp |
+
+---
+
+## Troubleshooting
+
+**Playbook not appearing in the list.**
+Verify the playbook's `isActive` field is `true`. The `GET /playbooks` endpoint only returns active playbooks. Also confirm the authenticated user has access to the playbook's organization, or that the playbook is a built-in (built-in playbooks are visible to all organizations).
+
+**Execution fails with "Missing required permissions".**
+The playbook definition specifies `requiredPermissions` that the executing user must have. Check the `missingPermissions` array in the 403 response to identify which permissions are needed. Built-in playbooks require `devices:read` and `devices:execute`.
+
+**Execution stuck in `pending` status.**
+The execute endpoint creates the execution record but does not run steps automatically. The AI assistant or the calling system is responsible for driving execution by invoking each step's tool and updating the execution via PATCH. If no external caller advances the execution, it remains in `pending`.
+
+**PATCH returns 409 Conflict.**
+The execution was modified by another process between your read and write. Re-fetch the execution via `GET /playbooks/executions/:id`, merge your changes with the current state, and retry the PATCH.
+
+**Invalid status transition error.**
+Execution status changes are validated against an allowed-transitions table. Terminal statuses (`completed`, `failed`, `rolled_back`, `cancelled`) cannot transition to any other status. Check the current execution status before attempting a PATCH.
+
+**Verify step fails but remediation worked.**
+The verification condition may be too strict, or the wait step before verification may not allow enough time for metrics to settle. Increase `waitSeconds` on the preceding wait step, or adjust the `verifyCondition` threshold. For disk cleanup, 30 seconds is usually sufficient; for memory relief, 300 seconds (5 minutes) is recommended.
+
+**Template variables not substituted.**
+Ensure the variable names in `toolInput` match the keys passed in the `variables` field of the execute request. Template placeholders use the format `{{variableName}}` and are case-sensitive.

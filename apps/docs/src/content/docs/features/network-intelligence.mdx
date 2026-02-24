@@ -1,0 +1,488 @@
+---
+title: Network Intelligence
+description: Network baseline computation, change detection, known guest management, and anomaly alerting.
+sidebar:
+  order: 35
+  label: Network Intelligence
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Network Intelligence extends Breeze's discovery engine with continuous monitoring of your network environment. While discovery answers "what is on this network right now?", Network Intelligence answers "what has changed, what is normal, and what is suspicious?" It tracks network baselines per subnet, detects when devices appear, disappear, or change characteristics, manages known guest devices that should not trigger alerts, records the full IP assignment history of every enrolled device, and fires anomaly alerts when deviations from established patterns occur.
+
+The system operates on three interconnected pillars: **baselines** that define what normal looks like for a given subnet, **change events** that record every deviation from those baselines, and **known guests** that whitelist expected transient devices so they do not generate noise.
+
+---
+
+## Network Baselines
+
+A network baseline represents the expected state of a specific subnet at a specific site. Baselines are scoped to an organization, site, and CIDR subnet (one baseline per unique combination, enforced by a unique index). Each baseline maintains a list of known devices that have been observed during periodic scans, along with scheduling and alert configuration.
+
+### How Baselines Work
+
+<Steps>
+1. **Create a baseline** for a subnet at a given site, optionally linking it to an existing discovery profile.
+
+2. **The baseline scan runs** on the configured schedule (default: every 4 hours). The scan is dispatched through BullMQ to an online agent at the baseline's site, which performs discovery against the target subnet.
+
+3. **Scan results are compared** against the baseline's known device list. The service identifies new devices, disappeared devices, changed devices, and potential rogue devices.
+
+4. **Change events are created** for each detected deviation. Events that match an identical fingerprint within the last 24 hours are deduplicated to prevent alert fatigue.
+
+5. **Alerts fire** for each event type that is enabled in the baseline's alert settings. Alerts are linked back to the change event and published to the event bus for notification delivery.
+
+6. **The known device list is updated** by merging scan results with the existing list. New IPs are added, existing entries have their `lastSeen` timestamp refreshed, and devices not seen in the scan are retained for future disappeared detection.
+</Steps>
+
+### Baseline Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier |
+| `orgId` | UUID | Organization this baseline belongs to |
+| `siteId` | UUID | Site within the organization |
+| `subnet` | string | CIDR subnet (e.g., `192.168.1.0/24`) |
+| `knownDevices` | JSON | Array of known device entries with IP, MAC, hostname, asset type, manufacturer, and timestamps |
+| `scanSchedule` | JSON | Schedule configuration (enabled, intervalHours, nextScanAt) |
+| `alertSettings` | JSON | Per-event-type alert toggles |
+| `lastScanAt` | timestamp | When the last scan completed |
+| `lastScanJobId` | UUID | Reference to the most recent discovery job |
+
+### Scan Schedule
+
+The scan schedule controls how often baseline comparison scans run automatically.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Whether automatic scanning is active |
+| `intervalHours` | integer | `4` | Hours between scans (1-168) |
+| `nextScanAt` | ISO 8601 string | Computed | Next scheduled scan time, auto-advanced after each scan |
+
+### Alert Settings
+
+Each event type can be independently enabled or disabled:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `newDevice` | `true` | Alert when a previously unseen device appears on the subnet |
+| `disappeared` | `true` | Alert when a known device is no longer seen after 24 hours |
+| `changed` | `true` | Alert when a known device changes MAC, hostname, or asset type |
+| `rogueDevice` | `false` | Alert when a device matches the organization's rogue device policy |
+
+<Aside>
+  Rogue device detection is disabled by default because it requires configuring an organization-level network policy with blocked manufacturers or allowed asset types. Without a policy, no device is classified as rogue.
+</Aside>
+
+### Creating a Baseline
+
+```bash
+POST /network/baselines
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "orgId": "uuid",
+  "siteId": "uuid",
+  "subnet": "192.168.1.0/24",
+  "profileId": "uuid",
+  "scanSchedule": {
+    "enabled": true,
+    "intervalHours": 4
+  },
+  "alertSettings": {
+    "newDevice": true,
+    "disappeared": true,
+    "changed": true,
+    "rogueDevice": false
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `orgId` | Yes* | Organization ID. Auto-resolved for org-scoped tokens |
+| `siteId` | Yes | Site the baseline monitors |
+| `subnet` | Yes | CIDR subnet to baseline (e.g., `10.0.0.0/24`) |
+| `profileId` | No | Link to an existing discovery profile. The profile must belong to the same org/site and include the requested subnet |
+| `scanSchedule` | No | Override default scan schedule. Defaults to enabled, 4-hour interval |
+| `alertSettings` | No | Override default alert toggles |
+
+<Aside type="caution">
+  Only one baseline can exist per organization/site/subnet combination. Attempting to create a duplicate returns a `409 Conflict` response.
+</Aside>
+
+### Triggering a Scan Manually
+
+```bash
+POST /network/baselines/:id/scan
+Authorization: Bearer <token>
+```
+
+This immediately enqueues a baseline comparison scan through BullMQ. The response includes the baseline ID and the BullMQ job ID for tracking. Redis must be available; if not, the endpoint returns `503`.
+
+---
+
+## Change Detection
+
+When a baseline scan completes, the comparison engine evaluates every discovered host against the baseline's known device list and produces change events for each deviation.
+
+### Event Types
+
+| Event Type | Severity | Trigger Condition |
+|------------|----------|-------------------|
+| `new_device` | Medium | An IP address appears in the scan that is not in the known device list |
+| `device_disappeared` | Low | A known device was last seen more than 24 hours ago and did not appear in the latest scan |
+| `device_changed` | Medium | A known device's MAC address, hostname, or asset type differs from the baseline record |
+| `rogue_device` | High | A new device matches the organization's blocked manufacturer list or is an asset type not in the allowed list |
+
+### What Triggers a "Changed" Event
+
+The comparison engine tracks three properties for change detection:
+
+- **MAC address** -- Indicates a possible device swap at the same IP
+- **Hostname** -- May signal a new device or configuration change
+- **Asset type** -- Reclassification based on updated scan data (e.g., an unknown device identified as a printer after SNMP data becomes available)
+
+### Deduplication
+
+To prevent alert fatigue from repeated scans detecting the same condition, the engine builds a fingerprint for each event combining the event type, IP address, MAC address, hostname, asset type, and state snapshots. If an identical fingerprint exists within the last 24 hours, the event is suppressed.
+
+### Rogue Device Detection
+
+Rogue device detection uses organization-level network policies stored in the organization's settings JSONB column. Two policy mechanisms are supported:
+
+| Policy | Description |
+|--------|-------------|
+| `blockedManufacturers` | Array of manufacturer names (case-insensitive). Any device whose manufacturer matches is flagged as rogue |
+| `allowedAssetTypes` | Array of permitted asset types. When non-empty, any device whose type is not in this list is flagged as rogue |
+
+Both policies can be set simultaneously. A device that matches either condition is classified as rogue.
+
+### Change Event Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier |
+| `orgId` | UUID | Organization |
+| `siteId` | UUID | Site |
+| `baselineId` | UUID | Parent baseline |
+| `eventType` | enum | `new_device`, `device_disappeared`, `device_changed`, `rogue_device` |
+| `ipAddress` | inet | IP address of the affected device |
+| `macAddress` | string | MAC address (if known) |
+| `hostname` | string | Hostname (if known) |
+| `assetType` | enum | Classified asset type |
+| `previousState` | JSON | State snapshot before the change (for changed/disappeared events) |
+| `currentState` | JSON | State snapshot from the current scan |
+| `detectedAt` | timestamp | When the change was detected |
+| `acknowledged` | boolean | Whether an operator has reviewed this event |
+| `acknowledgedBy` | UUID | User who acknowledged |
+| `acknowledgedAt` | timestamp | When acknowledgment occurred |
+| `alertId` | UUID | Linked alert, if one was created |
+| `linkedDeviceId` | UUID | Linked enrolled Breeze device, if resolved |
+| `notes` | text | Operator notes (up to 2,000 characters) |
+
+### Viewing Change Events
+
+List change events with filters:
+
+```
+GET /network/changes?orgId=uuid&eventType=new_device&acknowledged=false
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `orgId` | Filter by organization (required for system scope, auto-resolved for org scope) |
+| `siteId` | Filter by site |
+| `baselineId` | Filter to a specific baseline |
+| `eventType` | Filter by event type |
+| `acknowledged` | `true` or `false` |
+| `since` | ISO 8601 datetime -- only return events detected after this time |
+| `limit` | Max results (default 100, max 200) |
+| `offset` | Pagination offset |
+
+<Aside>
+  At least one filter (orgId, siteId, or baselineId) is required to prevent unbounded full-table scans.
+</Aside>
+
+The response includes `baselineSubnet` from the joined baseline record for context.
+
+### Acknowledging Events
+
+Acknowledge a single event:
+
+```bash
+POST /network/changes/:id/acknowledge
+Content-Type: application/json
+
+{
+  "notes": "Expected change — new printer added to the office."
+}
+```
+
+Bulk acknowledge up to 200 events at once:
+
+```bash
+POST /network/changes/bulk-acknowledge
+Content-Type: application/json
+
+{
+  "eventIds": ["uuid1", "uuid2", "uuid3"],
+  "notes": "Monthly review — all changes verified."
+}
+```
+
+The bulk endpoint returns counts for how many events were requested, how many were accessible to the current user, and how many were actually updated (already-acknowledged events are skipped).
+
+### Linking a Device to a Change Event
+
+Associate a change event with a specific enrolled device:
+
+```bash
+POST /network/changes/:id/link-device
+Content-Type: application/json
+
+{
+  "deviceId": "uuid"
+}
+```
+
+The device must belong to the same organization as the change event. If the change event has an associated alert, the alert's `deviceId` is also updated.
+
+### Viewing Changes for a Specific Baseline
+
+```
+GET /network/baselines/:id/changes?eventType=rogue_device&acknowledged=false&limit=50
+```
+
+This endpoint returns change events scoped to a single baseline, with the same filter options as the global changes endpoint.
+
+---
+
+## Known Guests
+
+Known guests are MAC addresses that represent expected transient devices — contractor laptops, vendor equipment, conference room displays, etc. When a known guest's MAC is seen during a baseline scan, the system can suppress `new_device` and `rogue_device` alerts for that address.
+
+Known guests are managed at the **partner** level, meaning they apply across all organizations managed by the MSP. This is useful for MSP technicians who bring their own equipment to multiple client sites.
+
+### Guest Entry Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier |
+| `partnerId` | UUID | Partner (MSP) that owns this entry |
+| `macAddress` | string | MAC address in `XX:XX:XX:XX:XX:XX` format (case-insensitive, stored lowercase) |
+| `label` | string | Human-readable name (e.g., "John's laptop", "Conference projector") |
+| `notes` | text | Optional additional context |
+| `addedBy` | UUID | User who created the entry |
+
+### Adding a Known Guest
+
+```bash
+POST /partner/known-guests
+Content-Type: application/json
+Authorization: Bearer <partner-token>
+
+{
+  "macAddress": "aa:bb:cc:dd:ee:ff",
+  "label": "IT Contractor - Dell Latitude",
+  "notes": "On-site every Tuesday for maintenance"
+}
+```
+
+MAC addresses are normalized to lowercase on insert. A unique constraint on `(partnerId, macAddress)` prevents duplicates -- attempting to add the same MAC returns `409 Conflict`.
+
+### Listing Known Guests
+
+```
+GET /partner/known-guests
+Authorization: Bearer <partner-token>
+```
+
+Returns all known guest entries for the authenticated partner, ordered by creation date.
+
+### Removing a Known Guest
+
+```bash
+DELETE /partner/known-guests/:id
+Authorization: Bearer <partner-token>
+```
+
+Returns `404` if the entry does not exist or belongs to a different partner.
+
+<Aside type="tip">
+  Known guests are particularly valuable for reducing false positive alerts in environments with frequent visitor traffic, such as co-working spaces or offices with regular vendor visits.
+</Aside>
+
+---
+
+## IP History
+
+The IP History system tracks every IP address assignment for every enrolled device over time. It records when addresses are first seen, when they change, and when they are removed, creating a complete audit trail of network addressing.
+
+### How IP History is Collected
+
+The Breeze agent reports IP address changes as part of its heartbeat cycle. Each update can include three categories of changes:
+
+| Category | Description |
+|----------|-------------|
+| `currentIPs` | All IP addresses currently active on the device (used for `lastSeen` refresh and bootstrap seeding) |
+| `changedIPs` | IP addresses that have been added or changed since the last report |
+| `removedIPs` | IP addresses that are no longer assigned to the device |
+
+On the first heartbeat when the database has no active records for a device, all `currentIPs` are automatically treated as `changedIPs` to bootstrap the history.
+
+### IP History Record Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier |
+| `deviceId` | UUID | Device this record belongs to |
+| `orgId` | UUID | Organization |
+| `interfaceName` | string | Network interface name (e.g., `eth0`, `Wi-Fi`) |
+| `ipAddress` | string | IPv4 or IPv6 address (max 45 chars) |
+| `ipType` | string | `ipv4` or `ipv6` |
+| `assignmentType` | enum | How the IP was assigned: `dhcp`, `static`, `vpn`, `link-local`, `unknown` |
+| `macAddress` | string | MAC address of the interface |
+| `subnetMask` | string | Subnet mask or prefix length |
+| `gateway` | string | Default gateway for the interface |
+| `dnsServers` | string[] | DNS server addresses (up to 8) |
+| `firstSeen` | timestamp | When this IP was first observed on this interface |
+| `lastSeen` | timestamp | Most recent observation |
+| `isActive` | boolean | Whether this assignment is currently active |
+| `deactivatedAt` | timestamp | When the assignment was deactivated (for removed IPs) |
+
+### Assignment Types
+
+| Type | Description |
+|------|-------------|
+| `dhcp` | Address assigned by DHCP server |
+| `static` | Manually configured static address |
+| `vpn` | Address assigned by a VPN tunnel |
+| `link-local` | Auto-configured link-local address (169.254.x.x or fe80::) |
+| `unknown` | Assignment method could not be determined |
+
+### Deduplication
+
+IP history entries are deduplicated by the composite key `(interfaceName, ipAddress, ipType)`. If the agent reports a changed IP that already has an active record with the same key, the existing record is updated with the new metadata (assignment type, MAC, subnet mask, gateway, DNS servers). If no matching record exists, a new entry is created.
+
+<Aside>
+  IPv6 addresses have zone identifiers (e.g., `%eth0`) stripped before storage. All IPv6 addresses are stored in lowercase. Invalid IP addresses are silently dropped with a debug log entry.
+</Aside>
+
+---
+
+## Anomaly Alerting
+
+When the baseline comparison engine detects a change event and the corresponding alert setting is enabled, it creates an alert through the standard Breeze alert system.
+
+### Alert Creation Flow
+
+<Steps>
+1. **Event type check** -- The engine verifies that the event type is enabled in the baseline's alert settings. If disabled, no alert is created.
+
+2. **Device resolution** -- The engine resolves which enrolled device should receive the alert using a five-strategy cascade:
+   - Direct link from the change event
+   - Discovered asset with matching IP address
+   - Device network table match by IP or MAC address
+   - Most recently seen device at the same site (fallback)
+   - Most recently seen device in the same organization (fallback)
+
+3. **Template resolution** -- The engine looks for a built-in alert template matching the event type (e.g., `network.new_device`). If found, the template's title and message are rendered with context variables. If not found, hardcoded fallback messages are used.
+
+4. **Alert insertion** -- The alert is inserted with the resolved severity, title, message, and a context object containing the full change event details.
+
+5. **Event bus publication** -- An `alert.triggered` event is published for downstream notification delivery (email, webhook, etc.).
+</Steps>
+
+### Alert Severity by Event Type
+
+| Event Type | Default Severity | Template Key |
+|------------|-----------------|--------------|
+| `new_device` | Medium | `network.new_device` |
+| `device_disappeared` | Low | `network.device_disappeared` |
+| `device_changed` | Medium | `network.device_changed` |
+| `rogue_device` | High | `network.rogue_device` |
+
+Severity can be overridden by configuring a custom alert template with the corresponding template key.
+
+### Template Variables
+
+Alert templates support `{{ variable }}` interpolation with the following context:
+
+| Variable | Description |
+|----------|-------------|
+| `eventType` | The event type string |
+| `ipAddress` | IP address of the affected device |
+| `macAddress` | MAC address (if known) |
+| `hostname` | Hostname (if known) |
+| `assetType` | Classified asset type |
+| `manufacturer` | Device manufacturer (if known) |
+| `detectedAt` | ISO 8601 timestamp of detection |
+| `previousState` | JSON object with the device's prior state |
+| `currentState` | JSON object with the device's current state |
+
+---
+
+## API Reference
+
+### Network Baselines
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/network/baselines` | List baselines (`?orgId=&siteId=&subnet=&limit=&offset=`) |
+| `POST` | `/network/baselines` | Create a new baseline |
+| `GET` | `/network/baselines/:id` | Get baseline by ID |
+| `PATCH` | `/network/baselines/:id` | Update scan schedule or alert settings |
+| `DELETE` | `/network/baselines/:id` | Delete baseline (`?deleteChanges=true` to cascade) |
+| `POST` | `/network/baselines/:id/scan` | Trigger a manual baseline scan |
+| `GET` | `/network/baselines/:id/changes` | List change events for a baseline |
+
+### Network Changes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/network/changes` | List change events with filters |
+| `GET` | `/network/changes/:id` | Get a single change event with baseline subnet |
+| `POST` | `/network/changes/:id/acknowledge` | Acknowledge a change event (optional notes) |
+| `POST` | `/network/changes/:id/link-device` | Link a change event to an enrolled device |
+| `POST` | `/network/changes/bulk-acknowledge` | Bulk acknowledge up to 200 events |
+
+### Known Guests
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/partner/known-guests` | List all known guests for the partner |
+| `POST` | `/partner/known-guests` | Add a known guest by MAC address |
+| `DELETE` | `/partner/known-guests/:id` | Remove a known guest |
+
+<Aside>
+  Baseline and change endpoints require authentication with `organization`, `partner`, or `system` scope. Known guest endpoints require `partner` or `system` scope. All write operations on baselines require the `devices:write` permission. Acknowledging changes requires the `alerts:acknowledge` permission.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Baseline scan stays pending and never completes.**
+Baseline scans are dispatched through BullMQ and require Redis to be running. Verify Redis is accessible with `redis-cli ping`. Also confirm that at least one Breeze agent is online at the baseline's site -- the scan worker selects an online agent from the same site to execute the discovery. Check the API logs for "Background job service unavailable" messages.
+
+**New device alerts fire repeatedly for the same device.**
+The deduplication window is 24 hours. If the same new device is detected in scans more than 24 hours apart without being added to the known device list, a new event is created each time. Acknowledge the event and ensure baselines are scanning frequently enough that the known device list stays current. Once a device has been seen in a scan, it is added to the known devices list and subsequent scans will not generate new device events for it.
+
+**Rogue device detection is not working despite enabling it.**
+Rogue device alerting requires two things: (1) the baseline's `alertSettings.rogueDevice` must be `true`, and (2) the organization must have a network policy configured with either `blockedManufacturers` or `allowedAssetTypes` in its settings JSONB. Without a policy, no device matches the rogue criteria.
+
+**Change events show `linkedDeviceId: null` even though the device is enrolled.**
+Device resolution uses a five-strategy cascade. If none of the strategies can match the change event's IP or MAC to an enrolled device, the link remains null. This commonly happens when the discovered device is not enrolled in Breeze (e.g., a printer or switch). You can manually link it using `POST /network/changes/:id/link-device`.
+
+**Known guest MAC is not suppressing alerts.**
+Known guests are managed at the partner level, but baselines operate at the organization/site level. Verify that the known guest entry exists with the correct MAC address (normalized to lowercase colon-separated format). Also note that the known guest list must be checked during the baseline comparison process -- if the comparison does not consult the known guest list, the MAC will not be suppressed.
+
+**IP history records are not being created for a device.**
+IP history is populated from agent heartbeat data. The agent must report `currentIPs`, `changedIPs`, or `removedIPs` in its heartbeat payload. If the agent is running an older version that does not report IP changes, no history will be recorded. Check the agent version and verify that the heartbeat handler is processing IP history updates by looking for `[IPHistory]` or `[DeviceIpHistory]` log messages.
+
+**Deleting a baseline fails with a foreign key error.**
+By default, `DELETE /network/baselines/:id` cascades to delete associated change events (`?deleteChanges=true` is the default). If you explicitly pass `?deleteChanges=false`, the delete will fail with `409 Conflict` if change events reference the baseline. Use `?deleteChanges=true` or delete the change events first.
+
+**Bulk acknowledge returns fewer acknowledged events than requested.**
+The bulk acknowledge endpoint only updates events that are not already acknowledged. The response includes `acknowledgedCount` (events actually updated), `requestedCount` (total IDs submitted), and `inaccessibleCount` (IDs the current user does not have access to). Events that were already acknowledged are not counted as failures -- they simply are not updated again.

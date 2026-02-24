@@ -1,0 +1,363 @@
+---
+title: Device Reliability
+description: Track device reliability metrics including uptime, crashes, hangs, BSOD events, and computed reliability scores.
+sidebar:
+  order: 32
+  label: Device Reliability
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Device Reliability tracks the operational health of every managed device in your fleet by collecting crash events, application hangs, service failures, hardware errors, and uptime data. The system computes a reliability score from 0 to 100 for each device using a weighted formula, identifies trend direction over time using linear regression, and surfaces the top issues affecting each device. Scores are recomputed automatically each time new telemetry arrives from the agent.
+
+The Breeze agent collects reliability telemetry from platform-specific event sources: Windows Event Log, macOS system logs, and Linux journal/syslog. Each heartbeat cycle, the agent sends a snapshot of recent events to the API, which stores the raw history and then triggers an asynchronous score computation via BullMQ (with an inline fallback if the queue is unavailable).
+
+---
+
+## Key Concepts
+
+### Data Collection Flow
+
+<Steps>
+1. **Agent collects telemetry** from the OS event log system. On Windows, this includes Event Log entries for BSODs, service crashes, hardware WHEA errors, and application hangs. On macOS, the agent reads system logs for kernel panics, application crashes, and launchd service failures. On Linux, the agent reads journald/syslog for kernel panics, OOM kills, systemd failures, and hardware errors.
+
+2. **Agent submits metrics** to `POST /agents/:id/reliability` with the structured payload: uptime seconds, boot time, crash events, application hangs, service failures, and hardware errors.
+
+3. **API stores raw history** in the `device_reliability_history` table. Each submission creates a new row, preserving the full event timeline.
+
+4. **Score computation is enqueued** via BullMQ. If the queue is unavailable, the computation runs inline as a fallback.
+
+5. **The scoring service** reads up to 90 days of history, aggregates events into daily buckets, computes sub-scores for each reliability factor, applies weights, and persists the result to the `device_reliability` table.
+</Steps>
+
+### Reliability Score Bands
+
+| Band | Score Range | Meaning |
+|------|-------------|---------|
+| **Critical** | 0 -- 50 | Device has significant stability problems requiring immediate attention |
+| **Poor** | 51 -- 70 | Device is experiencing frequent issues that affect usability |
+| **Fair** | 71 -- 85 | Device is generally stable but has notable issues |
+| **Good** | 86 -- 100 | Device is operating reliably with minimal issues |
+
+---
+
+## Reliability Score
+
+The reliability score is a weighted composite of five sub-scores, each calculated from the device's event history over rolling time windows (7, 30, and 90 days).
+
+### Factor Weights
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| Uptime | 30% | Based on the 90-day uptime percentage. Score 100 at 100% uptime, linearly down to 0 at 90% or below |
+| Crashes | 25% | Penalizes crash events. Recent crashes (7-day) are weighted more heavily than 30-day crashes |
+| Hangs | 15% | Penalizes application hangs, with extra penalty for unresolved hangs |
+| Service Failures | 15% | Penalizes service failures, with partial credit for auto-recovered services |
+| Hardware Errors | 15% | Penalizes hardware errors by severity: critical (-30), error (-15), warning (-5) per event |
+
+### Score Calculation
+
+The overall score is computed as:
+
+```
+reliabilityScore = clamp(0, 100,
+    uptimeScore * 0.30
+  + crashScore * 0.25
+  + hangScore * 0.15
+  + serviceFailureScore * 0.15
+  + hardwareErrorScore * 0.15
+)
+```
+
+Each sub-score starts at 100 and is reduced by event counts with specific penalty multipliers:
+
+- **Uptime Score**: If uptime is >= 100%, score is 100. If <= 90%, score is 0. Linear interpolation between 90% and 100%.
+- **Crash Score**: `100 - (crashCount30d + crashCount7d * 0.5) * 20`
+- **Hang Score**: `100 - hangCount30d * 10 - unresolvedHangCount30d * 20`
+- **Service Failure Score**: `100 - serviceFailureCount30d * 15 + recoveredServiceCount30d * 5`
+- **Hardware Error Score**: `100 - criticalCount30d * 30 - errorCount30d * 15 - warningCount30d * 5`
+
+### Trend Direction
+
+Trend direction is computed using linear regression over 30 days of daily reliability estimates. Each day's events are scored independently, and a regression line is fitted to the daily scores.
+
+| Trend | Slope Threshold | Meaning |
+|-------|-----------------|---------|
+| `improving` | slope > 2 | Reliability is getting better over time |
+| `stable` | -2 <= slope <= 2 | Reliability is holding steady |
+| `degrading` | slope < -2 | Reliability is getting worse over time |
+
+The `trendConfidence` field (0.0 to 1.0) indicates how well the linear model fits the data, factoring in both R-squared and data coverage (at least 14 days of data for full confidence).
+
+### Mean Time Between Failures (MTBF)
+
+MTBF is calculated from the 90-day window as:
+
+```
+mtbfHours = operatingHours / totalFailureCount
+```
+
+Where total failures include crashes, hangs, service failures, and hardware errors over the 90-day window. MTBF is `null` when there are zero failures or zero operating hours.
+
+---
+
+## Tracked Metrics
+
+### Crash Events
+
+System-level crashes that indicate an unexpected shutdown or critical failure.
+
+| Crash Type | Description | Platforms |
+|------------|-------------|-----------|
+| `bsod` | Blue Screen of Death / bugcheck | Windows |
+| `kernel_panic` | Kernel panic or oops | Windows, macOS, Linux |
+| `system_crash` | General system or application crash | Windows, macOS |
+| `oom_kill` | Out-of-memory kill | Linux |
+| `unknown` | Unclassified crash event | All |
+
+### Application Hangs
+
+Detected when a process is reported as "not responding" or "hang" in system event logs.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `processName` | string | Name of the hanging process |
+| `timestamp` | ISO 8601 | When the hang was detected |
+| `duration` | integer | Duration of the hang in seconds (0 if unknown) |
+| `resolved` | boolean | Whether the hang resolved without intervention |
+
+### Service Failures
+
+Detected when system services terminate unexpectedly or fail to start.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `serviceName` | string | Name of the failed service |
+| `timestamp` | ISO 8601 | When the failure occurred |
+| `errorCode` | string | OS-specific error code or event ID |
+| `recovered` | boolean | Whether the service auto-recovered |
+
+### Hardware Errors
+
+Hardware-level errors from WHEA (Windows), MCE, disk I/O, and memory subsystems.
+
+| Hardware Type | Classification Criteria |
+|---------------|------------------------|
+| `mce` | Machine Check Exception: WHEA source, "machine check", or "mce" keywords |
+| `memory` | Memory errors: EDAC, Event ID 13/50/51, or "memory" keyword |
+| `disk` | Disk errors: I/O errors, Event ID 7/11/15, or "disk"/"blk_update_request" keywords |
+| `unknown` | Hardware error that does not match known patterns |
+
+Hardware errors are further classified by severity:
+
+| Severity | Weight in Score |
+|----------|-----------------|
+| `critical` | -30 per event |
+| `error` | -15 per event |
+| `warning` | -5 per event |
+
+---
+
+## Platform Support
+
+<Tabs>
+  <TabItem label="Windows">
+    The Windows collector reads from the Windows Event Log via the `EventLogCollector`. Detected signals include:
+
+    - **BSOD/Bugcheck**: Event IDs 1001, 6008; messages containing "bugcheck", "blue screen", or "unexpected shutdown"
+    - **Service failures**: Event ID 7034; messages with "service terminated" or "service failed"
+    - **Application hangs**: Messages containing "hang" or "not responding"
+    - **Hardware errors**: WHEA events, disk errors, memory errors
+    - **System crashes**: Critical-level system events containing "crash"
+
+    Windows provides the richest reliability telemetry due to the structured Event Log system.
+  </TabItem>
+  <TabItem label="macOS">
+    The macOS collector reads from system logs. Detected signals include:
+
+    - **Kernel panics**: Messages containing "kernel panic" or "panic("
+    - **Application crashes**: Messages containing "application crash" or "crashed"
+    - **Application hangs**: Messages containing "hang" or "not responding"
+    - **Service failures**: launchd messages containing "exited" or "failed"
+    - **System crashes**: Critical-level system events containing "shutdown"
+    - **Hardware errors**: Messages with "i/o error" or "memory" keywords
+  </TabItem>
+  <TabItem label="Linux">
+    The Linux collector reads from journald/syslog. Detected signals include:
+
+    - **Kernel panics**: Messages containing "kernel panic", "oops", or "segfault"
+    - **OOM kills**: Messages containing "oom" or "out of memory"
+    - **Service failures**: systemd messages containing "failed" or "failure"
+    - **Process hangs**: Messages containing "hang", "not responding", or "blocked for more than"
+    - **Hardware errors**: Messages with "i/o error", "edac", or "mce" keywords
+  </TabItem>
+</Tabs>
+
+<Aside>
+  On all platforms, if the event log collector fails (permissions, missing log source, etc.), the reliability collector falls back to returning base metrics only (uptime and boot time) without any event data. This ensures the uptime score remains accurate even when event collection is unavailable.
+</Aside>
+
+---
+
+## Viewing Reliability Data
+
+### Fleet Overview
+
+List reliability scores for all devices in your organization, sorted worst-first by default:
+
+```bash
+GET /reliability?orgId=uuid&scoreRange=critical&trendDirection=degrading&page=1&limit=25
+```
+
+### List Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `orgId` | UUID | Filter by organization |
+| `siteId` | UUID | Filter by site |
+| `scoreRange` | string | Filter by band: `critical`, `poor`, `fair`, `good` (also accepts legacy `0-50`, `51-70`, `71-85`, `86-100` format) |
+| `trendDirection` | string | Filter by trend: `improving`, `stable`, `degrading` |
+| `issueType` | string | Filter by issue type: `crashes`, `hangs`, `hardware`, `services`, `uptime` |
+| `minScore` | integer | Minimum reliability score (0-100) |
+| `maxScore` | integer | Maximum reliability score (0-100) |
+| `page` | integer | Page number (default 1) |
+| `limit` | integer | Results per page (1-100, default 25) |
+
+The response includes a `summary` section with the average score, count of critical devices (score <= 50), and count of degrading devices:
+
+```json
+{
+  "data": [...],
+  "pagination": { "total": 150, "page": 1, "limit": 25, "totalPages": 6 },
+  "summary": {
+    "averageScore": 78,
+    "criticalDevices": 5,
+    "degradingDevices": 12
+  }
+}
+```
+
+### Organization Summary
+
+Get a high-level reliability overview for an organization, including the 10 worst devices:
+
+```bash
+GET /reliability/org/:orgId/summary
+```
+
+The response includes:
+
+| Field | Description |
+|-------|-------------|
+| `devices` | Total device count with reliability data |
+| `averageScore` | Organization-wide average reliability score |
+| `criticalDevices` | Devices with score 0-50 |
+| `poorDevices` | Devices with score 51-70 |
+| `fairDevices` | Devices with score 71-85 |
+| `goodDevices` | Devices with score 86-100 |
+| `degradingDevices` | Devices with a degrading trend |
+| `topIssues` | Ranked list of most common issue types across the org |
+| `worstDevices` | The 10 lowest-scoring devices with full reliability details |
+
+### Single Device Detail
+
+Get the full reliability snapshot and 30-day history for a specific device:
+
+```bash
+GET /reliability/:deviceId
+```
+
+The response contains two sections:
+
+- **`snapshot`** -- The current computed reliability state: overall score, all sub-scores, uptime percentages (7d/30d/90d), event counts, MTBF, trend direction and confidence, and top issues.
+- **`history`** -- An array of daily data points for the last 30 days, each containing sample count, max uptime seconds, crash/hang/service failure/hardware error counts, and a daily reliability estimate.
+
+### Device History
+
+Retrieve daily reliability history for a configurable lookback window:
+
+```bash
+GET /reliability/:deviceId/history?days=90
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `days` | integer | Lookback window in days (1-365, default 90) |
+
+Each data point in the response represents one day and includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `date` | string | Day in `YYYY-MM-DD` format |
+| `sampleCount` | integer | Number of telemetry submissions that day |
+| `uptimeSecondsMax` | integer | Highest reported uptime that day |
+| `crashCount` | integer | Total crash events |
+| `hangCount` | integer | Total application hangs |
+| `serviceFailureCount` | integer | Total service failures |
+| `hardwareErrorCount` | integer | Total hardware errors |
+| `reliabilityEstimate` | integer | Estimated reliability score for that day (0-100) |
+
+---
+
+## AI Integration
+
+The Breeze AI assistant can query device reliability data through its built-in tool system. The `query_device_reliability` tool allows natural language questions about fleet reliability to be answered with real data.
+
+The AI tool supports the same filters as the list API: organization, score range, trend direction, issue type, and score bounds. When invoked, it returns the same paginated results with a summary section, allowing the AI to answer questions like:
+
+- "Which devices have the worst reliability scores?"
+- "How many devices are in a degrading trend?"
+- "Show me all devices with hardware errors in the last 30 days"
+- "What is the average reliability score for Contoso?"
+
+<Aside>
+  AI reliability queries are subject to the same organization-scoped data isolation as direct API access. The AI can only access reliability data for organizations the authenticated user has permission to view.
+</Aside>
+
+---
+
+## API Reference
+
+### Fleet Reliability
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/reliability` | List device reliability scores with filtering and pagination |
+| GET | `/reliability/org/:orgId/summary` | Organization-level reliability summary with worst devices |
+| GET | `/reliability/:deviceId` | Full reliability snapshot and 30-day history for a device |
+| GET | `/reliability/:deviceId/history` | Daily reliability history with configurable lookback (`?days=`) |
+
+### Agent Ingestion
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/agents/:id/reliability` | Submit reliability metrics from the agent (agent auth required) |
+
+<Aside>
+  All reliability query endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data. The agent ingestion endpoint uses agent bearer token authentication.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**No reliability data for a device.**
+Reliability data appears after the agent has submitted at least one telemetry payload via `POST /agents/:id/reliability`. Confirm the agent is online and the heartbeat cycle is running. The agent includes a 24-hour initial lookback on first collection, so the first submission should include recent events. If the device exists but has no reliability snapshot, the scoring computation may not have run yet -- check BullMQ worker status.
+
+**Reliability score seems too low despite no visible issues.**
+The score is a composite of five factors with different weights. A device can have a low score due to a single factor being severely penalized. Use `GET /reliability/:deviceId` to inspect the individual sub-scores (`uptimeScore`, `crashScore`, `hangScore`, `serviceFailureScore`, `hardwareErrorScore`) and identify which factor is dragging the score down. For example, a 90% uptime over 90 days produces an uptime sub-score of 0, which alone would reduce the overall score by up to 30 points.
+
+**Trend direction shows `stable` with low confidence.**
+Trend computation requires at least 3 days of data and achieves full confidence at 14+ days. If the device was recently enrolled or has sparse telemetry, the trend will default to `stable` with `trendConfidence: 0`. Allow the device to accumulate more history before relying on trend data.
+
+**Agent event collection failing on specific platform.**
+On all platforms, if the event log collector encounters an error, the reliability collector gracefully falls back to base metrics (uptime and boot time only). Check agent logs for warnings like "reliability event log collection failed, returning base metrics only". Common causes include insufficient permissions to read system event logs, missing log sources, or the event log service being stopped.
+
+**MTBF showing `null`.**
+MTBF is only computed when there is at least one failure event (crash, hang, service failure, or hardware error) in the 90-day window AND the device has positive operating hours. A device with zero failures has no meaningful MTBF -- this is the ideal state. A device with zero uptime data also produces `null` MTBF.
+
+**Score not updating after new events arrive.**
+Score computation is enqueued via BullMQ after each telemetry submission. If the queue worker is down, the system falls back to inline computation, but this fallback may fail silently if the database is under load. Check BullMQ dashboard for failed or stalled `device-reliability-computation` jobs. The `computedAt` timestamp on the reliability snapshot indicates when the score was last calculated.
+
+**Organization summary showing stale data.**
+The org summary endpoint computes results in real time from the `device_reliability` table. If individual device scores have not been recomputed recently (check `computedAt`), the summary reflects outdated data. Trigger a fleet-wide recomputation by ensuring all agents are submitting telemetry and the reliability worker is processing jobs.
