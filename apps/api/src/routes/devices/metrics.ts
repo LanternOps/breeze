@@ -60,7 +60,7 @@ function aggregateMetricsByInterval(
   // For 1m interval, return data as-is
   if (interval === '1m') {
     return data.map(d => ({
-      timestamp: d.bucket.toISOString(),
+      timestamp: new Date(d.bucket).toISOString(),
       cpu: Number(d.avgCpuPercent?.toFixed(2) ?? 0),
       ram: Number(d.avgRamPercent?.toFixed(2) ?? 0),
       ramUsedMb: Math.round(d.avgRamUsedMb ?? 0),
@@ -120,7 +120,7 @@ function aggregateMetricsByInterval(
     const count = points.length;
     const avgCpu = points.reduce((sum, p) => sum + (p.avgCpuPercent ?? 0), 0) / count;
     const avgRam = points.reduce((sum, p) => sum + (p.avgRamPercent ?? 0), 0) / count;
-    const avgRamUsed = points.reduce((sum, p) => sum + (p.avgRamUsedMb ?? 0), 0) / count;
+    const avgRamUsed = points.reduce((sum, p) => sum + Number(p.avgRamUsedMb ?? 0), 0) / count;
     const avgDisk = points.reduce((sum, p) => sum + (p.avgDiskPercent ?? 0), 0) / count;
     const avgDiskUsed = points.reduce((sum, p) => sum + (p.avgDiskUsedGb ?? 0), 0) / count;
     const diskActivityAvailable = points.some((p) => p.diskActivityAvailable);
@@ -134,7 +134,7 @@ function aggregateMetricsByInterval(
     const totalOut = points.reduce((sum, p) => sum + Number(p.totalNetworkOut ?? 0), 0);
     const avgBwIn = points.reduce((sum, p) => sum + (p.avgBandwidthIn ?? 0), 0) / count;
     const avgBwOut = points.reduce((sum, p) => sum + (p.avgBandwidthOut ?? 0), 0) / count;
-    const avgProcess = points.reduce((sum, p) => sum + (p.avgProcessCount ?? 0), 0) / count;
+    const avgProcess = points.reduce((sum, p) => sum + Number(p.avgProcessCount ?? 0), 0) / count;
 
     result.push({
       timestamp: new Date(bucketKey).toISOString(),

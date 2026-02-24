@@ -228,14 +228,25 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 		if err != nil {
 			return fmt.Errorf("failed to list sessions: %w", err)
 		}
+		// Prefer active sessions, fall back to connected (lock screen after reboot).
+		var fallback string
 		for _, ds := range detected {
-			if ds.Type != "services" && ds.State == "active" {
+			if ds.Type == "services" {
+				continue
+			}
+			if ds.State == "active" {
 				targetSession = ds.Session
 				break
 			}
+			if ds.State == "connected" && fallback == "" {
+				fallback = ds.Session
+			}
 		}
 		if targetSession == "" {
-			return fmt.Errorf("no active non-services session found")
+			targetSession = fallback
+		}
+		if targetSession == "" {
+			return fmt.Errorf("no active or connected non-services session found")
 		}
 	}
 

@@ -269,6 +269,7 @@ export default function ViewerToolbar({
               <option value={15}>15</option>
               <option value={20}>20</option>
               <option value={30}>30</option>
+              <option value={60}>60</option>
             </select>
           </div>
         </>

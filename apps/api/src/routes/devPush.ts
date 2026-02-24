@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { randomUUID, createHash } from 'crypto';
 import { createReadStream, createWriteStream } from 'fs';
 import { mkdir, unlink, stat } from 'fs/promises';
@@ -67,7 +68,7 @@ async function devPushAuth(c: any, next: any) {
 }
 
 // POST /dev/push — upload binary + trigger agent update
-devPushRoutes.post('/push', devPushAuth, async (c) => {
+devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c) => c.json({ error: 'Binary too large (max 150MB)' }, 413) }), devPushAuth, async (c) => {
   // Build auth context from either JWT or API key
   const jwtAuth = c.get('auth') as AuthContext | undefined;
   const apiKey = c.get('apiKey') as { orgId: string; scopes: string[] } | undefined;

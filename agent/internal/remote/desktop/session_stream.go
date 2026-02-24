@@ -195,6 +195,7 @@ func (s *Session) adaptiveLoop() {
 	defer ticker.Stop()
 
 	var logCount int
+	var noStatsCount int
 	for {
 		select {
 		case <-s.done:
@@ -202,8 +203,17 @@ func (s *Session) adaptiveLoop() {
 		case <-ticker.C:
 			rtt, loss, ok := extractRemoteInboundVideoStats(s.peerConn.GetStats())
 			if !ok {
+				noStatsCount++
+				// Log periodically so we know the adaptive controller is blind
+				if noStatsCount%20 == 1 { // every 10s (20 × 500ms ticks)
+					slog.Warn("WebRTC RTCP stats unavailable — adaptive bitrate disabled",
+						"session", s.id,
+						"consecutiveMisses", noStatsCount,
+					)
+				}
 				continue
 			}
+			noStatsCount = 0
 			s.adaptive.Update(rtt, loss)
 			// Log RTCP stats periodically for bitrate diagnostics
 			logCount++
