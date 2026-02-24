@@ -53,6 +53,7 @@ export default function DevicesPage() {
   const [actionInProgress, setActionInProgress] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingToken, setOnboardingToken] = useState<string>('');
+  const [enrollmentSecret, setEnrollmentSecret] = useState<string>('');
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenCopied, setTokenCopied] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
@@ -170,6 +171,7 @@ export default function DevicesPage() {
     setShowOnboarding(true);
     setTokenLoading(true);
     setOnboardingToken('');
+    setEnrollmentSecret('');
     setTokenError(undefined);
 
     try {
@@ -209,6 +211,9 @@ export default function DevicesPage() {
         return;
       }
       setOnboardingToken(token);
+      if (data.enrollmentSecret) {
+        setEnrollmentSecret(data.enrollmentSecret);
+      }
     } catch (err) {
       setTokenError(err instanceof Error ? err.message : 'Network error. Please check your connection.');
     } finally {
@@ -590,8 +595,9 @@ export default function DevicesPage() {
                 const ghBase = (import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL || 'https://github.com/lanternops/breeze/releases/latest/download').replace(/\/$/, '');
                 const token = onboardingToken || '<TOKEN>';
 
-                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"`;
-                const unixCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo ./breeze-agent enroll "${token}" --server "${apiUrl}"`;
+                const secretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
+                const winCmd = `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; .\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${secretFlag}`;
+                const unixCmd = `curl -fsSL -o breeze-agent "${ghBase}/breeze-agent-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" && chmod +x breeze-agent && sudo ./breeze-agent enroll "${token}" --server "${apiUrl}"${secretFlag}`;
 
                 return (
                   <>

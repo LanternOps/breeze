@@ -87,7 +87,16 @@ coreRoutes.post(
       createdBy: auth.user.id,
     });
 
-    return c.json({ token: key });
+    const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
+    const secretRequired =
+      (process.env.NODE_ENV ?? 'development') === 'production'
+      && typeof configuredSecret === 'string'
+      && configuredSecret.length > 0;
+
+    return c.json({
+      token: key,
+      ...(secretRequired && { enrollmentSecret: configuredSecret }),
+    });
   }
 );
 

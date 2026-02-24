@@ -341,8 +341,7 @@ jobs:
           retention-days: 30
 
   build-macos-agent:
-    name: Sign + Notarize macOS Agent
-    if: vars.ENABLE_MACOS_SIGNING == 'true'
+    name: Build macOS Agent Universal Binary
     runs-on: macos-latest
     needs: [build-agent]
     steps:
@@ -358,7 +357,17 @@ jobs:
           name: breeze-agent-darwin-arm64
           path: staging/
 
+      - name: Create universal binary
+        run: |
+          chmod +x staging/breeze-agent-darwin-amd64
+          chmod +x staging/breeze-agent-darwin-arm64
+          lipo -create \
+            staging/breeze-agent-darwin-amd64 \
+            staging/breeze-agent-darwin-arm64 \
+            -output staging/breeze-agent-darwin-universal
+
       - name: Import certificate into keychain
+        if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -381,16 +390,8 @@ jobs:
 
           rm -f "$CERT_PATH"
 
-      - name: Create universal binary
-        run: |
-          chmod +x staging/breeze-agent-darwin-amd64
-          chmod +x staging/breeze-agent-darwin-arm64
-          lipo -create \
-            staging/breeze-agent-darwin-amd64 \
-            staging/breeze-agent-darwin-arm64 \
-            -output staging/breeze-agent-darwin-universal
-
       - name: Sign binaries
+        if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
@@ -402,6 +403,7 @@ jobs:
           done
 
       - name: Notarize binaries
+        if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -446,7 +448,7 @@ jobs:
           retention-days: 30
 
       - name: Cleanup keychain
-        if: always()
+        if: always() && vars.ENABLE_MACOS_SIGNING == 'true'
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
   build-viewer:
@@ -649,6 +651,168 @@ jobs:
           path: apps/helper/${{ matrix.asset_name }}
           retention-days: 30
 
+  build-viewer-macos:
+    name: Build Viewer (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/viewer/src-tauri -> target
+
+      - name: Add macOS universal target
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Inject version into viewer config
+        shell: bash
+        working-directory: apps/viewer
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+
+      - name: Build Tauri app
+        working-directory: apps/viewer
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri build --target universal-apple-darwin
+
+      - name: Find and rename artifact
+        shell: bash
+        working-directory: apps/viewer
+        run: |
+          asset=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
+          if [ -z "$asset" ]; then
+            echo "ERROR: No DMG found"
+            ls -R src-tauri/target/*/release/bundle/ || true
+            exit 1
+          fi
+          cp "$asset" breeze-viewer-macos.dmg
+
+      - name: Upload Viewer macOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-viewer-macos.dmg
+          path: apps/viewer/breeze-viewer-macos.dmg
+          retention-days: 30
+
+  build-helper-macos:
+    name: Build Helper (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/helper/src-tauri -> target
+
+      - name: Add macOS universal target
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Inject version into helper config
+        shell: bash
+        working-directory: apps/helper
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+
+      - name: Build Tauri app
+        working-directory: apps/helper
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri build --target universal-apple-darwin
+
+      - name: Find and rename artifact
+        shell: bash
+        working-directory: apps/helper
+        run: |
+          asset=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
+          if [ -z "$asset" ]; then
+            echo "ERROR: No DMG found"
+            ls -R src-tauri/target/*/release/bundle/ || true
+            exit 1
+          fi
+          cp "$asset" breeze-helper-macos.dmg
+
+      - name: Upload Helper macOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: breeze-helper-macos.dmg
+          path: apps/helper/breeze-helper-macos.dmg
+          retention-days: 30
+
   sign-windows-tauri:
     name: Sign Windows Tauri Artifacts
     if: vars.ENABLE_WINDOWS_SIGNING == 'true'
@@ -779,7 +943,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper]
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos]
     if: >-
       !cancelled()
       && needs.build-api.result == 'success'
@@ -790,6 +954,8 @@ jobs:
       && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
       && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
       && (needs.build-helper.result == 'success' || needs.build-helper.result == 'skipped')
+      && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
+      && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')
       && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)
     permissions:
       contents: write
@@ -866,7 +1032,7 @@ jobs:
   build-binaries-image:
     name: Build & Push Binaries Init Image
     runs-on: ubuntu-latest
-    needs: [build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper]
+    needs: [build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos]
     if: >-
       !cancelled()
       && needs.build-agent.result == 'success'
@@ -875,6 +1041,8 @@ jobs:
       && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
       && needs.build-viewer.result == 'success'
       && needs.build-helper.result == 'success'
+      && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
+      && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')
     permissions:
       contents: read
       packages: write
