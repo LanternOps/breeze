@@ -17,15 +17,16 @@ systemRoutes.get('/config-status', async (c) => {
 
   const env = process.env;
 
-  // Email provider detection
+  // Email provider detection ('auto' or unset = detect from available keys)
   let emailProvider: 'resend' | 'smtp' | 'mailgun' | 'none' = 'none';
   const emailConfigured =
     !!env.RESEND_API_KEY || !!env.SMTP_HOST || !!env.MAILGUN_API_KEY;
-  if (env.EMAIL_PROVIDER === 'resend' || (!env.EMAIL_PROVIDER && env.RESEND_API_KEY)) {
+  const autoDetect = !env.EMAIL_PROVIDER || env.EMAIL_PROVIDER === 'auto';
+  if (env.EMAIL_PROVIDER === 'resend' || (autoDetect && env.RESEND_API_KEY)) {
     emailProvider = 'resend';
-  } else if (env.EMAIL_PROVIDER === 'smtp' || (!env.EMAIL_PROVIDER && env.SMTP_HOST)) {
+  } else if (env.EMAIL_PROVIDER === 'smtp' || (autoDetect && env.SMTP_HOST)) {
     emailProvider = 'smtp';
-  } else if (env.EMAIL_PROVIDER === 'mailgun' || (!env.EMAIL_PROVIDER && env.MAILGUN_API_KEY)) {
+  } else if (env.EMAIL_PROVIDER === 'mailgun' || (autoDetect && env.MAILGUN_API_KEY)) {
     emailProvider = 'mailgun';
   }
 
@@ -37,7 +38,7 @@ systemRoutes.get('/config-status', async (c) => {
     },
     domain: {
       breezeDomain: env.BREEZE_DOMAIN || '',
-      publicUrl: env.PUBLIC_APP_URL || env.DASHBOARD_URL || '',
+      publicUrl: env.PUBLIC_API_URL || env.PUBLIC_APP_URL || env.DASHBOARD_URL || '',
       corsOrigins: env.CORS_ALLOWED_ORIGINS || ''
     },
     security: {
