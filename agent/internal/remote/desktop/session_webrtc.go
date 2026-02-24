@@ -179,13 +179,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			"session", sessionID, "error", probeErr.Error())
 	}
 
-	// Start conservatively and let adaptive bitrate ramp up. The controller
-	// responds to frame drops within ~4s, so 5Mbps avoids the initial burst
-	// that overwhelms jitter buffers on constrained paths.
-	initBitrate := 3_000_000
-	if w*h > 1920*1080 {
-		initBitrate = 5_000_000
-	}
+	// Start at 2.5Mbps to match the viewer's default max-bitrate slider.
+	// Adaptive ramps up from here; starting higher than the viewer ceiling
+	// causes an immediate burst that overwhelms jitter buffers.
+	initBitrate := 2_500_000
 
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
