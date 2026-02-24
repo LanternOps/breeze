@@ -455,10 +455,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            target: universal-apple-darwin
-            asset_name: breeze-viewer-macos.dmg
-            asset_glob: 'src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg'
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: breeze-viewer-windows.msi
@@ -496,12 +492,6 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/viewer/src-tauri -> target
-
-      - name: Add macOS universal target
-        if: contains(matrix.platform, 'macos')
-        run: |
-          rustup target add aarch64-apple-darwin
-          rustup target add x86_64-apple-darwin
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -565,10 +555,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            target: universal-apple-darwin
-            asset_name: breeze-helper-macos.dmg
-            asset_glob: 'src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg'
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: breeze-helper-windows.msi
@@ -606,12 +592,6 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/helper/src-tauri -> target
-
-      - name: Add macOS universal target
-        if: contains(matrix.platform, 'macos')
-        run: |
-          rustup target add aarch64-apple-darwin
-          rustup target add x86_64-apple-darwin
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
