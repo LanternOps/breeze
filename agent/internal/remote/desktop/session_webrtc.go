@@ -179,11 +179,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			"session", sessionID, "error", probeErr.Error())
 	}
 
-	// Scale initial bitrate to resolution. 2.5Mbps is fine for 1080p but
-	// starves 1440p+ text clarity. Main profile CABAC makes better use of bits.
-	initBitrate := 2_500_000
+	// Start conservatively and let adaptive bitrate ramp up. The controller
+	// responds to frame drops within ~4s, so 5Mbps avoids the initial burst
+	// that overwhelms jitter buffers on constrained paths.
+	initBitrate := 3_000_000
 	if w*h > 1920*1080 {
-		initBitrate = 8_000_000
+		initBitrate = 5_000_000
 	}
 
 	// Create H264 encoder via factory (will use MFT on Windows).

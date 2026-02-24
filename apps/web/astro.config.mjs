@@ -23,6 +23,7 @@ export default defineConfig({
       noExternal: ['@tanstack/react-query']
     },
     server: {
+      allowedHosts: true,
       proxy: {
         '/api': {
           target: process.env.API_URL || 'http://localhost:3001',

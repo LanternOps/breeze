@@ -1,0 +1,51 @@
+# GHCR deploy overrides — extra env vars + platform fixes for arm64 hosts
+services:
+  postgres:
+    ports:
+      - '5432:5432'
+
+  caddy:
+    command: |
+      sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
+      {
+        auto_https off
+      }
+      :80 {
+        encode zstd gzip
+        @api path /api/* /health /ready /metrics/*
+        handle @api {
+          reverse_proxy api:3001
+        }
+        handle {
+          reverse_proxy web:4321
+        }
+        header {
+          X-Content-Type-Options "nosniff"
+          X-Frame-Options "DENY"
+          Referrer-Policy "strict-origin-when-cross-origin"
+        }
+      }
+      CADDYEOF
+      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+
+  binaries-init:
+    image: alpine:3.19
+    platform: linux/amd64
+    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.9.4-2' > /target/VERSION && echo 'Stub binaries volume created'"]
+
+  web:
+    platform: linux/amd64
+
+  api:
+    ports:
+      - '3001:3001'
+    environment:
+      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER}
+      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-Lax}
+      PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-Lax}
+      ENABLE_REGISTRATION: ${ENABLE_REGISTRATION:-true}
+      BINARY_SOURCE: github
+      PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-true}

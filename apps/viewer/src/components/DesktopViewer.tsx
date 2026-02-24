@@ -48,7 +48,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [fps, setFps] = useState(0);
   const [quality, setQuality] = useState(60);
   const [scale, setScale] = useState(1.0);
-  const [maxFps, setMaxFps] = useState(15);
+  const [maxFps, setMaxFps] = useState(60);
   const [bitrate, setBitrate] = useState(2500);
   const [hostname, setHostname] = useState('');
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
@@ -630,6 +630,90 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     };
   }, [transport]);
 
+  // WebRTC stats polling — reports ICE candidate pair, RTT, jitter, and packet
+  // loss every 5s. Sends stats to the agent via the control channel so they ship
+  // through the agent's log pipeline to the database. Also logs to console.
+  useEffect(() => {
+    if (transport !== 'webrtc') return;
+    const pc = webrtcRef.current?.pc;
+    const ch = webrtcRef.current?.controlChannel;
+    if (!pc) return;
+
+    let prevBytesReceived = 0;
+    let prevTimestamp = 0;
+    let prevPacketsLost = 0;
+    let prevPacketsReceived = 0;
+    let prevFramesDropped = 0;
+    const interval = setInterval(async () => {
+      try {
+        const stats = await pc.getStats();
+        let rttMs = 0;
+        let localType = '', remoteType = '', protocol = '';
+        let framesReceived = 0, framesDecoded = 0, framesDropped = 0;
+        let jitterMs = 0, packetsLost = 0, packetsReceived = 0, kbps = 0;
+
+        stats.forEach((report: Record<string, unknown>) => {
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            rttMs = typeof report.currentRoundTripTime === 'number'
+              ? Math.round(report.currentRoundTripTime * 1000) : 0;
+            const localId = report.localCandidateId as string;
+            const remoteId = report.remoteCandidateId as string;
+            stats.forEach((r: Record<string, unknown>) => {
+              if (r.id === localId) { localType = r.candidateType as string; protocol = r.protocol as string; }
+              if (r.id === remoteId) { remoteType = r.candidateType as string; }
+            });
+          }
+          if (report.type === 'inbound-rtp' && report.kind === 'video') {
+            const bytesNow = (report.bytesReceived as number) || 0;
+            const tsNow = (report.timestamp as number) || 0;
+            if (prevTimestamp > 0 && tsNow > prevTimestamp) {
+              kbps = Math.round(((bytesNow - prevBytesReceived) * 8) / (tsNow - prevTimestamp));
+            }
+            prevBytesReceived = bytesNow;
+            prevTimestamp = tsNow;
+            framesReceived = (report.framesReceived as number) ?? 0;
+            framesDecoded = (report.framesDecoded as number) ?? 0;
+            framesDropped = (report.framesDropped as number) ?? 0;
+            jitterMs = typeof report.jitter === 'number' ? Math.round(report.jitter * 1000) : 0;
+            packetsLost = (report.packetsLost as number) ?? 0;
+            packetsReceived = (report.packetsReceived as number) ?? 0;
+          }
+        });
+
+        const summary = `local=${localType}/${protocol} remote=${remoteType} rtt=${rttMs}ms | frames=${framesReceived} decoded=${framesDecoded} dropped=${framesDropped} jitter=${jitterMs}ms pktLost=${packetsLost} kbps=${kbps}`;
+        console.log(`[WebRTC stats] ${summary}`);
+
+        // Send to agent via control channel so stats appear in agent_logs
+        // and drive the adaptive bitrate controller.
+        if (ch && ch.readyState === 'open') {
+          ch.send(JSON.stringify({
+            type: 'viewer_stats',
+            rttMs,
+            jitterMs,
+            packetsLost,
+            packetsLostDelta: packetsLost - prevPacketsLost,
+            packetsReceived,
+            packetsReceivedDelta: packetsReceived - prevPacketsReceived,
+            framesReceived,
+            framesDecoded,
+            framesDropped,
+            framesDroppedDelta: framesDropped - prevFramesDropped,
+            kbps,
+            iceLocal: `${localType}/${protocol}`,
+            iceRemote: remoteType,
+          }));
+        }
+        prevPacketsLost = packetsLost;
+        prevPacketsReceived = packetsReceived;
+        prevFramesDropped = framesDropped;
+      } catch {
+        // pc might be closed
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [transport]);
+
   // Request monitor list and listen for control channel responses (WebRTC only)
 	  useEffect(() => {
 	    if (transport !== 'webrtc') return;
@@ -998,6 +1082,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           scaleFactor: newScale,
           maxFps: newMaxFps,
         }));
+      }
+    } else if (transport === 'webrtc') {
+      const ch = webrtcRef.current?.controlChannel;
+      if (ch && ch.readyState === 'open') {
+        ch.send(JSON.stringify({ type: 'set_fps', value: newMaxFps }));
       }
     }
   }, [transport]);
