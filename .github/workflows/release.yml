@@ -330,6 +330,7 @@ jobs:
         with:
           name: breeze-agent-windows-amd64
           path: dist/breeze-agent-windows-amd64.exe
+          overwrite: true
           retention-days: 30
 
       - name: Upload Windows MSI artifact
