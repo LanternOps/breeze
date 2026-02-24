@@ -330,6 +330,7 @@ jobs:
         with:
           name: breeze-agent-windows-amd64
           path: dist/breeze-agent-windows-amd64.exe
+          overwrite: true
           retention-days: 30
 
       - name: Upload Windows MSI artifact
@@ -458,15 +459,19 @@ jobs:
             target: universal-apple-darwin
             asset_name: breeze-viewer-macos.dmg
             asset_glob: 'src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg'
+            requires_signing: true
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: breeze-viewer-windows.msi
             asset_glob: 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi'
+            requires_signing: false
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             asset_name: breeze-viewer-linux.AppImage
             asset_glob: 'src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage'
+            requires_signing: false
     runs-on: ${{ matrix.platform }}
+    if: ${{ !matrix.requires_signing || vars.ENABLE_MACOS_SIGNING == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -568,15 +573,19 @@ jobs:
             target: universal-apple-darwin
             asset_name: breeze-helper-macos.dmg
             asset_glob: 'src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg'
+            requires_signing: true
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: breeze-helper-windows.msi
             asset_glob: 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi'
+            requires_signing: false
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             asset_name: breeze-helper-linux.AppImage
             asset_glob: 'src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage'
+            requires_signing: false
     runs-on: ${{ matrix.platform }}
+    if: ${{ !matrix.requires_signing || vars.ENABLE_MACOS_SIGNING == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
