@@ -214,9 +214,15 @@ orgRoutes.get('/partners/:id', requireScope('system'), async (c) => {
   return c.json(partner);
 });
 
-orgRoutes.patch('/partners/:id', requireScope('system'), zValidator('json', updatePartnerSchema), async (c) => {
+orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), zValidator('json', updatePartnerSchema), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id');
+
+  // Partner-scoped users may only update their own partner
+  if (auth.scope === 'partner' && auth.partnerId !== id) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+
   const data = c.req.valid('json');
   const updates = { ...data, updatedAt: new Date() };
 
