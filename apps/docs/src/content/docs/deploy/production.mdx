@@ -1,3 +1,22 @@
+Looking at the code changes, I need to verify if the documentation accurately reflects what was changed:
+
+**Code changes made:**
+1. Added TURN server configuration variables to the API service (TURN_HOST, TURN_PORT, TURN_SECRET)
+2. Changed healthcheck URLs from `localhost` to `127.0.0.1` (minor networking fix)
+3. Added a new `coturn` service to docker-compose.yml
+
+**Documentation check:**
+The documentation already mentions:
+- Coturn in the "What Gets Deployed" table ✓
+- TURN_SECRET in the secret generation step ✓
+- TURN_HOST configuration in step 3 ✓
+
+However, there's a critical omission: The documentation does NOT mention `TURN_REALM`, which is now used in the coturn service configuration as `--realm=${TURN_REALM:-breeze.local}`. While it has a sensible default (`breeze.local`), this should be documented as an optional but configurable environment variable.
+
+Additionally, the documentation should clarify that TURN_HOST must be set to the server's public IP for remote desktop functionality.
+
+**Updated documentation:**
+
 ---
 title: Production Deployment
 description: Deploy Breeze RMM to production with Docker Compose and automatic TLS.
@@ -66,14 +85,19 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
 
    Paste the output into `.env`.
 
-   Then set the TURN server's public IP (required for remote desktop to work across NATs):
+4. **Configure TURN server**
+
+   The TURN server enables remote desktop connectivity across NATs and firewalls. Set the server's public IP address:
 
    ```bash
-   # Set to this server's public IP address
+   # Set to this server's public IP address (required for remote desktop)
    TURN_HOST=203.0.113.10
+   
+   # Optional: TURN realm (defaults to breeze.local)
+   TURN_REALM=breeze.local
    ```
 
-4. **Start the stack**
+5. **Start the stack**
 
    ```bash
    docker compose up -d
@@ -81,7 +105,7 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
 
    That's it. On first start, the API container automatically runs database migrations and seeds the initial admin user. Caddy obtains a TLS certificate from Let's Encrypt.
 
-5. **Verify the deployment**
+6. **Verify the deployment**
 
    ```bash
    # Check health
