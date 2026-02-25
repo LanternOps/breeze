@@ -709,7 +709,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       } catch {
         // pc might be closed
       }
-    }, 2000);
+    }, 1000);
 
     return () => clearInterval(interval);
   }, [transport]);

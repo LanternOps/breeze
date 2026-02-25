@@ -227,8 +227,6 @@ func (s *Session) handleControlMessage(data []byte) {
 			// Use framesDroppedDelta relative to total frame activity in this interval.
 			var effectiveLoss float64 = lossFraction
 			if vs.FramesDroppedDelta > 0 {
-				// framesDroppedDelta is per-interval; compare against received delta
-				// (packetsReceivedDelta as a proxy for frame throughput this interval).
 				frameLoss := float64(vs.FramesDroppedDelta) / float64(vs.FramesDroppedDelta+vs.FramesDecoded)
 				if vs.FramesDecoded == 0 {
 					frameLoss = 0.5 // significant but not max
