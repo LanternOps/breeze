@@ -652,6 +652,36 @@ export function createAgentWsHandlers(agentId: string, token: string | undefined
         // Handle command_result for terminal/desktop commands (non-UUID IDs)
         if (message.type === 'command_result' && typeof message.commandId === 'string' &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
+          // Handle WebRTC peer disconnect notifications from agent
+          if (message.commandId.startsWith('desk-disconnect-') &&
+              message.status === 'completed' &&
+              typeof message.result === 'object' && message.result !== null) {
+            const disconnectResult = message.result as Record<string, unknown>;
+            const sessionId = typeof disconnectResult.sessionId === 'string' ? disconnectResult.sessionId : null;
+            if (sessionId && disconnectResult.event === 'peer_disconnected') {
+              try {
+                await runWithAgentDbAccess(async () => {
+                  const result = await db
+                    .update(remoteSessions)
+                    .set({ status: 'disconnected', endedAt: new Date() })
+                    .where(
+                      and(
+                        eq(remoteSessions.id, sessionId),
+                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                        eq(remoteSessions.status, 'active')
+                      )
+                    )
+                    .returning({ id: remoteSessions.id });
+                  if (result.length > 0) {
+                    console.log(`[AgentWs] Session ${sessionId} marked disconnected (peer dropped)`);
+                  }
+                });
+              } catch (err) {
+                console.error(`[AgentWs] Failed to update session disconnect:`, err);
+              }
+            }
+          }
+
           // Store WebRTC answer from start_desktop command results
           if (message.commandId.startsWith('desk-') &&
               message.status === 'completed' &&

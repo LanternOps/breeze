@@ -31,6 +31,9 @@ const (
 	// SAS (Secure Attention Sequence) — helper requests service to invoke SendSAS
 	TypeSASRequest  = "sas_request"
 	TypeSASResponse = "sas_response"
+
+	// Desktop peer disconnected — helper notifies service when WebRTC drops
+	TypeDesktopPeerDisconnected = "desktop_peer_disconnected"
 )
 
 // MaxMessageSize is the maximum size of a JSON IPC message (16MB).
@@ -166,6 +169,13 @@ type SASRequest struct {
 type SASResponse struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+// DesktopPeerDisconnectedNotice is sent by the user helper to the service
+// when a WebRTC peer connection drops (Failed or Closed). The service relays
+// this to the API so it can mark the session as disconnected.
+type DesktopPeerDisconnectedNotice struct {
+	SessionID string `json:"sessionId"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the

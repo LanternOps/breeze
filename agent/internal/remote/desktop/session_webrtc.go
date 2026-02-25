@@ -344,6 +344,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			m.StopSession(sessionID)
+			if m.OnSessionStopped != nil {
+				go m.OnSessionStopped(sessionID)
+			}
 		}
 	})
 
