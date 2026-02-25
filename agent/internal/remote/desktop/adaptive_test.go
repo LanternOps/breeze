@@ -42,11 +42,10 @@ func newTestAdaptive(initial, min, max int) (*AdaptiveBitrate, *stubEncoder) {
 	return a, stub
 }
 
-// warmup feeds clean samples to get past the 3-sample EWMA warmup.
-// Returns the stableCount accumulated during warmup (the 3rd sample runs the
-// algorithm and may increment stableCount).
+// warmup feeds samples to get past the 5-sample EWMA warmup.
+// The 5th sample runs the algorithm and may increment stableCount.
 func warmup(a *AdaptiveBitrate, rtt time.Duration, loss float64) {
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 5; i++ {
 		a.Update(rtt, loss)
 	}
 }
@@ -61,9 +60,10 @@ func TestAdaptive_InitialBitrateMatchesEncoder(t *testing.T) {
 func TestAdaptive_WarmupPreventsEarlyAction(t *testing.T) {
 	a, stub := newTestAdaptive(2_500_000, 500_000, 8_000_000)
 
-	// First two samples shouldn't trigger any adjustment (warmup = 3 samples).
-	a.Update(10*time.Millisecond, 0.0)
-	a.Update(10*time.Millisecond, 0.0)
+	// First four samples shouldn't trigger any adjustment (warmup = 5 samples).
+	for i := 0; i < 4; i++ {
+		a.Update(10*time.Millisecond, 0.0)
+	}
 	if stub.bitrate != 2_500_000 {
 		t.Fatalf("bitrate changed during warmup: %d", stub.bitrate)
 	}
@@ -87,8 +87,8 @@ func TestAdaptive_DegradeMultiplicative(t *testing.T) {
 
 	// Warmup + first action with high loss triggers degrade.
 	warmup(a, 50*time.Millisecond, 0.10)
-	// The 3rd warmup sample is the first action sample → bitrate drops to 0.70x.
-	expected := int(float64(2_000_000) * 0.70)
+	// The 5th warmup sample is the first action sample → bitrate drops to 0.85x.
+	expected := int(float64(2_000_000) * 0.85)
 	if abs(stub.bitrate-expected) > 50_000 {
 		t.Fatalf("expected bitrate ~%d after degrade, got %d", expected, stub.bitrate)
 	}
