@@ -1,27 +1,3 @@
-Looking at the code changes, I need to analyze what was modified:
-
-1. **service_windows.go**: Added SCM session change event handling to detect user session changes (login/logout/disconnect)
-2. **handlers_desktop.go**: Improved session detection to prefer active sessions but fall back to connected sessions (for lock screen scenarios after reboot)
-3. **heartbeat.go**: 
-   - Added `scmSessionCh` channel for SCM session events
-   - Added `sendDesktopDisconnectNotification()` method to notify API when WebRTC peer drops
-   - Added `SCMSessionCh()` getter method
-   - Added helper lifecycle manager initialization in `Start()`
-   - Added `OnSessionStopped` callback for direct mode (non-service)
-   - Added handling of `TypeDesktopPeerDisconnected` IPC message
-
-The key functional changes are:
-- Remote desktop quality pulsing is reduced by proactively spawning helpers into user sessions after reboot (Windows service mode)
-- Desktop disconnect notifications are now sent to the API when WebRTC peers disconnect
-- Better session detection after reboot (connected sessions fallback)
-
-The documentation needs updates in the Remote Desktop section to reflect the new desktop disconnect notification behavior and session management improvements.
-
----
-
-Here's the updated documentation file:
-
-```mdx
 ---
 title: Commands & Config
 description: Agent command execution, configuration options, and service management.
@@ -416,11 +392,7 @@ Open interactive remote terminal (PTY) sessions. Terminal commands use the `term
 
 ## Remote Desktop
 
-Two remote desktop modes are available: WebRTC-based (legacy) and WebSocket-based streaming. The agent automatically manages helper processes in user sessions and notifies the API when peer connections drop.
-
-<Aside>
-On Windows service deployments, the agent proactively spawns helpers into user sessions upon startup and session changes, ensuring remote desktop is instantly available after reboot. This reduces connection latency and eliminates "quality pulsing" caused by lazy helper initialization.
-</Aside>
+Two remote desktop modes are available: WebRTC-based (legacy) and WebSocket-based streaming.
 
 ### WebRTC (Legacy)
 
@@ -438,22 +410,6 @@ On Windows service deployments, the agent proactively spawns helpers into user s
 | `iceServers` | array | No | Array of `{ urls, username, credential }` ICE server configs |
 
 Returns `{ sessionId, answer }` where `answer` is the WebRTC SDP answer.
-
-#### Peer Disconnect Handling
-
-When a WebRTC peer connection drops, the agent automatically sends a disconnect notification to the API containing:
-
-| Field | Type | Description |
-|---|---|---|
-| `type` | string | `"command_result"` |
-| `commandID` | string | `"desk-disconnect-{sessionId}"` |
-| `status` | string | `"completed"` |
-| `result.sessionId` | string | Session identifier |
-| `result.event` | string | `"peer_disconnected"` |
-
-This allows the API to mark the session as disconnected and enable the viewer to reconnect. The notification is sent:
-- In direct mode (non-Windows service) when the local peer connection ends
-- In Windows service mode when the user-mode helper detects the peer disconnect via IPC
 
 ### WebSocket Streaming
 
@@ -695,4 +651,249 @@ Network discovery, SNMP polling, and connectivity checks for monitoring.
 | `methods` | string[] | -- | Scan methods: `ping`, `arp`, `port` |
 | `portRanges` | string[] | -- | Port ranges for port scanning (e.g. `["22", "80", "443"]`) |
 | `snmpCommunities` | string[] | -- | SNMP community strings to try |
-| `timeout` | int
+| `timeout` | int | `2` | Per-host timeout in seconds |
+| `concurrency` | int | `128` | Max concurrent scan workers |
+| `deepScan` | bool | `false` | Enable deep scanning (more ports, slower) |
+| `identifyOS` | bool | `false` | Attempt OS fingerprinting |
+| `resolveHostnames` | bool | `false` | Perform reverse DNS lookups |
+| `jobId` | string | `""` | Job ID for tracking |
+
+<Aside>
+ARP scanning and ICMP ping require root/administrator privileges. Port scanning works without elevated privileges. The agent falls back to available methods automatically.
+</Aside>
+
+### `snmp_poll`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `target` | string | Required | Target IP or hostname |
+| `port` | int | `161` | SNMP port |
+| `version` | string | `"v2c"` | SNMP version: `"v1"`, `"v2c"`, `"v3"` |
+| `community` | string | `"public"` | Community string (v1/v2c) |
+| `username` | string | `""` | SNMPv3 username |
+| `authProtocol` | string | `""` | SNMPv3 auth protocol |
+| `authPassword` | string | `""` | SNMPv3 auth passphrase |
+| `privProtocol` | string | `""` | SNMPv3 privacy protocol |
+| `privPassword` | string | `""` | SNMPv3 privacy passphrase |
+| `oids` | string[] | -- | OIDs to poll |
+| `timeout` | int | `2` | Request timeout in seconds |
+| `retries` | int | `1` | Number of retries |
+| `deviceId` | string | `""` | Device ID for tracking |
+
+### `network_ping`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `target` | string | Required | IP address or hostname |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `timeout` | int | `5` | Timeout in seconds |
+| `count` | int | `4` | Number of ping attempts |
+
+Falls back to TCP connect (ports 443, then 80) if ICMP fails (common when running without root).
+
+### `network_tcp_check`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `target` | string | Required | IP address or hostname |
+| `port` | int | `443` | TCP port to check |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `timeout` | int | `5` | Connection timeout in seconds |
+| `expectBanner` | string | `""` | Expected string in the service banner |
+
+Returns `{ status, responseMs }` and optionally `{ banner }` if `expectBanner` is set. Status is `"degraded"` if the banner does not match.
+
+### `network_http_check`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | Required | Full URL to check (e.g. `https://example.com/health`) |
+| `method` | string | `"GET"` | HTTP method |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `expectedStatus` | int | `200` | Expected HTTP status code |
+| `expectedBody` | string | `""` | Expected string in response body |
+| `verifySsl` | bool | `true` | Verify TLS certificate |
+| `followRedirects` | bool | `true` | Follow HTTP redirects |
+| `timeout` | int | `10` | Request timeout in seconds |
+
+Returns `{ status, statusCode, responseMs }` plus `{ sslExpiry, sslDaysRemaining }` for HTTPS endpoints.
+
+### `network_dns_check`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `hostname` | string | Required | Hostname to look up |
+| `recordType` | string | `"A"` | Record type: `A`, `AAAA`, `MX`, `CNAME`, `TXT`, `NS` |
+| `monitorId` | string | `""` | Monitor ID for tracking |
+| `expectedValue` | string | `""` | Expected value in results |
+| `nameserver` | string | `""` | Custom DNS server (e.g. `8.8.8.8`) |
+| `timeout` | int | `5` | Lookup timeout in seconds |
+
+---
+
+## Backup Management
+
+Run, list, and stop backups using the configured backup provider.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `backup_run` | Start a backup job | -- |
+| `backup_list` | List backup snapshots | -- |
+| `backup_stop` | Stop a running backup | -- |
+
+### `backup_run`
+
+No payload parameters. Requires backup to be configured on the agent. Returns `{ jobId, status, snapshotId, filesBackedUp, bytesBackedUp }`.
+
+### `backup_list`
+
+No payload parameters. Returns `{ snapshots[], count }`.
+
+### `backup_stop`
+
+No payload parameters. Stops the currently running backup job.
+
+---
+
+## Software Inventory
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `collect_software` | Collect installed software inventory | -- |
+
+No payload parameters. Runs the software collector and returns the full list of installed applications with name, version, publisher, install date, and size.
+
+---
+
+## File Transfer
+
+Transfer files to/from managed devices.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `file_transfer` | Initiate a file transfer | `direction`, `path`, `transferId` |
+| `cancel_transfer` | Cancel an in-progress transfer | `transferId` |
+
+### `file_transfer`
+
+Payload is passed directly to the file transfer manager. Key fields include the transfer direction and file path.
+
+### `cancel_transfer`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `transferId` | string | Yes | Transfer ID to cancel |
+
+---
+
+## User Helper Commands
+
+These commands require the user-mode helper process to be running in a user's session.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `notify_user` | Send a desktop notification | `title`, `body`, `icon`, `urgency`, `username`, `actions` |
+| `tray_update` | Update the system tray icon/menu | `status`, `tooltip`, `menuItems` |
+
+### `notify_user`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `title` | string | `"Breeze Agent"` | Notification title |
+| `body` | string | Required | Notification body text |
+| `icon` | string | `""` | Icon path or identifier |
+| `urgency` | string | `"normal"` | Urgency level: `"low"`, `"normal"`, `"critical"` |
+| `username` | string | `""` | Target username (empty = first available session) |
+| `actions` | string[] | -- | Action button labels |
+
+### `tray_update`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `status` | string | `"ok"` | Tray icon status indicator |
+| `tooltip` | string | `"Breeze Agent"` | Tooltip text |
+| `menuItems` | array | -- | Array of `{ id, label, enabled }` menu items |
+
+---
+
+## Breeze Agent Service Management
+
+### Linux (systemd)
+
+```bash
+sudo systemctl start breeze-agent
+sudo systemctl stop breeze-agent
+sudo systemctl restart breeze-agent
+sudo systemctl status breeze-agent
+
+# View logs
+sudo journalctl -u breeze-agent -f
+```
+
+### macOS (launchd)
+
+```bash
+sudo launchctl load /Library/LaunchDaemons/com.breeze.agent.plist
+sudo launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist
+
+# View logs
+sudo log show --predicate 'process == "breeze-agent"' --last 1h
+```
+
+### Windows (Services)
+
+```powershell
+Start-Service breeze-agent
+Stop-Service breeze-agent
+Restart-Service breeze-agent
+Get-Service breeze-agent
+
+# View logs
+Get-EventLog -LogName Application -Source breeze-agent -Newest 50
+```
+
+---
+
+## Heartbeat Telemetry
+
+The agent sends a heartbeat every 60 seconds containing:
+
+| Field | Description |
+|---|---|
+| `cpu` | CPU usage percentage |
+| `memory` | Memory usage (used/total) |
+| `disk` | Disk usage per mount point |
+| `network` | Network interface stats |
+| `uptime` | System uptime |
+| `os` | OS name and version |
+| `hostname` | Current hostname |
+| `agentVersion` | Running agent version |
+
+---
+
+## User-Mode Helper
+
+The agent includes a user-mode helper process for operations that require user-session context:
+
+- Desktop notifications (`notify_user`)
+- User-specific inventory (installed apps, browser extensions)
+- Session-aware remote desktop
+- Script execution as a specific user (`runAs`)
+- System tray icon updates (`tray_update`)
+
+Install the user helper:
+
+<Tabs>
+  <TabItem label="Linux">
+```bash
+sudo make install-user-helper
+systemctl --user enable breeze-agent-user
+```
+  </TabItem>
+  <TabItem label="macOS">
+```bash
+sudo make install-user-helper
+# LaunchAgent auto-starts at login
+```
+  </TabItem>
+</Tabs>
