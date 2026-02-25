@@ -8570,3 +8570,25 @@ select {
   .u-row-span-23 { grid-row-end: span 23 / span 23; }
   .u-row-span-24 { grid-row-end: span 24 / span 24; }
 }
+
+@layer components {
+  .chart-tooltip .recharts-default-tooltip {
+    background-color: hsl(var(--card)) !important;
+    border: 1px solid hsl(var(--border)) !important;
+    border-radius: 0.5rem !important;
+    font-size: 12px;
+  }
+
+  .chart-tooltip .recharts-tooltip-label,
+  .chart-tooltip .recharts-tooltip-item {
+    font-size: 12px;
+  }
+
+  .chart-legend {
+    font-size: 12px;
+  }
+
+  .chart-legend-xs {
+    font-size: 11px;
+  }
+}

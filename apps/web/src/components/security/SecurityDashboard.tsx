@@ -91,13 +91,6 @@ const severityStyles: Record<Priority, string> = {
   low: 'bg-blue-500'
 };
 
-const chartTooltipStyle = {
-  backgroundColor: 'hsl(var(--card))',
-  border: '1px solid hsl(var(--border))',
-  borderRadius: '0.5rem',
-  fontSize: '12px'
-};
-
 const defaultOverview: SecurityOverview = {
   securityScore: 0,
   antivirus: { protected: 0, unprotected: 0 },
@@ -691,7 +684,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
                       <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                       <XAxis dataKey="timestamp" tick={{ fontSize: 10 }} className="text-muted-foreground" />
                       <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} className="text-muted-foreground" />
-                      <Tooltip contentStyle={chartTooltipStyle} />
+                      <Tooltip wrapperClassName="chart-tooltip" />
                       <Line
                         type="monotone"
                         dataKey="score"

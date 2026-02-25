@@ -1297,12 +1297,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                       width={40}
                     />
                     <Tooltip
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '0.5rem',
-                        fontSize: '12px'
-                      }}
+                      wrapperClassName="chart-tooltip"
                       labelFormatter={(value) => formatDateTime(String(value), effectiveTimezone)}
                       formatter={(value: number, name: string) => [`${value}%`, name]}
                     />

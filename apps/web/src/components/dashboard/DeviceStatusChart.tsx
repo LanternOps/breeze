@@ -111,13 +111,7 @@ export default function DeviceStatusChart() {
                 <Cell key={`cell-${index}`} fill={entry.color} />
               ))}
             </Pie>
-            <Tooltip
-              contentStyle={{
-                backgroundColor: 'hsl(var(--card))',
-                border: '1px solid hsl(var(--border))',
-                borderRadius: '0.5rem'
-              }}
-            />
+            <Tooltip wrapperClassName="chart-tooltip" />
             <Legend />
           </PieChart>
         </ResponsiveContainer>
