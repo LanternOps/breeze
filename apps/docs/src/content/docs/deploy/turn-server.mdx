@@ -1,0 +1,264 @@
+---
+title: TURN Server
+description: Deploy a dedicated TURN relay server for WebRTC remote desktop connections.
+sidebar:
+  order: 4
+  label: TURN Server
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+WebRTC remote desktop and terminal sessions need a TURN relay when a direct peer-to-peer connection is not possible — symmetric NAT, restrictive corporate firewalls, or carrier-grade NAT all prevent direct connections. Without TURN, these sessions will fail for affected users.
+
+The Breeze `docker-compose.yml` includes a bundled coturn container that works when the server has a public IP. However, if your Breeze stack runs behind Cloudflare Tunnel (or any other tunnel/proxy that only handles HTTP), **TURN must run on a separate host** because TURN uses UDP, which tunnels cannot carry.
+
+## Architecture Options
+
+| Setup | TURN Location | When to use |
+|---|---|---|
+| **Bundled** | Same host as Breeze | Server has a public IP with UDP ports open |
+| **External** | Dedicated VPS | Breeze is behind Cloudflare Tunnel, NAT, or a load balancer that doesn't pass UDP |
+
+<Aside type="tip">
+  A dedicated TURN server costs as little as $4/month (512 MB RAM is more than enough). coturn is very lightweight — it just relays UDP packets.
+</Aside>
+
+---
+
+## External TURN Server Setup
+
+This guide uses a DigitalOcean droplet, but any VPS provider (Hetzner, Vultr, Linode, AWS Lightsail) works identically.
+
+### Requirements
+
+- A VPS with a **public IPv4 address**
+- Ubuntu 22.04+ or Debian 12+
+- UDP ports open: **3478** and **49152–49252** (relay range)
+- SSH access
+
+### Provision the server
+
+<Tabs>
+<TabItem label="DigitalOcean CLI">
+
+```bash
+# Generate a TURN shared secret
+TURN_SECRET=$(openssl rand -hex 32)
+echo "TURN_SECRET=${TURN_SECRET}"
+
+# Create the droplet
+doctl compute droplet create breeze-coturn \
+  --region sfo3 \
+  --size s-1vcpu-512mb-10gb \
+  --image ubuntu-24-04-x64 \
+  --ssh-keys YOUR_SSH_KEY_ID \
+  --tag-names breeze,coturn \
+  --wait
+```
+
+</TabItem>
+<TabItem label="Manual">
+
+1. Create a 512 MB+ VPS with Ubuntu 24.04
+2. Note the public IP address
+3. Generate a shared secret: `openssl rand -hex 32`
+
+</TabItem>
+</Tabs>
+
+### Install and configure coturn
+
+SSH into the server and run:
+
+```bash
+# Install coturn
+apt-get update && apt-get install -y coturn
+
+# Enable the service
+sed -i 's/^#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn
+```
+
+Write the configuration file:
+
+```bash
+cat > /etc/turnserver.conf <<'EOF'
+listening-port=3478
+tls-listening-port=5349
+fingerprint
+lt-cred-mech
+static-auth-secret=YOUR_TURN_SECRET_HERE
+realm=breeze.local
+relay-threads=2
+max-allocations-quota=100
+min-port=49152
+max-port=49252
+no-cli
+log-file=stdout
+verbose
+external-ip=YOUR_PUBLIC_IP_HERE
+EOF
+```
+
+Replace `YOUR_TURN_SECRET_HERE` and `YOUR_PUBLIC_IP_HERE` with your actual values.
+
+Start the service:
+
+```bash
+systemctl enable coturn
+systemctl restart coturn
+systemctl status coturn
+```
+
+### Configure the firewall
+
+<Tabs>
+<TabItem label="DigitalOcean Cloud Firewall">
+
+```bash
+doctl compute firewall create \
+  --name breeze-coturn-fw \
+  --droplet-ids YOUR_DROPLET_ID \
+  --inbound-rules "protocol:tcp,ports:22,address:0.0.0.0/0 \
+    protocol:udp,ports:3478,address:0.0.0.0/0 \
+    protocol:udp,ports:49152-49252,address:0.0.0.0/0" \
+  --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0 \
+    protocol:udp,ports:all,address:0.0.0.0/0 \
+    protocol:icmp,address:0.0.0.0/0"
+```
+
+</TabItem>
+<TabItem label="UFW">
+
+```bash
+ufw allow 22/tcp
+ufw allow 3478/udp
+ufw allow 49152:49252/udp
+ufw enable
+```
+
+</TabItem>
+</Tabs>
+
+### Verify connectivity
+
+From your local machine:
+
+```bash
+# Check UDP port is reachable
+nc -u -z -w 3 YOUR_TURN_IP 3478
+
+# Check the service is running
+ssh root@YOUR_TURN_IP systemctl status coturn
+```
+
+---
+
+## Configure Breeze to Use External TURN
+
+### 1. Update `.env`
+
+Add or update these variables in your Breeze `.env` file:
+
+```bash
+TURN_HOST=YOUR_TURN_IP
+TURN_PORT=3478
+TURN_SECRET=YOUR_TURN_SECRET_HERE
+TURN_REALM=breeze.local
+```
+
+<Aside type="danger">
+  The `TURN_SECRET` is a shared HMAC key used to generate temporary credentials. Never share it publicly. Treat it like a database password — it should only exist in your `.env` and in the coturn config.
+</Aside>
+
+### 2. Disable the bundled coturn container
+
+If you are using a Docker Compose override file (e.g., `docker-compose.override.yml.ghcr`), add this to disable the local coturn service:
+
+```yaml
+services:
+  coturn:
+    image: alpine:3.19
+    entrypoint: ["true"]
+    restart: "no"
+    network_mode: bridge
+```
+
+This replaces the bundled coturn with a no-op container that exits immediately.
+
+### 3. Restart the stack
+
+```bash
+docker compose pull api web
+docker compose up -d
+```
+
+The API will now generate TURN credentials pointing to your external TURN server.
+
+---
+
+## Using the Bundled TURN Server
+
+If your Breeze server has a public IP (not behind a tunnel), the bundled coturn container works out of the box. Just set these in `.env`:
+
+```bash
+TURN_HOST=YOUR_SERVER_PUBLIC_IP
+TURN_SECRET=$(openssl rand -hex 32)
+```
+
+The bundled coturn runs with `network_mode: host`, so it needs direct access to the network — no port mapping is required, but the host firewall must allow:
+
+- **UDP 3478** — TURN listening port
+- **UDP 49152–65535** — relay port range (default, can be tightened in `docker/turnserver.conf`)
+
+---
+
+## Relay Port Range Sizing
+
+Each active WebRTC session uses one relay allocation (one UDP port). The default range in the bundled config is `49152–65535` (16,383 ports). For an external dedicated server, a tighter range reduces firewall surface:
+
+| Expected concurrent sessions | Recommended range | Ports |
+|---|---|---|
+| Up to 50 | 49152–49202 | 50 |
+| Up to 100 | 49152–49252 | 100 |
+| Up to 500 | 49152–49652 | 500 |
+
+Edit `min-port` and `max-port` in the coturn config and match the firewall rule.
+
+---
+
+## How Credentials Work
+
+Breeze uses the TURN **time-limited credential** mechanism (RFC 5766 long-term credentials with a shared secret):
+
+1. The API receives a request for ICE servers (`GET /remote/ice-servers`).
+2. It generates a temporary username (Unix timestamp + random nonce) and computes an HMAC-SHA1 signature using `TURN_SECRET`.
+3. The credential pair (username + HMAC password) is returned to both the viewer and agent.
+4. Credentials expire after a configurable TTL (default: 24 hours).
+5. coturn validates incoming TURN allocations against the same shared secret.
+
+Clients never see `TURN_SECRET` — they only receive short-lived derived credentials.
+
+---
+
+## Troubleshooting
+
+**Remote desktop fails with "ICE failed"**
+- Verify the TURN server is reachable: `nc -u -z -w 3 TURN_IP 3478`
+- Check coturn logs: `ssh root@TURN_IP journalctl -u coturn -f`
+- Confirm `TURN_HOST` in `.env` matches the TURN server's public IP exactly
+- Ensure the firewall allows UDP 3478 and the relay port range
+
+**Coturn starts but clients can't allocate**
+- Check `external-ip` in `/etc/turnserver.conf` — it must be the server's actual public IP
+- Verify `static-auth-secret` matches `TURN_SECRET` in Breeze's `.env`
+- Check for `realm` mismatch between coturn config and `TURN_REALM`
+
+**High bandwidth usage on the TURN server**
+- TURN relays all media when direct P2P fails. Each desktop session at 5 Mbps = ~2.25 GB/hour
+- Monitor with `vnstat` or DigitalOcean's bandwidth graphs
+- Consider enabling bandwidth limits in coturn: `max-bps=5000000` (per session)
+
+**WebSocket fallback is active instead of WebRTC**
+- The viewer falls back to WebSocket when WebRTC negotiation fails entirely
+- Check browser console for ICE errors
+- Ensure both STUN and TURN candidates are being generated (check `GET /remote/ice-servers` response)
