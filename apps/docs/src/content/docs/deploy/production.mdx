@@ -73,6 +73,10 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
    TURN_HOST=203.0.113.10
    ```
 
+   <Aside type="tip">
+     If your server is behind **Cloudflare Tunnel** or another HTTP-only proxy, TURN cannot run on the same host because it requires UDP. Deploy TURN on a separate VPS instead — see [TURN Server](/deploy/turn-server/) for a step-by-step guide.
+   </Aside>
+
 4. **Start the stack**
 
    ```bash
