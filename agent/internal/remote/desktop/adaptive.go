@@ -197,9 +197,9 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		a.stableCount = 0
 		// After degrading, require extra stable samples before upgrading again.
 		// This prevents the boom-bust cycle: degrade→recover→immediately ramp
-		// back to the same bitrate that caused congestion. At 2s viewer stats
-		// intervals, backoff=2 means ~4s of stable conditions before upgrading.
-		a.degradeBackoff = 2
+		// back to the same bitrate that caused congestion. At 1s viewer stats
+		// intervals, backoff=4 means ~4s of stable conditions before upgrading.
+		a.degradeBackoff = 4
 	} else if upgrade {
 		a.stableCount++
 		if a.degradeBackoff > 0 {
@@ -213,8 +213,9 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		}
 	}
 
-	// Require 2 consecutive stable samples plus no active backoff before upgrading.
-	const stableRequired = 2
+	// Require 3 consecutive stable samples plus no active backoff before upgrading.
+	// At 1s viewer stats polling, this means 3s of clean conditions before each step.
+	const stableRequired = 3
 
 	action := "hold"
 	newBitrate := a.targetBitrate

@@ -225,15 +225,16 @@ func (s *Session) handleControlMessage(data []byte) {
 			// Frame drops signal jitter-buffer overload even when packet loss is
 			// zero. Treat dropped frames as a loss signal for the adaptive controller.
 			// Use framesDroppedDelta relative to total frame activity in this interval.
+			// Combine packet loss and frame drops into a single congestion signal.
+			// Uses probability union P(A∪B) = P(A)+P(B)-P(A)·P(B) so both
+			// contribute without double-counting when they overlap.
 			var effectiveLoss float64 = lossFraction
 			if vs.FramesDroppedDelta > 0 {
 				frameLoss := float64(vs.FramesDroppedDelta) / float64(vs.FramesDroppedDelta+vs.FramesDecoded)
 				if vs.FramesDecoded == 0 {
 					frameLoss = 0.5 // significant but not max
 				}
-				if frameLoss > effectiveLoss {
-					effectiveLoss = frameLoss
-				}
+				effectiveLoss = lossFraction + frameLoss - lossFraction*frameLoss
 			}
 
 			slog.Info("Viewer WebRTC stats",

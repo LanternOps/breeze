@@ -193,8 +193,8 @@ func (s *Session) adaptiveLoop() {
 
 	// RTCP stats — log only. Pion v4 RemoteInboundRTPStreamStats FractionLost
 	// conflicts with viewer-reported stats when both feed adaptive, causing
-	// oscillation. Viewer stats (2s interval) are the sole adaptive input;
-	// they include jitter + frame drops that RTCP doesn't capture.
+	// oscillation. Viewer stats (1s interval) are the sole adaptive input;
+	// they include packet loss + frame drops that RTCP doesn't capture.
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
