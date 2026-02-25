@@ -3,6 +3,8 @@
  * Handles all API requests for the customer portal
  */
 
+import { navigateTo } from './navigation';
+
 const API_BASE = import.meta.env.PUBLIC_API_URL || 'http://localhost:3001';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
@@ -45,8 +47,6 @@ function resolveApiBase(): string {
     const parsed = new URL(API_BASE, window.location.origin);
     const windowHostname = window.location.hostname;
 
-    // Keep localhost development same-site by default, even if PUBLIC_API_URL
-    // was set to a different hostname/IP.
     if (isLoopbackHostname(windowHostname) && parsed.hostname !== windowHostname) {
       parsed.hostname = windowHostname;
       return parsed.origin;
@@ -55,10 +55,26 @@ function resolveApiBase(): string {
     if (isLoopbackHostname(parsed.hostname) && parsed.hostname !== window.location.hostname) {
       parsed.hostname = window.location.hostname;
     }
+
     return parsed.origin;
   } catch {
     return API_BASE;
   }
+}
+
+function buildQueryString(query?: Record<string, string | number | undefined>): string {
+  if (!query) {
+    return '';
+  }
+
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined) continue;
+    params.set(key, String(value));
+  }
+
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : '';
 }
 
 export function buildPortalApiUrl(path: string): string {
@@ -77,37 +93,54 @@ export function buildPortalApiUrl(path: string): string {
   return `${apiBase}/api/v1${cleanPath}`;
 }
 
-export interface ApiError {
-  error: string;
-  statusCode: number;
+export function buildServerForwardHeaders(request: Request): Headers {
+  const headers = new Headers();
+  const cookie = request.headers.get('cookie');
+  const host = request.headers.get('host');
+  const forwardedHost = request.headers.get('x-forwarded-host');
+  const forwardedProto = request.headers.get('x-forwarded-proto');
+
+  if (cookie) headers.set('cookie', cookie);
+  if (host) headers.set('host', host);
+  if (forwardedHost) headers.set('x-forwarded-host', forwardedHost);
+  if (forwardedProto) headers.set('x-forwarded-proto', forwardedProto);
+
+  return headers;
+}
+
+export interface ApiRequestConfig {
+  headers?: HeadersInit;
+  redirectOnUnauthorized?: boolean;
 }
 
 export interface ApiResponse<T> {
   data?: T;
   error?: string;
+  statusCode?: number;
+  headers?: Headers;
 }
 
-/**
- * Clear auth from storage (logout)
- */
 function clearAuth(): void {
   if (typeof window === 'undefined') return;
   localStorage.removeItem('portal-auth');
 }
 
-/**
- * Make an authenticated API request with automatic token refresh
- */
 export async function apiRequest<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  config: ApiRequestConfig = {}
 ): Promise<ApiResponse<T>> {
   const url = buildPortalApiUrl(endpoint);
   const method = (options.method ?? 'GET').toUpperCase();
 
-  const headers = new Headers(options.headers);
-  headers.set('Content-Type', 'application/json');
+  const headers = new Headers(config.headers);
+  const optionHeaders = new Headers(options.headers);
+  optionHeaders.forEach((value, key) => headers.set(key, value));
+
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    if (!headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
     const csrfToken = readCookie(CSRF_COOKIE_NAME);
     if (csrfToken) {
       headers.set(CSRF_HEADER_NAME, csrfToken);
@@ -115,115 +148,331 @@ export async function apiRequest<T>(
   }
 
   try {
-    const response = await fetch(url, { ...options, headers, credentials: 'include' });
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include'
+    });
 
-    // Portal auth uses in-memory sessions; 401 means session expired/invalid.
     if (response.status === 401) {
       clearAuth();
-      window.location.href = '/login';
-      return { error: 'Session expired' };
+      if (config.redirectOnUnauthorized !== false && typeof window !== 'undefined') {
+        void navigateTo('/login', { replace: true });
+      }
+      return {
+        error: 'Session expired',
+        statusCode: response.status,
+        headers: response.headers
+      };
     }
 
-    const data = await response.json().catch(() => ({}));
-
+    const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      return { error: data.error || 'Request failed' };
+      return {
+        error: body?.error || 'Request failed',
+        statusCode: response.status,
+        headers: response.headers
+      };
     }
 
-    return { data };
-  } catch (error) {
+    return {
+      data: body as T,
+      statusCode: response.status,
+      headers: response.headers
+    };
+  } catch {
     return { error: 'Network error' };
   }
 }
 
-/**
- * GET request helper
- */
-export async function apiGet<T>(endpoint: string): Promise<ApiResponse<T>> {
-  return apiRequest<T>(endpoint, { method: 'GET' });
+export async function apiGet<T>(
+  endpoint: string,
+  config: ApiRequestConfig = {}
+): Promise<ApiResponse<T>> {
+  return apiRequest<T>(endpoint, { method: 'GET' }, config);
 }
 
-/**
- * POST request helper
- */
 export async function apiPost<T>(
   endpoint: string,
-  body?: unknown
+  body?: unknown,
+  config: ApiRequestConfig = {}
 ): Promise<ApiResponse<T>> {
   return apiRequest<T>(endpoint, {
     method: 'POST',
     body: body ? JSON.stringify(body) : undefined
-  });
+  }, config);
 }
 
-/**
- * PUT request helper
- */
 export async function apiPut<T>(
   endpoint: string,
-  body?: unknown
+  body?: unknown,
+  config: ApiRequestConfig = {}
 ): Promise<ApiResponse<T>> {
   return apiRequest<T>(endpoint, {
     method: 'PUT',
     body: body ? JSON.stringify(body) : undefined
-  });
+  }, config);
 }
 
-/**
- * DELETE request helper
- */
-export async function apiDelete<T>(endpoint: string): Promise<ApiResponse<T>> {
-  return apiRequest<T>(endpoint, { method: 'DELETE' });
+export async function apiPatch<T>(
+  endpoint: string,
+  body?: unknown,
+  config: ApiRequestConfig = {}
+): Promise<ApiResponse<T>> {
+  return apiRequest<T>(endpoint, {
+    method: 'PATCH',
+    body: body ? JSON.stringify(body) : undefined
+  }, config);
 }
 
-// Portal-specific API endpoints
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+}
+
+export interface PaginatedResult<T> extends ApiResponse<T[]> {
+  pagination?: Pagination;
+}
 
 export interface Device {
   id: string;
-  name: string;
   hostname: string;
+  displayName: string | null;
+  osType: string | null;
+  osVersion: string | null;
   status: 'online' | 'offline' | 'warning';
-  lastSeen: string;
-  osType: string;
-  osVersion: string;
+  lastSeenAt: string | null;
 }
 
-export interface Ticket {
+export type TicketStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface TicketSummary {
   id: string;
-  title: string;
-  description: string;
-  status: 'open' | 'in_progress' | 'resolved' | 'closed';
-  priority: 'low' | 'medium' | 'high' | 'critical';
+  ticketNumber: string;
+  subject: string;
+  status: TicketStatus;
+  priority: TicketPriority;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface TicketComment {
+  id: string;
+  authorName: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface TicketDetails extends TicketSummary {
+  description: string;
+  comments: TicketComment[];
+}
+
 export interface Asset {
   id: string;
-  name: string;
-  type: string;
-  serialNumber?: string;
-  assignedTo?: string;
-  location?: string;
+  hostname: string;
+  displayName: string | null;
+  osType: string | null;
+  status: 'online' | 'offline' | 'warning';
+  lastSeenAt: string | null;
+}
+
+export interface Profile {
+  id: string;
+  orgId: string;
+  orgName: string | null;
+  organizationId: string;
+  organizationName: string;
+  email: string;
+  name: string | null;
+  receiveNotifications: boolean;
+  status: string;
+}
+
+export interface BrandingConfig {
+  id?: string;
+  orgId?: string;
+  name?: string;
+  logoUrl?: string | null;
+  faviconUrl?: string | null;
+  primaryColor?: string | null;
+  secondaryColor?: string | null;
+  accentColor?: string | null;
+  customDomain?: string | null;
+  welcomeMessage?: string | null;
+  supportEmail?: string | null;
+  supportPhone?: string | null;
+  footerText?: string | null;
+  customCss?: string | null;
+  enableTickets?: boolean;
+  enableAssetCheckout?: boolean;
+  enableSelfService?: boolean;
+  enablePasswordReset?: boolean;
+}
+
+export interface ListParams {
+  page?: number;
+  limit?: number;
+}
+
+function mapPaginatedData<T>(
+  response: ApiResponse<{ data: T[]; pagination?: Pagination }>
+): PaginatedResult<T> {
+  if (!response.data) {
+    return {
+      error: response.error,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  }
+
+  return {
+    data: response.data.data,
+    pagination: response.data.pagination,
+    statusCode: response.statusCode,
+    headers: response.headers
+  };
 }
 
 export const portalApi = {
-  // Devices
-  getDevices: () => apiGet<Device[]>('/portal/devices'),
+  getDevices: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<PaginatedResult<Device>> => {
+    const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 });
+    const response = await apiGet<{ data: Device[]; pagination: Pagination }>(
+      `/portal/devices${query}`,
+      config
+    );
+    return mapPaginatedData(response);
+  },
 
-  // Tickets
-  getTickets: () => apiGet<Ticket[]>('/portal/tickets'),
-  getTicket: (id: string) => apiGet<Ticket>(`/portal/tickets/${id}`),
-  createTicket: (data: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt'>) =>
-    apiPost<Ticket>('/portal/tickets', data),
+  getTickets: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<PaginatedResult<TicketSummary>> => {
+    const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 });
+    const response = await apiGet<{ data: TicketSummary[]; pagination: Pagination }>(
+      `/portal/tickets${query}`,
+      config
+    );
+    return mapPaginatedData(response);
+  },
 
-  // Assets
-  getAssets: () => apiGet<Asset[]>('/portal/assets'),
+  getTicket: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<TicketDetails>> => {
+    const response = await apiGet<{ ticket: TicketDetails }>(`/portal/tickets/${id}`, config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
 
-  // Profile
-  getProfile: () => apiGet<{ id: string; name: string; email: string }>('/portal/profile'),
-  updateProfile: (data: { name?: string; email?: string }) =>
-    apiPut('/portal/profile', data),
-  changePassword: (data: { currentPassword: string; newPassword: string }) =>
-    apiPost('/portal/profile/password', data)
+    return {
+      data: response.data.ticket,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  createTicket: async (
+    data: { subject: string; description: string; priority: TicketPriority },
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<TicketSummary & { description: string }>> => {
+    const response = await apiPost<{ ticket: TicketSummary & { description: string } }>(
+      '/portal/tickets',
+      data,
+      config
+    );
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.ticket,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  getAssets: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<PaginatedResult<Asset>> => {
+    const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 });
+    const response = await apiGet<{ data: Asset[]; pagination: Pagination }>(
+      `/portal/assets${query}`,
+      config
+    );
+    return mapPaginatedData(response);
+  },
+
+  getProfile: async (config: ApiRequestConfig = {}): Promise<ApiResponse<Profile>> => {
+    const response = await apiGet<{ user: Profile }>('/portal/profile', config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.user,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  updateProfile: async (
+    data: { name?: string; receiveNotifications?: boolean; password?: string; email?: string },
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<Profile>> => {
+    const response = await apiPatch<{ user: Profile }>('/portal/profile', data, config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.user,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  changePassword: (
+    data: { currentPassword: string; newPassword: string },
+    config: ApiRequestConfig = {}
+  ) => apiPost<{ success: boolean; message?: string }>('/portal/profile/password', data, config),
+
+  getBranding: async (config: ApiRequestConfig = {}): Promise<ApiResponse<BrandingConfig>> => {
+    const response = await apiGet<{ branding: BrandingConfig }>('/portal/branding', config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.branding,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  }
 };

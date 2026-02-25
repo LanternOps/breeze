@@ -10,7 +10,7 @@ import {
   RefreshCw,
   RotateCcw
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, marginLeftPxClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 type TreeNode = {
@@ -128,9 +128,9 @@ export default function SnapshotBrowser() {
         <div
           className={cn(
             'flex items-center gap-2 rounded-md px-2 py-1 text-sm',
-            nodePath === selectedFolder ? 'bg-primary/10 text-foreground' : 'text-muted-foreground'
+            nodePath === selectedFolder ? 'bg-primary/10 text-foreground' : 'text-muted-foreground',
+            marginLeftPxClass(depth * 14)
           )}
-          style={{ marginLeft: depth * 14 }}
         >
           {isFolder ? (
             <button onClick={() => toggleExpanded(node.id)} className="text-muted-foreground">

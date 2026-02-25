@@ -1,8 +1,11 @@
 import { defineMiddleware } from 'astro:middleware';
+import { hasPortalSessionCookie } from './lib/session';
 
-function readFlag(name: string): boolean {
-  const raw = process.env[name]?.trim().toLowerCase();
-  return raw === '1' || raw === 'true';
+const protectedPrefixes = ['/devices', '/tickets', '/assets', '/profile'];
+const authOnlyPaths = new Set(['/login', '/forgot-password']);
+
+function isProtectedPath(pathname: string): boolean {
+  return protectedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 function resolveConnectSrcDirective(): string {
@@ -31,30 +34,55 @@ function resolveConnectSrcDirective(): string {
   return `connect-src ${Array.from(sources).join(' ')}`;
 }
 
-const cspDirectives = [
+const fallbackCspDirectives = [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT')
-    ? "script-src 'self' 'unsafe-inline'"
-    : "script-src 'self'",
-  readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE')
-    ? "style-src 'self' 'unsafe-inline'"
-    : "style-src 'self'",
-  readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE') ? null : "style-src-attr 'unsafe-inline'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "style-src-attr 'none'",
   "script-src-attr 'none'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
   resolveConnectSrcDirective()
-].filter(Boolean).join('; ');
+].join('; ');
 
-export const onRequest = defineMiddleware(async (_context, next) => {
+export const onRequest = defineMiddleware(async (context, next) => {
+  const pathname = context.url.pathname;
+  const hasSession = hasPortalSessionCookie(context.request);
+
+  if (pathname === '/') {
+    return context.redirect(hasSession ? '/devices' : '/login', 302);
+  }
+
+  if (isProtectedPath(pathname) && !hasSession) {
+    return context.redirect('/login', 302);
+  }
+
+  if (hasSession && authOnlyPaths.has(pathname)) {
+    return context.redirect('/devices', 302);
+  }
+
   const response = await next();
   const headers = new Headers(response.headers);
+  const existingCsp = headers.get('Content-Security-Policy');
 
-  headers.set('Content-Security-Policy', cspDirectives);
+  // Astro experimental.csp sets hash-based CSP for HTML responses.
+  // Keep this strict fallback for non-HTML responses or routes without Astro rendering.
+  if (!existingCsp) {
+    headers.set('Content-Security-Policy', fallbackCspDirectives);
+  } else {
+    let patchedCsp = existingCsp;
+    if (!/\bscript-src-attr\b/i.test(patchedCsp)) {
+      patchedCsp = `${patchedCsp}; script-src-attr 'none'`;
+    }
+    if (!/\bstyle-src-attr\b/i.test(patchedCsp)) {
+      patchedCsp = `${patchedCsp}; style-src-attr 'none'`;
+    }
+    headers.set('Content-Security-Policy', patchedCsp);
+  }
   headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   headers.set('X-Frame-Options', 'DENY');

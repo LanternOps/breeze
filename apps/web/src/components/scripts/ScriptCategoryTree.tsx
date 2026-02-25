@@ -8,7 +8,7 @@ import {
   Pencil,
   Trash2
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, leftPxClass, paddingLeftPxClass, topPxClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 type ScriptCategory = {
@@ -352,9 +352,9 @@ export default function ScriptCategoryTree({
             'group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition',
             isSelected && 'bg-primary/10 text-primary',
             isDragOver && 'ring-1 ring-primary/50',
-            !isSelected && 'hover:bg-muted/60'
+            !isSelected && 'hover:bg-muted/60',
+            paddingLeftPxClass(depth * 16)
           )}
-          style={{ paddingLeft: depth * 16 }}
           draggable
           onDragStart={event => {
             setDraggingId(category.id);
@@ -535,8 +535,11 @@ export default function ScriptCategoryTree({
 
       {contextMenu && (
         <div
-          className="fixed z-50 w-44 rounded-md border bg-card py-1 text-sm shadow-lg"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className={cn(
+            'fixed z-50 w-44 rounded-md border bg-card py-1 text-sm shadow-lg',
+            leftPxClass(contextMenu.x),
+            topPxClass(contextMenu.y)
+          )}
         >
           <button
             type="button"

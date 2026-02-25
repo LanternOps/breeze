@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { fetchWithAuth } from '../../stores/auth';
+import { cn, heightPxClass, leftPxClass, topPxClass } from '@/lib/utils';
 
 export type TopologyNodeType =
   | 'router'
@@ -68,6 +69,18 @@ const statusStroke: Record<TopologyNodeStatus, string> = {
   online: '#22c55e',
   offline: '#ef4444',
   warning: '#eab308'
+};
+
+const statusDotClass: Record<TopologyNodeStatus, string> = {
+  online: 'bg-green-500',
+  offline: 'bg-red-500',
+  warning: 'bg-yellow-500'
+};
+
+const statusTextClass: Record<TopologyNodeStatus, string> = {
+  online: 'text-green-500',
+  offline: 'text-red-500',
+  warning: 'text-yellow-500'
 };
 
 const typeIcon: Record<TopologyNodeType, string> = {
@@ -510,15 +523,15 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: statusStroke.online }} />
+            <span className={cn('h-2.5 w-2.5 rounded-full', statusDotClass.online)} />
             Online
           </span>
           <span className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: statusStroke.warning }} />
+            <span className={cn('h-2.5 w-2.5 rounded-full', statusDotClass.warning)} />
             Warning
           </span>
           <span className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: statusStroke.offline }} />
+            <span className={cn('h-2.5 w-2.5 rounded-full', statusDotClass.offline)} />
             Offline
           </span>
         </div>
@@ -531,11 +544,14 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
       )}
 
       <div ref={containerRef} className="relative mt-6 overflow-hidden rounded-md border bg-muted/30">
-        <svg ref={svgRef} className="h-full w-full" style={{ height }} />
+        <svg ref={svgRef} className={cn('h-full w-full', heightPxClass(height))} />
         {tooltip && (
           <div
-            className="pointer-events-none fixed z-50 rounded-md border bg-card px-3 py-2 text-xs shadow-lg"
-            style={{ left: tooltip.x, top: tooltip.y }}
+            className={cn(
+              'pointer-events-none fixed z-50 rounded-md border bg-card px-3 py-2 text-xs shadow-lg',
+              leftPxClass(tooltip.x),
+              topPxClass(tooltip.y)
+            )}
           >
             <p className="font-semibold">{tooltip.node.label}</p>
             {tooltip.node.ipAddress && (
@@ -543,10 +559,7 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
             )}
             <p className="text-muted-foreground">
               {typeLabels[tooltip.node.type]} &middot;{' '}
-              <span
-                style={{ color: statusStroke[tooltip.node.status] }}
-                className="font-medium"
-              >
+              <span className={cn('font-medium', statusTextClass[tooltip.node.status])}>
                 {tooltip.node.status}
               </span>
             </p>

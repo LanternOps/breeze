@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, CheckCircle, Monitor, Shield, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type PatchSeveritySummary = {
@@ -131,7 +131,7 @@ function SeveritySummaryCard({
           <span>{progress}%</span>
         </div>
         <div className="mt-2 h-2 rounded-full bg-muted">
-          <div className={cn('h-2 rounded-full', barClass)} style={{ width: `${progress}%` }} />
+          <div className={cn('h-2 rounded-full', barClass, widthPercentClass(progress))} />
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ListChecks, Check, X, Clock, ChevronDown, ChevronRight } from 'lucide-react';
 import type { ActionPlanStep } from '@breeze/shared';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 const AUTO_REJECT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -68,8 +69,10 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
       {/* Countdown progress bar */}
       <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-800">
         <div
-          className="h-full rounded-full bg-purple-500/60 transition-all duration-1000 ease-linear"
-          style={{ width: `${progressPct}%` }}
+          className={cn(
+            'h-full rounded-full bg-purple-500/60 transition-all duration-1000 ease-linear',
+            widthPercentClass(progressPct)
+          )}
         />
       </div>
 

@@ -3,6 +3,7 @@ import { Search, ChevronLeft, ChevronRight, MoreHorizontal, MoreVertical, Filter
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
+import { widthPercentClass } from '@/lib/utils';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -436,8 +437,7 @@ export default function DeviceList({
                     <div className="flex items-center gap-2">
                       <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
                         <div
-                          className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-red-500' : device.cpuPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                          style={{ width: `${device.cpuPercent}%` }}
+                          className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-red-500' : device.cpuPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.cpuPercent)}`}
                         />
                       </div>
                       <span className="w-10 text-right">{device.cpuPercent}%</span>
@@ -447,8 +447,7 @@ export default function DeviceList({
                     <div className="flex items-center gap-2">
                       <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
                         <div
-                          className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-red-500' : device.ramPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                          style={{ width: `${device.ramPercent}%` }}
+                          className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-red-500' : device.ramPercent > 60 ? 'bg-yellow-500' : 'bg-green-500'} ${widthPercentClass(device.ramPercent)}`}
                         />
                       </div>
                       <span className="w-10 text-right">{device.ramPercent}%</span>

@@ -16,6 +16,7 @@ import {
   Tooltip,
   Legend
 } from 'recharts';
+import { minHeightPxClass } from '@/lib/utils';
 
 type ChartType = 'line' | 'bar' | 'area' | 'pie';
 
@@ -72,7 +73,7 @@ export default function ChartWidget({
         <h3 className="text-sm font-semibold">{title}</h3>
         {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
       </div>
-      <div className="flex-1" style={{ minHeight: height }}>
+      <div className={`flex-1 ${minHeightPxClass(height)}`}>
         {data.length === 0 ? (
           <div className="flex h-full items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
             No data available

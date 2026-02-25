@@ -21,7 +21,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts';
-import { cn, formatNumber } from '@/lib/utils';
+import { cn, formatNumber, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 
 type Priority = 'critical' | 'high' | 'medium' | 'low';
@@ -650,8 +650,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
                 </div>
                 <div className="h-2 w-full rounded-full bg-muted">
                   <div
-                    className={cn('h-2 rounded-full', scoreMeta.bar)}
-                    style={{ width: `${overview.securityScore}%` }}
+                    className={cn('h-2 rounded-full', scoreMeta.bar, widthPercentClass(overview.securityScore))}
                   />
                 </div>
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -778,10 +777,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
                   </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className="h-2 rounded-full bg-emerald-500"
-                    style={{ width: `${antivirusProtectedPercent}%` }}
-                  />
+                  <div className={cn('h-2 rounded-full bg-emerald-500', widthPercentClass(antivirusProtectedPercent))} />
                 </div>
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
@@ -822,10 +818,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
                   </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className="h-2 rounded-full bg-sky-500"
-                    style={{ width: `${firewallEnabledPercent}%` }}
-                  />
+                  <div className={cn('h-2 rounded-full bg-sky-500', widthPercentClass(firewallEnabledPercent))} />
                 </div>
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
@@ -862,10 +855,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
                   <span className="font-medium">{formatNumber(overview.encryption.filevaultEnabled)}</span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className="h-2 rounded-full bg-violet-500"
-                    style={{ width: `${encryptionPercent}%` }}
-                  />
+                  <div className={cn('h-2 rounded-full bg-violet-500', widthPercentClass(encryptionPercent))} />
                 </div>
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
@@ -896,10 +886,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
                   <span className="text-xs text-muted-foreground">compliant</span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className="h-2 rounded-full bg-emerald-500"
-                    style={{ width: `${passwordCompliance}%` }}
-                  />
+                  <div className={cn('h-2 rounded-full bg-emerald-500', widthPercentClass(passwordCompliance))} />
                 </div>
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
