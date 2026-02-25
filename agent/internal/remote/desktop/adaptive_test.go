@@ -100,26 +100,32 @@ func TestAdaptive_UpgradeRequiresStableSamples(t *testing.T) {
 	// Warm up with clean samples. The 3rd sample runs algorithm, stableCount→1.
 	warmup(a, 50*time.Millisecond, 0.0)
 
-	// After warmup, stableCount=1. Need 2 total to trigger upgrade (stableRequired=2).
-	// stableCount=1 after warmup — no upgrade yet.
+	// After warmup, stableCount=1. Need 3 total to trigger upgrade (stableRequired=3).
 	prevBitrate := stub.bitrate
 	if stub.bitrate != prevBitrate {
 		t.Fatalf("upgraded too early with stableCount=1, bitrate=%d", stub.bitrate)
 	}
 
-	// stableCount=2 → triggers upgrade.
+	// stableCount=2 — still not enough.
+	a.Update(50*time.Millisecond, 0.0)
+	if stub.bitrate != prevBitrate {
+		t.Fatalf("upgraded too early with stableCount=2, bitrate=%d", stub.bitrate)
+	}
+
+	// stableCount=3 → triggers upgrade.
 	a.Update(50*time.Millisecond, 0.0)
 	if stub.bitrate <= prevBitrate {
-		t.Fatalf("should have upgraded at stableCount=2, bitrate=%d", stub.bitrate)
+		t.Fatalf("should have upgraded at stableCount=3, bitrate=%d", stub.bitrate)
 	}
 }
 
 func TestAdaptive_UpgradeIsAdditive(t *testing.T) {
 	a, stub := newTestAdaptive(2_000_000, 500_000, 8_000_000)
 
-	// Warm up + get to stableCount=2 (triggers first upgrade, stableRequired=2).
+	// Warm up + get to stableCount=3 (triggers first upgrade, stableRequired=3).
 	warmup(a, 50*time.Millisecond, 0.0)       // stableCount=1
-	a.Update(50*time.Millisecond, 0.0)         // stableCount=2 → upgrade
+	a.Update(50*time.Millisecond, 0.0)         // stableCount=2
+	a.Update(50*time.Millisecond, 0.0)         // stableCount=3 → upgrade
 
 	// Step should be 5% of max (8M/20 = 400K).
 	expected := 2_000_000 + 400_000
