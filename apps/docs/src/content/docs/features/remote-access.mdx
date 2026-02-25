@@ -12,7 +12,9 @@ Breeze provides three distinct real-time access capabilities for managed devices
 
 Remote desktop sessions use WebRTC as the primary transport. The Breeze server acts as a signaling relay during connection setup — it brokers the initial SDP offer/answer exchange and ICE candidate negotiation between the native viewer app and the device agent. Once the peer-to-peer connection is established, video, audio, and input data flow directly between the viewer and the agent and do not transit the Breeze server.
 
-If WebRTC negotiation fails (e.g., both endpoints are behind symmetric NAT with no TURN server), the viewer automatically falls back to a WebSocket transport that relays JPEG frames through the Breeze server. The WebSocket fallback has reduced capabilities compared to WebRTC — no audio, no clipboard sync, no multi-monitor switching, and no low-latency cursor streaming.
+The Breeze stack includes a **coturn TURN server** that relays WebRTC traffic when a direct peer-to-peer connection is not possible (symmetric NAT, restrictive firewalls). The API generates short-lived TURN credentials via a shared secret and distributes them to both the viewer and agent during ICE negotiation. See [Environment Variables](/deploy/environment/#webrtc--turn) for configuration.
+
+If WebRTC negotiation fails even with TURN (e.g., TURN is misconfigured or unreachable), the viewer automatically falls back to a WebSocket transport that relays JPEG frames through the Breeze server. The WebSocket fallback has reduced capabilities compared to WebRTC — no audio, no clipboard sync, no multi-monitor switching, and no low-latency cursor streaming.
 
 <Aside>
   Multi-factor authentication (MFA) is required for all remote access sessions. Your role must also include the `remote:access` permission — see **Settings → Roles** if session creation returns "Access denied."
@@ -301,7 +303,13 @@ To free session capacity, close active sessions from the Active Sessions list on
 ## Troubleshooting
 
 **Session stuck in `connecting`.**
-WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). ICE negotiation fails when both endpoints are behind symmetric NAT and no TURN server is configured — contact your administrator to verify TURN configuration. The viewer should automatically fall back to the WebSocket transport after a timeout.
+WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
+
+- **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`).
+- **Firewall blocking TURN ports** — Coturn needs UDP and TCP port 3478, plus UDP ports 49152–65535 for media relay. Check `docker compose ps coturn` and verify the ports are reachable.
+- **Wrong `TURN_HOST`** — Must be the server's public IP, not a private address. Agents and viewers connect to this IP directly.
+
+The viewer should automatically fall back to the WebSocket transport after a timeout.
 
 **Session limit hit (429).**
 The organisation or user limit on concurrent sessions has been reached. Call `DELETE /remote/sessions/stale` to free capacity, or navigate to the Active Sessions list and close sessions that are no longer needed.
