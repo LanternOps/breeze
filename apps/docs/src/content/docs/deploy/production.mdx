@@ -1,22 +1,3 @@
-Looking at the code changes, I need to verify if the documentation accurately reflects what was changed:
-
-**Code changes made:**
-1. Added TURN server configuration variables to the API service (TURN_HOST, TURN_PORT, TURN_SECRET)
-2. Changed healthcheck URLs from `localhost` to `127.0.0.1` (minor networking fix)
-3. Added a new `coturn` service to docker-compose.yml
-
-**Documentation check:**
-The documentation already mentions:
-- Coturn in the "What Gets Deployed" table ✓
-- TURN_SECRET in the secret generation step ✓
-- TURN_HOST configuration in step 3 ✓
-
-However, there's a critical omission: The documentation does NOT mention `TURN_REALM`, which is now used in the coturn service configuration as `--realm=${TURN_REALM:-breeze.local}`. While it has a sensible default (`breeze.local`), this should be documented as an optional but configurable environment variable.
-
-Additionally, the documentation should clarify that TURN_HOST must be set to the server's public IP for remote desktop functionality.
-
-**Updated documentation:**
-
 ---
 title: Production Deployment
 description: Deploy Breeze RMM to production with Docker Compose and automatic TLS.
@@ -92,10 +73,14 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
    ```bash
    # Set to this server's public IP address (required for remote desktop)
    TURN_HOST=203.0.113.10
-   
+
    # Optional: TURN realm (defaults to breeze.local)
    TURN_REALM=breeze.local
    ```
+
+   <Aside type="tip">
+     If your server is behind **Cloudflare Tunnel** or another HTTP-only proxy, TURN cannot run on the same host because it requires UDP. Deploy TURN on a separate VPS instead — see [TURN Server](/deploy/turn-server/) for a step-by-step guide.
+   </Aside>
 
 5. **Start the stack**
 
