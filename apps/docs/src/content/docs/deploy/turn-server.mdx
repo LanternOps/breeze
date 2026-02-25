@@ -33,7 +33,7 @@ This guide uses a DigitalOcean droplet, but any VPS provider (Hetzner, Vultr, Li
 
 - A VPS with a **public IPv4 address**
 - Ubuntu 22.04+ or Debian 12+
-- UDP ports open: **3478** and **49152–49252** (relay range)
+- TCP+UDP ports open: **3478** and **49152–49252** (relay range)
 - SSH access
 
 ### Provision the server
@@ -119,7 +119,9 @@ doctl compute firewall create \
   --name breeze-coturn-fw \
   --droplet-ids YOUR_DROPLET_ID \
   --inbound-rules "protocol:tcp,ports:22,address:0.0.0.0/0 \
+    protocol:tcp,ports:3478,address:0.0.0.0/0 \
     protocol:udp,ports:3478,address:0.0.0.0/0 \
+    protocol:tcp,ports:49152-49252,address:0.0.0.0/0 \
     protocol:udp,ports:49152-49252,address:0.0.0.0/0" \
   --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0 \
     protocol:udp,ports:all,address:0.0.0.0/0 \
@@ -131,7 +133,9 @@ doctl compute firewall create \
 
 ```bash
 ufw allow 22/tcp
+ufw allow 3478/tcp
 ufw allow 3478/udp
+ufw allow 49152:49252/tcp
 ufw allow 49152:49252/udp
 ufw enable
 ```
@@ -144,6 +148,9 @@ ufw enable
 From your local machine:
 
 ```bash
+# Check TCP port is reachable
+nc -z -w 3 YOUR_TURN_IP 3478
+
 # Check UDP port is reachable
 nc -u -z -w 3 YOUR_TURN_IP 3478
 
@@ -207,8 +214,8 @@ TURN_SECRET=$(openssl rand -hex 32)
 
 The bundled coturn runs with `network_mode: host`, so it needs direct access to the network — no port mapping is required, but the host firewall must allow:
 
-- **UDP 3478** — TURN listening port
-- **UDP 49152–65535** — relay port range (default, can be tightened in `docker/turnserver.conf`)
+- **TCP+UDP 3478** — TURN listening port (TCP is required for clients behind restrictive firewalls)
+- **TCP+UDP 49152–65535** — relay port range (default, can be tightened in `docker/turnserver.conf`)
 
 ---
 
@@ -243,10 +250,10 @@ Clients never see `TURN_SECRET` — they only receive short-lived derived creden
 ## Troubleshooting
 
 **Remote desktop fails with "ICE failed"**
-- Verify the TURN server is reachable: `nc -u -z -w 3 TURN_IP 3478`
+- Verify the TURN server is reachable: `nc -z -w 3 TURN_IP 3478` (TCP) and `nc -u -z -w 3 TURN_IP 3478` (UDP)
 - Check coturn logs: `ssh root@TURN_IP journalctl -u coturn -f`
 - Confirm `TURN_HOST` in `.env` matches the TURN server's public IP exactly
-- Ensure the firewall allows UDP 3478 and the relay port range
+- Ensure the firewall allows **both TCP and UDP** on port 3478 and the relay port range — Breeze advertises `transport=tcp` and `transport=udp` TURN URLs
 
 **Coturn starts but clients can't allocate**
 - Check `external-ip` in `/etc/turnserver.conf` — it must be the server's actual public IP
