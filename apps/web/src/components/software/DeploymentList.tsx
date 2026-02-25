@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle, PauseCircle, PlayCircle, XCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 type DeploymentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused' | 'canceled';
 
@@ -221,7 +221,7 @@ export default function DeploymentList({ timezone }: DeploymentListProps) {
                         {item.status === 'running' ? (
                           <div className="flex items-center gap-2">
                             <div className="h-2 w-24 rounded-full bg-muted">
-                              <div className="h-2 rounded-full bg-primary" style={{ width: `${item.progress}%` }} />
+                              <div className={cn('h-2 rounded-full bg-primary', widthPercentClass(item.progress))} />
                             </div>
                             <span className="text-xs text-muted-foreground">{item.progress}%</span>
                           </div>

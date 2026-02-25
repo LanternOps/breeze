@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import AccessReviewList, { type AccessReview } from './AccessReviewList';
 import AccessReviewForm from './AccessReviewForm';
 
@@ -707,8 +707,7 @@ export default function AccessReviewPage() {
                   </p>
                   <div className="h-2 w-48 rounded-full bg-muted">
                     <div
-                      className="h-2 rounded-full bg-emerald-500"
-                      style={{ width: `${progressPercent}%` }}
+                      className={cn('h-2 rounded-full bg-emerald-500', widthPercentClass(progressPercent))}
                     />
                   </div>
                 </div>

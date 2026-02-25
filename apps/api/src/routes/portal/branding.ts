@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { portalBranding } from '../../db/schema';
 import { brandingParamSchema } from './schemas';
+import { applyPortalCacheHeaders, buildWeakEtag, isEtagFresh } from './helpers';
 
 export const brandingRoutes = new Hono();
 
@@ -52,7 +53,22 @@ brandingRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema)
     return c.json({ error: 'Branding not found' }, 404);
   }
 
-  return c.json({ branding });
+  const payload = { branding };
+  applyPortalCacheHeaders(c, {
+    scope: 'public',
+    browserMaxAgeSeconds: 300,
+    sharedMaxAgeSeconds: 3600,
+    staleWhileRevalidateSeconds: 86400,
+    vary: ['Host']
+  });
+  const etag = buildWeakEtag(payload);
+  c.header('ETag', etag);
+
+  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+    return new Response(null, { status: 304, headers: c.res.headers });
+  }
+
+  return c.json(payload);
 });
 
 brandingRoutes.get('/branding', async (c) => {
@@ -66,5 +82,20 @@ brandingRoutes.get('/branding', async (c) => {
     return c.json({ error: 'Branding not found' }, 404);
   }
 
-  return c.json({ branding });
+  const payload = { branding };
+  applyPortalCacheHeaders(c, {
+    scope: 'public',
+    browserMaxAgeSeconds: 300,
+    sharedMaxAgeSeconds: 3600,
+    staleWhileRevalidateSeconds: 86400,
+    vary: ['Host']
+  });
+  const etag = buildWeakEtag(payload);
+  c.header('ETag', etag);
+
+  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+    return new Response(null, { status: 304, headers: c.res.headers });
+  }
+
+  return c.json(payload);
 });

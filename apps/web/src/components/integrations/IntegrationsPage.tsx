@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   TriangleAlert
 } from 'lucide-react';
+import { widthPercentClass } from '@/lib/utils';
 
 type IntegrationStatus = 'connected' | 'warning' | 'disconnected';
 
@@ -219,8 +220,7 @@ export default function IntegrationsPage() {
           </div>
           <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className="h-full rounded-full bg-emerald-500"
-              style={{ width: `${(healthSummary.connected / healthSummary.total) * 100}%` }}
+              className={`h-full rounded-full bg-emerald-500 ${widthPercentClass((healthSummary.connected / healthSummary.total) * 100)}`}
             />
           </div>
         </div>

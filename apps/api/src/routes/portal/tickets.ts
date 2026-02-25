@@ -11,7 +11,10 @@ import {
   commentSchema,
 } from './schemas';
 import {
+  applyPortalCacheHeaders,
+  buildWeakEtag,
   getPagination,
+  isEtagFresh,
   validatePortalCookieCsrfRequest,
   writePortalAudit,
 } from './helpers';
@@ -67,10 +70,25 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
     .limit(limit)
     .offset(offset);
 
-  return c.json({
+  const payload = {
     data,
     pagination: { page, limit, total: Number(ticketCount) }
+  };
+
+  applyPortalCacheHeaders(c, {
+    scope: 'private',
+    browserMaxAgeSeconds: 15,
+    staleWhileRevalidateSeconds: 90,
+    vary: ['Authorization', 'Cookie']
   });
+  const etag = buildWeakEtag(payload);
+  c.header('ETag', etag);
+
+  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+    return new Response(null, { status: 304, headers: c.res.headers });
+  }
+
+  return c.json(payload);
 });
 
 ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) => {
@@ -170,7 +188,22 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
     .where(and(eq(ticketComments.ticketId, ticket.id), eq(ticketComments.isPublic, true)))
     .orderBy(desc(ticketComments.createdAt));
 
-  return c.json({ ticket: { ...ticket, comments } });
+  const payload = { ticket: { ...ticket, comments } };
+
+  applyPortalCacheHeaders(c, {
+    scope: 'private',
+    browserMaxAgeSeconds: 15,
+    staleWhileRevalidateSeconds: 90,
+    vary: ['Authorization', 'Cookie']
+  });
+  const etag = buildWeakEtag(payload);
+  c.header('ETag', etag);
+
+  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+    return new Response(null, { status: 304, headers: c.res.headers });
+  }
+
+  return c.json(payload);
 });
 
 ticketRoutes.post(

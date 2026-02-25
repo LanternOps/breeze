@@ -9,7 +9,7 @@ import {
   PauseCircle,
   Loader2
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 export type PatchJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'paused';
@@ -265,7 +265,7 @@ export default function PatchJobList({ pageSize = 8, onSelect }: PatchJobListPro
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <div className="h-2 w-24 rounded-full bg-muted">
-                          <div className="h-2 rounded-full bg-primary" style={{ width: `${progress}%` }} />
+                          <div className={cn('h-2 rounded-full bg-primary', widthPercentClass(progress))} />
                         </div>
                         <span className="text-xs text-muted-foreground">{progress}%</span>
                       </div>

@@ -4,7 +4,12 @@ import { desc, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
 import { listSchema } from './schemas';
-import { getPagination } from './helpers';
+import {
+  applyPortalCacheHeaders,
+  buildWeakEtag,
+  getPagination,
+  isEtagFresh
+} from './helpers';
 
 export const deviceRoutes = new Hono();
 
@@ -35,8 +40,23 @@ deviceRoutes.get('/devices', zValidator('query', listSchema), async (c) => {
     .limit(limit)
     .offset(offset);
 
-  return c.json({
+  const payload = {
     data,
     pagination: { page, limit, total: Number(count ?? 0) }
+  };
+
+  applyPortalCacheHeaders(c, {
+    scope: 'private',
+    browserMaxAgeSeconds: 15,
+    staleWhileRevalidateSeconds: 90,
+    vary: ['Authorization', 'Cookie']
   });
+  const etag = buildWeakEtag(payload);
+  c.header('ETag', etag);
+
+  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+    return new Response(null, { status: 304, headers: c.res.headers });
+  }
+
+  return c.json(payload);
 });

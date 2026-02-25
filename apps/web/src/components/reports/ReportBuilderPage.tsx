@@ -154,7 +154,7 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
           tableHtml = `<table><thead><tr>${headerRow}</tr></thead><tbody>${bodyRows}</tbody></table>`;
         }
 
-        const htmlContent = `<!DOCTYPE html><html><head><title>${escapedReportTitle} Report</title><style>body{font-family:system-ui,sans-serif;padding:20px}h1{font-size:18px;margin-bottom:10px}p{color:#666;font-size:12px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f5f5f5;font-weight:600}tr:nth-child(even){background-color:#fafafa}</style></head><body><h1>${escapedReportTitle} Report</h1><p>Generated: ${escapedGeneratedAt}</p>${tableHtml}</body></html>`;
+        const htmlContent = `<!DOCTYPE html><html><head><title>${escapedReportTitle} Report</title></head><body><h1>${escapedReportTitle} Report</h1><p>Generated: ${escapedGeneratedAt}</p>${tableHtml}</body></html>`;
 
         // Create blob URL and open in new window for printing
         const blob = new Blob([htmlContent], { type: 'text/html' });

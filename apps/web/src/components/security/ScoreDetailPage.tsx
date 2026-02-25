@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, ShieldCheck, Target, Users } from 'lucide-react';
-import { cn, formatNumber, friendlyFetchError } from '@/lib/utils';
+import { cn, formatNumber, friendlyFetchError, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import SecurityPageHeader from './SecurityPageHeader';
 import SecurityStatCard from './SecurityStatCard';
@@ -160,8 +160,7 @@ export default function ScoreDetailPage() {
                     <div className="flex items-center gap-3">
                       <div className="h-2 w-24 rounded-full bg-muted">
                         <div
-                          className={cn('h-2 rounded-full', scoreBarColor(comp.score))}
-                          style={{ width: `${comp.score}%` }}
+                          className={cn('h-2 rounded-full', scoreBarColor(comp.score), widthPercentClass(comp.score))}
                         />
                       </div>
                       <span className="text-sm font-medium">{comp.score}%</span>

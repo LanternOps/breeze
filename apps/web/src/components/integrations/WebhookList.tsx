@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pencil, Play, Power, Plus, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { widthPercentClass } from '@/lib/utils';
 
 export type WebhookStatus = 'active' | 'disabled' | 'failing';
 
@@ -212,12 +213,11 @@ export default function WebhookList({ onAdd, onEdit }: WebhookListProps) {
                   <td className="px-4 py-3 text-muted-foreground">{webhook.lastTriggered}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-emerald-500"
-                          style={{ width: `${webhook.successRate}%` }}
-                        />
-                      </div>
+                        <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={`h-full rounded-full bg-emerald-500 ${widthPercentClass(webhook.successRate)}`}
+                          />
+                        </div>
                       <span className="text-muted-foreground">{webhook.successRate}%</span>
                     </div>
                   </td>
