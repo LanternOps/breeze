@@ -90,6 +90,7 @@ Ensure these ports are accessible:
 |---|---|---|
 | **80** | TCP | HTTP → HTTPS redirect (Caddy) |
 | **443** | TCP | HTTPS (web UI, API, agent WebSocket) |
-| **3478** | TCP/UDP | TURN relay (optional, for WebRTC NAT traversal) |
+| **3478** | TCP/UDP | TURN server (coturn — WebRTC signaling and relay) |
+| **49152–65535** | UDP | TURN media relay port range (coturn) |
 
 All other services (PostgreSQL, Redis, Prometheus, Grafana) bind to `127.0.0.1` and are **not** exposed publicly.

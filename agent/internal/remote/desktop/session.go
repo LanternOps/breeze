@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
 	"github.com/breeze-rmm/agent/internal/remote/filedrop"
@@ -121,6 +121,11 @@ type SessionManager struct {
 	// mode the helper sets this to route the request via IPC to the SCM service
 	// which can call SendSAS(FALSE). In direct mode it defaults to InvokeSAS().
 	OnSASRequest func() error
+
+	// OnSessionStopped is called when a WebRTC peer connection transitions to
+	// Failed or Closed. Used to notify the API so it can mark the session as
+	// disconnected and allow reconnection.
+	OnSessionStopped func(sessionID string)
 }
 
 // NewSessionManager creates a new session manager

@@ -83,6 +83,14 @@ Redis-backed job queue for async operations:
 - Alert processing pipeline
 - Agent command queuing
 
+### TURN Server (coturn)
+
+A [coturn](https://github.com/coturn/coturn) TURN relay enables WebRTC remote desktop connections when direct peer-to-peer paths are blocked by NAT or firewalls:
+
+- Runs with `network_mode: host` for efficient UDP handling and wide relay port range (49152–65535)
+- Uses time-limited credentials generated from a shared secret (`TURN_SECRET`)
+- The API distributes TURN credentials to viewers and agents via `GET /remote/ice-servers`
+
 ### Reverse Proxy (Caddy)
 
 Caddy handles TLS termination, compression, and routing:

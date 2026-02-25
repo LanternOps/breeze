@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/pion/rtcp"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
 	"github.com/breeze-rmm/agent/internal/remote/filedrop"
@@ -179,12 +179,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			"session", sessionID, "error", probeErr.Error())
 	}
 
-	// Scale initial bitrate to resolution. 2.5Mbps is fine for 1080p but
-	// starves 1440p+ text clarity. Main profile CABAC makes better use of bits.
+	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.
+	// Adaptive ramps from here. Too low and the MFT encoder can't produce
+	// good keyframes; too high and it bursts the jitter buffer.
 	initBitrate := 2_500_000
-	if w*h > 1920*1080 {
-		initBitrate = 8_000_000
-	}
 
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
@@ -236,10 +234,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		session.fps = maxFrameRate
 	}
 
-	// Create adaptive bitrate controller — ceiling scales with resolution
-	maxAdaptiveBitrate := 8_000_000
+	// Create adaptive bitrate controller — conservative ceiling.
+	// Remote support doesn't need high bitrate, and over-provisioning
+	// causes jitter-buffer drops on tunnel connections. Viewer slider
+	// can override via set_bitrate control message.
+	maxAdaptiveBitrate := 4_000_000
 	if w*h > 1920*1080 {
-		maxAdaptiveBitrate = 15_000_000
+		maxAdaptiveBitrate = 5_000_000
 	}
 	adaptive, err := NewAdaptiveBitrate(AdaptiveConfig{
 		Encoder:        enc,
@@ -343,6 +344,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			m.StopSession(sessionID)
+			if m.OnSessionStopped != nil {
+				go m.OnSessionStopped(sessionID)
+			}
 		}
 	})
 

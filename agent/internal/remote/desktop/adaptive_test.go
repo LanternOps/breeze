@@ -42,11 +42,10 @@ func newTestAdaptive(initial, min, max int) (*AdaptiveBitrate, *stubEncoder) {
 	return a, stub
 }
 
-// warmup feeds clean samples to get past the 3-sample EWMA warmup.
-// Returns the stableCount accumulated during warmup (the 3rd sample runs the
-// algorithm and may increment stableCount).
+// warmup feeds samples to get past the 5-sample EWMA warmup.
+// The 5th sample runs the algorithm and may increment stableCount.
 func warmup(a *AdaptiveBitrate, rtt time.Duration, loss float64) {
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 5; i++ {
 		a.Update(rtt, loss)
 	}
 }
@@ -61,9 +60,10 @@ func TestAdaptive_InitialBitrateMatchesEncoder(t *testing.T) {
 func TestAdaptive_WarmupPreventsEarlyAction(t *testing.T) {
 	a, stub := newTestAdaptive(2_500_000, 500_000, 8_000_000)
 
-	// First two samples shouldn't trigger any adjustment (warmup = 3 samples).
-	a.Update(10*time.Millisecond, 0.0)
-	a.Update(10*time.Millisecond, 0.0)
+	// First four samples shouldn't trigger any adjustment (warmup = 5 samples).
+	for i := 0; i < 4; i++ {
+		a.Update(10*time.Millisecond, 0.0)
+	}
 	if stub.bitrate != 2_500_000 {
 		t.Fatalf("bitrate changed during warmup: %d", stub.bitrate)
 	}
@@ -87,8 +87,8 @@ func TestAdaptive_DegradeMultiplicative(t *testing.T) {
 
 	// Warmup + first action with high loss triggers degrade.
 	warmup(a, 50*time.Millisecond, 0.10)
-	// The 3rd warmup sample is the first action sample → bitrate drops to 0.70x.
-	expected := int(float64(2_000_000) * 0.70)
+	// The 5th warmup sample is the first action sample → bitrate drops to 0.85x.
+	expected := int(float64(2_000_000) * 0.85)
 	if abs(stub.bitrate-expected) > 50_000 {
 		t.Fatalf("expected bitrate ~%d after degrade, got %d", expected, stub.bitrate)
 	}
@@ -100,26 +100,32 @@ func TestAdaptive_UpgradeRequiresStableSamples(t *testing.T) {
 	// Warm up with clean samples. The 3rd sample runs algorithm, stableCount→1.
 	warmup(a, 50*time.Millisecond, 0.0)
 
-	// After warmup, stableCount=1. Need 2 total to trigger upgrade (stableRequired=2).
-	// stableCount=1 after warmup — no upgrade yet.
+	// After warmup, stableCount=1. Need 3 total to trigger upgrade (stableRequired=3).
 	prevBitrate := stub.bitrate
 	if stub.bitrate != prevBitrate {
 		t.Fatalf("upgraded too early with stableCount=1, bitrate=%d", stub.bitrate)
 	}
 
-	// stableCount=2 → triggers upgrade.
+	// stableCount=2 — still not enough.
+	a.Update(50*time.Millisecond, 0.0)
+	if stub.bitrate != prevBitrate {
+		t.Fatalf("upgraded too early with stableCount=2, bitrate=%d", stub.bitrate)
+	}
+
+	// stableCount=3 → triggers upgrade.
 	a.Update(50*time.Millisecond, 0.0)
 	if stub.bitrate <= prevBitrate {
-		t.Fatalf("should have upgraded at stableCount=2, bitrate=%d", stub.bitrate)
+		t.Fatalf("should have upgraded at stableCount=3, bitrate=%d", stub.bitrate)
 	}
 }
 
 func TestAdaptive_UpgradeIsAdditive(t *testing.T) {
 	a, stub := newTestAdaptive(2_000_000, 500_000, 8_000_000)
 
-	// Warm up + get to stableCount=2 (triggers first upgrade, stableRequired=2).
+	// Warm up + get to stableCount=3 (triggers first upgrade, stableRequired=3).
 	warmup(a, 50*time.Millisecond, 0.0)       // stableCount=1
-	a.Update(50*time.Millisecond, 0.0)         // stableCount=2 → upgrade
+	a.Update(50*time.Millisecond, 0.0)         // stableCount=2
+	a.Update(50*time.Millisecond, 0.0)         // stableCount=3 → upgrade
 
 	// Step should be 5% of max (8M/20 = 400K).
 	expected := 2_000_000 + 400_000

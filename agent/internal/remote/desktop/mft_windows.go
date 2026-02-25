@@ -198,17 +198,17 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	if qiErr == nil && codecAPI != 0 {
 		m.codecAPI = codecAPI
 
-		// Set GOP size (keyframe interval) = 2 seconds at configured FPS.
-		// Short GOPs mean faster recovery from packet loss — viewer never
-		// waits more than 2s for a fresh IDR. WebRTC PLI/FIR also handles
-		// on-demand keyframe recovery for immediate cases.
+		// Set GOP size (keyframe interval) = 3 seconds at configured FPS.
+		// Longer GOPs reduce the frequency of large I-frames that cause
+		// visible quality dips under CBR rate control. WebRTC PLI/FIR
+		// handles on-demand keyframe recovery for packet loss cases.
 		cfgFPS := m.cfg.FPS
 		if cfgFPS <= 0 {
 			cfgFPS = 30
 		}
-		gopSize := uint32(cfgFPS * 2)
-		if gopSize < 20 {
-			gopSize = 20
+		gopSize := uint32(cfgFPS * 3)
+		if gopSize < 30 {
+			gopSize = 30
 		}
 		gv := comVariant{vt: vtUI4, val: uint64(gopSize)}
 		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
@@ -244,13 +244,16 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 			slog.Debug("ICodecAPI SetValue(RateControl=CBR) failed (non-fatal)", "error", err)
 		}
 
-		// 3. Minimize VBV buffer: limits how many frames the encoder can queue
-		//    internally. Set to ~1 frame worth of bits at current bitrate/fps.
-		bitsPerFrame := uint32(m.cfg.Bitrate / max(m.cfg.FPS, 1))
-		if bitsPerFrame < 50000 {
-			bitsPerFrame = 50000
+		// 3. VBV buffer: set to ~3 frames worth of bits at current bitrate/fps.
+		//    A 1-frame buffer causes visible quality pulsing because each
+		//    keyframe (I-frame) consumes the entire budget, starving subsequent
+		//    P-frames until the buffer recovers. 3 frames gives the encoder
+		//    headroom to spread keyframe cost across neighboring frames.
+		vbvSize := uint32(m.cfg.Bitrate / max(m.cfg.FPS, 1) * 3)
+		if vbvSize < 150000 {
+			vbvSize = 150000
 		}
-		vbv := comVariant{vt: vtUI4, val: uint64(bitsPerFrame)}
+		vbv := comVariant{vt: vtUI4, val: uint64(vbvSize)}
 		if _, err := comCall(codecAPI, vtblCodecAPISetValue,
 			uintptr(unsafe.Pointer(&codecAPIAVEncCommonBufferSize)),
 			uintptr(unsafe.Pointer(&vbv)),

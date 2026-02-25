@@ -51,6 +51,11 @@ type AdaptiveBitrate struct {
 	// Track consecutive stable samples before upgrading. Prevents oscillation
 	// by requiring sustained good conditions before increasing bitrate.
 	stableCount int
+
+	// Post-degrade backoff: after a degrade event, require extra stable samples
+	// before upgrading to prevent the boom-bust cycle where the controller
+	// ramps back to the same bitrate that caused congestion.
+	degradeBackoff int
 }
 
 func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
@@ -142,7 +147,7 @@ func (a *AdaptiveBitrate) SetMaxBitrate(max int) {
 // Update feeds a new RTT/loss sample from RTCP and adjusts bitrate.
 //
 // Uses AIMD (Additive Increase, Multiplicative Decrease) with EWMA smoothing:
-//   - Degrade: multiplicative 0.70x on sustained high loss (fast reaction to congestion)
+//   - Degrade: multiplicative 0.85x on sustained high loss (moderate reaction to congestion)
 //   - Upgrade: additive +5% of max on sustained good conditions (gentle probe)
 //   - EWMA smoothing prevents reacting to single transient spikes
 //   - Loss-only upgrade gating so high-RTT connections can still recover
@@ -169,8 +174,9 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	a.updateEWMA(rtt, packetLoss)
 
-	// Need at least 3 samples before making decisions (~1.5s warmup).
-	if a.samplesCount < 3 {
+	// Need at least 5 samples before making decisions (~2.5s warmup).
+	// More samples let the EWMA settle before the controller reacts.
+	if a.samplesCount < 5 {
 		a.mu.Unlock()
 		return
 	}
@@ -179,9 +185,10 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 	smoothRTT := a.smoothedRTT
 
 	// Degrade: smoothed loss indicates real congestion (not a single spike).
-	// RTT alone doesn't trigger degrade — high RTT with zero loss is just a
-	// long path, not congestion. Only degrade on RTT if loss is also present.
-	degrade := loss >= 0.05 || (smoothRTT >= 300*time.Millisecond && loss >= 0.02)
+	// Threshold at 8% (strict >) avoids reacting to steady-state minor loss
+	// common on WiFi/residential connections. RTT alone doesn't trigger
+	// degrade — high RTT with zero loss is just a long path, not congestion.
+	degrade := loss > 0.08 || (smoothRTT >= 300*time.Millisecond && loss >= 0.03)
 
 	// Upgrade: loss-based only. Connections with inherently high RTT (cross-
 	// continent, WiFi) can still recover as long as there's no packet loss.
@@ -190,8 +197,16 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	if degrade {
 		a.stableCount = 0
+		// After degrading, require extra stable samples before upgrading again.
+		// This prevents the boom-bust cycle: degrade→recover→immediately ramp
+		// back to the same bitrate that caused congestion. At 1s viewer stats
+		// intervals, backoff=4 means ~4s of stable conditions before upgrading.
+		a.degradeBackoff = 4
 	} else if upgrade {
 		a.stableCount++
+		if a.degradeBackoff > 0 {
+			a.degradeBackoff--
+		}
 	} else {
 		// In the middle zone — not degrading, but not clean enough to upgrade.
 		// Let stableCount decay slowly rather than resetting.
@@ -200,10 +215,9 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		}
 	}
 
-	// Require 2 consecutive stable samples (~1s) before upgrading.
-	// This prevents upgrade→degrade oscillation cycles while still
-	// recovering quickly from brief congestion.
-	const stableRequired = 2
+	// Require 3 consecutive stable samples plus no active backoff before upgrading.
+	// At 1s viewer stats polling, this means 3s of clean conditions before each step.
+	const stableRequired = 3
 
 	action := "hold"
 	newBitrate := a.targetBitrate
@@ -214,11 +228,14 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	if degrade {
 		action = "degrade"
-		// Multiplicative decrease: fast reaction to congestion.
-		newBitrate = int(float64(newBitrate) * 0.70)
+		// Multiplicative decrease: moderate reaction to congestion.
+		// 0.85x is gentler than the typical 0.70x to reduce visual pulsing —
+		// aggressive drops cause large quality swings that are more jarring
+		// than a slightly slower reaction to congestion.
+		newBitrate = int(float64(newBitrate) * 0.85)
 		newBitrate = clampInt(newBitrate, a.minBitrate, a.maxBitrate)
 		newQuality = stepQuality(newQuality, -1, a.minQuality, a.maxQuality)
-	} else if a.stableCount >= stableRequired && a.targetBitrate < a.maxBitrate {
+	} else if a.stableCount >= stableRequired && a.degradeBackoff <= 0 && a.targetBitrate < a.maxBitrate {
 		action = "upgrade"
 		// Additive increase: gentle probe — add 5% of max ceiling.
 		// This avoids multiplicative overshoot that causes degrade spirals.

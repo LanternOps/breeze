@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -193,6 +194,73 @@ func (s *Session) handleControlMessage(data []byte) {
 		s.mu.RUnlock()
 		if ldc != nil {
 			ldc.SendText(string(lockResp))
+		}
+	case "viewer_stats":
+		// Viewer-reported WebRTC stats — log and feed into adaptive bitrate as
+		// a fallback when pion's RTCP RemoteInboundRTPStreamStats are unavailable.
+		var vs struct {
+			Type                 string `json:"type"`
+			RTTMs                int    `json:"rttMs"`
+			JitterMs             int    `json:"jitterMs"`
+			PacketsLost          int    `json:"packetsLost"`
+			PacketsLostDelta     int    `json:"packetsLostDelta"`
+			PacketsReceived      int    `json:"packetsReceived"`
+			PacketsReceivedDelta int    `json:"packetsReceivedDelta"`
+			FramesReceived       int    `json:"framesReceived"`
+			FramesDecoded        int    `json:"framesDecoded"`
+			FramesDropped        int    `json:"framesDropped"`
+			FramesDroppedDelta   int    `json:"framesDroppedDelta"`
+			Kbps                 int    `json:"kbps"`
+			ICELocal             string `json:"iceLocal"`
+			ICERemote            string `json:"iceRemote"`
+		}
+		if err := json.Unmarshal(data, &vs); err == nil {
+			// Compute loss fraction from viewer-reported deltas.
+			var lossFraction float64
+			totalDelta := vs.PacketsLostDelta + vs.PacketsReceivedDelta
+			if totalDelta > 0 && vs.PacketsLostDelta > 0 {
+				lossFraction = float64(vs.PacketsLostDelta) / float64(totalDelta)
+			}
+
+			// Frame drops signal jitter-buffer overload even when packet loss is
+			// zero. Treat dropped frames as a loss signal for the adaptive controller.
+			// Use framesDroppedDelta relative to total frame activity in this interval.
+			// Combine packet loss and frame drops into a single congestion signal
+			// using probability union P(A∪B) = P(A)+P(B)-P(A)·P(B).
+			// Jitter is NOT used as a signal — it's a lagging indicator that
+			// doesn't respond to bitrate reduction, causing death spirals.
+			var effectiveLoss float64 = lossFraction
+			if vs.FramesDroppedDelta > 0 {
+				frameLoss := float64(vs.FramesDroppedDelta) / float64(vs.FramesDroppedDelta+vs.FramesDecoded)
+				if vs.FramesDecoded == 0 {
+					frameLoss = 0.5 // significant but not max
+				}
+				effectiveLoss = effectiveLoss + frameLoss - effectiveLoss*frameLoss
+			}
+
+			slog.Info("Viewer WebRTC stats",
+				"session", s.id,
+				"rttMs", vs.RTTMs,
+				"jitterMs", vs.JitterMs,
+				"pktLost", vs.PacketsLost,
+				"pktLostDelta", vs.PacketsLostDelta,
+				"pktRcvdDelta", vs.PacketsReceivedDelta,
+				"lossFraction", fmt.Sprintf("%.3f", lossFraction),
+				"effectiveLoss", fmt.Sprintf("%.3f", effectiveLoss),
+				"framesRcvd", vs.FramesReceived,
+				"framesDecoded", vs.FramesDecoded,
+				"framesDropped", vs.FramesDropped,
+				"framesDroppedDelta", vs.FramesDroppedDelta,
+				"kbps", vs.Kbps,
+				"iceLocal", vs.ICELocal,
+				"iceRemote", vs.ICERemote,
+			)
+
+			// Feed viewer stats into the adaptive bitrate controller.
+			if s.adaptive != nil {
+				rtt := time.Duration(vs.RTTMs) * time.Millisecond
+				s.adaptive.Update(rtt, effectiveLoss)
+			}
 		}
 	case "switch_monitor":
 		if msg.Value < 0 {
