@@ -33,13 +33,6 @@ type DashboardStats = {
 
 type Pagination = { page: number; limit: number; total: number; totalPages: number };
 
-const chartTooltipStyle = {
-  backgroundColor: 'hsl(var(--card))',
-  border: '1px solid hsl(var(--border))',
-  borderRadius: '0.5rem',
-  fontSize: '12px'
-};
-
 const PIE_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6'];
 const PIE_DOT_CLASSES = ['bg-green-500', 'bg-blue-500', 'bg-amber-500', 'bg-violet-500'];
 
@@ -164,7 +157,7 @@ export default function AntivirusPage() {
                       <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={chartTooltipStyle} />
+                  <Tooltip wrapperClassName="chart-tooltip" />
                 </PieChart>
               </ResponsiveContainer>
             </div>

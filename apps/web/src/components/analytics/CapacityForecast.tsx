@@ -29,13 +29,6 @@ type CapacityForecastProps = {
   thresholds?: Thresholds;
 };
 
-const tooltipStyle = {
-  backgroundColor: 'hsl(var(--card))',
-  border: '1px solid hsl(var(--border))',
-  borderRadius: '0.5rem',
-  fontSize: '12px'
-};
-
 export default function CapacityForecast({
   title,
   currentValue,
@@ -63,7 +56,7 @@ export default function CapacityForecast({
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
             <XAxis dataKey="timestamp" tick={{ fontSize: 10 }} className="text-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
-            <Tooltip contentStyle={tooltipStyle} />
+            <Tooltip wrapperClassName="chart-tooltip" />
             {thresholds?.warning !== undefined && (
               <ReferenceLine
                 y={thresholds.warning}
