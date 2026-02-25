@@ -347,11 +347,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
                   width={50}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '0.5rem',
-                  }}
+                  wrapperClassName="chart-tooltip"
                   labelFormatter={(value) => formatTimestampFull(String(value), timezone)}
                   formatter={(value: number, name: string) => [formatBootTime(value), name]}
                 />
@@ -407,11 +403,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
                   width={50}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '0.5rem',
-                  }}
+                  wrapperClassName="chart-tooltip"
                   labelFormatter={(value) => formatTimestampFull(String(value), timezone)}
                   formatter={(value: number) => [formatBootTime(value), 'Total Boot Time']}
                 />

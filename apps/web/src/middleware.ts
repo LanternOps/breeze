@@ -5,10 +5,6 @@ function readFlag(name: string): boolean {
   return raw === '1' || raw === 'true';
 }
 
-function isProductionEnvironment(): boolean {
-  return (process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
-}
-
 function resolveConnectSrcDirective(): string {
   const sources = new Set<string>(["'self'", 'https:', 'ws:', 'wss:']);
   const configuredApiUrl = process.env.PUBLIC_API_URL;
@@ -125,12 +121,37 @@ function relaxExistingCsp(
 export const onRequest = defineMiddleware(async (_context, next) => {
   const response = await next();
   const headers = new Headers(response.headers);
-  const isProduction = isProductionEnvironment();
-  const allowUnsafeInlineScript = readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT');
-  const allowUnsafeInlineStyle = readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE');
+  const strictDevCsp = import.meta.env.DEV && readFlag('CSP_STRICT_DEV');
 
-  // Production is strict by default. Explicit flags provide a temporary opt-out.
-  if (isProduction && (allowUnsafeInlineScript || allowUnsafeInlineStyle)) {
+  // Default dev behavior: do not enforce CSP so Vite/HMR styles and scripts work.
+  // Use CSP_STRICT_DEV=1 when you explicitly want CSP enforcement in local dev.
+  if (import.meta.env.DEV && !strictDevCsp) {
+    headers.delete('Content-Security-Policy');
+    headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    headers.set('X-Frame-Options', 'DENY');
+    headers.set('X-Content-Type-Options', 'nosniff');
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    });
+  }
+
+  const allowUnsafeInlineInDev =
+    import.meta.env.DEV && (readFlag('CSP_ALLOW_DEV_UNSAFE_INLINE') || !strictDevCsp);
+  const allowUnsafeInlineScriptFlag =
+    readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT');
+  const allowUnsafeInlineStyleFlag =
+    readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE');
+  const allowUnsafeInlineScript = allowUnsafeInlineInDev || allowUnsafeInlineScriptFlag;
+  const allowUnsafeInlineStyle = allowUnsafeInlineInDev || allowUnsafeInlineStyleFlag;
+
+  // Production is strict by default. Dev allows inline by default because Vite/Astro
+  // inject inline script/style for HMR and hydration bootstrap.
+  // Set CSP_STRICT_DEV=1 to force strict CSP locally, or use CSP_ALLOW_* flags to opt out.
+  if (allowUnsafeInlineScript || allowUnsafeInlineStyle) {
     const existingCsp = headers.get('Content-Security-Policy');
     if (existingCsp) {
       headers.set(

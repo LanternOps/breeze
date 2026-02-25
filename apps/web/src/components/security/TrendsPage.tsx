@@ -28,13 +28,6 @@ type TrendsData = {
   summary: TrendSummary;
 };
 
-const chartTooltipStyle = {
-  backgroundColor: 'hsl(var(--card))',
-  border: '1px solid hsl(var(--border))',
-  borderRadius: '0.5rem',
-  fontSize: '12px'
-};
-
 const lineColors: Record<string, string> = {
   overall: '#22c55e',
   antivirus: '#3b82f6',
@@ -239,7 +232,7 @@ export default function TrendsPage() {
               <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
               <XAxis dataKey="timestamp" tick={{ fontSize: 10 }} className="text-muted-foreground" />
               <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} className="text-muted-foreground" />
-              <Tooltip contentStyle={chartTooltipStyle} />
+              <Tooltip wrapperClassName="chart-tooltip" />
               <Legend />
               {Object.entries(lineColors).map(([key, color]) =>
                 visibleLines.has(key) ? (
