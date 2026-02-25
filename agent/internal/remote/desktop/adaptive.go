@@ -51,6 +51,11 @@ type AdaptiveBitrate struct {
 	// Track consecutive stable samples before upgrading. Prevents oscillation
 	// by requiring sustained good conditions before increasing bitrate.
 	stableCount int
+
+	// Post-degrade backoff: after a degrade event, require extra stable samples
+	// before upgrading to prevent the boom-bust cycle where the controller
+	// ramps back to the same bitrate that caused congestion.
+	degradeBackoff int
 }
 
 func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
@@ -190,8 +195,16 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	if degrade {
 		a.stableCount = 0
+		// After degrading, require extra stable samples before upgrading again.
+		// This prevents the boom-bust cycle: degrade→recover→immediately ramp
+		// back to the same bitrate that caused congestion. At 2s viewer stats
+		// intervals, backoff=2 means ~4s of stable conditions before upgrading.
+		a.degradeBackoff = 2
 	} else if upgrade {
 		a.stableCount++
+		if a.degradeBackoff > 0 {
+			a.degradeBackoff--
+		}
 	} else {
 		// In the middle zone — not degrading, but not clean enough to upgrade.
 		// Let stableCount decay slowly rather than resetting.
@@ -200,9 +213,7 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		}
 	}
 
-	// Require 2 consecutive stable samples (~1s) before upgrading.
-	// This prevents upgrade→degrade oscillation cycles while still
-	// recovering quickly from brief congestion.
+	// Require 2 consecutive stable samples plus no active backoff before upgrading.
 	const stableRequired = 2
 
 	action := "hold"
@@ -218,7 +229,7 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		newBitrate = int(float64(newBitrate) * 0.70)
 		newBitrate = clampInt(newBitrate, a.minBitrate, a.maxBitrate)
 		newQuality = stepQuality(newQuality, -1, a.minQuality, a.maxQuality)
-	} else if a.stableCount >= stableRequired && a.targetBitrate < a.maxBitrate {
+	} else if a.stableCount >= stableRequired && a.degradeBackoff <= 0 && a.targetBitrate < a.maxBitrate {
 		action = "upgrade"
 		// Additive increase: gentle probe — add 5% of max ceiling.
 		// This avoids multiplicative overshoot that causes degrade spirals.

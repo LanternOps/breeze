@@ -191,11 +191,14 @@ func (s *Session) adaptiveLoop() {
 		return
 	}
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	// RTCP stats — log only. Pion v4 RemoteInboundRTPStreamStats FractionLost
+	// conflicts with viewer-reported stats when both feed adaptive, causing
+	// oscillation. Viewer stats (2s interval) are the sole adaptive input;
+	// they include jitter + frame drops that RTCP doesn't capture.
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	var logCount int
-	var noStatsCount int
 	for {
 		select {
 		case <-s.done:
@@ -203,22 +206,11 @@ func (s *Session) adaptiveLoop() {
 		case <-ticker.C:
 			rtt, loss, ok := extractRemoteInboundVideoStats(s.peerConn.GetStats())
 			if !ok {
-				noStatsCount++
-				// Log periodically so we know the adaptive controller is blind
-				if noStatsCount%20 == 1 { // every 10s (20 × 500ms ticks)
-					slog.Warn("WebRTC RTCP stats unavailable — adaptive bitrate disabled",
-						"session", s.id,
-						"consecutiveMisses", noStatsCount,
-					)
-				}
 				continue
 			}
-			noStatsCount = 0
-			s.adaptive.Update(rtt, loss)
-			// Log RTCP stats periodically for bitrate diagnostics
 			logCount++
-			if logCount%5 == 1 { // every 10s (5 × 2s ticks)
-				slog.Info("WebRTC RTCP stats",
+			if logCount%5 == 1 { // every 10s
+				slog.Info("WebRTC RTCP stats (diagnostic)",
 					"session", s.id,
 					"rtt", rtt.Round(time.Millisecond),
 					"fractionLost", fmt.Sprintf("%.4f", loss),
