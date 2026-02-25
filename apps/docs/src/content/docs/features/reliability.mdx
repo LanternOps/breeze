@@ -71,7 +71,7 @@ reliabilityScore = clamp(0, 100,
 
 Each sub-score starts at 100 and is reduced by event counts with specific penalty multipliers:
 
-- **Uptime Score**: If uptime is >= 100%, score is 100. If <= 90%, score is 0. Linear interpolation between 90% and 100%.
+- **Uptime Score**: If uptime is &ge; 100%, score is 100. If &le; 90%, score is 0. Linear interpolation between 90% and 100%.
 - **Crash Score**: `100 - (crashCount30d + crashCount7d * 0.5) * 20`
 - **Hang Score**: `100 - hangCount30d * 10 - unresolvedHangCount30d * 20`
 - **Service Failure Score**: `100 - serviceFailureCount30d * 15 + recoveredServiceCount30d * 5`
