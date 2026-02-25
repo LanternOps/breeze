@@ -83,8 +83,8 @@ Trend direction is computed using linear regression over 30 days of daily reliab
 
 | Trend | Slope Threshold | Meaning |
 |-------|-----------------|---------|
-| `improving` | slope > 2 | Reliability is getting better over time |
-| `stable` | -2 <= slope <= 2 | Reliability is holding steady |
+| `improving` | slope &gt; 2 | Reliability is getting better over time |
+| `stable` | -2 &le; slope &le; 2 | Reliability is holding steady |
 | `degrading` | slope < -2 | Reliability is getting worse over time |
 
 The `trendConfidence` field (0.0 to 1.0) indicates how well the linear model fits the data, factoring in both R-squared and data coverage (at least 14 days of data for full confidence).
@@ -223,7 +223,7 @@ GET /reliability?orgId=uuid&scoreRange=critical&trendDirection=degrading&page=1&
 | `page` | integer | Page number (default 1) |
 | `limit` | integer | Results per page (1-100, default 25) |
 
-The response includes a `summary` section with the average score, count of critical devices (score <= 50), and count of degrading devices:
+The response includes a `summary` section with the average score, count of critical devices (score &le; 50), and count of degrading devices:
 
 ```json
 {

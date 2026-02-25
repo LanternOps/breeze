@@ -106,7 +106,7 @@ Breeze supports four monitor types, stored in the `monitor_type` PostgreSQL enum
 The **polling interval** controls how frequently the BullMQ scheduler enqueues a check job for the monitor. The **timeout** is passed to the agent as the maximum time allowed for the check to complete before it is considered failed.
 
 <Aside type="note">
-  The scheduler runs every 30 seconds. A monitor becomes due for a check when `last_checked + polling_interval <= now`, or when `last_checked` is `NULL` (never checked). Setting a polling interval below 30 seconds means the monitor will be checked on every scheduler cycle.
+  The scheduler runs every 30 seconds. A monitor becomes due for a check when `last_checked + polling_interval` is at or before the current time, or when `last_checked` is `NULL` (never checked). Setting a polling interval below 30 seconds means the monitor will be checked on every scheduler cycle.
 </Aside>
 
 ## Monitor Status Lifecycle

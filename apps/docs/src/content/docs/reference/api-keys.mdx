@@ -202,7 +202,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 Enrollment keys have two expiration mechanisms:
 
 - **TTL (`expiresAt`)**: After this timestamp, the key cannot be used regardless of remaining usage. The default is 60 minutes from creation.
-- **Max usage (`maxUsage`)**: Limits the number of agents that can enroll with this key. Each successful enrollment increments `usageCount`. Once `usageCount >= maxUsage`, the key is exhausted.
+- **Max usage (`maxUsage`)**: Limits the number of agents that can enroll with this key. Each successful enrollment increments `usageCount`. Once `usageCount` reaches `maxUsage`, the key is exhausted.
 
 These constraints work together. A key with `maxUsage: 50` and a 24-hour TTL will stop accepting enrollments when either 50 agents have used it or 24 hours have passed, whichever comes first.
 
