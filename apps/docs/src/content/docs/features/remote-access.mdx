@@ -1,27 +1,3 @@
-# Review Analysis
-
-The code changes are substantial and introduce several significant improvements to the adaptive bitrate control and video quality. Here are the key changes that affect documentation:
-
-1. **Adaptive bitrate algorithm changes**: Degrade multiplier changed from 0.70x to 0.85x, warmup from 3 to 5 samples, stability requirements from 2 to 3 samples, degrade thresholds adjusted, new degradeBackoff mechanism
-2. **GOP size increase**: From 2 seconds to 3 seconds
-3. **VBV buffer changes**: From 1-frame to 3-frame buffer to reduce quality pulsing
-4. **Bitrate ceiling reductions**: From 8M/15M to 4M/5M depending on resolution
-5. **RTCP stats handling**: Changed from 500ms to 2s polling, RTCP is now diagnostic-only, viewer stats are the primary input
-6. **WebRTC library upgrade**: pion/webrtc v3 to v4
-7. **New OnSessionStopped callback**: For session lifecycle management
-
-The documentation currently states:
-- "A stability threshold of 2 consecutive stable measurements is required before increasing bitrate" — **INCORRECT** (now 3)
-- No mention of the degradeBackoff mechanism
-- No explanation of viewer stats as the primary adaptive input
-- No mention of the quality pulsing improvements (GOP, VBV buffer)
-- Max bitrate ceilings are outdated
-
----
-
-## Updated Documentation
-
-```mdx
 ---
 title: Remote Access
 description: Remote Desktop, Remote Terminal, and File Transfer for managed devices over WebRTC.
@@ -114,29 +90,15 @@ Breeze supports multi-monitor remote desktop. The viewer can switch between disp
   DXGI Desktop Duplication is delta-based — a static display with no visual changes produces zero frames. Breeze forces a desktop repaint using `InvalidateRect` and `RedrawWindow` after a monitor switch to ensure the first frame is captured immediately.
 </Aside>
 
-### Adaptive Bitrate Control
+### Adaptive Bitrate
 
 The remote desktop pipeline uses adaptive bitrate control to maintain smooth streaming across varying network conditions. The encoder adjusts the H264 bitrate based on:
 
-- Packet loss detected by the viewer's WebRTC stats
-- Frame drops in the viewer's jitter buffer
-- Round-trip time (RTT) measurements
+- Measured network throughput between viewer and agent
+- Frame delivery latency
+- Packet loss rate
 
-#### Algorithm
-
-Breeze uses an AIMD (Additive Increase, Multiplicative Decrease) strategy with exponential weighted moving average (EWMA) smoothing:
-
-- **Degrade** (Multiplicative Decrease): When congestion is detected (packet loss >8% or high RTT with loss >3%), the bitrate is reduced by 15% (0.85x multiplier). This moderate reduction minimizes jarring quality swings while still reacting to congestion.
-- **Upgrade** (Additive Increase): When conditions are stable, bitrate increases by 5% of the maximum ceiling. This gentle probe prevents overshooting that would trigger another degrade cycle.
-- **Stability Requirements**: A minimum of 3 consecutive measurements with good conditions (no loss, normal RTT) are required before upgrading. After a degrade event, an additional backoff period (~4 seconds) must pass with stable conditions before allowing the next upgrade. This prevents the "boom-bust" cycle where the controller rapidly oscillates between the same bitrate that caused congestion.
-
-#### Measurement Warmup
-
-The controller requires 5 initial measurements (~2.5 seconds at 1s polling interval) before taking any bitrate action. This allows the EWMA filter to settle and prevents react to transient network jitter.
-
-#### Data Sources
-
-The controller is fed viewer-reported WebRTC statistics (RTT, packet loss, and frame drops) at 1-second intervals. Frame drops in the viewer's jitter buffer are treated as a congestion signal alongside packet loss, allowing the controller to react even when the underlying network has zero loss but the encoder is over-provisioned. RTCP statistics from the encoder are logged for diagnostic purposes but do not feed the adaptive controller.
+The bitrate ramps up when conditions are good and drops when congestion is detected. A stability threshold of 2 consecutive stable measurements is required before increasing bitrate to prevent oscillation.
 
 ### Audio Streaming
 
@@ -145,15 +107,6 @@ Remote desktop sessions can optionally stream system audio from the device to th
 ### Secure Desktop Capture
 
 Breeze can capture the Windows secure desktop (Ctrl+Alt+Del screen, UAC prompts, lock screen). This is possible because the helper process runs as SYSTEM with `GENERIC_ALL` access to the input desktop. Secure desktop capture is automatic — no additional configuration is required.
-
-### Video Quality Optimization
-
-Breeze optimizes the H264 encoding pipeline to reduce perceived quality pulsing under adaptive bitrate control:
-
-- **GOP Size**: Set to 3 seconds (keyframe interval). Longer GOPs reduce the frequency of large I-frames that consume the entire VBV buffer and starve subsequent P-frames, causing visible quality dips.
-- **VBV Buffer**: Set to approximately 3 frames worth of bits at the current bitrate/FPS. A larger buffer gives the encoder headroom to spread keyframe cost across neighboring frames, preventing the single-frame starvation that causes quality pulsing.
-
-These settings work with the moderate multiplicative decrease (0.85x) to provide smooth, predictable quality transitions as bitrate adapts to network conditions.
 
 ---
 
@@ -352,10 +305,9 @@ To free session capacity, close active sessions from the Active Sessions list on
 **Session stuck in `connecting`.**
 WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
 
-- **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`). If using an external TURN server, check its status via SSH.
-- **Firewall blocking TURN ports** — Coturn needs TCP+UDP port 3478, plus TCP+UDP ports in the relay range (default 49152–65535, or tightened to 49152–49252). TCP is required because Breeze advertises `transport=tcp` TURN URLs for clients behind restrictive firewalls. Verify with `nc -z -w 3 TURN_IP 3478` (TCP) and `nc -u -z -w 3 TURN_IP 3478` (UDP).
-- **Wrong `TURN_HOST`** — Must be the TURN server's public IP, not a private address. If Breeze is behind Cloudflare Tunnel, TURN must run on a separate host with its own public IP — see [TURN Server](/deploy/turn-server/).
-- **Shared secret mismatch** — `TURN_SECRET` in `.env` must exactly match `static-auth-secret` in the coturn config.
+- **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`).
+- **Firewall blocking TURN ports** — Coturn needs UDP and TCP port 3478, plus UDP ports 49152–65535 for media relay. Check `docker compose ps coturn` and verify the ports are reachable.
+- **Wrong `TURN_HOST`** — Must be the server's public IP, not a private address. Agents and viewers connect to this IP directly.
 
 The viewer should automatically fall back to the WebSocket transport after a timeout.
 
@@ -370,4 +322,3 @@ The device must be online with an active WebSocket connection for the transfer t
 
 **"Access denied" when creating a session.**
 The user account does not have the `remote:access` permission. Navigate to **Settings → Roles**, locate the role assigned to the user, and enable `remote:access`. Changes take effect immediately without requiring re-login.
-```
