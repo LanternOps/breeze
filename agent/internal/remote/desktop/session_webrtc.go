@@ -234,12 +234,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		session.fps = maxFrameRate
 	}
 
-	// Create adaptive bitrate controller — ceiling scales with resolution.
-	// Conservative max: remote support doesn't need high bitrate, and
-	// over-provisioning causes jitter-buffer drops on tunnel connections.
-	maxAdaptiveBitrate := 5_000_000
+	// Create adaptive bitrate controller — conservative ceiling.
+	// Remote support doesn't need high bitrate, and over-provisioning
+	// causes jitter-buffer drops on tunnel connections. Viewer slider
+	// can override via set_bitrate control message.
+	maxAdaptiveBitrate := 4_000_000
 	if w*h > 1920*1080 {
-		maxAdaptiveBitrate = 8_000_000
+		maxAdaptiveBitrate = 5_000_000
 	}
 	adaptive, err := NewAdaptiveBitrate(AdaptiveConfig{
 		Encoder:        enc,
