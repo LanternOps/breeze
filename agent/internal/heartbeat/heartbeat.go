@@ -112,8 +112,9 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 
 	// User session helper (IPC)
-	sessionBroker *sessionbroker.Broker
-	isService     bool
+	sessionBroker   *sessionbroker.Broker
+	isService       bool
+	scmSessionCh    chan sessionbroker.SCMSessionEvent // fed by SCM handler
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -223,6 +224,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			reason = "windows-service"
 		}
 		log.Info("user helper IPC enabled", "socket", socketPath, "reason", reason)
+
+		// Pre-create the SCM session event channel so it's available before
+		// Start() runs. The service handler (service_windows.go) can begin
+		// forwarding events as soon as startAgent() returns.
+		if cfg.IsService && runtime.GOOS == "windows" {
+			h.scmSessionCh = make(chan sessionbroker.SCMSessionEvent, 16)
+		}
 	}
 
 	// Register winget provider (dispatches via user helper for user-context execution)
@@ -274,6 +282,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		})
 	}
 
+	// For direct mode (non-service), notify API when WebRTC peer drops.
+	// In service mode this is handled via IPC from the user helper.
+	if !cfg.IsService {
+		h.desktopMgr.OnSessionStopped = func(sessionID string) {
+			h.sendDesktopDisconnectNotification(sessionID)
+		}
+	}
+
 	return h
 }
 
@@ -314,6 +330,13 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			}()
 			h.handleSASFromHelper(session, env)
 		}()
+	case ipc.TypeDesktopPeerDisconnected:
+		var notice ipc.DesktopPeerDisconnectedNotice
+		if err := json.Unmarshal(env.Payload, &notice); err != nil {
+			log.Warn("invalid desktop peer disconnect payload", "error", err.Error())
+			return
+		}
+		go h.sendDesktopDisconnectNotification(notice.SessionID)
 	default:
 		log.Debug("unhandled user helper message", "type", env.Type, "uid", session.UID)
 	}
@@ -328,6 +351,37 @@ func (h *Heartbeat) sendTerminalOutput(sessionId string, data []byte) {
 	}
 }
 
+// sendDesktopDisconnectNotification tells the API that a WebRTC peer
+// connection dropped so it can mark the session as disconnected and allow
+// the viewer to reconnect.
+func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
+	if h.wsClient == nil {
+		return
+	}
+	result := websocket.CommandResult{
+		Type:      "command_result",
+		CommandID: "desk-disconnect-" + sessionID,
+		Status:    "completed",
+		Result: map[string]any{
+			"sessionId": sessionID,
+			"event":     "peer_disconnected",
+		},
+	}
+	if err := h.wsClient.SendResult(result); err != nil {
+		log.Warn("failed to send desktop disconnect notification", "session", sessionID, "error", err.Error())
+	}
+}
+
+// SCMSessionCh returns the channel for forwarding SCM session-change events
+// to the helper lifecycle manager. Returns nil if the lifecycle manager is not
+// active (non-service mode or non-Windows). Safe to call before Start().
+func (h *Heartbeat) SCMSessionCh() chan<- sessionbroker.SCMSessionEvent {
+	if h.scmSessionCh == nil {
+		return nil
+	}
+	return h.scmSessionCh
+}
+
 func (h *Heartbeat) Start() {
 	// Start session broker for user helpers
 	if h.sessionBroker != nil {
@@ -335,6 +389,19 @@ func (h *Heartbeat) Start() {
 	}
 	if h.sessionCol != nil {
 		h.sessionCol.Start(h.stopChan)
+	}
+
+	// Proactively spawn helpers into user sessions so remote desktop works
+	// instantly after reboot (Windows service only). The SCM session event
+	// channel (created in constructor) is fed by the service handler
+	// (service_windows.go) for instant notification; the lifecycle manager
+	// also runs a slow reconcile tick as a safety net for helper crashes
+	// and early-boot edge cases.
+	if h.scmSessionCh != nil && h.sessionBroker != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-h.stopChan; cancel() }()
+		lm := sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
+		go lm.Start(ctx)
 	}
 
 	// Start backup scheduler if configured
