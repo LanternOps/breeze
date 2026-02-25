@@ -52,3 +52,10 @@ services:
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
+
+  # Disable local coturn — using external DO droplet
+  coturn:
+    image: alpine:3.19
+    entrypoint: ["true"]
+    restart: "no"
+    network_mode: bridge
