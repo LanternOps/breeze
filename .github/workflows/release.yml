@@ -509,12 +509,12 @@ jobs:
         env:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Update tauri.conf.json
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          # Update tauri.conf.json — match any semver version string
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
           # Update Cargo.toml
-          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
           # Update package.json
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
           echo "Injected version $BUILD_VERSION into viewer config files"
 
       - name: Build Tauri app
@@ -609,12 +609,12 @@ jobs:
         env:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Update tauri.conf.json
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          # Update tauri.conf.json — match any semver version string
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
           # Update Cargo.toml
-          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
           # Update package.json
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
           echo "Injected version $BUILD_VERSION into helper config files"
 
       - name: Build Tauri app
@@ -696,9 +696,9 @@ jobs:
         env:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
-          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
 
       - name: Build Tauri app
         working-directory: apps/viewer
@@ -777,9 +777,9 @@ jobs:
         env:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
-          sed -i.bak 's/^version = "0.1.0"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
-          sed -i.bak 's/"version": "0.1.0"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
+          sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$BUILD_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
+          sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$BUILD_VERSION"'"/' package.json && rm package.json.bak
 
       - name: Build Tauri app
         working-directory: apps/helper
