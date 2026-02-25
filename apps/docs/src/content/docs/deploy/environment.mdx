@@ -130,6 +130,10 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
   In the dev Docker Compose overlay, `TURN_SECRET` defaults to `dev-turn-secret` and `TURN_HOST` defaults to `127.0.0.1`, so no configuration is needed for local development.
 </Aside>
 
+<Aside>
+  If Breeze runs behind Cloudflare Tunnel or another HTTP-only proxy, TURN must run on a separate host with a public IP. Point `TURN_HOST` to the external TURN server's IP. See [TURN Server](/deploy/turn-server/) for setup instructions.
+</Aside>
+
 ## Monitoring
 
 | Variable | Default | Description |
