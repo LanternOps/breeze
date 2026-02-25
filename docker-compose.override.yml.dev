@@ -1,0 +1,130 @@
+# Local dev overrides — code-mounted API + Web with hot-reload
+# Uses dev Dockerfiles that mount source code for live editing.
+# Usage: docker compose up --build -d
+
+services:
+  postgres:
+    ports:
+      - '5432:5432'
+
+  redis:
+    ports:
+      - '6379:6379'
+
+  caddy:
+    command: |
+      sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
+      {
+        auto_https off
+      }
+      :80 {
+        encode zstd gzip
+        @api path /api/* /health /ready /metrics/*
+        handle @api {
+          reverse_proxy api:3001
+        }
+        handle {
+          reverse_proxy web:4321 {
+            header_up Host localhost
+          }
+        }
+        header {
+          X-Content-Type-Options "nosniff"
+          X-Frame-Options "DENY"
+          Referrer-Policy "strict-origin-when-cross-origin"
+        }
+      }
+      CADDYEOF
+      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+
+  binaries-init:
+    image: alpine:3.19
+    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
+
+  api:
+    image: breeze-api:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api.dev
+    ports:
+      - '3001:3001'
+    volumes:
+      # Mount source code for hot-reloading
+      - ./apps/api/src:/app/apps/api/src:cached
+      - ./packages/shared/src:/app/packages/shared/src:cached
+      # Mount config files
+      - ./apps/api/package.json:/app/apps/api/package.json:ro
+      - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
+      - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
+      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
+      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
+      # Exclude node_modules (use container's)
+      - /app/node_modules
+      - /app/apps/api/node_modules
+      - /app/packages/shared/node_modules
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      ENABLE_API_DOCS: "true"
+      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER}
+      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-Lax}
+      PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-Lax}
+      ENABLE_REGISTRATION: ${ENABLE_REGISTRATION:-true}
+      PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-true}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
+      BINARY_SOURCE: disabled
+      TURN_HOST: ${TURN_HOST:-127.0.0.1}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-dev-turn-secret}
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
+      start_period: 60s
+
+  web:
+    image: breeze-web:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web.dev
+    ports:
+      - '4321:4321'
+    volumes:
+      # Mount source code for hot-reloading
+      - ./apps/web/src:/app/apps/web/src:cached
+      - ./apps/web/public:/app/apps/web/public:cached
+      - ./packages/shared/src:/app/packages/shared/src:cached
+      # Mount config files
+      - ./apps/web/package.json:/app/apps/web/package.json:ro
+      - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
+      - ./apps/web/astro.config.mjs:/app/apps/web/astro.config.mjs:ro
+      - ./apps/web/tailwind.config.mjs:/app/apps/web/tailwind.config.mjs:ro
+      - ./apps/web/postcss.config.mjs:/app/apps/web/postcss.config.mjs:ro
+      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
+      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
+      # Exclude node_modules (use container's)
+      - /app/node_modules
+      - /app/apps/web/node_modules
+      - /app/packages/shared/node_modules
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 4321
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
+      start_period: 60s
+
+  coturn:
+    image: coturn/coturn:4-alpine
+    container_name: breeze-coturn-dev
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./docker/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: >
+      turnserver
+      -c /etc/coturn/turnserver.conf
+      --static-auth-secret=${TURN_SECRET:-dev-turn-secret}
+      --realm=${TURN_REALM:-breeze.local}
+      --external-ip=${TURN_HOST:-127.0.0.1}

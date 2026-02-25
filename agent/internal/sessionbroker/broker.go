@@ -233,6 +233,19 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	return nil
 }
 
+// HasHelperForWinSession returns true if any connected helper is in the
+// given Windows session.
+func (b *Broker) HasHelperForWinSession(winSessionID string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, s := range b.sessions {
+		if s.WinSessionID == winSessionID {
+			return true
+		}
+	}
+	return false
+}
+
 // SendCommandAndWait forwards a command to a session and waits for the response.
 func (b *Broker) SendCommandAndWait(session *Session, id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
 	return session.SendCommand(id, cmdType, payload, timeout)
@@ -446,7 +459,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		case ipc.TypeDisconnect:
 			log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
 			s.Close()
-		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest:
+		case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected:
 			if b.onMessage != nil {
 				b.onMessage(s, env)
 			}

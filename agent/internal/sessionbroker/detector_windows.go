@@ -65,8 +65,11 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 			continue
 		}
 
-		// Only include active/disconnected sessions (and session 0)
-		if info.State != 0 && info.State != 4 && info.SessionID != 0 {
+		// Include active (0), connected (1), and disconnected (4) sessions.
+		// Connected (1) = session exists but no user logged in yet (e.g. lock
+		// screen after reboot). The helper runs as SYSTEM and can capture the
+		// Winlogon desktop via OpenInputDesktop, so this is a valid target.
+		if info.State != 0 && info.State != 1 && info.State != 4 && info.SessionID != 0 {
 			continue
 		}
 
@@ -194,6 +197,8 @@ func wtsStateString(state uint32) string {
 	switch state {
 	case 0:
 		return "active"
+	case 1:
+		return "connected"
 	case 4:
 		return "disconnected"
 	default:

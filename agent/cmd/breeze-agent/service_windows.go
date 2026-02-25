@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -72,7 +75,7 @@ func runAsService(startFn func() (*agentComponents, error)) error {
 // Execute is the SCM callback. It signals SERVICE_RUNNING, calls startFn,
 // then blocks until the SCM sends Stop or Shutdown.
 func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
-	const accepted = svc.AcceptStop | svc.AcceptShutdown
+	const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
 
 	changes <- svc.Status{State: svc.StartPending}
 
@@ -82,6 +85,9 @@ func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, chang
 		changes <- svc.Status{State: svc.StopPending}
 		return true, 1 // report error to SCM
 	}
+
+	// Get the SCM session event channel (nil if lifecycle manager not active).
+	scmCh := comps.hb.SCMSessionCh()
 
 	changes <- svc.Status{State: svc.Running, Accepts: accepted}
 	log.Info("agent running as Windows service")
@@ -98,9 +104,32 @@ func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, chang
 				changes <- svc.Status{State: svc.StopPending}
 				shutdownAgent(comps)
 				return false, 0
+			case svc.SessionChange:
+				if scmCh != nil {
+					sessionID := extractSessionID(cr.EventData)
+					select {
+					case scmCh <- sessionbroker.SCMSessionEvent{
+						EventType: cr.EventType,
+						SessionID: sessionID,
+					}:
+					default:
+						// Channel full — lifecycle manager will catch up
+						// on the next reconcile tick.
+					}
+				}
 			default:
 				log.Warn(fmt.Sprintf("unexpected SCM control request #%d", cr.Cmd))
 			}
 		}
 	}
+}
+
+// extractSessionID reads the session ID from the WTSSESSION_NOTIFICATION
+// struct pointed to by the SCM ChangeRequest's EventData field.
+func extractSessionID(eventData uintptr) uint32 {
+	if eventData == 0 {
+		return 0
+	}
+	notif := (*windows.WTSSESSION_NOTIFICATION)(unsafe.Pointer(eventData))
+	return notif.SessionID
 }

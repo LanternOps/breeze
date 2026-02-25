@@ -69,6 +69,15 @@ func (c *Client) Run() error {
 		return c.requestSASViaIPC()
 	}
 
+	// Notify the service when a WebRTC peer connection drops so it can relay
+	// the disconnect to the API and allow the viewer to reconnect.
+	c.desktopMgr.mgr.OnSessionStopped = func(sessionID string) {
+		notice := ipc.DesktopPeerDisconnectedNotice{SessionID: sessionID}
+		if err := c.conn.SendTyped("desk-disc-"+sessionID, ipc.TypeDesktopPeerDisconnected, notice); err != nil {
+			log.Warn("failed to send desktop peer disconnect via IPC", "session", sessionID, "error", err)
+		}
+	}
+
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
 
 	// Enter command loop

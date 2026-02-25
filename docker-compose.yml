@@ -115,6 +115,9 @@ services:
       S3_BUCKET: ${S3_BUCKET:-}
       S3_REGION: ${S3_REGION:-}
       S3_PRESIGN_TTL: ${S3_PRESIGN_TTL:-900}
+      TURN_HOST: ${TURN_HOST:-}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
@@ -127,7 +130,7 @@ services:
         condition: service_healthy
     healthcheck:
       <<: *healthcheck
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:3001/health']
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 40s
     networks:
       - breeze
@@ -147,7 +150,7 @@ services:
         condition: service_healthy
     healthcheck:
       <<: *healthcheck
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:4321/']
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       start_period: 30s
     networks:
       - breeze
@@ -188,6 +191,20 @@ services:
       start_period: 5s
     networks:
       - breeze
+
+  coturn:
+    image: coturn/coturn:4-alpine
+    container_name: breeze-coturn
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./docker/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: >
+      turnserver
+      -c /etc/coturn/turnserver.conf
+      --static-auth-secret=${TURN_SECRET:?Set TURN_SECRET in .env}
+      --realm=${TURN_REALM:-breeze.local}
+      --external-ip=${TURN_HOST:?Set TURN_HOST in .env}
 
 networks:
   breeze:

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media"
 )
 
 func (s *Session) startStreaming() {
@@ -191,7 +191,11 @@ func (s *Session) adaptiveLoop() {
 		return
 	}
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	// RTCP stats — log only. Pion v4 RemoteInboundRTPStreamStats FractionLost
+	// conflicts with viewer-reported stats when both feed adaptive, causing
+	// oscillation. Viewer stats (1s interval) are the sole adaptive input;
+	// they include packet loss + frame drops that RTCP doesn't capture.
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	var logCount int
@@ -204,11 +208,9 @@ func (s *Session) adaptiveLoop() {
 			if !ok {
 				continue
 			}
-			s.adaptive.Update(rtt, loss)
-			// Log RTCP stats periodically for bitrate diagnostics
 			logCount++
-			if logCount%5 == 1 { // every 10s (5 × 2s ticks)
-				slog.Info("WebRTC RTCP stats",
+			if logCount%5 == 1 { // every 10s
+				slog.Info("WebRTC RTCP stats (diagnostic)",
 					"session", s.id,
 					"rtt", rtt.Round(time.Millisecond),
 					"fractionLost", fmt.Sprintf("%.4f", loss),

@@ -1,0 +1,69 @@
+# Local build overrides — builds native arm64 images on Apple Silicon
+# (GHCR images are linux/amd64 only)
+# Usage: docker compose up --build -d
+
+services:
+  binaries-init:
+    image: alpine:3.19
+    entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
+
+  api:
+    image: breeze-api:local
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - '3001:3001'
+    environment:
+      BINARY_SOURCE: disabled
+      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER}
+      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-Lax}
+      PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-Lax}
+      TURN_HOST: ${TURN_HOST:-}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-}
+
+  caddy:
+    command: |
+      sh -c 'cat > /etc/caddy/Caddyfile <<CADDYEOF
+      {
+        auto_https off
+      }
+      :80 {
+        encode zstd gzip
+        @api path /api/* /health /ready /metrics/*
+        handle @api {
+          reverse_proxy api:3001
+        }
+        handle {
+          reverse_proxy web:4321
+        }
+        header {
+          X-Content-Type-Options "nosniff"
+          X-Frame-Options "DENY"
+          Referrer-Policy "strict-origin-when-cross-origin"
+        }
+      }
+      CADDYEOF
+      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+
+  web:
+    image: breeze-web:local
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        PUBLIC_API_URL: ""
+    ports:
+      - '4321:4321'
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

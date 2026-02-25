@@ -185,10 +185,13 @@ app.use(
   })
 );
 app.use('*', securityMiddleware());
-app.use('*', bodyLimit({
-  maxSize: 1024 * 1024, // 1MB default for all routes
-  onError: (c) => c.json({ error: 'Request body too large' }, 413),
-}));
+app.use('*', async (c, next) => {
+  // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
+  if (c.req.path.startsWith('/api/v1/dev/push')) {
+    return bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Binary too large (max 150MB)' }, 413) })(c, next);
+  }
+  return bodyLimit({ maxSize: 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Request body too large' }, 413) })(c, next);
+});
 app.use('*', globalRateLimit());
 app.use('*', prettyJSON());
 app.use(
