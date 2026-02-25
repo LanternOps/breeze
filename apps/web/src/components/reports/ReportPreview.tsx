@@ -9,7 +9,7 @@ import {
   Loader2,
   FileText
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import type { ReportType } from './ReportsList';
 
 type PreviewMode = 'table' | 'chart';
@@ -365,9 +365,9 @@ export default function ReportPreview({
                                 severity === 'high' && 'bg-orange-500',
                                 severity === 'medium' && 'bg-yellow-500',
                                 severity === 'low' && 'bg-blue-500',
-                                severity === 'info' && 'bg-gray-500'
+                                severity === 'info' && 'bg-gray-500',
+                                widthPercentClass(percentage)
                               )}
-                              style={{ width: `${percentage}%` }}
                             />
                           </div>
                           <span className="w-12 text-sm text-right">{count}</span>
@@ -481,8 +481,7 @@ export default function ReportPreview({
                         <span className="flex-1 text-sm truncate">{device.hostname}</span>
                         <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
                           <div
-                            className="h-full bg-primary rounded-full"
-                            style={{ width: `${device.value}%` }}
+                            className={cn('h-full rounded-full bg-primary', widthPercentClass(device.value))}
                           />
                         </div>
                         <span className="w-12 text-sm text-right">{device.value}%</span>

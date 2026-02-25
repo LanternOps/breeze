@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Bell, ChevronDown, LogOut, Settings, User } from 'lucide-react';
 import { usePortalAuth, portalLogout } from '@/lib/auth';
 import { useBranding } from './BrandingProvider';
-import { cn } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 
 export function PortalHeader() {
   const { user } = usePortalAuth();
@@ -11,7 +11,7 @@ export function PortalHeader() {
 
   const handleLogout = async () => {
     await portalLogout();
-    window.location.href = '/login';
+    await navigateTo('/login', { replace: true });
   };
 
   return (

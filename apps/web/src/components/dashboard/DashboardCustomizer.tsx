@@ -11,7 +11,7 @@ import {
   Settings2,
   Share2
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, gridColSpanClass, gridColStartClass, gridRowSpanClass, gridRowStartClass } from '@/lib/utils';
 
 const GRID_COLUMNS = 12;
 const ROW_HEIGHT = 120;
@@ -771,16 +771,16 @@ export default function DashboardCustomizer() {
               return (
                 <div
                   key={widget.id}
-                  style={{
-                    gridColumn: `${widget.x + 1} / span ${widget.w}`,
-                    gridRow: `${widget.y + 1} / span ${widget.h}`
-                  }}
                   draggable
                   onDragStart={(event) => handleWidgetDragStart(event, widget.id)}
                   onDragEnd={handleWidgetDragEnd}
                   onClick={() => setSelectedWidgetId(widget.id)}
                   className={cn(
                     'group relative flex h-full flex-col rounded-md border bg-background p-3 shadow-sm transition',
+                    gridColStartClass(widget.x + 1),
+                    gridColSpanClass(widget.w),
+                    gridRowStartClass(widget.y + 1),
+                    gridRowSpanClass(widget.h),
                     isSelected && 'ring-2 ring-primary/60',
                     isDragging && 'opacity-60'
                   )}

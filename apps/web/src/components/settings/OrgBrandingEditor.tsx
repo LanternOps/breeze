@@ -1,6 +1,7 @@
 import { type ChangeEvent, useEffect, useState } from 'react';
 import { Eye, Globe, Image, Palette, Save, Wand2, X } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 
 type BrandingData = {
   logoUrl?: string;
@@ -37,13 +38,17 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
   const initialData = { ...defaultBranding, ...branding };
   const [logoPreview, setLogoPreview] = useState(initialData.logoUrl || '');
   const [logoName, setLogoName] = useState('');
-  const [primaryColor, setPrimaryColor] = useState(initialData.primaryColor || '#2563eb');
-  const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || '#14b8a6');
+  const [primaryColor, setPrimaryColor] = useState(initialData.primaryColor || defaultBranding.primaryColor || '#2563eb');
+  const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || defaultBranding.secondaryColor || '#14b8a6');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(initialData.theme || 'system');
   const [customCss, setCustomCss] = useState(initialData.customCss || '');
   const [portalSubdomain, setPortalSubdomain] = useState(initialData.portalSubdomain || '');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const resolvedPrimaryColor = sanitizeHexColor(primaryColor, defaultBranding.primaryColor || '#2563eb');
+  const resolvedSecondaryColor = sanitizeHexColor(secondaryColor, defaultBranding.secondaryColor || '#14b8a6');
+  const primaryToken = resolveUiColorToken(resolvedPrimaryColor, defaultBranding.primaryColor || '#2563eb');
+  const secondaryToken = resolveUiColorToken(resolvedSecondaryColor, defaultBranding.secondaryColor || '#14b8a6');
 
   useEffect(() => {
     if (!logoPreview || !logoPreview.startsWith('blob:')) {
@@ -77,8 +82,8 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
   const handleSave = () => {
     const data: BrandingData = {
       logoUrl: logoPreview,
-      primaryColor,
-      secondaryColor,
+      primaryColor: resolvedPrimaryColor,
+      secondaryColor: resolvedSecondaryColor,
       theme,
       customCss,
       portalSubdomain
@@ -170,7 +175,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
               <div className="flex items-center gap-3">
                 <input
                   type="color"
-                  value={primaryColor}
+                  value={resolvedPrimaryColor}
                   onChange={event => {
                     setPrimaryColor(event.target.value);
                     markDirty();
@@ -197,7 +202,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
               <div className="flex items-center gap-3">
                 <input
                   type="color"
-                  value={secondaryColor}
+                  value={resolvedSecondaryColor}
                   onChange={event => {
                     setSecondaryColor(event.target.value);
                     markDirty();
@@ -306,8 +311,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             <div className="space-y-4 p-6">
               <div className="overflow-hidden rounded-lg border">
                 <div
-                  className="flex items-center justify-between px-5 py-4"
-                  style={{ backgroundColor: primaryColor, color: '#ffffff' }}
+                  className={`flex items-center justify-between px-5 py-4 ${primaryToken.bgClass} ${primaryToken.textOnClass}`}
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-xs font-semibold">
@@ -333,8 +337,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      className="rounded-md px-3 py-2 text-xs font-semibold text-white"
-                      style={{ backgroundColor: secondaryColor }}
+                      className={`rounded-md px-3 py-2 text-xs font-semibold ${secondaryToken.bgClass} ${secondaryToken.textOnClass}`}
                     >
                       Open support ticket
                     </button>

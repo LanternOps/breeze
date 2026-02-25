@@ -1,42 +1,29 @@
-import React, { useEffect, useState } from 'react';
-import { Ticket, Plus, Loader2, AlertCircle } from 'lucide-react';
-import { portalApi, type Ticket as TicketType } from '@/lib/api';
+import React from 'react';
+import { Ticket, Plus, AlertCircle } from 'lucide-react';
+import { type TicketSummary, type TicketPriority, type TicketStatus } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 
-export function TicketList() {
-  const [tickets, setTickets] = useState<TicketType[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+interface TicketListProps {
+  tickets: TicketSummary[];
+  error?: string | null;
+}
 
-  useEffect(() => {
-    async function fetchTickets() {
-      const result = await portalApi.getTickets();
-      if (result.data) {
-        setTickets(result.data);
-      } else {
-        setError(result.error || 'Failed to load tickets');
-      }
-      setIsLoading(false);
-    }
-
-    fetchTickets();
-  }, []);
-
-  const getPriorityColor = (priority: TicketType['priority']) => {
+export function TicketList({ tickets, error }: TicketListProps) {
+  const getPriorityColor = (priority: TicketPriority) => {
     switch (priority) {
-      case 'critical':
+      case 'urgent':
         return 'bg-destructive text-destructive-foreground';
       case 'high':
         return 'bg-warning text-warning-foreground';
-      case 'medium':
+      case 'normal':
         return 'bg-primary text-primary-foreground';
       case 'low':
         return 'bg-muted text-muted-foreground';
     }
   };
 
-  const getStatusColor = (status: TicketType['status']) => {
+  const getStatusColor = (status: TicketStatus) => {
     switch (status) {
       case 'open':
         return 'bg-primary/10 text-primary';
@@ -49,7 +36,7 @@ export function TicketList() {
     }
   };
 
-  const getStatusLabel = (status: TicketType['status']) => {
+  const getStatusLabel = (status: TicketStatus) => {
     switch (status) {
       case 'open':
         return 'Open';
@@ -61,14 +48,6 @@ export function TicketList() {
         return 'Closed';
     }
   };
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
 
   if (error) {
     return (
@@ -136,14 +115,15 @@ export function TicketList() {
               {tickets.map((ticket) => (
                 <tr
                   key={ticket.id}
-                  className="cursor-pointer hover:bg-muted/50"
-                  onClick={() => (window.location.href = `/tickets/${ticket.id}`)}
+                  className="hover:bg-muted/50"
                 >
                   <td className="px-4 py-3">
                     <div>
-                      <p className="font-medium">{ticket.title}</p>
-                      <p className="text-sm text-muted-foreground line-clamp-1">
-                        {ticket.description}
+                      <a className="font-medium hover:underline" href={`/tickets/${ticket.id}`}>
+                        {ticket.subject}
+                      </a>
+                      <p className="text-sm text-muted-foreground">
+                        #{ticket.ticketNumber}
                       </p>
                     </div>
                   </td>

@@ -41,6 +41,7 @@ const chartTooltipStyle = {
 };
 
 const PIE_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6'];
+const PIE_DOT_CLASSES = ['bg-green-500', 'bg-blue-500', 'bg-amber-500', 'bg-violet-500'];
 
 const statusBadge: Record<string, string> = {
   protected: 'bg-emerald-500/15 text-emerald-700 border-emerald-500/30',
@@ -171,7 +172,7 @@ export default function AntivirusPage() {
               {(dashboard?.providers ?? []).map((p, i) => (
                 <div key={p.providerId} className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+                    <span className={cn('h-2.5 w-2.5 rounded-full', PIE_DOT_CLASSES[i % PIE_DOT_CLASSES.length])} />
                     <span className="truncate">{p.providerName}</span>
                   </div>
                   <span className="font-medium">{p.deviceCount}</span>

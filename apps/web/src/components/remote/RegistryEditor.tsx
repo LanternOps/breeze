@@ -21,7 +21,7 @@ import {
   Copy,
   Save
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, paddingLeftPxClass } from '@/lib/utils';
 
 // ============================================================================
 // Types
@@ -176,9 +176,9 @@ function TreeNode({
       <div
         className={cn(
           'flex items-center gap-1 py-1 px-2 cursor-pointer hover:bg-muted/60 rounded-sm text-sm',
-          isSelected && 'bg-primary/10 text-primary'
+          isSelected && 'bg-primary/10 text-primary',
+          paddingLeftPxClass(level * 16 + 8)
         )}
-        style={{ paddingLeft: level * 16 + 8 + 'px' }}
         onClick={handleSelect}
       >
         {hasChildren ? (

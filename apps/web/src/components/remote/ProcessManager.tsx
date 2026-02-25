@@ -12,7 +12,7 @@ import {
   Loader2,
   ChevronRight
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 export type ProcessStatus = 'running' | 'sleeping' | 'stopped' | 'zombie' | 'idle';
 
@@ -409,9 +409,9 @@ export default function ProcessManager({
                                   ? 'bg-red-500'
                                   : proc.cpuPercent > 50
                                   ? 'bg-yellow-500'
-                                  : 'bg-green-500'
+                                  : 'bg-green-500',
+                                widthPercentClass(Math.min(proc.cpuPercent, 100))
                               )}
-                              style={{ width: Math.min(proc.cpuPercent, 100) + '%' }}
                             />
                           </div>
                           <span className="w-12 text-right text-sm">

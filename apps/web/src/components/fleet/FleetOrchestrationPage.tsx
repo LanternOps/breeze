@@ -4,7 +4,7 @@ import {
   FileText, Loader2, XCircle, RefreshCw, MessageSquare,
   ChevronRight, AlertTriangle, CheckCircle2, TrendingUp
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { useAiStore } from '@/stores/aiStore';
 
@@ -547,8 +547,7 @@ function StatusBar({ label, value, total, color }: {
       <span className="text-sm text-muted-foreground w-20">{label}</span>
       <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
         <div
-          className={cn('h-full rounded-full transition-all', color)}
-          style={{ width: `${pct}%` }}
+          className={cn('h-full rounded-full transition-all', color, widthPercentClass(pct))}
         />
       </div>
       <span className="text-sm font-medium w-10 text-right">{value}</span>

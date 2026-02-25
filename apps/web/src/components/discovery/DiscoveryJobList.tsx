@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { widthPercentClass } from '@/lib/utils';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -320,8 +321,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, onClearFilte
                             <div className="h-full w-full animate-pulse rounded-full bg-yellow-500" />
                           ) : (
                             <div
-                              className={`h-full rounded-full ${progressBarColor[job.status]}`}
-                              style={{ width: `${job.progress}%` }}
+                              className={`h-full rounded-full ${progressBarColor[job.status]} ${widthPercentClass(job.progress)}`}
                             />
                           )}
                         </div>

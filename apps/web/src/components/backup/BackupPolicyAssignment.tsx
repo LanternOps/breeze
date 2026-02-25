@@ -9,7 +9,7 @@ import {
   SlidersHorizontal,
   Users
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, marginLeftPxClass } from '@/lib/utils';
 
 type TreeNode = {
   id: string;
@@ -107,9 +107,9 @@ export default function BackupPolicyAssignment() {
         <div
           className={cn(
             'flex items-center justify-between rounded-md border px-3 py-2 text-sm',
-            node.selected ? 'border-primary/40 bg-primary/5' : 'border-muted bg-muted/20'
+            node.selected ? 'border-primary/40 bg-primary/5' : 'border-muted bg-muted/20',
+            marginLeftPxClass(depth * 16)
           )}
-          style={{ marginLeft: depth * 16 }}
         >
           <div className="flex items-center gap-2">
             <button

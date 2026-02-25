@@ -16,6 +16,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
+import { widthPercentClass } from '@/lib/utils';
 
 type PatchItem = {
   id?: string;
@@ -866,7 +867,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         </div>
         <div className="mt-4">
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-            <div className="h-full rounded-full bg-primary" style={{ width: `${compliancePercent}%` }} />
+            <div className={`h-full rounded-full bg-primary ${widthPercentClass(compliancePercent)}`} />
           </div>
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
             <span>{pendingNative.length + pendingOther.length} pending</span>

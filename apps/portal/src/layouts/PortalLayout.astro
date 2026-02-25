@@ -1,14 +1,26 @@
 ---
 import '../styles/globals.css';
-import PortalHeader from '../components/portal/PortalHeader';
-import PortalSidebar from '../components/portal/PortalSidebar';
-import { BrandingProvider } from '../components/portal/BrandingProvider';
+import { ClientRouter } from 'astro:transitions';
+import { loadPortalBranding } from '../lib/server';
 
 interface Props {
   title: string;
 }
 
 const { title } = Astro.props;
+const pathname = Astro.url.pathname;
+const branding = await loadPortalBranding(Astro.request);
+const navItems = [
+  { label: 'Devices', href: '/devices' },
+  { label: 'Tickets', href: '/tickets' },
+  { label: 'Assets', href: '/assets' },
+  { label: 'Profile', href: '/profile' }
+];
+
+const isActive = (href: string) => {
+  if (href === '/') return pathname === '/';
+  return pathname === href || pathname.startsWith(`${href}/`);
+};
 ---
 
 <!DOCTYPE html>
@@ -19,18 +31,152 @@ const { title } = Astro.props;
     <meta name="description" content="Customer Portal" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{title} | Customer Portal</title>
+    <ClientRouter />
   </head>
   <body class="min-h-screen bg-background antialiased">
-    <BrandingProvider client:load>
-      <div class="flex h-screen overflow-hidden">
-        <PortalSidebar client:load />
-        <div class="flex flex-1 flex-col overflow-hidden">
-          <PortalHeader client:load />
-          <main class="flex-1 overflow-y-auto p-6">
-            <slot />
-          </main>
+    <div class="flex h-screen overflow-hidden">
+      <aside class="hidden w-64 flex-col border-r bg-card lg:flex">
+        <div class="flex h-16 items-center border-b px-6">
+          {branding.logoUrl ? (
+            <img src={branding.logoUrl} alt={branding.name || 'Customer Portal'} class="h-8 w-auto" />
+          ) : (
+            <span class="font-semibold">{branding.name || 'Customer Portal'}</span>
+          )}
         </div>
+
+        <nav class="flex-1 space-y-1 p-4">
+          {navItems.map((item) => (
+            <a
+              href={item.href}
+              class:list={[
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                isActive(item.href)
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+              ]}
+            >
+              {item.label}
+            </a>
+          ))}
+        </nav>
+
+        <div class="border-t p-4">
+          <div class="rounded-md bg-muted p-4 text-xs text-muted-foreground">
+            <div class="text-sm font-medium text-foreground">Need Help?</div>
+            <p class="mt-1">Contact support for assistance.</p>
+            {branding.supportEmail && (
+              <a href={`mailto:${branding.supportEmail}`} class="mt-2 block text-primary hover:underline">
+                {branding.supportEmail}
+              </a>
+            )}
+            {branding.supportPhone && (
+              <a href={`tel:${branding.supportPhone}`} class="mt-1 block text-primary hover:underline">
+                {branding.supportPhone}
+              </a>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      <div class="flex flex-1 flex-col overflow-hidden">
+        <header class="flex h-16 items-center justify-between border-b bg-card px-6">
+          <div class="flex items-center gap-3">
+            <details class="relative lg:hidden">
+              <summary class="cursor-pointer list-none rounded-md border px-3 py-2 text-sm text-muted-foreground hover:bg-accent">
+                Menu
+              </summary>
+              <nav class="absolute left-0 top-12 z-30 w-56 rounded-md border bg-card p-2 shadow-lg">
+                {navItems.map((item) => (
+                  <a
+                    href={item.href}
+                    class:list={[
+                      'block rounded-md px-3 py-2 text-sm',
+                      isActive(item.href)
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                    ]}
+                  >
+                    {item.label}
+                  </a>
+                ))}
+              </nav>
+            </details>
+            <h1 class="text-lg font-semibold text-foreground">{branding.name || 'Customer Portal'}</h1>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <a href="/profile" class="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+              Profile
+            </a>
+            <button
+              type="button"
+              data-portal-logout
+              class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-accent"
+            >
+              Sign Out
+            </button>
+          </div>
+        </header>
+
+        <main class="flex-1 overflow-y-auto p-6">
+          <slot />
+        </main>
       </div>
-    </BrandingProvider>
+    </div>
+    <script is:inline>
+      (() => {
+        if (window.__portalLogoutInit) {
+          return;
+        }
+        window.__portalLogoutInit = true;
+
+        const getCookie = (name) => {
+          const target = `${name}=`;
+          for (const part of document.cookie.split(';')) {
+            const trimmed = part.trim();
+            if (trimmed.startsWith(target)) {
+              return decodeURIComponent(trimmed.slice(target.length));
+            }
+          }
+          return null;
+        };
+
+        const bindLogout = () => {
+          const logoutButton = document.querySelector('[data-portal-logout]');
+          if (!logoutButton || !(logoutButton instanceof HTMLButtonElement)) {
+            return;
+          }
+
+          logoutButton.onclick = async () => {
+            logoutButton.disabled = true;
+            try {
+              const csrf = getCookie('breeze_portal_csrf_token');
+              const headers = { 'Content-Type': 'application/json' };
+              if (csrf) {
+                headers['x-breeze-csrf'] = csrf;
+              }
+
+              await fetch('/api/v1/portal/auth/logout', {
+                method: 'POST',
+                credentials: 'include',
+                headers
+              });
+            } catch {
+              // Continue to login even if logout request fails.
+            }
+
+            try {
+              const { navigate } = await import('astro:transitions/client');
+              await navigate('/login', { history: 'replace' });
+            } catch {
+              window.location.replace('/login');
+            }
+          };
+        };
+
+        bindLogout();
+        document.addEventListener('astro:page-load', bindLogout);
+      })();
+    </script>
   </body>
 </html>

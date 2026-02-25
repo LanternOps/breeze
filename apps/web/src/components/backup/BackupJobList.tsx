@@ -10,7 +10,7 @@ import {
   Search,
   XCircle
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued';
@@ -265,8 +265,7 @@ export default function BackupJobList() {
                         {job.status === 'running' && (
                           <div className="h-1.5 w-24 rounded-full bg-muted">
                             <div
-                              className="h-1.5 rounded-full bg-primary"
-                              style={{ width: `${job.progress ?? 0}%` }}
+                              className={cn('h-1.5 rounded-full bg-primary', widthPercentClass(job.progress ?? 0))}
                             />
                           </div>
                         )}

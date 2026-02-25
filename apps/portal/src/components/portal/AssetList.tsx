@@ -1,34 +1,14 @@
-import React, { useEffect, useState } from 'react';
-import { Package, Loader2, AlertCircle, MapPin, User } from 'lucide-react';
-import { portalApi, type Asset } from '@/lib/api';
-import { cn } from '@/lib/utils';
+import React from 'react';
+import { Package, AlertCircle } from 'lucide-react';
+import { type Asset } from '@/lib/api';
+import { formatRelativeTime } from '@/lib/utils';
 
-export function AssetList() {
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+interface AssetListProps {
+  assets: Asset[];
+  error?: string | null;
+}
 
-  useEffect(() => {
-    async function fetchAssets() {
-      const result = await portalApi.getAssets();
-      if (result.data) {
-        setAssets(result.data);
-      } else {
-        setError(result.error || 'Failed to load assets');
-      }
-      setIsLoading(false);
-    }
-
-    fetchAssets();
-  }, []);
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
+export function AssetList({ assets, error }: AssetListProps) {
 
   if (error) {
     return (
@@ -60,19 +40,19 @@ export function AssetList() {
           <thead className="bg-muted/50">
             <tr>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                Name
+                Device
               </th>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                Type
+                Hostname
               </th>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                Serial Number
+                Platform
               </th>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                Assigned To
+                Status
               </th>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                Location
+                Last Seen
               </th>
             </tr>
           </thead>
@@ -84,36 +64,18 @@ export function AssetList() {
                     <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted">
                       <Package className="h-4 w-4 text-muted-foreground" />
                     </div>
-                    <span className="font-medium">{asset.name}</span>
+                    <span className="font-medium">{asset.displayName || asset.hostname}</span>
                   </div>
                 </td>
-                <td className="px-4 py-3">
-                  <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs font-medium">
-                    {asset.type}
-                  </span>
+                <td className="px-4 py-3 text-sm text-muted-foreground">{asset.hostname}</td>
+                <td className="px-4 py-3 text-sm text-muted-foreground">
+                  {asset.osType || '-'}
+                </td>
+                <td className="px-4 py-3 text-sm capitalize">
+                  {asset.status}
                 </td>
                 <td className="px-4 py-3 text-sm text-muted-foreground">
-                  {asset.serialNumber || '-'}
-                </td>
-                <td className="px-4 py-3">
-                  {asset.assignedTo ? (
-                    <div className="flex items-center gap-1 text-sm">
-                      <User className="h-4 w-4 text-muted-foreground" />
-                      {asset.assignedTo}
-                    </div>
-                  ) : (
-                    <span className="text-sm text-muted-foreground">-</span>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  {asset.location ? (
-                    <div className="flex items-center gap-1 text-sm">
-                      <MapPin className="h-4 w-4 text-muted-foreground" />
-                      {asset.location}
-                    </div>
-                  ) : (
-                    <span className="text-sm text-muted-foreground">-</span>
-                  )}
+                  {asset.lastSeenAt ? formatRelativeTime(asset.lastSeenAt) : '-'}
                 </td>
               </tr>
             ))}

@@ -46,6 +46,17 @@ const lineColors: Record<string, string> = {
   vulnerability_management: '#f97316'
 };
 
+const lineDotClasses: Record<string, string> = {
+  overall: 'bg-green-500',
+  antivirus: 'bg-blue-500',
+  firewall: 'bg-cyan-500',
+  encryption: 'bg-violet-500',
+  password_policy: 'bg-amber-500',
+  admin_accounts: 'bg-red-500',
+  patch_compliance: 'bg-pink-500',
+  vulnerability_management: 'bg-orange-500'
+};
+
 const lineLabels: Record<string, string> = {
   overall: 'Overall',
   antivirus: 'Antivirus',
@@ -217,10 +228,7 @@ export default function TrendsPage() {
                   : 'border-muted text-muted-foreground opacity-50'
               )}
             >
-              <span
-                className="h-2.5 w-2.5 rounded-full"
-                style={{ backgroundColor: lineColors[key] }}
-              />
+              <span className={cn('h-2.5 w-2.5 rounded-full', lineDotClasses[key] ?? 'bg-muted')} />
               {label}
             </button>
           ))}
