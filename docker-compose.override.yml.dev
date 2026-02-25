@@ -76,6 +76,9 @@ services:
       PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-true}
       PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
       BINARY_SOURCE: disabled
+      TURN_HOST: ${TURN_HOST:-127.0.0.1}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-dev-turn-secret}
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 60s
@@ -111,3 +114,17 @@ services:
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       start_period: 60s
+
+  coturn:
+    image: coturn/coturn:4-alpine
+    container_name: breeze-coturn-dev
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./docker/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: >
+      turnserver
+      -c /etc/coturn/turnserver.conf
+      --static-auth-secret=${TURN_SECRET:-dev-turn-secret}
+      --realm=${TURN_REALM:-breeze.local}
+      --external-ip=${TURN_HOST:-127.0.0.1}

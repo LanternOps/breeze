@@ -22,6 +22,7 @@ The core stack (`docker-compose.yml`) includes:
 | **Web** | `ghcr.io/lanternops/breeze/web` | Astro SSR dashboard |
 | **PostgreSQL** | `postgres:16-alpine` | Primary database |
 | **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
+| **Coturn** | `coturn/coturn:4-alpine` | TURN relay server for WebRTC remote desktop |
 
 An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail, exporters) is available as a separate overlay — see [Monitoring](#adding-monitoring).
 
@@ -64,6 +65,13 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
    ```
 
    Paste the output into `.env`.
+
+   Then set the TURN server's public IP (required for remote desktop to work across NATs):
+
+   ```bash
+   # Set to this server's public IP address
+   TURN_HOST=203.0.113.10
+   ```
 
 4. **Start the stack**
 

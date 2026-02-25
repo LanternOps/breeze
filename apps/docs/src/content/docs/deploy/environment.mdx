@@ -117,12 +117,18 @@ See [Binary Distribution](/deploy/binaries/) for details on local vs GitHub mode
 
 ## WebRTC / TURN
 
-| Variable | Default | Description |
-|---|---|---|
-| `TURN_HOST` | `localhost` | TURN server hostname |
-| `TURN_PORT` | `3478` | TURN listening port |
-| `TURN_SECRET` | — | TURN shared secret |
-| `TURN_REALM` | `breeze.local` | TURN realm |
+The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN server for WebRTC relay. Without TURN, remote desktop connections fail when either peer is behind symmetric NAT or a restrictive firewall.
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `TURN_HOST` | — | Yes (prod) | Public IP or hostname of the TURN server. Must be reachable by agents and viewers. |
+| `TURN_PORT` | `3478` | | TURN listening port (UDP and TCP) |
+| `TURN_SECRET` | — | Yes (prod) | Shared secret for TURN credential generation. Generate: `openssl rand -hex 32` |
+| `TURN_REALM` | `breeze.local` | | TURN authentication realm |
+
+<Aside type="tip">
+  In the dev Docker Compose overlay, `TURN_SECRET` defaults to `dev-turn-secret` and `TURN_HOST` defaults to `127.0.0.1`, so no configuration is needed for local development.
+</Aside>
 
 ## Monitoring
 
