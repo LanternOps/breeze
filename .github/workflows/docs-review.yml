@@ -1,9 +1,10 @@
 name: AI Doc Review
 
 on:
-  pull_request:
-    types: [closed]
-    branches: [main]
+  workflow_dispatch: # disabled automatic trigger — bot was clobbering docs files
+  # pull_request:
+  #   types: [closed]
+  #   branches: [main]
 
 jobs:
   review:
