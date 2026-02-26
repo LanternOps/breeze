@@ -85,6 +85,9 @@ export const CommandTypes = {
   SECURE_DELETE_FILE: 'secure_delete_file',
   QUARANTINE_FILE: 'quarantine_file',
 
+  // Peripheral control
+  PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
+
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
 

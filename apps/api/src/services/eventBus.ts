@@ -53,6 +53,10 @@ export type EventType =
   | 'compliance.sensitive_data_found'
   | 'compliance.credential_exposed'
   | 'compliance.sensitive_data_remediated'
+  // Peripheral control events
+  | 'peripheral.unauthorized_device'
+  | 'peripheral.blocked'
+  | 'peripheral.policy_changed'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'

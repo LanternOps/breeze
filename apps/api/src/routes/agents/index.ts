@@ -16,6 +16,7 @@ import { mtlsRoutes } from './mtls';
 import { bootPerformanceRoutes } from './bootPerformance';
 import { reliabilityRoutes } from './reliability';
 import { changesRoutes } from './changes';
+import { peripheralRoutes } from './peripherals';
 
 export const agentRoutes = new Hono();
 
@@ -60,3 +61,4 @@ agentRoutes.route('/', logsRoutes);
 agentRoutes.route('/', bootPerformanceRoutes);
 agentRoutes.route('/', reliabilityRoutes);
 agentRoutes.route('/', changesRoutes);
+agentRoutes.route('/', peripheralRoutes);

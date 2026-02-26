@@ -88,6 +88,7 @@ import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
 import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
+import { peripheralControlRoutes } from './routes/peripheralControl';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -122,6 +123,7 @@ import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorke
 import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
+import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -654,6 +656,7 @@ api.route('/s1', sentinelOneRoutes);
 api.route('/huntress', huntressRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
 api.route('/sensitive-data', sensitiveDataRoutes);
+api.route('/peripherals', peripheralControlRoutes);
 
 app.route('/api/v1', api);
 
@@ -866,6 +869,7 @@ async function initializeWorkers(): Promise<void> {
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
     ['backupWorker', initializeBackupWorker],
     ['sensitiveDataWorker', initializeSensitiveDataWorkers],
+    ['peripheralJobs', initializePeripheralJobs],
   ];
 
   await Promise.allSettled(
@@ -954,6 +958,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownBackupWorker,
     shutdownPatchSchedulerWorker,
     shutdownSensitiveDataWorkers,
+    shutdownPeripheralJobs,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
