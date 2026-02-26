@@ -171,3 +171,57 @@ export interface AiToolDefinition {
   tier: AiToolTier;
   inputSchema: Record<string, unknown>;
 }
+
+// ============================================
+// Script Builder Types
+// ============================================
+
+export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
+export type OSType = 'windows' | 'macos' | 'linux';
+export type RunAs = 'system' | 'user' | 'elevated';
+
+export interface ScriptBuilderContext {
+  scriptId?: string;
+  language?: ScriptLanguage;
+  osTypes?: OSType[];
+  editorSnapshot?: {
+    name?: string;
+    content?: string;
+    description?: string;
+    category?: string;
+    parameters?: Array<{
+      name: string;
+      type: 'string' | 'number' | 'boolean' | 'select';
+      defaultValue?: string;
+      required?: boolean;
+      options?: string;
+    }>;
+    runAs?: RunAs;
+    timeoutSeconds?: number;
+  };
+}
+
+export interface ScriptApplyCode {
+  type: 'code';
+  code: string;
+  language: ScriptLanguage;
+}
+
+export interface ScriptApplyMetadata {
+  type: 'metadata';
+  name?: string;
+  description?: string;
+  category?: string;
+  osTypes?: OSType[];
+  parameters?: Array<{
+    name: string;
+    type: 'string' | 'number' | 'boolean' | 'select';
+    defaultValue?: string;
+    required?: boolean;
+    options?: string;
+  }>;
+  runAs?: RunAs;
+  timeoutSeconds?: number;
+}
+
+export type ScriptApplyPayload = ScriptApplyCode | ScriptApplyMetadata;
