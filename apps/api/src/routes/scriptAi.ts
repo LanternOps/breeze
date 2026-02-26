@@ -136,16 +136,6 @@ scriptAiRoutes.post(
     const sessionId = c.req.param('id');
     const { content, editorContext } = c.req.valid('json');
 
-    // Update system prompt with latest editor state if provided
-    let updatedSystemPrompt: string | undefined;
-    if (editorContext) {
-      try {
-        updatedSystemPrompt = await updateEditorContext(sessionId, editorContext);
-      } catch (err) {
-        console.error('[ScriptAI] Failed to update editor context:', err);
-      }
-    }
-
     // Run pre-flight checks (rate limits, budget, session status)
     const preflight = await runPreFlightChecks(sessionId, content, auth, undefined, c);
     if (!preflight.ok) {
@@ -157,9 +147,22 @@ scriptAiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
+    // Verify this is actually a script_builder session
+    if (preflight.session.type !== 'script_builder') {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
     const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
 
-    // Use updated system prompt if we refreshed editor context
+    // Now safe to update editor context
+    let updatedSystemPrompt: string | undefined;
+    if (editorContext) {
+      try {
+        updatedSystemPrompt = await updateEditorContext(sessionId, editorContext);
+      } catch (err) {
+        console.error('[ScriptAI] Failed to update editor context:', err);
+      }
+    }
     const effectiveSystemPrompt = updatedSystemPrompt ?? systemPrompt;
 
     // Get or create streaming session with script builder MCP tools

@@ -93,6 +93,7 @@ export default function ScriptForm({
     handleSubmit,
     control,
     watch,
+    getValues,
     setValue,
     formState: { errors, isSubmitting }
   } = useForm<ScriptFormValues>({
@@ -119,7 +120,7 @@ export default function ScriptForm({
   const { panelOpen, togglePanel } = useScriptAiStore();
 
   const bridge: ScriptFormBridge = useMemo(() => ({
-    getFormValues: () => watch() as ScriptFormValues,
+    getFormValues: () => getValues() as ScriptFormValues,
     setFormValues: (partial) => {
       Object.entries(partial).forEach(([key, value]) => {
         if (value !== undefined) {
@@ -128,14 +129,16 @@ export default function ScriptForm({
       });
     },
     takeSnapshot: () => {
-      return structuredClone(watch()) as ScriptFormValues;
+      return structuredClone(getValues() as ScriptFormValues);
     },
     restoreSnapshot: (snapshot) => {
-      Object.entries(snapshot).forEach(([key, value]) => {
-        setValue(key as keyof ScriptFormValues, value as never, { shouldDirty: true });
-      });
+      if (snapshot) {
+        Object.entries(snapshot).forEach(([key, value]) => {
+          setValue(key as keyof ScriptFormValues, value as never, { shouldDirty: true });
+        });
+      }
     },
-  }), [watch, setValue]);
+  }), [getValues, setValue]);
 
   // Keyboard shortcut: Cmd+Shift+I to toggle AI panel
   useEffect(() => {

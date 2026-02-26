@@ -41,7 +41,7 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   get_script_details: 1,
   list_script_templates: 1,
   get_script_execution_history: 1,
-  execute_script_on_device: 4,
+  execute_script_on_device: 3,
 };
 
 export const SCRIPT_BUILDER_MCP_TOOL_NAMES = Object.keys(SCRIPT_BUILDER_TOOL_TIERS).map(
@@ -244,7 +244,6 @@ export function createScriptBuilderMcpServer(
       'View past execution results for a script. Use to understand success rates and common failures.',
       {
         scriptId: uuid.describe('The script ID to get execution history for'),
-        status: z.enum(['success', 'failure', 'running', 'timeout']).optional(),
         limit: z.number().int().min(1).max(50).optional(),
       },
       makeExistingHandler('get_script_execution_history', getAuth, onPreToolUse, onPostToolUse)
@@ -253,13 +252,11 @@ export function createScriptBuilderMcpServer(
     // --- Execution tool (requires approval) ---
     tool(
       'execute_script_on_device',
-      'Test-run the current script on a specific device. Requires user approval. The script does not need to be saved first.',
+      'Run a saved script on one or more devices. The script must be saved first. Requires user approval.',
       {
-        deviceId: uuid.describe('Target device ID'),
-        code: z.string().describe('The script code to execute'),
-        language: z.enum(['powershell', 'bash', 'python', 'cmd']),
-        runAs: z.enum(['system', 'user', 'elevated']).optional(),
-        timeoutSeconds: z.number().int().min(1).max(86400).optional(),
+        scriptId: uuid.describe('The saved script ID to execute'),
+        deviceIds: z.array(uuid).min(1).max(10).describe('Target device IDs'),
+        parameters: z.record(z.unknown()).optional(),
       },
       makeExistingHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
     ),
