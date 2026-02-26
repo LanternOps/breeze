@@ -32,6 +32,7 @@ export * from './agentVersions';
 export * from './eventLogs';
 export * from './auditBaselines';
 export * from './reliability';
+export * from './userRisk';
 export * from './ai';
 export * from './monitors';
 export * from './filesystem';

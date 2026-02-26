@@ -14,6 +14,7 @@ This comprehensive guide covers all administrative functions in the Breeze RMM p
 6. [Audit & Compliance](#6-audit--compliance)
 7. [System Settings](#7-system-settings)
 8. [Troubleshooting](#8-troubleshooting)
+9. [User Risk Scoring](#9-user-risk-scoring)
 
 ---
 
@@ -1544,6 +1545,66 @@ When contacting support, provide:
    - Recent changes
 
 ---
+
+## 9. User Risk Scoring
+
+The User Risk feature provides per-user behavioral risk scoring to prioritize interventions.
+
+### 9.1 Endpoints
+
+- `GET /api/v1/user-risk/scores` — ranked user risk list with filters and pagination
+- `GET /api/v1/user-risk/users/{userId}` — detailed factors, history, and recent risk events
+- `GET /api/v1/user-risk/events` — event history with severity/type/date filters
+- `GET /api/v1/user-risk/policy` — retrieve effective org policy
+- `PUT /api/v1/user-risk/policy` — update weights, thresholds, and interventions
+- `POST /api/v1/user-risk/assign-training` — assign training to a user
+
+### 9.2 Policy Tuning
+
+User risk policy is organization-scoped and supports:
+
+- `weights`: relative weighting for factors such as MFA risk, auth failures, threat exposure, and stale access
+- `thresholds`: boundary values for `medium`, `high`, `critical`, plus spike and auto-assignment thresholds
+- `interventions`: controls for notifications and auto-training behavior
+
+Example update:
+
+```bash
+PUT /api/v1/user-risk/policy
+Content-Type: application/json
+
+{
+  "orgId": "org-uuid",
+  "thresholds": {
+    "high": 75,
+    "critical": 90,
+    "spikeDelta": 20,
+    "autoAssignTrainingAtOrAbove": 85
+  },
+  "interventions": {
+    "autoAssignTraining": true,
+    "notifyOnHighRisk": true,
+    "notifyOnRiskSpike": true,
+    "trainingModuleId": "security-awareness-q1"
+  }
+}
+```
+
+### 9.3 Intervention Workflow
+
+1. Background jobs compute and persist user risk snapshots every 6 hours.
+2. High-signal risk events trigger targeted per-user recomputation for faster deltas.
+3. Threshold crossings/spikes emit user-risk events to the event bus.
+3. If enabled, high-risk users receive auto-assigned training with cooldown controls.
+4. Manual assignment remains available through `/assign-training`.
+5. All writes are auditable via route-level audit events.
+
+### 9.4 Operational Notes
+
+- For partner/system users spanning multiple orgs, pass `orgId` explicitly for writes.
+- Use `/events` to review explainability context for score changes.
+- Use policy tuning conservatively to prevent alert fatigue.
+- Job cadence is configurable via environment variables (for example: `USER_RISK_SCAN_INTERVAL_MS`).
 
 ## Appendix A: API Quick Reference
 

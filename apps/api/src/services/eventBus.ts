@@ -65,6 +65,9 @@ export type EventType =
   | 'user.login'
   | 'user.logout'
   | 'user.mfa.enabled'
+  | 'user.risk_score_high'
+  | 'user.risk_score_spike'
+  | 'user.training_assigned'
   // Device user-session events (BE-8)
   | 'session.login'
   | 'session.logout';
