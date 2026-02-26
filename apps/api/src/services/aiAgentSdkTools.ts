@@ -53,6 +53,10 @@ export const TOOL_TIERS = {
   manage_alerts: 1, // Base tier; action-level escalation handled in guardrails
   get_dns_security: 1,
   manage_dns_policy: 2,
+  get_s1_status: 1,
+  get_s1_threats: 1,
+  s1_isolate_device: 3,
+  s1_threat_action: 3,
   execute_command: 3,
   run_script: 3,
   manage_services: 3,
@@ -366,6 +370,52 @@ export function createBreezeMcpServer(
         reason: z.string().max(2000).optional(),
       },
       makeHandler('manage_dns_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_s1_status',
+      'Get SentinelOne integration health, endpoint coverage, and action backlog.',
+      {
+        orgId: uuid.optional(),
+      },
+      makeHandler('get_s1_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_s1_threats',
+      'Query SentinelOne threats with filters for severity, status, and device.',
+      {
+        orgId: uuid.optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low', 'unknown']).optional(),
+        status: z.enum(['active', 'in_progress', 'quarantined', 'resolved']).optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('get_s1_threats', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      's1_isolate_device',
+      'Isolate or unisolate one or more devices via SentinelOne. Requires user approval.',
+      {
+        orgId: uuid.optional(),
+        deviceId: uuid.optional(),
+        deviceIds: z.array(uuid).min(1).max(200).optional(),
+        isolate: z.boolean().optional(),
+      },
+      makeHandler('s1_isolate_device', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      's1_threat_action',
+      'Execute SentinelOne threat actions (kill, quarantine, rollback). Requires user approval.',
+      {
+        orgId: uuid.optional(),
+        action: z.enum(['kill', 'quarantine', 'rollback']),
+        threatIds: z.array(z.string().min(1).max(128)).min(1).max(200),
+      },
+      makeHandler('s1_threat_action', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

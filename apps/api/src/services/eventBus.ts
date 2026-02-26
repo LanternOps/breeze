@@ -44,6 +44,9 @@ export type EventType =
   | 'compliance.cis_deviation'
   | 'compliance.cis_score_changed'
   | 'compliance.cis_remediation_applied'
+  | 's1.threat_detected'
+  | 's1.device_isolated'
+  | 's1.threat_action_completed'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
@@ -494,6 +497,9 @@ export const EVENT_TYPES = {
   CIS_DEVIATION: 'compliance.cis_deviation' as const,
   CIS_SCORE_CHANGED: 'compliance.cis_score_changed' as const,
   CIS_REMEDIATION_APPLIED: 'compliance.cis_remediation_applied' as const,
+  S1_THREAT_DETECTED: 's1.threat_detected' as const,
+  S1_DEVICE_ISOLATED: 's1.device_isolated' as const,
+  S1_THREAT_ACTION_COMPLETED: 's1.threat_action_completed' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,

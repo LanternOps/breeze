@@ -84,6 +84,7 @@ import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
+import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
 
 // Workers
@@ -111,6 +112,7 @@ import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } 
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
+import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
 import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
@@ -644,6 +646,7 @@ api.route('/helper', helperRoutes);
 api.route('/playbooks', playbookRoutes);
 api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
+api.route('/s1', sentinelOneRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
 
 app.route('/api/v1', api);
@@ -850,6 +853,7 @@ async function initializeWorkers(): Promise<void> {
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
+    ['s1SyncWorker', initializeS1SyncJob],
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
@@ -943,6 +947,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPatchSchedulerWorker,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
+    shutdownS1SyncJob,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,
