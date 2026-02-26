@@ -18,6 +18,7 @@ import {
 
 // Reusable validators
 const uuid = z.string().uuid();
+const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const deviceId = z.object({ deviceId: uuid });
 const ipAddress = z.string().trim().max(45).refine(
   (value) => {
@@ -504,6 +505,24 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid.optional(),
     moduleId: z.string().min(1).max(120).optional(),
     reason: z.string().min(1).max(500).optional(),
+  get_backup_health: z.object({
+    orgId: uuid.optional(),
+    deviceId: backupEntityId.optional(),
+  }),
+
+  run_backup_verification: z.object({
+    orgId: uuid.optional(),
+    deviceId: backupEntityId,
+    backupJobId: backupEntityId.optional(),
+    snapshotId: backupEntityId.optional(),
+    verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
+    highImpactApproved: z.boolean().optional(),
+  }),
+
+  get_recovery_readiness: z.object({
+    orgId: uuid.optional(),
+    deviceId: backupEntityId.optional(),
+    includeRiskFactors: z.boolean().optional(),
   }),
 
   file_operations: z.object({

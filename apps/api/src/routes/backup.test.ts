@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { backupRoutes } from './backup';
+import { recoveryReadinessRecords } from './backup/store';
 
 // Valid UUID constants for tests
 const CONFIG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -46,6 +47,28 @@ vi.mock('../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    })),
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([]))
+      }))
+    })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => Promise.resolve())
+      }))
+    })),
+    delete: vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve())
+    }))
+  },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -313,5 +336,126 @@ describe('backup routes', () => {
     expect(Array.isArray(payload.data.points)).toBe(true);
     expect(payload.data.points.length).toBe(7);
     expect(Array.isArray(payload.data.providers)).toBe(true);
+  });
+
+  it('should run backup verification and expose readiness data', async () => {
+    const verifyRes = await app.request('/backup/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: 'dev-001',
+        verificationType: 'test_restore'
+      })
+    });
+
+    expect(verifyRes.status).toBe(201);
+    const verifyPayload = await verifyRes.json();
+    expect(verifyPayload.data.verification.id).toBeDefined();
+    expect(verifyPayload.data.verification.deviceId).toBe('dev-001');
+    expect(verifyPayload.data.verification.verificationType).toBe('test_restore');
+    expect(verifyPayload.data.readiness.readinessScore).toBeTypeOf('number');
+
+    const listRes = await app.request('/backup/verifications?deviceId=dev-001', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(listRes.status).toBe(200);
+    const listPayload = await listRes.json();
+    expect(Array.isArray(listPayload.data)).toBe(true);
+    expect(listPayload.data.length).toBeGreaterThan(0);
+  });
+
+  it('should reject full recovery verification without explicit approval', async () => {
+    const res = await app.request('/backup/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: 'dev-002',
+        verificationType: 'full_recovery'
+      })
+    });
+
+    expect(res.status).toBe(403);
+    const payload = await res.json();
+    expect(payload.error).toContain('highImpactApproved');
+  });
+
+  it('should reject inconsistent backup job and device combinations', async () => {
+    const res = await app.request('/backup/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: 'dev-001',
+        backupJobId: 'job-002',
+        verificationType: 'integrity'
+      })
+    });
+
+    expect(res.status).toBe(400);
+    const payload = await res.json();
+    expect(payload.error).toContain('backupJobId does not belong to requested device');
+  });
+
+  it('should return backup health and recovery readiness summaries', async () => {
+    const healthRes = await app.request('/backup/health', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(healthRes.status).toBe(200);
+    const health = await healthRes.json();
+    expect(health.data.status).toBeDefined();
+    expect(health.data.verification).toBeDefined();
+    expect(health.data.readiness).toBeDefined();
+
+    const readinessRes = await app.request('/backup/recovery-readiness', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(readinessRes.status).toBe(200);
+    const readiness = await readinessRes.json();
+    expect(readiness.data.summary).toBeDefined();
+    expect(Array.isArray(readiness.data.devices)).toBe(true);
+  });
+
+  it('should not recompute readiness on GET endpoints unless refresh=true', async () => {
+    const before = recoveryReadinessRecords.map((row) => row.calculatedAt);
+
+    const healthNoRefresh = await app.request('/backup/health', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(healthNoRefresh.status).toBe(200);
+    const afterHealthNoRefresh = recoveryReadinessRecords.map((row) => row.calculatedAt);
+    expect(afterHealthNoRefresh).toEqual(before);
+
+    const noRefreshRes = await app.request('/backup/recovery-readiness', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(noRefreshRes.status).toBe(200);
+    const afterNoRefresh = recoveryReadinessRecords.map((row) => row.calculatedAt);
+    expect(afterNoRefresh).toEqual(before);
+
+    const explicitFalseRes = await app.request('/backup/recovery-readiness?refresh=false', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(explicitFalseRes.status).toBe(200);
+    const afterExplicitFalse = recoveryReadinessRecords.map((row) => row.calculatedAt);
+    expect(afterExplicitFalse).toEqual(before);
+
+    const refreshRes = await app.request('/backup/recovery-readiness?refresh=true', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(refreshRes.status).toBe(200);
+    const afterRefresh = recoveryReadinessRecords.map((row) => row.calculatedAt);
+    expect(afterRefresh).not.toEqual(before);
+
+    const healthRefreshRes = await app.request('/backup/health?refresh=true', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(healthRefreshRes.status).toBe(200);
   });
 });

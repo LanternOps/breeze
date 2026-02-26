@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+const queryBoolean = z.preprocess((value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return value;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1') return true;
+  if (normalized === 'false' || normalized === '0') return false;
+  return value;
+}, z.boolean());
+
 export const configSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(['s3', 'local']),
@@ -79,4 +88,31 @@ export const restoreSchema = z.object({
   snapshotId: z.string().min(1),
   deviceId: z.string().min(1).optional(),
   targetPath: z.string().optional()
+});
+
+export const verificationRunSchema = z.object({
+  deviceId: z.string().min(1),
+  backupJobId: z.string().min(1).optional(),
+  snapshotId: z.string().min(1).optional(),
+  verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
+  highImpactApproved: z.boolean().optional()
+});
+
+export const verificationListSchema = z.object({
+  deviceId: z.string().optional(),
+  backupJobId: z.string().optional(),
+  verificationType: z.enum(['integrity', 'test_restore', 'full_recovery']).optional(),
+  status: z.enum(['passed', 'failed', 'partial']).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional()
+});
+
+export const backupHealthQuerySchema = z.object({
+  refresh: queryBoolean.optional()
+});
+
+export const recoveryReadinessQuerySchema = z.object({
+  refresh: queryBoolean.optional(),
+  deviceId: z.string().optional()
 });

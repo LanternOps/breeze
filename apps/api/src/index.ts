@@ -122,6 +122,7 @@ import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWor
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
+import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
@@ -879,6 +880,7 @@ async function initializeWorkers(): Promise<void> {
     ['reliabilityWorker', initializeReliabilityWorker],
     ['userRiskWorker', initializeUserRiskJobs],
     ['userRiskRetention', initializeUserRiskRetention],
+    ['backupVerificationJobs', initializeBackupVerificationJobs],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['logCorrelationWorker', initializeLogCorrelationWorker],
@@ -999,6 +1001,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
     shutdownHuntressSyncJob,
+    shutdownBackupVerificationJobs,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,

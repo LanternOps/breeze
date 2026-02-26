@@ -321,6 +321,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_user_risk_scores: { resource: 'users', action: 'read' },
   get_user_risk_detail: { resource: 'users', action: 'read' },
   assign_security_training: { resource: 'users', action: 'write' },
+  get_backup_health: { resource: 'devices', action: 'read' },
+  run_backup_verification: { resource: 'devices', action: 'execute' },
+  get_recovery_readiness: { resource: 'devices', action: 'read' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -340,6 +343,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   take_screenshot: { limit: 10, windowSeconds: 300 },
   analyze_screen: { limit: 10, windowSeconds: 300 },
   computer_control: { limit: 20, windowSeconds: 300 },
+  run_backup_verification: { limit: 10, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
@@ -432,6 +436,16 @@ export function checkGuardrails(
   }
 
   // Check for action-based tier overrides
+  if (toolName === 'run_backup_verification' && input.verificationType === 'full_recovery') {
+    return {
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: buildApprovalDescription(toolName, undefined, input)
+    };
+  }
+
+  // Check for action-based tier escalation
   const action = input.action as string | undefined;
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
@@ -718,6 +732,13 @@ function buildApprovalDescription(
       else if (action === 'delete') parts.push(`Delete monitor ${(input.monitorId as string)?.slice(0, 8)}...`);
       else parts.push(`Monitor ${action}: ${(input.monitorId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
+    case 'run_backup_verification': {
+      const verificationType = typeof input.verificationType === 'string' ? input.verificationType : 'integrity';
+      parts.push(`Run ${verificationType} backup verification`);
+      if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
+      if (input.backupJobId) parts.push(`job ${String(input.backupJobId).slice(0, 8)}...`);
+      break;
+    }
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

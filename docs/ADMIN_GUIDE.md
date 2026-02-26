@@ -1682,6 +1682,15 @@ Content-Type: application/json
 | `/api/v1/audit/logs/export` | GET | Export logs |
 | `/api/v1/audit/summary` | GET | Activity summary |
 
+### Backup Verification
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/backup/health` | GET | Backup verification and readiness status summary |
+| `/api/v1/backup/verify` | POST | Trigger integrity/test-restore/full-recovery verification run |
+| `/api/v1/backup/verifications` | GET | Query verification history by device, status, or type |
+| `/api/v1/backup/recovery-readiness` | GET | Per-device readiness score with estimated RTO/RPO |
+
 ---
 
 ## 9. Sensitive Data Discovery

@@ -38,6 +38,10 @@ export type EventType =
   | 'patch.installed'
   | 'patch.failed'
   | 'patch.rollback'
+  // Backup verification events
+  | 'backup.verification_failed'
+  | 'backup.verification_passed'
+  | 'backup.recovery_readiness_low'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -510,6 +514,10 @@ export const EVENT_TYPES = {
   PATCH_INSTALLED: 'patch.installed' as const,
   PATCH_FAILED: 'patch.failed' as const,
   PATCH_ROLLBACK: 'patch.rollback' as const,
+  // Backup verification
+  BACKUP_VERIFICATION_FAILED: 'backup.verification_failed' as const,
+  BACKUP_VERIFICATION_PASSED: 'backup.verification_passed' as const,
+  BACKUP_RECOVERY_READINESS_LOW: 'backup.recovery_readiness_low' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,
