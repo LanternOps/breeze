@@ -4,14 +4,5 @@ import OrgSettingsPage from '../../components/settings/OrgSettingsPage';
 ---
 
 <DashboardLayout title="Organization Settings | Breeze RMM">
-  <OrgSettingsPage client:only="react">
-    <div slot="fallback" class="flex h-full items-center justify-center">
-      <div class="text-center">
-        <p class="text-muted-foreground">Loading Organization Settings...</p>
-        <p class="mt-2 text-sm text-muted-foreground">
-          Configuring org profile, branding, and preferences
-        </p>
-      </div>
-    </div>
-  </OrgSettingsPage>
+  <OrgSettingsPage client:load />
 </DashboardLayout>
