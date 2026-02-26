@@ -14,6 +14,7 @@ export type EventType =
   | 'alert.triggered'
   | 'alert.acknowledged'
   | 'alert.resolved'
+  | 'alert.suppressed'
   | 'alert.escalated'
   // Script events
   | 'script.started'

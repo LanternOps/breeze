@@ -1282,12 +1282,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'generate_report',
-      description: 'Manage reports: list saved definitions, generate on-demand, get report data directly, create/update/delete report definitions, or view generation history.',
+      description: 'Manage reports: list saved definitions, generate on-demand, get report data directly, download a completed report run, create/update/delete report definitions, or view generation history.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'generate', 'data', 'create', 'update', 'delete', 'history'], description: 'The action to perform' },
+          action: { type: 'string', enum: ['list', 'generate', 'data', 'create', 'update', 'delete', 'history', 'download'], description: 'The action to perform' },
           reportId: { type: 'string', description: 'Report UUID (for generate/update/delete/history)' },
+          reportRunId: { type: 'string', description: 'Report run UUID (required for download)' },
           reportType: { type: 'string', enum: ['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary'], description: 'Report type (for generate/data/create)' },
           name: { type: 'string', description: 'Report name (for create/update)' },
           config: { type: 'object', description: 'Report configuration (filters, options)' },
@@ -1488,6 +1489,59 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .limit(limit);
 
         return JSON.stringify({ reportId: report.id, runs, showing: runs.length });
+      }
+
+      if (action === 'download') {
+        if (!input.reportRunId) return JSON.stringify({ error: 'reportRunId is required' });
+
+        const [run] = await db.select({
+          id: reportRuns.id,
+          reportId: reportRuns.reportId,
+          status: reportRuns.status,
+          startedAt: reportRuns.startedAt,
+          completedAt: reportRuns.completedAt,
+          outputUrl: reportRuns.outputUrl,
+          errorMessage: reportRuns.errorMessage,
+          rowCount: reportRuns.rowCount,
+          createdAt: reportRuns.createdAt,
+          reportName: reports.name,
+          reportType: reports.type,
+          reportFormat: reports.format,
+        }).from(reportRuns)
+          .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+          .where(eq(reportRuns.id, input.reportRunId as string))
+          .limit(1);
+
+        if (!run) return JSON.stringify({ error: 'Report run not found' });
+
+        // Verify org access via the parent report
+        const oc = orgWhere(auth, reports.orgId);
+        if (oc) {
+          const [accessible] = await db.select({ id: reports.id })
+            .from(reports)
+            .where(and(eq(reports.id, run.reportId), oc))
+            .limit(1);
+          if (!accessible) return JSON.stringify({ error: 'Report not found or access denied' });
+        }
+
+        if (run.status !== 'completed') {
+          return JSON.stringify({
+            error: `Report run is not completed (status: ${run.status})`,
+            runId: run.id,
+            status: run.status,
+            errorMessage: run.errorMessage
+          });
+        }
+
+        return JSON.stringify({
+          runId: run.id,
+          reportName: run.reportName,
+          reportType: run.reportType,
+          format: run.reportFormat,
+          outputUrl: run.outputUrl,
+          rowCount: run.rowCount,
+          completedAt: run.completedAt
+        });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

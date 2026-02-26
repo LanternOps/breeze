@@ -164,8 +164,9 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ),
 
   generate_report: z.object({
-    action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history']),
+    action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history', 'download']),
     reportId: uuid.optional(),
+    reportRunId: uuid.optional(),
     reportType: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
     name: z.string().min(1).max(255).optional(),
     config: z.record(z.unknown()).optional(),
@@ -187,5 +188,8 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ).refine(
     (d) => d.action !== 'create' || (!!d.name && !!d.reportType),
     { message: 'name and reportType are required for create' },
+  ).refine(
+    (d) => d.action !== 'download' || !!d.reportRunId,
+    { message: 'reportRunId is required for download' },
   ),
 };
