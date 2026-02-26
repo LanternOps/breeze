@@ -89,6 +89,7 @@ import { softwareInventoryRoutes } from './routes/softwareInventory';
 import { huntressRoutes } from './routes/huntress';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
+import { browserSecurityRoutes } from './routes/browserSecurity';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -124,6 +125,7 @@ import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
+import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -325,6 +327,7 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/agents\/[^/]+\/reliability$/,
   /^\/api\/v1\/agents\/[^/]+\/registry-state$/,
   /^\/api\/v1\/agents\/[^/]+\/config-state$/,
+  /^\/api\/v1\/agents\/[^/]+\/browser-inventory$/,
   /^\/api\/v1\/security\/recommendations\/[^/]+\/(complete|dismiss)$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/processes\/[^/]+\/kill$/,
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/registry\/value$/,
@@ -657,6 +660,7 @@ api.route('/huntress', huntressRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
 api.route('/sensitive-data', sensitiveDataRoutes);
 api.route('/peripherals', peripheralControlRoutes);
+api.route('/browser-security', browserSecurityRoutes);
 
 app.route('/api/v1', api);
 
@@ -870,6 +874,7 @@ async function initializeWorkers(): Promise<void> {
     ['backupWorker', initializeBackupWorker],
     ['sensitiveDataWorker', initializeSensitiveDataWorkers],
     ['peripheralJobs', initializePeripheralJobs],
+    ['browserSecurityWorker', initializeBrowserSecurityJobs],
   ];
 
   await Promise.allSettled(
@@ -959,6 +964,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPatchSchedulerWorker,
     shutdownSensitiveDataWorkers,
     shutdownPeripheralJobs,
+    shutdownBrowserSecurityJobs,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
