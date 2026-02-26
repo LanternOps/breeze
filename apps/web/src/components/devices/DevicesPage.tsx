@@ -302,6 +302,10 @@ export default function DevicesPage() {
           await fetchDevices();
           break;
 
+        case 'deploy-software':
+          void navigateTo('/software');
+          return;
+
         case 'terminal':
           window.location.href = `/remote/terminal/${device.id}`;
           return;
@@ -342,6 +346,11 @@ export default function DevicesPage() {
 
     if (action === 'run-script') {
       openScriptPicker(selectedDevices);
+      return;
+    }
+
+    if (action === 'deploy-software') {
+      void navigateTo('/software');
       return;
     }
 

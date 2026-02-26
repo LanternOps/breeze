@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, Download, Loader2, Plus, Sparkles, CheckCircle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, Download, Loader2, Plus, Sparkles, CheckCircle, Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -10,7 +10,8 @@ type VersionEntry = {
   version: string;
   releaseDate: string;
   architecture: Architecture;
-  downloads: number;
+  fileType: string;
+  originalFileName: string;
   notes: string[];
 };
 
@@ -42,16 +43,18 @@ function normalizeVersion(raw: Record<string, unknown>, index: number): VersionE
     version: String(raw.version ?? ''),
     releaseDate: String(raw.releaseDate ?? raw.releasedAt ?? ''),
     architecture,
-    downloads: Number(raw.downloads ?? raw.downloadCount ?? 0),
+    fileType: String(raw.fileType ?? ''),
+    originalFileName: String(raw.originalFileName ?? ''),
     notes
   };
 }
 
 interface SoftwareVersionManagerProps {
   timezone?: string;
+  catalogId?: string;
 }
 
-export default function SoftwareVersionManager({ timezone }: SoftwareVersionManagerProps) {
+export default function SoftwareVersionManager({ timezone, catalogId: propCatalogId }: SoftwareVersionManagerProps) {
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -59,12 +62,18 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<string>('');
   const [saving, setSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [catalogId, setCatalogId] = useState(propCatalogId ?? '');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [formState, setFormState] = useState({
     version: '',
-    releaseDate: '',
     architecture: 'x64' as Architecture,
-    downloads: '0',
-    notes: ''
+    notes: '',
+    silentInstallArgs: '',
+    silentUninstallArgs: '',
+    file: null as File | null,
+    fileName: ''
   });
 
   const fetchVersions = useCallback(async () => {
@@ -72,37 +81,39 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
       setLoading(true);
       setError(undefined);
 
-      const response = await fetchWithAuth('/software/catalog');
+      let resolvedCatalogId = propCatalogId ?? catalogId;
 
-      if (!response.ok) {
-        throw new Error('Failed to fetch software versions');
+      if (!resolvedCatalogId) {
+        const response = await fetchWithAuth('/software/catalog');
+        if (!response.ok) throw new Error('Failed to fetch software catalog');
+
+        const payload = await response.json();
+        const catalogData = payload.data ?? payload ?? [];
+        if (Array.isArray(catalogData) && catalogData.length > 0) {
+          resolvedCatalogId = String((catalogData[0] as Record<string, unknown>).id);
+          setCatalogId(resolvedCatalogId);
+        }
       }
 
-      const payload = await response.json();
-      const catalogData = payload.data ?? payload ?? [];
+      if (!resolvedCatalogId) {
+        setVersions([]);
+        return;
+      }
 
-      // Get first catalog item and fetch its versions
-      if (Array.isArray(catalogData) && catalogData.length > 0) {
-        const firstItem = catalogData[0] as Record<string, unknown>;
-        const catalogId = firstItem.id;
+      const versionsResponse = await fetchWithAuth(`/software/catalog/${resolvedCatalogId}/versions`);
+      if (versionsResponse.ok) {
+        const versionsPayload = await versionsResponse.json();
+        const versionsList = versionsPayload.data ?? versionsPayload.versions ?? versionsPayload ?? [];
 
-        if (catalogId) {
-          const versionsResponse = await fetchWithAuth(`/software/catalog/${catalogId}/versions`);
-          if (versionsResponse.ok) {
-            const versionsPayload = await versionsResponse.json();
-            const versionsList = versionsPayload.data ?? versionsPayload.versions ?? versionsPayload ?? [];
+        const normalizedVersions = Array.isArray(versionsList)
+          ? versionsList.map((v: Record<string, unknown>, i: number) => normalizeVersion(v, i))
+          : [];
 
-            const normalizedVersions = Array.isArray(versionsList)
-              ? versionsList.map((v: Record<string, unknown>, i: number) => normalizeVersion(v, i))
-              : [];
+        setVersions(normalizedVersions);
 
-            setVersions(normalizedVersions);
-
-            if (normalizedVersions.length > 0) {
-              setLatestId(normalizedVersions[0].id);
-              setSelectedVersionId(normalizedVersions[0].id);
-            }
-          }
+        if (normalizedVersions.length > 0) {
+          setLatestId(normalizedVersions[0].id);
+          setSelectedVersionId(normalizedVersions[0].id);
         }
       }
     } catch (err) {
@@ -110,7 +121,7 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [propCatalogId, catalogId]);
 
   useEffect(() => {
     fetchVersions();
@@ -126,55 +137,98 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
     [versions, selectedVersionId]
   );
 
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    setFormState(prev => ({
+      ...prev,
+      file,
+      fileName: file.name,
+      // Auto-populate MSI silent args
+      silentInstallArgs: ext === 'msi' && !prev.silentInstallArgs
+        ? 'msiexec /i "{file}" /qn /norestart'
+        : prev.silentInstallArgs,
+      silentUninstallArgs: ext === 'msi' && !prev.silentUninstallArgs
+        ? 'msiexec /x "{file}" /qn /norestart'
+        : prev.silentUninstallArgs,
+    }));
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!formState.version.trim()) return;
+    if (!catalogId) return;
 
     try {
       setSaving(true);
+      setUploadProgress(0);
 
-      // Get the first catalog item ID to add version to
-      const catalogResponse = await fetchWithAuth('/software/catalog');
-      if (!catalogResponse.ok) {
-        throw new Error('Failed to fetch catalog');
+      if (formState.file) {
+        // File upload path
+        const formData = new FormData();
+        formData.append('file', formState.file);
+        formData.append('version', formState.version.trim());
+        formData.append('architecture', formState.architecture);
+        if (formState.notes) formData.append('releaseNotes', formState.notes);
+        if (formState.silentInstallArgs) formData.append('silentInstallArgs', formState.silentInstallArgs);
+        if (formState.silentUninstallArgs) formData.append('silentUninstallArgs', formState.silentUninstallArgs);
+
+        setUploadProgress(10);
+
+        const response = await fetchWithAuth(`/software/catalog/${catalogId}/versions/upload`, {
+          method: 'POST',
+          body: formData,
+          headers: {} // Let browser set Content-Type with boundary
+        });
+
+        setUploadProgress(90);
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error ?? 'Failed to upload version');
+        }
+
+        const newVersionData = await response.json();
+        const newVersion = normalizeVersion(newVersionData.data ?? newVersionData, versions.length);
+
+        setVersions(prev => [newVersion, ...prev]);
+        setLatestId(newVersion.id);
+        setSelectedVersionId(newVersion.id);
+        setUploadProgress(100);
+      } else {
+        // JSON metadata-only path
+        const response = await fetchWithAuth(`/software/catalog/${catalogId}/versions`, {
+          method: 'POST',
+          body: JSON.stringify({
+            version: formState.version.trim(),
+            releaseNotes: formState.notes || undefined,
+            architecture: formState.architecture,
+            silentInstallArgs: formState.silentInstallArgs || undefined,
+            silentUninstallArgs: formState.silentUninstallArgs || undefined,
+          })
+        });
+
+        if (!response.ok) throw new Error('Failed to create version');
+
+        const newVersionData = await response.json();
+        const newVersion = normalizeVersion(newVersionData.data ?? newVersionData, versions.length);
+
+        setVersions(prev => [newVersion, ...prev]);
+        setLatestId(newVersion.id);
+        setSelectedVersionId(newVersion.id);
       }
 
-      const catalogPayload = await catalogResponse.json();
-      const catalogData = catalogPayload.data ?? catalogPayload ?? [];
-      if (!Array.isArray(catalogData) || catalogData.length === 0) {
-        throw new Error('No catalog items found');
-      }
-
-      const catalogId = (catalogData[0] as Record<string, unknown>).id;
-
-      const response = await fetchWithAuth(`/software/catalog/${catalogId}/versions`, {
-        method: 'POST',
-        body: JSON.stringify({
-          version: formState.version.trim(),
-          releaseDate: formState.releaseDate || new Date().toISOString(),
-          notes: formState.notes,
-          downloadUrl: 'https://example.com/download',
-          supportedPlatforms: ['windows', 'macos', 'linux']
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to create version');
-      }
-
-      const newVersionData = await response.json();
-      const newVersion = normalizeVersion(newVersionData.data ?? newVersionData, versions.length);
-
-      setVersions(prev => [newVersion, ...prev]);
-      setLatestId(newVersion.id);
-      setSelectedVersionId(newVersion.id);
-      setFormState({ version: '', releaseDate: '', architecture: 'x64', downloads: '0', notes: '' });
+      setFormState({ version: '', architecture: 'x64', notes: '', silentInstallArgs: '', silentUninstallArgs: '', file: null, fileName: '' });
+      if (fileInputRef.current) fileInputRef.current.value = '';
       setIsFormOpen(false);
     } catch (err) {
       console.error('Failed to create version:', err);
-      alert('Failed to create version. Please try again.');
+      setError(err instanceof Error ? err.message : 'Failed to create version');
     } finally {
       setSaving(false);
+      setUploadProgress(0);
     }
   };
 
@@ -237,16 +291,7 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
                 type="text"
                 value={formState.version}
                 onChange={event => setFormState(prev => ({ ...prev, version: event.target.value }))}
-                placeholder="e.g. 125.0"
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-semibold uppercase text-muted-foreground">Release Date</label>
-              <input
-                type="date"
-                value={formState.releaseDate}
-                onChange={event => setFormState(prev => ({ ...prev, releaseDate: event.target.value }))}
+                placeholder="e.g. 1.0.0"
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
@@ -262,16 +307,55 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
                 <option value="x86">x86</option>
               </select>
             </div>
-            <div>
-              <label className="text-xs font-semibold uppercase text-muted-foreground">Download Count</label>
+          </div>
+
+          <div className="mt-4">
+            <label className="text-xs font-semibold uppercase text-muted-foreground">Package File</label>
+            <div className="mt-2 flex items-center gap-3">
               <input
-                type="number"
-                value={formState.downloads}
-                onChange={event => setFormState(prev => ({ ...prev, downloads: event.target.value }))}
+                ref={fileInputRef}
+                type="file"
+                accept=".msi,.exe,.dmg,.deb,.pkg"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex h-10 items-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+              >
+                <Upload className="h-4 w-4" />
+                Choose File
+              </button>
+              <span className="text-sm text-muted-foreground">
+                {formState.fileName || 'No file selected (.msi, .exe, .dmg, .deb, .pkg)'}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground">Silent Install Args</label>
+              <input
+                type="text"
+                value={formState.silentInstallArgs}
+                onChange={event => setFormState(prev => ({ ...prev, silentInstallArgs: event.target.value }))}
+                placeholder='e.g. msiexec /i "{file}" /qn /norestart'
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground">Silent Uninstall Args</label>
+              <input
+                type="text"
+                value={formState.silentUninstallArgs}
+                onChange={event => setFormState(prev => ({ ...prev, silentUninstallArgs: event.target.value }))}
+                placeholder='e.g. msiexec /x "{file}" /qn /norestart'
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
+
           <div className="mt-4">
             <label className="text-xs font-semibold uppercase text-muted-foreground">Release Notes</label>
             <textarea
@@ -281,6 +365,19 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
               className="mt-2 min-h-[96px] w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
+
+          {saving && uploadProgress > 0 && (
+            <div className="mt-4">
+              <div className="h-2 w-full rounded-full bg-muted">
+                <div
+                  className="h-2 rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">Uploading... {uploadProgress}%</p>
+            </div>
+          )}
+
           <div className="mt-4 flex items-center justify-end gap-2">
             <button
               type="button"
@@ -294,7 +391,7 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
               disabled={saving}
               className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              {saving ? 'Saving...' : 'Save Version'}
+              {saving ? (formState.file ? 'Uploading...' : 'Saving...') : (formState.file ? 'Upload & Save' : 'Save Version')}
             </button>
           </div>
         </form>
@@ -321,7 +418,7 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
                 <th className="px-4 py-3">Version</th>
                 <th className="px-4 py-3">Release Date</th>
                 <th className="px-4 py-3">Architecture</th>
-                <th className="px-4 py-3">Downloads</th>
+                <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3">Latest</th>
               </tr>
             </thead>
@@ -350,7 +447,9 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
                         {entry.architecture}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{entry.downloads.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {entry.fileType ? entry.fileType.toUpperCase() : '—'}
+                    </td>
                     <td className="px-4 py-3">
                       <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                         <input
@@ -414,14 +513,8 @@ export default function SoftwareVersionManager({ timezone }: SoftwareVersionMana
                 <p className="text-xs uppercase text-muted-foreground">Selected build</p>
                 <p className="mt-2 text-lg font-semibold">v{selectedVersion.version}</p>
                 <p className="text-sm text-muted-foreground">Released {formatDate(selectedVersion.releaseDate, timezone)}</p>
-                {selectedVersion.id === latestVersion.id ? (
+                {selectedVersion.id === latestVersion.id && (
                   <p className="mt-2 text-xs text-emerald-600">Up to date</p>
-                ) : (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {latestVersion.downloads - selectedVersion.downloads > 0
-                      ? `${(latestVersion.downloads - selectedVersion.downloads).toLocaleString()} fewer downloads than latest.`
-                      : 'Adoption tracking in progress.'}
-                  </p>
                 )}
               </div>
             </div>

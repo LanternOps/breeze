@@ -135,6 +135,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           window.location.href = `/remote/tools?deviceId=${device.id}&deviceName=${encodeURIComponent(device.hostname)}&os=${device.os}`;
           return;
 
+        case 'deploy-software':
+          void navigateTo('/software');
+          return;
+
         case 'run-script':
           setScriptPickerOpen(true);
           break;
