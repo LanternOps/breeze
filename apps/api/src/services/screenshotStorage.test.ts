@@ -314,8 +314,10 @@ describe('screenshotStorage', () => {
       };
 
       mocks.selectWhere.mockResolvedValueOnce([expired1, expired2]);
+      const enoent = new Error('ENOENT') as NodeJS.ErrnoException;
+      enoent.code = 'ENOENT';
       vi.mocked(unlink)
-        .mockRejectedValueOnce(new Error('ENOENT'))
+        .mockRejectedValueOnce(enoent)
         .mockResolvedValueOnce(undefined);
 
       const count = await deleteExpiredScreenshots();

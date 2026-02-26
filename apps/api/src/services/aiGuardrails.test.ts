@@ -229,6 +229,7 @@ describe('checkGuardrails — fleet approval descriptions', () => {
 describe('checkToolPermission — reliability and posture read tools', () => {
   const auth = {
     user: { id: 'user-1' },
+    token: { roleId: 'role-1' },
     orgId: 'org-1',
     partnerId: null,
   } as any;

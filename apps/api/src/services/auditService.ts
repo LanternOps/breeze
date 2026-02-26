@@ -1,4 +1,4 @@
-import { db, runOutsideDbContext } from '../db';
+import { db } from '../db';
 import { auditLogs } from '../db/schema';
 
 export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'schedule' | 'agent' | 'integration';
@@ -26,14 +26,10 @@ export async function createAuditLog(params: CreateAuditLogParams): Promise<void
 }
 
 export function createAuditLogAsync(params: CreateAuditLogParams): void {
-  // Run outside any active DB transaction context so audit failures
-  // never abort business-logic transactions (e.g. password changes).
-  runOutsideDbContext(() => {
-    createAuditLog(params).catch((err) => {
-      if (process.env.NODE_ENV === 'test') {
-        return;
-      }
-      console.error('[audit] Failed to write audit log:', err);
-    });
+  createAuditLog(params).catch((err) => {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+    console.error('[audit] Failed to write audit log:', err);
   });
 }

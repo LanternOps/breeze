@@ -7,6 +7,9 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  dnsActionEnum: { enumValues: [] },
+  dnsThreatCategoryEnum: { enumValues: [] },
+  discoveredAssetTypeEnum: { enumValues: [] },
   devices: {},
   deviceHardware: {},
   deviceNetwork: {},
