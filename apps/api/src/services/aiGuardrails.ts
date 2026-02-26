@@ -293,6 +293,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     create: { resource: 'devices', action: 'write' },
     delete: { resource: 'devices', action: 'write' },
   },
+  // CIS hardening tools
+  get_cis_compliance: { resource: 'devices', action: 'read' },
+  get_cis_device_report: { resource: 'devices', action: 'read' },
+  apply_cis_remediation: { resource: 'devices', action: 'execute' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -352,6 +356,10 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Notification channel & saved filter tools
   manage_notification_channels: { limit: 10, windowSeconds: 300 },
   manage_saved_filters: { limit: 15, windowSeconds: 300 },
+  // CIS hardening tools
+  get_cis_compliance: { limit: 30, windowSeconds: 300 },
+  get_cis_device_report: { limit: 30, windowSeconds: 300 },
+  apply_cis_remediation: { limit: 10, windowSeconds: 600 },
 };
 
 export interface GuardrailCheck {

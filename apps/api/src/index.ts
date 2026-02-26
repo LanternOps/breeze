@@ -50,6 +50,7 @@ import { portalRoutes } from './routes/portal';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
+import { cisHardeningRoutes } from './routes/cisHardening';
 import { reliabilityRoutes } from './routes/reliability';
 import { snmpRoutes } from './routes/snmp';
 import { monitorRoutes } from './routes/monitors';
@@ -114,6 +115,7 @@ import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jo
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
 import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
 import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
+import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -611,6 +613,7 @@ api.route('/portal', portalRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
+api.route('/cis', cisHardeningRoutes);
 api.route('/reliability', reliabilityRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
@@ -828,6 +831,7 @@ async function initializeWorkers(): Promise<void> {
     ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
     ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
     ['auditBaselineJobs', initializeAuditBaselineJobs],
+    ['cisJobs', initializeCisJobs],
     ['automationWorker', initializeAutomationWorker],
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['reliabilityWorker', initializeReliabilityWorker],
@@ -957,6 +961,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownSoftwareRemediationWorker,
     shutdownSoftwareComplianceWorker,
     shutdownAuditBaselineJobs,
+    shutdownCisJobs,
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,

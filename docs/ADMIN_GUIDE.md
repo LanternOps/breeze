@@ -1166,6 +1166,84 @@ For assessments, export:
 3. Device deviation details and check timestamps
 4. Baseline apply command history and outcomes
 
+### 6.11 CIS Hardening Operations
+
+Use CIS hardening baselines to measure and improve endpoint configuration compliance.
+
+#### Baseline Profiles
+
+Create and maintain profiles per OS and benchmark level:
+
+```bash
+POST /api/v1/cis/baselines
+{
+  "orgId": "<org-uuid>",
+  "name": "Windows CIS L1",
+  "osType": "windows",
+  "benchmarkVersion": "CIS Microsoft Windows 11 Enterprise Benchmark v2.0.0",
+  "level": "l1",
+  "customExclusions": ["2.3.7.5"],
+  "scanSchedule": { "enabled": true, "intervalHours": 24 }
+}
+```
+
+List existing baselines:
+
+```bash
+GET /api/v1/cis/baselines?orgId=<org-uuid>
+```
+
+#### Scan and Reporting
+
+Trigger an on-demand scan:
+
+```bash
+POST /api/v1/cis/scan
+{
+  "baselineId": "<baseline-uuid>"
+}
+```
+
+Review fleet summary:
+
+```bash
+GET /api/v1/cis/compliance?orgId=<org-uuid>
+```
+
+Review device findings:
+
+```bash
+GET /api/v1/cis/devices/<device-uuid>/report
+```
+
+#### Remediation
+
+Create check-level remediation requests:
+
+```bash
+POST /api/v1/cis/remediate
+{
+  "deviceId": "<device-uuid>",
+  "baselineResultId": "<result-uuid>",
+  "checkIds": ["1.1.1", "9.1"],
+  "action": "apply",
+  "reason": "Quarterly hardening run"
+}
+```
+
+Approve (or reject) pending remediation actions:
+
+```bash
+POST /api/v1/cis/remediate/approve
+{
+  "actionIds": ["<action-uuid-1>", "<action-uuid-2>"],
+  "approved": true,
+  "note": "Change window approved by SecOps"
+}
+```
+
+Actions are tracked in `pending_approval → queued → in_progress → completed|failed` (or `cancelled` when rejected) and emitted as compliance events for external automation.
+
 ---
 
 ## 7. System Settings

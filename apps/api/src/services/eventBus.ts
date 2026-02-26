@@ -40,6 +40,10 @@ export type EventType =
   | 'patch.rollback'
   // Security events
   | 'security.score_changed'
+  // CIS compliance events
+  | 'compliance.cis_deviation'
+  | 'compliance.cis_score_changed'
+  | 'compliance.cis_remediation_applied'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
@@ -487,6 +491,9 @@ export const EVENT_TYPES = {
   PATCH_ROLLBACK: 'patch.rollback' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
+  CIS_DEVIATION: 'compliance.cis_deviation' as const,
+  CIS_SCORE_CHANGED: 'compliance.cis_score_changed' as const,
+  CIS_REMEDIATION_APPLIED: 'compliance.cis_remediation_applied' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,

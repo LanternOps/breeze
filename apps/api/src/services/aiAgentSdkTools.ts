@@ -58,6 +58,9 @@ export const TOOL_TIERS = {
   manage_services: 3,
   security_scan: 3,
   get_security_posture: 1,
+  get_cis_compliance: 1,
+  get_cis_device_report: 1,
+  apply_cis_remediation: 3,
   get_fleet_health: 1,
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
@@ -427,6 +430,46 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('get_security_posture', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_cis_compliance',
+      'Retrieve CIS benchmark compliance status across devices, including latest score, failed checks, and baseline metadata.',
+      {
+        orgId: uuid.optional(),
+        baselineId: uuid.optional(),
+        deviceId: uuid.optional(),
+        osType: z.enum(['windows', 'macos', 'linux']).optional(),
+        minScore: z.number().int().min(0).max(100).optional(),
+        maxScore: z.number().int().min(0).max(100).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      makeHandler('get_cis_compliance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_cis_device_report',
+      'Get detailed CIS benchmark findings and evidence for a specific device.',
+      {
+        deviceId: uuid,
+        baselineId: uuid.optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('get_cis_device_report', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'apply_cis_remediation',
+      'Queue approved CIS remediation actions for one device and one or more failed checks.',
+      {
+        deviceId: uuid,
+        baselineId: uuid.optional(),
+        baselineResultId: uuid.optional(),
+        checkIds: z.array(z.string().min(1).max(120)).min(1).max(100),
+        action: z.enum(['apply', 'rollback']).optional(),
+        reason: z.string().max(1000).optional(),
+      },
+      makeHandler('apply_cis_remediation', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
