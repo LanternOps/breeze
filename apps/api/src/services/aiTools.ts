@@ -3907,6 +3907,75 @@ registerTool({
 });
 
 // ============================================
+// manage_processes - Tier 1 (list), Tier 3 via guardrails (kill)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'manage_processes',
+    description: 'List running processes on a device with CPU and memory usage, or terminate a process.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'kill'],
+          description: 'Action to perform'
+        },
+        deviceId: { type: 'string', description: 'The device UUID' },
+        processId: { type: 'string', description: 'The PID of the process to kill (required for kill action)' },
+        search: { type: 'string', description: 'Filter process list by name' },
+        sortBy: {
+          type: 'string',
+          enum: ['cpu', 'memory', 'name', 'pid'],
+          description: 'Sort process list by field (default: cpu)'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of processes to return (default: 50, max: 200)'
+        }
+      },
+      required: ['action', 'deviceId']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const action = input.action as string;
+
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
+    const { executeCommand } = await getCommandQueue();
+
+    if (action === 'list') {
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+      const result = await executeCommand(deviceId, 'list_processes', {
+        search: input.search ?? undefined,
+        sortBy: input.sortBy ?? 'cpu',
+        limit
+      }, { userId: auth.user.id, timeoutMs: 30000 });
+
+      return JSON.stringify(result);
+    }
+
+    if (action === 'kill') {
+      if (!input.processId) {
+        return JSON.stringify({ error: 'processId is required for kill action' });
+      }
+
+      const result = await executeCommand(deviceId, 'kill_process', {
+        pid: input.processId
+      }, { userId: auth.user.id, timeoutMs: 30000 });
+
+      return JSON.stringify(result);
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  }
+});
+
+// ============================================
 // Helper Functions
 // ============================================
 
