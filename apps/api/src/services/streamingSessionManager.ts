@@ -183,6 +183,8 @@ export interface ActiveSession {
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
   mcpServer: McpSdkServerConfigWithInstance;
+  /** MCP tool name prefix for stripping in SSE events (e.g. 'mcp__breeze__' or 'mcp__script_builder__') */
+  mcpPrefix: string;
   /** FIFO queue of toolUseIds from content_block_start for postToolUse correlation */
   toolUseIdQueue: string[];
   /** Promise that resolves when background processor finishes */
@@ -249,6 +251,12 @@ export class StreamingSessionManager {
     systemPrompt: string,
     maxBudgetUsd: number | undefined,
     allowedTools?: string[],
+    mcpServerFactory?: (
+      getAuth: () => AuthContext,
+      onPreToolUse: ReturnType<typeof createSessionPreToolUse>,
+      onPostToolUse: ReturnType<typeof createSessionPostToolUse>,
+      getSession: () => ActiveSession,
+    ) => { server: McpSdkServerConfigWithInstance; name: string },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
       ip: requestContext?.req.header('x-forwarded-for') ?? requestContext?.req.header('x-real-ip'),
@@ -304,6 +312,7 @@ export class StreamingSessionManager {
       auth,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
+      mcpPrefix: MCP_PREFIX, // updated below if custom factory
       toolUseIdQueue: [],
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
@@ -320,8 +329,18 @@ export class StreamingSessionManager {
     const postToolUse = createSessionPostToolUse(session);
 
     // Create MCP server with pre/post tool-use callbacks
-    const mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse, () => session);
+    // Use custom factory if provided (e.g., script builder), otherwise default to breeze tools
+    let mcpServer: McpSdkServerConfigWithInstance;
+    let mcpServerName = 'breeze';
+    if (mcpServerFactory) {
+      const custom = mcpServerFactory(() => session.auth, preToolUse, postToolUse, () => session);
+      mcpServer = custom.server;
+      mcpServerName = custom.name;
+    } else {
+      mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse, () => session);
+    }
     session.mcpServer = mcpServer;
+    session.mcpPrefix = `mcp__${mcpServerName}__`;
 
     const maxTurns = Math.max(1, dbSession.maxTurns - dbSession.turnCount);
 
@@ -351,7 +370,7 @@ export class StreamingSessionManager {
           maxBudgetUsd,
           tools: [],
           allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
-          mcpServers: { breeze: mcpServer },
+          mcpServers: { [mcpServerName]: mcpServer },
           includePartialMessages: true,
           abortController,
           resume: dbSession.sdkSessionId ?? undefined,
@@ -521,8 +540,8 @@ export class StreamingSessionManager {
 
                 session.eventBus.publish({
                   type: 'tool_use_start',
-                  toolName: block.name.startsWith(MCP_PREFIX)
-                    ? block.name.slice(MCP_PREFIX.length)
+                  toolName: block.name.startsWith(session.mcpPrefix)
+                    ? block.name.slice(session.mcpPrefix.length)
                     : block.name,
                   toolUseId: block.id,
                   input: {},
@@ -564,8 +583,8 @@ export class StreamingSessionManager {
 
             for (const block of message.message.content) {
               if (block.type === 'tool_use') {
-                const bareName = block.name.startsWith(MCP_PREFIX)
-                  ? block.name.slice(MCP_PREFIX.length)
+                const bareName = block.name.startsWith(session.mcpPrefix)
+                  ? block.name.slice(session.mcpPrefix.length)
                   : block.name;
 
                 try {
