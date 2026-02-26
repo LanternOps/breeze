@@ -16,6 +16,11 @@ export type EventType =
   | 'alert.resolved'
   | 'alert.suppressed'
   | 'alert.escalated'
+  // Incident events
+  | 'incident.created'
+  | 'incident.contained'
+  | 'incident.escalated'
+  | 'incident.closed'
   // Script events
   | 'script.started'
   | 'script.completed'
