@@ -1,159 +1,232 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { getNextRun, resolveScopedOrgId, toDateOrNull } from './helpers';
+import { eq, and, sql, gte, desc } from 'drizzle-orm';
+import { db } from '../../db';
 import {
   backupConfigs,
-  backupJobs,
   backupPolicies,
+  backupJobs,
   backupSnapshots,
-  configOrgById,
-  jobOrgById,
-  policyOrgById,
-  snapshotOrgById
-} from './store';
+} from '../../db/schema';
+import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
+import type { BackupPolicySchedule, BackupPolicyTargets } from './types';
 
 export const dashboardRoutes = new Hono();
 
-dashboardRoutes.get('/usage-history', zValidator('query', usageHistoryQuerySchema), (c) => {
-  const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'orgId is required for this scope' }, 400);
-  }
-
-  const { days = 14 } = c.req.valid('query');
-  const scopedSnapshots = backupSnapshots.filter((snapshot) => snapshotOrgById.get(snapshot.id) === orgId);
-  const scopedConfigs = backupConfigs.filter((config) => configOrgById.get(config.id) === orgId);
-
-  const configById = new Map(scopedConfigs.map((config) => [config.id, config]));
-  const providers = new Set<string>(scopedConfigs.map((config) => config.provider));
-  const today = new Date();
-  const startDate = new Date(today);
-  startDate.setUTCHours(0, 0, 0, 0);
-  startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
-
-  const dailyIncrements = new Map<string, Map<string, number>>();
-
-  for (const snapshot of scopedSnapshots) {
-    const createdAt = new Date(snapshot.createdAt);
-    if (Number.isNaN(createdAt.getTime()) || createdAt < startDate) {
-      continue;
+dashboardRoutes.get(
+  '/usage-history',
+  zValidator('query', usageHistoryQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    const dayKey = createdAt.toISOString().slice(0, 10);
-    const provider = configById.get(snapshot.configId)?.provider ?? 'unknown';
-    providers.add(provider);
+    const { days = 14 } = c.req.valid('query');
+    const today = new Date();
+    const startDate = new Date(today);
+    startDate.setUTCHours(0, 0, 0, 0);
+    startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
 
-    const dayMap = dailyIncrements.get(dayKey) ?? new Map<string, number>();
-    dayMap.set(provider, (dayMap.get(provider) ?? 0) + snapshot.sizeBytes);
-    dailyIncrements.set(dayKey, dayMap);
-  }
+    // Get snapshots with their config's provider
+    const snapshots = await db
+      .select({
+        size: backupSnapshots.size,
+        timestamp: backupSnapshots.timestamp,
+        provider: backupConfigs.provider,
+      })
+      .from(backupSnapshots)
+      .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
+      .where(
+        and(
+          eq(backupSnapshots.orgId, orgId),
+          gte(backupSnapshots.timestamp, startDate)
+        )
+      );
 
-  const providerList = Array.from(providers);
-  const runningByProvider = new Map(providerList.map((provider) => [provider, 0]));
-  const points: Array<{
-    timestamp: string;
-    totalBytes: number;
-    providers: Array<{ provider: string; bytes: number }>;
-  }> = [];
+    const providers = new Set<string>();
+    const dailyIncrements = new Map<string, Map<string, number>>();
 
-  for (let offset = 0; offset < days; offset += 1) {
-    const dayDate = new Date(startDate);
-    dayDate.setUTCDate(startDate.getUTCDate() + offset);
-    const dayKey = dayDate.toISOString().slice(0, 10);
-    const incrementsForDay = dailyIncrements.get(dayKey);
-
-    for (const provider of providerList) {
-      const increment = incrementsForDay?.get(provider) ?? 0;
-      runningByProvider.set(provider, (runningByProvider.get(provider) ?? 0) + increment);
+    for (const snap of snapshots) {
+      const provider = snap.provider ?? 'unknown';
+      providers.add(provider);
+      const dayKey = snap.timestamp.toISOString().slice(0, 10);
+      const dayMap = dailyIncrements.get(dayKey) ?? new Map<string, number>();
+      dayMap.set(provider, (dayMap.get(provider) ?? 0) + (snap.size ?? 0));
+      dailyIncrements.set(dayKey, dayMap);
     }
 
-    const providerSeries = providerList.map((provider) => ({
-      provider,
-      bytes: runningByProvider.get(provider) ?? 0
-    }));
-    const totalBytes = providerSeries.reduce((sum, item) => sum + item.bytes, 0);
+    const providerList = Array.from(providers);
+    if (providerList.length === 0) providerList.push('local');
+    const runningByProvider = new Map(
+      providerList.map((p) => [p, 0])
+    );
+    const points: Array<{
+      timestamp: string;
+      totalBytes: number;
+      providers: Array<{ provider: string; bytes: number }>;
+    }> = [];
 
-    points.push({
-      timestamp: dayDate.toISOString(),
-      totalBytes,
-      providers: providerSeries
+    for (let offset = 0; offset < days; offset++) {
+      const dayDate = new Date(startDate);
+      dayDate.setUTCDate(startDate.getUTCDate() + offset);
+      const dayKey = dayDate.toISOString().slice(0, 10);
+      const incrementsForDay = dailyIncrements.get(dayKey);
+
+      for (const provider of providerList) {
+        const increment = incrementsForDay?.get(provider) ?? 0;
+        runningByProvider.set(
+          provider,
+          (runningByProvider.get(provider) ?? 0) + increment
+        );
+      }
+
+      const providerSeries = providerList.map((provider) => ({
+        provider,
+        bytes: runningByProvider.get(provider) ?? 0,
+      }));
+      const totalBytes = providerSeries.reduce(
+        (sum, item) => sum + item.bytes,
+        0
+      );
+
+      points.push({
+        timestamp: dayDate.toISOString(),
+        totalBytes,
+        providers: providerSeries,
+      });
+    }
+
+    return c.json({
+      data: {
+        days,
+        start: startDate.toISOString(),
+        end: today.toISOString(),
+        providers: providerList,
+        points,
+      },
     });
   }
+);
 
-  return c.json({
-    data: {
-      days,
-      start: startDate.toISOString(),
-      end: today.toISOString(),
-      providers: providerList,
-      points
-    }
-  });
-});
-
-dashboardRoutes.get('/dashboard', (c) => {
+dashboardRoutes.get('/dashboard', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  const scopedPolicies = backupPolicies.filter((policy) => policyOrgById.get(policy.id) === orgId);
-  const scopedJobs = backupJobs.filter((job) => jobOrgById.get(job.id) === orgId);
-  const scopedSnapshots = backupSnapshots.filter((snapshot) => snapshotOrgById.get(snapshot.id) === orgId);
-  const scopedConfigs = backupConfigs.filter((config) => configOrgById.get(config.id) === orgId);
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-  const now = Date.now();
-  const dayAgo = now - 24 * 60 * 60 * 1000;
+  // Run aggregation queries in parallel
+  const [configCount, policyCount, jobCount, snapshotCount, last24hStats, storageStats, policies, recentJobs] =
+    await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(backupConfigs)
+        .where(eq(backupConfigs.orgId, orgId))
+        .then((r) => r[0]?.count ?? 0),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(backupPolicies)
+        .where(eq(backupPolicies.orgId, orgId))
+        .then((r) => r[0]?.count ?? 0),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(backupJobs)
+        .where(eq(backupJobs.orgId, orgId))
+        .then((r) => r[0]?.count ?? 0),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(backupSnapshots)
+        .where(eq(backupSnapshots.orgId, orgId))
+        .then((r) => r[0]?.count ?? 0),
+      db
+        .select({
+          completed: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed')::int`,
+          failed: sql<number>`count(*) filter (where ${backupJobs.status} = 'failed')::int`,
+          running: sql<number>`count(*) filter (where ${backupJobs.status} = 'running')::int`,
+          pending: sql<number>`count(*) filter (where ${backupJobs.status} = 'pending')::int`,
+        })
+        .from(backupJobs)
+        .where(
+          and(
+            eq(backupJobs.orgId, orgId),
+            gte(backupJobs.createdAt, dayAgo)
+          )
+        )
+        .then((r) => r[0] ?? { completed: 0, failed: 0, running: 0, pending: 0 }),
+      db
+        .select({
+          totalBytes: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)::bigint`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(backupSnapshots)
+        .where(eq(backupSnapshots.orgId, orgId))
+        .then((r) => r[0] ?? { totalBytes: 0, count: 0 }),
+      db
+        .select()
+        .from(backupPolicies)
+        .where(eq(backupPolicies.orgId, orgId)),
+      db
+        .select()
+        .from(backupJobs)
+        .where(eq(backupJobs.orgId, orgId))
+        .orderBy(desc(backupJobs.createdAt))
+        .limit(5),
+    ]);
+
   const protectedDevices = new Set(
-    scopedPolicies.flatMap((policy) => policy.targets.deviceIds)
+    policies.flatMap((p) => {
+      const targets = p.targets as BackupPolicyTargets;
+      return targets?.deviceIds ?? [];
+    })
   );
-  const recentJobs = [...scopedJobs].sort((a, b) => {
-    const aTime = toDateOrNull(a.startedAt ?? a.createdAt) ?? 0;
-    const bTime = toDateOrNull(b.startedAt ?? b.createdAt) ?? 0;
-    return bTime - aTime;
-  });
 
-  const lastDayJobs = scopedJobs.filter((job) => {
-    const timestamp = toDateOrNull(job.startedAt ?? job.createdAt) ?? 0;
-    return timestamp >= dayAgo;
-  });
-
-  const completed = lastDayJobs.filter((job) => job.status === 'completed').length;
-  const failed = lastDayJobs.filter((job) => job.status === 'failed').length;
-  const running = lastDayJobs.filter((job) => job.status === 'running').length;
-  const queued = lastDayJobs.filter((job) => job.status === 'queued').length;
-  const totalBytes = scopedSnapshots.reduce((sum, snap) => sum + snap.sizeBytes, 0);
+  const latestJobs = recentJobs.map((row) => ({
+    id: row.id,
+    type: row.type,
+    deviceId: row.deviceId,
+    configId: row.configId,
+    policyId: row.policyId ?? null,
+    snapshotId: row.snapshotId ?? null,
+    status: row.status,
+    startedAt: row.startedAt?.toISOString() ?? null,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    totalSize: row.totalSize ?? null,
+  }));
 
   return c.json({
     data: {
       totals: {
-        configs: scopedConfigs.length,
-        policies: scopedPolicies.length,
-        jobs: scopedJobs.length,
-        snapshots: scopedSnapshots.length
+        configs: configCount,
+        policies: policyCount,
+        jobs: jobCount,
+        snapshots: snapshotCount,
       },
       jobsLast24h: {
-        completed,
-        failed,
-        running,
-        queued
+        completed: last24hStats.completed,
+        failed: last24hStats.failed,
+        running: last24hStats.running,
+        queued: last24hStats.pending,
       },
       storage: {
-        totalBytes,
-        snapshots: scopedSnapshots.length
+        totalBytes: Number(storageStats.totalBytes),
+        snapshots: storageStats.count,
       },
       coverage: {
-        protectedDevices: protectedDevices.size
+        protectedDevices: protectedDevices.size,
       },
-      latestJobs: recentJobs.slice(0, 5)
-    }
+      latestJobs,
+    },
   });
 });
 
-dashboardRoutes.get('/status/:deviceId', (c) => {
+dashboardRoutes.get('/status/:deviceId', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -161,31 +234,53 @@ dashboardRoutes.get('/status/:deviceId', (c) => {
   }
 
   const deviceId = c.req.param('deviceId');
-  const policy = backupPolicies.find(
-    (item) => item.targets.deviceIds.includes(deviceId) && policyOrgById.get(item.id) === orgId
-  );
-  const jobs = backupJobs
-    .filter((job) => jobOrgById.get(job.id) === orgId)
-    .filter((job) => job.deviceId === deviceId)
-    .sort((a, b) => {
-      const aTime = toDateOrNull(a.startedAt ?? a.createdAt) ?? 0;
-      const bTime = toDateOrNull(b.startedAt ?? b.createdAt) ?? 0;
-      return bTime - aTime;
-    });
+
+  // Find policy targeting this device
+  const policies = await db
+    .select()
+    .from(backupPolicies)
+    .where(eq(backupPolicies.orgId, orgId));
+
+  const policy = policies.find((p) => {
+    const targets = p.targets as BackupPolicyTargets;
+    return targets?.deviceIds?.includes(deviceId);
+  });
+
+  // Get recent jobs for this device
+  const jobs = await db
+    .select()
+    .from(backupJobs)
+    .where(
+      and(eq(backupJobs.orgId, orgId), eq(backupJobs.deviceId, deviceId))
+    )
+    .orderBy(desc(backupJobs.createdAt));
 
   const lastJob = jobs[0] ?? null;
-  const lastSuccess = jobs.find((job) => job.status === 'completed') ?? null;
-  const lastFailure = jobs.find((job) => job.status === 'failed') ?? null;
+  const lastSuccess =
+    jobs.find((j) => j.status === 'completed') ?? null;
+  const lastFailure =
+    jobs.find((j) => j.status === 'failed') ?? null;
+
+  const policySchedule = policy?.schedule as BackupPolicySchedule | null;
 
   return c.json({
     data: {
       deviceId,
       protected: Boolean(policy),
       policyId: policy?.id ?? null,
-      lastJob,
-      lastSuccessAt: lastSuccess?.completedAt ?? null,
-      lastFailureAt: lastFailure?.completedAt ?? null,
-      nextScheduledAt: policy ? getNextRun(policy.schedule) : null
-    }
+      lastJob: lastJob
+        ? {
+            id: lastJob.id,
+            status: lastJob.status,
+            createdAt: lastJob.createdAt.toISOString(),
+            completedAt: lastJob.completedAt?.toISOString() ?? null,
+          }
+        : null,
+      lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
+      lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
+      nextScheduledAt: policySchedule
+        ? getNextRun(policySchedule)
+        : null,
+    },
   });
 });

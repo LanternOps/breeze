@@ -77,7 +77,7 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   software_policy: <PackageCheck className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;

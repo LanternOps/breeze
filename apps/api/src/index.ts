@@ -113,6 +113,7 @@ import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
 import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
+import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -848,6 +849,7 @@ async function initializeWorkers(): Promise<void> {
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
+    ['backupWorker', initializeBackupWorker],
   ];
 
   await Promise.allSettled(
@@ -933,6 +935,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   const shutdownTasks: Array<() => Promise<void>> = [
     shutdownLogForwardingWorker,
     shutdownPatchJobWorkers,
+    shutdownBackupWorker,
     shutdownPatchSchedulerWorker,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,

@@ -133,9 +133,10 @@ const (
 	CmdScriptListRunning = "script_list_running"
 
 	// Backup management
-	CmdBackupRun  = "backup_run"
-	CmdBackupList = "backup_list"
-	CmdBackupStop = "backup_stop"
+	CmdBackupRun     = "backup_run"
+	CmdBackupList    = "backup_list"
+	CmdBackupStop    = "backup_stop"
+	CmdBackupRestore = "backup_restore"
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"

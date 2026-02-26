@@ -1,144 +1,215 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { randomUUID } from 'crypto';
+import { eq, and } from 'drizzle-orm';
+import { db } from '../../db';
+import { backupPolicies, backupConfigs } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
-import type { BackupPolicy } from './types';
 import { resolveScopedOrgId } from './helpers';
-import { backupConfigs, backupPolicies, configOrgById, policyOrgById } from './store';
 import { policySchema, policyUpdateSchema } from './schemas';
+import type {
+  BackupPolicySchedule,
+  BackupPolicyRetention,
+  BackupPolicyTargets,
+} from './types';
 
 export const policiesRoutes = new Hono();
 
-policiesRoutes.get('/policies', (c) => {
+policiesRoutes.get('/policies', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
-  return c.json({ data: backupPolicies.filter((policy) => policyOrgById.get(policy.id) === orgId) });
+  const rows = await db
+    .select()
+    .from(backupPolicies)
+    .where(eq(backupPolicies.orgId, orgId));
+
+  return c.json({ data: rows.map(toPolicyResponse) });
 });
 
-policiesRoutes.post('/policies', zValidator('json', policySchema), async (c) => {
-  const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'orgId is required for this scope' }, 400);
-  }
+policiesRoutes.post(
+  '/policies',
+  zValidator('json', policySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
 
-  const payload = c.req.valid('json');
-  const config = backupConfigs.find(
-    (item) => item.id === payload.configId && configOrgById.get(item.id) === orgId
-  );
-  if (!config) {
-    return c.json({ error: 'Config not found' }, 400);
-  }
+    const payload = c.req.valid('json');
 
-  const now = new Date().toISOString();
-  const policy: BackupPolicy = {
-    id: randomUUID(),
-    name: payload.name,
-    configId: payload.configId,
-    enabled: payload.enabled ?? true,
-    targets: {
+    // Verify config exists and belongs to this org
+    const [config] = await db
+      .select({ id: backupConfigs.id })
+      .from(backupConfigs)
+      .where(
+        and(
+          eq(backupConfigs.id, payload.configId),
+          eq(backupConfigs.orgId, orgId)
+        )
+      )
+      .limit(1);
+
+    if (!config) {
+      return c.json({ error: 'Config not found' }, 400);
+    }
+
+    const now = new Date();
+    const targets: BackupPolicyTargets = {
       deviceIds: payload.targets?.deviceIds ?? [],
       siteIds: payload.targets?.siteIds ?? [],
-      groupIds: payload.targets?.groupIds ?? []
-    },
-    schedule: {
+      groupIds: payload.targets?.groupIds ?? [],
+    };
+    const schedule: BackupPolicySchedule = {
       frequency: payload.schedule.frequency,
       time: payload.schedule.time,
       timezone: payload.schedule.timezone ?? 'UTC',
       dayOfWeek: payload.schedule.dayOfWeek,
-      dayOfMonth: payload.schedule.dayOfMonth
-    },
-    retention: {
+      dayOfMonth: payload.schedule.dayOfMonth,
+    };
+    const retention: BackupPolicyRetention = {
       keepDaily: payload.retention?.keepDaily ?? 7,
       keepWeekly: payload.retention?.keepWeekly ?? 4,
-      keepMonthly: payload.retention?.keepMonthly ?? 3
-    },
-    createdAt: now,
-    updatedAt: now
-  };
+      keepMonthly: payload.retention?.keepMonthly ?? 3,
+    };
 
-  backupPolicies.push(policy);
-  policyOrgById.set(policy.id, orgId);
-  writeRouteAudit(c, {
-    orgId,
-    action: 'backup.policy.create',
-    resourceType: 'backup_policy',
-    resourceId: policy.id,
-    resourceName: policy.name
-  });
-  return c.json(policy, 201);
-});
+    const [row] = await db
+      .insert(backupPolicies)
+      .values({
+        orgId,
+        configId: payload.configId,
+        name: payload.name,
+        enabled: payload.enabled ?? true,
+        targets,
+        schedule,
+        retention,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
 
-policiesRoutes.patch('/policies/:id', zValidator('json', policyUpdateSchema), async (c) => {
-  const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'orgId is required for this scope' }, 400);
-  }
-
-  const policyId = c.req.param('id');
-  if (policyOrgById.get(policyId) !== orgId) {
-    return c.json({ error: 'Policy not found' }, 404);
-  }
-  const policy = backupPolicies.find((item) => item.id === policyId);
-  if (!policy) {
-    return c.json({ error: 'Policy not found' }, 404);
-  }
-
-  const payload = c.req.valid('json');
-  if (payload.name !== undefined) policy.name = payload.name;
-  if (payload.enabled !== undefined) policy.enabled = payload.enabled;
-  if (payload.configId !== undefined) {
-    const configExists = backupConfigs.some(
-      (item) => item.id === payload.configId && configOrgById.get(item.id) === orgId
-    );
-    if (!configExists) {
-      return c.json({ error: 'Config not found' }, 400);
+    if (!row) {
+      return c.json({ error: 'Failed to create policy' }, 500);
     }
-    policy.configId = payload.configId;
-  }
-  if (payload.targets !== undefined) {
-    policy.targets = {
-      deviceIds: payload.targets.deviceIds ?? policy.targets.deviceIds,
-      siteIds: payload.targets.siteIds ?? policy.targets.siteIds,
-      groupIds: payload.targets.groupIds ?? policy.targets.groupIds
-    };
-  }
-  if (payload.schedule !== undefined) {
-    policy.schedule = {
-      frequency: payload.schedule.frequency ?? policy.schedule.frequency,
-      time: payload.schedule.time ?? policy.schedule.time,
-      timezone: payload.schedule.timezone ?? policy.schedule.timezone,
-      dayOfWeek: payload.schedule.dayOfWeek ?? policy.schedule.dayOfWeek,
-      dayOfMonth: payload.schedule.dayOfMonth ?? policy.schedule.dayOfMonth
-    };
-  }
-  if (payload.retention !== undefined) {
-    policy.retention = {
-      keepDaily: payload.retention.keepDaily ?? policy.retention.keepDaily,
-      keepWeekly: payload.retention.keepWeekly ?? policy.retention.keepWeekly,
-      keepMonthly: payload.retention.keepMonthly ?? policy.retention.keepMonthly
-    };
-  }
-  policy.updatedAt = new Date().toISOString();
 
-  writeRouteAudit(c, {
-    orgId,
-    action: 'backup.policy.update',
-    resourceType: 'backup_policy',
-    resourceId: policy.id,
-    resourceName: policy.name,
-    details: { changedFields: Object.keys(payload) }
-  });
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.policy.create',
+      resourceType: 'backup_policy',
+      resourceId: row.id,
+      resourceName: row.name,
+    });
 
-  return c.json(policy);
-});
+    return c.json(toPolicyResponse(row), 201);
+  }
+);
 
-policiesRoutes.delete('/policies/:id', (c) => {
+policiesRoutes.patch(
+  '/policies/:id',
+  zValidator('json', policyUpdateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const policyId = c.req.param('id');
+    const payload = c.req.valid('json');
+
+    // If configId is being changed, verify new config
+    if (payload.configId !== undefined) {
+      const [configExists] = await db
+        .select({ id: backupConfigs.id })
+        .from(backupConfigs)
+        .where(
+          and(
+            eq(backupConfigs.id, payload.configId),
+            eq(backupConfigs.orgId, orgId)
+          )
+        )
+        .limit(1);
+
+      if (!configExists) {
+        return c.json({ error: 'Config not found' }, 400);
+      }
+    }
+
+    // Load current row to merge partial updates
+    const [current] = await db
+      .select()
+      .from(backupPolicies)
+      .where(
+        and(eq(backupPolicies.id, policyId), eq(backupPolicies.orgId, orgId))
+      )
+      .limit(1);
+
+    if (!current) {
+      return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    const currentTargets = current.targets as BackupPolicyTargets;
+    const currentSchedule = current.schedule as BackupPolicySchedule;
+    const currentRetention = current.retention as BackupPolicyRetention;
+
+    const updateData: Record<string, unknown> = { updatedAt: new Date() };
+    if (payload.name !== undefined) updateData.name = payload.name;
+    if (payload.enabled !== undefined) updateData.enabled = payload.enabled;
+    if (payload.configId !== undefined) updateData.configId = payload.configId;
+    if (payload.targets !== undefined) {
+      updateData.targets = {
+        deviceIds: payload.targets.deviceIds ?? currentTargets.deviceIds,
+        siteIds: payload.targets.siteIds ?? currentTargets.siteIds,
+        groupIds: payload.targets.groupIds ?? currentTargets.groupIds,
+      };
+    }
+    if (payload.schedule !== undefined) {
+      updateData.schedule = {
+        frequency: payload.schedule.frequency ?? currentSchedule.frequency,
+        time: payload.schedule.time ?? currentSchedule.time,
+        timezone: payload.schedule.timezone ?? currentSchedule.timezone,
+        dayOfWeek: payload.schedule.dayOfWeek ?? currentSchedule.dayOfWeek,
+        dayOfMonth: payload.schedule.dayOfMonth ?? currentSchedule.dayOfMonth,
+      };
+    }
+    if (payload.retention !== undefined) {
+      updateData.retention = {
+        keepDaily: payload.retention.keepDaily ?? currentRetention.keepDaily,
+        keepWeekly: payload.retention.keepWeekly ?? currentRetention.keepWeekly,
+        keepMonthly:
+          payload.retention.keepMonthly ?? currentRetention.keepMonthly,
+      };
+    }
+
+    const [row] = await db
+      .update(backupPolicies)
+      .set(updateData)
+      .where(
+        and(eq(backupPolicies.id, policyId), eq(backupPolicies.orgId, orgId))
+      )
+      .returning();
+
+    if (!row) {
+      return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.policy.update',
+      resourceType: 'backup_policy',
+      resourceId: row.id,
+      resourceName: row.name,
+      details: { changedFields: Object.keys(payload) },
+    });
+
+    return c.json(toPolicyResponse(row));
+  }
+);
+
+policiesRoutes.delete('/policies/:id', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -146,23 +217,55 @@ policiesRoutes.delete('/policies/:id', (c) => {
   }
 
   const policyId = c.req.param('id');
-  if (policyOrgById.get(policyId) !== orgId) {
+  const [deleted] = await db
+    .delete(backupPolicies)
+    .where(
+      and(eq(backupPolicies.id, policyId), eq(backupPolicies.orgId, orgId))
+    )
+    .returning();
+
+  if (!deleted) {
     return c.json({ error: 'Policy not found' }, 404);
   }
-  const index = backupPolicies.findIndex((item) => item.id === policyId);
-  if (index === -1) {
-    return c.json({ error: 'Policy not found' }, 404);
-  }
-  const [deleted] = backupPolicies.splice(index, 1);
-  if (deleted) {
-    policyOrgById.delete(deleted.id);
-  }
+
   writeRouteAudit(c, {
     orgId,
     action: 'backup.policy.delete',
     resourceType: 'backup_policy',
-    resourceId: deleted?.id,
-    resourceName: deleted?.name
+    resourceId: deleted.id,
+    resourceName: deleted.name,
   });
+
   return c.json({ deleted: true });
 });
+
+function toPolicyResponse(row: typeof backupPolicies.$inferSelect) {
+  const targets = row.targets as BackupPolicyTargets;
+  const schedule = row.schedule as BackupPolicySchedule;
+  const retention = row.retention as BackupPolicyRetention;
+  return {
+    id: row.id,
+    name: row.name,
+    configId: row.configId,
+    enabled: row.enabled,
+    targets: {
+      deviceIds: targets?.deviceIds ?? [],
+      siteIds: targets?.siteIds ?? [],
+      groupIds: targets?.groupIds ?? [],
+    },
+    schedule: {
+      frequency: schedule?.frequency ?? 'daily',
+      time: schedule?.time ?? '02:00',
+      timezone: schedule?.timezone ?? 'UTC',
+      dayOfWeek: schedule?.dayOfWeek,
+      dayOfMonth: schedule?.dayOfMonth,
+    },
+    retention: {
+      keepDaily: retention?.keepDaily ?? 7,
+      keepWeekly: retention?.keepWeekly ?? 4,
+      keepMonthly: retention?.keepMonthly ?? 3,
+    },
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}

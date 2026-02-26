@@ -358,6 +358,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     trendData: [],
     trendLabel: 'Operational health'
   });
+  const [deviceIds, setDeviceIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -492,6 +493,23 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           } catch (err) {
             errors.push('sla');
             setSlaSummary({ uptime: 0, incidents: 0 });
+          }
+        })(),
+        (async () => {
+          try {
+            const devicesData = await fetchJson('/devices?limit=100&status=online');
+            const payload = getRecord(devicesData);
+            const data = Array.isArray(payload.data) ? payload.data : [];
+            setDeviceIds(
+              data
+                .map((device) => {
+                  const record = getRecord(device);
+                  return typeof record.id === 'string' ? record.id : '';
+                })
+                .filter(Boolean)
+            );
+          } catch {
+            setDeviceIds([]);
           }
         })()
       ]);
@@ -648,19 +666,39 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     ]
   );
 
-  const layout = useMemo<GridItem[]>(
-    () => [
-      { i: 'executive', x: 0, y: 0, w: 12, h: 4 },
-      { i: 'summary-uptime', x: 0, y: 4, w: 3, h: 2 },
-      { i: 'summary-sessions', x: 3, y: 4, w: 3, h: 2 },
-      { i: 'compliance-gauge', x: 6, y: 4, w: 3, h: 2 },
-      { i: 'sla-card', x: 9, y: 4, w: 3, h: 2 },
-      { i: 'performance', x: 0, y: 6, w: 8, h: 4 },
-      { i: 'capacity', x: 8, y: 6, w: 4, h: 4 },
-      { i: 'os-breakdown', x: 0, y: 10, w: 4, h: 4 },
-      { i: 'alert-table', x: 4, y: 10, w: 8, h: 4 }
+  const dashboardLayouts = useMemo<Record<string, GridItem[]>>(() => ({
+    operations: [
+      { i: 'executive', x: 0, y: 0, w: 12, h: 3 },
+      { i: 'summary-uptime', x: 0, y: 3, w: 4, h: 2 },
+      { i: 'summary-sessions', x: 4, y: 3, w: 4, h: 2 },
+      { i: 'compliance-gauge', x: 8, y: 3, w: 4, h: 2 },
+      { i: 'performance', x: 0, y: 5, w: 8, h: 3 },
+      { i: 'os-breakdown', x: 8, y: 5, w: 4, h: 3 },
+      { i: 'alert-table', x: 0, y: 8, w: 12, h: 3 }
     ],
-    []
+    capacity: [
+      { i: 'executive', x: 0, y: 0, w: 12, h: 3 },
+      { i: 'summary-uptime', x: 0, y: 3, w: 4, h: 2 },
+      { i: 'compliance-gauge', x: 4, y: 3, w: 4, h: 2 },
+      { i: 'sla-card', x: 8, y: 3, w: 4, h: 2 },
+      { i: 'capacity', x: 0, y: 5, w: 8, h: 3 },
+      { i: 'performance', x: 8, y: 5, w: 4, h: 3 },
+      { i: 'os-breakdown', x: 0, y: 8, w: 12, h: 3 }
+    ],
+    sla: [
+      { i: 'executive', x: 0, y: 0, w: 12, h: 3 },
+      { i: 'sla-card', x: 0, y: 3, w: 4, h: 2 },
+      { i: 'compliance-gauge', x: 4, y: 3, w: 4, h: 2 },
+      { i: 'summary-uptime', x: 8, y: 3, w: 4, h: 2 },
+      { i: 'performance', x: 0, y: 5, w: 8, h: 3 },
+      { i: 'alert-table', x: 8, y: 5, w: 4, h: 3 },
+      { i: 'os-breakdown', x: 0, y: 8, w: 12, h: 3 }
+    ]
+  }), []);
+
+  const filteredLayout = useMemo(
+    () => dashboardLayouts[selectedDashboard] ?? dashboardLayouts.operations,
+    [dashboardLayouts, selectedDashboard]
   );
 
   const widgetMap = useMemo(() => {
@@ -748,13 +786,30 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         </div>
       )}
 
-      <QueryBuilder />
+      <QueryBuilder
+        deviceIds={deviceIds}
+        onQueryResult={(result) => {
+          if (result.series && result.series.length > 0) {
+            const series = getRecord(result.series[0]);
+            const data = Array.isArray(series.data) ? series.data : [];
+            setPerformanceData(data.map((point, index) => {
+              const entry = getRecord(point);
+              const timestamp = entry.timestamp ?? entry.time ?? entry.label ?? String(index + 1);
+              return {
+                timestamp: String(timestamp),
+                cpu: pickNumber(entry.value, entry.cpu),
+                memory: 0
+              };
+            }));
+          }
+        }}
+      />
 
       <DashboardGrid
-        layout={layout}
+        layout={filteredLayout}
         columns={12}
-        rowHeight={76}
-        gap={16}
+        rowHeight={64}
+        gap={12}
         renderItem={item => {
           if (isInitialLoading) {
             return <div className="h-full w-full animate-pulse rounded-lg border bg-muted/40" />;
