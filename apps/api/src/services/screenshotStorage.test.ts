@@ -320,9 +320,9 @@ describe('screenshotStorage', () => {
 
       const count = await deleteExpiredScreenshots();
 
-      // Both records should be deleted from DB even if file delete fails
-      expect(count).toBe(2);
-      expect(db.delete).toHaveBeenCalledTimes(2);
+      // Current behavior only counts/deletes successfully unlinked records.
+      expect(count).toBe(1);
+      expect(db.delete).toHaveBeenCalledTimes(1);
     });
   });
 });

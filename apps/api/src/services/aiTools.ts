@@ -19,6 +19,10 @@ import {
   alerts,
   networkBaselines,
   networkChangeEvents,
+  discoveredAssets,
+  networkDeviceConfigs,
+  networkDeviceFirmware,
+  networkConfigDiffs,
   sites,
   organizations,
   auditLogs,
@@ -81,6 +85,11 @@ import {
   normalizeStartupItems,
   resolveStartupItem,
 } from './startupItems';
+import {
+  backupNetworkConfig,
+  collectNetworkDeviceConfig,
+  evaluateFirmwarePosture
+} from './networkConfigManagement';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -355,6 +364,252 @@ registerTool({
     return JSON.stringify({
       events,
       count: events.length
+    });
+  }
+});
+
+// ============================================
+// get_network_device_configs - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_network_device_configs',
+    description: 'Query network device configuration backups and change state.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        org_id: { type: 'string', description: 'Optional organization UUID filter' },
+        asset_id: { type: 'string', description: 'Optional network asset UUID filter' },
+        config_type: { type: 'string', enum: ['running', 'startup'], description: 'Filter by config snapshot type' },
+        changed_only: { type: 'boolean', description: 'Only include snapshots changed from the previous baseline' },
+        limit: { type: 'number', description: 'Max results (default: 50, max: 200)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const orgId = typeof input.org_id === 'string' ? input.org_id : undefined;
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return JSON.stringify({ error: 'Access to this organization denied' });
+    }
+
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(networkDeviceConfigs.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+    if (orgId) conditions.push(eq(networkDeviceConfigs.orgId, orgId));
+
+    if (typeof input.asset_id === 'string') {
+      conditions.push(eq(networkDeviceConfigs.assetId, input.asset_id));
+    }
+    if (typeof input.config_type === 'string') {
+      conditions.push(eq(networkDeviceConfigs.configType, input.config_type as 'running' | 'startup'));
+    }
+    if (typeof input.changed_only === 'boolean' && input.changed_only) {
+      conditions.push(eq(networkDeviceConfigs.changedFromPrevious, true));
+    }
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+    const rows = await db
+      .select({
+        id: networkDeviceConfigs.id,
+        orgId: networkDeviceConfigs.orgId,
+        assetId: networkDeviceConfigs.assetId,
+        configType: networkDeviceConfigs.configType,
+        hash: networkDeviceConfigs.hash,
+        changedFromPrevious: networkDeviceConfigs.changedFromPrevious,
+        capturedAt: networkDeviceConfigs.capturedAt,
+        metadata: networkDeviceConfigs.metadata
+      })
+      .from(networkDeviceConfigs)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(networkDeviceConfigs.capturedAt))
+      .limit(limit);
+
+    const configIds = rows.map((row) => row.id);
+    const diffRows = configIds.length > 0
+      ? await db
+        .select({
+          currentConfigId: networkConfigDiffs.currentConfigId,
+          summary: networkConfigDiffs.summary,
+          riskLevel: networkConfigDiffs.riskLevel
+        })
+        .from(networkConfigDiffs)
+        .where(inArray(networkConfigDiffs.currentConfigId, configIds))
+      : [];
+
+    const diffByConfigId = new Map(diffRows.map((row) => [row.currentConfigId, row]));
+
+    return JSON.stringify({
+      snapshots: rows.map((row) => ({
+        ...row,
+        capturedAt: row.capturedAt.toISOString(),
+        diffSummary: diffByConfigId.get(row.id)?.summary ?? null,
+        riskLevel: diffByConfigId.get(row.id)?.riskLevel ?? 'low'
+      })),
+      count: rows.length
+    });
+  }
+});
+
+// ============================================
+// get_network_firmware_status - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_network_firmware_status',
+    description: 'Get network firmware posture including potential vulnerability and EOL exposure.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        org_id: { type: 'string', description: 'Optional organization UUID filter' },
+        asset_id: { type: 'string', description: 'Optional network asset UUID filter' },
+        vulnerable_only: { type: 'boolean', description: 'Only include vulnerable firmware records' },
+        limit: { type: 'number', description: 'Max results (default: 100, max: 200)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    const orgId = typeof input.org_id === 'string' ? input.org_id : undefined;
+    const vulnerableOnly = input.vulnerable_only === true;
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return JSON.stringify({ error: 'Access to this organization denied' });
+    }
+
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(networkDeviceFirmware.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+    if (orgId) conditions.push(eq(networkDeviceFirmware.orgId, orgId));
+    if (typeof input.asset_id === 'string') {
+      conditions.push(eq(networkDeviceFirmware.assetId, input.asset_id));
+    }
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 100), 200);
+    const now = Date.now();
+
+    const baseQuery = db
+      .select()
+      .from(networkDeviceFirmware)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(networkDeviceFirmware.lastCheckedAt));
+
+    const rows = vulnerableOnly
+      ? await baseQuery
+      : await baseQuery.limit(limit);
+
+    const status = rows.map((row) => {
+      const posture = evaluateFirmwarePosture({
+        currentVersion: row.currentVersion,
+        latestVersion: row.latestVersion,
+        eolDate: row.eolDate,
+        cveCount: row.cveCount,
+        now
+      });
+      return {
+        ...row,
+        eolDate: row.eolDate?.toISOString() ?? null,
+        lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
+        posture
+      };
+    }).filter((row) => !vulnerableOnly || row.posture.vulnerable);
+
+    const firmware = vulnerableOnly ? status.slice(0, limit) : status;
+
+    return JSON.stringify({
+      firmware,
+      count: firmware.length
+    });
+  }
+});
+
+// ============================================
+// backup_network_config - Tier 2 (mutating)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'backup_network_config',
+    description: 'Capture and store a network device config snapshot, generating a diff against the previous baseline when changes are detected.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        org_id: { type: 'string', description: 'Organization UUID (required for partner/system scope)' },
+        asset_id: { type: 'string', description: 'Managed network asset UUID' },
+        config_type: { type: 'string', enum: ['running', 'startup'], description: 'Config snapshot type (default: running)' },
+        config_text: { type: 'string', description: 'Optional explicit config text (if omitted, connector collection is used)' }
+      },
+      required: ['asset_id']
+    }
+  },
+  handler: async (input, auth) => {
+    const orgResolution = resolveWritableToolOrgId(auth, typeof input.org_id === 'string' ? input.org_id : undefined);
+    if (!orgResolution.orgId) {
+      return JSON.stringify({ error: orgResolution.error });
+    }
+
+    const assetId = input.asset_id as string;
+    const configType = (typeof input.config_type === 'string' ? input.config_type : 'running') as 'running' | 'startup';
+    const hasManualConfigText = typeof input.config_text === 'string' && input.config_text.trim().length > 0;
+
+    const [asset] = await db
+      .select()
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgResolution.orgId)))
+      .limit(1);
+
+    if (!asset) {
+      return JSON.stringify({ error: 'Network asset not found or access denied' });
+    }
+    if (!['router', 'switch', 'firewall', 'access_point'].includes(asset.assetType)) {
+      return JSON.stringify({ error: `Asset type "${asset.assetType}" is not supported for network config backups` });
+    }
+
+    const collected = hasManualConfigText
+      ? {
+        configText: input.config_text,
+        metadata: { source: 'ai_tool' },
+        collector: 'manual-ai-input'
+      }
+      : await collectNetworkDeviceConfig(asset, configType);
+
+    if (!collected?.configText) {
+      return JSON.stringify({ error: 'No configuration could be collected for this asset' });
+    }
+
+    const result = await backupNetworkConfig({
+      orgId: orgResolution.orgId,
+      assetId,
+      configType,
+      configText: collected.configText,
+      unchangedSnapshotMinIntervalMinutes: hasManualConfigText ? 0 : 60,
+      metadata: {
+        collector: collected.collector,
+        ...(collected.metadata ?? {}),
+        initiatedBy: 'ai_tool'
+      }
+    });
+
+    return JSON.stringify({
+      success: true,
+      config: {
+        id: result.config.id,
+        assetId: result.config.assetId,
+        configType: result.config.configType,
+        changedFromPrevious: result.changed,
+        capturedAt: result.config.capturedAt.toISOString()
+      },
+      skipped: result.skipped,
+      diff: result.diff
+        ? {
+          id: result.diff.id,
+          riskLevel: result.diff.riskLevel,
+          summary: result.diff.summary,
+          createdAt: result.diff.createdAt.toISOString()
+        }
+        : null
     });
   }
 });

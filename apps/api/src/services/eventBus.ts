@@ -28,6 +28,10 @@ export type EventType =
   | 'policy.violation'
   | 'policy.compliant'
   | 'policy.remediation.triggered'
+  // Network configuration / firmware events
+  | 'network.config_changed'
+  | 'network.config_high_risk_diff'
+  | 'network.firmware_vulnerable'
   // Patch events
   | 'patch.available'
   | 'patch.approved'
@@ -459,6 +463,10 @@ export const EVENT_TYPES = {
   POLICY_VIOLATION: 'policy.violation' as const,
   POLICY_COMPLIANT: 'policy.compliant' as const,
   POLICY_REMEDIATION_TRIGGERED: 'policy.remediation.triggered' as const,
+  // Network config / firmware
+  NETWORK_CONFIG_CHANGED: 'network.config_changed' as const,
+  NETWORK_CONFIG_HIGH_RISK_DIFF: 'network.config_high_risk_diff' as const,
+  NETWORK_FIRMWARE_VULNERABLE: 'network.firmware_vulnerable' as const,
   // Patch
   PATCH_AVAILABLE: 'patch.available' as const,
   PATCH_APPROVED: 'patch.approved' as const,

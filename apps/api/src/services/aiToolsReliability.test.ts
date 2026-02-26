@@ -6,7 +6,10 @@ vi.mock('../db', () => ({
   db: {},
 }));
 
-vi.mock('../db/schema', () => ({
+vi.mock('../db/schema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db/schema')>();
+  return {
+    ...actual,
   devices: {},
   deviceHardware: {},
   deviceNetwork: {},
@@ -20,7 +23,10 @@ vi.mock('../db/schema', () => ({
   deviceCommands: {},
   deviceFilesystemCleanupRuns: {},
   deviceSessions: {},
-}));
+  dnsActionEnum: { enumValues: ['allow', 'block'] },
+  dnsThreatCategoryEnum: { enumValues: ['unknown'] },
+  };
+});
 
 vi.mock('./aiToolSchemas', () => ({
   validateToolInput: vi.fn(() => ({ success: true })),

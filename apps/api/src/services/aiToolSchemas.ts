@@ -306,6 +306,28 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(200).optional(),
   }),
 
+  get_network_device_configs: z.object({
+    org_id: uuid.optional(),
+    asset_id: uuid.optional(),
+    config_type: z.enum(['running', 'startup']).optional(),
+    changed_only: z.boolean().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  get_network_firmware_status: z.object({
+    org_id: uuid.optional(),
+    asset_id: uuid.optional(),
+    vulnerable_only: z.boolean().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  backup_network_config: z.object({
+    org_id: uuid.optional(),
+    asset_id: uuid,
+    config_type: z.enum(['running', 'startup']).optional(),
+    config_text: z.string().min(1).max(500_000).optional(),
+  }),
+
   acknowledge_network_device: z.object({
     event_id: uuid,
     notes: z.string().max(2000).optional(),

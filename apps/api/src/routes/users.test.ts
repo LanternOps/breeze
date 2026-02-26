@@ -63,6 +63,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
+  requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next())
 }));
 

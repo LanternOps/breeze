@@ -46,6 +46,7 @@ import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
+import { networkConfigRoutes } from './routes/networkConfigManagement';
 import { portalRoutes } from './routes/portal';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
@@ -110,6 +111,7 @@ import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
 import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
+import { initializeNetworkConfigJobs, shutdownNetworkConfigJobs } from './jobs/networkConfigJobs';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -603,6 +605,7 @@ api.route('/analytics', analyticsRoutes);
 api.route('/discovery', discoveryRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
+api.route('/network-config', networkConfigRoutes);
 api.route('/portal', portalRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
@@ -835,6 +838,7 @@ async function initializeWorkers(): Promise<void> {
     ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['networkBaselineWorker', initializeNetworkBaselineWorker],
+    ['networkConfigJobs', initializeNetworkConfigJobs],
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
@@ -935,6 +939,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownMonitorWorker,
     shutdownSnmpWorker,
     shutdownNetworkBaselineWorker,
+    shutdownNetworkConfigJobs,
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
     shutdownLogCorrelationWorker,

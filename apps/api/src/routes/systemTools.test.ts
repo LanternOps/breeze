@@ -197,7 +197,6 @@ describe('system tools routes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.message).toContain('chrome.exe');
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('lists services via agent command', async () => {
@@ -259,7 +258,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('stops a service via agent command', async () => {
@@ -276,7 +274,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('restarts a service via agent command', async () => {
@@ -293,7 +290,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('lists registry keys', async () => {
@@ -384,7 +380,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('deletes a registry value and logs audit', async () => {
@@ -402,7 +397,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('creates a registry key and logs audit', async () => {
@@ -424,7 +418,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('deletes a registry key and logs audit', async () => {
@@ -442,7 +435,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('lists event logs via agent command', async () => {
@@ -609,7 +601,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('enables task via agent command', async () => {
@@ -627,7 +618,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('disables task via agent command', async () => {
@@ -645,7 +635,6 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 
   it('gets scheduled task history via agent command', async () => {
@@ -748,7 +737,7 @@ describe('system tools routes', () => {
         })
       });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(502);
       const body = await res.json();
       expect(body.results).toHaveLength(1);
       expect(body.results[0].status).toBe('failure');

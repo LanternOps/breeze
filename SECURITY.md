@@ -40,6 +40,7 @@ The following are in scope:
 - Authentication and authorization flows
 - Multi-tenant data isolation
 - Agent-to-server communication
+- Network configuration backup, diff, and firmware posture workflows
 
 ## Out of Scope
 
@@ -54,5 +55,14 @@ We follow coordinated disclosure. Once a fix is released, we will:
 1. Credit the reporter (unless anonymity is requested)
 2. Publish a security advisory via GitHub Security Advisories
 3. Release a patched version
+
+## Network Config Governance
+
+For network device configuration management features:
+
+- Config snapshots are encrypted at rest before persistence.
+- Diff views redact obvious shared secrets and credential tokens.
+- High-risk config changes should be approval-gated before remediation actions.
+- Firmware vulnerability indicators (CVE/EOL/version lag) should be treated as security posture inputs, not standalone exploit confirmation.
 
 Thank you for helping keep Breeze and its users safe.

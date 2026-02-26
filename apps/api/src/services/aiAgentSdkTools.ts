@@ -64,6 +64,9 @@ export const TOOL_TIERS = {
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
   query_audit_log: 1,
   query_change_log: 1,
+  get_network_device_configs: 1,
+  get_network_firmware_status: 1,
+  backup_network_config: 2,
   network_discovery: 3,
   take_screenshot: 2,
   analyze_screen: 2,
@@ -511,6 +514,43 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('query_change_log', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_network_device_configs',
+      'Query network device configuration backup history and change state.',
+      {
+        org_id: uuid.optional(),
+        asset_id: uuid.optional(),
+        config_type: z.enum(['running', 'startup']).optional(),
+        changed_only: z.boolean().optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeHandler('get_network_device_configs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_network_firmware_status',
+      'Get network firmware posture including CVE and EOL risk hints.',
+      {
+        org_id: uuid.optional(),
+        asset_id: uuid.optional(),
+        vulnerable_only: z.boolean().optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeHandler('get_network_firmware_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'backup_network_config',
+      'Capture a network config snapshot and generate diff/risk metadata.',
+      {
+        org_id: uuid.optional(),
+        asset_id: uuid,
+        config_type: z.enum(['running', 'startup']).optional(),
+        config_text: z.string().min(1).max(500_000).optional(),
+      },
+      makeHandler('backup_network_config', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

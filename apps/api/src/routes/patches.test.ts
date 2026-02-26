@@ -37,7 +37,8 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
-    delete: vi.fn()
+    delete: vi.fn(),
+    execute: vi.fn()
   }
 }));
 
@@ -182,6 +183,7 @@ describe('patch routes', () => {
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
     app = new Hono();
     app.route('/patches', patchRoutes);
+    vi.mocked(db.execute).mockResolvedValue(undefined as any);
   });
 
   it('queues patch scans in parallel and reports skipped/missing devices', async () => {
@@ -325,7 +327,7 @@ describe('patch routes', () => {
     expect(body.data.summary.installed).toBe(6);
     expect(body.data.summary.pending).toBe(2);
     expect(body.data.summary.failed).toBe(1);
-    expect(body.data.filters).toEqual({ source: 'apple', severity: 'critical' });
+    expect(body.data.filters).toEqual({ source: 'apple', severity: 'critical', ringId: null });
   });
 
   it('queues a compliance report request and returns a persisted report id', async () => {

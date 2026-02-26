@@ -1516,5 +1516,29 @@ When contacting support, provide:
 
 ---
 
+## Appendix C: Network Device Configuration Management
+
+The Network Device Configuration Management APIs provide tenant-scoped backup history, config diff visibility, and firmware posture signals for managed network assets (`router`, `switch`, `firewall`, `access_point`).
+
+### Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/network-config/devices` | GET | List managed network devices with latest backup and firmware posture |
+| `/api/v1/network-config/backups` | GET | List configuration backup history |
+| `/api/v1/network-config/backup` | POST | Trigger on-demand config backup and diff generation |
+| `/api/v1/network-config/diffs` | GET | List redacted config diffs and risk tags |
+| `/api/v1/network-config/firmware-status` | GET | View firmware/EOL/CVE posture |
+
+### Operational Notes
+
+- Config snapshots are encrypted at rest.
+- Diff output is redacted for obvious secret-bearing fields.
+- High-risk config changes emit `network.config_high_risk_diff` events.
+- Vulnerable/EOL firmware findings emit `network.firmware_vulnerable` events.
+- Scheduled backup and firmware refresh jobs run daily by default.
+
+---
+
 *Last updated: February 2026*
 *Breeze RMM Documentation*
