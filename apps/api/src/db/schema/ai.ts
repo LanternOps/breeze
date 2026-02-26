@@ -27,6 +27,7 @@ export const aiSessions = pgTable('ai_sessions', {
   userId: uuid('user_id').references(() => users.id),
   deviceId: uuid('device_id').references(() => devices.id),
   status: aiSessionStatusEnum('status').notNull().default('active'),
+  type: text('type').notNull().default('general'),
   title: varchar('title', { length: 255 }),
   model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
   systemPrompt: text('system_prompt'),
