@@ -19,6 +19,7 @@ import {
 import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
+import { isCronDue } from '../services/automationRuntime';
 
 export const discoveryRoutes = new Hono();
 
@@ -166,6 +167,27 @@ const scanSchema = z.object({
 const listJobsSchema = z.object({
   orgId: z.string().uuid().optional()
 });
+
+// --- Next-run helpers ---
+
+function getNextCronOccurrence(cronExpr: string, timezone: string, from: Date): Date | null {
+  // Walk minute-by-minute up to 7 days ahead
+  const limit = 7 * 24 * 60;
+  const candidate = new Date(from);
+  candidate.setSeconds(0, 0);
+  candidate.setMinutes(candidate.getMinutes() + 1); // start from next minute
+  for (let i = 0; i < limit; i++) {
+    if (isCronDue(cronExpr, timezone, candidate)) return candidate;
+    candidate.setMinutes(candidate.getMinutes() + 1);
+  }
+  return null;
+}
+
+function getNextIntervalRun(lastRunAt: Date | null, intervalMinutes: number, now: Date): Date {
+  if (!lastRunAt) return now; // due immediately
+  const next = new Date(lastRunAt.getTime() + intervalMinutes * 60 * 1000);
+  return next > now ? next : now; // if overdue, due now
+}
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -503,15 +525,96 @@ discoveryRoutes.get(
       .where(where)
       .orderBy(desc(discoveryJobs.createdAt));
 
-    return c.json({
-      data: results.map((j) => ({
-        ...j,
-        createdAt: j.createdAt.toISOString(),
-        scheduledAt: j.scheduledAt?.toISOString() ?? null,
-        startedAt: j.startedAt?.toISOString() ?? null,
-        completedAt: j.completedAt?.toISOString() ?? null
-      }))
-    });
+    type JobRow = {
+      id: string;
+      orgId: string;
+      profileId: string | null;
+      profileName: string | null;
+      agentId: string | null;
+      status: string;
+      scheduledAt: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+      hostsScanned: number | null;
+      hostsDiscovered: number | null;
+      newAssets: number | null;
+      errors: unknown;
+      createdAt: string;
+    };
+
+    const jobRows: JobRow[] = results.map((j) => ({
+      ...j,
+      status: j.status as string,
+      createdAt: j.createdAt.toISOString(),
+      scheduledAt: j.scheduledAt?.toISOString() ?? null,
+      startedAt: j.startedAt?.toISOString() ?? null,
+      completedAt: j.completedAt?.toISOString() ?? null
+    }));
+
+    // Build synthetic "pending" rows for the next scheduled run of each active profile
+    const profileWhere: SQL[] = [eq(discoveryProfiles.enabled, true)];
+    if (orgResult.orgId) profileWhere.push(eq(discoveryProfiles.orgId, orgResult.orgId));
+
+    const activeProfiles = await db
+      .select({
+        id: discoveryProfiles.id,
+        orgId: discoveryProfiles.orgId,
+        name: discoveryProfiles.name,
+        schedule: discoveryProfiles.schedule
+      })
+      .from(discoveryProfiles)
+      .where(and(...profileWhere));
+
+    // Profiles that already have a scheduled/running job don't need a pending row
+    const activeProfileIds = new Set(
+      jobRows
+        .filter((j) => j.status === 'scheduled' || j.status === 'running')
+        .map((j) => j.profileId)
+    );
+
+    const now = new Date();
+    const pendingRows: typeof jobRows = [];
+
+    for (const profile of activeProfiles) {
+      if (activeProfileIds.has(profile.id)) continue;
+
+      const sched = profile.schedule as { type?: string; cron?: string; intervalMinutes?: number; timezone?: string } | null;
+      if (!sched || sched.type === 'manual') continue;
+
+      let nextRunAt: Date | null = null;
+
+      if (sched.type === 'interval' && sched.intervalMinutes) {
+        // Find the most recent job for this profile to compute next interval
+        const lastJob = jobRows.find((j) => j.profileId === profile.id);
+        const lastRunAt = lastJob?.scheduledAt ? new Date(lastJob.scheduledAt) : null;
+        nextRunAt = getNextIntervalRun(lastRunAt, sched.intervalMinutes, now);
+      } else if (sched.type === 'cron' && sched.cron) {
+        const tz = sched.timezone || 'UTC';
+        nextRunAt = getNextCronOccurrence(sched.cron, tz, now);
+      }
+
+      if (nextRunAt) {
+        pendingRows.push({
+          id: `next-${profile.id}`,
+          orgId: profile.orgId,
+          profileId: profile.id,
+          profileName: profile.name,
+          agentId: null,
+          status: 'pending',
+          scheduledAt: nextRunAt.toISOString(),
+          startedAt: null,
+          completedAt: null,
+          hostsScanned: null,
+          hostsDiscovered: null,
+          newAssets: null,
+          errors: null,
+          createdAt: nextRunAt.toISOString()
+        });
+      }
+    }
+
+    // Pending rows go first, then real jobs by createdAt desc
+    return c.json({ data: [...pendingRows, ...jobRows] });
   }
 );
 

@@ -1,6 +1,6 @@
 import { db } from '../db';
-import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
+import { eq, and, desc, sql, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
@@ -8,7 +8,18 @@ import {
   previewEffectiveConfig,
   assignPolicy,
   unassignPolicy,
+  getConfigPolicy,
+  createConfigPolicy,
+  updateConfigPolicy,
+  deleteConfigPolicy,
+  listFeatureLinks,
+  listAssignments,
 } from './configurationPolicy';
+import {
+  getConfigPolicyComplianceRuleInfo,
+  getConfigPolicyComplianceStats,
+  buildComplianceSummary,
+} from '../routes/policyManagement/helpers';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -254,6 +265,230 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         success: true,
         message: `Removed "${assignment.policyName}" assignment from ${assignment.level} ${assignment.targetId}`,
       });
+    }),
+  });
+
+  // 6. get_configuration_policy — Tier 1 (read)
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'get_configuration_policy',
+      description: 'Get a single configuration policy by ID with its feature links (bundled feature settings) and assignment count.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          policyId: { type: 'string', description: 'Configuration policy UUID' },
+        },
+        required: ['policyId'],
+      },
+    },
+    handler: safeHandler('get_configuration_policy', async (input, auth) => {
+      const policyId = input.policyId as string;
+      const policy = await getConfigPolicy(policyId, auth);
+      if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+      const featureLinks = await listFeatureLinks(policyId);
+      const assignments = await listAssignments(policyId);
+
+      return JSON.stringify({
+        policy,
+        featureLinks,
+        assignmentCount: assignments.length,
+        assignments,
+      });
+    }),
+  });
+
+  // 7. manage_configuration_policy — Tier 1 base, action-escalated
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'manage_configuration_policy',
+      description: 'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: ['create', 'update', 'activate', 'deactivate', 'delete'], description: 'The action to perform' },
+          policyId: { type: 'string', description: 'Configuration policy UUID (required for update/activate/deactivate/delete)' },
+          name: { type: 'string', description: 'Policy name (required for create)' },
+          description: { type: 'string', description: 'Policy description' },
+          status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
+          orgId: { type: 'string', description: 'Organization UUID (for create; defaults to current org)' },
+        },
+        required: ['action'],
+      },
+    },
+    handler: safeHandler('manage_configuration_policy', async (input, auth) => {
+      const action = input.action as string;
+
+      if (action === 'create') {
+        const orgId = (input.orgId as string) || getOrgId(auth);
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        if (!input.name) return JSON.stringify({ error: 'name is required for create' });
+
+        const policy = await createConfigPolicy(orgId, {
+          name: input.name as string,
+          description: input.description as string | undefined,
+          status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',
+        }, auth.user.id);
+
+        return JSON.stringify({ success: true, policy });
+      }
+
+      if (action === 'update') {
+        if (!input.policyId) return JSON.stringify({ error: 'policyId is required for update' });
+        const updates: { name?: string; description?: string; status?: 'active' | 'inactive' | 'archived' } = {};
+        if (typeof input.name === 'string') updates.name = input.name;
+        if (typeof input.description === 'string') updates.description = input.description;
+        if (typeof input.status === 'string') updates.status = input.status as 'active' | 'inactive' | 'archived';
+
+        const updated = await updateConfigPolicy(input.policyId as string, updates, auth);
+        if (!updated) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        return JSON.stringify({ success: true, policy: updated });
+      }
+
+      if (action === 'activate' || action === 'deactivate') {
+        if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
+        const newStatus = action === 'activate' ? 'active' : 'inactive';
+        const updated = await updateConfigPolicy(input.policyId as string, { status: newStatus }, auth);
+        if (!updated) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        return JSON.stringify({ success: true, message: `Policy "${updated.name}" ${action}d`, policy: updated });
+      }
+
+      if (action === 'delete') {
+        if (!input.policyId) return JSON.stringify({ error: 'policyId is required for delete' });
+        const deleted = await deleteConfigPolicy(input.policyId as string, auth);
+        if (!deleted) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        return JSON.stringify({ success: true, message: `Policy "${deleted.name}" deleted` });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
+    }),
+  });
+
+  // 8. configuration_policy_compliance — Tier 1 (read)
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'configuration_policy_compliance',
+      description: 'Check compliance status for configuration policies. Use "summary" for org-wide compliance overview across all config policies, or "status" for per-device compliance details for a specific config policy.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: ['summary', 'status'], description: 'summary = org-wide overview, status = per-policy device compliance' },
+          policyId: { type: 'string', description: 'Configuration policy UUID (required for status)' },
+          limit: { type: 'number', description: 'Max results for status (default 50)' },
+        },
+        required: ['action'],
+      },
+    },
+    handler: safeHandler('configuration_policy_compliance', async (input, auth) => {
+      const action = input.action as string;
+
+      if (action === 'summary') {
+        // Get all config policies for this org
+        const conditions: SQL[] = [];
+        const oc = orgWhere(auth, configurationPolicies.orgId);
+        if (oc) conditions.push(oc);
+
+        const policies = await db
+          .select({ id: configurationPolicies.id, name: configurationPolicies.name, status: configurationPolicies.status })
+          .from(configurationPolicies)
+          .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+        if (policies.length === 0) {
+          return JSON.stringify({ summary: [], message: 'No configuration policies found' });
+        }
+
+        // Get all feature links for these policies
+        const policyIds = policies.map((p) => p.id);
+        const links = await db
+          .select({ id: configPolicyFeatureLinks.id, configPolicyId: configPolicyFeatureLinks.configPolicyId, featureType: configPolicyFeatureLinks.featureType })
+          .from(configPolicyFeatureLinks)
+          .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds));
+
+        const featureLinkIds = links.map((l) => l.id);
+
+        // Get compliance stats per feature link
+        const { byFeatureLink } = featureLinkIds.length > 0
+          ? await getConfigPolicyComplianceStats(featureLinkIds)
+          : { byFeatureLink: new Map() };
+
+        // Aggregate stats per config policy
+        const summary = policies.map((policy) => {
+          const policyLinks = links.filter((l) => l.configPolicyId === policy.id);
+          let total = 0, compliant = 0, nonCompliant = 0, pending = 0, error = 0;
+
+          for (const link of policyLinks) {
+            const stats = byFeatureLink.get(link.id);
+            if (stats) {
+              total += stats.total;
+              compliant += stats.compliant;
+              nonCompliant += stats.nonCompliant;
+              pending += stats.pending;
+              error += stats.error;
+            }
+          }
+
+          return {
+            policyId: policy.id,
+            policyName: policy.name,
+            status: policy.status,
+            featureCount: policyLinks.length,
+            compliance: { total, compliant, nonCompliant, pending, error },
+          };
+        });
+
+        return JSON.stringify({ summary });
+      }
+
+      if (action === 'status') {
+        if (!input.policyId) return JSON.stringify({ error: 'policyId is required for status' });
+        const policyId = input.policyId as string;
+
+        // Verify access to this policy
+        const policy = await getConfigPolicy(policyId, auth);
+        if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+        // Get feature links for this policy
+        const links = await listFeatureLinks(policyId);
+        const featureLinkIds = links.map((l) => l.id);
+
+        if (featureLinkIds.length === 0) {
+          return JSON.stringify({ policyId, policyName: policy.name, devices: [], message: 'No feature links configured' });
+        }
+
+        // Get per-device compliance rows for these feature links
+        const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
+        const rows = await db
+          .select({
+            configPolicyId: automationPolicyCompliance.configPolicyId,
+            configItemName: automationPolicyCompliance.configItemName,
+            deviceId: automationPolicyCompliance.deviceId,
+            status: automationPolicyCompliance.status,
+            details: automationPolicyCompliance.details,
+            lastCheckedAt: automationPolicyCompliance.lastCheckedAt,
+            remediationAttempts: automationPolicyCompliance.remediationAttempts,
+          })
+          .from(automationPolicyCompliance)
+          .where(
+            and(
+              isNull(automationPolicyCompliance.policyId),
+              isNotNull(automationPolicyCompliance.configPolicyId),
+              inArray(automationPolicyCompliance.configPolicyId, featureLinkIds)
+            )
+          )
+          .limit(limit);
+
+        return JSON.stringify({
+          policyId,
+          policyName: policy.name,
+          devices: rows,
+          showing: rows.length,
+        });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
     }),
   });
 }

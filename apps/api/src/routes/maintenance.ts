@@ -275,13 +275,17 @@ maintenanceRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId, true);
+    const orgResult = resolveOrgId(auth, query.orgId);
 
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
 
-    const conditions = [eq(maintenanceWindows.orgId, orgResult.orgId as string)];
+    if (!orgResult.orgId) {
+      return c.json({ data: [] });
+    }
+
+    const conditions = [eq(maintenanceWindows.orgId, orgResult.orgId)];
 
     if (query.status) {
       conditions.push(eq(maintenanceWindows.status, query.status));

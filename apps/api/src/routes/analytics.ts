@@ -2,9 +2,16 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { and, eq, sql, gte, ne } from 'drizzle-orm';
+import { and, eq, sql, gte, lte, ne, inArray, desc } from 'drizzle-orm';
 import { db } from '../db';
-import { devices } from '../db/schema';
+import {
+  capacityPredictions,
+  capacityThresholds,
+  deviceMetrics,
+  devices,
+  slaDefinitions as slaDefinitionsTable,
+  slaCompliance as slaComplianceTable
+} from '../db/schema';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -32,33 +39,8 @@ type Widget = {
   updatedAt: Date;
 };
 
-type SlaDefinition = {
-  id: string;
-  orgId: string;
-  name: string;
-  description?: string;
-  metricType?: string;
-  targetPercentage: number;
-  evaluationWindow: 'daily' | 'weekly' | 'monthly';
-  scope: 'device' | 'site' | 'organization';
-  filters: Record<string, unknown>;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-type SlaComplianceEntry = {
-  id: string;
-  slaId: string;
-  periodStart: string;
-  periodEnd: string;
-  compliancePercentage: number;
-  status: 'met' | 'breached' | 'warning';
-};
-
 const dashboards = new Map<string, Dashboard>();
 const widgets = new Map<string, Widget>();
-const slaDefinitions = new Map<string, SlaDefinition>();
-const slaCompliance = new Map<string, SlaComplianceEntry[]>();
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -108,6 +90,36 @@ const timeSeriesQuerySchema = z.object({
   groupBy: z.array(z.string().min(1)).optional()
 });
 
+const metricColumnMap: Record<string, any> = {
+  cpu_usage: deviceMetrics.cpuPercent,
+  cpu: deviceMetrics.cpuPercent,
+  'CPU Utilization': deviceMetrics.cpuPercent,
+  memory_usage: deviceMetrics.ramPercent,
+  memory: deviceMetrics.ramPercent,
+  ram: deviceMetrics.ramPercent,
+  'Memory Utilization': deviceMetrics.ramPercent,
+  disk_usage: deviceMetrics.diskPercent,
+  disk: deviceMetrics.diskPercent,
+  'Disk Usage': deviceMetrics.diskPercent,
+  network_in: deviceMetrics.networkInBytes,
+  network_out: deviceMetrics.networkOutBytes,
+  'Network Throughput': deviceMetrics.bandwidthInBps,
+  process_count: deviceMetrics.processCount,
+};
+
+function aggregationSql(col: any, agg: string) {
+  switch (agg) {
+    case 'avg': return sql<number>`avg(${col})`;
+    case 'min': return sql<number>`min(${col})`;
+    case 'max': return sql<number>`max(${col})`;
+    case 'sum': return sql<number>`sum(${col})`;
+    case 'count': return sql<number>`count(${col})`;
+    case 'p95': return sql<number>`percentile_cont(0.95) within group (order by ${col})`;
+    case 'p99': return sql<number>`percentile_cont(0.99) within group (order by ${col})`;
+    default: return sql<number>`avg(${col})`;
+  }
+}
+
 const listDashboardsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -143,7 +155,8 @@ const updateWidgetSchema = z.object({
 
 const capacityQuerySchema = z.object({
   deviceId: z.string().uuid().optional(),
-  metricType: z.string().min(1).optional()
+  metricType: z.string().min(1).optional().default('disk'),
+  range: z.string().optional().default('30d')
 });
 
 const listSlaSchema = z.object({
@@ -156,11 +169,14 @@ const createSlaSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
-  metricType: z.string().min(1).optional(),
-  targetPercentage: z.number().min(0).max(100),
-  evaluationWindow: z.enum(['daily', 'weekly', 'monthly']).default('monthly'),
-  scope: z.enum(['device', 'site', 'organization']).default('organization'),
-  filters: z.record(z.any()).optional().default({})
+  uptimeTarget: z.number().min(0).max(100).optional(),
+  responseTimeTarget: z.number().optional(),
+  resolutionTimeTarget: z.number().optional(),
+  measurementWindow: z.enum(['daily', 'weekly', 'monthly']).optional().default('monthly'),
+  targetType: z.enum(['device', 'site', 'organization']).optional().default('organization'),
+  targetIds: z.array(z.string().uuid()).optional(),
+  excludeMaintenanceWindows: z.boolean().optional().default(false),
+  excludeWeekends: z.boolean().optional().default(false),
 });
 
 const executiveSummarySchema = z.object({
@@ -195,9 +211,55 @@ analyticsRoutes.post(
       }
     });
 
+    const startTime = new Date(data.startTime);
+    const endTime = new Date(data.endTime);
+    const interval = data.interval;
+    const series: Array<{
+      metricType: string;
+      aggregation: string;
+      interval: string;
+      data: Array<{ timestamp: string; value: number | null }>;
+    }> = [];
+
+    for (const metricType of data.metricTypes) {
+      const metricColumn = metricColumnMap[metricType];
+      if (!metricColumn) {
+        continue;
+      }
+
+      const bucket = sql<Date>`date_trunc(${interval}, ${deviceMetrics.timestamp})`;
+      const value = aggregationSql(metricColumn, data.aggregation);
+
+      const rows = await db
+        .select({
+          bucket,
+          value
+        })
+        .from(deviceMetrics)
+        .where(
+          and(
+            inArray(deviceMetrics.deviceId, data.deviceIds),
+            gte(deviceMetrics.timestamp, startTime),
+            lte(deviceMetrics.timestamp, endTime)
+          )
+        )
+        .groupBy(bucket)
+        .orderBy(bucket);
+
+      series.push({
+        metricType,
+        aggregation: data.aggregation,
+        interval: data.interval,
+        data: rows.map((row) => ({
+          timestamp: row.bucket instanceof Date ? row.bucket.toISOString() : new Date(String(row.bucket)).toISOString(),
+          value: row.value === null ? null : Number(row.value)
+        }))
+      });
+    }
+
     return c.json({
       query: data,
-      series: []
+      series
     });
   }
 );
@@ -576,11 +638,172 @@ analyticsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   zValidator('query', capacityQuerySchema),
   async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
+    const metricType = query.metricType.toLowerCase();
+
+    const predictionOrgCondition =
+      typeof auth?.orgCondition === 'function'
+        ? auth.orgCondition(capacityPredictions.orgId)
+        : auth?.orgId
+          ? eq(capacityPredictions.orgId, auth.orgId)
+          : undefined;
+
+    const predictionWhere = and(
+      eq(capacityPredictions.metricType, metricType),
+      ...(predictionOrgCondition ? [predictionOrgCondition] : []),
+      ...(query.deviceId ? [eq(capacityPredictions.deviceId, query.deviceId)] : [])
+    );
+
+    const storedPredictions = await db
+      .select({
+        metricName: capacityPredictions.metricName,
+        currentValue: capacityPredictions.currentValue,
+        predictedValue: capacityPredictions.predictedValue,
+        predictionDate: capacityPredictions.predictionDate,
+        growthRate: capacityPredictions.growthRate
+      })
+      .from(capacityPredictions)
+      .where(predictionWhere)
+      .orderBy(capacityPredictions.predictionDate);
+
+    if (storedPredictions.length > 0) {
+      const thresholdOrgCondition =
+        typeof auth?.orgCondition === 'function'
+          ? auth.orgCondition(capacityThresholds.orgId)
+          : auth?.orgId
+            ? eq(capacityThresholds.orgId, auth.orgId)
+            : undefined;
+
+      const thresholdWhere = and(
+        eq(capacityThresholds.metricType, metricType),
+        eq(capacityThresholds.metricName, storedPredictions[0]!.metricName),
+        ...(thresholdOrgCondition ? [thresholdOrgCondition] : [])
+      );
+
+      const thresholdRows = await db
+        .select({
+          warningThreshold: capacityThresholds.warningThreshold,
+          criticalThreshold: capacityThresholds.criticalThreshold
+        })
+        .from(capacityThresholds)
+        .where(thresholdWhere)
+        .limit(1);
+
+      return c.json({
+        currentValue: Number(storedPredictions[0]!.currentValue),
+        predictions: storedPredictions.map((row) => ({
+          timestamp: row.predictionDate.toISOString(),
+          value: Number(row.predictedValue),
+          trend: row.growthRate === null ? undefined : Number(row.growthRate)
+        })),
+        thresholds: thresholdRows[0]
+          ? {
+              warning:
+                thresholdRows[0].warningThreshold === null
+                  ? undefined
+                  : Number(thresholdRows[0].warningThreshold),
+              critical:
+                thresholdRows[0].criticalThreshold === null
+                  ? undefined
+                  : Number(thresholdRows[0].criticalThreshold)
+            }
+          : undefined
+      });
+    }
+
+    const normalizedRange = query.range.toLowerCase();
+    const rangeDays = normalizedRange === '7d' ? 7 : normalizedRange === '90d' ? 90 : 30;
+    const rangeStart = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
+
+    const metricColumn =
+      metricType === 'cpu'
+        ? deviceMetrics.cpuPercent
+        : metricType === 'memory'
+          ? deviceMetrics.ramPercent
+          : deviceMetrics.diskPercent;
+
+    const metricsOrgCondition =
+      typeof auth?.orgCondition === 'function'
+        ? auth.orgCondition(devices.orgId)
+        : auth?.orgId
+          ? eq(devices.orgId, auth.orgId)
+          : undefined;
+
+    const metricsWhere = and(
+      gte(deviceMetrics.timestamp, rangeStart),
+      ...(metricsOrgCondition ? [metricsOrgCondition] : []),
+      ...(query.deviceId ? [eq(deviceMetrics.deviceId, query.deviceId)] : [])
+    );
+
+    const actualRows = await db
+      .select({
+        timestamp: sql<Date>`date_trunc('day', ${deviceMetrics.timestamp})`,
+        value: sql<number>`avg(${metricColumn})`
+      })
+      .from(deviceMetrics)
+      .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
+      .where(metricsWhere)
+      .groupBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`)
+      .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
+
+    const actuals = actualRows.map((row) => ({
+      timestamp: row.timestamp.toISOString(),
+      value: Number(row.value)
+    }));
+
+    const pointCount = actuals.length;
+    const currentValue = pointCount > 0 ? actuals[pointCount - 1]!.value : 0;
+    let slope = 0;
+    let intercept = currentValue;
+
+    if (pointCount >= 2) {
+      let sumX = 0;
+      let sumY = 0;
+      let sumXY = 0;
+      let sumXX = 0;
+
+      for (let i = 0; i < pointCount; i += 1) {
+        const x = i;
+        const y = actuals[i]!.value;
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumXX += x * x;
+      }
+
+      const denominator = pointCount * sumXX - sumX * sumX;
+      if (denominator !== 0) {
+        slope = (pointCount * sumXY - sumX * sumY) / denominator;
+        intercept = (sumY - slope * sumX) / pointCount;
+      }
+    } else if (pointCount === 1) {
+      intercept = actuals[0]!.value;
+    }
+
+    const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
+    const actualSeries = actuals.map((point, index) => ({
+      timestamp: point.timestamp,
+      value: point.value,
+      trend: clampPercent(intercept + slope * index)
+    }));
+
+    const baselineDate = pointCount > 0 ? new Date(actuals[pointCount - 1]!.timestamp) : new Date();
+    const forecastSeries = Array.from({ length: 14 }, (_, index) => {
+      const projectedDate = new Date(baselineDate);
+      projectedDate.setUTCDate(projectedDate.getUTCDate() + index + 1);
+      const trend = clampPercent(intercept + slope * (pointCount + index));
+      return {
+        timestamp: projectedDate.toISOString(),
+        value: trend,
+        trend
+      };
+    });
 
     return c.json({
-      filter: query,
-      predictions: []
+      currentValue,
+      predictions: [...actualSeries, ...forecastSeries],
+      thresholds: undefined
     });
   }
 );
@@ -594,38 +817,45 @@ analyticsRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    let orgIds: string[] | null = null;
-
+    const conditions: ReturnType<typeof eq>[] = [];
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
-      orgIds = [auth.orgId];
+      conditions.push(eq(slaDefinitionsTable.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
         const hasAccess = await ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        orgIds = [query.orgId];
+        conditions.push(eq(slaDefinitionsTable.orgId, query.orgId));
       } else {
-        orgIds = await getOrgIdsForAuth(auth);
+        const orgIds = await getOrgIdsForAuth(auth);
+        if (!orgIds || orgIds.length === 0) {
+          return c.json({ data: [], pagination: { page, limit, total: 0 } });
+        }
+        conditions.push(inArray(slaDefinitionsTable.orgId, orgIds));
       }
-    } else if (auth.scope === 'system' && query.orgId) {
-      orgIds = [query.orgId];
+    } else if (query.orgId) {
+      conditions.push(eq(slaDefinitionsTable.orgId, query.orgId));
     }
 
-    let data = Array.from(slaDefinitions.values());
+    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
-    if (orgIds) {
-      if (orgIds.length === 0) {
-        return c.json({ data: [], pagination: { page, limit, total: 0 } });
-      }
-      data = data.filter((sla) => orgIds?.includes(sla.orgId));
-    }
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(slaDefinitionsTable)
+      .where(whereCondition);
+    const total = Number(countResult[0]?.count ?? 0);
 
-    const total = data.length;
-    const pageData = data.slice(offset, offset + limit);
+    const pageData = await db
+      .select()
+      .from(slaDefinitionsTable)
+      .where(whereCondition)
+      .orderBy(desc(slaDefinitionsTable.updatedAt))
+      .limit(limit)
+      .offset(offset);
 
     return c.json({
       data: pageData,
@@ -663,22 +893,26 @@ analyticsRoutes.post(
       }
     }
 
-    const now = new Date();
-    const sla: SlaDefinition = {
-      id: randomUUID(),
-      orgId: orgId as string,
-      name: data.name,
-      description: data.description,
-      metricType: data.metricType,
-      targetPercentage: data.targetPercentage,
-      evaluationWindow: data.evaluationWindow,
-      scope: data.scope,
-      filters: data.filters ?? {},
-      createdAt: now,
-      updatedAt: now
-    };
-
-    slaDefinitions.set(sla.id, sla);
+    const [sla] = await db
+      .insert(slaDefinitionsTable)
+      .values({
+        orgId: orgId as string,
+        name: data.name,
+        description: data.description,
+        uptimeTarget: data.uptimeTarget,
+        responseTimeTarget: data.responseTimeTarget,
+        resolutionTimeTarget: data.resolutionTimeTarget,
+        measurementWindow: data.measurementWindow,
+        targetType: data.targetType,
+        targetIds: data.targetIds,
+        excludeMaintenanceWindows: data.excludeMaintenanceWindows,
+        excludeWeekends: data.excludeWeekends,
+        enabled: true
+      })
+      .returning();
+    if (!sla) {
+      return c.json({ error: 'Failed to create SLA definition' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: sla.orgId,
@@ -698,7 +932,11 @@ analyticsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const slaId = c.req.param('id');
-    const sla = slaDefinitions.get(slaId);
+    const [sla] = await db
+      .select()
+      .from(slaDefinitionsTable)
+      .where(eq(slaDefinitionsTable.id, slaId))
+      .limit(1);
 
     if (!sla) {
       return c.json({ error: 'SLA definition not found' }, 404);
@@ -709,9 +947,55 @@ analyticsRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
+    const history = await db
+      .select()
+      .from(slaComplianceTable)
+      .where(eq(slaComplianceTable.slaId, slaId))
+      .orderBy(desc(slaComplianceTable.periodEnd))
+      .limit(12);
+
+    const now = new Date();
+    const measurementWindow = sla.measurementWindow ?? 'monthly';
+    const since = new Date(now);
+    if (measurementWindow === 'daily') {
+      since.setDate(since.getDate() - 1);
+    } else if (measurementWindow === 'weekly') {
+      since.setDate(since.getDate() - 7);
+    } else {
+      since.setMonth(since.getMonth() - 1);
+    }
+
+    const [onlineCountResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(devices)
+      .where(
+        and(
+          eq(devices.orgId, sla.orgId),
+          eq(devices.status, 'online'),
+          gte(devices.lastSeenAt, since)
+        )
+      );
+
+    const [totalCountResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(devices)
+      .where(
+        and(
+          eq(devices.orgId, sla.orgId),
+          ne(devices.status, 'decommissioned')
+        )
+      );
+
+    const onlineCount = Number(onlineCountResult?.count ?? 0);
+    const totalCount = Number(totalCountResult?.count ?? 0);
+    const liveUptime = totalCount > 0 ? (onlineCount / totalCount) * 100 : null;
+
     return c.json({
       slaId,
-      history: slaCompliance.get(slaId) ?? []
+      name: sla.name,
+      uptimeTarget: sla.uptimeTarget,
+      liveUptime,
+      history
     });
   }
 );

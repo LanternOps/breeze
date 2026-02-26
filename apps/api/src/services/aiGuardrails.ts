@@ -31,7 +31,7 @@ const TIER2_ACTIONS: Record<string, string[]> = {
   manage_alerts: ['acknowledge', 'resolve'],
   manage_services: ['list'],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
-  manage_policies: ['evaluate', 'activate', 'deactivate'],
+  manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve'],
   manage_groups: ['add_devices', 'remove_devices'],
@@ -49,7 +49,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
-  manage_policies: ['create', 'update', 'delete', 'remediate'],
+  manage_configuration_policy: ['create', 'update', 'delete'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['scan', 'install', 'rollback'],
   manage_groups: ['create', 'update', 'delete'],
@@ -95,19 +95,6 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   analyze_screen: { resource: 'devices', action: 'execute' },
   computer_control: { resource: 'devices', action: 'execute' },
   // Fleet tools — RBAC mappings
-  manage_policies: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    compliance_status: { resource: 'policies', action: 'read' },
-    compliance_summary: { resource: 'policies', action: 'read' },
-    evaluate: { resource: 'policies', action: 'execute' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
-    activate: { resource: 'policies', action: 'write' },
-    deactivate: { resource: 'policies', action: 'write' },
-    delete: { resource: 'policies', action: 'write' },
-    remediate: { resource: 'policies', action: 'execute' },
-  },
   manage_deployments: {
     list: { resource: 'deployments', action: 'read' },
     get: { resource: 'deployments', action: 'read' },
@@ -191,6 +178,18 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   detect_log_correlations: { resource: 'devices', action: 'read' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
+  get_configuration_policy: { resource: 'policies', action: 'read' },
+  manage_configuration_policy: {
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    activate: { resource: 'policies', action: 'write' },
+    deactivate: { resource: 'policies', action: 'write' },
+    delete: { resource: 'policies', action: 'write' },
+  },
+  configuration_policy_compliance: {
+    summary: { resource: 'policies', action: 'read' },
+    status: { resource: 'policies', action: 'read' },
+  },
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
@@ -219,7 +218,6 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   analyze_screen: { limit: 10, windowSeconds: 300 },
   computer_control: { limit: 20, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
-  manage_policies: { limit: 20, windowSeconds: 300 },
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
   manage_groups: { limit: 20, windowSeconds: 300 },
@@ -237,6 +235,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
   // Configuration policy tools
+  get_configuration_policy: { limit: 30, windowSeconds: 300 },
+  manage_configuration_policy: { limit: 20, windowSeconds: 300 },
+  configuration_policy_compliance: { limit: 30, windowSeconds: 300 },
   apply_configuration_policy: { limit: 10, windowSeconds: 300 },
   remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
   // Playbook tools
@@ -441,11 +442,10 @@ function buildApprovalDescription(
       break;
 
     // Fleet tools
-    case 'manage_policies':
-      if (action === 'create') parts.push(`Create compliance policy "${input.name}"${input.enforcement ? ` (${input.enforcement} mode)` : ''}`);
-      else if (action === 'delete') parts.push(`Delete compliance policy ${(input.policyId as string)?.slice(0, 8)}...`);
-      else if (action === 'remediate') parts.push(`Trigger remediation on non-compliant devices for policy ${(input.policyId as string)?.slice(0, 8)}...`);
-      else parts.push(`Policy ${action}: ${(input.policyId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+    case 'manage_configuration_policy':
+      if (action === 'create') parts.push(`Create configuration policy "${input.name}"`);
+      else if (action === 'delete') parts.push(`Delete configuration policy ${(input.policyId as string)?.slice(0, 8)}...`);
+      else parts.push(`Config policy ${action}: ${(input.policyId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
 
     case 'manage_deployments':

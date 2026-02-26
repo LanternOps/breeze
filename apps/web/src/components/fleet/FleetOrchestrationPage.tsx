@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Shield, Rocket, Package, FolderTree, Clock, Zap, Bell,
   FileText, Loader2, XCircle, RefreshCw, MessageSquare,
-  ChevronRight, AlertTriangle, CheckCircle2, TrendingUp
+  ChevronRight, AlertTriangle, CheckCircle2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -12,7 +12,7 @@ import { useAiStore } from '@/stores/aiStore';
 
 interface PolicySummary {
   total: number;
-  enforcing: number;
+  active: number;
   compliantPercent: number;
   nonCompliantDevices: number;
 }
@@ -27,9 +27,9 @@ interface DeploymentSummary {
 
 interface PatchSummary {
   pendingPatches: number;
-  approvedPatches: number;
   installedPatches: number;
-  criticalPending: number;
+  failedPatches: number;
+  missingPatches: number;
 }
 
 interface AlertSummary {
@@ -54,7 +54,7 @@ interface FleetStats {
 // ─── Quick Actions ──────────────────────────────────────────────────────
 
 const quickActions = [
-  { label: 'Check compliance', prompt: 'Show me a compliance summary for all policies', icon: Shield },
+  { label: 'Check compliance', prompt: 'Show me a compliance summary for all configuration policies', icon: Shield },
   { label: 'Active deployments', prompt: 'List all active deployments and their progress', icon: Rocket },
   { label: 'Critical patches', prompt: 'What critical patches are pending approval?', icon: Package },
   { label: 'Alert overview', prompt: 'Give me a summary of active alerts by severity', icon: Bell },
@@ -68,9 +68,10 @@ const quickActions = [
 
 async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: string[] }> {
   const endpoints = [
-    { name: 'policies', path: '/policies' },
+    { name: 'policies', path: '/configuration-policies' },
+    { name: 'policyCompliance', path: '/policies/compliance/stats' },
     { name: 'deployments', path: '/deployments' },
-    { name: 'patches', path: '/patches/compliance' },
+    { name: 'patchCompliance', path: '/patches/compliance' },
     { name: 'alerts', path: '/alerts/summary' },
     { name: 'automations', path: '/automations' },
     { name: 'maintenance', path: '/maintenance/windows' },
@@ -97,8 +98,9 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
 
   const [
     policiesRes,
+    policyComplianceRes,
     deploymentsRes,
-    patchesRes,
+    patchComplianceRes,
     alertsRes,
     automationsRes,
     maintenanceRes,
@@ -107,8 +109,9 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
   ] = results;
 
   const policies = await safeJson(policiesRes);
+  const policyCompliance = await safeJson(policyComplianceRes);
   const deployments = await safeJson(deploymentsRes);
-  const patches = await safeJson(patchesRes);
+  const patchCompliance = await safeJson(patchComplianceRes);
   const alerts = await safeJson(alertsRes);
   const automations = await safeJson(automationsRes);
   const maintenance = await safeJson(maintenanceRes);
@@ -122,22 +125,27 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
   const groupList = groups?.data ?? groups?.groups ?? [];
   const reportList = reports?.data ?? reports?.reports ?? [];
 
-  const enforcingPolicies = Array.isArray(policyList)
-    ? policyList.filter((p: Record<string, unknown>) => p.enforcement === 'enforce' || p.enforcementMode === 'enforce').length
+  const activePolicies = Array.isArray(policyList)
+    ? policyList.filter((p: Record<string, unknown>) => p.status === 'active').length
     : 0;
 
-  const complianceSummary: Record<string, unknown> = (patches?.summary ?? patches ?? {}) as Record<string, unknown>;
+  // Policy compliance from /policies/compliance/stats (config policy system)
+  const policyCompData = (policyCompliance?.data ?? policyCompliance ?? {}) as Record<string, unknown>;
+  const complianceOverview = (policyCompData.complianceOverview ?? {}) as Record<string, unknown>;
+
+  // Patch compliance from /patches/compliance (operational patch data)
+  const patchCompData = (patchCompliance?.data ?? patchCompliance ?? {}) as Record<string, unknown>;
+  const patchSummary = (patchCompData.summary ?? {}) as Record<string, unknown>;
+
+  // Alert severity from /alerts/summary
+  const alertBySeverity = (alerts?.bySeverity ?? {}) as Record<string, unknown>;
 
   return { failedEndpoints, stats: {
     policies: {
       total: Array.isArray(policyList) ? policyList.length : 0,
-      enforcing: enforcingPolicies,
-      compliantPercent: typeof complianceSummary.compliantPercent === 'number'
-        ? complianceSummary.compliantPercent
-        : 0,
-      nonCompliantDevices: typeof complianceSummary.nonCompliantDevices === 'number'
-        ? complianceSummary.nonCompliantDevices
-        : 0,
+      active: activePolicies,
+      compliantPercent: toNum(policyCompData.complianceRate),
+      nonCompliantDevices: toNum(complianceOverview.non_compliant),
     },
     deployments: {
       total: Array.isArray(deploymentList) ? deploymentList.length : 0,
@@ -147,16 +155,16 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
       failed: countByStatus(deploymentList, ['failed', 'error']),
     },
     patches: {
-      pendingPatches: toNum(complianceSummary.pendingPatches ?? complianceSummary.pending),
-      approvedPatches: toNum(complianceSummary.approvedPatches ?? complianceSummary.approved),
-      installedPatches: toNum(complianceSummary.installedPatches ?? complianceSummary.installed),
-      criticalPending: toNum(complianceSummary.criticalPending ?? complianceSummary.critical),
+      pendingPatches: toNum(patchSummary.pending),
+      installedPatches: toNum(patchSummary.installed),
+      failedPatches: toNum(patchSummary.failed),
+      missingPatches: toNum(patchSummary.missing),
     },
     alerts: {
-      critical: toNum(alerts?.critical),
-      high: toNum(alerts?.high),
-      medium: toNum(alerts?.medium),
-      low: toNum(alerts?.low),
+      critical: toNum(alertBySeverity.critical),
+      high: toNum(alertBySeverity.high),
+      medium: toNum(alertBySeverity.medium),
+      low: toNum(alertBySeverity.low),
       total: toNum(alerts?.total),
     },
     automationCount: Array.isArray(automationList) ? automationList.length : 0,
@@ -213,16 +221,16 @@ export default function FleetOrchestrationPage() {
         data: {
           page: 'fleet',
           policyCount: data.policies.total,
-          enforcingPolicies: data.policies.enforcing,
+          activePolicies: data.policies.active,
           activeDeployments: data.deployments.active,
           pendingPatches: data.patches.pendingPatches,
-          criticalPatches: data.patches.criticalPending,
+          failedPatches: data.patches.failedPatches,
           activeAlerts: data.alerts.total,
           criticalAlerts: data.alerts.critical,
           automationCount: data.automationCount,
           maintenanceActive: data.maintenanceActive,
           groupCount: data.groupCount,
-          hint: 'User is on the Fleet Orchestration page. You have fleet-level tools: manage_policies, manage_deployments, manage_patches, manage_groups, manage_maintenance_windows, manage_automations, manage_alert_rules, generate_report. Use these to help with fleet operations.',
+          hint: 'User is on the Fleet Orchestration page. You have fleet-level tools: manage_configuration_policy, get_configuration_policy, configuration_policy_compliance, list_configuration_policies, apply_configuration_policy, remove_configuration_policy_assignment, preview_configuration_change, get_effective_configuration, manage_deployments, manage_patches, manage_groups, manage_maintenance_windows, manage_automations, manage_alert_rules, generate_report. Use these to help with fleet operations.',
         },
       });
     } catch (err) {
@@ -314,9 +322,9 @@ export default function FleetOrchestrationPage() {
           title="Policies"
           icon={Shield}
           value={s.policies.total}
-          subtitle={`${s.policies.enforcing} enforcing`}
+          subtitle={`${s.policies.active} active`}
           accent="blue"
-          onClick={() => handleQuickAction('Show me a compliance summary for all policies')}
+          onClick={() => handleQuickAction('Show me a compliance summary for all configuration policies')}
         />
         <StatCard
           title="Deployments"
@@ -331,9 +339,9 @@ export default function FleetOrchestrationPage() {
           title="Patches"
           icon={Package}
           value={s.patches.pendingPatches}
-          subtitle={`pending approval`}
-          accent={s.patches.criticalPending > 0 ? 'red' : 'yellow'}
-          badge={s.patches.criticalPending > 0 ? `${s.patches.criticalPending} critical` : undefined}
+          subtitle={`pending installation`}
+          accent={s.patches.failedPatches > 0 ? 'red' : 'yellow'}
+          badge={s.patches.failedPatches > 0 ? `${s.patches.failedPatches} failed` : undefined}
           onClick={() => handleQuickAction('What critical patches are pending approval?')}
         />
         <StatCard
@@ -446,16 +454,16 @@ export default function FleetOrchestrationPage() {
               color="text-yellow-500"
             />
             <MiniStat
-              label="Approved"
-              value={s.patches.approvedPatches}
-              icon={CheckCircle2}
-              color="text-blue-500"
-            />
-            <MiniStat
               label="Installed"
               value={s.patches.installedPatches}
-              icon={TrendingUp}
+              icon={CheckCircle2}
               color="text-green-500"
+            />
+            <MiniStat
+              label="Failed"
+              value={s.patches.failedPatches}
+              icon={XCircle}
+              color={s.patches.failedPatches > 0 ? 'text-red-500' : 'text-green-500'}
             />
           </div>
         </div>
@@ -474,8 +482,8 @@ export default function FleetOrchestrationPage() {
               color="text-blue-500"
             />
             <MiniStat
-              label="Enforcing"
-              value={s.policies.enforcing}
+              label="Active"
+              value={s.policies.active}
               icon={CheckCircle2}
               color="text-green-500"
             />

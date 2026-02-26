@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('./aiTools', () => ({
   getToolTier: vi.fn((toolName: string) => {
     const tiers: Record<string, number> = {
-      manage_policies: 1,
       manage_deployments: 1,
       manage_patches: 1,
       manage_groups: 1,
@@ -12,6 +11,10 @@ vi.mock('./aiTools', () => ({
       manage_automations: 1,
       manage_alert_rules: 1,
       generate_report: 1,
+      // Configuration policy tools
+      manage_configuration_policy: 1,
+      get_configuration_policy: 1,
+      configuration_policy_compliance: 1,
       // Playbook tools
       list_playbooks: 1,
       execute_playbook: 3,
@@ -48,10 +51,6 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
 
   describe('Tier 1 (auto-execute) — read-only actions', () => {
     const t1Cases: [string, string][] = [
-      ['manage_policies', 'list'],
-      ['manage_policies', 'get'],
-      ['manage_policies', 'compliance_status'],
-      ['manage_policies', 'compliance_summary'],
       ['manage_deployments', 'list'],
       ['manage_deployments', 'get'],
       ['manage_deployments', 'device_status'],
@@ -89,9 +88,8 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
 
   describe('Tier 2 (auto-execute + audit) — low-risk mutations', () => {
     const t2Cases: [string, string][] = [
-      ['manage_policies', 'evaluate'],
-      ['manage_policies', 'activate'],
-      ['manage_policies', 'deactivate'],
+      ['manage_configuration_policy', 'activate'],
+      ['manage_configuration_policy', 'deactivate'],
       ['manage_deployments', 'pause'],
       ['manage_deployments', 'resume'],
       ['manage_patches', 'approve'],
@@ -124,10 +122,9 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
 
   describe('Tier 3 (requires approval) — destructive/mutating operations', () => {
     const t3Cases: [string, string][] = [
-      ['manage_policies', 'create'],
-      ['manage_policies', 'update'],
-      ['manage_policies', 'delete'],
-      ['manage_policies', 'remediate'],
+      ['manage_configuration_policy', 'create'],
+      ['manage_configuration_policy', 'update'],
+      ['manage_configuration_policy', 'delete'],
       ['manage_deployments', 'create'],
       ['manage_deployments', 'start'],
       ['manage_deployments', 'cancel'],
@@ -153,7 +150,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     });
 
     it('provides a description for Tier 3 actions', () => {
-      const result = checkGuardrails('manage_policies', { action: 'create', name: 'Require AV' });
+      const result = checkGuardrails('manage_configuration_policy', { action: 'create', name: 'Require AV' });
       expect(result.description).toBeTruthy();
       expect(typeof result.description).toBe('string');
     });
@@ -170,7 +167,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
   // --- Base tier without action → uses base tier ---
 
   it('uses base tier when no action provided', () => {
-    const result = checkGuardrails('manage_policies', {});
+    const result = checkGuardrails('manage_configuration_policy', {});
     expect(result.tier).toBe(1);
     expect(result.allowed).toBe(true);
     expect(result.requiresApproval).toBe(false);
@@ -201,7 +198,7 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
 
 describe('checkGuardrails — fleet approval descriptions', () => {
   it('includes policy name in create description', () => {
-    const result = checkGuardrails('manage_policies', { action: 'create', name: 'Require Firewall' });
+    const result = checkGuardrails('manage_configuration_policy', { action: 'create', name: 'Require Firewall' });
     expect(result.description).toContain('Require Firewall');
   });
 
