@@ -16,6 +16,7 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
     sessionId,
     createSession,
     closeSession,
+    interruptResponse,
     setBridge,
     hasApplied,
     revert,
@@ -41,12 +42,17 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
     }
   }, [panelOpen, sessionId, createSession, bridge]);
 
-  // Cleanup session on unmount
+  // Cleanup session on unmount — interrupt first if streaming
   useEffect(() => {
     return () => {
-      closeSession();
+      const { isStreaming } = useScriptAiStore.getState();
+      if (isStreaming) {
+        interruptResponse().then(() => closeSession());
+      } else {
+        closeSession();
+      }
     };
-  }, [closeSession]);
+  }, [closeSession, interruptResponse]);
 
   if (!panelOpen) return null;
 
