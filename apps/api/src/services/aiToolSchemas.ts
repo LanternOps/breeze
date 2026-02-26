@@ -319,6 +319,27 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(500).optional()
   }),
 
+  get_sensitive_data_overview: z.object({
+    view: z.enum(['dashboard', 'findings', 'scans']).optional(),
+    status: z.enum(['open', 'remediated', 'accepted', 'false_positive']).optional(),
+    risk: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+    dataType: z.enum(['pii', 'pci', 'phi', 'credential', 'financial']).optional(),
+    deviceId: uuid.optional(),
+    scanId: uuid.optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  remediate_sensitive_data: z.object({
+    findingIds: z.array(uuid).min(1).max(250),
+    action: z.enum(['encrypt', 'quarantine', 'secure_delete', 'accept_risk', 'false_positive', 'mark_remediated']),
+    confirm: z.boolean().optional(),
+    dryRun: z.boolean().optional(),
+    secondApprovalToken: z.string().max(256).optional(),
+    encryptionKeyRef: z.string().max(255).optional(),
+    encryptionKeyVersion: z.string().max(100).optional(),
+    quarantineDir: safePath.optional(),
+  }),
+
   get_fleet_health: z.object({
     orgId: uuid.optional(),
     siteId: uuid.optional(),

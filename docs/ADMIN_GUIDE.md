@@ -1623,6 +1623,36 @@ When contacting support, provide:
 
 ---
 
+## 9. Sensitive Data Discovery
+
+Sensitive data discovery helps find probable PII/PCI/PHI/credential/financial exposure on endpoints without storing raw matched values.
+
+### 9.1 Key Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/sensitive-data/scan` | POST | Queue scan jobs for one or more devices |
+| `/api/v1/sensitive-data/scans/:id` | GET | Get scan lifecycle status and summary |
+| `/api/v1/sensitive-data/report` | GET | Fleet findings report with risk/status filters |
+| `/api/v1/sensitive-data/remediate` | POST | Queue remediation or mark accepted/false positive |
+| `/api/v1/sensitive-data/policies` | GET/POST | List/create scan policies |
+| `/api/v1/sensitive-data/policies/:id` | PUT/DELETE | Update/delete scan policy |
+
+### 9.2 Policy Guidance
+
+- Start with `credential` and `pci` classes in pilot orgs, then expand.
+- Keep scopes narrow (`Documents`, `Desktop`, `Downloads`) before broadening.
+- Set file type allowlists to reduce scan volume and false positives.
+- Use schedule type `interval` or `cron` only after validating baseline scan times.
+
+### 9.3 Remediation Safety
+
+- `accept_risk` and `false_positive` update finding status immediately.
+- Destructive actions (`encrypt`, `quarantine`, `secure_delete`) require `confirm=true`.
+- Remediation commands are executed per-device and tracked through command results.
+
+---
+
 ## Appendix B: Permission Reference
 
 ### Complete Permission List

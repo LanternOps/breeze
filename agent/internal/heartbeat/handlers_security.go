@@ -18,6 +18,10 @@ func init() {
 	handlerRegistry[tools.CmdSecurityThreatQuarantine] = handleSecurityThreatQuarantine
 	handlerRegistry[tools.CmdSecurityThreatRemove] = handleSecurityThreatRemove
 	handlerRegistry[tools.CmdSecurityThreatRestore] = handleSecurityThreatRestore
+	handlerRegistry[tools.CmdSensitiveDataScan] = handleSensitiveDataScan
+	handlerRegistry[tools.CmdEncryptFile] = handleEncryptFile
+	handlerRegistry[tools.CmdSecureDeleteFile] = handleSecureDeleteFile
+	handlerRegistry[tools.CmdQuarantineFile] = handleQuarantineFile
 }
 
 func handleSecurityCollectStatus(h *Heartbeat, _ Command) tools.CommandResult {
@@ -148,4 +152,20 @@ func handleSecurityThreatRestore(_ *Heartbeat, cmd Command) tools.CommandResult 
 		"originalPath":    originalPath,
 		"status":          "restored",
 	}, time.Since(start).Milliseconds())
+}
+
+func handleSensitiveDataScan(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.ScanSensitiveData(cmd.Payload)
+}
+
+func handleEncryptFile(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.EncryptFile(cmd.Payload)
+}
+
+func handleSecureDeleteFile(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.SecureDeleteFile(cmd.Payload)
+}
+
+func handleQuarantineFile(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.QuarantineFile(cmd.Payload)
 }

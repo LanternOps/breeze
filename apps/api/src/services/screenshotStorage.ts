@@ -122,11 +122,7 @@ export async function deleteExpiredScreenshots(): Promise<number> {
     try {
       await unlink(fullPath);
     } catch (err: unknown) {
-      const code = err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
-      if (code !== 'ENOENT') {
-        console.error(`[ScreenshotStorage] Failed to delete expired screenshot file ${fullPath}:`, err);
-        continue; // Skip DB record deletion to avoid orphaning
-      }
+      console.error(`[ScreenshotStorage] Failed to delete expired screenshot file ${fullPath}:`, err);
     }
 
     await db.delete(aiScreenshots).where(eq(aiScreenshots.id, record.id));

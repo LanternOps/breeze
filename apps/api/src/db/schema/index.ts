@@ -41,9 +41,7 @@ export * from './brainDeviceContext';
 export * from './playbooks';
 export * from './changes';
 export * from './dnsSecurity';
-<<<<<<< HEAD
 export * from './cisHardening';
 export * from './sentinelOne';
-=======
 export * from './huntress';
->>>>>>> d082369 (Fix Huntress integration findings and stabilize API tests)
+export * from './sensitiveData';

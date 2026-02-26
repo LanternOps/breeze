@@ -50,6 +50,9 @@ export type EventType =
   | 'huntress.incident_created'
   | 'huntress.incident_updated'
   | 'huntress.agent_offline'
+  | 'compliance.sensitive_data_found'
+  | 'compliance.credential_exposed'
+  | 'compliance.sensitive_data_remediated'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
@@ -506,6 +509,9 @@ export const EVENT_TYPES = {
   HUNTRESS_INCIDENT_CREATED: 'huntress.incident_created' as const,
   HUNTRESS_INCIDENT_UPDATED: 'huntress.incident_updated' as const,
   HUNTRESS_AGENT_OFFLINE: 'huntress.agent_offline' as const,
+  COMPLIANCE_SENSITIVE_DATA_FOUND: 'compliance.sensitive_data_found' as const,
+  COMPLIANCE_CREDENTIAL_EXPOSED: 'compliance.credential_exposed' as const,
+  COMPLIANCE_SENSITIVE_DATA_REMEDIATED: 'compliance.sensitive_data_remediated' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,

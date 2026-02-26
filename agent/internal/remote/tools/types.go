@@ -101,6 +101,10 @@ const (
 	CmdSecurityThreatQuarantine = "security_threat_quarantine"
 	CmdSecurityThreatRemove     = "security_threat_remove"
 	CmdSecurityThreatRestore    = "security_threat_restore"
+	CmdSensitiveDataScan        = "sensitive_data_scan"
+	CmdEncryptFile              = "encrypt_file"
+	CmdSecureDeleteFile         = "secure_delete_file"
+	CmdQuarantineFile           = "quarantine_file"
 
 	// File operations
 	CmdFileList           = "file_list"

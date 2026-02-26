@@ -23,6 +23,9 @@ var elevatedCommandTypes = map[string]bool{
 	tools.CmdScheduleReboot:           true,
 	tools.CmdCancelReboot:             true,
 	tools.CmdApplyAuditPolicyBaseline: true,
+	tools.CmdEncryptFile:              true,
+	tools.CmdSecureDeleteFile:         true,
+	tools.CmdQuarantineFile:           true,
 }
 
 // RequiresElevation returns true if the command type needs root/admin privileges.

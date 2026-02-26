@@ -4,10 +4,17 @@ import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceCommands } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { commandResultSchema, securityCommandTypes, filesystemAnalysisCommandType, uuidRegex } from './schemas';
+import {
+  commandResultSchema,
+  securityCommandTypes,
+  filesystemAnalysisCommandType,
+  sensitiveDataCommandTypes,
+  uuidRegex
+} from './schemas';
 import {
   handleSecurityCommandResult,
   handleFilesystemAnalysisCommandResult,
+  handleSensitiveDataCommandResult,
   handleSoftwareRemediationCommandResult,
   handleCisCommandResult,
 } from './helpers';
@@ -88,6 +95,19 @@ commandsRoutes.post(
       } catch (err) {
         console.error(`[agents] filesystem analysis post-processing failed for ${commandId}:`, err);
         captureException(err);
+      }
+    }
+
+    if (
+      command.type === sensitiveDataCommandTypes.scan ||
+      command.type === sensitiveDataCommandTypes.encrypt ||
+      command.type === sensitiveDataCommandTypes.secureDelete ||
+      command.type === sensitiveDataCommandTypes.quarantine
+    ) {
+      try {
+        await handleSensitiveDataCommandResult(command, data);
+      } catch (err) {
+        console.error(`[agents] sensitive data post-processing failed for ${commandId}:`, err);
       }
     }
 
