@@ -86,6 +86,7 @@ import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
 import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
+import { huntressRoutes } from './routes/huntress';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -118,6 +119,7 @@ import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patch
 import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
 import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
 import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
+import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -647,6 +649,7 @@ api.route('/playbooks', playbookRoutes);
 api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
 api.route('/s1', sentinelOneRoutes);
+api.route('/huntress', huntressRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
 
 app.route('/api/v1', api);
@@ -854,6 +857,7 @@ async function initializeWorkers(): Promise<void> {
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
     ['s1SyncWorker', initializeS1SyncJob],
+    ['huntressSyncWorker', initializeHuntressSyncJob],
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
@@ -948,6 +952,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
+    shutdownHuntressSyncJob,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
     shutdownSnmpWorker,

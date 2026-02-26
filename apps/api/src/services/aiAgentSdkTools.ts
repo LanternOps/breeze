@@ -52,11 +52,14 @@ export const TOOL_TIERS = {
   get_user_experience_metrics: 1,
   manage_alerts: 1, // Base tier; action-level escalation handled in guardrails
   get_dns_security: 1,
+  get_huntress_status: 1,
+  get_huntress_incidents: 1,
   manage_dns_policy: 2,
   get_s1_status: 1,
   get_s1_threats: 1,
   s1_isolate_device: 3,
   s1_threat_action: 3,
+  sync_huntress_data: 2,
   execute_command: 3,
   run_script: 3,
   manage_services: 3,
@@ -370,6 +373,33 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'get_huntress_status',
+      'Get Huntress integration sync health, agent coverage, and incident summary counts.',
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+      },
+      makeHandler('get_huntress_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_huntress_incidents',
+      'Query Huntress incidents with filters for status, severity, and device mapping.',
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+        status: z.string().max(30).optional(),
+        severity: z.string().max(20).optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        includeResolved: z.boolean().optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('get_huntress_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'manage_dns_policy',
       'Add or remove domains from DNS blocklist/allowlist and synchronize with the provider.',
       {
@@ -425,6 +455,16 @@ export function createBreezeMcpServer(
         threatIds: z.array(z.string().min(1).max(128)).min(1).max(200),
       },
       makeHandler('s1_threat_action', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'sync_huntress_data',
+      'Trigger a manual Huntress sync for an accessible integration.',
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+      },
+      makeHandler('sync_huntress_data', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
