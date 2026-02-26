@@ -1,19 +1,17 @@
 ---
-import Layout from '../../layouts/Layout.astro';
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import OrgSettingsPage from '../../components/settings/OrgSettingsPage';
 ---
 
-<Layout title="Organization Settings | Breeze RMM">
-  <div class="h-[calc(100vh-4rem)]">
-    <OrgSettingsPage client:only="react">
-      <div slot="fallback" class="flex h-full items-center justify-center">
-        <div class="text-center">
-          <p class="text-muted-foreground">Loading Organization Settings...</p>
-          <p class="mt-2 text-sm text-muted-foreground">
-            Configuring org profile, branding, and preferences
-          </p>
-        </div>
+<DashboardLayout title="Organization Settings | Breeze RMM">
+  <OrgSettingsPage client:only="react">
+    <div slot="fallback" class="flex h-full items-center justify-center">
+      <div class="text-center">
+        <p class="text-muted-foreground">Loading Organization Settings...</p>
+        <p class="mt-2 text-sm text-muted-foreground">
+          Configuring org profile, branding, and preferences
+        </p>
       </div>
-    </OrgSettingsPage>
-  </div>
-</Layout>
+    </div>
+  </OrgSettingsPage>
+</DashboardLayout>
