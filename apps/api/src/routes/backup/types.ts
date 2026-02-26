@@ -19,34 +19,43 @@ export type BackupPolicySchedule = {
   dayOfMonth?: number;
 };
 
+export type BackupPolicyRetention = {
+  keepDaily: number;
+  keepWeekly: number;
+  keepMonthly: number;
+};
+
+export type BackupPolicyTargets = {
+  deviceIds: string[];
+  siteIds: string[];
+  groupIds: string[];
+};
+
 export type BackupPolicy = {
   id: string;
   name: string;
   configId: string;
   enabled: boolean;
-  targets: {
-    deviceIds: string[];
-    siteIds: string[];
-    groupIds: string[];
-  };
+  targets: BackupPolicyTargets;
   schedule: BackupPolicySchedule;
-  retention: {
-    keepDaily: number;
-    keepWeekly: number;
-    keepMonthly: number;
-  };
+  retention: BackupPolicyRetention;
   createdAt: string;
   updatedAt: string;
 };
 
-export type BackupJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
-export type BackupJobType = 'backup' | 'restore';
-export type BackupJobTrigger = 'scheduled' | 'manual' | 'restore';
+export type BackupJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'partial';
+
+export type BackupJobType = 'scheduled' | 'manual' | 'incremental';
 
 export type BackupJob = {
   id: string;
   type: BackupJobType;
-  trigger: BackupJobTrigger;
   deviceId: string;
   configId: string;
   policyId?: string | null;
@@ -56,20 +65,22 @@ export type BackupJob = {
   completedAt?: string | null;
   createdAt: string;
   updatedAt: string;
-  sizeBytes?: number;
-  error?: string | null;
+  totalSize?: number | null;
+  fileCount?: number | null;
+  errorCount?: number | null;
+  errorLog?: string | null;
 };
 
 export type BackupSnapshot = {
   id: string;
   deviceId: string;
-  configId: string;
+  configId?: string | null;
   jobId: string;
   createdAt: string;
-  sizeBytes: number;
-  fileCount: number;
-  label: string;
-  location: string;
+  sizeBytes: number | null;
+  fileCount: number | null;
+  label: string | null;
+  location: string | null;
 };
 
 export type SnapshotTreeItem = {
@@ -86,11 +97,11 @@ export type RestoreJob = {
   snapshotId: string;
   deviceId: string;
   status: BackupJobStatus;
-  targetPath?: string;
+  targetPath?: string | null;
   createdAt: string;
   startedAt?: string | null;
   completedAt?: string | null;
   updatedAt: string;
-  progress?: number;
-  bytesRestored?: number;
+  restoredSize?: number | null;
+  restoredFiles?: number | null;
 };

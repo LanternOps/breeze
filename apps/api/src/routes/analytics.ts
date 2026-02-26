@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { randomUUID } from 'crypto';
 import { and, eq, sql, gte, lte, ne, inArray, desc } from 'drizzle-orm';
 import { db } from '../db';
 import {
+  analyticsDashboards,
+  dashboardWidgets,
   capacityPredictions,
   capacityThresholds,
   deviceMetrics,
@@ -16,31 +17,6 @@ import { authMiddleware, requireScope, type AuthContext } from '../middleware/au
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const analyticsRoutes = new Hono();
-
-type Dashboard = {
-  id: string;
-  orgId: string;
-  name: string;
-  description?: string;
-  layout: Record<string, unknown>;
-  widgetIds: string[];
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-type Widget = {
-  id: string;
-  dashboardId: string;
-  name: string;
-  type: string;
-  config: Record<string, unknown>;
-  layout?: Record<string, unknown>;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-const dashboards = new Map<string, Dashboard>();
-const widgets = new Map<string, Widget>();
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -153,6 +129,22 @@ const updateWidgetSchema = z.object({
   layout: z.record(z.any()).optional()
 });
 
+function mapWidgetToApi(widget: typeof dashboardWidgets.$inferSelect) {
+  return {
+    id: widget.id,
+    dashboardId: widget.dashboardId,
+    name: widget.title,
+    type: widget.widgetType,
+    config: (widget.dataSource ?? {}) as Record<string, unknown>,
+    layout: (widget.position ?? {}) as Record<string, unknown>,
+    chartType: widget.chartType,
+    visualization: (widget.visualization ?? {}) as Record<string, unknown>,
+    refreshInterval: widget.refreshInterval,
+    createdAt: widget.createdAt,
+    updatedAt: widget.updatedAt
+  };
+}
+
 const capacityQuerySchema = z.object({
   deviceId: z.string().uuid().optional(),
   metricType: z.string().min(1).optional().default('disk'),
@@ -213,7 +205,20 @@ analyticsRoutes.post(
 
     const startTime = new Date(data.startTime);
     const endTime = new Date(data.endTime);
+    if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
+      return c.json({ error: 'Invalid startTime or endTime' }, 400);
+    }
+
     const interval = data.interval;
+    const metricMap: Record<string, any> = {
+      ...metricColumnMap,
+      ram_used_mb: deviceMetrics.ramUsedMb,
+      disk_used_gb: deviceMetrics.diskUsedGb,
+      bandwidth_in: deviceMetrics.bandwidthInBps,
+      bandwidth_out: deviceMetrics.bandwidthOutBps,
+      'network throughput': deviceMetrics.bandwidthInBps,
+    };
+
     const series: Array<{
       metricType: string;
       aggregation: string;
@@ -222,7 +227,9 @@ analyticsRoutes.post(
     }> = [];
 
     for (const metricType of data.metricTypes) {
-      const metricColumn = metricColumnMap[metricType];
+      const normalizedMetricType = metricType.trim();
+      const metricColumn =
+        metricMap[normalizedMetricType] ?? metricMap[normalizedMetricType.toLowerCase()];
       if (!metricColumn) {
         continue;
       }
@@ -277,41 +284,69 @@ analyticsRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    let orgIds: string[] | null = null;
-
+    const conditions: ReturnType<typeof eq>[] = [];
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
-      orgIds = [auth.orgId];
+      conditions.push(eq(analyticsDashboards.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
         const hasAccess = await ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        orgIds = [query.orgId];
+        conditions.push(eq(analyticsDashboards.orgId, query.orgId));
       } else {
-        orgIds = await getOrgIdsForAuth(auth);
+        const orgIds = await getOrgIdsForAuth(auth);
+        if (!orgIds || orgIds.length === 0) {
+          return c.json({ data: [], pagination: { page, limit, total: 0 } });
+        }
+        conditions.push(inArray(analyticsDashboards.orgId, orgIds));
       }
     } else if (auth.scope === 'system' && query.orgId) {
-      orgIds = [query.orgId];
+      conditions.push(eq(analyticsDashboards.orgId, query.orgId));
     }
 
-    let data = Array.from(dashboards.values());
+    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
-    if (orgIds) {
-      if (orgIds.length === 0) {
-        return c.json({ data: [], pagination: { page, limit, total: 0 } });
-      }
-      data = data.filter((dashboard) => orgIds?.includes(dashboard.orgId));
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(analyticsDashboards)
+      .where(whereCondition);
+    const total = Number(countResult[0]?.count ?? 0);
+
+    const pageData = await db
+      .select()
+      .from(analyticsDashboards)
+      .where(whereCondition)
+      .orderBy(desc(analyticsDashboards.updatedAt))
+      .limit(limit)
+      .offset(offset);
+
+    const dashboardIds = pageData.map((dashboard) => dashboard.id);
+    const widgetRows = dashboardIds.length
+      ? await db
+          .select({
+            id: dashboardWidgets.id,
+            dashboardId: dashboardWidgets.dashboardId
+          })
+          .from(dashboardWidgets)
+          .where(inArray(dashboardWidgets.dashboardId, dashboardIds))
+      : [];
+
+    const widgetIdsByDashboardId = new Map<string, string[]>();
+    for (const row of widgetRows) {
+      const widgetIds = widgetIdsByDashboardId.get(row.dashboardId) ?? [];
+      widgetIds.push(row.id);
+      widgetIdsByDashboardId.set(row.dashboardId, widgetIds);
     }
-
-    const total = data.length;
-    const pageData = data.slice(offset, offset + limit);
 
     return c.json({
-      data: pageData,
+      data: pageData.map((dashboard) => ({
+        ...dashboard,
+        widgetIds: widgetIdsByDashboardId.get(dashboard.id) ?? []
+      })),
       pagination: { page, limit, total }
     });
   }
@@ -346,19 +381,19 @@ analyticsRoutes.post(
       }
     }
 
-    const now = new Date();
-    const dashboard: Dashboard = {
-      id: randomUUID(),
-      orgId: orgId as string,
-      name: data.name,
-      description: data.description,
-      layout: data.layout ?? {},
-      widgetIds: [],
-      createdAt: now,
-      updatedAt: now
-    };
-
-    dashboards.set(dashboard.id, dashboard);
+    const [dashboard] = await db
+      .insert(analyticsDashboards)
+      .values({
+        orgId: orgId as string,
+        name: data.name,
+        description: data.description,
+        layout: data.layout ?? {},
+        createdBy: auth.user?.id
+      })
+      .returning();
+    if (!dashboard) {
+      return c.json({ error: 'Failed to create dashboard' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: dashboard.orgId,
@@ -368,7 +403,7 @@ analyticsRoutes.post(
       resourceName: dashboard.name
     });
 
-    return c.json(dashboard, 201);
+    return c.json({ ...dashboard, widgetIds: [] }, 201);
   }
 );
 
@@ -378,23 +413,73 @@ analyticsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const dashboardId = c.req.param('id');
-    const dashboard = dashboards.get(dashboardId);
+    const rows = await db
+      .select({
+        dashboardId: analyticsDashboards.id,
+        orgId: analyticsDashboards.orgId,
+        name: analyticsDashboards.name,
+        description: analyticsDashboards.description,
+        isDefault: analyticsDashboards.isDefault,
+        isSystem: analyticsDashboards.isSystem,
+        layout: analyticsDashboards.layout,
+        createdBy: analyticsDashboards.createdBy,
+        createdAt: analyticsDashboards.createdAt,
+        updatedAt: analyticsDashboards.updatedAt,
+        widgetId: dashboardWidgets.id,
+        widgetDashboardId: dashboardWidgets.dashboardId,
+        widgetType: dashboardWidgets.widgetType,
+        widgetTitle: dashboardWidgets.title,
+        widgetDataSource: dashboardWidgets.dataSource,
+        widgetChartType: dashboardWidgets.chartType,
+        widgetVisualization: dashboardWidgets.visualization,
+        widgetPosition: dashboardWidgets.position,
+        widgetRefreshInterval: dashboardWidgets.refreshInterval,
+        widgetCreatedAt: dashboardWidgets.createdAt,
+        widgetUpdatedAt: dashboardWidgets.updatedAt
+      })
+      .from(analyticsDashboards)
+      .leftJoin(dashboardWidgets, eq(dashboardWidgets.dashboardId, analyticsDashboards.id))
+      .where(eq(analyticsDashboards.id, dashboardId))
+      .orderBy(desc(dashboardWidgets.createdAt));
 
-    if (!dashboard) {
+    if (rows.length === 0) {
       return c.json({ error: 'Dashboard not found' }, 404);
     }
 
+    const dashboard = rows[0]!;
     const hasAccess = await ensureOrgAccess(dashboard.orgId, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    const widgetData = dashboard.widgetIds
-      .map((id) => widgets.get(id))
-      .filter((widget): widget is Widget => Boolean(widget));
+    const widgetData = rows
+      .filter((row) => row.widgetId !== null)
+      .map((row) => ({
+        id: row.widgetId as string,
+        dashboardId: row.widgetDashboardId as string,
+        name: row.widgetTitle as string,
+        type: row.widgetType as string,
+        config: (row.widgetDataSource ?? {}) as Record<string, unknown>,
+        layout: (row.widgetPosition ?? {}) as Record<string, unknown>,
+        chartType: row.widgetChartType,
+        visualization: (row.widgetVisualization ?? {}) as Record<string, unknown>,
+        refreshInterval: row.widgetRefreshInterval,
+        createdAt: row.widgetCreatedAt as Date,
+        updatedAt: row.widgetUpdatedAt as Date
+      }));
 
     return c.json({
-      ...dashboard,
+      id: dashboard.dashboardId,
+      orgId: dashboard.orgId,
+      name: dashboard.name,
+      description: dashboard.description,
+      isDefault: dashboard.isDefault,
+      isSystem: dashboard.isSystem,
+      layout: dashboard.layout,
+      createdBy: dashboard.createdBy,
+      createdAt: dashboard.createdAt,
+      updatedAt: dashboard.updatedAt,
+      widgetIds: widgetData.map((widget) => widget.id),
       widgets: widgetData
     });
   }
@@ -413,7 +498,11 @@ analyticsRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const dashboard = dashboards.get(dashboardId);
+    const [dashboard] = await db
+      .select()
+      .from(analyticsDashboards)
+      .where(eq(analyticsDashboards.id, dashboardId))
+      .limit(1);
     if (!dashboard) {
       return c.json({ error: 'Dashboard not found' }, 404);
     }
@@ -423,29 +512,49 @@ analyticsRoutes.patch(
       return c.json({ error: 'Access denied' }, 403);
     }
 
+    const setData: {
+      name?: string;
+      description?: string;
+      layout?: Record<string, unknown>;
+      updatedAt: Date;
+    } = {
+      updatedAt: new Date()
+    };
     if (updates.name !== undefined) {
-      dashboard.name = updates.name;
+      setData.name = updates.name;
     }
     if (updates.description !== undefined) {
-      dashboard.description = updates.description;
+      setData.description = updates.description;
     }
     if (updates.layout !== undefined) {
-      dashboard.layout = updates.layout;
+      setData.layout = updates.layout;
     }
-    dashboard.updatedAt = new Date();
 
-    dashboards.set(dashboard.id, dashboard);
+    const [updatedDashboard] = await db
+      .update(analyticsDashboards)
+      .set(setData)
+      .where(eq(analyticsDashboards.id, dashboardId))
+      .returning();
+    if (!updatedDashboard) {
+      return c.json({ error: 'Dashboard not found' }, 404);
+    }
+
+    const widgetRows = await db
+      .select({ id: dashboardWidgets.id })
+      .from(dashboardWidgets)
+      .where(eq(dashboardWidgets.dashboardId, dashboardId));
+    const widgetIds = widgetRows.map((row) => row.id);
 
     writeRouteAudit(c, {
       orgId: dashboard.orgId,
       action: 'analytics.dashboard.update',
       resourceType: 'analytics_dashboard',
       resourceId: dashboard.id,
-      resourceName: dashboard.name,
+      resourceName: updatedDashboard.name,
       details: { changedFields: Object.keys(updates) }
     });
 
-    return c.json(dashboard);
+    return c.json({ ...updatedDashboard, widgetIds });
   }
 );
 
@@ -455,7 +564,11 @@ analyticsRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const dashboardId = c.req.param('id');
-    const dashboard = dashboards.get(dashboardId);
+    const [dashboard] = await db
+      .select()
+      .from(analyticsDashboards)
+      .where(eq(analyticsDashboards.id, dashboardId))
+      .limit(1);
 
     if (!dashboard) {
       return c.json({ error: 'Dashboard not found' }, 404);
@@ -466,11 +579,8 @@ analyticsRoutes.delete(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    for (const widgetId of dashboard.widgetIds) {
-      widgets.delete(widgetId);
-    }
-
-    dashboards.delete(dashboardId);
+    await db.delete(dashboardWidgets).where(eq(dashboardWidgets.dashboardId, dashboardId));
+    await db.delete(analyticsDashboards).where(eq(analyticsDashboards.id, dashboardId));
 
     writeRouteAudit(c, {
       orgId: dashboard.orgId,
@@ -492,7 +602,11 @@ analyticsRoutes.post(
     const auth = c.get('auth');
     const dashboardId = c.req.param('id');
     const data = c.req.valid('json');
-    const dashboard = dashboards.get(dashboardId);
+    const [dashboard] = await db
+      .select()
+      .from(analyticsDashboards)
+      .where(eq(analyticsDashboards.id, dashboardId))
+      .limit(1);
 
     if (!dashboard) {
       return c.json({ error: 'Dashboard not found' }, 404);
@@ -504,32 +618,36 @@ analyticsRoutes.post(
     }
 
     const now = new Date();
-    const widget: Widget = {
-      id: randomUUID(),
-      dashboardId,
-      name: data.name,
-      type: data.type,
-      config: data.config ?? {},
-      layout: data.layout,
-      createdAt: now,
-      updatedAt: now
-    };
+    const [widget] = await db
+      .insert(dashboardWidgets)
+      .values({
+        dashboardId,
+        title: data.name,
+        widgetType: data.type,
+        dataSource: data.config ?? {},
+        position: data.layout ?? {},
+        updatedAt: now
+      })
+      .returning();
+    if (!widget) {
+      return c.json({ error: 'Failed to create widget' }, 500);
+    }
 
-    widgets.set(widget.id, widget);
-    dashboard.widgetIds.push(widget.id);
-    dashboard.updatedAt = now;
-    dashboards.set(dashboard.id, dashboard);
+    await db
+      .update(analyticsDashboards)
+      .set({ updatedAt: now })
+      .where(eq(analyticsDashboards.id, dashboardId));
 
     writeRouteAudit(c, {
       orgId: dashboard.orgId,
       action: 'analytics.widget.create',
       resourceType: 'analytics_widget',
       resourceId: widget.id,
-      resourceName: widget.name,
-      details: { dashboardId: dashboard.id, type: widget.type }
+      resourceName: widget.title,
+      details: { dashboardId: dashboard.id, type: widget.widgetType }
     });
 
-    return c.json(widget, 201);
+    return c.json(mapWidgetToApi(widget), 201);
   }
 );
 
@@ -546,47 +664,68 @@ analyticsRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const widget = widgets.get(widgetId);
-    if (!widget) {
+    const [widgetRecord] = await db
+      .select({
+        id: dashboardWidgets.id,
+        dashboardId: dashboardWidgets.dashboardId,
+        title: dashboardWidgets.title,
+        orgId: analyticsDashboards.orgId
+      })
+      .from(dashboardWidgets)
+      .innerJoin(analyticsDashboards, eq(dashboardWidgets.dashboardId, analyticsDashboards.id))
+      .where(eq(dashboardWidgets.id, widgetId))
+      .limit(1);
+
+    if (!widgetRecord) {
       return c.json({ error: 'Widget not found' }, 404);
     }
 
-    const dashboard = dashboards.get(widget.dashboardId);
-    if (!dashboard) {
-      return c.json({ error: 'Dashboard not found' }, 404);
-    }
-
-    const hasAccess = await ensureOrgAccess(dashboard.orgId, auth);
+    const hasAccess = await ensureOrgAccess(widgetRecord.orgId, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
+    const setData: {
+      title?: string;
+      widgetType?: string;
+      dataSource?: Record<string, unknown>;
+      position?: Record<string, unknown>;
+      updatedAt: Date;
+    } = {
+      updatedAt: new Date()
+    };
     if (updates.name !== undefined) {
-      widget.name = updates.name;
+      setData.title = updates.name;
     }
     if (updates.type !== undefined) {
-      widget.type = updates.type;
+      setData.widgetType = updates.type;
     }
     if (updates.config !== undefined) {
-      widget.config = updates.config;
+      setData.dataSource = updates.config;
     }
     if (updates.layout !== undefined) {
-      widget.layout = updates.layout;
+      setData.position = updates.layout;
     }
-    widget.updatedAt = new Date();
 
-    widgets.set(widget.id, widget);
+    const [updatedWidget] = await db
+      .update(dashboardWidgets)
+      .set(setData)
+      .where(eq(dashboardWidgets.id, widgetId))
+      .returning();
+    if (!updatedWidget) {
+      return c.json({ error: 'Widget not found' }, 404);
+    }
 
     writeRouteAudit(c, {
-      orgId: dashboard.orgId,
+      orgId: widgetRecord.orgId,
       action: 'analytics.widget.update',
       resourceType: 'analytics_widget',
-      resourceId: widget.id,
-      resourceName: widget.name,
+      resourceId: updatedWidget.id,
+      resourceName: updatedWidget.title,
       details: { changedFields: Object.keys(updates) }
     });
 
-    return c.json(widget);
+    return c.json(mapWidgetToApi(updatedWidget));
   }
 );
 
@@ -596,33 +735,40 @@ analyticsRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const widgetId = c.req.param('id');
-    const widget = widgets.get(widgetId);
+    const [widgetRecord] = await db
+      .select({
+        id: dashboardWidgets.id,
+        dashboardId: dashboardWidgets.dashboardId,
+        title: dashboardWidgets.title,
+        orgId: analyticsDashboards.orgId
+      })
+      .from(dashboardWidgets)
+      .innerJoin(analyticsDashboards, eq(dashboardWidgets.dashboardId, analyticsDashboards.id))
+      .where(eq(dashboardWidgets.id, widgetId))
+      .limit(1);
 
-    if (!widget) {
+    if (!widgetRecord) {
       return c.json({ error: 'Widget not found' }, 404);
     }
 
-    const dashboard = dashboards.get(widget.dashboardId);
-    if (!dashboard) {
-      return c.json({ error: 'Dashboard not found' }, 404);
-    }
-
-    const hasAccess = await ensureOrgAccess(dashboard.orgId, auth);
+    const hasAccess = await ensureOrgAccess(widgetRecord.orgId, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    widgets.delete(widgetId);
-    dashboard.widgetIds = dashboard.widgetIds.filter((id) => id !== widgetId);
-    dashboard.updatedAt = new Date();
-    dashboards.set(dashboard.id, dashboard);
+    const now = new Date();
+    await db.delete(dashboardWidgets).where(eq(dashboardWidgets.id, widgetId));
+    await db
+      .update(analyticsDashboards)
+      .set({ updatedAt: now })
+      .where(eq(analyticsDashboards.id, widgetRecord.dashboardId));
 
     writeRouteAudit(c, {
-      orgId: dashboard.orgId,
+      orgId: widgetRecord.orgId,
       action: 'analytics.widget.delete',
       resourceType: 'analytics_widget',
-      resourceId: widget.id,
-      resourceName: widget.name
+      resourceId: widgetRecord.id,
+      resourceName: widgetRecord.title
     });
 
     return c.json({ success: true });
@@ -693,7 +839,7 @@ analyticsRoutes.get(
       return c.json({
         currentValue: Number(storedPredictions[0]!.currentValue),
         predictions: storedPredictions.map((row) => ({
-          timestamp: row.predictionDate.toISOString(),
+          timestamp: row.predictionDate instanceof Date ? row.predictionDate.toISOString() : String(row.predictionDate),
           value: Number(row.predictedValue),
           trend: row.growthRate === null ? undefined : Number(row.growthRate)
         })),
@@ -748,7 +894,7 @@ analyticsRoutes.get(
       .orderBy(sql`date_trunc('day', ${deviceMetrics.timestamp})`);
 
     const actuals = actualRows.map((row) => ({
-      timestamp: row.timestamp.toISOString(),
+      timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : String(row.timestamp),
       value: Number(row.value)
     }));
 

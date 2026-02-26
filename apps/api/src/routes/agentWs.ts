@@ -4,10 +4,11 @@ import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults, remoteSessions } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, networkMonitors, networkMonitorResults, remoteSessions, backupJobs, restoreJobs } from '../db/schema';
 import { handleTerminalOutput } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/discoveryWorker';
+import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
 import { isRedisAvailable } from '../services/redis';
@@ -315,7 +316,95 @@ async function processOrphanedCommandResult(
     return;
   }
 
-  console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands or discovery jobs for agent ${agentId}`);
+  // Check if this is a backup job result
+  const [backupJob] = await db
+    .select({ id: backupJobs.id, orgId: backupJobs.orgId, deviceId: backupJobs.deviceId })
+    .from(backupJobs)
+    .where(eq(backupJobs.id, result.commandId))
+    .limit(1);
+
+  if (backupJob) {
+    console.log(`[AgentWs] Processing backup result for job ${backupJob.id} from agent ${agentId}`);
+    try {
+      const backupData = result.result as {
+        jobId?: string;
+        snapshotId?: string;
+        filesBackedUp?: number;
+        bytesBackedUp?: number;
+        warning?: string;
+        status?: string;
+      } | undefined;
+
+      if (isRedisAvailable()) {
+        await enqueueBackupResults(
+          backupJob.id,
+          backupJob.orgId,
+          backupJob.deviceId,
+          {
+            status: result.status ?? 'failed',
+            snapshotId: backupData?.snapshotId,
+            filesBackedUp: backupData?.filesBackedUp,
+            bytesBackedUp: backupData?.bytesBackedUp,
+            warning: backupData?.warning,
+            error: result.error || result.stderr,
+          }
+        );
+      } else {
+        console.warn(`[AgentWs] Redis unavailable, marking backup job ${backupJob.id} with inline result`);
+        const now = new Date();
+        await db
+          .update(backupJobs)
+          .set({
+            status: result.status === 'completed' ? 'completed' : 'failed',
+            completedAt: now,
+            totalSize: backupData?.bytesBackedUp ?? null,
+            fileCount: backupData?.filesBackedUp ?? null,
+            snapshotId: backupData?.snapshotId ?? null,
+            errorLog: result.error || result.stderr || backupData?.warning || null,
+            updatedAt: now,
+          })
+          .where(eq(backupJobs.id, backupJob.id));
+      }
+    } catch (err) {
+      console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
+    }
+    return;
+  }
+
+  // Check if this is a restore job result
+  const [restoreJob] = await db
+    .select({ id: restoreJobs.id, orgId: restoreJobs.orgId })
+    .from(restoreJobs)
+    .where(eq(restoreJobs.id, result.commandId))
+    .limit(1);
+
+  if (restoreJob) {
+    console.log(`[AgentWs] Processing restore result for job ${restoreJob.id} from agent ${agentId}`);
+    try {
+      const restoreData = result.result as {
+        filesRestored?: number;
+        bytesRestored?: number;
+        errors?: string[];
+      } | undefined;
+
+      const now = new Date();
+      await db
+        .update(restoreJobs)
+        .set({
+          status: result.status === 'completed' ? 'completed' : 'failed',
+          completedAt: now,
+          restoredSize: restoreData?.bytesRestored ?? null,
+          restoredFiles: restoreData?.filesRestored ?? null,
+          updatedAt: now,
+        })
+        .where(eq(restoreJobs.id, restoreJob.id));
+    } catch (err) {
+      console.error(`[AgentWs] Failed to process restore results for ${agentId}:`, err);
+    }
+    return;
+  }
+
+  console.warn(`[AgentWs] Command ${result.commandId} not found in deviceCommands or discovery/backup jobs for agent ${agentId}`);
 }
 
 /**
