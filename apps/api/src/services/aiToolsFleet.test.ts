@@ -46,7 +46,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema/automations', () => ({
   automationPolicies: { orgId: 'orgId', id: 'id', name: 'name' },
-  automationPolicyCompliance: { policyId: 'policyId' },
+  automationPolicyCompliance: { policyId: 'policyId', id: 'id', status: 'status' },
   automations: { orgId: 'orgId', id: 'id' },
   automationRuns: { automationId: 'automationId' },
 }));
@@ -96,7 +96,6 @@ import { registerFleetTools } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
 
 const EXPECTED_TOOLS = [
-  'manage_policies',
   'manage_deployments',
   'manage_patches',
   'manage_groups',
@@ -112,8 +111,8 @@ describe('registerFleetTools', () => {
   // Register once for all tests
   registerFleetTools(toolMap);
 
-  it('registers exactly 8 fleet tools', () => {
-    expect(toolMap.size).toBe(8);
+  it('registers exactly 7 fleet tools', () => {
+    expect(toolMap.size).toBe(7);
   });
 
   it.each(EXPECTED_TOOLS)('registers %s', (toolName) => {

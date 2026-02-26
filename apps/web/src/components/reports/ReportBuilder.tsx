@@ -25,6 +25,7 @@ import {
 import { cn } from '@/lib/utils';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
@@ -661,6 +662,7 @@ export default function ReportBuilder({
   onPreview,
   onCancel
 }: ReportBuilderProps) {
+  const { currentOrgId } = useOrgStore();
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
 
@@ -828,7 +830,8 @@ export default function ReportBuilder({
           body: JSON.stringify({
             type: builderToLegacyType[builderType],
             config,
-            format: exportFormats[0] ?? 'csv'
+            format: exportFormats[0] ?? 'csv',
+            ...(currentOrgId ? { orgId: currentOrgId } : {})
           })
         });
 
@@ -871,7 +874,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode]);
+  }, [builderType, currentOrgId, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
@@ -1187,6 +1190,7 @@ export default function ReportBuilder({
       type: values.type,
       schedule: values.schedule,
       format: primaryFormat,
+      ...(currentOrgId ? { orgId: currentOrgId } : {}),
       config: {
         builderType,
         dataSource,
@@ -1219,7 +1223,8 @@ export default function ReportBuilder({
           body: JSON.stringify({
             type: payload.type,
             config: payload.config,
-            format: primaryFormat
+            format: primaryFormat,
+            ...(currentOrgId ? { orgId: currentOrgId } : {})
           })
         });
       } else if (mode === 'edit' && reportId) {

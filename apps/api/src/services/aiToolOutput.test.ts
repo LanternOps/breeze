@@ -52,19 +52,18 @@ describe('compactToolResultForChat', () => {
 
   // ─── Fleet tool compaction ──────────────────────────────────────────
 
-  it('compacts oversized manage_policies list output', () => {
+  it('compacts oversized list_configuration_policies output', () => {
     const raw = JSON.stringify({
       policies: Array.from({ length: 80 }).map((_, i) => ({
         id: `policy-${i}`,
         name: `Policy ${i}`,
-        enforcement: 'enforce',
-        enabled: true,
-        compliance: { compliant: 50, total: 60 },
+        status: 'active',
+        featureTypes: ['patch', 'alert_rule'],
       })),
-      total: 80,
+      showing: 80,
     });
 
-    const compacted = compactToolResultForChat('manage_policies', raw + ' '.repeat(5_000));
+    const compacted = compactToolResultForChat('list_configuration_policies', raw + ' '.repeat(5_000));
     const parsed = JSON.parse(compacted) as Record<string, unknown>;
 
     expect(Array.isArray(parsed.policies)).toBe(true);
@@ -131,7 +130,7 @@ describe('compactToolResultForChat', () => {
       policies: [{ id: '1', name: 'Small list' }],
     });
 
-    const compacted = compactToolResultForChat('manage_policies', raw);
+    const compacted = compactToolResultForChat('list_configuration_policies', raw);
     expect(compacted).toBe(raw);
   });
 

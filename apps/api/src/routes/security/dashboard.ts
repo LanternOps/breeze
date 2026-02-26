@@ -100,6 +100,9 @@ dashboardRoutes.get(
       score: Number(point.overall ?? 0)
     }));
 
+    const avProtected = statuses.filter((status) => status.realTimeProtection).length;
+    const avUnprotected = statuses.length - avProtected;
+
     return c.json({
       data: {
         totalDevices,
@@ -115,6 +118,14 @@ dashboardRoutes.get(
         providers,
         securityScore,
         overallScore: securityScore,
+        antivirus: {
+          protected: avProtected,
+          unprotected: avUnprotected
+        },
+        firewall: {
+          enabled: statuses.filter((status) => status.firewallEnabled).length,
+          disabled: statuses.filter((status) => !status.firewallEnabled).length
+        },
         firewallEnabled: statuses.filter((status) => status.firewallEnabled).length,
         firewallDisabled: statuses.filter((status) => !status.firewallEnabled).length,
         encryption: {

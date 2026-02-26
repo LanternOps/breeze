@@ -86,6 +86,11 @@ export const testAlertRuleSchema = z.object({
   deviceId: z.string().uuid()
 });
 
+export const bulkAlertActionSchema = z.object({
+  action: z.enum(['acknowledge', 'resolve']),
+  alertIds: z.array(z.string().uuid()).min(1).max(100)
+});
+
 // Alerts schemas
 export const listAlertsSchema = z.object({
   page: z.string().optional(),
