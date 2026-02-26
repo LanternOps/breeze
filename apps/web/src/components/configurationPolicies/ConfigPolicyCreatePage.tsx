@@ -6,6 +6,7 @@ import { Layers, FilePlus2, Link as LinkIcon } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import PolicyLinkSelector from './featureTabs/PolicyLinkSelector';
+import { navigateTo } from '@/lib/navigation';
 
 const createPolicySchema = z.object({
   name: z.string().min(1, 'Policy name is required').max(255),
@@ -50,7 +51,7 @@ export default function ConfigPolicyCreatePage() {
 
       const policy = await response.json();
       const params = linkedPolicyId ? `?linked=${linkedPolicyId}` : '';
-      window.location.href = `/configuration-policies/${policy.id}${params}`;
+      void navigateTo(`/configuration-policies/${policy.id}${params}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     }

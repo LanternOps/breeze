@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Database, Save, Key, Link, ScrollText, Info } from 'lucide-react';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type LogForwardingData = {
   enabled: boolean;
@@ -43,7 +44,7 @@ export default function OrgEventLogSettings({ onDirty }: OrgEventLogSettingsProp
         const response = await fetchWithAuth(`/agents/org/${currentOrgId}/settings/log-forwarding`);
         if (!response.ok) {
           if (response.status === 401) {
-            window.location.href = '/login';
+            void navigateTo('/login', { replace: true });
             return;
           }
           throw new Error('Failed to load log forwarding settings');

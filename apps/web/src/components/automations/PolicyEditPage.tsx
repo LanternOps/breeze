@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -183,7 +184,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
         throw new Error(errorMessage);
       }
 
-      window.location.href = '/policies';
+      void navigateTo('/policies');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -192,7 +193,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
   };
 
   const handleCancel = () => {
-    window.location.href = '/policies';
+    void navigateTo('/policies');
   };
 
   if (loading) {

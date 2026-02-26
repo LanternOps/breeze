@@ -15,6 +15,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import KnownGuestsSettings from './KnownGuestsSettings';
 import type { PartnerSettings, BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule } from '@breeze/shared';
+import { navigateTo } from '@/lib/navigation';
 
 type Partner = {
   id: string;
@@ -104,7 +105,7 @@ export default function PartnerSettingsPage() {
       const response = await fetchWithAuth('/orgs/partners/me');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         if (response.status === 403) {

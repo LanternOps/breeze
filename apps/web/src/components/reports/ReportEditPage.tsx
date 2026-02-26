@@ -3,6 +3,7 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ReportEditPageProps = {
   reportId: string;
@@ -36,11 +37,11 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
 
   const handleSubmit = useCallback(async () => {
     // Report has been updated
-    window.location.href = '/reports';
+    void navigateTo('/reports');
   }, []);
 
   const handleCancel = useCallback(() => {
-    window.location.href = '/reports';
+    void navigateTo('/reports');
   }, []);
 
   if (loading) {

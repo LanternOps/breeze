@@ -16,6 +16,7 @@ import { cn, heightPercentClass } from '@/lib/utils';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type TemplatePreview = {
   gradient: string;
@@ -464,7 +465,7 @@ export default function ReportTemplates() {
   }, [activeTemplate]);
 
   const handleSubmit = useCallback(() => {
-    window.location.href = '/reports';
+    void navigateTo('/reports');
   }, []);
 
   return (

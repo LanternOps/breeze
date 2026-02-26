@@ -42,6 +42,7 @@ import DeviceIpHistoryTab from './DeviceIpHistoryTab';
 import DeviceBootPerformanceTab from './DeviceBootPerformanceTab';
 import DevicePlaybookHistory from './DevicePlaybookHistory';
 import DevicePeripheralsTab from './DevicePeripheralsTab';
+import { navigateTo } from '@/lib/navigation';
 
 type Tab =
   | 'overview'
@@ -263,7 +264,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
               onAction('files', device);
               return;
             }
-            window.location.href = `/remote/files/${device.id}`;
+            void navigateTo(`/remote/files/${device.id}`);
           }}
         />
       )}

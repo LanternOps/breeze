@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type PatchResult = {
   id?: string;
@@ -229,7 +230,7 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
         );
         if (!response.ok) {
           if (response.status === 401) {
-            window.location.href = '/login';
+            void navigateTo('/login', { replace: true });
             return;
           }
           throw new Error('Failed to fetch patch history');

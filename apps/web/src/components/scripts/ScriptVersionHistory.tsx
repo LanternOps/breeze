@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Calendar, GitCompare, RotateCcw, User, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptVersion = {
   id: string;
@@ -82,7 +83,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
       const response = await fetchWithAuth(`/scripts/${scriptId}`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch script versions');
@@ -154,7 +155,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to rollback script');

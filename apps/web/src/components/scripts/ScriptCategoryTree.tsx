@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { cn, leftPxClass, paddingLeftPxClass, topPxClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptCategory = {
   id: string;
@@ -177,7 +178,7 @@ export default function ScriptCategoryTree({
       const response = await fetchWithAuth('/scripts?includeSystem=true');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch scripts');

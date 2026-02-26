@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Plus, Tag, Trash2, Loader2 } from 'lucide-react';
 import { cn, resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptTag = {
   id: string;
@@ -49,7 +50,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
       const scriptsResponse = await fetchWithAuth('/scripts?includeSystem=true');
       if (!scriptsResponse.ok) {
         if (scriptsResponse.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch scripts');
@@ -244,7 +245,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
 
         if (!response.ok) {
           if (response.status === 401) {
-            window.location.href = '/login';
+            void navigateTo('/login', { replace: true });
             return;
           }
           // Continue with local update even if API fails

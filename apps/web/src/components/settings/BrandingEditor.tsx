@@ -3,6 +3,7 @@ import { FileCode, Globe, Image, Mail, Palette, RefreshCcw, Save } from 'lucide-
 import { fetchWithAuth } from '../../stores/auth';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 
 type BrandingEditorProps = {
   organizationId?: string;
@@ -217,7 +218,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
       const response = await fetchWithAuth(`/orgs/organizations/${organizationId}/branding`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         if (response.status === 404) {

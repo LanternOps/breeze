@@ -14,6 +14,7 @@ import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
 import CommandPalette from './CommandPalette';
 import { useAuthStore, apiLogout } from '../../stores/auth';
+import { navigateTo } from '../../lib/navigation';
 
 export default function Header() {
   const [mounted, setMounted] = useState(false);
@@ -53,10 +54,10 @@ export default function Header() {
     setIsLoggingOut(true);
     try {
       await apiLogout();
-      window.location.href = '/login';
+      await navigateTo('/login', { replace: true });
     } catch {
       // Even if logout fails on server, redirect to login
-      window.location.href = '/login';
+      await navigateTo('/login', { replace: true });
     }
   };
 

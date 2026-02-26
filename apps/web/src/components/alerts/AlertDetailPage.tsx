@@ -3,6 +3,7 @@ import { ArrowLeft, AlertTriangle, CheckCircle, XCircle, Clock, ExternalLink, Us
 import { fetchWithAuth } from '../../stores/auth';
 import { cn } from '@/lib/utils';
 import { useAiStore } from '@/stores/aiStore';
+import { navigateTo } from '@/lib/navigation';
 
 type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
@@ -104,7 +105,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   }, [alert, setPageContext]);
 
   const handleBack = () => {
-    window.location.href = '/alerts';
+    void navigateTo('/alerts');
   };
 
   const handleAcknowledge = async () => {

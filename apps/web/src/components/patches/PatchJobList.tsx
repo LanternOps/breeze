@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 export type PatchJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'paused';
 
@@ -105,7 +106,7 @@ export default function PatchJobList({ pageSize = 8, onSelect }: PatchJobListPro
       const response = await fetchWithAuth('/patches/jobs');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch patch jobs');

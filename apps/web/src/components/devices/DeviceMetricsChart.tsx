@@ -10,6 +10,7 @@ import {
   Legend
 } from 'recharts';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type TimeRange = '1h' | '6h' | '24h' | '7d' | '30d';
 
@@ -76,7 +77,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
       const response = await fetchWithAuth(`/devices/${deviceId}/metrics?range=${timeRange}`);
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
