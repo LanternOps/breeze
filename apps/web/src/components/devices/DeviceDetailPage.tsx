@@ -7,6 +7,7 @@ import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
+import { navigateTo } from '@/lib/navigation';
 
 type DeviceDetailPageProps = {
   deviceId: string;
@@ -133,6 +134,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
         case 'remote-tools':
           window.location.href = `/remote/tools?deviceId=${device.id}&deviceName=${encodeURIComponent(device.hostname)}&os=${device.os}`;
+          return;
+
+        case 'deploy-software':
+          void navigateTo('/software');
           return;
 
         case 'run-script':

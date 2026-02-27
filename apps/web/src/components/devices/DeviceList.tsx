@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Package } from 'lucide-react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -331,6 +331,13 @@ export default function DeviceList({
                   className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   Run Script
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleBulkAction('deploy-software')}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  Deploy Software
                 </button>
                 <button
                   type="button"

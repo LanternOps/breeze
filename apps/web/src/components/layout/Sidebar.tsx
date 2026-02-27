@@ -72,7 +72,8 @@ const operationsNav = [
 ];
 
 const managementNav = [
-  { name: 'Software', href: '/software-inventory', icon: Package },
+  { name: 'App Library', href: '/software', icon: Package },
+  { name: 'App Policies', href: '/software-inventory', icon: Package },
   { name: 'Config Policies', href: '/configuration-policies', icon: Layers },
   { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
   { name: 'Users', href: '/settings/users', icon: Users },
