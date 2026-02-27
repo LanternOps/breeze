@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { playbookRoutes } from './playbooks';
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),

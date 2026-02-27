@@ -31,6 +31,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
@@ -271,6 +272,7 @@ describe('configurationPolicies patchJob routes', () => {
           { id: device2, orgId: ORG_ID, hostname: 'host-2' },
         ]) as any);
 
+      // First device suppressed, second not
       let maintenanceCallCount = 0;
       checkDeviceMaintenanceWindowMock.mockImplementation(async () => {
         maintenanceCallCount++;
@@ -324,6 +326,45 @@ describe('configurationPolicies patchJob routes', () => {
       expect(insertValuesMock).toHaveBeenCalledTimes(1);
       expect(insertValuesMock.mock.calls[0]?.[0]?.targets?.deviceIds).toEqual([DEVICE_ID, device2]);
     });
+
+    it('creates separate jobs when devices belong to different orgs', async () => {
+      const device2 = '66666666-6666-6666-6666-666666666666';
+      const otherOrgId = '77777777-7777-7777-7777-777777777777';
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectWhereLimitResult([makeFeatureLink()]) as any)
+        .mockReturnValueOnce(selectWhereResult([
+          { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
+          { id: device2, orgId: otherOrgId, hostname: 'host-2' },
+        ]) as any);
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+
+      // Extend canAccessOrg to include both orgs
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          accessibleOrgIds: [ORG_ID, otherOrgId],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === otherOrgId,
+        }));
+        await next();
+      });
+      app.route('/', patchJobRoutes);
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValuesMock } as any);
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID, device2] }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValuesMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('GET /:id/patch-settings', () => {
@@ -337,6 +378,7 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.configPolicyId).toBe(POLICY_ID);
       expect(json.approvalRing.ringId).toBeNull();
       expect(json.deployment.scheduleTime).toBe('02:00');
+      expect(json.deployment).toBeDefined();
     });
 
     it('returns 404 when policy not found', async () => {
@@ -368,6 +410,8 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.resolved).not.toBeNull();
       expect(json.resolved.approvalRing.ringId).toBeNull();
       expect(json.resolved.deployment.scheduleTime).toBe('02:00');
+      expect(json.resolved.deployment).toBeDefined();
+      expect(json.resolved.approvalRing).toBeDefined();
     });
 
     it('returns 404 when policy not found', async () => {

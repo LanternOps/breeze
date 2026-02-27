@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock dependencies before imports
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
   },

@@ -20,6 +20,7 @@ const {
 // Module mocks
 // ---------------------------------------------------------------------------
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: mockSelect,
     insert: mockInsert,

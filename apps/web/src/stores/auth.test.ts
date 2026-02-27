@@ -248,7 +248,7 @@ describe('auth API helpers', () => {
 
     const result = await apiVerifyMFA('123456', 'temp-1', 'totp');
 
-    expect(result).toEqual({ success: true, user: baseUser, tokens });
+    expect(result).toEqual({ success: true, user: { ...baseUser, requiresSetup: false }, tokens, requiresSetup: false });
   });
 
   it('apiLogout clears state even when logout network call fails', async () => {

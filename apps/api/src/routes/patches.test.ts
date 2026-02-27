@@ -33,12 +33,14 @@ vi.mock('drizzle-orm', () => {
 });
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
     execute: vi.fn(),
     update: vi.fn(),
-    delete: vi.fn()
+    delete: vi.fn(),
+    execute: vi.fn().mockResolvedValue(undefined),
   }
 }));
 

@@ -7,6 +7,7 @@ vi.mock('bullmq', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn()
   },

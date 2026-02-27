@@ -14,6 +14,7 @@ vi.mock('../services/snmpDashboardTopInterfaces', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({ from: vi.fn() })),
     insert: vi.fn(() => ({ values: vi.fn() })),

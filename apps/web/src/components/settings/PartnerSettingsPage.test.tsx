@@ -31,6 +31,8 @@ describe('PartnerSettingsPage language control', () => {
   });
 
   it('removes coming-soon language selector and shows default language copy', async () => {
+    // Default response for child component fetches (e.g., KnownGuestsSettings)
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
         id: 'partner-1',

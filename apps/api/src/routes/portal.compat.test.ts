@@ -13,6 +13,7 @@ vi.mock('../services/password', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({

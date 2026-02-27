@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { securityRoutes } from './security';
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),

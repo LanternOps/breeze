@@ -132,7 +132,8 @@ describe('DevicePatchStatusTab', () => {
           }
         })
       )
-      .mockResolvedValueOnce(
+      // PatchInstallHistory child may also fetch; provide default responses
+      .mockResolvedValue(
         makeJsonResponse({
           queuedCommandIds: ['cmd-1'],
           jobId: 'scan-123'
@@ -145,8 +146,7 @@ describe('DevicePatchStatusTab', () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
-        2,
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
         '/patches/scan',
         expect.objectContaining({
           method: 'POST',
@@ -162,33 +162,33 @@ describe('DevicePatchStatusTab', () => {
   });
 
   it('queues install for pending third-party patches', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          data: {
-            compliancePercent: 10,
-            pending: [
-              {
-                id: 'f0cfbd5f-6f8d-4682-9f52-bc37f8d6edbf',
-                title: 'Google Chrome',
-                externalId: 'third_party:Google Chrome:122.0.6261.57',
-                description: 'installed: 121.0.6167.184',
-                source: 'third_party',
-                category: 'application',
-                status: 'pending'
-              }
-            ],
-            installed: []
+    const patchData = {
+      data: {
+        compliancePercent: 10,
+        pending: [
+          {
+            id: 'f0cfbd5f-6f8d-4682-9f52-bc37f8d6edbf',
+            title: 'Google Chrome',
+            externalId: 'third_party:Google Chrome:122.0.6261.57',
+            description: 'installed: 121.0.6167.184',
+            source: 'third_party',
+            category: 'application',
+            status: 'pending'
           }
-        })
-      )
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          success: true,
-          commandId: 'cmd-install-1',
-          patchCount: 1
-        })
-      );
+        ],
+        installed: []
+      }
+    };
+
+    // Route responses by URL to avoid PatchInstallHistory and polling
+    // consuming mock slots meant for the install action
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/patches/install')) {
+        return makeJsonResponse({ success: true, commandId: 'cmd-install-1', patchCount: 1 });
+      }
+      // Patch data endpoint and any other fetches
+      return makeJsonResponse(patchData);
+    });
 
     render(<DevicePatchStatusTab deviceId={deviceId} osType="macos" />);
 
@@ -199,8 +199,7 @@ describe('DevicePatchStatusTab', () => {
     fireEvent.click(installButton);
 
     await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
-        2,
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
         `/devices/${deviceId}/patches/install`,
         expect.objectContaining({
           method: 'POST',
@@ -211,7 +210,9 @@ describe('DevicePatchStatusTab', () => {
       );
     });
 
-    await screen.findByText(/Install pending third-party patches queued/i);
+    // After install succeeds, startInstallPolling immediately replaces the
+    // success notice with a polling info message.
+    await screen.findByText(/Installing patches/i);
   });
 
   it('disables install controls when there are no pending patches', async () => {

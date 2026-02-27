@@ -232,6 +232,7 @@ describe('checkToolPermission — reliability and posture read tools', () => {
     token: { roleId: 'role-1' },
     orgId: 'org-1',
     partnerId: null,
+    token: { roleId: 'viewer', scope: 'organization' },
   } as any;
 
   it('enforces devices.read for get_fleet_health', async () => {
