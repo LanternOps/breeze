@@ -32,10 +32,10 @@ const deleteMock = vi.fn(() => chainMock([]));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
-    select: (...args: any[]) => selectMock(...args),
-    insert: (...args: any[]) => insertMock(...args),
-    update: (...args: any[]) => updateMock(...args),
-    delete: (...args: any[]) => deleteMock(...args),
+    select: (...args: unknown[]) => selectMock(...(args as [])),
+    insert: (...args: unknown[]) => insertMock(...(args as [])),
+    update: (...args: unknown[]) => updateMock(...(args as [])),
+    delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
