@@ -1,35 +1,15 @@
-import React, { useEffect, useState } from 'react';
-import { Monitor, Wifi, WifiOff, AlertTriangle, Loader2 } from 'lucide-react';
-import { portalApi, type Device } from '@/lib/api';
+import React from 'react';
+import { Monitor, Wifi, WifiOff, AlertTriangle } from 'lucide-react';
+import { type Device } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 
-export function DeviceList() {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+interface DeviceListProps {
+  devices: Device[];
+  error?: string | null;
+}
 
-  useEffect(() => {
-    async function fetchDevices() {
-      const result = await portalApi.getDevices();
-      if (result.data) {
-        setDevices(result.data);
-      } else {
-        setError(result.error || 'Failed to load devices');
-      }
-      setIsLoading(false);
-    }
-
-    fetchDevices();
-  }, []);
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
+export function DeviceList({ devices, error }: DeviceListProps) {
 
   if (error) {
     return (
@@ -87,7 +67,7 @@ export function DeviceList() {
                   <Monitor className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div>
-                  <h3 className="font-medium">{device.name}</h3>
+                  <h3 className="font-medium">{device.displayName || device.hostname}</h3>
                   <p className="text-sm text-muted-foreground">
                     {device.hostname}
                   </p>
@@ -111,11 +91,11 @@ export function DeviceList() {
             <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
               <div>
                 <span className="text-muted-foreground">OS:</span>{' '}
-                <span>{device.osType} {device.osVersion}</span>
+                <span>{device.osType || 'Unknown'} {device.osVersion || ''}</span>
               </div>
               <div>
                 <span className="text-muted-foreground">Last seen:</span>{' '}
-                <span>{formatRelativeTime(device.lastSeen)}</span>
+                <span>{device.lastSeenAt ? formatRelativeTime(device.lastSeenAt) : 'Unknown'}</span>
               </div>
             </div>
           </div>

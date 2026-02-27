@@ -14,7 +14,7 @@ import {
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 export type ComplianceStatus = 'compliant' | 'non_compliant' | 'unknown';
 
@@ -401,16 +401,15 @@ export default function ComplianceDashboard({
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="flex items-center gap-2">
-                      <div className="h-2 w-24 rounded-full bg-muted overflow-hidden">
-                        <div
-                          className={cn(
-                            'h-full rounded-full',
-                            policyPercent >= 90 ? 'bg-green-500' :
-                            policyPercent >= 70 ? 'bg-yellow-500' : 'bg-red-500'
-                          )}
-                          style={{ width: `${policyPercent}%` }}
-                        />
-                      </div>
+                        <div className="h-2 w-24 rounded-full bg-muted overflow-hidden">
+                          <div
+                            className={cn(
+                              'h-full rounded-full',
+                              policyPercent >= 90 ? 'bg-green-500' :
+                              policyPercent >= 70 ? 'bg-yellow-500' : 'bg-red-500'
+                            , widthPercentClass(policyPercent))}
+                          />
+                        </div>
                       <span className={cn(
                         'text-sm font-medium',
                         policyPercent >= 90 ? 'text-green-600' :

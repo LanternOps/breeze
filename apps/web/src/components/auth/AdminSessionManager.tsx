@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiLogout, fetchWithAuth, restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { navigateTo } from '../../lib/navigation';
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 60;
 const DEFAULT_REFRESH_INTERVAL_MINUTES = 5;
@@ -108,7 +109,7 @@ export default function AdminSessionManager() {
         idleLogoutInFlightRef.current = true;
         await apiLogout();
         if (!cancelled) {
-          window.location.href = '/login';
+          await navigateTo('/login', { replace: true });
         }
         return;
       }

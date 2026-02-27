@@ -2,6 +2,8 @@ import { type ChangeEvent, type DragEvent, useCallback, useEffect, useState } fr
 import { FileCode, Globe, Image, Mail, Palette, RefreshCcw, Save } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 
 type BrandingEditorProps = {
   organizationId?: string;
@@ -79,21 +81,6 @@ const normalizeHex = (value: string) => {
   }
 
   return value;
-};
-
-const getContrastColor = (value: string, fallback: string) => {
-  const normalized = normalizeHex(value);
-  if (!normalized) {
-    return fallback;
-  }
-
-  const hex = normalized.slice(1);
-  const red = Number.parseInt(hex.slice(0, 2), 16);
-  const green = Number.parseInt(hex.slice(2, 4), 16);
-  const blue = Number.parseInt(hex.slice(4, 6), 16);
-  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-
-  return luminance > 0.6 ? '#0f172a' : '#f8fafc';
 };
 
 type UploadDropzoneProps = {
@@ -231,7 +218,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
       const response = await fetchWithAuth(`/orgs/organizations/${organizationId}/branding`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         if (response.status === 404) {
@@ -417,12 +404,12 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
     onSave?.();
   };
 
-  const resolvedPrimary = isValidHex(primaryColor) ? primaryColor : defaultBranding.primaryColor;
-  const resolvedSecondary = isValidHex(secondaryColor) ? secondaryColor : defaultBranding.secondaryColor;
+  const resolvedPrimary = sanitizeHexColor(primaryColor, defaultBranding.primaryColor);
+  const resolvedSecondary = sanitizeHexColor(secondaryColor, defaultBranding.secondaryColor);
   const primarySwatch = normalizeHex(resolvedPrimary) ?? defaultBranding.primaryColor;
   const secondarySwatch = normalizeHex(resolvedSecondary) ?? defaultBranding.secondaryColor;
-  const primaryText = getContrastColor(resolvedPrimary, '#f8fafc');
-  const secondaryText = getContrastColor(resolvedSecondary, '#0f172a');
+  const primaryToken = resolveUiColorToken(resolvedPrimary, defaultBranding.primaryColor);
+  const secondaryToken = resolveUiColorToken(resolvedSecondary, defaultBranding.secondaryColor);
   const initials = getInitials(branding.organizationName || 'Breeze');
   const safeLogoLightPreview = sanitizeImageSrc(logoLightPreview);
   const safeLogoDarkPreview = sanitizeImageSrc(logoDarkPreview);
@@ -622,8 +609,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
               </div>
               <div className="overflow-hidden rounded-lg border bg-background">
                 <div
-                  className="flex items-center justify-between px-4 py-3"
-                  style={{ backgroundColor: resolvedPrimary, color: primaryText }}
+                  className={`flex items-center justify-between px-4 py-3 ${primaryToken.bgClass} ${primaryToken.textOnClass}`}
                 >
                   <div className="flex items-center gap-2">
                     {safeLogoLightPreview ? (
@@ -652,8 +638,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                   <div className="flex flex-wrap items-center gap-3">
                     <button
                       type="button"
-                      className="rounded-md px-3 py-2 text-xs font-semibold"
-                      style={{ backgroundColor: resolvedSecondary, color: secondaryText }}
+                      className={`rounded-md px-3 py-2 text-xs font-semibold ${secondaryToken.bgClass} ${secondaryToken.textOnClass}`}
                     >
                       View dashboard
                     </button>
@@ -672,8 +657,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
               </div>
               <div className="space-y-4 rounded-lg border bg-background p-4">
                 <div
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2"
-                  style={{ borderColor: resolvedPrimary }}
+                  className={`flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2 ${primaryToken.borderClass}`}
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex h-8 w-8 items-center justify-center rounded-md border bg-muted text-xs font-semibold">
@@ -707,15 +691,14 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                   </div>
                   <button
                     type="button"
-                    className="rounded-md px-3 py-2 text-xs font-semibold"
-                    style={{ backgroundColor: resolvedSecondary, color: secondaryText }}
+                    className={`rounded-md px-3 py-2 text-xs font-semibold ${secondaryToken.bgClass} ${secondaryToken.textOnClass}`}
                   >
                     New request
                   </button>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-md border p-3" style={{ borderColor: resolvedSecondary }}>
+                  <div className={`rounded-md border p-3 ${secondaryToken.borderClass}`}>
                     <p className="text-xs text-muted-foreground">Open requests</p>
                     <p className="text-xl font-semibold">12</p>
                   </div>

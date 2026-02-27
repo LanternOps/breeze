@@ -6,6 +6,7 @@ import ComplianceDashboard, {
   type ComplianceTrend
 } from './ComplianceDashboard';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type CompliancePageProps = {
   policyId?: string;
@@ -62,11 +63,11 @@ export default function CompliancePage({ policyId }: CompliancePageProps) {
   }, [fetchComplianceData]);
 
   const handleViewDevice = (deviceId: string) => {
-    window.location.href = `/devices/${deviceId}`;
+    void navigateTo(`/devices/${deviceId}`);
   };
 
   const handleViewPolicy = (policyId: string) => {
-    window.location.href = `/policies/compliance?policyId=${policyId}`;
+    void navigateTo(`/policies/compliance?policyId=${policyId}`);
   };
 
   if (loading) {

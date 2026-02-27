@@ -182,7 +182,7 @@ export default function DevicesPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         let errorMessage = 'Failed to generate installation token';
@@ -243,7 +243,7 @@ export default function DevicesPage() {
   };
 
   const handleSelectDevice = (device: Device) => {
-    window.location.href = `/devices/${device.id}`;
+    void navigateTo(`/devices/${device.id}`);
   };
 
   const openScriptPicker = (targetDevices: Device[]) => {
@@ -308,11 +308,11 @@ export default function DevicesPage() {
           return;
 
         case 'terminal':
-          window.location.href = `/remote/terminal/${device.id}`;
+          void navigateTo(`/remote/terminal/${device.id}`);
           return;
 
         case 'files':
-          window.location.href = `/remote/files/${device.id}`;
+          void navigateTo(`/remote/files/${device.id}`);
           return;
 
         case 'run-script':

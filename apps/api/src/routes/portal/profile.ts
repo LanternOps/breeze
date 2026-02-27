@@ -12,8 +12,11 @@ import {
   PORTAL_REDIS_KEYS,
 } from './schemas';
 import {
+  applyPortalCacheHeaders,
+  buildWeakEtag,
   portalSessions,
   buildPortalUserPayload,
+  isEtagFresh,
   validatePortalCookieCsrfRequest,
   writePortalAudit,
 } from './helpers';
@@ -22,7 +25,22 @@ export const profileRoutes = new Hono();
 
 profileRoutes.get('/profile', async (c) => {
   const auth = c.get('portalAuth');
-  return c.json({ user: buildPortalUserPayload(auth.user) });
+  const payload = { user: buildPortalUserPayload(auth.user) };
+
+  applyPortalCacheHeaders(c, {
+    scope: 'private',
+    browserMaxAgeSeconds: 15,
+    staleWhileRevalidateSeconds: 60,
+    vary: ['Authorization', 'Cookie']
+  });
+  const etag = buildWeakEtag(payload);
+  c.header('ETag', etag);
+
+  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+    return new Response(null, { status: 304, headers: c.res.headers });
+  }
+
+  return c.json(payload);
 });
 
 profileRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (c) => {

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
 
@@ -37,7 +38,7 @@ export default function SsoProvidersPage() {
       const response = await fetchWithAuth('/sso/providers');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch SSO providers');

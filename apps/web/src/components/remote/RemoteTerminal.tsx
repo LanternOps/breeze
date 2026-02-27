@@ -498,10 +498,9 @@ export default function RemoteTerminal({
       <div
         ref={terminalContainerRef}
         className={cn(
-          'flex-1 min-h-[400px] bg-[#1a1b26] cursor-text',
+          'flex-1 min-h-[400px] bg-[#1a1b26] cursor-text p-2',
           isFullscreen && 'min-h-0'
         )}
-        style={{ padding: '8px' }}
         onClick={() => terminalRef.current?.focus()}
       />
     </div>

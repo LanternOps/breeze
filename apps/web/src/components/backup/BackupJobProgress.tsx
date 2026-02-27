@@ -63,7 +63,7 @@ export default function BackupJobProgress() {
             <div className="text-xs text-muted-foreground">Speed 182 MB/s</div>
           </div>
           <div className="mt-3 h-2 w-full rounded-full bg-muted">
-            <div className="h-2 rounded-full bg-primary" style={{ width: '62%' }} />
+            <div className="h-2 w-[62%] rounded-full bg-primary" />
           </div>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>Files processed: 12,482 / 20,160</span>

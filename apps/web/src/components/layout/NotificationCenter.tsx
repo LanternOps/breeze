@@ -7,6 +7,7 @@ import {
   Settings
 } from 'lucide-react';
 import { cn, formatRelativeTime } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
 
 const POLL_INTERVAL_MS = 30000;
@@ -298,7 +299,7 @@ export default function NotificationCenter() {
     if (!notification.read) {
       await markNotificationRead(notification.id, true);
     }
-    window.location.href = notification.href;
+    await navigateTo(notification.href);
   };
 
   return (

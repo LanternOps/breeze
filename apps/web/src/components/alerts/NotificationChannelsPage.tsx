@@ -4,6 +4,7 @@ import NotificationChannelList, { type NotificationChannel } from './Notificatio
 import NotificationChannelForm, { type NotificationChannelFormValues } from './NotificationChannelForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -23,7 +24,7 @@ export default function NotificationChannelsPage() {
       const response = await fetchWithAuth('/alerts/channels');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch notification channels');
@@ -64,7 +65,7 @@ export default function NotificationChannelsPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Test failed');
@@ -215,7 +216,7 @@ export default function NotificationChannelsPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         const data = await response.json();
@@ -242,7 +243,7 @@ export default function NotificationChannelsPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to delete channel');

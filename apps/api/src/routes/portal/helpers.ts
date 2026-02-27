@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
@@ -49,6 +49,54 @@ export function normalizeEmail(email: string) {
 
 export function getClientIp(c: Context): string {
   return getTrustedClientIp(c);
+}
+
+export type PortalCachePolicy = {
+  scope: 'private' | 'public';
+  browserMaxAgeSeconds: number;
+  staleWhileRevalidateSeconds: number;
+  sharedMaxAgeSeconds?: number;
+  vary?: string[];
+};
+
+export function applyPortalCacheHeaders(c: Context, policy: PortalCachePolicy): void {
+  if (policy.scope === 'public') {
+    const sharedMaxAge = policy.sharedMaxAgeSeconds ?? policy.browserMaxAgeSeconds;
+    c.header(
+      'Cache-Control',
+      `public, max-age=${policy.browserMaxAgeSeconds}, s-maxage=${sharedMaxAge}, stale-while-revalidate=${policy.staleWhileRevalidateSeconds}`
+    );
+    c.header(
+      'CDN-Cache-Control',
+      `public, max-age=${sharedMaxAge}, stale-while-revalidate=${policy.staleWhileRevalidateSeconds}`
+    );
+  } else {
+    c.header(
+      'Cache-Control',
+      `private, max-age=${policy.browserMaxAgeSeconds}, stale-while-revalidate=${policy.staleWhileRevalidateSeconds}`
+    );
+  }
+
+  if (policy.vary && policy.vary.length > 0) {
+    c.header('Vary', policy.vary.join(', '));
+  }
+}
+
+export function buildWeakEtag(payload: unknown): string {
+  const serialized = JSON.stringify(payload) ?? '';
+  const digest = createHash('sha1').update(serialized).digest('base64url');
+  return `W/"${digest}"`;
+}
+
+export function isEtagFresh(ifNoneMatchHeader: string | undefined, etag: string): boolean {
+  if (!ifNoneMatchHeader) {
+    return false;
+  }
+
+  return ifNoneMatchHeader
+    .split(',')
+    .map((tag) => tag.trim())
+    .includes(etag);
 }
 
 // ============================================

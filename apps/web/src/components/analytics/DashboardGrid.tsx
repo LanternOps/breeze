@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Grip, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import {
+  cn,
+  gapPxClass,
+  gridAutoRowsPxClass,
+  gridColSpanClass,
+  gridColStartClass,
+  gridColsClass,
+  gridRowSpanClass,
+  gridRowStartClass
+} from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 type GridItem = {
@@ -157,14 +166,7 @@ export default function DashboardGrid({
   }
 
   return (
-    <div
-      className={cn('grid w-full overflow-hidden', className)}
-      style={{
-        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gridAutoRows: `${rowHeight}px`,
-        gap
-      }}
-    >
+    <div className={cn('grid w-full overflow-hidden', gridColsClass(columns), gridAutoRowsPxClass(rowHeight), gapPxClass(gap), className)}>
       {orderedLayout.map(item => {
         const draggable = isDraggable && item.isDraggable !== false;
 
@@ -173,14 +175,12 @@ export default function DashboardGrid({
             key={item.i}
             className={cn(
               'group relative min-w-0 overflow-hidden transition',
+              gridColStartClass(item.x + 1),
+              gridColSpanClass(item.w),
+              gridRowStartClass(item.y + 1),
+              gridRowSpanClass(item.h),
               dragId === item.i ? 'ring-2 ring-primary/40' : ''
             )}
-            style={{
-              gridColumnStart: item.x + 1,
-              gridColumnEnd: `span ${item.w}`,
-              gridRowStart: item.y + 1,
-              gridRowEnd: `span ${item.h}`
-            }}
             draggable={draggable}
             onDragStart={event => {
               if (!draggable) return;

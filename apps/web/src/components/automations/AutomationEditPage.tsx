@@ -3,6 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
 import type { DeploymentTargetConfig } from '@breeze/shared';
+import { navigateTo } from '@/lib/navigation';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -273,7 +274,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         throw new Error(data.error || 'Failed to save automation');
       }
 
-      window.location.href = '/automations';
+      void navigateTo('/automations');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -282,7 +283,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   };
 
   const handleCancel = () => {
-    window.location.href = '/automations';
+    void navigateTo('/automations');
   };
 
   if (loading) {

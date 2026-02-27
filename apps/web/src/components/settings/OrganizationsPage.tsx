@@ -4,6 +4,7 @@ import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
 type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
@@ -61,7 +62,7 @@ export default function OrganizationsPage() {
       const response = await fetchWithAuth('/orgs/organizations');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch organizations');

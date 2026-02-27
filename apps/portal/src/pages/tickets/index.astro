@@ -1,8 +1,19 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import TicketList from '../../components/portal/TicketList';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const response = await portalApi.getTickets(
+  { page: 1, limit: 100 },
+  buildServerApiConfig(Astro.request)
+);
+
+if (response.statusCode === 401) {
+  return Astro.redirect('/login');
+}
 ---
 
 <PortalLayout title="Support Tickets">
-  <TicketList client:load />
+  <TicketList tickets={response.data ?? []} error={response.error} />
 </PortalLayout>

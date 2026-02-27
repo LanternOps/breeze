@@ -14,7 +14,7 @@ import {
   Loader2,
   RefreshCw
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 type DeviceStatusData = {
@@ -340,9 +340,9 @@ export default function DashboardWidgets({
                       ? 'bg-success'
                       : compliance.complianceScore >= 70
                         ? 'bg-warning'
-                        : 'bg-destructive'
+                        : 'bg-destructive',
+                    widthPercentClass(compliance.complianceScore)
                   )}
-                  style={{ width: `${compliance.complianceScore}%` }}
                 />
               </div>
             </div>
@@ -403,9 +403,9 @@ export default function DashboardWidgets({
                         <div
                           className={cn(
                             'h-full rounded-full',
-                            device.value >= 90 ? 'bg-destructive' : device.value >= 70 ? 'bg-warning' : 'bg-primary'
+                            device.value >= 90 ? 'bg-destructive' : device.value >= 70 ? 'bg-warning' : 'bg-primary',
+                            widthPercentClass(device.value)
                           )}
-                          style={{ width: `${device.value}%` }}
                         />
                       </div>
                     </div>
@@ -433,9 +433,9 @@ export default function DashboardWidgets({
                         <div
                           className={cn(
                             'h-full rounded-full',
-                            device.value >= 90 ? 'bg-destructive' : device.value >= 70 ? 'bg-warning' : 'bg-primary'
+                            device.value >= 90 ? 'bg-destructive' : device.value >= 70 ? 'bg-warning' : 'bg-primary',
+                            widthPercentClass(device.value)
                           )}
-                          style={{ width: `${device.value}%` }}
                         />
                       </div>
                     </div>
@@ -463,9 +463,9 @@ export default function DashboardWidgets({
                         <div
                           className={cn(
                             'h-full rounded-full',
-                            device.value >= 90 ? 'bg-destructive' : device.value >= 70 ? 'bg-warning' : 'bg-primary'
+                            device.value >= 90 ? 'bg-destructive' : device.value >= 70 ? 'bg-warning' : 'bg-primary',
+                            widthPercentClass(device.value)
                           )}
-                          style={{ width: `${device.value}%` }}
                         />
                       </div>
                     </div>

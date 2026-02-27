@@ -28,13 +28,6 @@ type TrendsData = {
   summary: TrendSummary;
 };
 
-const chartTooltipStyle = {
-  backgroundColor: 'hsl(var(--card))',
-  border: '1px solid hsl(var(--border))',
-  borderRadius: '0.5rem',
-  fontSize: '12px'
-};
-
 const lineColors: Record<string, string> = {
   overall: '#22c55e',
   antivirus: '#3b82f6',
@@ -44,6 +37,17 @@ const lineColors: Record<string, string> = {
   admin_accounts: '#ef4444',
   patch_compliance: '#ec4899',
   vulnerability_management: '#f97316'
+};
+
+const lineDotClasses: Record<string, string> = {
+  overall: 'bg-green-500',
+  antivirus: 'bg-blue-500',
+  firewall: 'bg-cyan-500',
+  encryption: 'bg-violet-500',
+  password_policy: 'bg-amber-500',
+  admin_accounts: 'bg-red-500',
+  patch_compliance: 'bg-pink-500',
+  vulnerability_management: 'bg-orange-500'
 };
 
 const lineLabels: Record<string, string> = {
@@ -217,10 +221,7 @@ export default function TrendsPage() {
                   : 'border-muted text-muted-foreground opacity-50'
               )}
             >
-              <span
-                className="h-2.5 w-2.5 rounded-full"
-                style={{ backgroundColor: lineColors[key] }}
-              />
+              <span className={cn('h-2.5 w-2.5 rounded-full', lineDotClasses[key] ?? 'bg-muted')} />
               {label}
             </button>
           ))}
@@ -231,7 +232,7 @@ export default function TrendsPage() {
               <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
               <XAxis dataKey="timestamp" tick={{ fontSize: 10 }} className="text-muted-foreground" />
               <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} className="text-muted-foreground" />
-              <Tooltip contentStyle={chartTooltipStyle} />
+              <Tooltip wrapperClassName="chart-tooltip" />
               <Legend />
               {Object.entries(lineColors).map(([key, color]) =>
                 visibleLines.has(key) ? (

@@ -1,9 +1,10 @@
 import { useCallback } from 'react';
 import ReportsList, { type Report } from './ReportsList';
+import { navigateTo } from '@/lib/navigation';
 
 export default function ReportsPage() {
   const handleEdit = useCallback((report: Report) => {
-    window.location.href = `/reports/${report.id}/edit`;
+    void navigateTo(`/reports/${report.id}/edit`);
   }, []);
 
   const handleGenerate = useCallback((report: Report) => {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
+import { navigateTo } from '../../lib/navigation';
 
 export default function AuthOverlay() {
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
@@ -78,5 +79,5 @@ function redirectToLogin() {
   if (currentPath !== '/login' && currentPath !== '/register') {
     sessionStorage.setItem('redirectAfterLogin', currentPath);
   }
-  window.location.href = '/login';
+  void navigateTo('/login', { replace: true });
 }

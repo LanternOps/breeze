@@ -3,6 +3,7 @@ import { CheckCircle, ChevronDown, ChevronRight, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import type { AlertSeverity } from './AlertList';
+import { navigateTo } from '@/lib/navigation';
 
 type AlertItem = {
   id: string;
@@ -47,7 +48,7 @@ export default function CorrelatedAlertGroups() {
       const response = await fetchWithAuth('/alerts/correlations');
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -91,7 +92,7 @@ export default function CorrelatedAlertGroups() {
       });
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -110,7 +111,7 @@ export default function CorrelatedAlertGroups() {
       });
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 

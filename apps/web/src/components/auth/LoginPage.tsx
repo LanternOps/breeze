@@ -3,6 +3,7 @@ import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
 import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode } from '../../stores/auth';
 import type { MfaMethod } from '../../stores/auth';
+import { navigateTo } from '../../lib/navigation';
 
 function getRegistrationDisabledNotice(): string | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -49,7 +50,8 @@ export default function LoginPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      window.location.href = result.requiresSetup ? '/setup' : '/';
+      await navigateTo(result.requiresSetup ? '/setup' : '/');
+      return;
     }
 
     setLoading(false);
@@ -71,7 +73,8 @@ export default function LoginPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      window.location.href = result.requiresSetup ? '/setup' : '/';
+      await navigateTo(result.requiresSetup ? '/setup' : '/');
+      return;
     }
 
     setLoading(false);

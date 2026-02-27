@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Download, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 export type ScriptTemplate = {
   id: string;
@@ -39,7 +40,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
       const response = await fetchWithAuth('/scripts/templates');
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
