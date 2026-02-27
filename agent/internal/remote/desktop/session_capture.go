@@ -19,6 +19,12 @@ const (
 
 	startupFrameWarmupWindow = 4 * time.Second
 	startupFrameRepaintEvery = 200 * time.Millisecond
+
+	// writeBackpressureThreshold is the number of consecutive WriteSample
+	// failures before the capture loop starts skipping frames. This prevents
+	// the encoder from producing frames that pile up in pion's internal
+	// buffers when the network can't keep up.
+	writeBackpressureThreshold = 3
 )
 
 var encodedFramePool = sync.Pool{
@@ -215,6 +221,9 @@ func (s *Session) captureLoopDXGI() captureMode {
 				wasIdle = false
 			}
 			consecutiveSkips = 0
+			// Reset backpressure on user activity — give the pipeline another
+			// chance since the user is actively waiting for frames.
+			s.writeBackpressure.Store(0)
 		}
 
 		// Monitor switch: re-read capturer and reinitialize GPU pipeline state.
@@ -568,16 +577,25 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 
-	// 5. Write as pion media.Sample
+	// 5. Write as pion media.Sample — skip if backpressure detected.
+	if bp := s.writeBackpressure.Load(); bp >= writeBackpressureThreshold {
+		s.metrics.RecordDrop()
+		return
+	}
 	sample := media.Sample{
 		Data:     h264Data,
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Warn("Failed to write H264 sample", "session", s.id, "error", err)
+		bp := s.writeBackpressure.Add(1)
+		if bp == writeBackpressureThreshold {
+			slog.Warn("Write backpressure: skipping frames until network drains",
+				"session", s.id, "consecutiveFailures", bp)
+		}
 		s.metrics.RecordDrop()
 		return
 	}
+	s.writeBackpressure.Store(0)
 
 	s.cacheEncodedFrame(h264Data)
 	s.noteVideoWrite()
@@ -651,15 +669,25 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		)
 	}
 
+	// Skip encoding output if pion's send buffer is congested.
+	if bp := s.writeBackpressure.Load(); bp >= writeBackpressureThreshold {
+		s.metrics.RecordDrop()
+		return true, false, false
+	}
 	sample := media.Sample{
 		Data:     h264Data,
 		Duration: frameDuration,
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
-		slog.Warn("Failed to write H264 sample", "session", s.id, "error", err)
+		bp := s.writeBackpressure.Add(1)
+		if bp == writeBackpressureThreshold {
+			slog.Warn("Write backpressure (GPU): skipping frames until network drains",
+				"session", s.id, "consecutiveFailures", bp)
+		}
 		s.metrics.RecordDrop()
 		return true, false, false
 	}
+	s.writeBackpressure.Store(0)
 
 	s.cacheEncodedFrame(h264Data)
 	s.noteVideoWrite()

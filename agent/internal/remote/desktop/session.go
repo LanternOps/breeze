@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,6 +98,12 @@ type Session struct {
 	cursorOffsetY atomic.Int32
 
 	frameIdx uint64
+
+	// writeBackpressure counts consecutive WriteSample failures. When pion's
+	// internal send buffer is congested, continuing to push frames just wastes
+	// memory. The capture loop checks this counter and skips encoding when it
+	// exceeds a threshold, giving the network time to drain.
+	writeBackpressure atomic.Int32
 
 	// sasHandler is set from SessionManager.OnSASRequest during creation.
 	sasHandler func() error
@@ -242,6 +249,11 @@ func (s *Session) Stop() {
 			"totalSkipped", snap.FramesSkipped,
 			"uptime", snap.Uptime.Round(time.Second),
 		)
+
+		// Desktop sessions allocate large buffers (DXGI textures, NV12
+		// staging, RGBA frames). Return memory to the OS promptly rather
+		// than waiting for the next GC cycle.
+		debug.FreeOSMemory()
 	})
 }
 
