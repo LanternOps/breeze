@@ -1,3 +1,5 @@
+import { captureException } from '../sentry';
+
 type HttpMethod = 'GET' | 'POST';
 
 export const S1_THREAT_ACTIONS = ['kill', 'quarantine', 'rollback'] as const;
@@ -225,7 +227,9 @@ export class SentinelOneClient {
   private normalizeAgent(row: Record<string, unknown>): S1Agent | null {
     const id = str(row.id) ?? str(row.agentId) ?? str(row.uuid);
     if (!id) {
-      console.warn('[SentinelOneClient] Dropping agent record with no ID');
+      const msg = '[SentinelOneClient] Dropping agent record with no recognizable ID';
+      console.warn(msg);
+      captureException(new Error(msg));
       return null;
     }
 
@@ -249,7 +253,9 @@ export class SentinelOneClient {
   private normalizeThreat(row: Record<string, unknown>): S1Threat | null {
     const id = str(row.id) ?? str(row.threatId);
     if (!id) {
-      console.warn('[SentinelOneClient] Dropping threat record with no ID');
+      const msg = '[SentinelOneClient] Dropping threat record with no recognizable ID';
+      console.warn(msg);
+      captureException(new Error(msg));
       return null;
     }
 
@@ -292,7 +298,9 @@ export class SentinelOneClient {
       const payload: Record<string, unknown> = await this.requestJson<Record<string, unknown>>(path, 'GET', undefined, params);
 
       if (payload.data && !Array.isArray(payload.data)) {
-        console.warn(`[SentinelOneClient] Expected array at payload.data but got ${typeof payload.data} for ${path}`);
+        const msg = `[SentinelOneClient] Expected array at payload.data but got ${typeof payload.data} for ${path}`;
+        console.warn(msg);
+        captureException(new Error(msg));
       }
       const pageData = asArray(payload.data);
       results.push(...pageData);

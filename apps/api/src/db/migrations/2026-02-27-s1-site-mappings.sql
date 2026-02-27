@@ -1,6 +1,8 @@
 -- S1 Site-to-Organization mappings
 -- Maps SentinelOne site names to Breeze organizations for multi-tenant agent routing
 -- NOTE: integration_id does not cascade on delete; drop mappings manually before removing an integration.
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS s1_site_mappings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   integration_id UUID NOT NULL REFERENCES s1_integrations(id),
@@ -32,3 +34,5 @@ CREATE POLICY breeze_org_isolation_update ON s1_site_mappings
   WITH CHECK (public.breeze_has_org_access(org_id));
 CREATE POLICY breeze_org_isolation_delete ON s1_site_mappings
   FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+COMMIT;

@@ -564,15 +564,15 @@ export async function metricsMiddleware(c: any, next: () => Promise<void>): Prom
   } finally {
     httpRequestsInFlight.dec();
     inFlightRequests -= 1;
+
+    const duration = (performance.now() - start) / 1000;
+    const status = c.res?.status ?? 500;
+    const method = c.req.method;
+    const path = c.req.path;
+
+    const auth = c.get('auth');
+    const orgId = auth?.orgId;
+
+    recordHttpRequest(method, path, status, duration, orgId);
   }
-
-  const duration = (performance.now() - start) / 1000;
-  const status = c.res.status;
-  const method = c.req.method;
-  const path = c.req.path;
-
-  const auth = c.get('auth');
-  const orgId = auth?.orgId;
-
-  recordHttpRequest(method, path, status, duration, orgId);
 }

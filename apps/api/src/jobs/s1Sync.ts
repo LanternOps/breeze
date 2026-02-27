@@ -68,7 +68,6 @@ interface IntegrationForSync {
   id: string;
   orgId: string;
   managementUrl: string;
-  apiTokenEncrypted: string;
   isActive: boolean;
   lastSyncAt: Date | null;
 }
@@ -209,7 +208,6 @@ async function listActiveIntegrations(): Promise<IntegrationForSync[]> {
       id: s1Integrations.id,
       orgId: s1Integrations.orgId,
       managementUrl: s1Integrations.managementUrl,
-      apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
       isActive: s1Integrations.isActive,
       lastSyncAt: s1Integrations.lastSyncAt
     })
@@ -684,6 +682,9 @@ async function processPollActions() {
       } catch (dbError) {
         console.error(`[S1SyncJob] Failed to persist poll result for action ${action.id}:`, dbError);
         captureException(dbError);
+        // Still count the poll attempt even though DB persist failed
+        recordS1ActionPollTransition(nextStatus);
+        updated += 1;
         continue;
       }
 

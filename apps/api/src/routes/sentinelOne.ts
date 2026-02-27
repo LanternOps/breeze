@@ -11,6 +11,7 @@ import {
 } from '../jobs/s1Sync';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
+import { captureException } from '../services/sentry';
 import { PERMISSIONS } from '../services/permissions';
 import {
   executeS1IsolationForOrg,
@@ -171,7 +172,7 @@ sentinelOneRoutes.post(
 
     // Check if integration already exists (needed to validate token presence)
     const [existing] = await db
-      .select({ id: s1Integrations.id })
+      .select({ id: s1Integrations.id, apiTokenEncrypted: s1Integrations.apiTokenEncrypted })
       .from(s1Integrations)
       .where(eq(s1Integrations.orgId, orgResult.orgId))
       .limit(1);
@@ -191,13 +192,21 @@ sentinelOneRoutes.post(
       conflictSet.apiTokenEncrypted = sql`excluded.api_token_encrypted`;
     }
 
+    // For new integrations, encryptedToken is guaranteed non-null by the guard above.
+    // For updates, use the existing encrypted token as fallback so the INSERT row
+    // satisfies NOT NULL even though the conflict path preserves the existing value.
+    const tokenForInsert = encryptedToken ?? existing?.apiTokenEncrypted;
+    if (!tokenForInsert) {
+      return c.json({ error: 'API token is required for new integrations' }, 400);
+    }
+
     const [integration] = await db
       .insert(s1Integrations)
       .values({
         orgId: orgResult.orgId,
         name: body.name,
         managementUrl: body.managementUrl,
-        apiTokenEncrypted: encryptedToken ?? 'placeholder',
+        apiTokenEncrypted: tokenForInsert,
         isActive: body.isActive ?? true,
         createdBy: auth.user.id,
         updatedAt: now
@@ -235,7 +244,10 @@ sentinelOneRoutes.post(
         resourceName: integration.name,
         details: { isActive: integration.isActive, syncJobId }
       });
-    } catch { /* audit is best-effort */ }
+    } catch (auditErr) {
+      console.error('[s1-route] Audit write failed:', auditErr);
+      captureException(auditErr);
+    }
 
     return c.json({
       data: {
@@ -460,7 +472,10 @@ sentinelOneRoutes.post(
           providerActionId: result.data.providerActionId
         }
       });
-    } catch { /* audit is best-effort */ }
+    } catch (auditErr) {
+      console.error('[s1-route] Audit write failed:', auditErr);
+      captureException(auditErr);
+    }
 
     if (result.status === 502) {
       return c.json({
@@ -522,7 +537,10 @@ sentinelOneRoutes.post(
           providerActionId: result.data.providerActionId
         }
       });
-    } catch { /* audit is best-effort */ }
+    } catch (auditErr) {
+      console.error('[s1-route] Audit write failed:', auditErr);
+      captureException(auditErr);
+    }
 
     if (result.status === 502) {
       return c.json({
@@ -579,7 +597,15 @@ sentinelOneRoutes.post(
       integrationId = integration.id;
     }
 
-    const jobId = await scheduleS1Sync(integrationId);
+    let jobId: string;
+    try {
+      jobId = await scheduleS1Sync(integrationId);
+    } catch (syncError) {
+      console.error('[s1-route] Failed to schedule S1 sync:', syncError);
+      captureException(syncError);
+      return c.json({ error: 'Failed to schedule sync job' }, 500);
+    }
+
     try {
       writeRouteAudit(c, {
         orgId,
@@ -588,7 +614,10 @@ sentinelOneRoutes.post(
         resourceId: integrationId,
         details: { jobId }
       });
-    } catch { /* audit is best-effort */ }
+    } catch (auditErr) {
+      console.error('[s1-route] Audit write failed:', auditErr);
+      captureException(auditErr);
+    }
 
     return c.json({ data: { integrationId, jobId } });
   }
@@ -695,7 +724,10 @@ sentinelOneRoutes.post(
           resourceName: body.siteName,
           details: { integrationId: body.integrationId }
         });
-      } catch { /* audit is best-effort */ }
+      } catch (auditErr) {
+      console.error('[s1-route] Audit write failed:', auditErr);
+      captureException(auditErr);
+    }
 
       return c.json({ data: { siteName: body.siteName, mappedOrgId: null } });
     }
@@ -729,7 +761,10 @@ sentinelOneRoutes.post(
         resourceName: body.siteName,
         details: { integrationId: body.integrationId, targetOrgId: body.orgId }
       });
-    } catch { /* audit is best-effort */ }
+    } catch (auditErr) {
+      console.error('[s1-route] Audit write failed:', auditErr);
+      captureException(auditErr);
+    }
 
     return c.json({ data: { siteName: body.siteName, mappedOrgId: body.orgId } });
   }

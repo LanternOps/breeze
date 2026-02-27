@@ -22,7 +22,7 @@ export interface S1ActiveIntegration {
 
 export interface S1ActionErrorResult {
   ok: false;
-  status: 400 | 403 | 404;
+  status: 400 | 403 | 404 | 500;
   error: string;
   details?: Record<string, unknown>;
 }
@@ -205,7 +205,7 @@ export async function executeS1IsolationForOrg(params: {
     if (httpStatus === 502) {
       return {
         ok: false,
-        status: 500 as 400,
+        status: 500,
         error: warning ? `${warning}; ${dbWarning}` : dbWarning
       };
     }
@@ -353,7 +353,7 @@ export async function executeS1ThreatActionForOrg(params: {
     if (httpStatus === 502) {
       return {
         ok: false,
-        status: 500 as 400,
+        status: 500,
         error: warning ? `${warning}; ${dbWarning}` : dbWarning
       };
     }

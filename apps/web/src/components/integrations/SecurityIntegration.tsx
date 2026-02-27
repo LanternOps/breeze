@@ -80,7 +80,11 @@ export default function SecurityIntegration() {
   const fetchIntegration = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/s1/integration');
-      if (!res.ok) return;
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        setLoadError(`Failed to load integration: ${json.error ?? `HTTP ${res.status}`}`);
+        return;
+      }
       const json = await res.json();
       const data = json.data as Integration | null;
       setIntegration(data);
@@ -97,7 +101,10 @@ export default function SecurityIntegration() {
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/s1/status');
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.error(`[SecurityIntegration] Status fetch failed: HTTP ${res.status}`);
+        return;
+      }
       const json = await res.json();
       setSummary(json.summary as StatusSummary);
     } catch (err) {
@@ -108,7 +115,10 @@ export default function SecurityIntegration() {
   const fetchSites = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/s1/sites');
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.error(`[SecurityIntegration] Sites fetch failed: HTTP ${res.status}`);
+        return;
+      }
       const json = await res.json();
       setSites(json.data as SiteRow[]);
       if (json.integrationId) setIntegrationId(json.integrationId);
@@ -120,7 +130,10 @@ export default function SecurityIntegration() {
   const fetchOrgs = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/orgs/organizations');
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.error(`[SecurityIntegration] Organizations fetch failed: HTTP ${res.status}`);
+        return;
+      }
       const json = await res.json();
       const list = (json.data ?? json) as Array<{ id: string; name: string }>;
       setOrgs(list.map((o) => ({ id: o.id, name: o.name })));
@@ -181,9 +194,10 @@ export default function SecurityIntegration() {
         return;
       }
       setSyncState({ status: 'done', message: 'Sync triggered' });
-      setTimeout(async () => {
-        await fetchIntegration();
-        await Promise.all([fetchStatus(), fetchSites()]);
+      setTimeout(() => {
+        Promise.all([fetchIntegration(), fetchStatus(), fetchSites()]).catch((err) => {
+          console.error('[SecurityIntegration] Post-sync refresh failed:', err);
+        });
       }, 3000);
     } catch (err) {
       setSyncState({ status: 'error', message: err instanceof Error ? err.message : 'Network error' });
