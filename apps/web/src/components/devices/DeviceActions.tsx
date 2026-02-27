@@ -11,7 +11,8 @@ import {
   AlertTriangle,
   Wrench,
   Trash2,
-  XCircle
+  XCircle,
+  Package
 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -103,6 +104,14 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               >
                 <RotateCcw className="h-4 w-4" />
                 Reboot
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAction('deploy-software')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <Package className="h-4 w-4" />
+                Deploy Software
               </button>
               <button
                 type="button"
@@ -198,6 +207,14 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               >
                 <Shield className="h-4 w-4" />
                 {device.status === 'maintenance' ? 'Exit Maintenance' : 'Enter Maintenance'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAction('deploy-software')}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <Package className="h-4 w-4" />
+                Deploy Software
               </button>
               <button
                 type="button"
