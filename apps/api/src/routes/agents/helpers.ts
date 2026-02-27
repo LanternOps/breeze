@@ -17,6 +17,8 @@ import {
   securityStatus,
   securityThreats,
   securityScans,
+  sensitiveDataFindings,
+  sensitiveDataScans,
   organizations,
   deviceGroupMemberships,
   configPolicyAssignments,
@@ -25,8 +27,13 @@ import {
   configPolicyEventLogSettings,
 } from '../../db/schema';
 import { getRedis } from '../../services/redis';
+import { publishEvent } from '../../services/eventBus';
 import { scheduleSoftwareComplianceCheck } from '../../jobs/softwareComplianceWorker';
-import { recordSoftwareRemediationDecision } from '../metrics';
+import {
+  recordSensitiveDataFinding,
+  recordSensitiveDataRemediationDecision,
+  recordSoftwareRemediationDecision
+} from '../metrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import { publishEvent } from '../../services/eventBus';
@@ -52,6 +59,7 @@ import {
   securityStatusIngestSchema,
   securityCommandTypes,
   filesystemAnalysisCommandType,
+  sensitiveDataCommandTypes,
   filesystemDiskThresholdPercent,
   filesystemThresholdCooldownMinutes,
   filesystemAutoResumeMaxRuns,
@@ -587,6 +595,328 @@ export async function handleSecurityCommandResult(
     if (resultData.status === 'completed') {
       await updateThreatStatusForAction(command);
     }
+  }
+}
+
+// ============================================
+// Sensitive Data Discovery
+// ============================================
+
+const sensitiveDataTypeValues = new Set(['pii', 'pci', 'phi', 'credential', 'financial']);
+const sensitiveDataRiskValues = new Set(['low', 'medium', 'high', 'critical']);
+
+function normalizeSensitiveDataType(value: unknown): 'pii' | 'pci' | 'phi' | 'credential' | 'financial' | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (!sensitiveDataTypeValues.has(normalized)) return null;
+  return normalized as 'pii' | 'pci' | 'phi' | 'credential' | 'financial';
+}
+
+function normalizeSensitiveRisk(value: unknown, dataType: string): 'low' | 'medium' | 'high' | 'critical' {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (sensitiveDataRiskValues.has(normalized)) {
+      return normalized as 'low' | 'medium' | 'high' | 'critical';
+    }
+  }
+
+  if (dataType === 'credential' || dataType === 'pci') return 'critical';
+  if (dataType === 'phi' || dataType === 'financial') return 'high';
+  if (dataType === 'pii') return 'medium';
+  return 'low';
+}
+
+function normalizeSensitiveConfidence(value: unknown, dataType: string): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.min(1, value));
+  }
+  switch (dataType) {
+    case 'credential':
+      return 0.95;
+    case 'pci':
+      return 0.9;
+    case 'phi':
+      return 0.8;
+    case 'financial':
+      return 0.78;
+    case 'pii':
+      return 0.72;
+    default:
+      return 0.5;
+  }
+}
+
+function mapRemediationActionFromCommandType(commandType: string): 'encrypt' | 'secure_delete' | 'quarantine' | null {
+  if (commandType === sensitiveDataCommandTypes.encrypt) return 'encrypt';
+  if (commandType === sensitiveDataCommandTypes.secureDelete) return 'secure_delete';
+  if (commandType === sensitiveDataCommandTypes.quarantine) return 'quarantine';
+  return null;
+}
+
+export async function handleSensitiveDataCommandResult(
+  command: typeof deviceCommands.$inferSelect,
+  resultData: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  if (
+    command.type !== sensitiveDataCommandTypes.scan
+    && command.type !== sensitiveDataCommandTypes.encrypt
+    && command.type !== sensitiveDataCommandTypes.secureDelete
+    && command.type !== sensitiveDataCommandTypes.quarantine
+  ) {
+    return;
+  }
+
+  const payload = isObject(command.payload) ? command.payload : {};
+  const resultJson = parseResultJson(resultData.stdout);
+  const now = new Date();
+
+  if (command.type === sensitiveDataCommandTypes.scan) {
+    const scanId = asString(resultJson?.scanId) ?? asString(payload.scanId);
+    if (!isUuid(scanId)) {
+      return;
+    }
+
+    const [scan] = await db
+      .select({
+        id: sensitiveDataScans.id,
+        orgId: sensitiveDataScans.orgId,
+        deviceId: sensitiveDataScans.deviceId,
+        summary: sensitiveDataScans.summary
+      })
+      .from(sensitiveDataScans)
+      .where(and(eq(sensitiveDataScans.id, scanId), eq(sensitiveDataScans.deviceId, command.deviceId)))
+      .limit(1);
+
+    if (!scan) {
+      return;
+    }
+
+    const existingSummary = isObject(scan.summary) ? scan.summary : {};
+    const scanSummary = isObject(resultJson?.summary) ? resultJson.summary : {};
+    const findingsRaw = Array.isArray(resultJson?.findings) ? resultJson.findings : [];
+
+    const normalizedFindings: Array<{
+      filePath: string;
+      dataType: 'pii' | 'pci' | 'phi' | 'credential' | 'financial';
+      patternId: string;
+      matchCount: number;
+      risk: 'low' | 'medium' | 'high' | 'critical';
+      confidence: number;
+      fileOwner: string | null;
+      fileModifiedAt: Date | null;
+    }> = [];
+    for (const rawFinding of findingsRaw) {
+      if (!isObject(rawFinding)) continue;
+      const filePath = readTrimmedString(rawFinding.filePath);
+      const dataType = normalizeSensitiveDataType(rawFinding.dataType);
+      if (!filePath || !dataType) continue;
+
+      const patternId = readTrimmedString(rawFinding.patternId) ?? 'unknown';
+      const matchCount = Math.max(1, asInt(rawFinding.matchCount, 1));
+      const risk = normalizeSensitiveRisk(rawFinding.risk, dataType);
+      const confidence = normalizeSensitiveConfidence(rawFinding.confidence, dataType);
+      normalizedFindings.push({
+        filePath,
+        dataType,
+        patternId,
+        matchCount,
+        risk,
+        confidence,
+        fileOwner: readTrimmedString(rawFinding.fileOwner),
+        fileModifiedAt: parseDate(rawFinding.fileModifiedAt),
+      });
+    }
+
+    const dedupedFindings = Array.from(
+      new Map(
+        normalizedFindings.map((finding) => [
+          `${finding.filePath}::${finding.dataType}::${finding.patternId}`,
+          finding
+        ])
+      ).values()
+    );
+
+    const byRisk: Record<string, number> = {};
+    const byStatus: Record<string, number> = { open: dedupedFindings.length };
+    for (const finding of dedupedFindings) {
+      byRisk[finding.risk] = (byRisk[finding.risk] ?? 0) + 1;
+    }
+
+    await db
+      .update(sensitiveDataScans)
+      .set({
+        status: resultData.status === 'completed' ? 'completed' : 'failed',
+        completedAt: now,
+        summary: {
+          ...existingSummary,
+          commandId: command.id,
+          commandStatus: resultData.status,
+          agentSummary: scanSummary,
+          findingsCount: dedupedFindings.length,
+          findings: {
+            total: dedupedFindings.length,
+            byRisk,
+            byStatus,
+          },
+          completedAt: now.toISOString(),
+        }
+      })
+      .where(eq(sensitiveDataScans.id, scan.id));
+
+    if (resultData.status !== 'completed') {
+      return;
+    }
+
+    for (const finding of dedupedFindings) {
+      const [existingOpen] = await db
+        .select({
+          id: sensitiveDataFindings.id,
+          occurrenceCount: sensitiveDataFindings.occurrenceCount,
+        })
+        .from(sensitiveDataFindings)
+        .where(and(
+          eq(sensitiveDataFindings.orgId, scan.orgId),
+          eq(sensitiveDataFindings.deviceId, scan.deviceId),
+          eq(sensitiveDataFindings.filePath, finding.filePath),
+          eq(sensitiveDataFindings.dataType, finding.dataType),
+          eq(sensitiveDataFindings.patternId, finding.patternId),
+          eq(sensitiveDataFindings.status, 'open')
+        ))
+        .limit(1);
+
+      if (existingOpen) {
+        await db
+          .update(sensitiveDataFindings)
+          .set({
+            matchCount: finding.matchCount,
+            risk: finding.risk,
+            confidence: finding.confidence,
+            fileOwner: finding.fileOwner,
+            fileModifiedAt: finding.fileModifiedAt,
+            lastSeenAt: now,
+            occurrenceCount: (existingOpen.occurrenceCount ?? 1) + 1,
+          })
+          .where(eq(sensitiveDataFindings.id, existingOpen.id));
+        continue;
+      }
+
+      await db.insert(sensitiveDataFindings).values({
+        orgId: scan.orgId,
+        deviceId: scan.deviceId,
+        scanId: scan.id,
+        filePath: finding.filePath,
+        dataType: finding.dataType,
+        patternId: finding.patternId,
+        matchCount: finding.matchCount,
+        risk: finding.risk,
+        confidence: finding.confidence,
+        fileOwner: finding.fileOwner,
+        fileModifiedAt: finding.fileModifiedAt,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        occurrenceCount: 1,
+        status: 'open'
+      });
+    }
+
+    const credentialFindings = dedupedFindings.filter((finding) => finding.dataType === 'credential');
+    if (dedupedFindings.length > 0) {
+      const findingMetricCounts = new Map<string, number>();
+      for (const finding of dedupedFindings) {
+        const key = `${finding.dataType}::${finding.risk}`;
+        findingMetricCounts.set(key, (findingMetricCounts.get(key) ?? 0) + 1);
+      }
+      for (const [key, count] of findingMetricCounts.entries()) {
+        const [dataType, risk] = key.split('::');
+        recordSensitiveDataFinding(dataType ?? 'unknown', risk ?? 'unknown', count);
+      }
+
+      await publishEvent(
+        'compliance.sensitive_data_found',
+        scan.orgId,
+        {
+          deviceId: scan.deviceId,
+          scanId: scan.id,
+          findingCount: dedupedFindings.length,
+          criticalCount: dedupedFindings.filter((finding) => finding.risk === 'critical').length,
+        },
+        'agents.command.result'
+      );
+    }
+
+    if (credentialFindings.length > 0) {
+      await publishEvent(
+        'compliance.credential_exposed',
+        scan.orgId,
+        {
+          deviceId: scan.deviceId,
+          scanId: scan.id,
+          findingCount: credentialFindings.length,
+          criticalCount: credentialFindings.filter((finding) => finding.risk === 'critical').length,
+        },
+        'agents.command.result'
+      );
+    }
+    return;
+  }
+
+  const findingId = asString(payload.findingId);
+  const action = mapRemediationActionFromCommandType(command.type);
+  if (!isUuid(findingId) || !action) {
+    return;
+  }
+
+  const [finding] = await db
+    .select({
+      id: sensitiveDataFindings.id,
+      orgId: sensitiveDataFindings.orgId,
+      deviceId: sensitiveDataFindings.deviceId,
+      scanId: sensitiveDataFindings.scanId
+    })
+    .from(sensitiveDataFindings)
+    .where(and(
+      eq(sensitiveDataFindings.id, findingId),
+      eq(sensitiveDataFindings.deviceId, command.deviceId)
+    ))
+    .limit(1);
+
+  if (!finding) {
+    return;
+  }
+
+  await db
+    .update(sensitiveDataFindings)
+    .set({
+      remediationAction: action,
+      status: resultData.status === 'completed' ? 'remediated' : 'open',
+      remediatedAt: resultData.status === 'completed' ? now : null,
+      remediationMetadata: {
+        commandId: command.id,
+        commandStatus: resultData.status,
+        completedAt: now.toISOString(),
+        keyRef: readTrimmedString(payload.encryptionKeyRef),
+        keyVersion: readTrimmedString(payload.encryptionKeyVersion),
+        provider: readTrimmedString(payload.encryptionProvider),
+      }
+    })
+    .where(eq(sensitiveDataFindings.id, finding.id));
+
+  if (resultData.status === 'completed') {
+    recordSensitiveDataRemediationDecision(`${action}_completed`, 1);
+    await publishEvent(
+      'compliance.sensitive_data_remediated',
+      finding.orgId,
+      {
+        findingId: finding.id,
+        scanId: finding.scanId,
+        deviceId: finding.deviceId,
+        action,
+        remediatedAt: now.toISOString(),
+      },
+      'agents.command.result'
+    );
+  } else {
+    recordSensitiveDataRemediationDecision(`${action}_failed`, 1);
   }
 }
 

@@ -403,7 +403,7 @@ export const updateConfigPolicySchema = z.object({
 });
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data']),
   featurePolicyId: z.string().uuid().optional(),
   inlineSettings: z.record(z.unknown()).optional(),
 }).refine(
@@ -420,6 +420,21 @@ export const eventLogInlineSettingsSchema = z.object({
   rateLimitPerHour: z.number().int().min(100).max(100000).default(12000),
   enableFullTextSearch: z.boolean().default(true),
   enableCorrelation: z.boolean().default(true),
+});
+
+export const sensitiveDataInlineSettingsSchema = z.object({
+  detectionClasses: z.array(z.enum(['credential', 'pci', 'phi', 'pii', 'financial'])).min(1).default(['credential']),
+  includePaths: z.array(z.string().min(1).max(2048)).max(256).default([]),
+  excludePaths: z.array(z.string().min(1).max(2048)).max(256).default([]),
+  fileTypes: z.array(z.string().min(1).max(32)).max(128).default([]),
+  maxFileSizeBytes: z.number().int().min(1024).max(1073741824).default(104857600),
+  workers: z.number().int().min(1).max(32).default(4),
+  timeoutSeconds: z.number().int().min(5).max(1800).default(300),
+  suppressPatternIds: z.array(z.string().min(1).max(80)).max(200).default([]),
+  scheduleType: z.enum(['manual', 'interval', 'cron']).default('manual'),
+  intervalMinutes: z.number().int().min(5).max(10080).optional(),
+  cron: z.string().max(120).optional(),
+  timezone: z.string().max(64).default('UTC'),
 });
 
 export const updateFeatureLinkSchema = z.object({

@@ -43,6 +43,9 @@ describe('metrics routes', () => {
   let recordHttpRequest: typeof import('./metrics').recordHttpRequest;
   let recordAgentHeartbeat: typeof import('./metrics').recordAgentHeartbeat;
   let recordScriptExecution: typeof import('./metrics').recordScriptExecution;
+  let recordSensitiveDataFinding: typeof import('./metrics').recordSensitiveDataFinding;
+  let recordSensitiveDataRemediationDecision: typeof import('./metrics').recordSensitiveDataRemediationDecision;
+  let recordSensitiveDataScanQueued: typeof import('./metrics').recordSensitiveDataScanQueued;
   let updateBusinessMetrics: typeof import('./metrics').updateBusinessMetrics;
   let metricsMiddleware: typeof import('./metrics').metricsMiddleware;
 
@@ -55,6 +58,9 @@ describe('metrics routes', () => {
     recordHttpRequest = metricsModule.recordHttpRequest;
     recordAgentHeartbeat = metricsModule.recordAgentHeartbeat;
     recordScriptExecution = metricsModule.recordScriptExecution;
+    recordSensitiveDataFinding = metricsModule.recordSensitiveDataFinding;
+    recordSensitiveDataRemediationDecision = metricsModule.recordSensitiveDataRemediationDecision;
+    recordSensitiveDataScanQueued = metricsModule.recordSensitiveDataScanQueued;
     updateBusinessMetrics = metricsModule.updateBusinessMetrics;
     metricsMiddleware = metricsModule.metricsMiddleware;
     app = new Hono();
@@ -184,6 +190,30 @@ describe('metrics routes', () => {
       expect.arrayContaining([
         { labels: { status: 'success' }, value: 2 },
         { labels: { status: 'failed' }, value: 1 }
+      ])
+    );
+  });
+
+  it('records sensitive-data metrics', async () => {
+    recordSensitiveDataScanQueued(3);
+    recordSensitiveDataFinding('credential', 'critical', 2);
+    recordSensitiveDataRemediationDecision('encrypt_completed', 1);
+
+    const jsonRes = await app.request('/json', {
+      headers: { Authorization: 'Bearer token' }
+    });
+    const body = await jsonRes.json();
+
+    expect(body.business_metrics.sensitive_data_scans_queued_total).toBe(3);
+    expect(body.sensitive_data.scans_queued_total).toBe(3);
+    expect(body.sensitive_data.findings).toEqual(
+      expect.arrayContaining([
+        { labels: { data_type: 'credential', risk: 'critical' }, value: 2 }
+      ])
+    );
+    expect(body.sensitive_data.remediation_decisions).toEqual(
+      expect.arrayContaining([
+        { labels: { decision: 'encrypt_completed' }, value: 1 }
       ])
     );
   });

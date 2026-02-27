@@ -201,6 +201,12 @@ export const securityCommandTypes = {
 } as const;
 
 export const filesystemAnalysisCommandType = 'filesystem_analysis';
+export const sensitiveDataCommandTypes = {
+  scan: 'sensitive_data_scan',
+  encrypt: 'encrypt_file',
+  secureDelete: 'secure_delete_file',
+  quarantine: 'quarantine_file'
+} as const;
 
 // ============================================
 // Management Posture

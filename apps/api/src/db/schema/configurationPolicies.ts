@@ -35,6 +35,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'automation',
   'event_log',
   'software_policy',
+  'sensitive_data',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -194,6 +195,26 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   rateLimitPerHour: integer('rate_limit_per_hour').notNull().default(12000),
   enableFullTextSearch: boolean('enable_full_text_search').notNull().default(true),
   enableCorrelation: boolean('enable_correlation').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Single-item: one row per feature link (sensitive data scan settings)
+export const configPolicySensitiveDataSettings = pgTable('config_policy_sensitive_data_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+  detectionClasses: text('detection_classes').array().notNull().default(['credential']),
+  includePaths: text('include_paths').array().notNull().default([]),
+  excludePaths: text('exclude_paths').array().notNull().default([]),
+  fileTypes: text('file_types').array().notNull().default([]),
+  maxFileSizeBytes: integer('max_file_size_bytes').notNull().default(104857600),
+  workers: integer('workers').notNull().default(4),
+  timeoutSeconds: integer('timeout_seconds').notNull().default(300),
+  suppressPatternIds: text('suppress_pattern_ids').array().notNull().default([]),
+  scheduleType: varchar('schedule_type', { length: 20 }).notNull().default('manual'),
+  intervalMinutes: integer('interval_minutes'),
+  cron: varchar('cron', { length: 120 }),
+  timezone: varchar('timezone', { length: 64 }).notNull().default('UTC'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

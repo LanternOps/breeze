@@ -87,6 +87,7 @@ import { dnsSecurityRoutes } from './routes/dnsSecurity';
 import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
 import { huntressRoutes } from './routes/huntress';
+import { sensitiveDataRoutes } from './routes/sensitiveData';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -120,6 +121,7 @@ import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './
 import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
 import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
+import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -651,6 +653,7 @@ api.route('/dns-security', dnsSecurityRoutes);
 api.route('/s1', sentinelOneRoutes);
 api.route('/huntress', huntressRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
+api.route('/sensitive-data', sensitiveDataRoutes);
 
 app.route('/api/v1', api);
 
@@ -862,6 +865,7 @@ async function initializeWorkers(): Promise<void> {
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
     ['backupWorker', initializeBackupWorker],
+    ['sensitiveDataWorker', initializeSensitiveDataWorkers],
   ];
 
   await Promise.allSettled(
@@ -949,6 +953,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPatchJobWorkers,
     shutdownBackupWorker,
     shutdownPatchSchedulerWorker,
+    shutdownSensitiveDataWorkers,
     shutdownPatchComplianceReportWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,

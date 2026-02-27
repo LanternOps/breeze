@@ -1,4 +1,4 @@
-export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy';
+export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data';
 
 export type FeatureLink = {
   id: string;
@@ -34,4 +34,5 @@ export const FEATURE_META: Record<FeatureType, {
   automation:   { label: 'Automations',  fetchUrl: '/automations',         description: 'Automated tasks and responses' },
   event_log:    { label: 'Event Logs',   fetchUrl: null,                   description: 'Event log collection and retention' },
   software_policy: { label: 'Software Policy', fetchUrl: '/software-policies', description: 'Allowlist/blocklist software rules' },
+  sensitive_data: { label: 'Data Discovery', fetchUrl: '/sensitive-data/policies', description: 'Sensitive data scanning configuration' },
 };

@@ -80,6 +80,10 @@ export const CommandTypes = {
   SECURITY_THREAT_QUARANTINE: 'security_threat_quarantine',
   SECURITY_THREAT_REMOVE: 'security_threat_remove',
   SECURITY_THREAT_RESTORE: 'security_threat_restore',
+  SENSITIVE_DATA_SCAN: 'sensitive_data_scan',
+  ENCRYPT_FILE: 'encrypt_file',
+  SECURE_DELETE_FILE: 'secure_delete_file',
+  QUARANTINE_FILE: 'quarantine_file',
 
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
@@ -170,6 +174,10 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.SECURITY_THREAT_QUARANTINE,
   CommandTypes.SECURITY_THREAT_REMOVE,
   CommandTypes.SECURITY_THREAT_RESTORE,
+  CommandTypes.SENSITIVE_DATA_SCAN,
+  CommandTypes.ENCRYPT_FILE,
+  CommandTypes.SECURE_DELETE_FILE,
+  CommandTypes.QUARANTINE_FILE,
   CommandTypes.TAKE_SCREENSHOT,
   CommandTypes.COMPUTER_ACTION,
   CommandTypes.MANAGE_STARTUP_ITEM,
