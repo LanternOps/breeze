@@ -8,7 +8,6 @@ const { publishEventMock, setCooldownMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
