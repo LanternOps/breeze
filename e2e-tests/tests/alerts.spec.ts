@@ -1,49 +1,44 @@
 import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Alert Lifecycle', () => {
-  test('alert rules page loads', async ({ page }) => {
+  test('alert rules page redirects to configuration policies', async ({ page }) => {
     await page.goto('/alerts/rules');
-    await waitForApp(page, '/alerts/rules');
+    await waitForApp(page);
 
-    // Heading should say "Alert Rules"
-    await expect(page.locator('h1').first()).toContainText(/Alert Rules/i, { timeout: 10_000 });
+    // /alerts/rules 301-redirects to /configuration-policies
+    await expect(page).toHaveURL(/\/configuration-policies/, { timeout: 10_000 });
+
+    await waitForContentLoad(page);
+
+    // Heading should say "Configuration Policies" (alert rules were merged here)
+    await expect(page.locator('h1').first()).toContainText(/Configuration Policies/i, { timeout: 10_000 });
 
     // Should see a table or an empty state message
     const listOrEmpty = page
       .locator('table')
-      .or(page.locator('text=No rules'))
-      .or(page.locator('text=No alert rules'))
+      .or(page.locator('text=No policies'))
       .first();
     await expect(listOrEmpty).toBeVisible({ timeout: 15_000 });
   });
 
-  test('create alert rule page loads', async ({ page }) => {
-    // Navigate directly to avoid ERR_ABORTED from client-side routing
-    try {
-      await page.goto('/alerts/rules/new');
-      await waitForApp(page, '/alerts/rules/new');
-    } catch {
-      test.skip(true, 'Navigation to /alerts/rules/new failed — skipping');
-      return;
-    }
+  test('create alert rule page redirects to configuration policies', async ({ page }) => {
+    // /alerts/rules/new also redirects to /configuration-policies
+    await page.goto('/alerts/rules/new');
+    await waitForApp(page);
 
-    await expect(page).toHaveURL(/\/alerts\/rules\/new/);
+    await expect(page).toHaveURL(/\/configuration-policies/, { timeout: 10_000 });
 
-    // Heading should say "Create Alert Rule"
-    await expect(page.locator('h1').first()).toContainText(/Create Alert Rule/i, { timeout: 10_000 });
+    await waitForContentLoad(page);
 
-    // Should show a form for creating a rule
-    const form = page
-      .locator('form')
-      .or(page.locator('[name="name"]'))
-      .first();
-    await expect(form).toBeVisible({ timeout: 10_000 });
+    // Should land on configuration policies page
+    await expect(page.locator('h1').first()).toContainText(/Configuration Policies/i, { timeout: 10_000 });
   });
 
   test('active alerts page loads', async ({ page }) => {
     await page.goto('/alerts');
     await waitForApp(page, '/alerts');
+    await waitForContentLoad(page);
 
     // Heading should say "Alerts"
     await expect(page.locator('h1').first()).toContainText(/Alerts/i, { timeout: 10_000 });
@@ -60,6 +55,7 @@ test.describe('Alert Lifecycle', () => {
   test('alert detail shows acknowledge and resolve actions', async ({ page }) => {
     await page.goto('/alerts');
     await waitForApp(page, '/alerts');
+    await waitForContentLoad(page);
 
     // If there are active alerts, click the first one
     const firstAlert = page.locator('table tbody tr').first();
@@ -82,6 +78,7 @@ test.describe('Alert Lifecycle', () => {
   test('alert channels page loads', async ({ page }) => {
     await page.goto('/alerts/channels');
     await waitForApp(page, '/alerts/channels');
+    await waitForContentLoad(page);
 
     // Heading should say "Notification Channels"
     await expect(page.locator('h1').first()).toContainText(/Notification Channels/i, { timeout: 10_000 });

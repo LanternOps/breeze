@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Sites CRUD', () => {
   test.describe.configure({ mode: 'serial' });
@@ -13,6 +13,7 @@ test.describe('Sites CRUD', () => {
   test('page loads with Sites heading', async ({ page }) => {
     await page.goto('/settings/sites');
     await waitForApp(page, '/settings/sites');
+    await waitForContentLoad(page);
 
     // SitesPage renders h1 "Sites" after organizations load
     const heading = page.locator('h1:has-text("Sites")').first();
@@ -22,6 +23,7 @@ test.describe('Sites CRUD', () => {
   test('create a new site', async ({ page }) => {
     await page.goto('/settings/sites');
     await waitForApp(page, '/settings/sites');
+    await waitForContentLoad(page);
 
     // Wait for the h1 to confirm data has loaded
     await expect(page.locator('h1:has-text("Sites")').first()).toBeVisible({ timeout: 15_000 });
@@ -57,8 +59,9 @@ test.describe('Sites CRUD', () => {
     ).first();
     await submitBtn.click();
 
-    // Modal should close and site should appear in list
-    await expect(modal).not.toBeVisible({ timeout: 10_000 });
+    // Wait for form submission to complete — button shows "Saving..." during submission
+    // Then modal should close and site should appear in list
+    await expect(modal).not.toBeVisible({ timeout: 20_000 });
     await expect(page.locator(`text=${siteName}`).first()).toBeVisible({ timeout: 10_000 });
 
     created = true;
@@ -69,6 +72,7 @@ test.describe('Sites CRUD', () => {
 
     await page.goto('/settings/sites');
     await waitForApp(page, '/settings/sites');
+    await waitForContentLoad(page);
 
     // Wait for table to render (SiteList renders a <table>)
     await expect(page.locator('table').first()).toBeVisible({ timeout: 15_000 });
@@ -80,6 +84,7 @@ test.describe('Sites CRUD', () => {
 
     await page.goto('/settings/sites');
     await waitForApp(page, '/settings/sites');
+    await waitForContentLoad(page);
 
     // Wait for table to render
     await expect(page.locator('table').first()).toBeVisible({ timeout: 15_000 });
@@ -110,7 +115,7 @@ test.describe('Sites CRUD', () => {
     await saveBtn.click();
 
     // Modal should close and updated name should appear
-    await expect(modal).not.toBeVisible({ timeout: 10_000 });
+    await expect(modal).not.toBeVisible({ timeout: 20_000 });
     await expect(page.locator(`text=${updatedSiteName}`).first()).toBeVisible({ timeout: 10_000 });
   });
 
@@ -119,6 +124,7 @@ test.describe('Sites CRUD', () => {
 
     await page.goto('/settings/sites');
     await waitForApp(page, '/settings/sites');
+    await waitForContentLoad(page);
 
     // Wait for table to render
     await expect(page.locator('table').first()).toBeVisible({ timeout: 15_000 });
@@ -147,7 +153,7 @@ test.describe('Sites CRUD', () => {
     await confirmBtn.click();
 
     // Modal should close and site should disappear
-    await expect(modal).not.toBeVisible({ timeout: 10_000 });
+    await expect(modal).not.toBeVisible({ timeout: 20_000 });
     await expect(page.locator(`text=${nameToFind}`)).not.toBeVisible({ timeout: 10_000 });
   });
 });

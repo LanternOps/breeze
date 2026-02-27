@@ -1,6 +1,29 @@
 import type { Page } from '@playwright/test';
 
 /**
+ * Wait for React component loading spinners to disappear.
+ *
+ * All React page components (AutomationsPage, DevicesPage, PoliciesPage, etc.)
+ * use the same loading gate pattern:
+ *   if (loading) return <div><div class="animate-spin ..."/><p>Loading...</p></div>
+ *
+ * This hides ALL content (h1, tables, etc.) until the API fetch completes.
+ * Call this after waitForApp() and before content assertions.
+ */
+export async function waitForContentLoad(page: Page, timeout = 20_000): Promise<void> {
+  const spinner = page.locator('.animate-spin').first();
+  try {
+    // Wait briefly for the spinner to appear; if it never appears, content loaded fast
+    await spinner.waitFor({ state: 'visible', timeout: 2_000 });
+  } catch {
+    // Spinner never appeared — content loaded without a loading state
+    return;
+  }
+  // Spinner is visible — wait for it to disappear (do NOT catch; surface stuck-spinner errors)
+  await spinner.waitFor({ state: 'hidden', timeout });
+}
+
+/**
  * Wait for the authenticated app shell to finish loading.
  *
  * Most pages use DashboardLayout (sidebar + header). We wait for the sidebar

@@ -1,21 +1,27 @@
 import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Settings', () => {
   test('organization settings page loads', async ({ page }) => {
     await page.goto('/settings/organization');
     await waitForApp(page, '/settings/organization');
+    await waitForContentLoad(page);
 
     await expect(page.locator('h1').first()).toContainText(/Organization settings/i, { timeout: 10_000 });
 
-    // Should show org settings form or organization-related content
-    const content = page.locator('form').or(page.locator('input[name]')).first();
+    // OrgSettingsPage uses a tabbed layout with aside nav (not a form)
+    // Look for the settings tab navigation or the "General" tab content
+    const content = page.locator('aside nav')
+      .or(page.locator('button:has-text("General")'))
+      .or(page.locator('button:has-text("Branding")'))
+      .first();
     await expect(content).toBeVisible({ timeout: 10_000 });
   });
 
   test('user management page loads', async ({ page }) => {
     await page.goto('/settings/users');
     await waitForApp(page, '/settings/users');
+    await waitForContentLoad(page);
 
     await expect(page.locator('h1').first()).toContainText(/Users/i, { timeout: 10_000 });
 
@@ -30,6 +36,7 @@ test.describe('Settings', () => {
   test('role management page loads', async ({ page }) => {
     await page.goto('/settings/roles');
     await waitForApp(page, '/settings/roles');
+    await waitForContentLoad(page);
 
     await expect(page.locator('h1').first()).toContainText(/Roles/i, { timeout: 10_000 });
 
@@ -44,6 +51,7 @@ test.describe('Settings', () => {
   test('API keys page loads', async ({ page }) => {
     await page.goto('/settings/api-keys');
     await waitForApp(page, '/settings/api-keys');
+    await waitForContentLoad(page);
 
     await expect(page.locator('h1').first()).toContainText(/API Keys/i, { timeout: 10_000 });
 
@@ -58,6 +66,7 @@ test.describe('Settings', () => {
   test('API key creation flow', async ({ page }) => {
     await page.goto('/settings/api-keys');
     await waitForApp(page, '/settings/api-keys');
+    await waitForContentLoad(page);
 
     // Look for create button
     const createBtn = page.locator('button:has-text("Create")')
@@ -98,6 +107,7 @@ test.describe('Settings', () => {
   test('SSO settings page loads', async ({ page }) => {
     await page.goto('/settings/sso');
     await waitForApp(page, '/settings/sso');
+    await waitForContentLoad(page);
 
     await expect(page.locator('h1').first()).toContainText(/Single Sign-On/i, { timeout: 10_000 });
   });
@@ -105,6 +115,7 @@ test.describe('Settings', () => {
   test('profile page loads', async ({ page }) => {
     await page.goto('/settings/profile');
     await waitForApp(page, '/settings/profile');
+    await waitForContentLoad(page);
 
     await expect(page.locator('h1').first()).toContainText(/Profile settings/i, { timeout: 10_000 });
 
