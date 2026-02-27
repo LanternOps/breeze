@@ -78,17 +78,23 @@ export async function getScriptBuilderMessages(sessionId: string) {
 /**
  * Update the system prompt with the latest editor state.
  * Called on each message to keep the AI aware of manual edits.
+ * The update is org-scoped via auth to enforce tenant isolation.
  */
 export async function updateEditorContext(
   sessionId: string,
   context: ScriptBuilderContext,
+  auth: AuthContext,
 ): Promise<string> {
   const systemPrompt = buildScriptBuilderSystemPrompt(context);
+
+  const conditions = [eq(aiSessions.id, sessionId)];
+  const orgCondition = auth.orgCondition(aiSessions.orgId);
+  if (orgCondition) conditions.push(orgCondition);
 
   await db
     .update(aiSessions)
     .set({ systemPrompt, contextSnapshot: context })
-    .where(eq(aiSessions.id, sessionId));
+    .where(and(...conditions));
 
   return systemPrompt;
 }

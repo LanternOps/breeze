@@ -13,7 +13,7 @@ import type {
   ScriptBuilderContext,
   ScriptLanguage,
   OSType,
-  RunAs,
+  ScriptRunAs,
 } from '@breeze/shared';
 
 // ============================================
@@ -34,10 +34,11 @@ export interface ScriptAiMessage {
 }
 
 /**
- * Values that can be read from / written to the ScriptForm.
+ * Shape of the ScriptForm state. Used both for live reads/writes
+ * via the bridge and for point-in-time snapshots (revert/redo).
  * Mirrors the form shape used by react-hook-form in ScriptForm.
  */
-export interface ScriptFormValues {
+export interface ScriptFormSnapshot {
   name?: string;
   description?: string;
   content?: string;
@@ -51,7 +52,7 @@ export interface ScriptFormValues {
     required?: boolean;
     options?: string;
   }>;
-  runAs?: RunAs;
+  runAs?: ScriptRunAs;
   timeoutSeconds?: number;
 }
 
@@ -61,13 +62,13 @@ export interface ScriptFormValues {
  */
 export interface ScriptFormBridge {
   /** Read current form values */
-  getFormValues: () => ScriptFormValues;
+  getFormValues: () => ScriptFormSnapshot;
   /** Write values into the form */
-  setFormValues: (values: Partial<ScriptFormValues>) => void;
+  setFormValues: (values: Partial<ScriptFormSnapshot>) => void;
   /** Take a snapshot of the current form state (for revert) */
-  takeSnapshot: () => ScriptFormValues;
+  takeSnapshot: () => ScriptFormSnapshot;
   /** Restore a previously taken snapshot */
-  restoreSnapshot: (snapshot: ScriptFormValues) => void;
+  restoreSnapshot: (snapshot: ScriptFormSnapshot) => void;
 }
 
 interface PendingApproval {
@@ -88,8 +89,8 @@ interface ScriptAiState {
   panelOpen: boolean;
   hasApplied: boolean;
   hasReverted: boolean;
-  formSnapshot: ScriptFormValues | null;
-  appliedSnapshot: ScriptFormValues | null;
+  formSnapshot: ScriptFormSnapshot | null;
+  appliedSnapshot: ScriptFormSnapshot | null;
   isInterrupting: boolean;
 
   // Internal (not serialized)
@@ -293,6 +294,7 @@ export const useScriptAiStore = create<ScriptAiState>()(
         let buffer = '';
         let currentAssistantId: string | null = null;
         let snapshotTakenThisTurn = false;
+        let consecutiveParseFailures = 0;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -307,8 +309,22 @@ export const useScriptAiStore = create<ScriptAiState>()(
               const jsonStr = line.slice(5).trim();
               if (!jsonStr) continue;
 
+              let event: AiStreamEvent;
               try {
-                const event = JSON.parse(jsonStr) as AiStreamEvent;
+                event = JSON.parse(jsonStr) as AiStreamEvent;
+                consecutiveParseFailures = 0;
+              } catch (parseErr) {
+                consecutiveParseFailures++;
+                console.error('[ScriptAI] Failed to parse SSE JSON:', jsonStr.slice(0, 200), parseErr);
+                if (consecutiveParseFailures >= 5) {
+                  set({ error: 'Stream became corrupted. Please try again.', isStreaming: false });
+                  reader.cancel().catch((e) => console.warn('[ScriptAI] Cancel failed:', e));
+                  return;
+                }
+                continue;
+              }
+
+              try {
                 const result = processScriptStreamEvent(
                   event,
                   set,
@@ -318,15 +334,15 @@ export const useScriptAiStore = create<ScriptAiState>()(
                 );
                 currentAssistantId = result.currentAssistantId;
                 snapshotTakenThisTurn = result.snapshotTaken;
-              } catch (parseErr) {
-                console.error('[ScriptAI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
+              } catch (processErr) {
+                console.error('[ScriptAI] Error processing SSE event:', event.type, processErr);
               }
             }
           }
         }
       } catch (err) {
         set({
-          error: err instanceof Error ? err.message : 'Failed to send message',
+          error: err instanceof Error ? err.message : 'Failed to send message. Please try again.',
           isStreaming: false,
         });
       } finally {
@@ -512,12 +528,12 @@ function processScriptStreamEvent(
             const base = baseToolName(toolName);
 
             if (base === 'apply_script_code') {
-              const values: Partial<ScriptFormValues> = {};
+              const values: Partial<ScriptFormSnapshot> = {};
               if (output.code != null) values.content = output.code;
               if (output.language != null) values.language = output.language;
               bridge.setFormValues(values);
             } else if (base === 'apply_script_metadata') {
-              const values: Partial<ScriptFormValues> = {};
+              const values: Partial<ScriptFormSnapshot> = {};
               if (output.name != null) values.name = output.name;
               if (output.description != null) values.description = output.description;
               if (output.category != null) values.category = output.category;

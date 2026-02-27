@@ -12,7 +12,7 @@ import { executeTool } from './aiTools';
 import { withSystemDbAccessContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
-import type { ActiveSession } from './streamingSessionManager';
+import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
@@ -66,13 +66,14 @@ function makeExistingHandler(
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
+        captureException(err);
         console.error(`[ScriptBuilder] PreToolUse threw for ${toolName}:`, err);
         check = { allowed: false, error: 'Internal guardrails error.' };
       }
       if (!check.allowed) {
         if (onPostToolUse) {
           try { await onPostToolUse(toolName, args, JSON.stringify({ error: check.error }), true, 0); }
-          catch (err) { console.error('[ScriptBuilder] PostToolUse failed:', err); }
+          catch (err) { captureException(err); console.error('[ScriptBuilder] PostToolUse failed:', err); }
         }
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: check.error }) }], isError: true };
       }
@@ -90,17 +91,18 @@ function makeExistingHandler(
 
       if (onPostToolUse) {
         try { await onPostToolUse(toolName, args, compactResult, false, durationMs); }
-        catch (err) { console.error('[ScriptBuilder] PostToolUse failed:', err); }
+        catch (err) { captureException(err); console.error('[ScriptBuilder] PostToolUse failed:', err); }
       }
 
       return { content: [{ type: 'text' as const, text: compactResult }] };
     } catch (err) {
+      captureException(err);
       const errorMsg = err instanceof Error ? err.message : 'Unknown error';
       const durationMs = Date.now() - startTime;
 
       if (onPostToolUse) {
         try { await onPostToolUse(toolName, args, JSON.stringify({ error: errorMsg }), true, durationMs); }
-        catch (e) { console.error('[ScriptBuilder] PostToolUse failed:', e); }
+        catch (e) { captureException(e); console.error('[ScriptBuilder] PostToolUse failed:', e); }
       }
 
       return { content: [{ type: 'text' as const, text: JSON.stringify({ error: errorMsg }) }], isError: true };
@@ -123,7 +125,7 @@ function makeApplyHandler(
 
     if (onPostToolUse) {
       try { await onPostToolUse(toolName, args, output, false, durationMs); }
-      catch (err) { console.error('[ScriptBuilder] PostToolUse failed:', err); }
+      catch (err) { captureException(err); console.error('[ScriptBuilder] PostToolUse failed:', err); }
     }
 
     return { content: [{ type: 'text' as const, text: output }] };

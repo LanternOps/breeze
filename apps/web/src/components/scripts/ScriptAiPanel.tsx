@@ -36,8 +36,6 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
     if (!sessionId) {
       const formValues = bridge.getFormValues();
       createSession({
-        language: formValues.language,
-        osTypes: formValues.osTypes,
         editorSnapshot: formValues,
       });
     }
@@ -48,9 +46,9 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
     return () => {
       const { isStreaming } = useScriptAiStore.getState();
       if (isStreaming) {
-        interruptResponse().then(() => closeSession());
+        interruptResponse().then(() => closeSession()).catch((err) => console.warn('[ScriptAiPanel] Cleanup failed:', err));
       } else {
-        closeSession();
+        closeSession().catch((err) => console.warn('[ScriptAiPanel] Cleanup failed:', err));
       }
     };
   }, [closeSession, interruptResponse]);
