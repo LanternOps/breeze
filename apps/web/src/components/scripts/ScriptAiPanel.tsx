@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { X, Undo2 } from 'lucide-react';
+import { X, Undo2, Redo2 } from 'lucide-react';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
 import ScriptAiMessages from './ScriptAiMessages';
 import ScriptAiInput from './ScriptAiInput';
@@ -11,7 +11,6 @@ interface ScriptAiPanelProps {
 
 export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
   const {
-    panelOpen,
     closePanel,
     sessionId,
     createSession,
@@ -19,7 +18,9 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
     interruptResponse,
     setBridge,
     hasApplied,
+    hasReverted,
     revert,
+    redo,
     error,
     clearError,
   } = useScriptAiStore();
@@ -30,9 +31,9 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
     return () => setBridge(null);
   }, [bridge, setBridge]);
 
-  // Create session when panel opens for the first time
+  // Create session when panel mounts for the first time
   useEffect(() => {
-    if (panelOpen && !sessionId) {
+    if (!sessionId) {
       const formValues = bridge.getFormValues();
       createSession({
         language: formValues.language,
@@ -40,7 +41,7 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
         editorSnapshot: formValues,
       });
     }
-  }, [panelOpen, sessionId, createSession, bridge]);
+  }, [sessionId, createSession, bridge]);
 
   // Cleanup session on unmount — interrupt first if streaming
   useEffect(() => {
@@ -54,14 +55,22 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
     };
   }, [closeSession, interruptResponse]);
 
-  if (!panelOpen) return null;
-
   return (
-    <div className="flex w-96 shrink-0 flex-col border-l bg-background">
+    <div className="flex h-[600px] w-96 shrink-0 flex-col overflow-hidden border-l bg-background">
       {/* Header */}
       <div className="flex items-center justify-between border-b px-3 py-2">
         <span className="text-sm font-medium">AI Script Assistant</span>
         <div className="flex items-center gap-1">
+          {hasReverted && (
+            <button
+              onClick={redo}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              title="Re-apply AI change"
+            >
+              <Redo2 className="h-3 w-3" />
+              Redo
+            </button>
+          )}
           {hasApplied && (
             <button
               onClick={revert}

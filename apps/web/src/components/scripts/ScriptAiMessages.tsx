@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Bot, User, Wrench, Check, X, Loader2 } from 'lucide-react';
 import { useScriptAiStore, type ScriptAiMessage } from '@/stores/scriptAiStore';
 
@@ -35,12 +37,31 @@ function MessageBubble({ message }: { message: ScriptAiMessage }) {
           ? 'bg-primary text-primary-foreground'
           : 'bg-muted'
       }`}>
-        <div className="whitespace-pre-wrap break-words">
-          {message.content}
-          {message.isStreaming && (
-            <span className="ml-1 inline-block h-3 w-1 animate-pulse bg-current" />
-          )}
-        </div>
+        {isUser ? (
+          <div className="whitespace-pre-wrap break-words">{message.content}</div>
+        ) : (
+          <div className="prose prose-sm max-w-none break-words dark:prose-invert prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => (
+                  <a
+                    href={href && /^https?:\/\//.test(href) ? href : '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {children}
+                  </a>
+                ),
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+            {message.isStreaming && (
+              <span className="ml-1 inline-block h-3 w-1 animate-pulse bg-current" />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -78,10 +99,12 @@ function ApprovalCard() {
 
 export default function ScriptAiMessages() {
   const { messages, isStreaming, isLoading } = useScriptAiStore();
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
+  // Auto-scroll the chat container (not the page) as messages stream in
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, messages[messages.length - 1]?.content]);
 
   if (isLoading) {
@@ -105,12 +128,11 @@ export default function ScriptAiMessages() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div ref={containerRef} className="min-h-0 flex-1 overflow-y-auto">
       {messages.map((msg) => (
         <MessageBubble key={msg.id} message={msg} />
       ))}
       <ApprovalCard />
-      <div ref={bottomRef} />
     </div>
   );
 }
