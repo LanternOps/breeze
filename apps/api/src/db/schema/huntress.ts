@@ -35,7 +35,7 @@ export const huntressIntegrations = pgTable('huntress_integrations', {
 export const huntressAgents = pgTable('huntress_agents', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  integrationId: uuid('integration_id').notNull().references(() => huntressIntegrations.id),
+  integrationId: uuid('integration_id').notNull().references(() => huntressIntegrations.id, { onDelete: 'cascade' }),
   huntressAgentId: varchar('huntress_agent_id', { length: 128 }).notNull(),
   deviceId: uuid('device_id').references(() => devices.id),
   hostname: varchar('hostname', { length: 255 }),
@@ -43,6 +43,7 @@ export const huntressAgents = pgTable('huntress_agents', {
   status: varchar('status', { length: 20 }),
   lastSeenAt: timestamp('last_seen_at'),
   metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   agentIdIdx: uniqueIndex('huntress_agents_agent_id_idx').on(table.integrationId, table.huntressAgentId),
@@ -52,7 +53,7 @@ export const huntressAgents = pgTable('huntress_agents', {
 export const huntressIncidents = pgTable('huntress_incidents', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  integrationId: uuid('integration_id').notNull().references(() => huntressIntegrations.id),
+  integrationId: uuid('integration_id').notNull().references(() => huntressIntegrations.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').references(() => devices.id),
   huntressIncidentId: varchar('huntress_incident_id', { length: 128 }).notNull(),
   severity: varchar('severity', { length: 20 }),

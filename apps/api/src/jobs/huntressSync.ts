@@ -17,6 +17,7 @@ import { publishEvent } from '../services/eventBus';
 import { getRedisConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { decryptSecret } from '../services/secretCrypto';
+import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from '../services/huntressConstants';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -96,14 +97,11 @@ function toComparableDate(value: Date | null): string | null {
 
 function isOfflineAgentStatus(status: string | null): boolean {
   if (!status) return false;
-  return status.includes('offline')
-    || status.includes('inactive')
-    || status.includes('disconnected')
-    || status.includes('dead');
+  return (HUNTRESS_OFFLINE_STATUSES as readonly string[]).some(s => status.includes(s));
 }
 
 function isResolvedIncidentStatus(status: string): boolean {
-  return status === 'resolved' || status === 'closed' || status === 'dismissed';
+  return (HUNTRESS_RESOLVED_STATUSES as readonly string[]).includes(status);
 }
 
 async function addUniqueJob(
@@ -125,7 +123,9 @@ async function addUniqueJob(
     ) {
       return String(existing.id);
     }
-    await existing.remove().catch(() => undefined);
+    await existing.remove().catch((err) => {
+      console.warn(`[HuntressSync] Failed to remove stale job ${jobId}, proceeding with re-add:`, err);
+    });
   }
 
   const created = await queue.add(name, data, {
@@ -218,6 +218,7 @@ async function publishHuntressEvent(
     await publishEvent(type, orgId, payload, 'huntress-sync');
   } catch (error) {
     console.error(`[HuntressSync] Failed to publish ${type}:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -289,22 +290,29 @@ async function upsertAgents(params: {
     };
   });
 
-  for (const batch of chunk(values, 500)) {
-    await db
-      .insert(huntressAgents)
-      .values(batch)
-      .onConflictDoUpdate({
-        target: [huntressAgents.integrationId, huntressAgents.huntressAgentId],
-        set: {
-          deviceId: sql`excluded.device_id`,
-          hostname: sql`excluded.hostname`,
-          platform: sql`excluded.platform`,
-          status: sql`excluded.status`,
-          lastSeenAt: sql`excluded.last_seen_at`,
-          metadata: sql`excluded.metadata`,
-          updatedAt: sql`excluded.updated_at`,
-        }
-      });
+  for (const [batchIndex, batch] of chunk(values, 500).entries()) {
+    try {
+      await db
+        .insert(huntressAgents)
+        .values(batch)
+        .onConflictDoUpdate({
+          target: [huntressAgents.integrationId, huntressAgents.huntressAgentId],
+          set: {
+            deviceId: sql`excluded.device_id`,
+            hostname: sql`excluded.hostname`,
+            platform: sql`excluded.platform`,
+            status: sql`excluded.status`,
+            lastSeenAt: sql`excluded.last_seen_at`,
+            metadata: sql`excluded.metadata`,
+            updatedAt: sql`excluded.updated_at`,
+          }
+        });
+    } catch (err) {
+      throw new Error(
+        `Failed to upsert agent batch ${batchIndex + 1} (${batch.length} records, ` +
+        `first huntressAgentId=${batch[0]?.huntressAgentId}): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   const offlineEvents: Array<{
@@ -312,6 +320,7 @@ async function upsertAgents(params: {
     orgId: string;
     payload: Record<string, unknown>;
   }> = [];
+  // Only emit offline events for agents that transitioned to offline (were previously online and are now offline)
   for (const row of values) {
     const previous = existingByAgentId.get(row.huntressAgentId);
     if (!previous) continue;
@@ -477,26 +486,33 @@ async function upsertIncidents(params: {
     };
   });
 
-  for (const batch of chunk(values, 500)) {
-    await db
-      .insert(huntressIncidents)
-      .values(batch)
-      .onConflictDoUpdate({
-        target: [huntressIncidents.integrationId, huntressIncidents.huntressIncidentId],
-        set: {
-          deviceId: sql`excluded.device_id`,
-          severity: sql`excluded.severity`,
-          category: sql`excluded.category`,
-          title: sql`excluded.title`,
-          description: sql`excluded.description`,
-          recommendation: sql`excluded.recommendation`,
-          status: sql`excluded.status`,
-          reportedAt: sql`excluded.reported_at`,
-          resolvedAt: sql`excluded.resolved_at`,
-          details: sql`excluded.details`,
-          updatedAt: sql`excluded.updated_at`,
-        }
-      });
+  for (const [batchIndex, batch] of chunk(values, 500).entries()) {
+    try {
+      await db
+        .insert(huntressIncidents)
+        .values(batch)
+        .onConflictDoUpdate({
+          target: [huntressIncidents.integrationId, huntressIncidents.huntressIncidentId],
+          set: {
+            deviceId: sql`excluded.device_id`,
+            severity: sql`excluded.severity`,
+            category: sql`excluded.category`,
+            title: sql`excluded.title`,
+            description: sql`excluded.description`,
+            recommendation: sql`excluded.recommendation`,
+            status: sql`excluded.status`,
+            reportedAt: sql`excluded.reported_at`,
+            resolvedAt: sql`excluded.resolved_at`,
+            details: sql`excluded.details`,
+            updatedAt: sql`excluded.updated_at`,
+          }
+        });
+    } catch (err) {
+      throw new Error(
+        `Failed to upsert incident batch ${batchIndex + 1} (${batch.length} records, ` +
+        `first huntressIncidentId=${batch[0]?.huntressIncidentId}): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   let created = 0;
@@ -561,7 +577,12 @@ async function syncIntegrationById(
     .where(eq(huntressIntegrations.id, integrationId))
     .limit(1);
 
-  if (!integration || !integration.isActive) {
+  if (!integration) {
+    console.warn(`[HuntressSync] Integration ${integrationId} not found, skipping sync`);
+    throw new Error(`Huntress integration ${integrationId} not found`);
+  }
+  if (!integration.isActive) {
+    console.warn(`[HuntressSync] Integration ${integrationId} is inactive, skipping sync`);
     return {
       integrationId,
       fetchedAgents: 0,
@@ -580,9 +601,14 @@ async function syncIntegrationById(
       agents = webhookPayload.agents;
       incidents = webhookPayload.incidents;
     } else {
-      const apiKey = decryptSecret(integration.apiKeyEncrypted);
+      let apiKey: string | null;
+      try {
+        apiKey = decryptSecret(integration.apiKeyEncrypted);
+      } catch (err) {
+        throw new Error(`Failed to decrypt API key for Huntress integration ${integrationId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       if (!apiKey) {
-        throw new Error('Missing Huntress API key');
+        throw new Error(`Huntress API key is empty for integration ${integrationId}`);
       }
 
       const client = new HuntressClient({
@@ -591,6 +617,7 @@ async function syncIntegrationById(
         baseUrl: integration.apiBaseUrl,
       });
 
+      // Subtract 60s from last sync to create an overlap window, ensuring events near the boundary aren't missed
       const since = integration.lastSyncAt
         ? new Date(integration.lastSyncAt.getTime() - 60_000)
         : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
@@ -746,11 +773,11 @@ export async function findHuntressIntegrationByAccount(accountId: string): Promi
         )
       )
       .limit(2);
-    if (rows.length === 0) return { status: 'none' };
-    if (rows.length > 1) return { status: 'ambiguous' };
+    if (rows.length === 0) return { status: 'none' } as const;
+    if (rows.length > 1) return { status: 'ambiguous' } as const;
     return {
-      status: 'single',
-      integration: rows[0],
+      status: 'single' as const,
+      integration: rows[0]!,
     };
   });
 }

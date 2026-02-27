@@ -23,10 +23,14 @@ import {
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import { captureException } from '../services/sentry';
+import { escapeLike } from '../utils/sql';
+import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntressConstants';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
-    return fn();
+    console.error('[huntress] withSystemDbAccessContext is not available — webhook DB queries may fail');
+    throw new Error('System DB access context is not available');
   }
   return dbModule.withSystemDbAccessContext(fn);
 };
@@ -71,7 +75,16 @@ const upsertIntegrationSchema = z.object({
   name: z.string().min(1).max(200),
   apiKey: z.string().min(1).max(5000).optional(),
   accountId: z.string().min(1).max(120).optional(),
-  apiBaseUrl: z.string().url().max(300).optional(),
+  apiBaseUrl: z.string().url().max(300).optional().refine(
+    (url) => {
+      if (!url) return true;
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'https:' && parsed.hostname.endsWith('.huntress.io');
+      } catch { return false; }
+    },
+    { message: 'apiBaseUrl must be a valid HTTPS Huntress API URL (*.huntress.io)' }
+  ),
   webhookSecret: z.string().min(1).max(5000).optional(),
   isActive: z.boolean().optional(),
 });
@@ -144,13 +157,14 @@ async function resolveWebhookIntegration(params: {
   return { ...lookup.integration, isActive: true };
 }
 
-// Public webhook receiver (signed, no user auth).
+// Public webhook receiver (no user auth). Signature verification applied when webhook secret is configured.
 huntressRoutes.post('/webhook', async (c) => {
   const rawBody = await c.req.text();
   let payload: unknown = {};
   try {
     payload = rawBody ? JSON.parse(rawBody) : {};
-  } catch {
+  } catch (err) {
+    console.warn('[huntress] Webhook received invalid JSON:', rawBody?.slice(0, 500), err);
     return c.json({ error: 'Invalid JSON payload' }, 400);
   }
 
@@ -170,21 +184,24 @@ huntressRoutes.post('/webhook', async (c) => {
     return c.json({ error: integration.error }, integration.status);
   }
 
-  if (integration.webhookSecretEncrypted) {
-    const webhookSecret = decryptSecret(integration.webhookSecretEncrypted);
-    if (!webhookSecret) {
-      return c.json({ error: 'Webhook secret is not configured correctly' }, 401);
-    }
+  // Webhook signature verification is mandatory. Reject if no secret is configured.
+  if (!integration.webhookSecretEncrypted) {
+    return c.json({ error: 'Webhook secret not configured for this integration. Configure a webhook secret to enable webhook ingestion.' }, 403);
+  }
 
-    const signatureCheck = verifyHuntressWebhookSignature({
-      secret: webhookSecret,
-      payload: rawBody,
-      signatureHeader: c.req.header('x-huntress-signature') ?? c.req.header('x-signature'),
-      timestampHeader: c.req.header('x-huntress-timestamp') ?? c.req.header('x-timestamp'),
-    });
-    if (!signatureCheck.ok) {
-      return c.json({ error: signatureCheck.error }, 401);
-    }
+  const webhookSecret = decryptSecret(integration.webhookSecretEncrypted);
+  if (!webhookSecret) {
+    return c.json({ error: 'Webhook secret is not configured correctly' }, 401);
+  }
+
+  const signatureCheck = verifyHuntressWebhookSignature({
+    secret: webhookSecret,
+    payload: rawBody,
+    signatureHeader: c.req.header('x-huntress-signature') ?? c.req.header('x-signature'),
+    timestampHeader: c.req.header('x-huntress-timestamp') ?? c.req.header('x-timestamp'),
+  });
+  if (!signatureCheck.ok) {
+    return c.json({ error: signatureCheck.error }, 401);
   }
 
   try {
@@ -204,12 +221,12 @@ huntressRoutes.post('/webhook', async (c) => {
     });
   } catch (error) {
     console.error('[huntress] Webhook ingestion failed:', error);
-    return c.json({
-      error: error instanceof Error ? error.message : 'Webhook ingestion failed',
-    }, 500);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return c.json({ error: 'Webhook ingestion failed' }, 500);
   }
 });
 
+// All routes below require authentication. The webhook route above is intentionally excluded.
 huntressRoutes.use('*', authMiddleware);
 
 huntressRoutes.get(
@@ -349,11 +366,14 @@ huntressRoutes.post(
     }
 
     let syncJobId: string | null = null;
+    let syncWarning: string | null = null;
     if (integration.isActive) {
       try {
         syncJobId = await scheduleHuntressSync(integration.id);
       } catch (error) {
         console.error('[huntress] failed to schedule initial sync:', error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        syncWarning = 'Initial sync could not be scheduled. Data will sync on the next scheduled cycle.';
       }
     }
 
@@ -374,6 +394,7 @@ huntressRoutes.post(
       hasApiKey: true,
       hasWebhookSecret: webhookSecretEncrypted !== null,
       syncJobId,
+      ...(syncWarning ? { syncWarning } : {}),
     }, existing ? 200 : 201);
   }
 );
@@ -444,6 +465,10 @@ huntressRoutes.get(
       return c.json({ error: orgResult.error }, orgResult.status);
     }
 
+    const statusConditions: SQL[] = [eq(huntressIntegrations.orgId, orgResult.orgId)];
+    const statusOrgCondition = auth.orgCondition(huntressIntegrations.orgId);
+    if (statusOrgCondition) statusConditions.push(statusOrgCondition);
+
     const [integration] = await db
       .select({
         id: huntressIntegrations.id,
@@ -455,7 +480,7 @@ huntressRoutes.get(
         lastSyncError: huntressIntegrations.lastSyncError,
       })
       .from(huntressIntegrations)
-      .where(eq(huntressIntegrations.orgId, orgResult.orgId))
+      .where(and(...statusConditions))
       .limit(1);
 
     if (!integration) {
@@ -497,7 +522,7 @@ huntressRoutes.get(
         .where(
           and(
             eq(huntressAgents.integrationId, integration.id),
-            sql`coalesce(lower(${huntressAgents.status}), '') in ('offline', 'inactive', 'disconnected', 'dead')`
+            sql`coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())})`
           )
         ),
       db
@@ -506,7 +531,7 @@ huntressRoutes.get(
         .where(
           and(
             eq(huntressIncidents.integrationId, integration.id),
-            sql`coalesce(lower(${huntressIncidents.status}), '') not in ('resolved', 'closed', 'dismissed')`
+            sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`
           )
         ),
       db
@@ -570,7 +595,7 @@ huntressRoutes.get(
     if (query.severity) conditions.push(eq(huntressIncidents.severity, query.severity));
     if (query.deviceId) conditions.push(eq(huntressIncidents.deviceId, query.deviceId));
     if (query.search) {
-      const pattern = `%${query.search.replace(/[%_]/g, '\\$&')}%`;
+      const pattern = `%${escapeLike(query.search)}%`;
       conditions.push(ilike(huntressIncidents.title, pattern));
     }
     const orgCondition = auth.orgCondition(huntressIncidents.orgId);

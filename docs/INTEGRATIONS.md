@@ -64,8 +64,8 @@ Breeze supports a per-organization Huntress connector that syncs endpoint agent 
    - `name`
    - `apiKey`
    - optional `accountId`
-   - optional `apiBaseUrl`
-   - optional `webhookSecret` (recommended)
+   - optional `apiBaseUrl` (must be HTTPS on `*.huntress.io`)
+   - `webhookSecret` (required for webhook ingestion)
 2. If webhook delivery is enabled in Huntress, configure the Breeze webhook endpoint:
    - `POST /api/v1/huntress/webhook`
    - include either integration id or account id in webhook routing metadata
@@ -73,7 +73,7 @@ Breeze supports a per-organization Huntress connector that syncs endpoint agent 
 3. Trigger an initial sync with `POST /api/v1/huntress/sync`.
 
 ### Sync Model
-- Scheduled sync runs every 15 minutes.
+- Scheduled sync runs every 15 minutes (see `DEFAULT_SYNC_INTERVAL_MINUTES` in `huntressSync.ts`).
 - Manual sync can be queued via API.
 - Incident deduplication is based on `(integration_id, huntress_incident_id)`.
 - Agent deduplication is based on `(integration_id, huntress_agent_id)`.
@@ -81,8 +81,8 @@ Breeze supports a per-organization Huntress connector that syncs endpoint agent 
 ### Correlation Behavior
 - Huntress agents are mapped to Breeze devices by normalized hostname.
 - Huntress incidents are mapped to devices via:
-  1. Huntress agent linkage when present.
-  2. Hostname fallback.
+  1. The Huntress agent's pre-established device mapping (itself based on hostname).
+  2. Direct hostname fallback when no agent link exists.
 
 ### Troubleshooting
 - `lastSyncStatus = error`: inspect `lastSyncError` from the integration record.
@@ -91,7 +91,7 @@ Breeze supports a per-organization Huntress connector that syncs endpoint agent 
   - verify API key and account scope,
   - run manual sync and inspect queue/job logs.
 - Webhook rejected:
-  - confirm `webhookSecret` matches configured signature key,
+  - confirm `webhookSecret` is configured and matches the Huntress signature key,
   - confirm the webhook includes both signature and timestamp headers,
-  - confirm request timestamp is within replay window,
+  - confirm request timestamp is within the replay window (default 10 minutes),
   - confirm integration/account routing metadata is present.

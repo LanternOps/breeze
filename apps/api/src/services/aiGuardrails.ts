@@ -471,7 +471,13 @@ export async function checkToolPermission(
 ): Promise<string | null> {
   // Helper sessions use a synthetic auth with no roleId — tool access is
   // governed by the helper whitelist (helperToolFilter), not user RBAC.
-  if (auth.token && auth.token.roleId === null) return null;
+  // Helper sessions use a synthetic auth with no roleId — tool access is
+  // governed by the helper whitelist, not user RBAC.
+  if (!auth.token) {
+    console.warn(`[aiGuardrails] checkToolPermission called without auth.token for tool ${toolName}`);
+    return null;
+  }
+  if (auth.token.roleId === null) return null;
 
   const permDef = TOOL_PERMISSIONS[toolName];
   if (!permDef) return `No RBAC permission mapping for tool "${toolName}"`;

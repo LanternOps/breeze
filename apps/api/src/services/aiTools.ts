@@ -78,6 +78,7 @@ import { registerMonitoringTools } from './aiToolsMonitoring';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { scheduleCisRemediationWithResult } from '../jobs/cisJobs';
+import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
 import {
   getActiveDeviceContext,
   getAllDeviceContext,
@@ -1675,14 +1676,14 @@ registerTool({
         .select({
           totalAgents: sql<number>`count(*)::int`,
           mappedAgents: sql<number>`coalesce(sum(case when ${huntressAgents.deviceId} is not null then 1 else 0 end), 0)::int`,
-          offlineAgents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressAgents.status}), '') in ('offline', 'inactive', 'disconnected', 'dead') then 1 else 0 end), 0)::int`,
+          offlineAgents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())}) then 1 else 0 end), 0)::int`,
         })
         .from(huntressAgents)
         .innerJoin(huntressIntegrations, eq(huntressAgents.integrationId, huntressIntegrations.id))
         .where(where),
       db
         .select({
-          openIncidents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressIncidents.status}), '') not in ('resolved', 'closed', 'dismissed') then 1 else 0 end), 0)::int`,
+          openIncidents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())}) then 1 else 0 end), 0)::int`,
         })
         .from(huntressIncidents)
         .innerJoin(huntressIntegrations, eq(huntressIncidents.integrationId, huntressIntegrations.id))
@@ -1692,7 +1693,7 @@ registerTool({
           integrationId: huntressAgents.integrationId,
           totalAgents: sql<number>`count(*)::int`,
           mappedAgents: sql<number>`coalesce(sum(case when ${huntressAgents.deviceId} is not null then 1 else 0 end), 0)::int`,
-          offlineAgents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressAgents.status}), '') in ('offline', 'inactive', 'disconnected', 'dead') then 1 else 0 end), 0)::int`,
+          offlineAgents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())}) then 1 else 0 end), 0)::int`,
         })
         .from(huntressAgents)
         .where(inArray(huntressAgents.integrationId, integrationIds))
@@ -1700,7 +1701,7 @@ registerTool({
       db
         .select({
           integrationId: huntressIncidents.integrationId,
-          openIncidents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressIncidents.status}), '') not in ('resolved', 'closed', 'dismissed') then 1 else 0 end), 0)::int`,
+          openIncidents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())}) then 1 else 0 end), 0)::int`,
         })
         .from(huntressIncidents)
         .where(inArray(huntressIncidents.integrationId, integrationIds))
@@ -1819,7 +1820,7 @@ registerTool({
       conditions.push(ilike(huntressIncidents.title, searchPattern));
     }
     if (!includeResolved) {
-      conditions.push(sql`coalesce(lower(${huntressIncidents.status}), '') not in ('resolved', 'closed', 'dismissed')`);
+      conditions.push(sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`);
     }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;

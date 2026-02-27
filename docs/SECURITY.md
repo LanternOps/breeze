@@ -35,13 +35,13 @@ SentinelOne containment/remediation APIs are treated as high-risk operations.
   - `huntress_incidents`
 
 ### Ingestion Paths
-- Scheduled polling (every 15 minutes) through the Huntress sync worker.
+- Scheduled polling (every 15 minutes, see `DEFAULT_SYNC_INTERVAL_MINUTES` in `huntressSync.ts`) through the Huntress sync worker.
 - Signed webhook ingestion through `POST /api/v1/huntress/webhook`.
 
 ### Webhook Authenticity Controls
-- Webhooks are validated with HMAC-SHA256 signatures when `webhookSecret` is configured.
-- Signed webhook payloads must include a timestamp header, and replay window enforcement is applied.
-- Invalid or stale signatures are rejected before persistence.
+- Webhooks require HMAC-SHA256 signature validation. If `webhookSecret` is not configured on the integration, webhook ingestion is rejected with a 403 error.
+- When webhook signing is enabled, signed payloads must include a timestamp header and replay window enforcement is applied (default 10 minutes).
+- When webhook signing is enabled, invalid or stale signatures are rejected before persistence.
 - If account-level routing is ambiguous, webhook ingestion requires an explicit integration id.
 
 ### Event Lifecycle
@@ -52,12 +52,13 @@ The integration emits normalized events on the Breeze event bus:
 
 ### Correlation and Triage
 1. Ingest Huntress agents and incidents.
-2. Correlate Huntress entities to Breeze devices.
+2. Correlate Huntress entities to Breeze devices by hostname matching.
 3. Normalize severity and status fields.
 4. Persist incident state transitions.
 5. Emit integration events for downstream automation and response.
 
 ### Operational Guardrails
 - Integration management and manual sync endpoints require authenticated org write access and MFA.
-- Webhook ingestion is unauthenticated by user session but cryptographically validated.
+- Webhook ingestion is unauthenticated by user session but cryptographically validated via HMAC-SHA256 signature.
 - Integration health and incident read APIs remain org-scoped for partner/system contexts.
+- The `apiBaseUrl` field is restricted to HTTPS URLs on `*.huntress.io` to prevent SSRF.

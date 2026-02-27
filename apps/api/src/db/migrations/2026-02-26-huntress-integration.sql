@@ -23,7 +23,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS huntress_integrations_org_idx
 CREATE TABLE IF NOT EXISTS huntress_agents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL REFERENCES organizations(id),
-  integration_id uuid NOT NULL REFERENCES huntress_integrations(id),
+  integration_id uuid NOT NULL REFERENCES huntress_integrations(id) ON DELETE CASCADE,
   huntress_agent_id varchar(128) NOT NULL,
   device_id uuid REFERENCES devices(id),
   hostname varchar(255),
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS huntress_agents (
   status varchar(20),
   last_seen_at timestamp,
   metadata jsonb,
+  created_at timestamp NOT NULL DEFAULT now(),
   updated_at timestamp NOT NULL DEFAULT now()
 );
 
@@ -42,7 +43,7 @@ CREATE INDEX IF NOT EXISTS huntress_agents_org_device_idx
 CREATE TABLE IF NOT EXISTS huntress_incidents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL REFERENCES organizations(id),
-  integration_id uuid NOT NULL REFERENCES huntress_integrations(id),
+  integration_id uuid NOT NULL REFERENCES huntress_integrations(id) ON DELETE CASCADE,
   device_id uuid REFERENCES devices(id),
   huntress_incident_id varchar(128) NOT NULL,
   severity varchar(20),

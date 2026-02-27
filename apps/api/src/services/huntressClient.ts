@@ -179,7 +179,8 @@ function extractPaginationState(payload: unknown): {
     let url: URL;
     try {
       url = new URL(nextLink, 'https://api.huntress.io');
-    } catch {
+    } catch (err) {
+      console.warn('[HuntressClient] Skipping malformed pagination link:', nextLink, err);
       continue;
     }
 
@@ -273,25 +274,47 @@ function normalizeWebhookPayload(payload: unknown): {
   return { accountId, agents, incidents };
 }
 
+const MAX_RETRIES = 3;
+
 async function fetchJson(
   url: URL,
   init: RequestInit,
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<unknown> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
-    const text = await response.text();
-    if (!response.ok) {
-      const preview = text.trim().slice(0, 400);
-      throw new Error(`Huntress API request failed (${response.status} ${response.statusText}): ${preview || '<empty>'}`);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      const text = await response.text();
+
+      // Retry on transient errors (429, 5xx)
+      if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
+        if (attempt < MAX_RETRIES) {
+          const retryAfter = parseInt(response.headers.get('Retry-After') ?? '', 10);
+          const delay = Number.isFinite(retryAfter) ? retryAfter * 1000 : Math.min(1000 * 2 ** attempt, 30_000);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+      }
+
+      if (!response.ok) {
+        const preview = text.trim().slice(0, 400);
+        throw new Error(`Huntress API request failed (${response.status} ${response.statusText}): ${preview || '<empty>'}`);
+      }
+      if (!text.trim()) return {};
+      try {
+        return JSON.parse(text);
+      } catch {
+        const preview = text.slice(0, 300);
+        throw new Error(`Huntress API returned non-JSON response from ${url.pathname}: ${preview}`);
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    if (!text.trim()) return {};
-    return JSON.parse(text);
-  } finally {
-    clearTimeout(timer);
   }
+  // Should not be reached, but satisfies TypeScript
+  throw new Error(`Huntress API request to ${url.pathname} failed after ${MAX_RETRIES} retries`);
 }
 
 export class HuntressClient {
@@ -300,6 +323,9 @@ export class HuntressClient {
   private readonly baseUrl: URL;
 
   constructor(input: { apiKey: string; accountId?: string | null; baseUrl?: string | null }) {
+    if (!input.apiKey.trim()) {
+      throw new Error('Huntress API key must not be empty');
+    }
     this.apiKey = input.apiKey;
     this.accountId = input.accountId ?? null;
     this.baseUrl = new URL(input.baseUrl?.trim() || DEFAULT_HUNTRESS_BASE_URL);
@@ -310,6 +336,7 @@ export class HuntressClient {
     for (const [key, value] of Object.entries(query ?? {})) {
       url.searchParams.set(key, value);
     }
+    // Send both Bearer token and X-API-Key header for compatibility with different Huntress API auth modes
     const headers: Record<string, string> = {
       Accept: 'application/json',
       Authorization: `Bearer ${this.apiKey}`,
@@ -352,7 +379,7 @@ export class HuntressClient {
         continue;
       }
 
-      const candidateNextPage = pagination.nextPage
+      const candidateNextPage: number | null = pagination.nextPage
         ?? (pagination.hasMore && rows.length > 0 ? (nextPage ?? 1) + 1 : null);
       if (candidateNextPage && candidateNextPage > 1) {
         const token = `page:${candidateNextPage}`;
@@ -392,6 +419,7 @@ export function parseHuntressWebhookPayload(payload: unknown): {
   return normalizeWebhookPayload(payload);
 }
 
+/** Signing format matches Huntress webhook spec: HMAC-SHA256 of '{timestamp}.{payload}' prefixed with 'sha256='. */
 export function buildHuntressWebhookSignature(secret: string, payload: string, timestamp?: string | null): string {
   const signed = timestamp ? `${timestamp}.${payload}` : payload;
   return `sha256=${createHmac('sha256', secret).update(signed).digest('hex')}`;
@@ -419,6 +447,7 @@ export function verifyHuntressWebhookSignature(input: {
   if (!Number.isFinite(parsedTimestamp) || parsedTimestamp <= 0) {
     return { ok: false, error: 'Invalid Huntress timestamp header' };
   }
+  // Huntress may send Unix timestamps in seconds or milliseconds. Values above 1e12 are already in ms.
   const timestampMs = parsedTimestamp > 1_000_000_000_000
     ? parsedTimestamp
     : parsedTimestamp * 1000;
