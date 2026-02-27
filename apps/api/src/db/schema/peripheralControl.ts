@@ -1,3 +1,15 @@
+/**
+ * Peripheral Control schema — USB/Bluetooth/Thunderbolt policy enforcement.
+ *
+ * peripheralPolicies: defines rules for device classes (storage, bluetooth, etc.)
+ *   scoped to org/site/group/device via targetType + targetIds JSONB.
+ *   `all_usb` is a superset that covers all USB classes including `storage`.
+ *   Exception rules in the exceptions JSONB allow vendor/product/serial overrides.
+ *
+ * peripheralEvents: agent-reported telemetry (connect, disconnect, block, etc.)
+ *   linked to the triggering policy when applicable. Deduplicated via
+ *   sourceEventId unique partial index (only deduplicates events that carry an ID).
+ */
 import {
   boolean,
   index,
@@ -5,9 +17,11 @@ import {
   pgEnum,
   pgTable,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { devices } from './devices';
 import { organizations } from './orgs';
 import { users } from './users';
@@ -58,6 +72,7 @@ export interface PeripheralExceptionRule {
   serialNumber?: string;
   allow?: boolean;
   reason?: string;
+  /** ISO 8601 timestamp; enforcement is agent-side — the API stores but does not filter expired rules */
   expiresAt?: string;
 }
 
@@ -71,7 +86,7 @@ export const peripheralPolicies = pgTable('peripheral_policies', {
   targetIds: jsonb('target_ids').$type<PeripheralPolicyTargetIds>().default({}),
   exceptions: jsonb('exceptions').$type<PeripheralExceptionRule[]>().default([]),
   isActive: boolean('is_active').notNull().default(true),
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -90,12 +105,15 @@ export const peripheralEvents = pgTable('peripheral_events', {
   vendor: varchar('vendor', { length: 255 }),
   product: varchar('product', { length: 255 }),
   serialNumber: varchar('serial_number', { length: 255 }),
-  details: jsonb('details'),
+  details: jsonb('details').$type<Record<string, unknown>>(),
   occurredAt: timestamp('occurred_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   orgDeviceTimeIdx: index('peripheral_events_org_device_time_idx').on(table.orgId, table.deviceId, table.occurredAt),
   typeIdx: index('peripheral_events_type_idx').on(table.eventType),
   orgPolicyTimeIdx: index('peripheral_events_org_policy_time_idx').on(table.orgId, table.policyId, table.occurredAt),
-  sourceEventIdx: index('peripheral_events_source_event_idx').on(table.orgId, table.deviceId, table.sourceEventId),
+  sourceEventIdx: uniqueIndex('peripheral_events_source_event_idx')
+    .on(table.orgId, table.deviceId, table.sourceEventId)
+    .where(sql`source_event_id IS NOT NULL`),
+  typeTimeIdx: index('peripheral_events_type_time_idx').on(table.eventType, table.occurredAt),
 }));

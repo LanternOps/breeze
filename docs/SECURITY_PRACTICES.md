@@ -202,7 +202,7 @@ Breeze includes policy-driven USB/peripheral controls for data-exfiltration resi
 
 ### High-Risk Change Protections
 
-- Policy mutations require org write permission and MFA in API workflows.
+- Policy mutations require org write permission and MFA when performed through API routes. AI-initiated mutations are gated by tier-3 approval (human confirmation) instead of MFA.
 - Every policy mutation emits an auditable event (`peripheral.policy_changed`).
 - Emergency rollback is first-class via policy disable endpoint.
 
@@ -210,7 +210,7 @@ Breeze includes policy-driven USB/peripheral controls for data-exfiltration resi
 
 - Agents submit peripheral telemetry as structured events (`connected`, `blocked`, etc.).
 - Blocked activity emits correlation events (`peripheral.blocked`).
-- Periodic anomaly detection emits `peripheral.unauthorized_device` when blocked activity crosses threshold.
+- Periodic anomaly detection emits `peripheral.unauthorized_device` when blocked activity crosses threshold. Default: 5+ blocked events per device within a 30-minute lookback window, scanned every 15 minutes. Configurable via `PERIPHERAL_ANOMALY_BLOCKED_THRESHOLD`.
 - All ingestion and policy operations are written to audit logs for immutable review.
 
 ---

@@ -87,4 +87,65 @@ describe('schedulePeripheralPolicyDistribution', () => {
     expect(addCall?.[1]?.changedPolicyIds).toEqual(['pA', 'pB']);
     expect(addCall?.[2]?.jobId).toBe('policy-distribution:org-2');
   });
+
+  it('removes stale completed job before creating a new one', async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const getState = vi.fn().mockResolvedValue('completed');
+    queueMock.getJob.mockResolvedValue({
+      id: 'job-stale',
+      data: {
+        type: 'policy-distribution',
+        orgId: 'org-3',
+        changedPolicyIds: ['p-old'],
+        reason: 'prior',
+        queuedAt: '2026-02-25T00:00:00.000Z'
+      },
+      getState,
+      remove
+    });
+
+    const jobId = await schedulePeripheralPolicyDistribution('org-3', ['p-new'], 'policy-updated');
+
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(queueMock.add).toHaveBeenCalledTimes(1);
+    expect(jobId).toBe('job-new');
+    const addCall = queueMock.add.mock.calls[0];
+    expect(addCall?.[1]?.changedPolicyIds).toEqual(['p-new']);
+    expect(addCall?.[2]?.jobId).toBe('policy-distribution:org-3');
+  });
+
+  it('still creates a new job when stale job removal fails', async () => {
+    const remove = vi.fn().mockRejectedValue(new Error('Redis unavailable'));
+    const getState = vi.fn().mockResolvedValue('completed');
+    queueMock.getJob.mockResolvedValue({
+      id: 'job-stale-fail',
+      data: {
+        type: 'policy-distribution',
+        orgId: 'org-4',
+        changedPolicyIds: ['p-old'],
+        reason: 'prior',
+        queuedAt: '2026-02-25T00:00:00.000Z'
+      },
+      getState,
+      remove
+    });
+
+    const jobId = await schedulePeripheralPolicyDistribution('org-4', ['p-fresh'], 'policy-updated');
+
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(queueMock.add).toHaveBeenCalledTimes(1);
+    expect(jobId).toBe('job-new');
+    const addCall = queueMock.add.mock.calls[0];
+    expect(addCall?.[1]?.changedPolicyIds).toEqual(['p-fresh']);
+  });
+
+  it('deduplicates policy IDs in input', async () => {
+    queueMock.getJob.mockResolvedValue(null);
+
+    await schedulePeripheralPolicyDistribution('org-5', ['p1', 'p1', 'p2'], 'dedup-test');
+
+    expect(queueMock.add).toHaveBeenCalledTimes(1);
+    const addCall = queueMock.add.mock.calls[0];
+    expect(addCall?.[1]?.changedPolicyIds).toEqual(['p1', 'p2']);
+  });
 });

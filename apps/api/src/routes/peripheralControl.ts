@@ -53,6 +53,36 @@ const policySchema = z.object({
     }
   })).max(2000).optional(),
   isActive: z.boolean().optional(),
+}).superRefine((data, ctx) => {
+  if (data.targetType === 'organization' && data.targetIds &&
+      (data.targetIds.siteIds?.length || data.targetIds.groupIds?.length || data.targetIds.deviceIds?.length)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'targetIds should be empty when targetType is organization',
+      path: ['targetIds'],
+    });
+  }
+  if (data.targetType === 'site' && !data.targetIds?.siteIds?.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'siteIds required when targetType is site',
+      path: ['targetIds', 'siteIds'],
+    });
+  }
+  if (data.targetType === 'group' && !data.targetIds?.groupIds?.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'groupIds required when targetType is group',
+      path: ['targetIds', 'groupIds'],
+    });
+  }
+  if (data.targetType === 'device' && !data.targetIds?.deviceIds?.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'deviceIds required when targetType is device',
+      path: ['targetIds', 'deviceIds'],
+    });
+  }
 });
 
 const listPoliciesQuerySchema = z.object({
@@ -164,8 +194,12 @@ function resolveOrgIdForWrite(
   return { error: 'orgId is required for this scope', status: 400 };
 }
 
-function normalizeExceptionRule(rule: z.infer<typeof exceptionsSchema>['exception']): PeripheralExceptionRule {
-  if (!rule) return {};
+function combineWarning(current: string | undefined, next: string): string {
+  return current ? `${current}; ${next}` : next;
+}
+
+function normalizeExceptionRule(rule: z.infer<typeof exceptionsSchema>['exception']): PeripheralExceptionRule | null {
+  if (!rule) return null;
   return {
     vendor: rule.vendor?.trim() || undefined,
     product: rule.product?.trim() || undefined,
@@ -370,7 +404,9 @@ peripheralControlRoutes.post(
       try {
         await schedulePeripheralPolicyDistribution(updated.orgId, [updated.id], 'policy-updated');
       } catch (error) {
-        distributionWarning = error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
+        distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
+        console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${updated.id}:`, error);
       }
 
       try {
@@ -380,22 +416,28 @@ peripheralControlRoutes.post(
           changedBy: auth.user.id
         });
       } catch (error) {
-        distributionWarning = distributionWarning ?? `event publish failed: ${error instanceof Error ? error.message : String(error)}`;
+        const message = error instanceof Error ? error.message : String(error);
+        distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
+        console.error(`[peripheralControl] Failed to emit policy change event for policy ${updated.id}:`, error);
       }
 
-      writeRouteAudit(c, {
-        orgId: updated.orgId,
-        action: 'peripheral.policy.update',
-        resourceType: 'peripheral_policy',
-        resourceId: updated.id,
-        resourceName: updated.name,
-        details: {
-          deviceClass: updated.deviceClass,
-          actionMode: updated.action,
-          targetType: updated.targetType,
-          distributionWarning
-        }
-      });
+      try {
+        writeRouteAudit(c, {
+          orgId: updated.orgId,
+          action: 'peripheral.policy.update',
+          resourceType: 'peripheral_policy',
+          resourceId: updated.id,
+          resourceName: updated.name,
+          details: {
+            deviceClass: updated.deviceClass,
+            actionMode: updated.action,
+            targetType: updated.targetType,
+            distributionWarning
+          }
+        });
+      } catch (error) {
+        console.error(`[peripheralControl] Failed to write audit for policy ${updated.id}:`, error);
+      }
 
       return c.json({ data: updated, warning: distributionWarning });
     }
@@ -428,7 +470,9 @@ peripheralControlRoutes.post(
     try {
       await schedulePeripheralPolicyDistribution(created.orgId, [created.id], 'policy-created');
     } catch (error) {
-      distributionWarning = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
+      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${created.id}:`, error);
     }
 
     try {
@@ -438,22 +482,28 @@ peripheralControlRoutes.post(
         changedBy: auth.user.id
       });
     } catch (error) {
-      distributionWarning = distributionWarning ?? `event publish failed: ${error instanceof Error ? error.message : String(error)}`;
+      const message = error instanceof Error ? error.message : String(error);
+      distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
+      console.error(`[peripheralControl] Failed to emit policy change event for policy ${created.id}:`, error);
     }
 
-    writeRouteAudit(c, {
-      orgId: created.orgId,
-      action: 'peripheral.policy.create',
-      resourceType: 'peripheral_policy',
-      resourceId: created.id,
-      resourceName: created.name,
-      details: {
-        deviceClass: created.deviceClass,
-        actionMode: created.action,
-        targetType: created.targetType,
-        distributionWarning
-      }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId: created.orgId,
+        action: 'peripheral.policy.create',
+        resourceType: 'peripheral_policy',
+        resourceId: created.id,
+        resourceName: created.name,
+        details: {
+          deviceClass: created.deviceClass,
+          actionMode: created.action,
+          targetType: created.targetType,
+          distributionWarning
+        }
+      });
+    } catch (error) {
+      console.error(`[peripheralControl] Failed to write audit for policy ${created.id}:`, error);
+    }
 
     return c.json({ data: created, warning: distributionWarning }, 201);
   }
@@ -490,7 +540,9 @@ peripheralControlRoutes.post(
     try {
       await schedulePeripheralPolicyDistribution(updated.orgId, [updated.id], 'policy-disabled');
     } catch (error) {
-      distributionWarning = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
+      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${updated.id}:`, error);
     }
 
     try {
@@ -500,19 +552,25 @@ peripheralControlRoutes.post(
         changedBy: auth.user.id
       });
     } catch (error) {
-      distributionWarning = distributionWarning ?? `event publish failed: ${error instanceof Error ? error.message : String(error)}`;
+      const message = error instanceof Error ? error.message : String(error);
+      distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
+      console.error(`[peripheralControl] Failed to emit policy change event for policy ${updated.id}:`, error);
     }
 
-    writeRouteAudit(c, {
-      orgId: updated.orgId,
-      action: 'peripheral.policy.disable',
-      resourceType: 'peripheral_policy',
-      resourceId: updated.id,
-      resourceName: updated.name,
-      details: {
-        distributionWarning
-      }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId: updated.orgId,
+        action: 'peripheral.policy.disable',
+        resourceType: 'peripheral_policy',
+        resourceId: updated.id,
+        resourceName: updated.name,
+        details: {
+          distributionWarning
+        }
+      });
+    } catch (error) {
+      console.error(`[peripheralControl] Failed to write audit for policy ${updated.id}:`, error);
+    }
 
     return c.json({ data: updated, warning: distributionWarning });
   }
@@ -541,6 +599,9 @@ peripheralControlRoutes.post(
 
     if (payload.operation === 'add') {
       const nextRule = normalizeExceptionRule(payload.exception);
+      if (!nextRule) {
+        return c.json({ error: 'Invalid exception rule' }, 400);
+      }
       nextExceptions = [...currentExceptions, nextRule];
       changed = 1;
     } else {
@@ -576,7 +637,9 @@ peripheralControlRoutes.post(
     try {
       await schedulePeripheralPolicyDistribution(updated.orgId, [updated.id], 'policy-exceptions-updated');
     } catch (error) {
-      distributionWarning = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
+      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${updated.id}:`, error);
     }
 
     try {
@@ -588,21 +651,27 @@ peripheralControlRoutes.post(
         changed
       });
     } catch (error) {
-      distributionWarning = distributionWarning ?? `event publish failed: ${error instanceof Error ? error.message : String(error)}`;
+      const message = error instanceof Error ? error.message : String(error);
+      distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
+      console.error(`[peripheralControl] Failed to emit policy change event for policy ${updated.id}:`, error);
     }
 
-    writeRouteAudit(c, {
-      orgId: updated.orgId,
-      action: 'peripheral.policy.exceptions',
-      resourceType: 'peripheral_policy',
-      resourceId: updated.id,
-      resourceName: updated.name,
-      details: {
-        operation: payload.operation,
-        changed,
-        distributionWarning
-      }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId: updated.orgId,
+        action: 'peripheral.policy.exceptions',
+        resourceType: 'peripheral_policy',
+        resourceId: updated.id,
+        resourceName: updated.name,
+        details: {
+          operation: payload.operation,
+          changed,
+          distributionWarning
+        }
+      });
+    } catch (error) {
+      console.error(`[peripheralControl] Failed to write audit for policy ${updated.id}:`, error);
+    }
 
     return c.json({
       data: updated,

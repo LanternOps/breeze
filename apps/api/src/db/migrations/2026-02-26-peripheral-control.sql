@@ -73,10 +73,13 @@ CREATE INDEX IF NOT EXISTS peripheral_events_type_idx
   ON peripheral_events (event_type);
 CREATE INDEX IF NOT EXISTS peripheral_events_org_policy_time_idx
   ON peripheral_events (org_id, policy_id, occurred_at DESC);
-CREATE INDEX IF NOT EXISTS peripheral_events_source_event_idx
-  ON peripheral_events (org_id, device_id, source_event_id);
-CREATE UNIQUE INDEX IF NOT EXISTS peripheral_events_source_evt_uniq
-  ON peripheral_events (org_id, device_id, source_event_id);
+DROP INDEX IF EXISTS peripheral_events_source_event_idx;
+DROP INDEX IF EXISTS peripheral_events_source_evt_uniq;
+CREATE UNIQUE INDEX IF NOT EXISTS peripheral_events_source_event_idx
+  ON peripheral_events (org_id, device_id, source_event_id)
+  WHERE source_event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS peripheral_events_type_time_idx
+  ON peripheral_events (event_type, occurred_at DESC);
 
 ALTER TABLE peripheral_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE peripheral_policies FORCE ROW LEVEL SECURITY;

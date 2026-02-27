@@ -9,6 +9,12 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
+import {
+  peripheralDeviceClassEnum,
+  peripheralPolicyActionEnum,
+  peripheralPolicyTargetTypeEnum,
+  peripheralEventTypeEnum
+} from '../db/schema';
 
 // Reusable validators
 const uuid = z.string().uuid();
@@ -251,10 +257,31 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     org_id: uuid.optional(),
     device_id: uuid.optional(),
     policy_id: uuid.optional(),
-    event_type: z.enum(['connected', 'disconnected', 'blocked', 'mounted_read_only', 'policy_override']).optional(),
+    event_type: z.enum(peripheralEventTypeEnum.enumValues).optional(),
     start: z.string().datetime({ offset: true }).optional(),
     end: z.string().datetime({ offset: true }).optional(),
     limit: z.number().int().min(1).max(500).optional(),
+  }).superRefine((data, ctx) => {
+    if (data.start && data.end) {
+      const s = new Date(data.start);
+      const e = new Date(data.end);
+      if (s.getTime() > e.getTime()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['start'],
+          message: 'start must be before end',
+        });
+        return;
+      }
+      const maxWindowMs = 90 * 24 * 60 * 60 * 1000;
+      if ((e.getTime() - s.getTime()) > maxWindowMs) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['start'],
+          message: 'Time range cannot exceed 90 days',
+        });
+      }
+    }
   }),
 
   manage_peripheral_policy: z.object({
@@ -262,12 +289,23 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     policy_id: uuid.optional(),
     org_id: uuid.optional(),
     name: z.string().min(1).max(200).optional(),
-    device_class: z.enum(['storage', 'all_usb', 'bluetooth', 'thunderbolt']).optional(),
-    policy_action: z.enum(['allow', 'block', 'read_only', 'alert']).optional(),
-    target_type: z.enum(['organization', 'site', 'group', 'device']).optional(),
-    target_ids: z.record(z.unknown()).optional(),
+    device_class: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
+    policy_action: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
+    target_type: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional(),
+    target_ids: z.object({
+      siteIds: z.array(z.string().uuid()).max(1000).optional(),
+      groupIds: z.array(z.string().uuid()).max(1000).optional(),
+      deviceIds: z.array(z.string().uuid()).max(5000).optional(),
+    }).optional(),
     is_active: z.boolean().optional(),
-    exception: z.record(z.unknown()).optional(),
+    exception: z.object({
+      vendor: z.string().max(255).optional(),
+      product: z.string().max(255).optional(),
+      serialNumber: z.string().max(255).optional(),
+      allow: z.boolean().optional(),
+      reason: z.string().max(2000).optional(),
+      expiresAt: z.string().datetime({ offset: true }).optional(),
+    }).optional(),
     match: z.object({
       vendor: z.string().max(255).optional(),
       product: z.string().max(255).optional(),

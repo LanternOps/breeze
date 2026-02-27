@@ -60,6 +60,11 @@ import {
   huntressIncidents,
   peripheralEvents,
   peripheralPolicies,
+  peripheralDeviceClassEnum,
+  peripheralEventTypeEnum,
+  peripheralPolicyActionEnum,
+  peripheralPolicyTargetTypeEnum,
+  type PeripheralExceptionRule,
   type DnsPolicyDomain
 } from '../db/schema';
 import { eq, ne, and, or, desc, sql, like, ilike, inArray, gte, lte, SQL } from 'drizzle-orm';
@@ -240,16 +245,7 @@ function normalizeDnsCategory(category: unknown): string | null {
   return 'unknown';
 }
 
-type PeripheralExceptionInput = {
-  vendor?: string;
-  product?: string;
-  serialNumber?: string;
-  allow?: boolean;
-  reason?: string;
-  expiresAt?: string;
-};
-
-function normalizePeripheralException(input: Record<string, unknown>): PeripheralExceptionInput {
+function normalizePeripheralException(input: Record<string, unknown>): PeripheralExceptionRule {
   return {
     vendor: typeof input.vendor === 'string' ? input.vendor.trim() || undefined : undefined,
     product: typeof input.product === 'string' ? input.product.trim() || undefined : undefined,
@@ -2167,11 +2163,11 @@ registerTool({
         policy_id: { type: 'string', description: 'Optional policy UUID filter' },
         event_type: {
           type: 'string',
-          enum: ['connected', 'disconnected', 'blocked', 'mounted_read_only', 'policy_override']
+          enum: [...peripheralEventTypeEnum.enumValues]
         },
-        start: { type: 'string', description: 'ISO timestamp lower bound' },
-        end: { type: 'string', description: 'ISO timestamp upper bound' },
-        limit: { type: 'number', description: 'Max rows to return (default 100, max 500)' }
+        start: { type: 'string', description: 'ISO timestamp lower bound (max 90-day window)' },
+        end: { type: 'string', description: 'ISO timestamp upper bound (max 90-day window)' },
+        limit: { type: 'number', description: 'Max rows to return (default 100, max 500). REST API supports up to 1000.' }
       }
     }
   },
@@ -2193,6 +2189,11 @@ registerTool({
     }
     if (start.getTime() > end.getTime()) {
       return JSON.stringify({ error: 'start must be before end' });
+    }
+
+    const maxWindowMs = 90 * 24 * 60 * 60 * 1000;
+    if ((end.getTime() - start.getTime()) > maxWindowMs) {
+      return JSON.stringify({ error: 'Time range cannot exceed 90 days' });
     }
 
     const conditions: SQL[] = [
@@ -2243,7 +2244,7 @@ registerTool({
   tier: 3,
   definition: {
     name: 'manage_peripheral_policy',
-    description: 'Create, update, disable, and manage exceptions for USB/peripheral control policies.',
+    description: 'Create, update, disable, and manage exceptions for USB/peripheral control policies. When removing exceptions, all specified match fields must match (unspecified fields act as wildcards). Tier 3: requires human approval.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -2254,9 +2255,9 @@ registerTool({
         policy_id: { type: 'string' },
         org_id: { type: 'string' },
         name: { type: 'string' },
-        device_class: { type: 'string', enum: ['storage', 'all_usb', 'bluetooth', 'thunderbolt'] },
-        policy_action: { type: 'string', enum: ['allow', 'block', 'read_only', 'alert'] },
-        target_type: { type: 'string', enum: ['organization', 'site', 'group', 'device'] },
+        device_class: { type: 'string', enum: [...peripheralDeviceClassEnum.enumValues] },
+        policy_action: { type: 'string', enum: [...peripheralPolicyActionEnum.enumValues] },
+        target_type: { type: 'string', enum: [...peripheralPolicyTargetTypeEnum.enumValues] },
         target_ids: { type: 'object' },
         is_active: { type: 'boolean' },
         exception: { type: 'object' },
@@ -2417,14 +2418,19 @@ registerTool({
         return JSON.stringify({ error: 'Policy not found or access denied' });
       }
 
-      await db
+      const [disabled] = await db
         .update(peripheralPolicies)
         .set({ isActive: false, updatedAt: new Date() })
-        .where(eq(peripheralPolicies.id, policy.id));
+        .where(eq(peripheralPolicies.id, policy.id))
+        .returning();
+
+      if (!disabled) {
+        return JSON.stringify({ error: 'Failed to disable policy' });
+      }
 
       let warning: string | undefined;
       try {
-        await schedulePeripheralPolicyDistribution(policy.orgId, [policy.id], 'ai-tool-disable');
+        await schedulePeripheralPolicyDistribution(disabled.orgId, [disabled.id], 'ai-tool-disable');
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
@@ -2455,7 +2461,7 @@ registerTool({
       }
 
       const existingExceptions = Array.isArray(policy.exceptions)
-        ? policy.exceptions as PeripheralExceptionInput[]
+        ? policy.exceptions as PeripheralExceptionRule[]
         : [];
 
       let nextExceptions = existingExceptions;
@@ -2495,13 +2501,18 @@ registerTool({
         }
       }
 
-      await db
+      const [updatedPolicy] = await db
         .update(peripheralPolicies)
         .set({
           exceptions: nextExceptions,
           updatedAt: new Date()
         })
-        .where(eq(peripheralPolicies.id, policy.id));
+        .where(eq(peripheralPolicies.id, policy.id))
+        .returning();
+
+      if (!updatedPolicy) {
+        return JSON.stringify({ error: 'Failed to update policy exceptions' });
+      }
 
       let warning: string | undefined;
       try {

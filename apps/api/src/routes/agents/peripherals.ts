@@ -47,6 +47,10 @@ peripheralRoutes.put('/:id/peripherals/events', zValidator('json', submitPeriphe
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  if (agent?.orgId && agent.orgId !== device.orgId) {
+    return c.json({ error: 'Organization mismatch' }, 403);
+  }
+
   const rows = data.events.map((event) => ({
     orgId: device.orgId,
     deviceId: device.id,
@@ -102,8 +106,9 @@ peripheralRoutes.put('/:id/peripherals/events', zValidator('json', submitPeriphe
   }
 
   const blockedEvents = rows.filter((row) => row.eventType === 'blocked');
+  let blockedPublishFailures = 0;
   if (blockedEvents.length > 0) {
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       blockedEvents.map(async (event) => {
         await publishEvent(
           'peripheral.blocked',
@@ -123,28 +128,43 @@ peripheralRoutes.put('/:id/peripherals/events', zValidator('json', submitPeriphe
         );
       })
     );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        blockedPublishFailures++;
+        console.error(
+          `[peripherals] Failed to publish peripheral.blocked event for device ${device.id}:`,
+          result.reason
+        );
+      }
+    }
   }
 
-  writeAuditEvent(c, {
-    orgId: agent?.orgId ?? device.orgId,
-    actorType: 'agent',
-    actorId: agent?.agentId ?? agentId,
-    action: 'agent.peripheral_events.submit',
-    resourceType: 'device',
-    resourceId: device.id,
-    resourceName: device.hostname,
-    details: {
-      submittedCount: data.events.length,
-      insertedCount: inserted,
-      deduplicatedCount: deduplicated,
-      blockedCount: blockedEvents.length
-    },
-  });
+  try {
+    writeAuditEvent(c, {
+      orgId: agent?.orgId ?? device.orgId,
+      actorType: 'agent',
+      actorId: agent?.agentId ?? agentId,
+      action: 'agent.peripheral_events.submit',
+      resourceType: 'device',
+      resourceId: device.id,
+      resourceName: device.hostname,
+      details: {
+        submittedCount: data.events.length,
+        insertedCount: inserted,
+        deduplicatedCount: deduplicated,
+        blockedCount: blockedEvents.length,
+        blockedPublishFailures
+      },
+    });
+  } catch (error) {
+    console.error(`[peripherals] Failed to write audit event for device ${device.id}:`, error);
+  }
 
   return c.json({
     success: true,
     count: inserted,
     deduplicatedCount: deduplicated,
-    blockedCount: blockedEvents.length
+    blockedCount: blockedEvents.length,
+    ...(blockedPublishFailures > 0 ? { blockedPublishFailures } : {})
   });
 });

@@ -33,33 +33,36 @@ interface PolicyDistributionJobData {
 
 type PeripheralJobData = AnomalyScanJobData | PolicyDistributionJobData;
 
-let anomalyQueue: Queue<PeripheralJobData> | null = null;
-let anomalyWorker: Worker<PeripheralJobData> | null = null;
-let policyDistributionQueue: Queue<PeripheralJobData> | null = null;
-let policyDistributionWorker: Worker<PeripheralJobData> | null = null;
+let anomalyQueue: Queue<AnomalyScanJobData> | null = null;
+let anomalyWorker: Worker<AnomalyScanJobData> | null = null;
+let policyDistributionQueue: Queue<PolicyDistributionJobData> | null = null;
+let policyDistributionWorker: Worker<PolicyDistributionJobData> | null = null;
 
 function getBlockedThreshold(): number {
   const raw = process.env.PERIPHERAL_ANOMALY_BLOCKED_THRESHOLD;
   if (!raw) return DEFAULT_BLOCKED_THRESHOLD;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 1) {
+    console.warn(
+      `[PeripheralJobs] Invalid PERIPHERAL_ANOMALY_BLOCKED_THRESHOLD="${raw}", using default ${DEFAULT_BLOCKED_THRESHOLD}`
+    );
     return DEFAULT_BLOCKED_THRESHOLD;
   }
   return parsed;
 }
 
-export function getPeripheralAnomalyQueue(): Queue<PeripheralJobData> {
+export function getPeripheralAnomalyQueue(): Queue<AnomalyScanJobData> {
   if (!anomalyQueue) {
-    anomalyQueue = new Queue<PeripheralJobData>(PERIPHERAL_ANOMALY_QUEUE, {
+    anomalyQueue = new Queue<AnomalyScanJobData>(PERIPHERAL_ANOMALY_QUEUE, {
       connection: getRedisConnection(),
     });
   }
   return anomalyQueue;
 }
 
-export function getPeripheralPolicyDistributionQueue(): Queue<PeripheralJobData> {
+export function getPeripheralPolicyDistributionQueue(): Queue<PolicyDistributionJobData> {
   if (!policyDistributionQueue) {
-    policyDistributionQueue = new Queue<PeripheralJobData>(PERIPHERAL_POLICY_DISTRIBUTION_QUEUE, {
+    policyDistributionQueue = new Queue<PolicyDistributionJobData>(PERIPHERAL_POLICY_DISTRIBUTION_QUEUE, {
       connection: getRedisConnection(),
     });
   }
@@ -91,6 +94,7 @@ async function processAnomalyScan(_data: AnomalyScanJobData): Promise<{ alerts: 
   }
 
   let alerts = 0;
+  let failed = 0;
   for (const row of rows) {
     try {
       await publishEvent(
@@ -108,6 +112,7 @@ async function processAnomalyScan(_data: AnomalyScanJobData): Promise<{ alerts: 
       );
       alerts++;
     } catch (error) {
+      failed++;
       console.error(
         `[PeripheralJobs] Failed to publish peripheral.unauthorized_device for ${row.deviceId}:`,
         error
@@ -115,12 +120,23 @@ async function processAnomalyScan(_data: AnomalyScanJobData): Promise<{ alerts: 
     }
   }
 
-  return { alerts };
+  if (failed > 0) {
+    console.error(
+      `[PeripheralJobs] Anomaly scan: ${failed}/${rows.length} alert publications failed`
+    );
+  }
+
+  if (failed > 0 && alerts === 0) {
+    throw new Error(`All ${failed} anomaly alert publications failed — will retry`);
+  }
+
+  return { alerts, failed };
 }
 
 async function processPolicyDistribution(data: PolicyDistributionJobData): Promise<{
   queued: number;
   immediate: number;
+  failed: number;
 }> {
   const [activePolicies, orgDevices] = await Promise.all([
     db
@@ -148,7 +164,7 @@ async function processPolicyDistribution(data: PolicyDistributionJobData): Promi
   ]);
 
   if (orgDevices.length === 0) {
-    return { queued: 0, immediate: 0 };
+    return { queued: 0, immediate: 0, failed: 0 };
   }
 
   const payload = {
@@ -170,6 +186,7 @@ async function processPolicyDistribution(data: PolicyDistributionJobData): Promi
 
   let queued = 0;
   let immediate = 0;
+  let failed = 0;
 
   for (const device of orgDevices) {
     try {
@@ -190,6 +207,7 @@ async function processPolicyDistribution(data: PolicyDistributionJobData): Promi
       await queueCommand(device.id, CommandTypes.PERIPHERAL_POLICY_SYNC, payload);
       queued++;
     } catch (error) {
+      failed++;
       console.error(
         `[PeripheralJobs] Failed to queue peripheral policy sync for device ${device.id}:`,
         error
@@ -197,17 +215,20 @@ async function processPolicyDistribution(data: PolicyDistributionJobData): Promi
     }
   }
 
-  return { queued, immediate };
+  if (failed > 0) {
+    console.error(
+      `[PeripheralJobs] Policy distribution for org ${data.orgId}: ${failed}/${orgDevices.length} devices failed`
+    );
+  }
+
+  return { queued, immediate, failed };
 }
 
-function createPeripheralAnomalyWorker(): Worker<PeripheralJobData> {
-  return new Worker<PeripheralJobData>(
+function createPeripheralAnomalyWorker(): Worker<AnomalyScanJobData> {
+  return new Worker<AnomalyScanJobData>(
     PERIPHERAL_ANOMALY_QUEUE,
-    async (job: Job<PeripheralJobData>) => {
+    async (job: Job<AnomalyScanJobData>) => {
       return runWithSystemDbAccess(async () => {
-        if (job.data.type !== 'anomaly-scan') {
-          throw new Error(`Unexpected job type for anomaly queue: ${(job.data as { type: string }).type}`);
-        }
         return processAnomalyScan(job.data);
       });
     },
@@ -218,14 +239,11 @@ function createPeripheralAnomalyWorker(): Worker<PeripheralJobData> {
   );
 }
 
-function createPeripheralPolicyDistributionWorker(): Worker<PeripheralJobData> {
-  return new Worker<PeripheralJobData>(
+function createPeripheralPolicyDistributionWorker(): Worker<PolicyDistributionJobData> {
+  return new Worker<PolicyDistributionJobData>(
     PERIPHERAL_POLICY_DISTRIBUTION_QUEUE,
-    async (job: Job<PeripheralJobData>) => {
+    async (job: Job<PolicyDistributionJobData>) => {
       return runWithSystemDbAccess(async () => {
-        if (job.data.type !== 'policy-distribution') {
-          throw new Error(`Unexpected job type for policy distribution queue: ${(job.data as { type: string }).type}`);
-        }
         return processPolicyDistribution(job.data);
       });
     },
@@ -294,8 +312,8 @@ export async function schedulePeripheralPolicyDistribution(
     }
 
     await existing.remove().catch((error) => {
-      console.warn(
-        `[PeripheralJobs] Failed to remove stale policy distribution job ${jobId}:`,
+      console.error(
+        `[PeripheralJobs] Failed to remove stale policy distribution job ${jobId} — queue infrastructure may be degraded:`,
         error
       );
     });
