@@ -5,6 +5,7 @@ import {
   Database,
   PlugZap,
   Plus,
+  Shield,
   ShieldCheck,
   TriangleAlert
 } from 'lucide-react';
@@ -21,7 +22,7 @@ type IntegrationCard = {
 };
 
 type IntegrationCategory = {
-  id: 'webhooks' | 'psa' | 'monitoring' | 'backup';
+  id: 'webhooks' | 'psa' | 'monitoring' | 'backup' | 'security';
   label: string;
   description: string;
   cta: string;
@@ -151,6 +152,23 @@ const integrationCatalog: IntegrationCategory[] = [
         status: 'connected',
         lastChecked: '12m ago',
         connectedAccounts: 2
+      }
+    ]
+  },
+  {
+    id: 'security',
+    label: 'Security',
+    description: 'Endpoint detection and response integrations.',
+    cta: 'Add security',
+    icon: Shield,
+    integrations: [
+      {
+        id: 'sec-s1',
+        name: 'SentinelOne',
+        description: 'EDR agent sync, threat detection, and containment.',
+        status: 'disconnected',
+        lastChecked: '—',
+        connectedAccounts: 0
       }
     ]
   }
