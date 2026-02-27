@@ -608,6 +608,60 @@ auditBaselineRoutes.post(
   }
 );
 
+const listApplyRequestsSchema = z.object({
+  orgId: z.string().uuid().optional(),
+  status: z.enum(['pending', 'approved', 'rejected', 'expired', 'consumed']).optional(),
+  baselineId: z.string().uuid().optional(),
+});
+
+auditBaselineRoutes.get(
+  '/apply-requests',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission('audit', 'read'),
+  zValidator('query', listApplyRequestsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) {
+      return c.json({ error: orgResult.error }, orgResult.status);
+    }
+
+    const conditions: SQL[] = [];
+    if (orgResult.orgId) {
+      conditions.push(eq(auditBaselineApplyApprovals.orgId, orgResult.orgId));
+    } else {
+      const orgCondition = auth.orgCondition(auditBaselineApplyApprovals.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+    }
+
+    if (query.status) {
+      conditions.push(eq(auditBaselineApplyApprovals.status, query.status));
+    }
+    if (query.baselineId) {
+      conditions.push(eq(auditBaselineApplyApprovals.baselineId, query.baselineId));
+    }
+
+    const rows = await db
+      .select({
+        approval: auditBaselineApplyApprovals,
+        baselineName: auditBaselines.name,
+      })
+      .from(auditBaselineApplyApprovals)
+      .innerJoin(auditBaselines, eq(auditBaselineApplyApprovals.baselineId, auditBaselines.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(auditBaselineApplyApprovals.createdAt));
+
+    return c.json({
+      data: rows.map((row) => ({
+        ...mapApplyApprovalRow(row.approval),
+        baselineName: row.baselineName,
+      })),
+    });
+  }
+);
+
 auditBaselineRoutes.post(
   '/apply-requests/:approvalId/decision',
   requireScope('organization', 'partner', 'system'),
