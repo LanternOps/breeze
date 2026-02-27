@@ -196,11 +196,12 @@ auditBaselineRoutes.post(
     const now = new Date();
 
     if (body.id) {
+      const baselineId = body.id;
       const [existing] = await db
         .select()
         .from(auditBaselines)
         .where(and(
-          eq(auditBaselines.id, body.id),
+          eq(auditBaselines.id, baselineId),
           eq(auditBaselines.orgId, orgId),
         ))
         .limit(1);
@@ -234,13 +235,13 @@ auditBaselineRoutes.post(
             isActive: body.isActive ?? existing.isActive,
             updatedAt: now,
           })
-          .where(eq(auditBaselines.id, body.id));
+          .where(eq(auditBaselines.id, baselineId));
       });
 
       const [updated] = await db
         .select()
         .from(auditBaselines)
-        .where(eq(auditBaselines.id, body.id))
+        .where(eq(auditBaselines.id, baselineId))
         .limit(1);
 
       if (!updated) {
