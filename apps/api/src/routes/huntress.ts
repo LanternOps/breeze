@@ -164,7 +164,7 @@ huntressRoutes.post('/webhook', async (c) => {
   try {
     payload = rawBody ? JSON.parse(rawBody) : {};
   } catch (err) {
-    console.warn('[huntress] Webhook received invalid JSON:', rawBody?.slice(0, 500), err);
+    console.warn('[huntress] Webhook received invalid JSON payload');
     return c.json({ error: 'Invalid JSON payload' }, 400);
   }
 
@@ -256,6 +256,7 @@ huntressRoutes.get(
         lastSyncError: huntressIntegrations.lastSyncError,
         createdAt: huntressIntegrations.createdAt,
         updatedAt: huntressIntegrations.updatedAt,
+        hasApiKey: sql<boolean>`(${huntressIntegrations.apiKeyEncrypted} is not null and ${huntressIntegrations.apiKeyEncrypted} != '')`,
         hasWebhookSecret: sql<boolean>`(${huntressIntegrations.webhookSecretEncrypted} is not null)`
       })
       .from(huntressIntegrations)
@@ -266,12 +267,7 @@ huntressRoutes.get(
       return c.json({ data: null });
     }
 
-    return c.json({
-      data: {
-        ...integration,
-        hasApiKey: true,
-      }
-    });
+    return c.json({ data: integration });
   }
 );
 
@@ -304,7 +300,11 @@ huntressRoutes.post(
       ? encryptSecret(body.apiKey)
       : existing?.apiKeyEncrypted ?? null;
     if (!apiKeyEncrypted) {
-      return c.json({ error: 'Failed to encrypt Huntress API key' }, 500);
+      return c.json({
+        error: body.apiKey
+          ? 'Failed to encrypt Huntress API key. Please contact support.'
+          : 'API key is missing from the existing integration. Please provide a new API key.'
+      }, body.apiKey ? 500 : 400);
     }
 
     const webhookSecretEncrypted = body.webhookSecret !== undefined
@@ -425,6 +425,7 @@ huntressRoutes.post(
         id: huntressIntegrations.id,
         orgId: huntressIntegrations.orgId,
         name: huntressIntegrations.name,
+        isActive: huntressIntegrations.isActive,
       })
       .from(huntressIntegrations)
       .where(and(...conditions))
@@ -434,7 +435,18 @@ huntressRoutes.post(
       return c.json({ error: 'Huntress integration not found' }, 404);
     }
 
-    const jobId = await scheduleHuntressSync(integration.id);
+    if (!integration.isActive) {
+      return c.json({ error: 'Integration is inactive. Activate it before syncing.' }, 400);
+    }
+
+    let jobId: string;
+    try {
+      jobId = await scheduleHuntressSync(integration.id);
+    } catch (error) {
+      console.error('[huntress] Failed to schedule sync:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      return c.json({ error: 'Failed to schedule sync. Please try again later.' }, 500);
+    }
 
     writeRouteAudit(c, {
       orgId: integration.orgId,
@@ -500,77 +512,83 @@ huntressRoutes.get(
       });
     }
 
-    const [
-      [totalAgents],
-      [mappedAgents],
-      [offlineAgents],
-      [openIncidents],
-      bySeverity,
-      byStatus,
-    ] = await Promise.all([
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(huntressAgents)
-        .where(eq(huntressAgents.integrationId, integration.id)),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(huntressAgents)
-        .where(and(eq(huntressAgents.integrationId, integration.id), isNotNull(huntressAgents.deviceId))),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(huntressAgents)
-        .where(
-          and(
-            eq(huntressAgents.integrationId, integration.id),
-            sql`coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())})`
-          )
-        ),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(huntressIncidents)
-        .where(
-          and(
-            eq(huntressIncidents.integrationId, integration.id),
-            sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`
-          )
-        ),
-      db
-        .select({
-          severity: huntressIncidents.severity,
-          count: sql<number>`count(*)::int`
-        })
-        .from(huntressIncidents)
-        .where(eq(huntressIncidents.integrationId, integration.id))
-        .groupBy(huntressIncidents.severity)
-        .orderBy(desc(sql`count(*)`)),
-      db
-        .select({
-          status: huntressIncidents.status,
-          count: sql<number>`count(*)::int`
-        })
-        .from(huntressIncidents)
-        .where(eq(huntressIncidents.integrationId, integration.id))
-        .groupBy(huntressIncidents.status)
-        .orderBy(desc(sql`count(*)`)),
-    ]);
-
-    const totalAgentsCount = Number(totalAgents?.count ?? 0);
-    const mappedAgentsCount = Number(mappedAgents?.count ?? 0);
-
-    return c.json({
-      integration,
-      coverage: {
-        totalAgents: totalAgentsCount,
-        mappedAgents: mappedAgentsCount,
-        unmappedAgents: Math.max(totalAgentsCount - mappedAgentsCount, 0),
-        offlineAgents: Number(offlineAgents?.count ?? 0),
-      },
-      incidents: {
-        open: Number(openIncidents?.count ?? 0),
+    try {
+      const [
+        [totalAgents],
+        [mappedAgents],
+        [offlineAgents],
+        [openIncidents],
         bySeverity,
         byStatus,
-      }
-    });
+      ] = await Promise.all([
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(huntressAgents)
+          .where(eq(huntressAgents.integrationId, integration.id)),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(huntressAgents)
+          .where(and(eq(huntressAgents.integrationId, integration.id), isNotNull(huntressAgents.deviceId))),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(huntressAgents)
+          .where(
+            and(
+              eq(huntressAgents.integrationId, integration.id),
+              sql`coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())})`
+            )
+          ),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(huntressIncidents)
+          .where(
+            and(
+              eq(huntressIncidents.integrationId, integration.id),
+              sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`
+            )
+          ),
+        db
+          .select({
+            severity: huntressIncidents.severity,
+            count: sql<number>`count(*)::int`
+          })
+          .from(huntressIncidents)
+          .where(eq(huntressIncidents.integrationId, integration.id))
+          .groupBy(huntressIncidents.severity)
+          .orderBy(desc(sql`count(*)`)),
+        db
+          .select({
+            status: huntressIncidents.status,
+            count: sql<number>`count(*)::int`
+          })
+          .from(huntressIncidents)
+          .where(eq(huntressIncidents.integrationId, integration.id))
+          .groupBy(huntressIncidents.status)
+          .orderBy(desc(sql`count(*)`)),
+      ]);
+
+      const totalAgentsCount = Number(totalAgents?.count ?? 0);
+      const mappedAgentsCount = Number(mappedAgents?.count ?? 0);
+
+      return c.json({
+        integration,
+        coverage: {
+          totalAgents: totalAgentsCount,
+          mappedAgents: mappedAgentsCount,
+          unmappedAgents: Math.max(totalAgentsCount - mappedAgentsCount, 0),
+          offlineAgents: Number(offlineAgents?.count ?? 0),
+        },
+        incidents: {
+          open: Number(openIncidents?.count ?? 0),
+          bySeverity,
+          byStatus,
+        }
+      });
+    } catch (error) {
+      console.error('[huntress] Failed to fetch status:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      return c.json({ error: 'Failed to fetch integration status' }, 500);
+    }
   }
 );
 
@@ -603,44 +621,50 @@ huntressRoutes.get(
 
     const where = and(...conditions);
 
-    const [rows, [countRow]] = await Promise.all([
-      db
-        .select({
-          id: huntressIncidents.id,
-          orgId: huntressIncidents.orgId,
-          integrationId: huntressIncidents.integrationId,
-          deviceId: huntressIncidents.deviceId,
-          deviceHostname: devices.hostname,
-          huntressIncidentId: huntressIncidents.huntressIncidentId,
-          severity: huntressIncidents.severity,
-          category: huntressIncidents.category,
-          title: huntressIncidents.title,
-          description: huntressIncidents.description,
-          recommendation: huntressIncidents.recommendation,
-          status: huntressIncidents.status,
-          reportedAt: huntressIncidents.reportedAt,
-          resolvedAt: huntressIncidents.resolvedAt,
-          details: huntressIncidents.details,
-          createdAt: huntressIncidents.createdAt,
-          updatedAt: huntressIncidents.updatedAt,
-        })
-        .from(huntressIncidents)
-        .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
-        .where(where)
-        .orderBy(desc(huntressIncidents.reportedAt), desc(huntressIncidents.createdAt))
-        .limit(limit)
-        .offset(offset),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(huntressIncidents)
-        .where(where),
-    ]);
+    try {
+      const [rows, [countRow]] = await Promise.all([
+        db
+          .select({
+            id: huntressIncidents.id,
+            orgId: huntressIncidents.orgId,
+            integrationId: huntressIncidents.integrationId,
+            deviceId: huntressIncidents.deviceId,
+            deviceHostname: devices.hostname,
+            huntressIncidentId: huntressIncidents.huntressIncidentId,
+            severity: huntressIncidents.severity,
+            category: huntressIncidents.category,
+            title: huntressIncidents.title,
+            description: huntressIncidents.description,
+            recommendation: huntressIncidents.recommendation,
+            status: huntressIncidents.status,
+            reportedAt: huntressIncidents.reportedAt,
+            resolvedAt: huntressIncidents.resolvedAt,
+            details: huntressIncidents.details,
+            createdAt: huntressIncidents.createdAt,
+            updatedAt: huntressIncidents.updatedAt,
+          })
+          .from(huntressIncidents)
+          .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
+          .where(where)
+          .orderBy(desc(huntressIncidents.reportedAt), desc(huntressIncidents.createdAt))
+          .limit(limit)
+          .offset(offset),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(huntressIncidents)
+          .where(where),
+      ]);
 
-    return c.json({
-      data: rows,
-      total: Number(countRow?.count ?? 0),
-      limit,
-      offset,
-    });
+      return c.json({
+        data: rows,
+        total: Number(countRow?.count ?? 0),
+        limit,
+        offset,
+      });
+    } catch (error) {
+      console.error('[huntress] Failed to fetch incidents:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      return c.json({ error: 'Failed to fetch incidents' }, 500);
+    }
   }
 );

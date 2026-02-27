@@ -92,7 +92,11 @@ export default function HuntressIntegration() {
   const fetchIntegration = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/huntress/integration');
-      if (!res.ok) return;
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        setLoadError(`Failed to load integration (${res.status}): ${(json as Record<string, unknown>).error ?? res.statusText}`);
+        return;
+      }
       const json = await res.json();
       const data = json.data as Integration | null;
       setIntegration(data);
@@ -109,7 +113,10 @@ export default function HuntressIntegration() {
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/huntress/status');
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.error(`[HuntressIntegration] Status fetch failed: ${res.status} ${res.statusText}`);
+        return;
+      }
       const json = await res.json();
       setCoverage(json.coverage);
       setIncidents(json.incidents);
@@ -121,7 +128,10 @@ export default function HuntressIntegration() {
   const fetchRecentIncidents = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/huntress/incidents?limit=5');
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.error(`[HuntressIntegration] Incidents fetch failed: ${res.status} ${res.statusText}`);
+        return;
+      }
       const json = await res.json();
       setRecentIncidents(json.data ?? []);
     } catch (err) {
@@ -156,7 +166,7 @@ export default function HuntressIntegration() {
         setSaveState({ status: 'error', message: json.error ?? 'Failed to save' });
         return;
       }
-      setSaveState({ status: 'saved', message: json.warning ?? 'Integration saved' });
+      setSaveState({ status: 'saved', message: json.syncWarning ?? 'Integration saved' });
       setApiKey('');
       setWebhookSecret('');
       await fetchIntegration();
@@ -180,8 +190,12 @@ export default function HuntressIntegration() {
       }
       setSyncState({ status: 'done', message: 'Sync triggered' });
       setTimeout(async () => {
-        await fetchIntegration();
-        await Promise.all([fetchStatus(), fetchRecentIncidents()]);
+        try {
+          await fetchIntegration();
+          await Promise.all([fetchStatus(), fetchRecentIncidents()]);
+        } catch (refreshErr) {
+          console.error('[HuntressIntegration] Failed to refresh after sync:', refreshErr);
+        }
       }, 3000);
     } catch (err) {
       setSyncState({ status: 'error', message: err instanceof Error ? err.message : 'Network error' });

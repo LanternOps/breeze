@@ -76,8 +76,7 @@ async function runWithConcurrencyLimit<T>(
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (true) {
-        const current = cursor;
-        cursor += 1;
+        const current = cursor++;
         if (current >= items.length) return;
         await worker(items[current]!);
       }
@@ -667,14 +666,19 @@ async function syncIntegrationById(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await db
-      .update(huntressIntegrations)
-      .set({
-        lastSyncStatus: 'error',
-        lastSyncError: `${source}: ${message}`.slice(0, 2000),
-        updatedAt: new Date(),
-      })
-      .where(eq(huntressIntegrations.id, integrationId));
+    try {
+      await db
+        .update(huntressIntegrations)
+        .set({
+          lastSyncStatus: 'error',
+          lastSyncError: `${source}: ${message}`.slice(0, 2000),
+          updatedAt: new Date(),
+        })
+        .where(eq(huntressIntegrations.id, integrationId));
+    } catch (dbErr) {
+      console.error(`[HuntressSync] Failed to record sync error for integration ${integrationId}:`, dbErr);
+      captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
+    }
     throw error;
   }
 }

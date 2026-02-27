@@ -123,6 +123,12 @@ function extractArrayFromEnvelope(payload: unknown, keys: string[]): unknown[] {
       if (nestedList.length > 0) return nestedList;
     }
   }
+  const rootKeys = Object.keys(root);
+  if (rootKeys.length > 0) {
+    console.warn(
+      `[HuntressClient] Could not extract array from payload. Expected keys: [${keys.join(', ')}], found keys: [${rootKeys.slice(0, 15).join(', ')}]`
+    );
+  }
   return [];
 }
 
@@ -261,6 +267,11 @@ function normalizeWebhookPayload(payload: unknown): {
   const incidents = incidentCandidates
     .map((item) => normalizeIncident(item))
     .filter((item): item is HuntressIncidentRecord => item !== null);
+  if (incidentCandidates.length > 0 && incidents.length < incidentCandidates.length) {
+    console.warn(
+      `[HuntressClient] Dropped ${incidentCandidates.length - incidents.length}/${incidentCandidates.length} incident records during normalization (missing required fields)`
+    );
+  }
 
   const agentCandidates = [
     ...extractArrayFromEnvelope(payload, ['agents', 'endpoints', 'hosts', 'devices', 'data', 'results']),
@@ -270,6 +281,11 @@ function normalizeWebhookPayload(payload: unknown): {
   const agents = agentCandidates
     .map((item) => normalizeAgent(item))
     .filter((item): item is HuntressAgentRecord => item !== null);
+  if (agentCandidates.length > 0 && agents.length < agentCandidates.length) {
+    console.warn(
+      `[HuntressClient] Dropped ${agentCandidates.length - agents.length}/${agentCandidates.length} agent records during normalization (missing required fields)`
+    );
+  }
 
   return { accountId, agents, incidents };
 }
@@ -293,6 +309,9 @@ async function fetchJson(
         if (attempt < MAX_RETRIES) {
           const retryAfter = parseInt(response.headers.get('Retry-After') ?? '', 10);
           const delay = Number.isFinite(retryAfter) ? retryAfter * 1000 : Math.min(1000 * 2 ** attempt, 30_000);
+          console.warn(
+            `[HuntressClient] Retrying ${url.pathname} after ${response.status} (attempt ${attempt + 1}/${MAX_RETRIES}, delay ${delay}ms)`
+          );
           await new Promise((r) => setTimeout(r, delay));
           continue;
         }
@@ -305,10 +324,26 @@ async function fetchJson(
       if (!text.trim()) return {};
       try {
         return JSON.parse(text);
-      } catch {
+      } catch (parseErr) {
         const preview = text.slice(0, 300);
-        throw new Error(`Huntress API returned non-JSON response from ${url.pathname}: ${preview}`);
+        throw new Error(
+          `Huntress API returned non-JSON response from ${url.pathname}: ${parseErr instanceof Error ? parseErr.message : 'parse error'}; body preview: ${preview}`
+        );
       }
+    } catch (err) {
+      clearTimeout(timer);
+      // Retry on timeouts
+      if (err instanceof DOMException && err.name === 'AbortError' && attempt < MAX_RETRIES) {
+        console.warn(
+          `[HuntressClient] Request to ${url.pathname} timed out after ${timeoutMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
+        );
+        continue;
+      }
+      // Wrap raw AbortError with context
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error(`Huntress API request to ${url.pathname} timed out after ${timeoutMs}ms`);
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -327,8 +362,12 @@ export class HuntressClient {
       throw new Error('Huntress API key must not be empty');
     }
     this.apiKey = input.apiKey;
-    this.accountId = input.accountId ?? null;
-    this.baseUrl = new URL(input.baseUrl?.trim() || DEFAULT_HUNTRESS_BASE_URL);
+    this.accountId = input.accountId?.trim() || null;
+    const parsedUrl = new URL(input.baseUrl?.trim() || DEFAULT_HUNTRESS_BASE_URL);
+    if (parsedUrl.protocol !== 'https:' || !parsedUrl.hostname.endsWith('.huntress.io')) {
+      throw new Error(`Invalid Huntress API base URL: ${parsedUrl.origin}. Must be HTTPS *.huntress.io`);
+    }
+    this.baseUrl = parsedUrl;
   }
 
   private async request(pathname: string, query?: Record<string, string>): Promise<unknown> {
@@ -398,16 +437,28 @@ export class HuntressClient {
 
   async listAgents(since?: Date): Promise<HuntressAgentRecord[]> {
     const rows = await this.requestPaginated('/agents', since, ['agents', 'data', 'items', 'results']);
-    return rows
+    const agents = rows
       .map((row) => normalizeAgent(row))
       .filter((row): row is HuntressAgentRecord => row !== null);
+    if (rows.length > 0 && agents.length < rows.length) {
+      console.warn(
+        `[HuntressClient] Dropped ${rows.length - agents.length}/${rows.length} agent records during normalization (missing required fields)`
+      );
+    }
+    return agents;
   }
 
   async listIncidents(since?: Date): Promise<HuntressIncidentRecord[]> {
     const rows = await this.requestPaginated('/incidents', since, ['incidents', 'alerts', 'findings', 'data', 'items', 'results']);
-    return rows
+    const incidents = rows
       .map((row) => normalizeIncident(row))
       .filter((row): row is HuntressIncidentRecord => row !== null);
+    if (rows.length > 0 && incidents.length < rows.length) {
+      console.warn(
+        `[HuntressClient] Dropped ${rows.length - incidents.length}/${rows.length} incident records during normalization (missing required fields)`
+      );
+    }
+    return incidents;
   }
 }
 
