@@ -38,8 +38,8 @@ export const s1Agents = pgTable('s1_agents', {
   s1AgentId: varchar('s1_agent_id', { length: 128 }).notNull(),
   deviceId: uuid('device_id').references(() => devices.id),
   status: varchar('status', { length: 30 }),
-  infected: boolean('infected').default(false),
-  threatCount: integer('threat_count').default(0),
+  infected: boolean('infected').notNull().default(false),
+  threatCount: integer('threat_count').notNull().default(0),
   policyName: varchar('policy_name', { length: 200 }),
   lastSeenAt: timestamp('last_seen_at'),
   metadata: jsonb('metadata'),
@@ -92,4 +92,16 @@ export const s1Actions = pgTable('s1_actions', {
 }, (table) => ({
   orgStatusIdx: index('s1_actions_org_status_idx').on(table.orgId, table.status),
   providerActionIdx: index('s1_actions_provider_action_idx').on(table.providerActionId)
+}));
+
+export const s1SiteMappings = pgTable('s1_site_mappings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id').notNull().references(() => s1Integrations.id),
+  siteName: varchar('site_name', { length: 200 }).notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  uniqueSiteIdx: uniqueIndex('s1_site_mappings_integration_site_idx').on(table.integrationId, table.siteName),
+  orgIdx: index('s1_site_mappings_org_idx').on(table.orgId)
 }));
