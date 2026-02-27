@@ -9,6 +9,7 @@ import {
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
   configPolicyEventLogSettings,
+  configPolicySensitiveDataSettings,
   devices,
   organizations,
   deviceGroupMemberships,
@@ -19,6 +20,7 @@ import {
   automationPolicies,
   maintenanceWindows,
   softwarePolicies,
+  sensitiveDataPolicies,
 } from '../db/schema';
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
 import { eventLogInlineSettingsSchema } from '@breeze/shared/validators';
@@ -28,7 +30,7 @@ import type { AuthContext } from '../middleware/auth';
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -317,6 +319,25 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'sensitive_data': {
+      await tx.insert(configPolicySensitiveDataSettings).values({
+        featureLinkId: linkId,
+        detectionClasses: Array.isArray(s.detectionClasses) ? s.detectionClasses as string[] : ['credential'],
+        includePaths: Array.isArray(s.includePaths) ? s.includePaths as string[] : [],
+        excludePaths: Array.isArray(s.excludePaths) ? s.excludePaths as string[] : [],
+        fileTypes: Array.isArray(s.fileTypes) ? s.fileTypes as string[] : [],
+        maxFileSizeBytes: typeof s.maxFileSizeBytes === 'number' ? s.maxFileSizeBytes : 104857600,
+        workers: typeof s.workers === 'number' ? s.workers : 4,
+        timeoutSeconds: typeof s.timeoutSeconds === 'number' ? s.timeoutSeconds : 300,
+        suppressPatternIds: Array.isArray(s.suppressPatternIds) ? s.suppressPatternIds as string[] : [],
+        scheduleType: typeof s.scheduleType === 'string' ? s.scheduleType : 'manual',
+        intervalMinutes: typeof s.intervalMinutes === 'number' ? s.intervalMinutes : null,
+        cron: typeof s.cron === 'string' ? s.cron : null,
+        timezone: typeof s.timezone === 'string' ? s.timezone : 'UTC',
+      });
+      break;
+    }
+
     default:
       // monitoring, backup, security — no normalized tables yet
       break;
@@ -350,6 +371,9 @@ async function deleteNormalizedRows(
       break;
     case 'event_log':
       await tx.delete(configPolicyEventLogSettings).where(eq(configPolicyEventLogSettings.featureLinkId, linkId));
+      break;
+    case 'sensitive_data':
+      await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
       break;
     default:
       break;
@@ -486,6 +510,29 @@ async function assembleInlineSettings(
         rateLimitPerHour: row.rateLimitPerHour,
         enableFullTextSearch: row.enableFullTextSearch,
         enableCorrelation: row.enableCorrelation,
+      };
+    }
+
+    case 'sensitive_data': {
+      const [row] = await db
+        .select()
+        .from(configPolicySensitiveDataSettings)
+        .where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        detectionClasses: row.detectionClasses,
+        includePaths: row.includePaths,
+        excludePaths: row.excludePaths,
+        fileTypes: row.fileTypes,
+        maxFileSizeBytes: row.maxFileSizeBytes,
+        workers: row.workers,
+        timeoutSeconds: row.timeoutSeconds,
+        suppressPatternIds: row.suppressPatternIds,
+        scheduleType: row.scheduleType,
+        intervalMinutes: row.intervalMinutes,
+        cron: row.cron,
+        timezone: row.timezone,
       };
     }
 
@@ -888,6 +935,7 @@ const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCo
   compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
   software_policy: { table: softwarePolicies, orgIdCol: softwarePolicies.orgId },
+  sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
 };
 
 export async function validateFeaturePolicyExists(
@@ -902,6 +950,9 @@ export async function validateFeaturePolicyExists(
     }
     return { valid: true };
   }
+
+  // sensitive_data supports both linked policy and inline settings
+  // If featurePolicyId is provided, it can reference a sensitiveDataPolicies record or a config policy
 
   if (!featurePolicyId) {
     return { valid: true }; // inline-only is allowed; schema ensures inlineSettings is present

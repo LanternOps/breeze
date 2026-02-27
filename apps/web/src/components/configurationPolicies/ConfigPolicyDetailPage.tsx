@@ -14,6 +14,7 @@ import {
   HardDrive,
   Shield,
   ScrollText,
+  ScanSearch,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -28,6 +29,7 @@ import ComplianceTab from './featureTabs/ComplianceTab';
 import AutomationTab from './featureTabs/AutomationTab';
 import EventLogTab from './featureTabs/EventLogTab';
 import SoftwarePolicyTab from './featureTabs/SoftwarePolicyTab';
+import SensitiveDataTab from './featureTabs/SensitiveDataTab';
 
 type Tab = 'overview' | FeatureType | 'assignments';
 
@@ -75,9 +77,10 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   automation: <Zap className="h-4 w-4" />,
   event_log: <ScrollText className="h-4 w-4" />,
   software_policy: <PackageCheck className="h-4 w-4" />,
+  sensitive_data: <ScanSearch className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -353,6 +356,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       case 'automation': return <AutomationTab {...props} />;
       case 'event_log': return <EventLogTab {...props} />;
       case 'software_policy': return <SoftwarePolicyTab {...props} />;
+      case 'sensitive_data': return <SensitiveDataTab {...props} />;
     }
   };
 

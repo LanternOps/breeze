@@ -27,7 +27,8 @@ import {
   Layers,
   ScrollText,
   Download,
-  ClipboardCheck
+  ClipboardCheck,
+  ScanSearch,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -55,6 +56,7 @@ const integrationsNav = [
 const monitoringNav = [
   { name: 'Monitoring', href: '/monitoring', icon: Activity },
   { name: 'Security', href: '/security', icon: ShieldCheck },
+  { name: 'Data Discovery', href: '/sensitive-data', icon: ScanSearch },
   { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
   { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck }
 ];
