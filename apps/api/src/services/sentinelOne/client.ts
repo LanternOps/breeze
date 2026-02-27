@@ -2,36 +2,51 @@ type HttpMethod = 'GET' | 'POST';
 
 export type S1ThreatAction = 'kill' | 'quarantine' | 'rollback';
 
+/** Shared status values used for action tracking, polling, and metrics. */
+export const S1_ACTION_STATUSES = ['queued', 'in_progress', 'completed', 'failed'] as const;
+export type S1ActionStatus = (typeof S1_ACTION_STATUSES)[number];
+
+/** Canonical severity values for normalized S1 threats. */
+export const S1_THREAT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'] as const;
+export type S1ThreatSeverity = (typeof S1_THREAT_SEVERITIES)[number];
+
+/** Canonical status values for normalized S1 threats. */
+export const S1_THREAT_STATUSES = ['active', 'in_progress', 'quarantined', 'resolved'] as const;
+export type S1ThreatStatus = (typeof S1_THREAT_STATUSES)[number];
+
 export interface S1Agent {
   id: string;
-  uuid?: string | null;
-  computerName?: string | null;
-  machineType?: string | null;
-  siteName?: string | null;
-  osName?: string | null;
+  uuid: string | null;
+  computerName: string | null;
+  machineType: string | null;
+  siteName: string | null;
+  osName: string | null;
   networkInterfaces?: Array<{ inet?: string[] }>;
-  infected?: boolean | null;
-  activeThreats?: number | null;
-  isActive?: boolean | null;
-  policyName?: string | null;
-  lastSeen?: string | null;
-  updatedAt?: string | null;
-  [key: string]: unknown;
+  infected: boolean | null;
+  activeThreats: number | null;
+  isActive: boolean | null;
+  policyName: string | null;
+  lastSeen: string | null;
+  updatedAt: string | null;
 }
 
 export interface S1Threat {
   id: string;
-  agentId?: string | null;
-  threatName?: string | null;
-  classification?: string | null;
-  threatSeverity?: string | null;
-  processName?: string | null;
-  filePath?: string | null;
-  mitigationStatus?: string | null;
-  detectedAt?: string | null;
-  resolvedAt?: string | null;
+  agentId: string | null;
+  threatName: string | null;
+  classification: string | null;
+  threatSeverity: string | null;
+  processName: string | null;
+  filePath: string | null;
+  mitigationStatus: string | null;
+  detectedAt: string | null;
+  resolvedAt: string | null;
   mitreTechniques?: unknown;
-  [key: string]: unknown;
+}
+
+export interface PagedResult<T> {
+  results: T[];
+  truncated: boolean;
 }
 
 export interface S1ActionResponse {
@@ -40,7 +55,7 @@ export interface S1ActionResponse {
 }
 
 export interface S1ActivityStatus {
-  status: 'queued' | 'in_progress' | 'completed' | 'failed';
+  status: S1ActionStatus;
   details?: unknown;
 }
 
@@ -74,19 +89,30 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function mapActivityStatus(value: unknown): 'queued' | 'in_progress' | 'completed' | 'failed' {
+function mapActivityStatus(value: unknown): S1ActionStatus {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (normalized.includes('fail') || normalized.includes('error')) return 'failed';
   if (normalized.includes('done') || normalized.includes('success') || normalized.includes('complete')) return 'completed';
   if (normalized.includes('progress') || normalized.includes('running') || normalized.includes('active')) return 'in_progress';
+  if (normalized.length > 0) {
+    console.warn(`[SentinelOneClient] Unrecognized activity status "${value}", defaulting to 'queued'`);
+  }
   return 'queued';
 }
 
+/**
+ * HTTP client for the SentinelOne Management API v2.1.
+ *
+ * Pagination: Uses cursor-based pagination. The response includes
+ * `pagination.nextCursor` which is passed as a `cursor` query parameter
+ * on subsequent requests. A configurable `maxPages` safeguard prevents
+ * runaway pagination.
+ */
 export class SentinelOneClient {
   private readonly baseUrl: string;
   private readonly apiToken: string;
   private readonly timeoutMs: number;
-  private readonly maxPages: number;
+  readonly maxPages: number;
 
   constructor(opts: S1ClientOptions) {
     this.baseUrl = opts.managementUrl.replace(/\/+$/, '');
@@ -96,7 +122,7 @@ export class SentinelOneClient {
     this.maxPages = Math.max(1, opts.maxPages ?? envMaxPages ?? DEFAULT_MAX_PAGES);
   }
 
-  async listAgents(updatedSince?: Date): Promise<S1Agent[]> {
+  async listAgents(updatedSince?: Date): Promise<PagedResult<S1Agent>> {
     const query: Record<string, string> = {
       limit: '200',
       sortBy: 'updatedAt',
@@ -105,13 +131,14 @@ export class SentinelOneClient {
     if (updatedSince) {
       query.updatedAt__gte = updatedSince.toISOString();
     }
-    const rows = await this.fetchPaged('/web/api/v2.1/agents', query);
-    return rows
+    const paged = await this.fetchPaged('/web/api/v2.1/agents', query);
+    const results = paged.results
       .map((row) => this.normalizeAgent(row))
       .filter((row): row is S1Agent => Boolean(row));
+    return { results, truncated: paged.truncated };
   }
 
-  async listThreats(updatedSince?: Date): Promise<S1Threat[]> {
+  async listThreats(updatedSince?: Date): Promise<PagedResult<S1Threat>> {
     const query: Record<string, string> = {
       limit: '200',
       sortBy: 'updatedAt',
@@ -120,10 +147,11 @@ export class SentinelOneClient {
     if (updatedSince) {
       query.updatedAt__gte = updatedSince.toISOString();
     }
-    const rows = await this.fetchPaged('/web/api/v2.1/threats', query);
-    return rows
+    const paged = await this.fetchPaged('/web/api/v2.1/threats', query);
+    const results = paged.results
       .map((row) => this.normalizeThreat(row))
       .filter((row): row is S1Threat => Boolean(row));
+    return { results, truncated: paged.truncated };
   }
 
   async isolateAgents(agentIds: string[], isolate = true): Promise<S1ActionResponse> {
@@ -189,7 +217,10 @@ export class SentinelOneClient {
 
   private normalizeAgent(row: Record<string, unknown>): S1Agent | null {
     const id = str(row.id) ?? str(row.agentId) ?? str(row.uuid);
-    if (!id) return null;
+    if (!id) {
+      console.warn('[SentinelOneClient] Dropping agent record with no ID');
+      return null;
+    }
 
     return {
       id,
@@ -205,13 +236,15 @@ export class SentinelOneClient {
       policyName: str(row.policyName),
       lastSeen: str(row.lastSeen),
       updatedAt: str(row.updatedAt),
-      ...row
     };
   }
 
   private normalizeThreat(row: Record<string, unknown>): S1Threat | null {
     const id = str(row.id) ?? str(row.threatId);
-    if (!id) return null;
+    if (!id) {
+      console.warn('[SentinelOneClient] Dropping threat record with no ID');
+      return null;
+    }
 
     return {
       id,
@@ -225,11 +258,10 @@ export class SentinelOneClient {
       detectedAt: str(row.detectedAt) ?? str(row.createdAt),
       resolvedAt: str(row.resolvedAt),
       mitreTechniques: row.mitreTechniques ?? row.mitreTactics,
-      ...row
     };
   }
 
-  private async fetchPaged(path: string, query: Record<string, string>): Promise<Record<string, unknown>[]> {
+  private async fetchPaged(path: string, query: Record<string, string>): Promise<PagedResult<Record<string, unknown>>> {
     const results: Record<string, unknown>[] = [];
     let cursor: string | null = null;
     let pageCount = 0;
@@ -238,6 +270,10 @@ export class SentinelOneClient {
       pageCount += 1;
       const params: Record<string, string> = cursor ? { ...query, cursor } : query;
       const payload: Record<string, unknown> = await this.requestJson<Record<string, unknown>>(path, 'GET', undefined, params);
+
+      if (payload.data && !Array.isArray(payload.data)) {
+        console.warn(`[SentinelOneClient] Expected array at payload.data but got ${typeof payload.data} for ${path}`);
+      }
       const pageData = asArray(payload.data);
       results.push(...pageData);
 
@@ -255,14 +291,15 @@ export class SentinelOneClient {
       cursor = nextCursor;
     }
 
-    if (cursor && pageCount >= this.maxPages) {
+    const truncated = cursor !== null && pageCount >= this.maxPages;
+    if (truncated) {
       console.warn(
         `[SentinelOneClient] Pagination limit reached for ${path}; ` +
-        `maxPages=${this.maxPages}, fetched=${results.length}. Results may be truncated.`
+        `maxPages=${this.maxPages}, fetched=${results.length}. Results are truncated.`
       );
     }
 
-    return results;
+    return { results, truncated };
   }
 
   private extractActivityId(payload: Record<string, unknown>): string | null {

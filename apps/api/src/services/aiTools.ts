@@ -1806,6 +1806,18 @@ registerTool({
       });
     }
 
+    const agentConditions: SQL[] = [eq(s1Agents.integrationId, integration.id)];
+    const agentOrgCond = auth.orgCondition(s1Agents.orgId);
+    if (agentOrgCond) agentConditions.push(agentOrgCond);
+
+    const threatConditions: SQL[] = [eq(s1Threats.integrationId, integration.id)];
+    const threatOrgCond = auth.orgCondition(s1Threats.orgId);
+    if (threatOrgCond) threatConditions.push(threatOrgCond);
+
+    const actionConditions: SQL[] = [eq(s1Actions.orgId, integration.orgId)];
+    const actionOrgCond = auth.orgCondition(s1Actions.orgId);
+    if (actionOrgCond) actionConditions.push(actionOrgCond);
+
     const [agentSummary, threatSummary, actionSummary, recentActions] = await Promise.all([
       db
         .select({
@@ -1815,14 +1827,14 @@ registerTool({
           reportedThreatCount: sql<number>`coalesce(sum(${s1Agents.threatCount}), 0)::int`
         })
         .from(s1Agents)
-        .where(eq(s1Agents.integrationId, integration.id)),
+        .where(and(...agentConditions)),
       db
         .select({
           activeThreats: sql<number>`count(*) filter (where ${s1Threats.status} in ('active', 'in_progress'))::int`,
           highOrCriticalThreats: sql<number>`count(*) filter (where ${s1Threats.severity} in ('high', 'critical'))::int`
         })
         .from(s1Threats)
-        .where(eq(s1Threats.integrationId, integration.id)),
+        .where(and(...threatConditions)),
       db
         .select({
           pendingActions: sql<number>`count(*) filter (where ${s1Actions.status} in ('queued', 'in_progress'))::int`,
@@ -1830,7 +1842,7 @@ registerTool({
           failedActions: sql<number>`count(*) filter (where ${s1Actions.status} = 'failed')::int`
         })
         .from(s1Actions)
-        .where(eq(s1Actions.orgId, integration.orgId)),
+        .where(and(...actionConditions)),
       db
         .select({
           id: s1Actions.id,
@@ -1841,7 +1853,7 @@ registerTool({
           providerActionId: s1Actions.providerActionId
         })
         .from(s1Actions)
-        .where(eq(s1Actions.orgId, integration.orgId))
+        .where(and(...actionConditions))
         .orderBy(desc(s1Actions.requestedAt))
         .limit(10)
     ]);
@@ -1907,6 +1919,8 @@ registerTool({
       eq(s1Threats.orgId, orgResolution.orgId),
       eq(s1Threats.integrationId, integration.id)
     ];
+    const threatOrgCond = auth.orgCondition(s1Threats.orgId);
+    if (threatOrgCond) conditions.push(threatOrgCond);
 
     if (typeof input.severity === 'string' && input.severity.length > 0) {
       conditions.push(eq(s1Threats.severity, input.severity));
@@ -1984,7 +1998,8 @@ registerTool({
         deviceId: { type: 'string', description: 'Single device UUID' },
         deviceIds: { type: 'array', items: { type: 'string' }, description: 'One or more device UUIDs' },
         isolate: { type: 'boolean', description: 'true=isolate (default), false=unisolate' }
-      }
+      },
+      required: ['deviceIds']
     }
   },
   handler: async (input, auth) => {

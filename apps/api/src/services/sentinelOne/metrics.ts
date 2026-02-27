@@ -1,7 +1,8 @@
+import type { S1ActionStatus } from './client';
+
 type S1SyncJob = 'sync-integration' | 'sync-all-agents' | 'sync-all-threats' | 'poll-actions';
 type S1SyncOutcome = 'success' | 'failure';
 type S1DispatchOutcome = 'accepted' | 'untracked' | 'failed';
-type S1PollStatus = 'queued' | 'in_progress' | 'completed' | 'failed';
 
 interface CounterValue {
   labels: Record<string, string>;
@@ -11,7 +12,7 @@ interface CounterValue {
 interface S1MetricsRecorder {
   onSyncRun?: (job: S1SyncJob, outcome: S1SyncOutcome, durationMs: number) => void;
   onActionDispatch?: (action: string, outcome: S1DispatchOutcome) => void;
-  onActionPollTransition?: (status: S1PollStatus) => void;
+  onActionPollTransition?: (status: S1ActionStatus) => void;
 }
 
 const s1SyncRunState = new Map<string, CounterValue>();
@@ -53,7 +54,7 @@ export function recordS1ActionDispatch(action: string, outcome: S1DispatchOutcom
   recorder?.onActionDispatch?.(normalizedAction, outcome);
 }
 
-export function recordS1ActionPollTransition(status: S1PollStatus): void {
+export function recordS1ActionPollTransition(status: S1ActionStatus): void {
   upsertCounterState(s1ActionPollTransitionState, { status });
   recorder?.onActionPollTransition?.(status);
 }

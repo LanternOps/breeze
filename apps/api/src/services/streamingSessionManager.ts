@@ -14,7 +14,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -33,6 +33,10 @@ const MAX_ACTIVE_SESSIONS = 200;
 const EVENT_RING_BUFFER_SIZE = 100;
 const SDK_TURN_TIMEOUT_MS = 3 * 60 * 1000; // 3 min per-turn timeout
 const MCP_PREFIX = 'mcp__breeze__';
+const runOutsideDbContextSafe = <T>(fn: () => T): T => {
+  const runner = (db as { runOutsideDbContext?: <U>(task: () => U) => U }).runOutsideDbContext;
+  return typeof runner === 'function' ? runner(fn) : fn();
+};
 
 // ============================================
 // StreamInputController
@@ -337,7 +341,7 @@ export class StreamingSessionManager {
     // transaction (via withDbAccessContext). Without this escape hatch, the SDK's
     // tool handlers inherit the transaction context and hang after the HTTP
     // request completes and the transaction commits.
-    runOutsideDbContext(() => {
+    runOutsideDbContextSafe(() => {
       const sdkQuery = query({
         prompt: inputController.getInputStream(),
         options: {

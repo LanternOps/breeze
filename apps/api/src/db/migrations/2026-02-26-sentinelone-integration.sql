@@ -25,14 +25,15 @@ CREATE TABLE IF NOT EXISTS s1_agents (
   s1_agent_id varchar(128) NOT NULL,
   device_id uuid REFERENCES devices(id),
   status varchar(30),
-  infected boolean DEFAULT false,
-  threat_count integer DEFAULT 0,
+  infected boolean NOT NULL DEFAULT false,
+  threat_count integer NOT NULL DEFAULT 0,
   policy_name varchar(200),
   last_seen_at timestamp,
   metadata jsonb,
   updated_at timestamp NOT NULL DEFAULT now()
 );
 
+-- Re-create unique index to support idempotent migration reruns
 DROP INDEX IF EXISTS s1_agents_external_idx;
 CREATE UNIQUE INDEX s1_agents_external_idx
   ON s1_agents (integration_id, s1_agent_id);
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS s1_threats (
   updated_at timestamp NOT NULL DEFAULT now()
 );
 
+-- Re-create unique index to support idempotent migration reruns
 DROP INDEX IF EXISTS s1_threats_external_idx;
 CREATE UNIQUE INDEX s1_threats_external_idx
   ON s1_threats (integration_id, s1_threat_id);

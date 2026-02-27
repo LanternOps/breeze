@@ -11,7 +11,7 @@ import {
 } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 import { decryptSecret } from '../services/secretCrypto';
-import { SentinelOneClient, type S1ThreatAction } from '../services/sentinelOne/client';
+import { SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import {
@@ -72,8 +72,6 @@ interface IntegrationForSync {
   isActive: boolean;
   lastSyncAt: Date | null;
 }
-
-type S1ActionStatus = 'queued' | 'in_progress' | 'completed' | 'failed';
 
 function toObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -248,7 +246,12 @@ async function mapDeviceCandidates(orgId: string): Promise<{
   return { byHostname, byIp };
 }
 
-function resolveDeviceIdForAgent(
+/**
+ * Match an S1 agent to a Breeze device by hostname (case-insensitive) then
+ * by IP from any network interface. Returns null for unmatched agents, which
+ * are still persisted with a null deviceId.
+ */
+export function resolveDeviceIdForAgent(
   agent: Record<string, unknown>,
   candidates: { byHostname: Map<string, string>; byIp: Map<string, string> }
 ): string | null {
@@ -279,9 +282,10 @@ function resolveDeviceIdForAgent(
 async function syncAgentsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
-): Promise<{ fetched: number; upserted: number }> {
+): Promise<{ fetched: number; upserted: number; truncated: boolean }> {
   const candidates = await mapDeviceCandidates(integration.orgId);
-  const fetchedAgents = await client.listAgents(integration.lastSyncAt ?? undefined);
+  const agentResult = await client.listAgents(integration.lastSyncAt ?? undefined);
+  const fetchedAgents = agentResult.results;
 
   let upserted = 0;
   for (let i = 0; i < fetchedAgents.length; i += 300) {
@@ -337,15 +341,17 @@ async function syncAgentsForIntegration(
 
   return {
     fetched: fetchedAgents.length,
-    upserted
+    upserted,
+    truncated: agentResult.truncated
   };
 }
 
 async function syncThreatsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
-): Promise<{ fetched: number; upserted: number; emitted: number }> {
-  const fetchedThreats = await client.listThreats(integration.lastSyncAt ?? undefined);
+): Promise<{ fetched: number; upserted: number; emitted: number; emitFailures: number; truncated: boolean }> {
+  const threatResult = await client.listThreats(integration.lastSyncAt ?? undefined);
+  const fetchedThreats = threatResult.results;
   const agentRows = await db
     .select({
       s1AgentId: s1Agents.s1AgentId,
@@ -429,6 +435,7 @@ async function syncThreatsForIntegration(
   }
 
   let emitted = 0;
+  let emitFailures = 0;
   for (const threat of dedupeThreatDetections(threatsToEmit)) {
     try {
       await publishEvent(
@@ -445,14 +452,18 @@ async function syncThreatsForIntegration(
       );
       emitted += 1;
     } catch (error) {
+      emitFailures += 1;
       console.error('[S1SyncJob] Failed to publish s1.threat_detected:', error);
+      captureException(error);
     }
   }
 
   return {
     fetched: fetchedThreats.length,
     upserted,
-    emitted
+    emitted,
+    emitFailures,
+    truncated: threatResult.truncated
   };
 }
 
@@ -471,8 +482,10 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
     .limit(1);
 
   if (!integration || !integration.isActive) {
+    console.warn(`[S1SyncJob] Integration ${data.integrationId} not found or inactive; skipping sync`);
     return {
       integrationId: data.integrationId,
+      skipped: true,
       fetchedAgents: 0,
       upsertedAgents: 0,
       fetchedThreats: 0,
@@ -493,16 +506,17 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
 
   try {
     const [agentResult, threatResult] = await Promise.all([
-      data.syncAgents ? syncAgentsForIntegration(integration, client) : Promise.resolve({ fetched: 0, upserted: 0 }),
-      data.syncThreats ? syncThreatsForIntegration(integration, client) : Promise.resolve({ fetched: 0, upserted: 0, emitted: 0 })
+      data.syncAgents ? syncAgentsForIntegration(integration, client) : Promise.resolve({ fetched: 0, upserted: 0, truncated: false }),
+      data.syncThreats ? syncThreatsForIntegration(integration, client) : Promise.resolve({ fetched: 0, upserted: 0, emitted: 0, emitFailures: 0, truncated: false })
     ]);
 
+    const wasTruncated = agentResult.truncated || threatResult.truncated;
     await db
       .update(s1Integrations)
       .set({
         lastSyncAt: new Date(),
-        lastSyncStatus: 'success',
-        lastSyncError: null,
+        lastSyncStatus: wasTruncated ? 'partial' : 'success',
+        lastSyncError: wasTruncated ? 'Results were truncated due to pagination limits' : null,
         updatedAt: new Date()
       })
       .where(eq(s1Integrations.id, integration.id));
@@ -513,7 +527,8 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
       upsertedAgents: agentResult.upserted,
       fetchedThreats: threatResult.fetched,
       upsertedThreats: threatResult.upserted,
-      emittedThreatEvents: threatResult.emitted
+      emittedThreatEvents: threatResult.emitted,
+      truncated: wasTruncated
     };
   } catch (error) {
     await db
@@ -583,19 +598,38 @@ async function processPollActions() {
     .from(s1Integrations)
     .where(and(inArray(s1Integrations.orgId, orgIds), eq(s1Integrations.isActive, true)));
 
-  const integrationByOrg = new Map<string, { managementUrl: string; apiTokenEncrypted: string }>();
+  // Build a reusable client per org to avoid redundant decrypt + instantiation per action
+  const clientByOrg = new Map<string, SentinelOneClient | null>();
+  const clientErrorByOrg = new Map<string, string>();
   for (const integration of integrations) {
-    integrationByOrg.set(integration.orgId, {
+    let token: string | null;
+    try {
+      token = decryptSecret(integration.apiTokenEncrypted);
+    } catch (cryptoError) {
+      // Permanent failure — don't retry actions tied to this org
+      clientByOrg.set(integration.orgId, null);
+      clientErrorByOrg.set(integration.orgId, `Token decryption failed: ${truncateError(cryptoError)}`);
+      continue;
+    }
+    if (!token) {
+      clientByOrg.set(integration.orgId, null);
+      clientErrorByOrg.set(integration.orgId, 'SentinelOne integration token is missing or invalid');
+      continue;
+    }
+    clientByOrg.set(integration.orgId, new SentinelOneClient({
       managementUrl: integration.managementUrl,
-      apiTokenEncrypted: integration.apiTokenEncrypted
-    });
+      apiToken: token
+    }));
   }
 
   let updated = 0;
   for (const action of pendingActions) {
     if (!action.providerActionId) continue;
-    const integration = integrationByOrg.get(action.orgId);
-    if (!integration) {
+    const client = clientByOrg.get(action.orgId);
+    const clientError = clientErrorByOrg.get(action.orgId);
+
+    if (client === undefined) {
+      // No integration found for this org
       await db
         .update(s1Actions)
         .set({
@@ -609,13 +643,13 @@ async function processPollActions() {
       continue;
     }
 
-    const token = decryptSecret(integration.apiTokenEncrypted);
-    if (!token) {
+    if (!client) {
+      // Client construction failed (bad token)
       await db
         .update(s1Actions)
         .set({
           status: 'failed',
-          error: 'Action status polling failed: SentinelOne integration token is missing or invalid',
+          error: `Action status polling failed: ${clientError ?? 'unknown client error'}`,
           completedAt: new Date()
         })
         .where(eq(s1Actions.id, action.id));
@@ -625,10 +659,6 @@ async function processPollActions() {
     }
 
     try {
-      const client = new SentinelOneClient({
-        managementUrl: integration.managementUrl,
-        apiToken: token
-      });
 
       const activity = await client.getActivityStatus(action.providerActionId);
       const nextStatus = activity.status;
@@ -663,6 +693,7 @@ async function processPollActions() {
             's1-sync-worker'
           ).catch((error) => {
             console.error('[S1SyncJob] Failed to publish s1.device_isolated:', error);
+            captureException(error);
           });
         } else {
           await publishEvent(
@@ -677,6 +708,7 @@ async function processPollActions() {
             's1-sync-worker'
           ).catch((error) => {
             console.error('[S1SyncJob] Failed to publish s1.threat_action_completed:', error);
+            captureException(error);
           });
         }
       }

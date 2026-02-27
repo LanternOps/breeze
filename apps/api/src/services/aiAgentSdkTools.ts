@@ -231,12 +231,21 @@ function makeHandler(
         }
       }
 
+      // Detect error responses returned as JSON strings by tool handlers
+      let isToolError = false;
+      try {
+        const parsed = JSON.parse(compactResult);
+        if (parsed && typeof parsed === 'object' && 'error' in parsed && !('success' in parsed) && !('data' in parsed) && !('configured' in parsed)) {
+          isToolError = true;
+        }
+      } catch { /* not JSON, treat as success */ }
+
       const durationMs = Date.now() - startTime;
       if (onPostToolUse) {
-        try { await onPostToolUse(toolName, args, compactResult, false, durationMs); }
+        try { await onPostToolUse(toolName, args, compactResult, isToolError, durationMs); }
         catch (err) { console.error('[AI-SDK] PostToolUse callback failed:', err); }
       }
-      return { content: [{ type: 'text' as const, text: compactResult }] };
+      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;

@@ -6,6 +6,7 @@ import {
   dispatchS1ThreatAction,
   scheduleS1ActionPoll
 } from '../../jobs/s1Sync';
+import { captureException } from '../sentry';
 import type { S1ThreatAction } from './client';
 
 const NO_ACTIVITY_ID_WARNING = 'Provider did not return activityId; action cannot be tracked';
@@ -140,7 +141,8 @@ export async function executeS1IsolationForOrg(params: {
   let providerActionId: string | null = null;
   let providerRaw: unknown = null;
   let warning: string | undefined;
-  let status: 'in_progress' | 'failed' = 'failed';
+  // Default to 'completed' (untracked) instead of 'failed' when dispatch succeeds but no activityId
+  let status: 'in_progress' | 'completed' | 'failed' = 'failed';
   let errorText: string | null = null;
   let httpStatus: 200 | 502 = 200;
 
@@ -151,39 +153,68 @@ export async function executeS1IsolationForOrg(params: {
 
     if (providerActionId) {
       status = 'in_progress';
-      await scheduleS1ActionPoll().catch((error) => {
-        console.error('[s1-actions] Failed to schedule action poll:', error);
-      });
+      try {
+        await scheduleS1ActionPoll();
+      } catch (pollError) {
+        console.error('[s1-actions] Failed to schedule action poll:', pollError);
+        captureException(pollError);
+        warning = `Action dispatched but status polling could not be scheduled: ${truncateError(pollError)}`;
+      }
     } else {
+      // Dispatch succeeded but S1 did not return a trackable activity ID
       warning = NO_ACTIVITY_ID_WARNING;
-      errorText = NO_ACTIVITY_ID_WARNING;
+      status = 'completed';
     }
   } catch (error) {
     warning = formatDispatchError(error);
     errorText = warning;
     providerRaw = { error: warning };
     httpStatus = 502;
+    status = 'failed';
   }
 
-  const actionRows = await db
-    .insert(s1Actions)
-    .values(
-      agents.map((row) => ({
-        orgId: params.orgId,
-        deviceId: row.deviceId,
-        requestedBy: params.requestedBy,
-        action: params.isolate ? 'isolate' : 'unisolate',
-        payload: {
-          integrationId: params.integrationId,
-          s1AgentId: row.s1AgentId,
-          providerResponse: providerRaw
-        },
-        status,
+  let actionRows: Array<{ id: string; deviceId: string | null }> = [];
+  try {
+    actionRows = await db
+      .insert(s1Actions)
+      .values(
+        agents.map((row) => ({
+          orgId: params.orgId,
+          deviceId: row.deviceId,
+          requestedBy: params.requestedBy,
+          action: params.isolate ? 'isolate' : 'unisolate',
+          payload: {
+            integrationId: params.integrationId,
+            s1AgentId: row.s1AgentId,
+            providerResponse: providerRaw
+          },
+          status,
+          providerActionId,
+          error: errorText
+        }))
+      )
+      .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId });
+  } catch (dbError) {
+    console.error('[s1-actions] Failed to persist action records after dispatch:', dbError);
+    captureException(dbError);
+    const dbWarning = providerActionId
+      ? `Action dispatched (providerActionId: ${providerActionId}) but tracking records could not be saved: ${truncateError(dbError)}`
+      : `Failed to persist action records: ${truncateError(dbError)}`;
+    return {
+      ok: true,
+      status: httpStatus,
+      data: {
+        requestedDeviceIds,
+        inaccessibleDeviceIds,
+        unmappedAccessibleDeviceIds,
+        requestedDevices: requestedDeviceIds.length,
+        mappedAgents: uniqueAgentIds.length,
         providerActionId,
-        error: errorText
-      }))
-    )
-    .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId });
+        actions: [],
+        warning: warning ? `${warning}; ${dbWarning}` : dbWarning
+      }
+    };
+  }
 
   return {
     ok: true,
@@ -249,7 +280,7 @@ export async function executeS1ThreatActionForOrg(params: {
   let providerActionId: string | null = null;
   let providerRaw: unknown = null;
   let warning: string | undefined;
-  let status: 'in_progress' | 'failed' = 'failed';
+  let status: 'in_progress' | 'completed' | 'failed' = 'failed';
   let errorText: string | null = null;
   let httpStatus: 200 | 502 = 200;
 
@@ -260,40 +291,69 @@ export async function executeS1ThreatActionForOrg(params: {
 
     if (providerActionId) {
       status = 'in_progress';
-      await scheduleS1ActionPoll().catch((error) => {
-        console.error('[s1-actions] Failed to schedule action poll:', error);
-      });
+      try {
+        await scheduleS1ActionPoll();
+      } catch (pollError) {
+        console.error('[s1-actions] Failed to schedule action poll:', pollError);
+        captureException(pollError);
+        warning = `Action dispatched but status polling could not be scheduled: ${truncateError(pollError)}`;
+      }
     } else {
+      // Dispatch succeeded but S1 did not return a trackable activity ID
       warning = NO_ACTIVITY_ID_WARNING;
-      errorText = NO_ACTIVITY_ID_WARNING;
+      status = 'completed';
     }
   } catch (error) {
     warning = formatDispatchError(error);
     errorText = warning;
     providerRaw = { error: warning };
     httpStatus = 502;
+    status = 'failed';
   }
 
-  const actionRows = await db
-    .insert(s1Actions)
-    .values(
-      matchedThreats.map((threat) => ({
-        orgId: params.orgId,
-        deviceId: threat.deviceId,
-        requestedBy: params.requestedBy,
-        action: `threat_${params.action}`,
-        payload: {
-          integrationId: params.integrationId,
-          threatId: threat.id,
-          s1ThreatId: threat.s1ThreatId,
-          providerResponse: providerRaw
-        },
-        status,
+  let actionRows: Array<{ id: string; deviceId: string | null }> = [];
+  try {
+    actionRows = await db
+      .insert(s1Actions)
+      .values(
+        matchedThreats.map((threat) => ({
+          orgId: params.orgId,
+          deviceId: threat.deviceId,
+          requestedBy: params.requestedBy,
+          action: `threat_${params.action}`,
+          payload: {
+            integrationId: params.integrationId,
+            threatId: threat.id,
+            s1ThreatId: threat.s1ThreatId,
+            providerResponse: providerRaw
+          },
+          status,
+          providerActionId,
+          error: errorText
+        }))
+      )
+      .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId });
+  } catch (dbError) {
+    console.error('[s1-actions] Failed to persist action records after dispatch:', dbError);
+    captureException(dbError);
+    const dbWarning = providerActionId
+      ? `Action dispatched (providerActionId: ${providerActionId}) but tracking records could not be saved: ${truncateError(dbError)}`
+      : `Failed to persist action records: ${truncateError(dbError)}`;
+    return {
+      ok: true,
+      status: httpStatus,
+      data: {
+        action: params.action,
+        requestedThreats: params.threatIds.length,
+        matchedThreats: matchedThreatIds.length,
+        matchedThreatIds,
+        unmatchedThreatIds,
         providerActionId,
-        error: errorText
-      }))
-    )
-    .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId });
+        actions: [],
+        warning: warning ? `${warning}; ${dbWarning}` : dbWarning
+      }
+    };
+  }
 
   return {
     ok: true,
