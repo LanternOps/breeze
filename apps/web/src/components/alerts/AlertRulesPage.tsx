@@ -85,7 +85,7 @@ export default function AlertRulesPage() {
   const handleToggle = async (rule: AlertRule, enabled: boolean) => {
     try {
       const response = await fetchWithAuth(`/alerts/rules/${rule.id}`, {
-        method: 'PATCH',
+        method: 'PUT',
         body: JSON.stringify({ enabled })
       });
 
