@@ -363,6 +363,17 @@ peripheralControlRoutes.get(
   }
 );
 
+peripheralControlRoutes.get(
+  '/policies/:id',
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id');
+    const policy = await getPolicyWithAccess(id, auth);
+    if (!policy) return c.json({ error: 'Policy not found' }, 404);
+    return c.json({ data: policy });
+  }
+);
+
 peripheralControlRoutes.post(
   '/policies',
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),

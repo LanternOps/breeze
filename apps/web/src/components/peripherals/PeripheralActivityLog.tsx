@@ -58,8 +58,8 @@ export default function PeripheralActivityLog({ deviceId, limit: propLimit }: Pe
       if (filterEventType) params.set('eventType', filterEventType);
       if (filterPeripheralType) params.set('peripheralType', filterPeripheralType);
       if (filterVendor) params.set('vendor', filterVendor);
-      if (filterFrom) params.set('from', filterFrom);
-      if (filterTo) params.set('to', filterTo);
+      if (filterFrom) params.set('start', new Date(filterFrom).toISOString());
+      if (filterTo) params.set('end', new Date(filterTo + 'T23:59:59').toISOString());
       params.set('limit', String(limit));
       params.set('offset', String(offset));
       const response = await fetchWithAuth(`/peripherals/activity?${params.toString()}`);

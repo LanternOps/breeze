@@ -5,6 +5,7 @@ import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 import PolicyLinkSelector from './PolicyLinkSelector';
+import { fetchWithAuth } from '../../../stores/auth';
 
 type PolicySummary = {
   name: string;
@@ -48,24 +49,24 @@ export default function PeripheralControlTab({ policyId, existingLink, onLinkCha
     }
     let cancelled = false;
 
-    import('../../../stores/auth').then(({ fetchWithAuth }) => {
-      fetchWithAuth(`${meta.fetchUrl}/${selectedPolicyId}`).then(async (res) => {
-        if (!res.ok || cancelled) return;
-        const json = await res.json();
-        const data = json.data ?? json;
-        if (!cancelled) {
-          setLinkedPolicySummary({
-            name: data.name,
-            deviceClass: data.deviceClass,
-            action: data.action,
-            targetType: data.targetType,
-            isActive: data.isActive,
-            exceptions: data.exceptions,
-          });
-        }
-      }).catch((err) => {
+    fetchWithAuth(`${meta.fetchUrl}/${selectedPolicyId}`).then(async (res) => {
+      if (!res.ok || cancelled) return;
+      const json = await res.json();
+      const data = json.data ?? json;
+      if (!cancelled) {
+        setLinkedPolicySummary({
+          name: data.name,
+          deviceClass: data.deviceClass,
+          action: data.action,
+          targetType: data.targetType,
+          isActive: data.isActive,
+          exceptions: data.exceptions,
+        });
+      }
+    }).catch((err) => {
+      if (!cancelled) {
         console.warn(`[PeripheralControlTab] Failed to load linked policy ${selectedPolicyId}:`, err);
-      });
+      }
     });
 
     return () => { cancelled = true; };

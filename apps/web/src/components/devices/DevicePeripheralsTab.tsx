@@ -90,8 +90,8 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
       const json = await response.json();
       const data = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
       setPolicies(data.filter((p: PeripheralPolicy) => p.isActive));
-    } catch {
-      // Non-critical — policies section will just be empty
+    } catch (err) {
+      console.error('[DevicePeripheralsTab] Failed to fetch policies:', err);
     } finally {
       setLoadingPolicies(false);
     }
