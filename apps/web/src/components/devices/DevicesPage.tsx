@@ -8,6 +8,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices } from '../../services/deviceActions';
+import { navigateTo } from '@/lib/navigation';
 
 type ViewMode = 'list' | 'grid';
 

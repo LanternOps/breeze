@@ -7,6 +7,7 @@ import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
+import { navigateTo } from '@/lib/navigation';
 
 type DeviceDetailPageProps = {
   deviceId: string;
