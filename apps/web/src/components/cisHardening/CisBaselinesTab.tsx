@@ -3,18 +3,7 @@ import { Loader2, Pencil, Play, Plus } from 'lucide-react';
 import { cn, friendlyFetchError } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import CisBaselineForm from './CisBaselineForm';
-
-type Baseline = {
-  id: string;
-  name: string;
-  osType: string;
-  level: string;
-  benchmarkVersion: string;
-  scanSchedule?: { enabled?: boolean; intervalHours?: number } | null;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
+import type { Baseline } from './types';
 
 const levelBadge: Record<string, string> = {
   l1: 'bg-blue-500/20 text-blue-700 border-blue-500/30',

@@ -6,13 +6,7 @@ import CisSummaryCards from './CisSummaryCards';
 import CisComplianceTab from './CisComplianceTab';
 import CisBaselinesTab from './CisBaselinesTab';
 import CisRemediationsTab from './CisRemediationsTab';
-
-type CisSummary = {
-  devicesAudited: number;
-  averageScore: number;
-  failingDevices: number;
-  compliantDevices: number;
-};
+import type { CisSummary } from './types';
 
 const tabs = ['Compliance', 'Baselines', 'Remediations'] as const;
 type Tab = (typeof tabs)[number];

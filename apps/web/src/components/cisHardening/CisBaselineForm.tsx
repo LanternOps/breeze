@@ -1,16 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
-
-type Baseline = {
-  id: string;
-  name: string;
-  osType: string;
-  level: string;
-  benchmarkVersion: string;
-  scanSchedule?: { enabled?: boolean; intervalHours?: number } | null;
-  isActive: boolean;
-};
+import type { Baseline } from './types';
 
 interface CisBaselineFormProps {
   baseline: Baseline | null;
@@ -28,6 +19,14 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
   const [isActive, setIsActive] = useState(baseline?.isActive ?? true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !saving) onClose();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [saving, onClose]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,7 +69,10 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8"
+      onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
+    >
       <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-6 flex items-center justify-between">
           <h2 className="text-lg font-semibold">{baseline ? 'Edit Baseline' : 'New Baseline'}</h2>

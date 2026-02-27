@@ -1,12 +1,6 @@
 import { Activity, AlertTriangle, ClipboardCheck, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-type CisSummary = {
-  devicesAudited: number;
-  averageScore: number;
-  failingDevices: number;
-  compliantDevices: number;
-};
+import type { CisSummary } from './types';
 
 interface CisSummaryCardsProps {
   summary: CisSummary | null;
@@ -29,7 +23,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
           </div>
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground">Average Score</p>
-            <p className={cn('text-xl font-semibold', scoreColor)}>{Math.round(score)}</p>
+            <p className={cn('text-xl font-semibold', scoreColor)}>{Math.round(score)}%</p>
           </div>
         </div>
         <div className="mt-3 h-1.5 w-full rounded-full bg-muted">

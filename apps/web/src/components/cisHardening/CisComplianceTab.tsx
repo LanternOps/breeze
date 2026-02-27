@@ -3,40 +3,7 @@ import { Loader2, Search } from 'lucide-react';
 import { friendlyFetchError } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import CisComplianceRow from './CisComplianceRow';
-
-type Finding = {
-  checkId?: string;
-  title?: string;
-  severity?: string;
-  status?: string;
-  message?: string;
-};
-
-type ComplianceEntry = {
-  result: {
-    id: string;
-    deviceId: string;
-    baselineId: string;
-    checkedAt: string;
-    totalChecks: number;
-    passedChecks: number;
-    failedChecks: number;
-    score: number;
-    findings: Finding[];
-  };
-  baseline: {
-    id: string;
-    name: string;
-    osType: string;
-    level: string;
-  };
-  device: {
-    id: string;
-    hostname: string;
-    osType: string;
-    status: string;
-  };
-};
+import type { ComplianceEntry } from './types';
 
 interface CisComplianceTabProps {
   refreshKey: number;

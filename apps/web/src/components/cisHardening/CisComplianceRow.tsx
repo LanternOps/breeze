@@ -1,40 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { cn, formatRelativeTime } from '@/lib/utils';
-
-type Finding = {
-  checkId?: string;
-  title?: string;
-  severity?: string;
-  status?: string;
-  message?: string;
-};
-
-type ComplianceEntry = {
-  result: {
-    id: string;
-    deviceId: string;
-    baselineId: string;
-    checkedAt: string;
-    totalChecks: number;
-    passedChecks: number;
-    failedChecks: number;
-    score: number;
-    findings: Finding[];
-  };
-  baseline: {
-    id: string;
-    name: string;
-    osType: string;
-    level: string;
-  };
-  device: {
-    id: string;
-    hostname: string;
-    osType: string;
-    status: string;
-  };
-};
+import type { ComplianceEntry } from './types';
 
 const severityBadge: Record<string, string> = {
   low: 'bg-blue-500/20 text-blue-700 border-blue-500/30',
