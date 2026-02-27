@@ -1999,7 +1999,7 @@ registerTool({
         deviceIds: { type: 'array', items: { type: 'string' }, description: 'One or more device UUIDs' },
         isolate: { type: 'boolean', description: 'true=isolate (default), false=unisolate' }
       },
-      required: ['deviceIds']
+      required: []
     }
   },
   handler: async (input, auth) => {

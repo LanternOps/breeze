@@ -147,7 +147,7 @@ describe('SentinelOneClient error handling', () => {
     const { results } = await client.listAgents();
 
     expect(results).toHaveLength(1);
-    expect(results[0].id).toBe('agent-1');
+    expect(results[0]!.id).toBe('agent-1');
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Dropping agent record'));
   });
 

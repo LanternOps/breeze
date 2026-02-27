@@ -10,7 +10,10 @@ SentinelOne containment/remediation APIs are treated as high-risk operations.
 - Mutating routes require specific scopes (`organization`, `partner`, or `system`):
   - Isolation/threat-action routes require `devices:execute` permission + MFA middleware.
   - Integration management routes require `organizations:write` permission + MFA middleware.
-- AI tools that invoke SentinelOne actions are Tier 3 (approval-gated, require MFA).
+- AI tool tiers:
+  - **Tier 1** (read-only): `get_s1_status`, `get_s1_threats` — no approval, no MFA.
+  - **Tier 2** (operational): `s1_sync` — approval-gated, no MFA.
+  - **Tier 3** (high-risk): `s1_isolate_device`, `s1_threat_action` — approval-gated, MFA required.
 - Rate-limited: S1 action tools are limited to 5 invocations per 10 minutes.
 - All action requests are persisted to `s1_actions` with provider action IDs for traceability.
 - Action status is polled asynchronously and emitted into the event bus.

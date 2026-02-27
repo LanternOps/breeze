@@ -71,9 +71,11 @@ export default function SecurityIntegration() {
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [syncState, setSyncState] = useState<SyncState>({ status: 'idle' });
   const [siteMapSaving, setSiteMapSaving] = useState<Record<string, boolean>>({});
+  const [siteMapError, setSiteMapError] = useState<string | null>(null);
 
   const fetchIntegration = useCallback(async () => {
     try {
@@ -87,8 +89,8 @@ export default function SecurityIntegration() {
         setManagementUrl(data.managementUrl);
         setApiToken('');
       }
-    } catch {
-      // Integration not configured yet
+    } catch (err) {
+      setLoadError(`Failed to load integration: ${err instanceof Error ? err.message : 'Network error'}`);
     }
   }, []);
 
@@ -98,8 +100,8 @@ export default function SecurityIntegration() {
       if (!res.ok) return;
       const json = await res.json();
       setSummary(json.summary as StatusSummary);
-    } catch {
-      // Status unavailable
+    } catch (err) {
+      console.error('[SecurityIntegration] Failed to fetch status:', err);
     }
   }, []);
 
@@ -110,8 +112,8 @@ export default function SecurityIntegration() {
       const json = await res.json();
       setSites(json.data as SiteRow[]);
       if (json.integrationId) setIntegrationId(json.integrationId);
-    } catch {
-      // Sites unavailable
+    } catch (err) {
+      console.error('[SecurityIntegration] Failed to fetch sites:', err);
     }
   }, []);
 
@@ -122,8 +124,8 @@ export default function SecurityIntegration() {
       const json = await res.json();
       const list = (json.data ?? json) as Array<{ id: string; name: string }>;
       setOrgs(list.map((o) => ({ id: o.id, name: o.name })));
-    } catch {
-      // Orgs unavailable
+    } catch (err) {
+      console.error('[SecurityIntegration] Failed to fetch organizations:', err);
     }
   }, []);
 
@@ -140,14 +142,17 @@ export default function SecurityIntegration() {
   const handleSave = async () => {
     setSaveState({ status: 'saving' });
     try {
+      const payload: Record<string, unknown> = {
+        name,
+        managementUrl,
+        isActive: true
+      };
+      if (apiToken.trim().length > 0) {
+        payload.apiToken = apiToken;
+      }
       const res = await fetchWithAuth('/s1/integration', {
         method: 'POST',
-        body: JSON.stringify({
-          name,
-          managementUrl,
-          apiToken,
-          isActive: true
-        })
+        body: JSON.stringify(payload)
       });
       const json = await res.json();
       if (!res.ok) {
@@ -188,6 +193,7 @@ export default function SecurityIntegration() {
   const handleSiteMap = async (siteName: string, orgId: string | null) => {
     if (!integrationId) return;
     setSiteMapSaving((prev) => ({ ...prev, [siteName]: true }));
+    setSiteMapError(null);
     try {
       const res = await fetchWithAuth('/s1/sites/map', {
         method: 'POST',
@@ -195,9 +201,12 @@ export default function SecurityIntegration() {
       });
       if (res.ok) {
         await fetchSites();
+      } else {
+        const json = await res.json().catch(() => ({}));
+        setSiteMapError(`Failed to map "${siteName}": ${json.error ?? 'Unknown error'}`);
       }
-    } catch {
-      // Mapping failed silently — row will not update
+    } catch (err) {
+      setSiteMapError(`Failed to map "${siteName}": ${err instanceof Error ? err.message : 'Network error'}`);
     } finally {
       setSiteMapSaving((prev) => ({ ...prev, [siteName]: false }));
     }
@@ -233,7 +242,7 @@ export default function SecurityIntegration() {
         </span>
       );
     }
-    if (integration.lastSyncStatus === 'failed') {
+    if (integration.lastSyncStatus === 'error') {
       return (
         <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700">
           <AlertTriangle className="h-3.5 w-3.5" /> Error
@@ -261,6 +270,12 @@ export default function SecurityIntegration() {
           <p className="text-sm text-muted-foreground">Connect your SentinelOne tenant for endpoint detection and response.</p>
         </div>
       </div>
+
+      {loadError && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
 
       {/* Connection Setup */}
       <div className="rounded-xl border bg-card p-6 shadow-sm">
@@ -426,6 +441,12 @@ export default function SecurityIntegration() {
           <p className="mb-4 text-sm text-muted-foreground">
             Map each SentinelOne site to a Breeze organization. Unmapped sites will inherit the integration's default org.
           </p>
+
+          {siteMapError && (
+            <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {siteMapError}
+            </div>
+          )}
 
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

@@ -67,7 +67,7 @@ const integrationUpsertSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
   managementUrl: z.string().url().max(2_000),
-  apiToken: z.string().min(1).max(10_000),
+  apiToken: z.string().max(10_000).optional(),
   isActive: z.boolean().optional()
 });
 
@@ -158,32 +158,53 @@ sentinelOneRoutes.post(
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
-    const encryptedToken = encryptSecret(body.apiToken);
-    if (!encryptedToken) {
-      return c.json({ error: 'Failed to encrypt SentinelOne API token' }, 500);
+
+    // Token is required for new integrations, optional for updates
+    const hasToken = typeof body.apiToken === 'string' && body.apiToken.length > 0;
+    let encryptedToken: string | null = null;
+    if (hasToken) {
+      encryptedToken = encryptSecret(body.apiToken!);
+      if (!encryptedToken) {
+        return c.json({ error: 'Failed to encrypt SentinelOne API token' }, 500);
+      }
+    }
+
+    // Check if integration already exists (needed to validate token presence)
+    const [existing] = await db
+      .select({ id: s1Integrations.id })
+      .from(s1Integrations)
+      .where(eq(s1Integrations.orgId, orgResult.orgId))
+      .limit(1);
+
+    if (!existing && !encryptedToken) {
+      return c.json({ error: 'API token is required for new integrations' }, 400);
     }
 
     const now = new Date();
+    const conflictSet: Record<string, unknown> = {
+      name: sql`excluded.name`,
+      managementUrl: sql`excluded.management_url`,
+      isActive: sql`excluded.is_active`,
+      updatedAt: now
+    };
+    if (encryptedToken) {
+      conflictSet.apiTokenEncrypted = sql`excluded.api_token_encrypted`;
+    }
+
     const [integration] = await db
       .insert(s1Integrations)
       .values({
         orgId: orgResult.orgId,
         name: body.name,
         managementUrl: body.managementUrl,
-        apiTokenEncrypted: encryptedToken,
+        apiTokenEncrypted: encryptedToken ?? 'placeholder',
         isActive: body.isActive ?? true,
         createdBy: auth.user.id,
         updatedAt: now
       })
       .onConflictDoUpdate({
         target: s1Integrations.orgId,
-        set: {
-          name: sql`excluded.name`,
-          managementUrl: sql`excluded.management_url`,
-          apiTokenEncrypted: sql`excluded.api_token_encrypted`,
-          isActive: sql`excluded.is_active`,
-          updatedAt: now
-        }
+        set: conflictSet
       })
       .returning({
         id: s1Integrations.id,
@@ -205,14 +226,16 @@ sentinelOneRoutes.post(
       console.error('[s1-route] Failed to schedule initial sync:', error);
     }
 
-    writeRouteAudit(c, {
-      orgId: integration.orgId,
-      action: 's1.integration.upsert',
-      resourceType: 's1_integration',
-      resourceId: integration.id,
-      resourceName: integration.name,
-      details: { isActive: integration.isActive, syncJobId }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId: integration.orgId,
+        action: 's1.integration.upsert',
+        resourceType: 's1_integration',
+        resourceId: integration.id,
+        resourceName: integration.name,
+        details: { isActive: integration.isActive, syncJobId }
+      });
+    } catch { /* audit is best-effort */ }
 
     return c.json({
       data: {
@@ -423,19 +446,21 @@ sentinelOneRoutes.post(
       return c.json({ error: result.error, details: result.details }, result.status);
     }
 
-    writeRouteAudit(c, {
-      orgId: orgResult.orgId,
-      action: (body.isolate ?? true) ? 's1.device.isolate' : 's1.device.unisolate',
-      resourceType: 's1_action',
-      details: {
-        integrationId: integration.id,
-        requestedDevices: result.data.requestedDevices,
-        inaccessibleDevices: result.data.inaccessibleDeviceIds.length,
-        unmappedDevices: result.data.unmappedAccessibleDeviceIds.length,
-        mappedAgents: result.data.mappedAgents,
-        providerActionId: result.data.providerActionId
-      }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId: orgResult.orgId,
+        action: (body.isolate ?? true) ? 's1.device.isolate' : 's1.device.unisolate',
+        resourceType: 's1_action',
+        details: {
+          integrationId: integration.id,
+          requestedDevices: result.data.requestedDevices,
+          inaccessibleDevices: result.data.inaccessibleDeviceIds.length,
+          unmappedDevices: result.data.unmappedAccessibleDeviceIds.length,
+          mappedAgents: result.data.mappedAgents,
+          providerActionId: result.data.providerActionId
+        }
+      });
+    } catch { /* audit is best-effort */ }
 
     if (result.status === 502) {
       return c.json({
@@ -483,19 +508,21 @@ sentinelOneRoutes.post(
       return c.json({ error: result.error, details: result.details }, result.status);
     }
 
-    writeRouteAudit(c, {
-      orgId: orgResult.orgId,
-      action: 's1.threat.action',
-      resourceType: 's1_action',
-      details: {
-        integrationId: integration.id,
-        requestedThreats: result.data.requestedThreats,
-        matchedThreats: result.data.matchedThreats,
-        unmatchedThreats: result.data.unmatchedThreatIds.length,
-        action: body.action,
-        providerActionId: result.data.providerActionId
-      }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId: orgResult.orgId,
+        action: 's1.threat.action',
+        resourceType: 's1_action',
+        details: {
+          integrationId: integration.id,
+          requestedThreats: result.data.requestedThreats,
+          matchedThreats: result.data.matchedThreats,
+          unmatchedThreats: result.data.unmatchedThreatIds.length,
+          action: body.action,
+          providerActionId: result.data.providerActionId
+        }
+      });
+    } catch { /* audit is best-effort */ }
 
     if (result.status === 502) {
       return c.json({
@@ -553,13 +580,15 @@ sentinelOneRoutes.post(
     }
 
     const jobId = await scheduleS1Sync(integrationId);
-    writeRouteAudit(c, {
-      orgId,
-      action: 's1.sync.manual',
-      resourceType: 's1_integration',
-      resourceId: integrationId,
-      details: { jobId }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId,
+        action: 's1.sync.manual',
+        resourceType: 's1_integration',
+        resourceId: integrationId,
+        details: { jobId }
+      });
+    } catch { /* audit is best-effort */ }
 
     return c.json({ data: { integrationId, jobId } });
   }
@@ -658,13 +687,15 @@ sentinelOneRoutes.post(
           )
         );
 
-      writeRouteAudit(c, {
-        orgId: integration.orgId,
-        action: 's1.site.unmap',
-        resourceType: 's1_site_mapping',
-        resourceName: body.siteName,
-        details: { integrationId: body.integrationId }
-      });
+      try {
+        writeRouteAudit(c, {
+          orgId: integration.orgId,
+          action: 's1.site.unmap',
+          resourceType: 's1_site_mapping',
+          resourceName: body.siteName,
+          details: { integrationId: body.integrationId }
+        });
+      } catch { /* audit is best-effort */ }
 
       return c.json({ data: { siteName: body.siteName, mappedOrgId: null } });
     }
@@ -690,13 +721,15 @@ sentinelOneRoutes.post(
         }
       });
 
-    writeRouteAudit(c, {
-      orgId: integration.orgId,
-      action: 's1.site.map',
-      resourceType: 's1_site_mapping',
-      resourceName: body.siteName,
-      details: { integrationId: body.integrationId, targetOrgId: body.orgId }
-    });
+    try {
+      writeRouteAudit(c, {
+        orgId: integration.orgId,
+        action: 's1.site.map',
+        resourceType: 's1_site_mapping',
+        resourceName: body.siteName,
+        details: { integrationId: body.integrationId, targetOrgId: body.orgId }
+      });
+    } catch { /* audit is best-effort */ }
 
     return c.json({ data: { siteName: body.siteName, mappedOrgId: body.orgId } });
   }

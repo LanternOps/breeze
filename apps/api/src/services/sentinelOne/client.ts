@@ -1,6 +1,7 @@
 type HttpMethod = 'GET' | 'POST';
 
-export type S1ThreatAction = 'kill' | 'quarantine' | 'rollback';
+export const S1_THREAT_ACTIONS = ['kill', 'quarantine', 'rollback'] as const;
+export type S1ThreatAction = (typeof S1_THREAT_ACTIONS)[number];
 
 /** Shared status values used for action tracking, polling, and metrics. */
 export const S1_ACTION_STATUSES = ['queued', 'in_progress', 'completed', 'failed'] as const;
@@ -35,7 +36,7 @@ export interface S1Threat {
   agentId: string | null;
   threatName: string | null;
   classification: string | null;
-  threatSeverity: string | null;
+  threatSeverity: S1ThreatSeverity | null;
   processName: string | null;
   filePath: string | null;
   mitigationStatus: string | null;
@@ -115,6 +116,12 @@ export class SentinelOneClient {
   readonly maxPages: number;
 
   constructor(opts: S1ClientOptions) {
+    if (!opts.managementUrl || opts.managementUrl.trim().length === 0) {
+      throw new Error('SentinelOneClient: managementUrl is required');
+    }
+    if (!opts.apiToken || opts.apiToken.trim().length === 0) {
+      throw new Error('SentinelOneClient: apiToken is required');
+    }
     this.baseUrl = opts.managementUrl.replace(/\/+$/, '');
     this.apiToken = opts.apiToken;
     this.timeoutMs = Math.max(1_000, opts.timeoutMs ?? 30_000);
@@ -246,12 +253,15 @@ export class SentinelOneClient {
       return null;
     }
 
+    const rawSeverity = str(row.threatSeverity) ?? str(row.severity);
+    const severity = this.normalizeSeverityValue(rawSeverity);
+
     return {
       id,
       agentId: str(row.agentId),
       threatName: str(row.threatName),
       classification: str(row.classification),
-      threatSeverity: str(row.threatSeverity) ?? str(row.severity),
+      threatSeverity: severity,
       processName: str(row.processName),
       filePath: str(row.filePath),
       mitigationStatus: str(row.mitigationStatus) ?? str(row.status),
@@ -259,6 +269,16 @@ export class SentinelOneClient {
       resolvedAt: str(row.resolvedAt),
       mitreTechniques: row.mitreTechniques ?? row.mitreTactics,
     };
+  }
+
+  private normalizeSeverityValue(value: string | null): S1ThreatSeverity | null {
+    if (!value) return null;
+    const lower = value.trim().toLowerCase();
+    if (lower.includes('critical')) return 'critical';
+    if (lower.includes('high')) return 'high';
+    if (lower.includes('medium')) return 'medium';
+    if (lower.includes('low')) return 'low';
+    return 'unknown';
   }
 
   private async fetchPaged(path: string, query: Record<string, string>): Promise<PagedResult<Record<string, unknown>>> {

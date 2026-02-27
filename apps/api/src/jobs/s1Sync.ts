@@ -11,7 +11,7 @@ import {
 } from '../db/schema';
 import { getRedisConnection } from '../services/redis';
 import { decryptSecret } from '../services/secretCrypto';
-import { SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
+import { S1_THREAT_ACTIONS, SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import {
@@ -111,7 +111,7 @@ export function normalizeThreatStatus(value: unknown): string {
 }
 
 function isThreatAction(value: string): value is S1ThreatAction {
-  return value === 'kill' || value === 'quarantine' || value === 'rollback';
+  return (S1_THREAT_ACTIONS as readonly string[]).includes(value);
 }
 
 function truncateError(err: unknown): string {
@@ -531,14 +531,19 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
       truncated: wasTruncated
     };
   } catch (error) {
-    await db
-      .update(s1Integrations)
-      .set({
-        lastSyncStatus: 'error',
-        lastSyncError: truncateError(error),
-        updatedAt: new Date()
-      })
-      .where(eq(s1Integrations.id, integration.id));
+    try {
+      await db
+        .update(s1Integrations)
+        .set({
+          lastSyncStatus: 'error',
+          lastSyncError: truncateError(error),
+          updatedAt: new Date()
+        })
+        .where(eq(s1Integrations.id, integration.id));
+    } catch (dbError) {
+      console.error('[S1SyncJob] Failed to persist sync error status:', dbError);
+      captureException(dbError);
+    }
     throw error;
   }
 }
@@ -659,7 +664,6 @@ async function processPollActions() {
     }
 
     try {
-
       const activity = await client.getActivityStatus(action.providerActionId);
       const nextStatus = activity.status;
       const isDone = nextStatus === 'completed' || nextStatus === 'failed';
@@ -667,15 +671,21 @@ async function processPollActions() {
       nextPayload.pollFailureCount = 0;
       nextPayload.lastPollAt = new Date().toISOString();
 
-      await db
-        .update(s1Actions)
-        .set({
-          status: nextStatus,
-          completedAt: isDone ? new Date() : null,
-          error: nextStatus === 'failed' ? truncateError(activity.details) : null,
-          payload: nextPayload
-        })
-        .where(eq(s1Actions.id, action.id));
+      try {
+        await db
+          .update(s1Actions)
+          .set({
+            status: nextStatus,
+            completedAt: isDone ? new Date() : null,
+            error: nextStatus === 'failed' ? truncateError(activity.details) : null,
+            payload: nextPayload
+          })
+          .where(eq(s1Actions.id, action.id));
+      } catch (dbError) {
+        console.error(`[S1SyncJob] Failed to persist poll result for action ${action.id}:`, dbError);
+        captureException(dbError);
+        continue;
+      }
 
       recordS1ActionPollTransition(nextStatus);
       updated += 1;

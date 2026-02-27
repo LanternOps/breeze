@@ -200,6 +200,16 @@ export async function executeS1IsolationForOrg(params: {
     const dbWarning = providerActionId
       ? `Action dispatched (providerActionId: ${providerActionId}) but tracking records could not be saved: ${truncateError(dbError)}`
       : `Failed to persist action records: ${truncateError(dbError)}`;
+
+    // If dispatch itself also failed, propagate as error
+    if (httpStatus === 502) {
+      return {
+        ok: false,
+        status: 500 as 400,
+        error: warning ? `${warning}; ${dbWarning}` : dbWarning
+      };
+    }
+
     return {
       ok: true,
       status: httpStatus,
@@ -339,6 +349,15 @@ export async function executeS1ThreatActionForOrg(params: {
     const dbWarning = providerActionId
       ? `Action dispatched (providerActionId: ${providerActionId}) but tracking records could not be saved: ${truncateError(dbError)}`
       : `Failed to persist action records: ${truncateError(dbError)}`;
+
+    if (httpStatus === 502) {
+      return {
+        ok: false,
+        status: 500 as 400,
+        error: warning ? `${warning}; ${dbWarning}` : dbWarning
+      };
+    }
+
     return {
       ok: true,
       status: httpStatus,
