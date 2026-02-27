@@ -33,11 +33,13 @@ vi.mock('drizzle-orm', () => {
 });
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
-    delete: vi.fn()
+    delete: vi.fn(),
+    execute: vi.fn().mockResolvedValue(undefined),
   }
 }));
 
@@ -325,7 +327,7 @@ describe('patch routes', () => {
     expect(body.data.summary.installed).toBe(6);
     expect(body.data.summary.pending).toBe(2);
     expect(body.data.summary.failed).toBe(1);
-    expect(body.data.filters).toEqual({ source: 'apple', severity: 'critical' });
+    expect(body.data.filters).toEqual({ source: 'apple', severity: 'critical', ringId: null });
   });
 
   it('queues a compliance report request and returns a persisted report id', async () => {

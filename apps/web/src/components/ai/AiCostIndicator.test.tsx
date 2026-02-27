@@ -6,7 +6,9 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  useAuthStore: vi.fn(),
+  useAuthStore: vi.fn((selector: (state: { isAuthenticated: boolean }) => boolean) =>
+    selector({ isAuthenticated: true })
+  ),
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);

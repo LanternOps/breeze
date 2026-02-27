@@ -47,7 +47,8 @@ const {
 // Module mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../../db', () => ({ db: dbMock }));
+vi.mock('../../db', () => ({ runOutsideDbContext: vi.fn((fn) => fn()),
+  db: dbMock }));
 
 vi.mock('../../db/schema', () => ({
   softwarePolicies: { id: 'sp.id', orgId: 'sp.orgId', name: 'sp.name' },

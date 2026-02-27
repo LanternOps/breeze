@@ -23,6 +23,7 @@ vi.mock('../services/fileStorage', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({

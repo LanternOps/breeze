@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockListReliabilityDevices = vi.fn();
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {},
 }));
 
@@ -20,6 +21,9 @@ vi.mock('../db/schema', () => ({
   deviceCommands: {},
   deviceFilesystemCleanupRuns: {},
   deviceSessions: {},
+  dnsActionEnum: { enumValues: ['allow', 'block', 'log'] },
+  dnsThreatCategoryEnum: { enumValues: ['malware', 'phishing', 'botnet', 'cryptomining'] },
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
 }));
 
 vi.mock('./aiToolSchemas', () => ({

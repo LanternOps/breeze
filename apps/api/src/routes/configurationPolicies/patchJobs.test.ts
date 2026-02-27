@@ -31,6 +31,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
@@ -141,10 +142,8 @@ describe('configurationPolicies patchJob routes', () => {
       // Mock loadConfigPolicyPatchSettings → null (no feature link found)
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]),
-            }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
           }),
         }),
       } as any);
@@ -168,10 +167,8 @@ describe('configurationPolicies patchJob routes', () => {
           // loadConfigPolicyPatchSettings
           return {
             from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({
-                where: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
-                }),
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
               }),
             }),
           } as any;
@@ -211,10 +208,8 @@ describe('configurationPolicies patchJob routes', () => {
         if (selectCallCount === 1) {
           return {
             from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({
-                where: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
-                }),
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
               }),
             }),
           } as any;
@@ -257,10 +252,8 @@ describe('configurationPolicies patchJob routes', () => {
         if (selectCallCount === 1) {
           return {
             from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({
-                where: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
-                }),
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
               }),
             }),
           } as any;
@@ -291,10 +284,8 @@ describe('configurationPolicies patchJob routes', () => {
         if (selectCallCount === 1) {
           return {
             from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({
-                where: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
-                }),
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
               }),
             }),
           } as any;
@@ -328,10 +319,8 @@ describe('configurationPolicies patchJob routes', () => {
         if (selectCallCount === 1) {
           return {
             from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({
-                where: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
-                }),
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
               }),
             }),
           } as any;
@@ -379,8 +368,9 @@ describe('configurationPolicies patchJob routes', () => {
       }
     });
 
-    it('creates separate jobs when devices resolve different patch settings', async () => {
+    it('creates separate jobs when devices belong to different orgs', async () => {
       const device2 = '66666666-6666-6666-6666-666666666666';
+      const otherOrgId = '77777777-7777-7777-7777-777777777777';
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
 
       let selectCallCount = 0;
@@ -389,10 +379,8 @@ describe('configurationPolicies patchJob routes', () => {
         if (selectCallCount === 1) {
           return {
             from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({
-                where: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
-                }),
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
               }),
             }),
           } as any;
@@ -401,19 +389,24 @@ describe('configurationPolicies patchJob routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
               { id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' },
-              { id: device2, orgId: ORG_ID, hostname: 'host-2' },
+              { id: device2, orgId: otherOrgId, hostname: 'host-2' },
             ]),
           }),
         } as any;
       });
 
       checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
-      resolvePatchConfigForDeviceMock.mockImplementation(async (deviceId: string) => {
-        if (deviceId === DEVICE_ID) {
-          return makePatchSettings({ scheduleTime: '01:00' });
-        }
-        return makePatchSettings({ scheduleTime: '03:00' });
+
+      // Extend canAccessOrg to include both orgs
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          accessibleOrgIds: [ORG_ID, otherOrgId],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === otherOrgId,
+        }));
+        await next();
       });
+      app.route('/', patchJobRoutes);
 
       const insertReturningMock = vi.fn()
         .mockResolvedValueOnce([{ id: 'job-1' }])
@@ -433,11 +426,6 @@ describe('configurationPolicies patchJob routes', () => {
 
       expect(res.status).toBe(201);
       expect(insertValuesMock).toHaveBeenCalledTimes(2);
-
-      const firstPayload = insertValuesMock.mock.calls[0]?.[0];
-      const secondPayload = insertValuesMock.mock.calls[1]?.[0];
-      const scheduleTimes = [firstPayload?.patches?.scheduleTime, secondPayload?.patches?.scheduleTime];
-      expect(scheduleTimes.sort()).toEqual(['01:00', '03:00']);
     });
   });
 
@@ -451,13 +439,8 @@ describe('configurationPolicies patchJob routes', () => {
 
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                patchSettings: makePatchSettings(),
-                featureLinkId: 'fl-1',
-              }]),
-            }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
           }),
         }),
       } as any);
@@ -466,7 +449,7 @@ describe('configurationPolicies patchJob routes', () => {
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.configPolicyId).toBe(POLICY_ID);
-      expect(json.patchSettings.sources).toContain('windows_update');
+      expect(json.deployment).toBeDefined();
     });
 
     it('returns 404 when policy not found', async () => {
@@ -481,10 +464,8 @@ describe('configurationPolicies patchJob routes', () => {
 
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]),
-            }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
           }),
         }),
       } as any);
@@ -502,22 +483,36 @@ describe('configurationPolicies patchJob routes', () => {
     it('returns resolved patch config for a device', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
 
-      // Device lookup
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+      // Device lookup (1st call) + loadConfigPolicyPatchSettings (2nd call)
+      let selectCallCount = 0;
+      vi.mocked(db.select).mockImplementation(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          // Device lookup: db.select({ orgId }).from(devices).where(...).limit(1)
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+              }),
+            }),
+          } as any;
+        }
+        // loadConfigPolicyPatchSettings: db.select().from(configPolicyFeatureLinks).where(...).limit(1)
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
+            }),
           }),
-        }),
-      } as any);
-
-      resolvePatchConfigForDeviceMock.mockResolvedValue(makePatchSettings());
+        } as any;
+      });
 
       const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.resolved).not.toBeNull();
-      expect(json.resolved.sources).toContain('windows_update');
+      expect(json.resolved.deployment).toBeDefined();
+      expect(json.resolved.approvalRing).toBeDefined();
     });
 
     it('returns 404 when policy not found', async () => {
@@ -561,15 +556,28 @@ describe('configurationPolicies patchJob routes', () => {
     it('returns null resolved when no patch config found for device', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
 
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+      // Device lookup (1st call) + loadConfigPolicyPatchSettings returns null (2nd call)
+      let selectCallCount = 0;
+      vi.mocked(db.select).mockImplementation(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+              }),
+            }),
+          } as any;
+        }
+        // No feature link found → loadConfigPolicyPatchSettings returns null
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
           }),
-        }),
-      } as any);
-
-      resolvePatchConfigForDeviceMock.mockResolvedValue(null);
+        } as any;
+      });
 
       const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
       expect(res.status).toBe(200);
@@ -603,10 +611,8 @@ describe('configurationPolicies patchJob routes', () => {
         if (selectCallCount === 1) {
           return {
             from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({
-                where: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockResolvedValue([{ patchSettings: makePatchSettings(), featureLinkId: 'fl-1' }]),
-                }),
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'fl-1', featureType: 'patch', inlineSettings: makePatchSettings() }]),
               }),
             }),
           } as any;
@@ -637,18 +643,30 @@ describe('configurationPolicies patchJob routes', () => {
       expect(res.status).toBe(500);
     });
 
-    it('returns 500 when resolvePatchConfigForDevice throws', async () => {
+    it('returns 500 when loadConfigPolicyPatchSettings throws', async () => {
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P1', status: 'active' });
 
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+      // Device lookup (1st call) succeeds, loadConfigPolicyPatchSettings (2nd call) throws
+      let selectCallCount = 0;
+      vi.mocked(db.select).mockImplementation(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+              }),
+            }),
+          } as any;
+        }
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockRejectedValue(new Error('DB connection lost')),
+            }),
           }),
-        }),
-      } as any);
-
-      resolvePatchConfigForDeviceMock.mockRejectedValue(new Error('Hierarchy error'));
+        } as any;
+      });
 
       const res = await app.request(`/${POLICY_ID}/resolve-patch-config/${DEVICE_ID}`);
       expect(res.status).toBe(500);

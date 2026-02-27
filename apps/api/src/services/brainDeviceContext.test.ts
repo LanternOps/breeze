@@ -9,6 +9,7 @@ const mockInsertValues = vi.fn();
 const mockUpdateSet = vi.fn();
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({ from: mockSelectFrom })),
     insert: vi.fn(() => ({ values: mockInsertValues })),

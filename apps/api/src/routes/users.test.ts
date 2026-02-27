@@ -16,6 +16,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -63,7 +64,8 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requirePermission: vi.fn(() => (c: any, next: any) => next())
+  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('../services/email', () => ({

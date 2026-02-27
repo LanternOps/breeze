@@ -52,6 +52,7 @@ vi.mock('../db', () => {
         deleteWhere,
       },
     },
+    runOutsideDbContext: vi.fn((fn) => fn()),
   };
 });
 
@@ -314,8 +315,9 @@ describe('screenshotStorage', () => {
       };
 
       mocks.selectWhere.mockResolvedValueOnce([expired1, expired2]);
+      const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
       vi.mocked(unlink)
-        .mockRejectedValueOnce(new Error('ENOENT'))
+        .mockRejectedValueOnce(enoentError)
         .mockResolvedValueOnce(undefined);
 
       const count = await deleteExpiredScreenshots();

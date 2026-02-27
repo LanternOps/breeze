@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { searchRoutes } from './search';
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn()
   }
