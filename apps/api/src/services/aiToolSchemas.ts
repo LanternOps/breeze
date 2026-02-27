@@ -445,6 +445,35 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reason: z.string().max(500).optional(),
   }),
 
+  // CIS hardening tools
+  get_cis_compliance: z.object({
+    orgId: uuid.optional(),
+    baselineId: uuid.optional(),
+    deviceId: uuid.optional(),
+    osType: z.enum(['windows', 'macos', 'linux']).optional(),
+    minScore: z.number().int().min(0).max(100).optional(),
+    maxScore: z.number().int().min(0).max(100).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }).refine(
+    (data) => data.minScore == null || data.maxScore == null || data.minScore <= data.maxScore,
+    { message: 'minScore must be <= maxScore' },
+  ),
+
+  get_cis_device_report: z.object({
+    deviceId: uuid,
+    baselineId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  apply_cis_remediation: z.object({
+    deviceId: uuid,
+    baselineId: uuid.optional(),
+    baselineResultId: uuid.optional(),
+    checkIds: z.array(z.string().min(1).max(120)).min(1).max(100),
+    action: z.enum(['apply', 'rollback']).default('apply'),
+    reason: z.string().max(1000).optional(),
+  }),
+
   // Software policy tools
   get_software_compliance: z.object({
     policyId: uuid.optional(),

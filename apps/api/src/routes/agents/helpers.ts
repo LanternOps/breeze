@@ -9,6 +9,9 @@ import {
   deviceDisks,
   deviceFilesystemSnapshots,
   automationPolicies,
+  cisBaselines,
+  cisBaselineResults,
+  cisRemediationActions,
   softwareComplianceStatus,
   softwarePolicies,
   securityStatus,
@@ -25,6 +28,8 @@ import { getRedis } from '../../services/redis';
 import { scheduleSoftwareComplianceCheck } from '../../jobs/softwareComplianceWorker';
 import { recordSoftwareRemediationDecision } from '../metrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { parseCisCollectorOutput } from '../../services/cisHardening';
+import { publishEvent } from '../../services/eventBus';
 import {
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
@@ -35,6 +40,7 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import {
   type SecurityProviderValue,
@@ -589,6 +595,8 @@ export async function handleSecurityCommandResult(
 // ============================================
 
 const softwareUninstallCommandType = 'software_uninstall';
+const cisBenchmarkCommandType = 'cis_benchmark';
+const cisRemediationCommandType = 'apply_cis_remediation';
 
 export async function handleSoftwareRemediationCommandResult(
   command: typeof deviceCommands.$inferSelect,
@@ -721,6 +729,281 @@ export async function handleSoftwareRemediationCommandResult(
     console.error('[agents/helpers] Audit write failed for software_uninstalled:', err);
   });
   recordSoftwareRemediationDecision('command_result_completed');
+}
+
+export async function handleCisCommandResult(
+  command: typeof deviceCommands.$inferSelect,
+  resultData: z.infer<typeof commandResultSchema>
+): Promise<void> {
+  if (command.type !== cisBenchmarkCommandType && command.type !== cisRemediationCommandType) {
+    return;
+  }
+
+  const payload = isObject(command.payload) ? command.payload : {};
+
+  if (command.type === cisBenchmarkCommandType) {
+    const baselineId = readTrimmedString(payload.baselineId);
+    if (!baselineId || !isUuid(baselineId)) {
+      console.warn(`[agents/helpers] cis_benchmark command ${command.id} missing valid baselineId`);
+      return;
+    }
+
+    const [baseline] = await db
+      .select({
+        id: cisBaselines.id,
+        orgId: cisBaselines.orgId,
+        name: cisBaselines.name,
+      })
+      .from(cisBaselines)
+      .where(eq(cisBaselines.id, baselineId))
+      .limit(1);
+
+    if (!baseline) {
+      console.warn(`[agents/helpers] cis_benchmark command ${command.id}: baseline ${baselineId} not found`);
+      return;
+    }
+
+    // Defense-in-depth: verify baseline org matches device org
+    const [deviceRow] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, command.deviceId))
+      .limit(1);
+    if (!deviceRow || deviceRow.orgId !== baseline.orgId) {
+      console.warn(
+        `[agents/helpers] cis_benchmark command ${command.id}: org mismatch baseline.orgId=${baseline.orgId} device.orgId=${deviceRow?.orgId}`,
+      );
+      return;
+    }
+
+    // Idempotency guard: prevent duplicate result rows if the agent delivers the same command result more than once
+    const [existingForCommand] = await db
+      .select({ id: cisBaselineResults.id })
+      .from(cisBaselineResults)
+      .where(and(
+        eq(cisBaselineResults.baselineId, baseline.id),
+        eq(cisBaselineResults.deviceId, command.deviceId),
+        sql`${cisBaselineResults.summary} ->> 'commandId' = ${command.id}`,
+      ))
+      .limit(1);
+
+    if (existingForCommand) {
+      console.debug(`[agents/helpers] cis_benchmark command ${command.id}: duplicate result skipped (idempotency)`);
+      return;
+    }
+
+    const [previousResult] = await db
+      .select({
+        score: cisBaselineResults.score,
+      })
+      .from(cisBaselineResults)
+      .where(and(
+        eq(cisBaselineResults.baselineId, baseline.id),
+        eq(cisBaselineResults.deviceId, command.deviceId),
+      ))
+      .orderBy(desc(cisBaselineResults.checkedAt))
+      .limit(1);
+
+    let parsed = parseCisCollectorOutput(resultData.stdout);
+    if (resultData.status !== 'completed') {
+      parsed = {
+        checkedAt: new Date(),
+        findings: [{
+          checkId: 'collector.runtime',
+          title: 'CIS collector execution',
+          severity: 'high',
+          status: 'fail',
+          message: resultData.error ?? resultData.stderr ?? 'CIS collector execution failed',
+          evidence: null,
+          remediation: null,
+        }],
+        totalChecks: 1,
+        passedChecks: 0,
+        failedChecks: 1,
+        score: 0,
+        rawSummary: {
+          error: resultData.error ?? null,
+          stderr: resultData.stderr ?? null,
+          status: resultData.status,
+        },
+      };
+    }
+
+    const summary = {
+      ...(parsed.rawSummary ?? {}),
+      commandId: command.id,
+      commandStatus: resultData.status,
+    };
+
+    const [inserted] = await db
+      .insert(cisBaselineResults)
+      .values({
+        orgId: baseline.orgId,
+        deviceId: command.deviceId,
+        baselineId: baseline.id,
+        checkedAt: parsed.checkedAt,
+        totalChecks: parsed.totalChecks,
+        passedChecks: parsed.passedChecks,
+        failedChecks: parsed.failedChecks,
+        score: parsed.score,
+        findings: parsed.findings,
+        summary,
+      })
+      .returning({
+        id: cisBaselineResults.id,
+        score: cisBaselineResults.score,
+        failedChecks: cisBaselineResults.failedChecks,
+        checkedAt: cisBaselineResults.checkedAt,
+      });
+
+    if (!inserted) {
+      console.error(
+        `[agents/helpers] cis_benchmark command ${command.id}: failed to insert baseline result (baseline=${baseline.id}, device=${command.deviceId})`,
+      );
+      return;
+    }
+
+    if (inserted.failedChecks > 0) {
+      publishEvent(
+        'compliance.cis_deviation',
+        baseline.orgId,
+        {
+          baselineId: baseline.id,
+          baselineName: baseline.name,
+          deviceId: command.deviceId,
+          resultId: inserted.id,
+          failedChecks: inserted.failedChecks,
+          checkedAt: inserted.checkedAt.toISOString(),
+        },
+        'agent-command-result'
+      ).catch((error) => {
+        console.error('[agents/helpers] Failed to publish compliance.cis_deviation:', error);
+        captureException(error);
+      });
+    }
+
+    const previousScore = previousResult?.score ?? null;
+    if (previousScore === null || previousScore !== inserted.score) {
+      publishEvent(
+        'compliance.cis_score_changed',
+        baseline.orgId,
+        {
+          baselineId: baseline.id,
+          baselineName: baseline.name,
+          deviceId: command.deviceId,
+          previousScore,
+          currentScore: inserted.score,
+          delta: previousScore === null ? null : inserted.score - previousScore,
+          resultId: inserted.id,
+          checkedAt: inserted.checkedAt.toISOString(),
+        },
+        'agent-command-result'
+      ).catch((error) => {
+        console.error('[agents/helpers] Failed to publish compliance.cis_score_changed:', error);
+        captureException(error);
+      });
+    }
+
+    return;
+  }
+
+  const actionId = readTrimmedString(payload.actionId);
+  if (!actionId || !isUuid(actionId)) {
+    console.warn(`[agents/helpers] apply_cis_remediation command ${command.id} missing valid actionId`);
+    return;
+  }
+
+  const [action] = await db
+    .select({
+      id: cisRemediationActions.id,
+      orgId: cisRemediationActions.orgId,
+      baselineId: cisRemediationActions.baselineId,
+      baselineResultId: cisRemediationActions.baselineResultId,
+      checkId: cisRemediationActions.checkId,
+      actionName: cisRemediationActions.action,
+      details: cisRemediationActions.details,
+      beforeState: cisRemediationActions.beforeState,
+      afterState: cisRemediationActions.afterState,
+      rollbackHint: cisRemediationActions.rollbackHint,
+    })
+    .from(cisRemediationActions)
+    .where(eq(cisRemediationActions.id, actionId))
+    .limit(1);
+
+  if (!action) {
+    console.warn(`[agents/helpers] apply_cis_remediation command ${command.id}: remediation action ${actionId} not found`);
+    return;
+  }
+
+  const completed = resultData.status === 'completed';
+  const payloadDetails = isObject(payload.details) ? payload.details : null;
+  const resultPayload = parseResultJson(resultData.stdout);
+  const resultDetails = resultPayload && isObject(resultPayload.details)
+    ? resultPayload.details
+    : null;
+  const beforeStateFromResult = resultPayload && isObject(resultPayload.beforeState)
+    ? resultPayload.beforeState
+    : resultPayload && isObject(resultPayload.before_state)
+      ? resultPayload.before_state
+      : null;
+  const afterStateFromResult = resultPayload && isObject(resultPayload.afterState)
+    ? resultPayload.afterState
+    : resultPayload && isObject(resultPayload.after_state)
+      ? resultPayload.after_state
+      : null;
+  const rollbackHint = readTrimmedString(
+    (resultPayload?.rollbackHint as unknown)
+      ?? (resultPayload?.rollback_hint as unknown)
+      ?? (resultDetails?.rollbackHint as unknown)
+      ?? (resultDetails?.rollback_hint as unknown)
+      ?? (payloadDetails?.rollbackHint as unknown)
+      ?? (payloadDetails?.rollback_hint as unknown)
+      ?? action.rollbackHint
+  );
+
+  const updatedDetails = {
+    ...(action.details ?? {}),
+    ...(payloadDetails ?? {}),
+    ...(resultDetails ?? {}),
+    commandId: command.id,
+    commandStatus: resultData.status,
+    exitCode: resultData.exitCode ?? null,
+    error: resultData.error ?? null,
+    stderr: resultData.stderr ?? null,
+    completedAt: new Date().toISOString(),
+  };
+
+  await db
+    .update(cisRemediationActions)
+    .set({
+      status: completed ? 'completed' : 'failed',
+      executedAt: new Date(),
+      details: updatedDetails,
+      beforeState: beforeStateFromResult ?? action.beforeState ?? null,
+      afterState: afterStateFromResult ?? action.afterState ?? null,
+      rollbackHint: rollbackHint ?? null,
+    })
+    .where(eq(cisRemediationActions.id, action.id));
+
+  if (completed) {
+    publishEvent(
+      'compliance.cis_remediation_applied',
+      action.orgId,
+      {
+        actionId: action.id,
+        baselineId: action.baselineId,
+        baselineResultId: action.baselineResultId,
+        deviceId: command.deviceId,
+        checkId: action.checkId,
+        action: action.actionName,
+        commandId: command.id,
+      },
+      'agent-command-result'
+    ).catch((error) => {
+      console.error('[agents/helpers] Failed to publish compliance.cis_remediation_applied:', error);
+      captureException(error);
+    });
+  }
 }
 
 // ============================================

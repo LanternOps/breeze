@@ -41,3 +41,4 @@ export * from './brainDeviceContext';
 export * from './playbooks';
 export * from './changes';
 export * from './dnsSecurity';
+export * from './cisHardening';

@@ -9,6 +9,7 @@ import {
   handleSecurityCommandResult,
   handleFilesystemAnalysisCommandResult,
   handleSoftwareRemediationCommandResult,
+  handleCisCommandResult,
 } from './helpers';
 import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
@@ -136,6 +137,15 @@ commandsRoutes.post(
         }
       } catch (err) {
         console.error(`[agents] post-apply verification enqueue failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'cis_benchmark' || command.type === 'apply_cis_remediation') {
+      try {
+        await handleCisCommandResult(command, data);
+      } catch (err) {
+        console.error(`[agents] CIS command post-processing failed for ${commandId}:`, err);
         captureException(err);
       }
     }
