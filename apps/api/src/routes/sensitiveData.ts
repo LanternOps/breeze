@@ -458,10 +458,11 @@ sensitiveDataRoutes.get(
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const [{ count }] = await db
+    const [row] = await db
       .select({ count: sql<number>`count(*)` })
       .from(sensitiveDataFindings)
       .where(whereClause);
+    const count = row?.count ?? 0;
 
     const rows = await db
       .select({
