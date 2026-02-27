@@ -232,11 +232,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
               width={45}
             />
             <Tooltip
-              contentStyle={{
-                backgroundColor: 'hsl(var(--card))',
-                border: '1px solid hsl(var(--border))',
-                borderRadius: '0.5rem'
-              }}
+              wrapperClassName="chart-tooltip"
               labelFormatter={(value) => new Date(value).toLocaleString()}
               formatter={(value: number, name: string) => [`${value}%`, name]}
             />
@@ -300,11 +296,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                   width={50}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '0.5rem'
-                  }}
+                  wrapperClassName="chart-tooltip"
                   labelFormatter={(value) => new Date(value).toLocaleString()}
                   formatter={(value: number, name: string) => [formatBandwidth(value), name]}
                 />
@@ -385,11 +377,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                   width={50}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '0.5rem'
-                  }}
+                  wrapperClassName="chart-tooltip"
                   labelFormatter={(value) => new Date(value).toLocaleString()}
                   formatter={(value: number, name: string) => [formatBytesPerSec(value), name]}
                 />

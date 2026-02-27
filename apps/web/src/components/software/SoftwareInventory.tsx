@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import DeviceDrawer from './DeviceDrawer';
+import { navigateTo } from '@/lib/navigation';
 
 type VersionInfo = { version: string; count: number };
 
@@ -184,7 +185,7 @@ export default function SoftwareInventory({ onSwitchToPolicies }: SoftwareInvent
       const params = new URLSearchParams({ prefill: '1', name });
       if (vendor) params.set('vendor', vendor);
       params.set('mode', 'blocklist');
-      window.location.href = `/software-policies?${params}`;
+      void navigateTo(`/software-policies?${params}`);
     }
   };
 

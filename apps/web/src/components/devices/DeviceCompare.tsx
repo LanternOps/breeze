@@ -473,15 +473,6 @@ function buildPdfHtml(selectedDevices: DeviceComparisonData[], osLabels: Record<
 <html>
   <head>
     <title>Device Comparison</title>
-    <style>
-      body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
-      h1 { font-size: 20px; margin-bottom: 4px; }
-      h2 { font-size: 16px; margin-top: 20px; }
-      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-      th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 12px; }
-      th { background: #f9fafb; }
-      ul { margin: 6px 0 0 16px; }
-    </style>
   </head>
   <body>
     <h1>Device Comparison Report</h1>
@@ -1306,12 +1297,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                       width={40}
                     />
                     <Tooltip
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '0.5rem',
-                        fontSize: '12px'
-                      }}
+                      wrapperClassName="chart-tooltip"
                       labelFormatter={(value) => formatDateTime(String(value), effectiveTimezone)}
                       formatter={(value: number, name: string) => [`${value}%`, name]}
                     />

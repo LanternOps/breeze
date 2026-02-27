@@ -1,5 +1,6 @@
 import { Square, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import type { ActionPlanStep } from '@breeze/shared';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 /** Human-readable tool name */
 function formatToolName(name: string): string {
@@ -48,10 +49,11 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
       {/* Progress bar */}
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
         <div
-          className={`h-full rounded-full transition-all duration-500 ${
-            status === 'aborted' ? 'bg-red-500/60' : status === 'completed' ? 'bg-green-500/60' : 'bg-blue-500/60'
-          }`}
-          style={{ width: `${progressPct}%` }}
+          className={cn(
+            'h-full rounded-full transition-all duration-500',
+            status === 'aborted' ? 'bg-red-500/60' : status === 'completed' ? 'bg-green-500/60' : 'bg-blue-500/60',
+            widthPercentClass(progressPct)
+          )}
         />
       </div>
 

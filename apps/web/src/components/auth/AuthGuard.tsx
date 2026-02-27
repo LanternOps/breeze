@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
+import { navigateTo } from '../../lib/navigation';
 
 interface AuthGuardProps {
   children: ReactNode;
@@ -64,7 +65,7 @@ export default function AuthGuard({ children }: AuthGuardProps) {
       if (currentPath !== '/login' && currentPath !== '/register') {
         sessionStorage.setItem('redirectAfterLogin', currentPath);
       }
-      window.location.href = '/login';
+      void navigateTo('/login', { replace: true });
     }
 
     return () => { cancelled = true; };

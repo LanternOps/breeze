@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Download, TrendingUp, User, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ActivityEntry = {
   id: string;
@@ -42,7 +43,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       ]);
 
       if (usersRes.status === 401 || activityRes.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -123,7 +124,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       const response = await fetchWithAuth(`/audit-logs/export${params}`);
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 

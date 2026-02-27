@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 const registerSchema = z
   .object({
@@ -167,8 +168,7 @@ export default function RegisterForm({
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className={`h-full transition-all ${strength.className}`}
-              style={{ width: `${strength.percent}%` }}
+              className={cn('h-full transition-all', strength.className, widthPercentClass(strength.percent))}
               aria-hidden="true"
             />
           </div>

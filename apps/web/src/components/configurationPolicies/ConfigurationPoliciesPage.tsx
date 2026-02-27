@@ -3,6 +3,7 @@ import { Plus, Layers } from 'lucide-react';
 import ConfigPolicyList, { type ConfigPolicy } from './ConfigPolicyList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'delete';
 
@@ -44,7 +45,7 @@ export default function ConfigurationPoliciesPage() {
   }, [fetchPolicies]);
 
   const handleEdit = (policy: ConfigPolicy) => {
-    window.location.href = `/configuration-policies/${policy.id}`;
+    void navigateTo(`/configuration-policies/${policy.id}`);
   };
 
   const handleDelete = (policy: ConfigPolicy) => {

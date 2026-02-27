@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, Search, Shield, ShieldOff } from 'lucide-react';
-import { formatNumber, friendlyFetchError } from '@/lib/utils';
+import { formatNumber, friendlyFetchError, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import SecurityPageHeader from './SecurityPageHeader';
 import SecurityStatCard from './SecurityStatCard';
@@ -118,7 +118,7 @@ export default function FirewallPage() {
       </div>
 
       <div className="h-3 w-full rounded-full bg-muted">
-        <div className="h-3 rounded-full bg-sky-500" style={{ width: `${summary.coveragePercent}%` }} />
+        <div className={`h-3 rounded-full bg-sky-500 ${widthPercentClass(summary.coveragePercent)}`} />
       </div>
 
       {error && (

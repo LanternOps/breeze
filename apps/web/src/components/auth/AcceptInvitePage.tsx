@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ResetPasswordForm from './ResetPasswordForm';
 import { apiAcceptInvite, useAuthStore } from '../../stores/auth';
+import { navigateTo } from '../../lib/navigation';
 
 export default function AcceptInvitePage() {
   const [error, setError] = useState<string>();
@@ -30,9 +31,11 @@ export default function AcceptInvitePage() {
 
       if (result.user && result.tokens) {
         useAuthStore.getState().login(result.user, result.tokens);
-        window.location.href = '/';
+        await navigateTo('/');
+        return;
       } else {
-        window.location.href = '/login';
+        await navigateTo('/login', { replace: true });
+        return;
       }
     } finally {
       setLoading(false);

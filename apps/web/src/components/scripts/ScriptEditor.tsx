@@ -12,6 +12,7 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import type { ScriptLanguage, OSType } from './ScriptList';
+import { navigateTo } from '@/lib/navigation';
 
 type ParameterType = 'string' | 'number' | 'boolean' | 'dropdown' | 'filePath';
 
@@ -536,7 +537,7 @@ export default function ScriptEditor({ scriptId, timezone }: ScriptEditorProps) 
       }
       const data = await response.json();
       const created: ScriptRecord = data.script ?? data;
-      window.location.href = `/scripts/${created.id}`;
+      void navigateTo(`/scripts/${created.id}`);
     } catch (err) {
       setSaveAsError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

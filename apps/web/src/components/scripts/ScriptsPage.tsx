@@ -7,6 +7,7 @@ import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { cn } from '@/lib/utils';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'execute' | 'delete' | 'execution-details' | 'import-library';
 
@@ -47,7 +48,7 @@ export default function ScriptsPage() {
       const response = await fetchWithAuth('/scripts');
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch scripts');
@@ -108,7 +109,7 @@ export default function ScriptsPage() {
   };
 
   const handleEdit = (script: Script) => {
-    window.location.href = `/scripts/${script.id}`;
+    void navigateTo(`/scripts/${script.id}`);
   };
 
   const handleDelete = (script: Script) => {

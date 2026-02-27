@@ -12,10 +12,11 @@ import {
   Users,
   X
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, heightPercentClass } from '@/lib/utils';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type TemplatePreview = {
   gradient: string;
@@ -392,8 +393,7 @@ const TemplatePreviewCard = ({ template }: { template: ReportTemplate }) => {
         {template.preview.bars.map((height, index) => (
           <div
             key={`${template.id}-bar-${index}`}
-            className={cn('flex-1 rounded-sm', template.preview.accent)}
-            style={{ height: `${height}%` }}
+            className={cn('flex-1 rounded-sm', template.preview.accent, heightPercentClass(height))}
           />
         ))}
       </div>
@@ -465,7 +465,7 @@ export default function ReportTemplates() {
   }, [activeTemplate]);
 
   const handleSubmit = useCallback(() => {
-    window.location.href = '/reports';
+    void navigateTo('/reports');
   }, []);
 
   return (

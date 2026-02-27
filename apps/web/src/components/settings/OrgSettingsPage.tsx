@@ -15,6 +15,7 @@ import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 const tabs = [
   {
@@ -162,7 +163,7 @@ export default function OrgSettingsPage() {
       const response = await fetchWithAuth(`/orgs/organizations/${currentOrgId}`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch organization details');

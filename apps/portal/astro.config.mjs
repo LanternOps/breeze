@@ -8,6 +8,26 @@ export default defineConfig({
   adapter: node({
     mode: 'standalone'
   }),
+  experimental: {
+    csp: {
+      directives: [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "img-src 'self' data: https:",
+        "font-src 'self' data:",
+        "connect-src 'self' https: ws: wss:"
+      ],
+      scriptDirective: {
+        resources: ["'self'"]
+      },
+      styleDirective: {
+        resources: ["'self'"]
+      }
+    }
+  },
   integrations: [
     react(),
     tailwind({

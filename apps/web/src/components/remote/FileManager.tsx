@@ -28,7 +28,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
 import { copyFiles, moveFiles, deleteFiles } from './fileOperations';
@@ -1490,8 +1490,7 @@ export default function FileManager({
                   {transfer.status === 'transferring' && (
                     <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
                       <div
-                        className="h-full bg-primary transition-all"
-                        style={{ width: `${transfer.progress}%` }}
+                        className={cn('h-full bg-primary transition-all', widthPercentClass(transfer.progress))}
                       />
                     </div>
                   )}
@@ -1540,8 +1539,11 @@ export default function FileManager({
       {/* Context Menu */}
       {contextMenu && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className={cn(
+            'fixed z-50 min-w-[160px] rounded-lg border border-gray-700 bg-gray-800 py-1 shadow-xl',
+            leftPxClass(contextMenu.x),
+            topPxClass(contextMenu.y)
+          )}
         >
           <button type="button" onClick={contextCopyTo} className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2">
             <Copy className="w-4 h-4" /> Copy to...

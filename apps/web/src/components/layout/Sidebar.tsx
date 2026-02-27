@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import {
   LayoutDashboard,
   Monitor,
@@ -35,6 +35,29 @@ import { cn } from '@/lib/utils';
 
 interface SidebarProps {
   currentPath?: string;
+}
+
+// Track the current pathname reactively so persisted sidebar updates on View Transitions
+let pathListeners = new Set<() => void>();
+function subscribeToPath(cb: () => void) {
+  pathListeners.add(cb);
+  return () => { pathListeners.delete(cb); };
+}
+function getPathSnapshot() {
+  return typeof window !== 'undefined' ? window.location.pathname : '/';
+}
+function getServerSnapshot() {
+  return '/';
+}
+if (typeof window !== 'undefined') {
+  // Update after Astro View Transitions swap the DOM
+  document.addEventListener('astro:after-swap', () => {
+    pathListeners.forEach((cb) => cb());
+  });
+  // Also handle popstate for back/forward
+  window.addEventListener('popstate', () => {
+    pathListeners.forEach((cb) => cb());
+  });
 }
 
 const navigation = [
@@ -90,7 +113,8 @@ const settingsNav = [
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const currentPath = initialPath;
+  const livePath = useSyncExternalStore(subscribeToPath, getPathSnapshot, getServerSnapshot);
+  const currentPath = livePath || initialPath;
 
   // Find the single most-specific matching href across all sections
   // so only one nav item highlights at a time

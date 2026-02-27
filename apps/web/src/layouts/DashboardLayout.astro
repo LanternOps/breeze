@@ -15,16 +15,16 @@ const currentPath = Astro.url.pathname;
 ---
 
 <Layout title={title}>
-  <AuthOverlay client:load />
-  <AdminSessionManager client:load />
+  <AuthOverlay client:load transition:persist />
+  <AdminSessionManager client:load transition:persist />
   <div class="flex h-screen overflow-hidden">
-    <Sidebar currentPath={currentPath} client:load />
+    <Sidebar currentPath={currentPath} client:load transition:persist />
     <div class="flex flex-1 flex-col overflow-hidden">
-      <Header client:load />
+      <Header client:load transition:persist />
       <main class="flex-1 overflow-y-auto p-6">
         <slot />
       </main>
     </div>
   </div>
-  <AiChatSidebar client:load />
+  <AiChatSidebar client:load transition:persist />
 </Layout>

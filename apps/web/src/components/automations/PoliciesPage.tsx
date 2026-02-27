@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus, Shield } from 'lucide-react';
 import PolicyList, { type Policy } from './PolicyList';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'delete';
 
@@ -46,7 +47,7 @@ export default function PoliciesPage() {
   }, [fetchPolicies]);
 
   const handleEdit = (policy: Policy) => {
-    window.location.href = `/policies/${policy.id}`;
+    void navigateTo(`/policies/${policy.id}`);
   };
 
   const handleDelete = (policy: Policy) => {
@@ -55,7 +56,7 @@ export default function PoliciesPage() {
   };
 
   const handleViewCompliance = (policy: Policy) => {
-    window.location.href = `/policies/compliance?policyId=${policy.id}`;
+    void navigateTo(`/policies/compliance?policyId=${policy.id}`);
   };
 
   const handleToggle = async (policy: Policy, enabled: boolean) => {

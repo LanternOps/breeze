@@ -12,10 +12,9 @@ import {
   Cell,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend
+  CartesianGrid
 } from 'recharts';
+import { minHeightPxClass } from '@/lib/utils';
 
 type ChartType = 'line' | 'bar' | 'area' | 'pie';
 
@@ -38,13 +37,6 @@ type ChartWidgetProps = {
 };
 
 const defaultColors = ['#2563eb', '#22c55e', '#f97316', '#0ea5e9', '#a855f7', '#ef4444'];
-
-const tooltipStyle = {
-  backgroundColor: 'hsl(var(--card))',
-  border: '1px solid hsl(var(--border))',
-  borderRadius: '0.5rem',
-  fontSize: '12px'
-};
 
 export default function ChartWidget({
   title,
@@ -72,7 +64,7 @@ export default function ChartWidget({
         <h3 className="text-sm font-semibold">{title}</h3>
         {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
       </div>
-      <div className="flex-1" style={{ minHeight: height }}>
+      <div className={`flex-1 ${minHeightPxClass(height)}`}>
         {data.length === 0 ? (
           <div className="flex h-full items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
             No data available
@@ -84,8 +76,6 @@ export default function ChartWidget({
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey={xKey} tick={{ fontSize: 10 }} className="text-muted-foreground" />
                 <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
                 {derivedSeries.map((item, index) => (
                   <Line
                     key={item.key}
@@ -103,8 +93,6 @@ export default function ChartWidget({
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey={xKey} tick={{ fontSize: 10 }} className="text-muted-foreground" />
                 <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
                 {derivedSeries.map((item, index) => (
                   <Bar
                     key={item.key}
@@ -120,8 +108,6 @@ export default function ChartWidget({
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey={xKey} tick={{ fontSize: 10 }} className="text-muted-foreground" />
                 <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
                 {derivedSeries.map((item, index) => (
                   <Area
                     key={item.key}
@@ -136,8 +122,6 @@ export default function ChartWidget({
               </AreaChart>
             ) : (
               <PieChart>
-                <Tooltip contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Pie
                   data={data}
                   dataKey={valueKey}

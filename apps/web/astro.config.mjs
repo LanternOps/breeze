@@ -5,9 +5,33 @@ import node from '@astrojs/node';
 
 export default defineConfig({
   output: 'server',
+  devToolbar: {
+    enabled: false
+  },
   adapter: node({
     mode: 'standalone'
   }),
+  experimental: {
+    csp: {
+      directives: [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "worker-src 'self' blob:",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "connect-src 'self' https: ws: wss:"
+      ],
+      scriptDirective: {
+        resources: ["'self'", 'https://cdn.jsdelivr.net', 'https://static.cloudflareinsights.com']
+      },
+      styleDirective: {
+        resources: ["'self'", 'https://cdn.jsdelivr.net']
+      }
+    }
+  },
   integrations: [
     react(),
     tailwind({

@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import AuditLogDetail, { type AuditLogEntry } from './AuditLogDetail';
 import AuditFilters from './AuditFilters';
+import { navigateTo } from '@/lib/navigation';
 
 type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAddress';
 
@@ -163,7 +164,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       const response = await fetchWithAuth(`${endpoint}?${params.toString()}`);
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 
@@ -248,7 +249,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       const response = await fetchWithAuth('/audit-logs/export');
 
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
 

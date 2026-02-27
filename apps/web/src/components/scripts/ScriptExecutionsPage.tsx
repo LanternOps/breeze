@@ -6,6 +6,7 @@ import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionM
 import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptExecutionsPageProps = {
   scriptId: string;
@@ -31,7 +32,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       const response = await fetchWithAuth(`/scripts/${scriptId}`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch script');
@@ -50,7 +51,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       const response = await fetchWithAuth(`/scripts/${scriptId}/executions`);
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch executions');
@@ -116,7 +117,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
     if (!response.ok) {
       if (response.status === 401) {
-        window.location.href = '/login';
+        void navigateTo('/login', { replace: true });
         return;
       }
       const data = await response.json();

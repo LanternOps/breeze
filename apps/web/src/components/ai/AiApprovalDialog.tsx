@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ShieldAlert, Check, X, Clock, Monitor } from 'lucide-react';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
@@ -154,8 +155,10 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
       {/* Countdown progress bar */}
       <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-800">
         <div
-          className="h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear"
-          style={{ width: `${progressPct}%` }}
+          className={cn(
+            'h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear',
+            widthPercentClass(progressPct)
+          )}
         />
       </div>
 

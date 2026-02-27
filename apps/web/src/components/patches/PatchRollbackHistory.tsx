@@ -8,7 +8,7 @@ import {
   XCircle,
   AlertTriangle
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, widthPercentClass } from '@/lib/utils';
 
 export type RollbackStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 
@@ -241,8 +241,7 @@ export default function PatchRollbackHistory({
                         {rollback.status === 'in_progress' && (
                           <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
                             <div
-                              className="h-full rounded-full bg-amber-500 transition-all"
-                              style={{ width: `${progressPercent}%` }}
+                              className={cn('h-full rounded-full bg-amber-500 transition-all', widthPercentClass(progressPercent))}
                             />
                           </div>
                         )}

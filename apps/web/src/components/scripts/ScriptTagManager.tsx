@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Plus, Tag, Trash2, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptTag = {
   id: string;
@@ -21,7 +22,12 @@ type ScriptTagManagerProps = {
 };
 
 export default function ScriptTagManager({ tags: externalTags, scripts: externalScripts }: ScriptTagManagerProps) {
-  const [tags, setTags] = useState<ScriptTag[]>(externalTags ?? []);
+  const [tags, setTags] = useState<ScriptTag[]>(
+    (externalTags ?? []).map((tag) => ({
+      ...tag,
+      color: sanitizeHexColor(tag.color, '#64748b')
+    }))
+  );
   const [scripts, setScripts] = useState<ScriptItem[]>(externalScripts ?? []);
   const [loading, setLoading] = useState(!externalTags && !externalScripts);
   const [error, setError] = useState<string>();
@@ -44,7 +50,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
       const scriptsResponse = await fetchWithAuth('/scripts?includeSystem=true');
       if (!scriptsResponse.ok) {
         if (scriptsResponse.status === 401) {
-          window.location.href = '/login';
+          void navigateTo('/login', { replace: true });
           return;
         }
         throw new Error('Failed to fetch scripts');
@@ -73,7 +79,10 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
               scriptTags.push(`tag-${tag}`);
             } else if (tag && typeof tag === 'object' && tag.name) {
               if (!tagMap.has(tag.id)) {
-                tagMap.set(tag.id, tag);
+                tagMap.set(tag.id, {
+                  ...tag,
+                  color: sanitizeHexColor(tag.color, getColorForTag(tag.name))
+                });
               }
               scriptTags.push(tag.id);
             }
@@ -170,7 +179,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
       const newTag: ScriptTag = {
         id: `tag-${trimmed.toLowerCase().replace(/\s+/g, '-')}`,
         name: trimmed,
-        color: newTagColor
+        color: resolveUiColorToken(newTagColor, '#22c55e').hex
       };
       setTags(prev => [...prev, newTag]);
       setNewTagName('');
@@ -236,7 +245,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
 
         if (!response.ok) {
           if (response.status === 401) {
-            window.location.href = '/login';
+            void navigateTo('/login', { replace: true });
             return;
           }
           // Continue with local update even if API fails
@@ -322,10 +331,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
                 tags.map(tag => (
                   <div key={tag.id} className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
                     <div className="flex items-center gap-2">
-                      <span
-                        className="h-3 w-3 rounded-full"
-                        style={{ backgroundColor: tag.color }}
-                      />
+                      <span className={cn('h-3 w-3 rounded-full', resolveUiColorToken(tag.color, '#64748b').bgClass)} />
                       <div>
                         <p className="text-sm font-medium">{tag.name}</p>
                         <p className="text-xs text-muted-foreground">Used on {tagUsage[tag.id] || 0} scripts</p>
@@ -358,7 +364,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
                 <input
                   type="color"
                   value={newTagColor}
-                  onChange={event => setNewTagColor(event.target.value)}
+                  onChange={event => setNewTagColor(sanitizeHexColor(event.target.value, '#22c55e'))}
                   className="h-10 w-12 rounded-md border bg-background"
                 />
                 <button
@@ -417,7 +423,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
                       : 'border-muted bg-background text-muted-foreground'
                   )}
                 >
-                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color }} />
+                  <span className={cn('h-2 w-2 rounded-full', resolveUiColorToken(tag.color, '#64748b').bgClass)} />
                   {tag.name}
                   {bulkTagIds.has(tag.id) && <Check className="h-3 w-3" />}
                 </button>
