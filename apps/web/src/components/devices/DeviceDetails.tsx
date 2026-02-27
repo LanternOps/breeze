@@ -18,7 +18,8 @@ import {
   Shield,
   User,
   Layers,
-  Timer
+  Timer,
+  Usb
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
@@ -40,6 +41,7 @@ import DeviceEffectiveConfigTab from './DeviceEffectiveConfigTab';
 import DeviceIpHistoryTab from './DeviceIpHistoryTab';
 import DeviceBootPerformanceTab from './DeviceBootPerformanceTab';
 import DevicePlaybookHistory from './DevicePlaybookHistory';
+import DevicePeripheralsTab from './DevicePeripheralsTab';
 
 type Tab =
   | 'overview'
@@ -59,7 +61,8 @@ type Tab =
   | 'filesystem'
   | 'ip-history'
   | 'boot-performance'
-  | 'playbooks';
+  | 'playbooks'
+  | 'peripherals';
 
 type DeviceDetailsProps = {
   device: Device;
@@ -127,6 +130,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'patches', label: 'Patch Status', icon: <CheckCircle className="h-4 w-4" /> },
     { id: 'filesystem', label: 'Disk Cleanup', icon: <HardDrive className="h-4 w-4" /> },
     { id: 'security', label: 'Security', icon: <Shield className="h-4 w-4" /> },
+    { id: 'peripherals', label: 'Peripherals', icon: <Usb className="h-4 w-4" /> },
     { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" /> },
     { id: 'effective-config', label: 'Effective Config', icon: <Layers className="h-4 w-4" /> },
     { id: 'alerts', label: 'Alert History', icon: <AlertTriangle className="h-4 w-4" /> },
@@ -266,6 +270,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'security' && (
         <DeviceSecurityTab deviceId={device.id} timezone={effectiveTimezone} />
+      )}
+
+      {activeTab === 'peripherals' && (
+        <DevicePeripheralsTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'management' && (

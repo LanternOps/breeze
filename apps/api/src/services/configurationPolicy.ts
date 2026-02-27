@@ -21,6 +21,7 @@ import {
   maintenanceWindows,
   softwarePolicies,
   sensitiveDataPolicies,
+  peripheralPolicies,
 } from '../db/schema';
 import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
 import { eventLogInlineSettingsSchema } from '@breeze/shared/validators';
@@ -30,7 +31,7 @@ import type { AuthContext } from '../middleware/auth';
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data';
+type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control';
 type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
@@ -936,6 +937,7 @@ const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCo
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
   software_policy: { table: softwarePolicies, orgIdCol: softwarePolicies.orgId },
   sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
+  peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
 };
 
 export async function validateFeaturePolicyExists(

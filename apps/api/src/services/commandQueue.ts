@@ -85,6 +85,9 @@ export const CommandTypes = {
   SECURE_DELETE_FILE: 'secure_delete_file',
   QUARANTINE_FILE: 'quarantine_file',
 
+  // Peripheral control — pushes full active policy set to agent
+  PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
+
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
 
@@ -182,6 +185,8 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.COMPUTER_ACTION,
   CommandTypes.MANAGE_STARTUP_ITEM,
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
+  // Peripheral control — pushes full active policy set to agent
+  CommandTypes.PERIPHERAL_POLICY_SYNC,
 ]);
 
 /**

@@ -9,6 +9,12 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
+import {
+  peripheralDeviceClassEnum,
+  peripheralPolicyActionEnum,
+  peripheralPolicyTargetTypeEnum,
+  peripheralEventTypeEnum
+} from '../db/schema';
 
 // Reusable validators
 const uuid = z.string().uuid();
@@ -245,6 +251,135 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid.optional(),
     action: z.enum(['kill', 'quarantine', 'rollback']),
     threatIds: z.array(z.string().min(1).max(128)).min(1).max(200),
+  }),
+
+  get_peripheral_activity: z.object({
+    org_id: uuid.optional(),
+    device_id: uuid.optional(),
+    policy_id: uuid.optional(),
+    event_type: z.enum(peripheralEventTypeEnum.enumValues).optional(),
+    start: z.string().datetime({ offset: true }).optional(),
+    end: z.string().datetime({ offset: true }).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }).superRefine((data, ctx) => {
+    if (data.start && data.end) {
+      const s = new Date(data.start);
+      const e = new Date(data.end);
+      if (s.getTime() > e.getTime()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['start'],
+          message: 'start must be before end',
+        });
+        return;
+      }
+      const maxWindowMs = 90 * 24 * 60 * 60 * 1000;
+      if ((e.getTime() - s.getTime()) > maxWindowMs) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['start'],
+          message: 'Time range cannot exceed 90 days',
+        });
+      }
+    }
+  }),
+
+  manage_peripheral_policy: z.object({
+    action: z.enum(['create', 'update', 'disable', 'add_exception', 'remove_exception']),
+    policy_id: uuid.optional(),
+    org_id: uuid.optional(),
+    name: z.string().min(1).max(200).optional(),
+    device_class: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
+    policy_action: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
+    target_type: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional(),
+    target_ids: z.object({
+      siteIds: z.array(z.string().uuid()).max(1000).optional(),
+      groupIds: z.array(z.string().uuid()).max(1000).optional(),
+      deviceIds: z.array(z.string().uuid()).max(5000).optional(),
+    }).optional(),
+    is_active: z.boolean().optional(),
+    exception: z.object({
+      vendor: z.string().max(255).optional(),
+      product: z.string().max(255).optional(),
+      serialNumber: z.string().max(255).optional(),
+      allow: z.boolean().optional(),
+      reason: z.string().max(2000).optional(),
+      expiresAt: z.string().datetime({ offset: true }).optional(),
+    }).optional(),
+    match: z.object({
+      vendor: z.string().max(255).optional(),
+      product: z.string().max(255).optional(),
+      serialNumber: z.string().max(255).optional(),
+    }).optional(),
+  }).superRefine((data, ctx) => {
+    if ((data.action === 'update' || data.action === 'disable' || data.action === 'add_exception' || data.action === 'remove_exception') && !data.policy_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['policy_id'],
+        message: 'policy_id is required for this action',
+      });
+    }
+
+    if (data.action === 'create') {
+      if (!data.name) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['name'],
+          message: 'name is required for create',
+        });
+      }
+      if (!data.device_class) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['device_class'],
+          message: 'device_class is required for create',
+        });
+      }
+      if (!data.policy_action) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['policy_action'],
+          message: 'policy_action is required for create',
+        });
+      }
+      if (!data.target_type) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['target_type'],
+          message: 'target_type is required for create',
+        });
+      }
+    }
+
+    if (data.action === 'add_exception') {
+      const rule = data.exception ?? {};
+      const vendor = typeof rule.vendor === 'string' && rule.vendor.trim().length > 0;
+      const product = typeof rule.product === 'string' && rule.product.trim().length > 0;
+      const serialNumber = typeof rule.serialNumber === 'string' && rule.serialNumber.trim().length > 0;
+      if (!vendor && !product && !serialNumber) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['exception'],
+          message: 'exception must include at least one of vendor, product, or serialNumber',
+        });
+      }
+    }
+
+    if (data.action === 'remove_exception') {
+      const match = data.match;
+      const hasMatch = Boolean(
+        (typeof match?.vendor === 'string' && match.vendor.trim().length > 0)
+        || (typeof match?.product === 'string' && match.product.trim().length > 0)
+        || (typeof match?.serialNumber === 'string' && match.serialNumber.trim().length > 0)
+      );
+      if (!hasMatch) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['match'],
+          message: 'match must include at least one of vendor, product, or serialNumber',
+        });
+      }
+    }
   }),
 
   execute_command: z.object({

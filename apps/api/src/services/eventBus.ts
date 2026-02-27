@@ -53,6 +53,10 @@ export type EventType =
   | 'compliance.sensitive_data_found'
   | 'compliance.credential_exposed'
   | 'compliance.sensitive_data_remediated'
+  // Peripheral control events
+  | 'peripheral.unauthorized_device'
+  | 'peripheral.blocked'
+  | 'peripheral.policy_changed'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
@@ -526,4 +530,8 @@ export const EVENT_TYPES = {
   // Compliance
   COMPLIANCE_AUDIT_DEVIATION: 'compliance.audit_deviation' as const,
   COMPLIANCE_AUDIT_REMEDIATED: 'compliance.audit_remediated' as const,
+  // Peripheral control
+  PERIPHERAL_UNAUTHORIZED_DEVICE: 'peripheral.unauthorized_device' as const,
+  PERIPHERAL_BLOCKED: 'peripheral.blocked' as const,
+  PERIPHERAL_POLICY_CHANGED: 'peripheral.policy_changed' as const,
 };
