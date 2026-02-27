@@ -10,6 +10,7 @@ type AuditFiltersState = {
   startDate?: string;
   endDate?: string;
   userId?: string;
+  userEmail?: string;
   actions: string[];
   resources: string[];
   search: string;
@@ -96,6 +97,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
       startDate: datePreset === 'custom' ? customStart : undefined,
       endDate: datePreset === 'custom' ? customEnd : undefined,
       userId: selectedUserId,
+      userEmail: selectedUser?.email,
       actions: selectedActions,
       resources: selectedResources,
       search: detailsSearch

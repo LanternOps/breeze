@@ -36,12 +36,14 @@ type Config struct {
 	BackupLocalPath          string   `mapstructure:"backup_local_path"`
 	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
+	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
+	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
 
 	// Logging configuration
-	LogLevel      string `mapstructure:"log_level"`
-	LogFormat     string `mapstructure:"log_format"`
-	LogFile       string `mapstructure:"log_file"`
-	LogMaxSizeMB  int    `mapstructure:"log_max_size_mb"`
+	LogLevel         string `mapstructure:"log_level"`
+	LogFormat        string `mapstructure:"log_format"`
+	LogFile          string `mapstructure:"log_file"`
+	LogMaxSizeMB     int    `mapstructure:"log_max_size_mb"`
 	LogMaxBackups    int    `mapstructure:"log_max_backups"`
 	LogShippingLevel string `mapstructure:"log_shipping_level"`
 

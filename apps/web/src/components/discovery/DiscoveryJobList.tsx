@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight } from 'lucide-react';
+import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight, CalendarClock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
-export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
 
-type ApiJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
+type ApiJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
 
 type ApiDiscoveryJob = {
   id: string;
@@ -42,6 +42,7 @@ export type DiscoveryJob = {
 };
 
 const statusConfig: Record<DiscoveryJobStatus, { label: string; color: string; icon: typeof Clock }> = {
+  pending: { label: 'Next Run', color: 'bg-purple-500/20 text-purple-700 border-purple-500/40', icon: CalendarClock },
   scheduled: { label: 'Scheduled', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Clock },
   running: { label: 'Running', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40', icon: PlayCircle },
   completed: { label: 'Completed', color: 'bg-green-500/20 text-green-700 border-green-500/40', icon: CheckCircle },
@@ -50,6 +51,7 @@ const statusConfig: Record<DiscoveryJobStatus, { label: string; color: string; i
 };
 
 const progressBarColor: Record<DiscoveryJobStatus, string> = {
+  pending: 'bg-purple-300',
   failed: 'bg-red-500',
   cancelled: 'bg-gray-400',
   completed: 'bg-green-500',
@@ -82,7 +84,8 @@ function formatDuration(startedAt?: string | null, completedAt?: string | null):
 }
 
 function mapJob(job: ApiDiscoveryJob): DiscoveryJob {
-  const status: DiscoveryJobStatus = job.status ?? 'scheduled';
+  const rawStatus = job.status ?? 'scheduled';
+  const status: DiscoveryJobStatus = rawStatus === 'pending' ? 'pending' : rawStatus;
   const discovered = job.hostsDiscovered ?? job.results?.length ?? 0;
   const targeted = job.hostsTargeted ?? job.hostsScanned ?? Math.max(discovered, job.results?.length ?? 0);
 
@@ -313,61 +316,76 @@ export default function DiscoveryJobList({ timezone, profileFilter, onClearFilte
                         <span className="mt-1 block text-xs text-destructive">{job.errors}</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm">
-                      <div className="flex items-center gap-3">
-                        <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
-                          {job.isIndeterminate ? (
-                            <div className="h-full w-full animate-pulse rounded-full bg-yellow-500" />
-                          ) : (
-                            <div
-                              className={`h-full rounded-full ${progressBarColor[job.status]}`}
-                              style={{ width: `${job.progress}%` }}
-                            />
-                          )}
-                        </div>
-                        <span className="w-10 text-right text-xs">
-                          {job.isIndeterminate ? '...' : `${job.progress}%`}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      {job.hostsDiscovered} / {job.hostsTargeted}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      {job.newAssets != null ? job.newAssets : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {job.duration ?? '—'}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.startedAt, timezone)}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.finishedAt, timezone)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        {(job.status === 'scheduled' || job.status === 'running') && (
-                          <button
-                            type="button"
-                            onClick={() => cancelJob(job.id)}
-                            disabled={cancellingId === job.id}
-                            title="Cancel job"
-                            className="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        )}
-                        {job.status === 'completed' && job.hostsDiscovered > 0 && onViewAssets && (
-                          <button
-                            type="button"
-                            onClick={onViewAssets}
-                            title="View discovered assets"
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
-                          >
-                            Assets
-                            <ArrowRight className="h-3 w-3" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
+                    {job.status === 'pending' ? (
+                      <>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">—</td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">—</td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">—</td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">—</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">—</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">—</td>
+                        <td className="px-4 py-3" />
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-4 py-3 text-sm">
+                          <div className="flex items-center gap-3">
+                            <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+                              {job.isIndeterminate ? (
+                                <div className="h-full w-full animate-pulse rounded-full bg-yellow-500" />
+                              ) : (
+                                <div
+                                  className={`h-full rounded-full ${progressBarColor[job.status]}`}
+                                  style={{ width: `${job.progress}%` }}
+                                />
+                              )}
+                            </div>
+                            <span className="w-10 text-right text-xs">
+                              {job.isIndeterminate ? '...' : `${job.progress}%`}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-sm">
+                          {job.hostsDiscovered} / {job.hostsTargeted}
+                        </td>
+                        <td className="px-4 py-3 text-sm">
+                          {job.newAssets != null ? job.newAssets : '—'}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">
+                          {job.duration ?? '—'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.startedAt, timezone)}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.finishedAt, timezone)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1">
+                            {(job.status === 'scheduled' || job.status === 'running') && (
+                              <button
+                                type="button"
+                                onClick={() => cancelJob(job.id)}
+                                disabled={cancellingId === job.id}
+                                title="Cancel job"
+                                className="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            )}
+                            {job.status === 'completed' && job.hostsDiscovered > 0 && onViewAssets && (
+                              <button
+                                type="button"
+                                onClick={onViewAssets}
+                                title="View discovered assets"
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
+                              >
+                                Assets
+                                <ArrowRight className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </>
+                    )}
                   </tr>
                 );
               })

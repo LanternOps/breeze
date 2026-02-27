@@ -238,7 +238,7 @@ export default function WebhooksPage() {
       const payload = transformFormToPayload(values);
       const url =
         modalMode === 'create' ? '/webhooks' : `/webhooks/${selectedWebhook?.id}`;
-      const method = modalMode === 'create' ? 'POST' : 'PUT';
+      const method = modalMode === 'create' ? 'POST' : 'PATCH';
 
       // Include orgId when creating a new webhook
       const requestPayload = modalMode === 'create' && currentOrgId

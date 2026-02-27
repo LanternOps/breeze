@@ -8,51 +8,6 @@ function parse(tool: string, input: unknown) {
   return fleetToolInputSchemas[tool]!.safeParse(input);
 }
 
-// ─── manage_policies ────────────────────────────────────────────────────
-
-describe('manage_policies schema', () => {
-  it('accepts valid list action', () => {
-    expect(parse('manage_policies', { action: 'list' }).success).toBe(true);
-  });
-
-  it('accepts valid list with filters', () => {
-    expect(parse('manage_policies', { action: 'list', enforcement: 'enforce', enabled: true, limit: 50 }).success).toBe(true);
-  });
-
-  it('requires policyId for get/update/delete/evaluate/activate/deactivate/remediate', () => {
-    for (const action of ['get', 'compliance_status', 'evaluate', 'update', 'activate', 'deactivate', 'delete', 'remediate']) {
-      const result = parse('manage_policies', { action });
-      expect(result.success).toBe(false);
-    }
-  });
-
-  it('accepts get with policyId', () => {
-    expect(parse('manage_policies', { action: 'get', policyId: TEST_UUID }).success).toBe(true);
-  });
-
-  it('requires name, rules, targets for create', () => {
-    const result = parse('manage_policies', { action: 'create', name: 'Test' });
-    expect(result.success).toBe(false);
-  });
-
-  it('accepts valid create', () => {
-    expect(parse('manage_policies', {
-      action: 'create',
-      name: 'Require AV',
-      rules: { hasAntivirus: true },
-      targets: { groupId: TEST_UUID },
-    }).success).toBe(true);
-  });
-
-  it('rejects invalid action', () => {
-    expect(parse('manage_policies', { action: 'invalid' }).success).toBe(false);
-  });
-
-  it('rejects invalid enforcement value', () => {
-    expect(parse('manage_policies', { action: 'list', enforcement: 'strict' }).success).toBe(false);
-  });
-});
-
 // ─── manage_deployments ─────────────────────────────────────────────────
 
 describe('manage_deployments schema', () => {

@@ -59,7 +59,7 @@ var allCommandTypes = []string{
 	tools.CmdSecurityThreatRestore,
 
 	// handlers_patch.go init() — backup
-	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop,
+	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop, tools.CmdBackupRestore,
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,

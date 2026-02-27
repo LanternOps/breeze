@@ -38,7 +38,6 @@ vi.mock('../services', () => ({
 }));
 
 vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -58,7 +57,8 @@ vi.mock('../db', () => ({
       }))
     }))
   },
-  withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn())
+  withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => any) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

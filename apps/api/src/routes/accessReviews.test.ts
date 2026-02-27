@@ -10,7 +10,6 @@ vi.mock('../services/permissions', () => ({
 }));
 
 vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -35,7 +34,9 @@ vi.mock('../db', () => ({
       where: vi.fn(() => Promise.resolve())
     })),
     transaction: vi.fn()
-  }
+  },
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

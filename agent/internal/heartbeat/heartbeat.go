@@ -112,9 +112,9 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 
 	// User session helper (IPC)
-	sessionBroker   *sessionbroker.Broker
-	isService       bool
-	scmSessionCh    chan sessionbroker.SCMSessionEvent // fed by SCM handler
+	sessionBroker *sessionbroker.Broker
+	isService     bool
+	scmSessionCh  chan sessionbroker.SCMSessionEvent // fed by SCM handler
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -254,7 +254,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		var backupProvider providers.BackupProvider
 		switch cfg.BackupProvider {
 		case "s3":
-			backupProvider = providers.NewS3Provider(cfg.BackupS3Bucket, cfg.BackupS3Region, "", "", "")
+			backupProvider = providers.NewS3Provider(
+				cfg.BackupS3Bucket,
+				cfg.BackupS3Region,
+				cfg.BackupS3AccessKey,
+				cfg.BackupS3SecretKey,
+				"",
+			)
 		default:
 			localPath := cfg.BackupLocalPath
 			if localPath == "" {
@@ -1237,12 +1243,12 @@ func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]any, []m
 	installedItems := make([]map[string]any, len(installedPatches))
 	for i, patch := range installedPatches {
 		m := map[string]any{
-			"name":       patch.Name,
-			"version":    patch.Version,
-			"category":   patch.Category,
-			"source":     h.mapPatchSource(patch.Source),
+			"name":        patch.Name,
+			"version":     patch.Version,
+			"category":    patch.Category,
+			"source":      h.mapPatchSource(patch.Source),
 			"installedAt": patch.InstalledAt,
-			"externalId": patch.KBNumber,
+			"externalId":  patch.KBNumber,
 		}
 		if patch.KBNumber != "" {
 			m["kbNumber"] = patch.KBNumber

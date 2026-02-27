@@ -69,7 +69,6 @@ export const TOOL_TIERS = {
   analyze_screen: 2,
   computer_control: 3,
   // Fleet orchestration tools
-  manage_policies: 1,        // Action-level escalation in guardrails
   manage_deployments: 1,     // Action-level escalation in guardrails
   manage_patches: 1,         // Action-level escalation in guardrails
   manage_groups: 1,          // Action-level escalation in guardrails
@@ -93,6 +92,9 @@ export const TOOL_TIERS = {
   detect_log_correlations: 2,
   // Configuration policy tools
   list_configuration_policies: 1,
+  get_configuration_policy: 1,
+  manage_configuration_policy: 1, // Action-level escalation in guardrails
+  configuration_policy_compliance: 1,
   get_effective_configuration: 1,
   preview_configuration_change: 1,
   apply_configuration_policy: 2,
@@ -567,25 +569,6 @@ export function createBreezeMcpServer(
     // Fleet orchestration tools
 
     tool(
-      'manage_policies',
-      'Manage compliance policies: list, get, check compliance, evaluate, create, update, activate/deactivate, delete, remediate.',
-      {
-        action: z.enum(['list', 'get', 'compliance_status', 'compliance_summary', 'evaluate', 'create', 'update', 'activate', 'deactivate', 'delete', 'remediate']),
-        policyId: uuid.optional(),
-        enforcement: z.enum(['monitor', 'warn', 'enforce']).optional(),
-        enabled: z.boolean().optional(),
-        name: z.string().max(255).optional(),
-        description: z.string().max(2000).optional(),
-        rules: z.record(z.unknown()).optional(),
-        targets: z.record(z.unknown()).optional(),
-        checkIntervalMinutes: z.number().int().min(1).max(1440).optional(),
-        remediationScriptId: uuid.optional(),
-        limit: z.number().int().min(1).max(100).optional(),
-      },
-      makeHandler('manage_policies', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
       'manage_deployments',
       'Manage staged deployments: list, get details, device status, create, start, pause, resume, cancel.',
       {
@@ -920,6 +903,40 @@ export function createBreezeMcpServer(
         assignmentId: uuid,
       },
       makeHandler('remove_configuration_policy_assignment', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_configuration_policy',
+      'Get a single configuration policy by ID with its feature links and assignment count.',
+      {
+        policyId: uuid,
+      },
+      makeHandler('get_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_configuration_policy',
+      'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy.',
+      {
+        action: z.enum(['create', 'update', 'activate', 'deactivate', 'delete']),
+        policyId: uuid.optional(),
+        name: z.string().max(255).optional(),
+        description: z.string().max(2000).optional(),
+        status: z.enum(['active', 'inactive', 'archived']).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('manage_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configuration_policy_compliance',
+      'Check compliance status for configuration policies. Use "summary" for org-wide overview, or "status" for per-device compliance for a specific policy.',
+      {
+        action: z.enum(['summary', 'status']),
+        policyId: uuid.optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('configuration_policy_compliance', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Playbook tools

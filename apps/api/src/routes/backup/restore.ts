@@ -1,73 +1,93 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { randomUUID } from 'crypto';
+import { eq, and } from 'drizzle-orm';
+import { db } from '../../db';
+import { backupSnapshots, restoreJobs } from '../../db/schema';
 import { writeRouteAudit } from '../../services/auditEvents';
-import type { RestoreJob } from './types';
 import { resolveScopedOrgId } from './helpers';
-import { backupJobs, backupSnapshots, jobOrgById, restoreJobs, restoreOrgById, snapshotOrgById } from './store';
 import { restoreSchema } from './schemas';
 
 export const restoreRoutes = new Hono();
 
-restoreRoutes.post('/restore', zValidator('json', restoreSchema), async (c) => {
-  const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'orgId is required for this scope' }, 400);
-  }
-
-  const payload = c.req.valid('json');
-  const snapshot = backupSnapshots.find(
-    (item) => item.id === payload.snapshotId && snapshotOrgById.get(item.id) === orgId
-  );
-  if (!snapshot) {
-    return c.json({ error: 'Snapshot not found' }, 404);
-  }
-
-  const now = new Date().toISOString();
-  const restoreJob: RestoreJob = {
-    id: randomUUID(),
-    snapshotId: snapshot.id,
-    deviceId: payload.deviceId ?? snapshot.deviceId,
-    status: 'queued',
-    targetPath: payload.targetPath,
-    createdAt: now,
-    startedAt: null,
-    completedAt: null,
-    updatedAt: now,
-    progress: 0
-  };
-
-  restoreJobs.push(restoreJob);
-  restoreOrgById.set(restoreJob.id, orgId);
-  backupJobs.push({
-    id: restoreJob.id,
-    type: 'restore',
-    trigger: 'restore',
-    deviceId: restoreJob.deviceId,
-    configId: snapshot.configId,
-    snapshotId: snapshot.id,
-    status: 'queued',
-    createdAt: now,
-    updatedAt: now
-  });
-  jobOrgById.set(restoreJob.id, orgId);
-
-  writeRouteAudit(c, {
-    orgId,
-    action: 'backup.restore.create',
-    resourceType: 'restore_job',
-    resourceId: restoreJob.id,
-    details: {
-      snapshotId: snapshot.id,
-      deviceId: restoreJob.deviceId
+restoreRoutes.post(
+  '/restore',
+  zValidator('json', restoreSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth);
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
     }
-  });
 
-  return c.json(restoreJob, 201);
-});
+    const payload = c.req.valid('json');
 
-restoreRoutes.get('/restore/:id', (c) => {
+    // Verify snapshot exists and belongs to this org
+    const [snapshot] = await db
+      .select()
+      .from(backupSnapshots)
+      .where(
+        and(
+          eq(backupSnapshots.id, payload.snapshotId),
+          eq(backupSnapshots.orgId, orgId)
+        )
+      )
+      .limit(1);
+
+    if (!snapshot) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const now = new Date();
+    const [row] = await db
+      .insert(restoreJobs)
+      .values({
+        orgId,
+        snapshotId: snapshot.id,
+        deviceId: payload.deviceId ?? snapshot.deviceId,
+        restoreType: 'selective',
+        targetPath: payload.targetPath ?? null,
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    if (!row) {
+      return c.json({ error: 'Failed to create restore job' }, 500);
+    }
+
+    // Enqueue BullMQ job to dispatch restore to agent
+    try {
+      const { enqueueRestoreDispatch } = await import(
+        '../../jobs/backupWorker'
+      );
+      await enqueueRestoreDispatch(
+        row.id,
+        snapshot.snapshotId,
+        row.deviceId,
+        orgId,
+        row.targetPath ?? undefined
+      );
+    } catch (err) {
+      console.error('[BackupRestore] Failed to enqueue dispatch:', err);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.restore.create',
+      resourceType: 'restore_job',
+      resourceId: row.id,
+      details: {
+        snapshotId: snapshot.id,
+        deviceId: row.deviceId,
+      },
+    });
+
+    return c.json(toRestoreResponse(row), 201);
+  }
+);
+
+restoreRoutes.get('/restore/:id', async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth);
   if (!orgId) {
@@ -75,12 +95,30 @@ restoreRoutes.get('/restore/:id', (c) => {
   }
 
   const restoreId = c.req.param('id');
-  if (restoreOrgById.get(restoreId) !== orgId) {
+  const [row] = await db
+    .select()
+    .from(restoreJobs)
+    .where(and(eq(restoreJobs.id, restoreId), eq(restoreJobs.orgId, orgId)))
+    .limit(1);
+
+  if (!row) {
     return c.json({ error: 'Restore job not found' }, 404);
   }
-  const restoreJob = restoreJobs.find((item) => item.id === restoreId);
-  if (!restoreJob) {
-    return c.json({ error: 'Restore job not found' }, 404);
-  }
-  return c.json(restoreJob);
+  return c.json(toRestoreResponse(row));
 });
+
+function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
+  return {
+    id: row.id,
+    snapshotId: row.snapshotId,
+    deviceId: row.deviceId,
+    status: row.status,
+    targetPath: row.targetPath ?? null,
+    createdAt: row.createdAt.toISOString(),
+    startedAt: row.startedAt?.toISOString() ?? null,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    updatedAt: row.updatedAt.toISOString(),
+    restoredSize: row.restoredSize ?? null,
+    restoredFiles: row.restoredFiles ?? null,
+  };
+}

@@ -35,17 +35,33 @@ import {
   dnsPolicies,
   dnsSecurityEvents,
   dnsThreatCategoryEnum,
+  customFieldDefinitions,
+  scripts,
+  scriptVersions,
+  scriptTemplates,
+  scriptExecutions,
+  agentVersions,
+  remoteSessions,
+  automationPolicies,
+  automationPolicyCompliance,
+  notificationChannels,
+  savedFilters,
+  securityThreats,
   type DnsPolicyDomain
 } from '../db/schema';
-import { eq, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
+import { eq, ne, and, desc, sql, like, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import { validateToolInput } from './aiToolSchemas';
 import { schedulePolicySync } from '../jobs/dnsSyncJob';
 import { registerAgentLogTools } from './aiToolsAgentLogs';
+import { registerBackupTools } from './aiToolsBackup';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 import { registerEventLogTools } from './aiToolsEventLogs';
+import { registerAnalyticsTools } from './aiToolsAnalytics';
 import { registerFleetTools } from './aiToolsFleet';
+import { registerIntegrationTools } from './aiToolsIntegrations';
+import { registerMonitoringTools } from './aiToolsMonitoring';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import {
@@ -1079,24 +1095,25 @@ registerTool({
 });
 
 // ============================================
-// manage_alerts - Tier 1 (list/get), Tier 2 (acknowledge/resolve)
+// manage_alerts - Tier 1 (list/get), Tier 2 (acknowledge/resolve/suppress)
 // ============================================
 
 registerTool({
-  tier: 1, // Base tier; acknowledge/resolve checked at runtime in guardrails
+  tier: 1, // Base tier; acknowledge/resolve/suppress checked at runtime in guardrails
   definition: {
     name: 'manage_alerts',
-    description: 'Query, view, acknowledge, or resolve alerts. Use action "list" to search alerts, "get" for details, "acknowledge" to mark as seen, or "resolve" to close an alert.',
+    description: 'Query, view, acknowledge, resolve, or suppress alerts. Use action "list" to search alerts, "get" for details, "acknowledge" to mark as seen, "resolve" to close, or "suppress" to temporarily silence an alert.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        action: { type: 'string', enum: ['list', 'get', 'acknowledge', 'resolve'], description: 'The action to perform' },
-        alertId: { type: 'string', description: 'Alert UUID (required for get/acknowledge/resolve)' },
+        action: { type: 'string', enum: ['list', 'get', 'acknowledge', 'resolve', 'suppress'], description: 'The action to perform' },
+        alertId: { type: 'string', description: 'Alert UUID (required for get/acknowledge/resolve/suppress)' },
         status: { type: 'string', enum: ['active', 'acknowledged', 'resolved', 'suppressed'], description: 'Filter by status (for list)' },
         severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list)' },
         deviceId: { type: 'string', description: 'Filter by device UUID (for list)' },
         limit: { type: 'number', description: 'Max results (for list, default 25)' },
-        resolutionNote: { type: 'string', description: 'Note when resolving an alert' }
+        resolutionNote: { type: 'string', description: 'Note when resolving or suppressing an alert' },
+        suppressDuration: { type: 'number', description: 'Hours to suppress the alert (default: 24, max: 720)' }
       },
       required: ['action']
     }
@@ -1124,7 +1141,8 @@ registerTool({
           deviceId: alerts.deviceId,
           triggeredAt: alerts.triggeredAt,
           acknowledgedAt: alerts.acknowledgedAt,
-          resolvedAt: alerts.resolvedAt
+          resolvedAt: alerts.resolvedAt,
+          suppressedUntil: alerts.suppressedUntil
         })
         .from(alerts)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
@@ -1229,6 +1247,54 @@ registerTool({
       }
 
       return JSON.stringify({ success: true, message: `Alert "${alert.title}" resolved`, warning: resolveEventWarning });
+    }
+
+    if (action === 'suppress') {
+      if (!input.alertId) return JSON.stringify({ error: 'alertId is required' });
+
+      const alert = await findAlertWithAccess(input.alertId as string, auth);
+      if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
+
+      const durationHours = Math.min(Math.max(1, Number(input.suppressDuration) || 24), 720);
+      const suppressedUntil = new Date(Date.now() + durationHours * 60 * 60 * 1000);
+
+      await db
+        .update(alerts)
+        .set({
+          status: 'suppressed',
+          suppressedUntil,
+          resolutionNote: (input.resolutionNote as string) ?? `Suppressed for ${durationHours}h via AI assistant`
+        })
+        .where(eq(alerts.id, input.alertId as string));
+
+      let suppressEventWarning: string | undefined;
+      try {
+        await publishEvent(
+          'alert.suppressed',
+          alert.orgId,
+          {
+            alertId: alert.id,
+            ruleId: alert.ruleId,
+            deviceId: alert.deviceId,
+            suppressedBy: auth.user.id,
+            suppressedUntil: suppressedUntil.toISOString(),
+            durationHours
+          },
+          'ai-tools',
+          { userId: auth.user.id }
+        );
+      } catch (error) {
+        console.error('[AiTools] Failed to publish alert.suppressed event:', error);
+        suppressEventWarning = 'Alert was suppressed but event notification may be delayed';
+      }
+
+      return JSON.stringify({
+        success: true,
+        message: `Alert "${alert.title}" suppressed until ${suppressedUntil.toISOString()}`,
+        suppressedUntil: suppressedUntil.toISOString(),
+        durationHours,
+        warning: suppressEventWarning
+      });
     }
 
     return JSON.stringify({ error: `Unknown action: ${action}` });
@@ -1840,13 +1906,15 @@ registerTool({
   tier: 3,
   definition: {
     name: 'security_scan',
-    description: 'Run security scans on a device, or manage detected threats (quarantine, remove, restore).',
+    description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data.',
     input_schema: {
       type: 'object' as const,
       properties: {
         deviceId: { type: 'string', description: 'The device UUID' },
-        action: { type: 'string', enum: ['scan', 'status', 'quarantine', 'remove', 'restore'], description: 'Security action' },
-        threatId: { type: 'string', description: 'Threat ID (for quarantine/remove/restore)' }
+        action: { type: 'string', enum: ['scan', 'status', 'quarantine', 'remove', 'restore', 'vulnerabilities'], description: 'Security action' },
+        threatId: { type: 'string', description: 'Threat ID (for quarantine/remove/restore)' },
+        severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'], description: 'Filter by severity (for vulnerabilities)' },
+        limit: { type: 'number', description: 'Max results for vulnerabilities (default 25, max 100)' }
       },
       required: ['deviceId', 'action']
     }
@@ -1856,6 +1924,66 @@ registerTool({
 
     const access = await verifyDeviceAccess(deviceId, auth);
     if ('error' in access) return JSON.stringify({ error: access.error });
+
+    if (input.action === 'vulnerabilities') {
+      const conditions: SQL[] = [eq(securityThreats.deviceId, deviceId)];
+      if (input.severity) {
+        conditions.push(eq(securityThreats.severity, input.severity as 'critical' | 'high' | 'medium' | 'low'));
+      }
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+
+      const threats = await db
+        .select({
+          id: securityThreats.id,
+          threatName: securityThreats.threatName,
+          threatType: securityThreats.threatType,
+          severity: securityThreats.severity,
+          status: securityThreats.status,
+          filePath: securityThreats.filePath,
+          processName: securityThreats.processName,
+          detectedAt: securityThreats.detectedAt,
+          resolvedAt: securityThreats.resolvedAt,
+          details: securityThreats.details
+        })
+        .from(securityThreats)
+        .where(and(...conditions))
+        .orderBy(desc(securityThreats.detectedAt))
+        .limit(limit);
+
+      const [countResult] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(securityThreats)
+        .where(and(...conditions));
+
+      const [severitySummary] = await db
+        .select({
+          critical: sql<number>`count(*) filter (where ${securityThreats.severity} = 'critical')`,
+          high: sql<number>`count(*) filter (where ${securityThreats.severity} = 'high')`,
+          medium: sql<number>`count(*) filter (where ${securityThreats.severity} = 'medium')`,
+          low: sql<number>`count(*) filter (where ${securityThreats.severity} = 'low')`,
+          active: sql<number>`count(*) filter (where ${securityThreats.status} = 'detected')`,
+          quarantined: sql<number>`count(*) filter (where ${securityThreats.status} = 'quarantined')`,
+          removed: sql<number>`count(*) filter (where ${securityThreats.status} = 'removed')`
+        })
+        .from(securityThreats)
+        .where(eq(securityThreats.deviceId, deviceId));
+
+      return JSON.stringify({
+        threats,
+        total: Number(countResult?.count ?? 0),
+        showing: threats.length,
+        summary: {
+          critical: Number(severitySummary?.critical ?? 0),
+          high: Number(severitySummary?.high ?? 0),
+          medium: Number(severitySummary?.medium ?? 0),
+          low: Number(severitySummary?.low ?? 0),
+          active: Number(severitySummary?.active ?? 0),
+          quarantined: Number(severitySummary?.quarantined ?? 0),
+          removed: Number(severitySummary?.removed ?? 0)
+        }
+      });
+    }
 
     const { executeCommand } = await getCommandQueue();
     const actionMap: Record<string, string> = {
@@ -3611,10 +3739,14 @@ registerTool({
 // Fleet Orchestration Tools (8 tools)
 // ============================================
 
+registerAnalyticsTools(aiTools);
 registerFleetTools(aiTools);
+registerBackupTools(aiTools);
 registerAgentLogTools(aiTools);
 registerConfigPolicyTools(aiTools);
 registerEventLogTools(aiTools);
+registerMonitoringTools(aiTools);
+registerIntegrationTools(aiTools);
 
 // ============================================
 // get_device_context - Tier 1 (auto-execute)
@@ -3775,6 +3907,75 @@ registerTool({
 });
 
 // ============================================
+// manage_processes - Tier 1 (list), Tier 3 via guardrails (kill)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'manage_processes',
+    description: 'List running processes on a device with CPU and memory usage, or terminate a process.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'kill'],
+          description: 'Action to perform'
+        },
+        deviceId: { type: 'string', description: 'The device UUID' },
+        processId: { type: 'string', description: 'The PID of the process to kill (required for kill action)' },
+        search: { type: 'string', description: 'Filter process list by name' },
+        sortBy: {
+          type: 'string',
+          enum: ['cpu', 'memory', 'name', 'pid'],
+          description: 'Sort process list by field (default: cpu)'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of processes to return (default: 50, max: 200)'
+        }
+      },
+      required: ['action', 'deviceId']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const action = input.action as string;
+
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
+    const { executeCommand } = await getCommandQueue();
+
+    if (action === 'list') {
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+      const result = await executeCommand(deviceId, 'list_processes', {
+        search: input.search ?? undefined,
+        sortBy: input.sortBy ?? 'cpu',
+        limit
+      }, { userId: auth.user.id, timeoutMs: 30000 });
+
+      return JSON.stringify(result);
+    }
+
+    if (action === 'kill') {
+      if (!input.processId) {
+        return JSON.stringify({ error: 'processId is required for kill action' });
+      }
+
+      const result = await executeCommand(deviceId, 'kill_process', {
+        pid: input.processId
+      }, { userId: auth.user.id, timeoutMs: 30000 });
+
+      return JSON.stringify(result);
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  }
+});
+
+// ============================================
 // Helper Functions
 // ============================================
 
@@ -3816,6 +4017,1357 @@ function aggregateMetrics(
     count: b.count
   }));
 }
+
+// ============================================
+// manage_scheduled_tasks - Tier 1 base, with action escalation
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'manage_scheduled_tasks',
+    description: 'List, run, enable, disable, or delete Windows scheduled tasks on a device.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: { type: 'string', description: 'The device UUID' },
+        action: {
+          type: 'string',
+          enum: ['list', 'run', 'disable', 'enable', 'delete'],
+          description: 'Action to perform on scheduled tasks'
+        },
+        taskName: { type: 'string', description: 'Task name (required for run/disable/enable/delete)' },
+        search: { type: 'string', description: 'Filter task list by name (only for list action)' }
+      },
+      required: ['deviceId', 'action']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const action = input.action as string;
+
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
+    const { executeCommand } = await getCommandQueue();
+    const commandTypeMap: Record<string, string> = {
+      list: 'scheduled_tasks_list',
+      run: 'scheduled_tasks_run',
+      disable: 'scheduled_tasks_disable',
+      enable: 'scheduled_tasks_enable',
+      delete: 'scheduled_tasks_delete'
+    };
+
+    const commandType = commandTypeMap[action];
+    if (!commandType) return JSON.stringify({ error: `Unknown action: ${action}` });
+
+    const payload: Record<string, unknown> = {};
+    if (action === 'list') {
+      if (input.search) payload.search = input.search;
+    } else {
+      if (!input.taskName) return JSON.stringify({ error: 'taskName is required for this action' });
+      payload.taskName = input.taskName;
+    }
+
+    const result = await executeCommand(deviceId, commandType, payload, {
+      userId: auth.user.id,
+      timeoutMs: 30000
+    });
+
+    return JSON.stringify(result);
+  }
+});
+
+// ============================================
+// manage_processes - Tier 1 (list), Tier 3 via guardrails (kill)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'manage_processes',
+    description: 'List running processes on a device with CPU and memory usage, or terminate a process.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'kill'],
+          description: 'Action to perform'
+        },
+        deviceId: { type: 'string', description: 'The device UUID' },
+        processId: { type: 'string', description: 'The PID of the process to kill (required for kill action)' },
+        search: { type: 'string', description: 'Filter process list by name' },
+        sortBy: {
+          type: 'string',
+          enum: ['cpu', 'memory', 'name', 'pid'],
+          description: 'Sort process list by field (default: cpu)'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of processes to return (default: 50, max: 200)'
+        }
+      },
+      required: ['action', 'deviceId']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const action = input.action as string;
+
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
+    const { executeCommand } = await getCommandQueue();
+
+    if (action === 'list') {
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+      const result = await executeCommand(deviceId, 'list_processes', {
+        search: input.search ?? undefined,
+        sortBy: input.sortBy ?? 'cpu',
+        limit
+      }, { userId: auth.user.id, timeoutMs: 30000 });
+
+      return JSON.stringify(result);
+    }
+
+    if (action === 'kill') {
+      if (!input.processId) {
+        return JSON.stringify({ error: 'processId is required for kill action' });
+      }
+
+      const result = await executeCommand(deviceId, 'kill_process', {
+        pid: input.processId
+      }, { userId: auth.user.id, timeoutMs: 30000 });
+
+      return JSON.stringify(result);
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  }
+});
+
+// ============================================
+// manage_tags - Tier 2 (auto-execute + audit)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'manage_tags',
+    description: 'List all tags used across devices, or add/remove tags on a specific device.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'add', 'remove'],
+          description: 'Action to perform: list all tags, add tags to a device, or remove tags from a device'
+        },
+        deviceId: { type: 'string', description: 'Device UUID (required for add/remove)' },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Tags to add or remove (required for add/remove)'
+        },
+        search: { type: 'string', description: 'Filter tag list by partial match (only for list action)' }
+      },
+      required: ['action']
+    }
+  },
+  handler: async (input, auth) => {
+    const action = input.action as string;
+
+    if (action === 'list') {
+      const conditions: SQL[] = [];
+      const orgCond = auth.orgCondition(devices.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const search = input.search as string | undefined;
+      const whereClause = conditions.length > 0 ? and(...conditions) : sql`true`;
+
+      const tagRows = await db.execute<{ tag: string }>(
+        search
+          ? sql`SELECT DISTINCT tag FROM (SELECT unnest(tags) AS tag FROM devices WHERE ${whereClause}) t WHERE tag ILIKE ${'%' + escapeLike(search) + '%'} ORDER BY tag`
+          : sql`SELECT DISTINCT unnest(tags) AS tag FROM devices WHERE ${whereClause} ORDER BY tag`
+      );
+
+      const tags = (tagRows as unknown as { tag: string }[]).map((r) => r.tag);
+      return JSON.stringify({ tags, total: tags.length });
+    }
+
+    if (action === 'add' || action === 'remove') {
+      const deviceId = input.deviceId as string;
+      const tagsInput = input.tags as string[];
+
+      if (!deviceId) return JSON.stringify({ error: 'deviceId is required for add/remove' });
+      if (!tagsInput || tagsInput.length === 0) return JSON.stringify({ error: 'tags array is required for add/remove' });
+
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      if (action === 'add') {
+        const tagsArray = sql`${tagsInput}::text[]`;
+        await db.execute(
+          sql`UPDATE devices SET tags = (SELECT array_agg(DISTINCT t) FROM unnest(array_cat(tags, ${tagsArray})) t), updated_at = now() WHERE id = ${deviceId}`
+        );
+      } else {
+        for (const tag of tagsInput) {
+          await db.execute(
+            sql`UPDATE devices SET tags = array_remove(tags, ${tag}), updated_at = now() WHERE id = ${deviceId}`
+          );
+        }
+      }
+
+      const [updated] = await db
+        .select({ tags: devices.tags })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+
+      return JSON.stringify({
+        success: true,
+        action,
+        deviceId,
+        tags: updated?.tags ?? []
+      });
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  }
+});
+
+// ============================================
+// query_custom_fields - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'query_custom_fields',
+    description: 'Get custom field definitions for the organization, or get custom field values for a specific device.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list_definitions', 'get_device_values'],
+          description: 'Action: list_definitions to see available fields, get_device_values to see a device\'s field values'
+        },
+        deviceId: { type: 'string', description: 'Device UUID (required for get_device_values)' }
+      },
+      required: ['action']
+    }
+  },
+  handler: async (input, auth) => {
+    const action = input.action as string;
+
+    if (action === 'list_definitions') {
+      const conditions: SQL[] = [];
+      if (auth.orgId) {
+        conditions.push(
+          sql`(${customFieldDefinitions.orgId} = ${auth.orgId} OR ${customFieldDefinitions.orgId} IS NULL)`
+        );
+      }
+      if (auth.partnerId) {
+        conditions.push(
+          sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
+        );
+      }
+
+      const definitions = await db
+        .select({
+          id: customFieldDefinitions.id,
+          name: customFieldDefinitions.name,
+          fieldKey: customFieldDefinitions.fieldKey,
+          type: customFieldDefinitions.type,
+          required: customFieldDefinitions.required,
+          options: customFieldDefinitions.options,
+          deviceTypes: customFieldDefinitions.deviceTypes,
+          defaultValue: customFieldDefinitions.defaultValue,
+        })
+        .from(customFieldDefinitions)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(customFieldDefinitions.name);
+
+      return JSON.stringify({ definitions, total: definitions.length });
+    }
+
+    if (action === 'get_device_values') {
+      const deviceId = input.deviceId as string;
+      if (!deviceId) return JSON.stringify({ error: 'deviceId is required for get_device_values' });
+
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      const { device } = access;
+
+      const conditions: SQL[] = [];
+      if (auth.orgId) {
+        conditions.push(
+          sql`(${customFieldDefinitions.orgId} = ${auth.orgId} OR ${customFieldDefinitions.orgId} IS NULL)`
+        );
+      }
+      if (auth.partnerId) {
+        conditions.push(
+          sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
+        );
+      }
+
+      const definitions = await db
+        .select({
+          id: customFieldDefinitions.id,
+          name: customFieldDefinitions.name,
+          fieldKey: customFieldDefinitions.fieldKey,
+          type: customFieldDefinitions.type,
+          required: customFieldDefinitions.required,
+          options: customFieldDefinitions.options,
+          defaultValue: customFieldDefinitions.defaultValue,
+        })
+        .from(customFieldDefinitions)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(customFieldDefinitions.name);
+
+      return JSON.stringify({
+        deviceId,
+        hostname: device.hostname,
+        customFields: device.customFields ?? {},
+        definitions,
+      });
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  }
+});
+
+// ============================================
+// registry_operations - Tier 1 base, with action escalation
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'registry_operations',
+    description: 'Read or modify Windows registry keys and values on a device.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['read_key', 'get_value', 'set_value', 'create_key', 'delete_key'],
+          description: 'Registry operation to perform'
+        },
+        deviceId: { type: 'string', description: 'The device UUID' },
+        keyPath: {
+          type: 'string',
+          description: 'Full registry key path (e.g. HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion)'
+        },
+        valueName: { type: 'string', description: 'Registry value name (for get_value/set_value)' },
+        valueData: { type: 'string', description: 'Data to write (for set_value)' },
+        valueType: {
+          type: 'string',
+          enum: ['REG_SZ', 'REG_DWORD', 'REG_QWORD', 'REG_BINARY', 'REG_EXPAND_SZ', 'REG_MULTI_SZ'],
+          description: 'Registry value type (for set_value)'
+        }
+      },
+      required: ['action', 'deviceId', 'keyPath']
+    }
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const action = input.action as string;
+
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
+    const { executeCommand } = await getCommandQueue();
+
+    const commandTypeMap: Record<string, string> = {
+      read_key: 'registry_read_key',
+      get_value: 'registry_get_value',
+      set_value: 'registry_set_value',
+      create_key: 'registry_create_key',
+      delete_key: 'registry_delete_key',
+    };
+
+    const commandType = commandTypeMap[action];
+    if (!commandType) return JSON.stringify({ error: `Unknown action: ${action}` });
+
+    const payload: Record<string, unknown> = {
+      keyPath: input.keyPath,
+    };
+
+    if (input.valueName) payload.valueName = input.valueName;
+    if (input.valueData !== undefined) payload.valueData = input.valueData;
+    if (input.valueType) payload.valueType = input.valueType;
+
+    const result = await executeCommand(deviceId, commandType, payload, {
+      userId: auth.user.id,
+      timeoutMs: 30000,
+    });
+
+    return JSON.stringify(result);
+  }
+});
+
+// ============================================
+// search_script_library - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'search_script_library',
+    description: 'Search the script library including org scripts and built-in templates. Filter by category, language, OS, or search text.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        search: { type: 'string', description: 'Partial match on script name or description' },
+        category: { type: 'string', description: 'Filter by category name' },
+        language: { type: 'string', enum: ['powershell', 'bash', 'python', 'cmd', 'zsh'], description: 'Filter by scripting language' },
+        osType: { type: 'string', enum: ['windows', 'macos', 'linux'], description: 'Filter by supported OS (checks osTypes array)' },
+        includeTemplates: { type: 'boolean', description: 'Include built-in script templates (default false)' },
+        limit: { type: 'number', description: 'Max results to return (default 25, max 100)' },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    const limit = Math.min(Math.max((input.limit as number) || 25, 1), 100);
+    const search = input.search as string | undefined;
+    const category = input.category as string | undefined;
+    const language = input.language as string | undefined;
+    const osType = input.osType as string | undefined;
+    const includeTemplates = (input.includeTemplates as boolean) ?? false;
+
+    // Query org scripts
+    const conditions: SQL[] = [];
+    const orgCond = auth.orgCondition(scripts.orgId);
+    if (orgCond) conditions.push(orgCond);
+
+    if (search) {
+      const pattern = '%' + escapeLike(search) + '%';
+      conditions.push(
+        sql`(${scripts.name} ILIKE ${pattern} OR ${scripts.description} ILIKE ${pattern})`
+      );
+    }
+    if (category) conditions.push(eq(scripts.category, category));
+    if (language) conditions.push(eq(scripts.language, language as typeof scripts.language.enumValues[number]));
+    if (osType) conditions.push(sql`${osType} = ANY(${scripts.osTypes})`);
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const orgScripts = await db
+      .select({
+        id: scripts.id,
+        name: scripts.name,
+        description: scripts.description,
+        category: scripts.category,
+        language: scripts.language,
+        osTypes: scripts.osTypes,
+        version: scripts.version,
+        isSystem: scripts.isSystem,
+        createdAt: scripts.createdAt,
+      })
+      .from(scripts)
+      .where(whereClause)
+      .orderBy(desc(scripts.updatedAt))
+      .limit(limit);
+
+    const [countResult] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(scripts)
+      .where(whereClause);
+    const totalOrgScripts = countResult?.count ?? 0;
+
+    // Optionally query built-in templates
+    let templates: Array<{
+      id: string;
+      name: string;
+      description: string | null;
+      category: string | null;
+      language: string | null;
+      isBuiltIn: boolean;
+      source: string;
+    }> = [];
+    let totalTemplates = 0;
+
+    if (includeTemplates) {
+      const tplConditions: SQL[] = [];
+      if (search) {
+        const pattern = '%' + escapeLike(search) + '%';
+        tplConditions.push(
+          sql`(${scriptTemplates.name} ILIKE ${pattern} OR ${scriptTemplates.description} ILIKE ${pattern})`
+        );
+      }
+      if (category) tplConditions.push(eq(scriptTemplates.category, category));
+      if (language) tplConditions.push(eq(scriptTemplates.language, language as typeof scriptTemplates.language.enumValues[number]));
+
+      const tplWhere = tplConditions.length > 0 ? and(...tplConditions) : undefined;
+
+      const tplRows = await db
+        .select({
+          id: scriptTemplates.id,
+          name: scriptTemplates.name,
+          description: scriptTemplates.description,
+          category: scriptTemplates.category,
+          language: scriptTemplates.language,
+          isBuiltIn: scriptTemplates.isBuiltIn,
+        })
+        .from(scriptTemplates)
+        .where(tplWhere)
+        .limit(limit);
+
+      templates = tplRows.map(t => ({ ...t, source: 'template' }));
+
+      const [tplCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(scriptTemplates)
+        .where(tplWhere);
+      totalTemplates = tplCount?.count ?? 0;
+    }
+
+    return JSON.stringify({
+      scripts: orgScripts.map(s => ({ ...s, source: 'library' })),
+      templates,
+      totalMatches: totalOrgScripts + totalTemplates,
+      totalOrgScripts,
+      totalTemplates,
+    });
+  },
+});
+
+// ============================================
+// get_script_details - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_script_details',
+    description: 'Get full script details including content, parameters, version history, and execution statistics.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        scriptId: { type: 'string', description: 'UUID of the script' },
+        includeContent: { type: 'boolean', description: 'Include the script content (default true)' },
+        includeVersionHistory: { type: 'boolean', description: 'Include version history (default false)' },
+        includeExecutionStats: { type: 'boolean', description: 'Include execution statistics (default false)' },
+      },
+      required: ['scriptId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const scriptId = input.scriptId as string;
+    const includeContent = (input.includeContent as boolean) ?? true;
+    const includeVersionHistory = (input.includeVersionHistory as boolean) ?? false;
+    const includeExecutionStats = (input.includeExecutionStats as boolean) ?? false;
+
+    // Query script with org scoping
+    const conditions: SQL[] = [eq(scripts.id, scriptId)];
+    const orgCond = auth.orgCondition(scripts.orgId);
+    if (orgCond) conditions.push(orgCond);
+
+    const [script] = await db
+      .select()
+      .from(scripts)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!script) {
+      return JSON.stringify({ error: 'Script not found or access denied' });
+    }
+
+    const result: Record<string, unknown> = {
+      id: script.id,
+      name: script.name,
+      description: script.description,
+      category: script.category,
+      language: script.language,
+      osTypes: script.osTypes,
+      parameters: script.parameters,
+      timeoutSeconds: script.timeoutSeconds,
+      runAs: script.runAs,
+      isSystem: script.isSystem,
+      version: script.version,
+      createdBy: script.createdBy,
+      createdAt: script.createdAt,
+      updatedAt: script.updatedAt,
+    };
+
+    if (includeContent) {
+      result.content = script.content;
+    }
+
+    if (includeVersionHistory) {
+      const versions = await db
+        .select({
+          id: scriptVersions.id,
+          version: scriptVersions.version,
+          changelog: scriptVersions.changelog,
+          createdBy: scriptVersions.createdBy,
+          createdAt: scriptVersions.createdAt,
+        })
+        .from(scriptVersions)
+        .where(eq(scriptVersions.scriptId, scriptId))
+        .orderBy(desc(scriptVersions.version))
+        .limit(10);
+
+      result.versionHistory = versions;
+    }
+
+    if (includeExecutionStats) {
+      const [stats] = await db
+        .select({
+          totalExecutions: sql<number>`count(*)::int`,
+          completedCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'completed')::int`,
+          failedCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'failed')::int`,
+          pendingCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'pending')::int`,
+          runningCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'running')::int`,
+          timeoutCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'timeout')::int`,
+          cancelledCount: sql<number>`count(*) filter (where ${scriptExecutions.status} = 'cancelled')::int`,
+          avgDurationSeconds: sql<number>`avg(extract(epoch from (${scriptExecutions.completedAt} - ${scriptExecutions.startedAt})))::numeric(10,2)`,
+        })
+        .from(scriptExecutions)
+        .where(eq(scriptExecutions.scriptId, scriptId));
+
+      result.executionStats = stats;
+    }
+
+    return JSON.stringify(result);
+  },
+});
+
+// ============================================
+// query_agent_versions - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'query_agent_versions',
+    description: 'List available agent versions and check which devices need upgrades.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list_versions', 'check_upgrades'],
+          description: 'Action to perform',
+        },
+        platform: {
+          type: 'string',
+          description: 'Filter by platform (windows, macos, linux) — only for list_versions',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default 25, max 50)',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  handler: async (input, auth) => {
+    const action = input.action as string;
+    const limit = Math.min((input.limit as number) || 25, 50);
+
+    if (action === 'list_versions') {
+      const conditions: SQL[] = [];
+      if (input.platform) {
+        conditions.push(eq(agentVersions.platform, input.platform as string));
+      }
+
+      const versions = await db
+        .select({
+          version: agentVersions.version,
+          platform: agentVersions.platform,
+          architecture: agentVersions.architecture,
+          isLatest: agentVersions.isLatest,
+          fileSize: agentVersions.fileSize,
+          releaseNotes: agentVersions.releaseNotes,
+          createdAt: agentVersions.createdAt,
+        })
+        .from(agentVersions)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(agentVersions.createdAt))
+        .limit(limit);
+
+      return JSON.stringify({ versions, total: versions.length });
+    }
+
+    if (action === 'check_upgrades') {
+      // Get the latest agent version
+      const [latest] = await db
+        .select({ version: agentVersions.version })
+        .from(agentVersions)
+        .where(eq(agentVersions.isLatest, true))
+        .limit(1);
+
+      if (!latest) {
+        return JSON.stringify({ error: 'No latest agent version found' });
+      }
+
+      // Find devices in org with a different agent version
+      const conditions: SQL[] = [ne(devices.agentVersion, latest.version)];
+      const orgCond = auth.orgCondition(devices.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const outdated = await db
+        .select({
+          currentVersion: devices.agentVersion,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(devices)
+        .where(and(...conditions))
+        .groupBy(devices.agentVersion)
+        .orderBy(desc(sql<number>`count(*)`));
+
+      const totalOutdated = outdated.reduce((sum, row) => sum + row.count, 0);
+
+      return JSON.stringify({
+        latestVersion: latest.version,
+        totalOutdated,
+        byVersion: outdated,
+      });
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  },
+});
+
+// ============================================
+// trigger_agent_upgrade - Tier 3 (requires approval)
+// ============================================
+
+registerTool({
+  tier: 3,
+  definition: {
+    name: 'trigger_agent_upgrade',
+    description: 'Queue an agent upgrade for a device or group of devices.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Device UUIDs to upgrade (max 50)',
+        },
+        targetVersion: {
+          type: 'string',
+          description: 'Target agent version (defaults to latest if not specified)',
+        },
+      },
+      required: ['deviceIds'],
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceIds = (input.deviceIds as string[]).slice(0, 50);
+    if (deviceIds.length === 0) {
+      return JSON.stringify({ error: 'deviceIds array is required and must not be empty' });
+    }
+
+    // Verify access to the first device
+    const firstAccess = await verifyDeviceAccess(deviceIds[0]!, auth);
+    if ('error' in firstAccess) return JSON.stringify({ error: firstAccess.error });
+
+    // Verify all deviceIds belong to the org
+    const orgCond = auth.orgCondition(devices.orgId);
+    const accessConditions: SQL[] = [inArray(devices.id, deviceIds)];
+    if (orgCond) accessConditions.push(orgCond);
+
+    const accessibleDevices = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(...accessConditions));
+
+    const accessibleIds = new Set(accessibleDevices.map(d => d.id));
+    const deniedIds = deviceIds.filter(id => !accessibleIds.has(id));
+    if (deniedIds.length > 0) {
+      return JSON.stringify({ error: `Access denied for devices: ${deniedIds.join(', ')}` });
+    }
+
+    // Resolve target version
+    let targetVersion = input.targetVersion as string | undefined;
+    if (!targetVersion) {
+      const [latest] = await db
+        .select({ version: agentVersions.version })
+        .from(agentVersions)
+        .where(eq(agentVersions.isLatest, true))
+        .limit(1);
+
+      if (!latest) {
+        return JSON.stringify({ error: 'No latest agent version found' });
+      }
+      targetVersion = latest.version;
+    } else {
+      // Verify the specified version exists
+      const [versionRow] = await db
+        .select({ version: agentVersions.version })
+        .from(agentVersions)
+        .where(eq(agentVersions.version, targetVersion))
+        .limit(1);
+
+      if (!versionRow) {
+        return JSON.stringify({ error: `Agent version "${targetVersion}" not found` });
+      }
+    }
+
+    // Dispatch upgrade commands
+    const { executeCommand } = await getCommandQueue();
+    let queued = 0;
+    const errors: Record<string, string> = {};
+
+    for (const deviceId of deviceIds) {
+      try {
+        await executeCommand(deviceId, 'agent_upgrade', {
+          targetVersion,
+        }, { userId: auth.user.id, timeoutMs: 60000 });
+        queued++;
+      } catch (err) {
+        errors[deviceId] = err instanceof Error ? err.message : 'Failed to queue upgrade';
+      }
+    }
+
+    return JSON.stringify({
+      queued,
+      targetVersion,
+      ...(Object.keys(errors).length > 0 ? { errors } : {}),
+    });
+  },
+});
+
+// ============================================
+// list_remote_sessions - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'list_remote_sessions',
+    description: 'List active and recent remote sessions (terminal, desktop, file transfer).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        status: {
+          type: 'string',
+          enum: ['pending', 'connecting', 'active', 'disconnected', 'failed'],
+          description: 'Filter by session status',
+        },
+        type: {
+          type: 'string',
+          enum: ['terminal', 'desktop', 'file_transfer'],
+          description: 'Filter by session type',
+        },
+        deviceId: {
+          type: 'string',
+          description: 'Filter by device UUID',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default 25, max 100)',
+        },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    const limit = Math.min((input.limit as number) || 25, 100);
+
+    const conditions: SQL[] = [];
+    const orgCond = auth.orgCondition(devices.orgId);
+    if (orgCond) conditions.push(orgCond);
+
+    if (input.status) {
+      conditions.push(eq(remoteSessions.status, input.status as typeof remoteSessions.status.enumValues[number]));
+    }
+    if (input.type) {
+      conditions.push(eq(remoteSessions.type, input.type as typeof remoteSessions.type.enumValues[number]));
+    }
+    if (input.deviceId) {
+      conditions.push(eq(remoteSessions.deviceId, input.deviceId as string));
+    }
+
+    const sessions = await db
+      .select({
+        id: remoteSessions.id,
+        deviceHostname: devices.hostname,
+        type: remoteSessions.type,
+        status: remoteSessions.status,
+        startedAt: remoteSessions.startedAt,
+        endedAt: remoteSessions.endedAt,
+        durationSeconds: remoteSessions.durationSeconds,
+        bytesTransferred: remoteSessions.bytesTransferred,
+      })
+      .from(remoteSessions)
+      .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(remoteSessions.createdAt))
+      .limit(limit);
+
+    return JSON.stringify({ sessions, total: sessions.length });
+  },
+});
+
+// ============================================
+// create_remote_session - Tier 3 (requires approval)
+// ============================================
+
+registerTool({
+  tier: 3,
+  definition: {
+    name: 'create_remote_session',
+    description: 'Create a new remote terminal or file transfer session to a device.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        deviceId: {
+          type: 'string',
+          description: 'Device UUID to connect to',
+        },
+        type: {
+          type: 'string',
+          enum: ['terminal', 'file_transfer'],
+          description: 'Session type',
+        },
+      },
+      required: ['deviceId', 'type'],
+    },
+  },
+  handler: async (input, auth) => {
+    const deviceId = input.deviceId as string;
+    const sessionType = input.type as string;
+
+    // Verify device access and require online status
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return JSON.stringify({ error: access.error });
+
+    // Insert new remote session
+    const [session] = await db
+      .insert(remoteSessions)
+      .values({
+        deviceId,
+        userId: auth.user.id,
+        type: sessionType as 'terminal' | 'file_transfer',
+        status: 'pending',
+      })
+      .returning({ id: remoteSessions.id, status: remoteSessions.status });
+
+    return JSON.stringify({
+      id: session!.id,
+      status: session!.status,
+      deviceId,
+      type: sessionType,
+    });
+  },
+});
+
+// ============================================
+// query_compliance_policies - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'query_compliance_policies',
+    description: 'List compliance policies and their enforcement status.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        enabled: {
+          type: 'boolean',
+          description: 'Filter by enabled/disabled status',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default 25, max 100)',
+        },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+
+    const conditions: SQL[] = [];
+    const orgCond = auth.orgCondition(automationPolicies.orgId);
+    if (orgCond) conditions.push(orgCond);
+
+    if (input.enabled !== undefined) {
+      conditions.push(eq(automationPolicies.enabled, input.enabled as boolean));
+    }
+
+    const policies = await db
+      .select({
+        id: automationPolicies.id,
+        name: automationPolicies.name,
+        description: automationPolicies.description,
+        enabled: automationPolicies.enabled,
+        enforcement: automationPolicies.enforcement,
+        checkIntervalMinutes: automationPolicies.checkIntervalMinutes,
+        lastEvaluatedAt: automationPolicies.lastEvaluatedAt,
+        createdAt: automationPolicies.createdAt,
+      })
+      .from(automationPolicies)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(automationPolicies.createdAt))
+      .limit(limit);
+
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(automationPolicies)
+      .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+    return JSON.stringify({
+      policies,
+      total: Number(countResult[0]?.count ?? 0),
+      showing: policies.length,
+    });
+  },
+});
+
+// ============================================
+// get_compliance_status - Tier 1 (auto-execute)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_compliance_status',
+    description: 'Get device-level compliance status for a specific policy.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        policyId: {
+          type: 'string',
+          description: 'Policy UUID (required)',
+        },
+        status: {
+          type: 'string',
+          enum: ['compliant', 'non_compliant', 'pending', 'error'],
+          description: 'Filter by compliance status',
+        },
+        deviceId: {
+          type: 'string',
+          description: 'Filter by device UUID',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default 50, max 200)',
+        },
+      },
+      required: ['policyId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const policyId = input.policyId as string;
+    const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+
+    const conditions: SQL[] = [
+      eq(automationPolicyCompliance.policyId, policyId),
+    ];
+
+    // Org scoping via join with devices table
+    const orgCond = auth.orgCondition(devices.orgId);
+    if (orgCond) conditions.push(orgCond);
+
+    if (input.status) {
+      conditions.push(
+        eq(
+          automationPolicyCompliance.status,
+          input.status as typeof automationPolicyCompliance.status.enumValues[number]
+        )
+      );
+    }
+    if (input.deviceId) {
+      conditions.push(eq(automationPolicyCompliance.deviceId, input.deviceId as string));
+    }
+
+    const records = await db
+      .select({
+        policyId: automationPolicyCompliance.policyId,
+        deviceId: automationPolicyCompliance.deviceId,
+        status: automationPolicyCompliance.status,
+        details: automationPolicyCompliance.details,
+        lastCheckedAt: automationPolicyCompliance.lastCheckedAt,
+        remediationAttempts: automationPolicyCompliance.remediationAttempts,
+      })
+      .from(automationPolicyCompliance)
+      .innerJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
+      .where(and(...conditions))
+      .orderBy(desc(automationPolicyCompliance.lastCheckedAt))
+      .limit(limit);
+
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(automationPolicyCompliance)
+      .innerJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
+      .where(and(...conditions));
+
+    // Status breakdown
+    const breakdownResult = await db
+      .select({
+        status: automationPolicyCompliance.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(automationPolicyCompliance)
+      .innerJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
+      .where(and(...conditions))
+      .groupBy(automationPolicyCompliance.status);
+
+    const breakdown: Record<string, number> = {};
+    for (const row of breakdownResult) {
+      breakdown[row.status] = Number(row.count);
+    }
+
+    return JSON.stringify({
+      records,
+      total: Number(countResult[0]?.count ?? 0),
+      showing: records.length,
+      breakdown,
+    });
+  },
+});
+
+// ============================================
+// manage_notification_channels - Tier 1 base with action escalation
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'manage_notification_channels',
+    description: 'List notification channels or test a channel\'s connectivity.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'test'],
+          description: 'The action to perform',
+        },
+        channelId: {
+          type: 'string',
+          description: 'Channel UUID (required for test)',
+        },
+        type: {
+          type: 'string',
+          description: 'Filter by channel type (for list)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default 25, max 50)',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  handler: async (input, auth) => {
+    const action = input.action as string;
+
+    if (action === 'list') {
+      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 50);
+
+      const conditions: SQL[] = [];
+      const orgCond = auth.orgCondition(notificationChannels.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      if (input.type) {
+        conditions.push(eq(notificationChannels.type, input.type as typeof notificationChannels.type.enumValues[number]));
+      }
+
+      const channels = await db
+        .select({
+          id: notificationChannels.id,
+          name: notificationChannels.name,
+          type: notificationChannels.type,
+          enabled: notificationChannels.enabled,
+          createdAt: notificationChannels.createdAt,
+        })
+        .from(notificationChannels)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(notificationChannels.createdAt))
+        .limit(limit);
+
+      return JSON.stringify({ channels, total: channels.length });
+    }
+
+    if (action === 'test') {
+      if (!input.channelId) {
+        return JSON.stringify({ error: 'channelId is required for test action' });
+      }
+
+      const channelId = input.channelId as string;
+
+      // Verify channel exists and belongs to org
+      const conditions: SQL[] = [eq(notificationChannels.id, channelId)];
+      const orgCond = auth.orgCondition(notificationChannels.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const [channel] = await db
+        .select({
+          id: notificationChannels.id,
+          name: notificationChannels.name,
+          type: notificationChannels.type,
+          enabled: notificationChannels.enabled,
+        })
+        .from(notificationChannels)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!channel) {
+        return JSON.stringify({ error: 'Notification channel not found or access denied' });
+      }
+
+      // Return channel details for testing (actual delivery is handled by the notification service)
+      return JSON.stringify({
+        success: true,
+        message: `Channel "${channel.name}" (${channel.type}) verified — use the notification API to send a test message`,
+        channel: {
+          id: channel.id,
+          name: channel.name,
+          type: channel.type,
+          enabled: channel.enabled,
+        },
+      });
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  },
+});
+
+// ============================================
+// manage_saved_filters - Tier 1 base with action escalation
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'manage_saved_filters',
+    description: 'List, create, or delete saved device filters.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'get', 'create', 'delete'],
+          description: 'The action to perform',
+        },
+        filterId: {
+          type: 'string',
+          description: 'Filter UUID (required for get/delete)',
+        },
+        name: {
+          type: 'string',
+          description: 'Filter name (required for create)',
+        },
+        description: {
+          type: 'string',
+          description: 'Filter description (optional, for create)',
+        },
+        conditions: {
+          type: 'object',
+          description: 'Filter conditions object (required for create)',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  handler: async (input, auth) => {
+    const action = input.action as string;
+
+    if (action === 'list') {
+      const conditions: SQL[] = [];
+      const orgCond = auth.orgCondition(savedFilters.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const filters = await db
+        .select({
+          id: savedFilters.id,
+          name: savedFilters.name,
+          description: savedFilters.description,
+          createdAt: savedFilters.createdAt,
+        })
+        .from(savedFilters)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(savedFilters.createdAt));
+
+      return JSON.stringify({ filters, total: filters.length });
+    }
+
+    if (action === 'get') {
+      if (!input.filterId) {
+        return JSON.stringify({ error: 'filterId is required for get action' });
+      }
+
+      const conditions: SQL[] = [eq(savedFilters.id, input.filterId as string)];
+      const orgCond = auth.orgCondition(savedFilters.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const [filter] = await db
+        .select()
+        .from(savedFilters)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!filter) {
+        return JSON.stringify({ error: 'Saved filter not found or access denied' });
+      }
+
+      return JSON.stringify({ filter });
+    }
+
+    if (action === 'create') {
+      if (!input.name) {
+        return JSON.stringify({ error: 'name is required for create action' });
+      }
+      if (!input.conditions) {
+        return JSON.stringify({ error: 'conditions is required for create action' });
+      }
+
+      const resolved = resolveWritableToolOrgId(auth);
+      if (resolved.error) return JSON.stringify({ error: resolved.error });
+
+      const [created] = await db
+        .insert(savedFilters)
+        .values({
+          orgId: resolved.orgId!,
+          name: input.name as string,
+          description: (input.description as string) ?? null,
+          conditions: input.conditions as Record<string, unknown>,
+          createdBy: auth.user.id,
+        })
+        .returning({
+          id: savedFilters.id,
+          name: savedFilters.name,
+          createdAt: savedFilters.createdAt,
+        });
+
+      return JSON.stringify({ success: true, filter: created });
+    }
+
+    if (action === 'delete') {
+      if (!input.filterId) {
+        return JSON.stringify({ error: 'filterId is required for delete action' });
+      }
+
+      const conditions: SQL[] = [eq(savedFilters.id, input.filterId as string)];
+      const orgCond = auth.orgCondition(savedFilters.orgId);
+      if (orgCond) conditions.push(orgCond);
+
+      const [existing] = await db
+        .select({ id: savedFilters.id, name: savedFilters.name })
+        .from(savedFilters)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!existing) {
+        return JSON.stringify({ error: 'Saved filter not found or access denied' });
+      }
+
+      await db.delete(savedFilters).where(eq(savedFilters.id, input.filterId as string));
+
+      return JSON.stringify({ success: true, message: `Deleted filter "${existing.name}"` });
+    }
+
+    return JSON.stringify({ error: `Unknown action: ${action}` });
+  },
+});
 
 // ============================================
 // Exports

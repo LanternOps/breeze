@@ -54,6 +54,9 @@ jobs:
       - name: Check migration coverage
         run: ./scripts/check-migration-coverage.sh
 
+      - name: Check schema drift (column-level)
+        run: pnpm check:schema-drift
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest

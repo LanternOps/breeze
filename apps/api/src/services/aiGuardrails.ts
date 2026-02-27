@@ -25,13 +25,13 @@ const BLOCKED_TOOLS = new Set<string>([
 ]);
 
 // Actions that are Tier 2 (auto-execute + audit):
-//   manage_alerts: acknowledge/resolve are low-risk mutations
+//   manage_alerts: acknowledge/resolve/suppress are low-risk mutations
 //   manage_services: list is a read downgraded from the tool's base Tier 3
 const TIER2_ACTIONS: Record<string, string[]> = {
-  manage_alerts: ['acknowledge', 'resolve'],
+  manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_services: ['list'],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
-  manage_policies: ['evaluate', 'activate', 'deactivate'],
+  manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve'],
   manage_groups: ['add_devices', 'remove_devices'],
@@ -39,6 +39,15 @@ const TIER2_ACTIONS: Record<string, string[]> = {
   manage_automations: ['enable', 'disable'],
   manage_alert_rules: ['create_rule', 'update_rule'],
   generate_report: ['create', 'update', 'delete', 'generate'],
+  // Notification channel & saved filter tools — Tier 2 actions
+  manage_notification_channels: ['test'],
+  manage_saved_filters: ['create', 'delete'],
+};
+
+// Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
+const TIER1_ACTIONS: Record<string, string[]> = {
+  security_scan: ['vulnerabilities'],
+  manage_tags: ['list'],
 };
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
@@ -48,14 +57,19 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
+  manage_scheduled_tasks: ['run', 'disable', 'enable', 'delete'],
   // Fleet tools — Tier 3 actions (require user approval)
-  manage_policies: ['create', 'update', 'delete', 'remediate'],
+  manage_configuration_policy: ['create', 'update', 'delete'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['scan', 'install', 'rollback'],
   manage_groups: ['create', 'update', 'delete'],
   manage_maintenance_windows: ['delete'],
   manage_automations: ['create', 'update', 'delete', 'run'],
   manage_alert_rules: ['delete_rule'],
+  manage_processes: ['kill'],
+  registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // Monitoring tools — Tier 3 actions (require user approval)
+  manage_monitors: ['create', 'update', 'delete'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -70,9 +84,21 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     get: { resource: 'alerts', action: 'read' },
     acknowledge: { resource: 'alerts', action: 'acknowledge' },
     resolve: { resource: 'alerts', action: 'write' },
+    suppress: { resource: 'alerts', action: 'write' },
   },
   manage_services: { resource: 'devices', action: 'execute' },
-  security_scan: { resource: 'devices', action: 'execute' },
+  manage_processes: {
+    list: { resource: 'devices', action: 'read' },
+    kill: { resource: 'devices', action: 'execute' },
+  },
+  security_scan: {
+    scan: { resource: 'devices', action: 'execute' },
+    status: { resource: 'devices', action: 'execute' },
+    quarantine: { resource: 'devices', action: 'execute' },
+    remove: { resource: 'devices', action: 'execute' },
+    restore: { resource: 'devices', action: 'execute' },
+    vulnerabilities: { resource: 'devices', action: 'read' },
+  },
   analyze_disk_usage: { resource: 'devices', action: 'read' },
   disk_cleanup: {
     preview: { resource: 'devices', action: 'read' },
@@ -91,23 +117,17 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   network_discovery: { resource: 'devices', action: 'execute' },
   analyze_boot_performance: { resource: 'devices', action: 'read' },
   manage_startup_items: { resource: 'devices', action: 'execute' },
+  manage_scheduled_tasks: {
+    list: { resource: 'devices', action: 'read' },
+    run: { resource: 'devices', action: 'execute' },
+    disable: { resource: 'devices', action: 'execute' },
+    enable: { resource: 'devices', action: 'execute' },
+    delete: { resource: 'devices', action: 'execute' },
+  },
   take_screenshot: { resource: 'devices', action: 'execute' },
   analyze_screen: { resource: 'devices', action: 'execute' },
   computer_control: { resource: 'devices', action: 'execute' },
   // Fleet tools — RBAC mappings
-  manage_policies: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    compliance_status: { resource: 'policies', action: 'read' },
-    compliance_summary: { resource: 'policies', action: 'read' },
-    evaluate: { resource: 'policies', action: 'execute' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
-    activate: { resource: 'policies', action: 'write' },
-    deactivate: { resource: 'policies', action: 'write' },
-    delete: { resource: 'policies', action: 'write' },
-    remediate: { resource: 'policies', action: 'execute' },
-  },
   manage_deployments: {
     list: { resource: 'deployments', action: 'read' },
     get: { resource: 'deployments', action: 'read' },
@@ -177,7 +197,11 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     update: { resource: 'reports', action: 'write' },
     delete: { resource: 'reports', action: 'write' },
     history: { resource: 'reports', action: 'read' },
+    download: { resource: 'reports', action: 'read' },
   },
+  // Analytics tools
+  query_analytics: { resource: 'devices', action: 'read' },
+  get_executive_summary: { resource: 'devices', action: 'read' },
   // Brain device context tools
   get_device_context: { resource: 'devices', action: 'read' },
   set_device_context: { resource: 'devices', action: 'write' },
@@ -191,6 +215,18 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   detect_log_correlations: { resource: 'devices', action: 'read' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
+  get_configuration_policy: { resource: 'policies', action: 'read' },
+  manage_configuration_policy: {
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    activate: { resource: 'policies', action: 'write' },
+    deactivate: { resource: 'policies', action: 'write' },
+    delete: { resource: 'policies', action: 'write' },
+  },
+  configuration_policy_compliance: {
+    summary: { resource: 'policies', action: 'read' },
+    status: { resource: 'policies', action: 'read' },
+  },
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
@@ -202,6 +238,61 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
+  // Tags, custom fields, and registry tools
+  manage_tags: {
+    list: { resource: 'devices', action: 'read' },
+    add: { resource: 'devices', action: 'write' },
+    remove: { resource: 'devices', action: 'write' },
+  },
+  query_custom_fields: { resource: 'devices', action: 'read' },
+  registry_operations: {
+    read_key: { resource: 'devices', action: 'read' },
+    get_value: { resource: 'devices', action: 'read' },
+    set_value: { resource: 'devices', action: 'execute' },
+    create_key: { resource: 'devices', action: 'execute' },
+    delete_key: { resource: 'devices', action: 'execute' },
+  },
+  // Script library tools
+  search_script_library: { resource: 'scripts', action: 'read' },
+  get_script_details: { resource: 'scripts', action: 'read' },
+  // Backup & DR tools
+  query_backups: { resource: 'devices', action: 'read' },
+  get_backup_status: { resource: 'devices', action: 'read' },
+  browse_snapshots: { resource: 'devices', action: 'read' },
+  trigger_backup: { resource: 'devices', action: 'execute' },
+  restore_snapshot: { resource: 'devices', action: 'execute' },
+  // Monitoring tools — RBAC mappings
+  query_monitors: { resource: 'devices', action: 'read' },
+  manage_monitors: {
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'write' },
+  },
+  // Integration & webhook tools
+  query_webhooks: { resource: 'devices', action: 'read' },
+  query_psa_status: { resource: 'devices', action: 'read' },
+  test_webhook: { resource: 'devices', action: 'write' },
+  // Agent version & remote session tools
+  query_agent_versions: { resource: 'devices', action: 'read' },
+  trigger_agent_upgrade: { resource: 'devices', action: 'execute' },
+  list_remote_sessions: { resource: 'devices', action: 'read' },
+  create_remote_session: { resource: 'devices', action: 'execute' },
+  // Compliance policy tools
+  query_compliance_policies: { resource: 'policies', action: 'read' },
+  get_compliance_status: { resource: 'policies', action: 'read' },
+  // Notification channel tools
+  manage_notification_channels: {
+    list: { resource: 'alerts', action: 'read' },
+    test: { resource: 'alerts', action: 'write' },
+  },
+  // Saved filter tools
+  manage_saved_filters: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'write' },
+  },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -215,11 +306,11 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   analyze_disk_usage: { limit: 10, windowSeconds: 300 },
   disk_cleanup: { limit: 3, windowSeconds: 600 },
   manage_startup_items: { limit: 5, windowSeconds: 600 },
+  manage_scheduled_tasks: { limit: 10, windowSeconds: 300 },
   take_screenshot: { limit: 10, windowSeconds: 300 },
   analyze_screen: { limit: 10, windowSeconds: 300 },
   computer_control: { limit: 20, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
-  manage_policies: { limit: 20, windowSeconds: 300 },
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
   manage_groups: { limit: 20, windowSeconds: 300 },
@@ -237,10 +328,30 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
   // Configuration policy tools
+  get_configuration_policy: { limit: 30, windowSeconds: 300 },
+  manage_configuration_policy: { limit: 20, windowSeconds: 300 },
+  configuration_policy_compliance: { limit: 30, windowSeconds: 300 },
   apply_configuration_policy: { limit: 10, windowSeconds: 300 },
   remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
   // Playbook tools
   execute_playbook: { limit: 5, windowSeconds: 600 },
+  manage_processes: { limit: 15, windowSeconds: 300 },
+  // Tags and registry tools
+  manage_tags: { limit: 20, windowSeconds: 300 },
+  registry_operations: { limit: 15, windowSeconds: 300 },
+  // Backup tools
+  trigger_backup: { limit: 5, windowSeconds: 600 },
+  restore_snapshot: { limit: 3, windowSeconds: 600 },
+  // Monitoring tools
+  manage_monitors: { limit: 10, windowSeconds: 300 },
+  // Integration & webhook tools
+  test_webhook: { limit: 5, windowSeconds: 300 },
+  // Agent version & remote session tools
+  trigger_agent_upgrade: { limit: 5, windowSeconds: 600 },
+  create_remote_session: { limit: 10, windowSeconds: 300 },
+  // Notification channel & saved filter tools
+  manage_notification_channels: { limit: 10, windowSeconds: 300 },
+  manage_saved_filters: { limit: 15, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {
@@ -279,8 +390,18 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier escalation
+  // Check for action-based tier overrides
   const action = input.action as string | undefined;
+
+  // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
+  if (action && TIER1_ACTIONS[toolName]?.includes(action)) {
+    return {
+      tier: 1,
+      allowed: true,
+      requiresApproval: false,
+      description: buildApprovalDescription(toolName, action, input)
+    };
+  }
 
   if (action && TIER3_ACTIONS[toolName]?.includes(action)) {
     return {
@@ -332,7 +453,7 @@ export async function checkToolPermission(
   if (auth.token.roleId === null) return null;
 
   const permDef = TOOL_PERMISSIONS[toolName];
-  if (!permDef) return null; // No permission mapping — allow
+  if (!permDef) return `No RBAC permission mapping for tool "${toolName}"`;
 
   // Resolve the required permission (may be action-dependent)
   let required: { resource: string; action: string };
@@ -441,11 +562,10 @@ function buildApprovalDescription(
       break;
 
     // Fleet tools
-    case 'manage_policies':
-      if (action === 'create') parts.push(`Create compliance policy "${input.name}"${input.enforcement ? ` (${input.enforcement} mode)` : ''}`);
-      else if (action === 'delete') parts.push(`Delete compliance policy ${(input.policyId as string)?.slice(0, 8)}...`);
-      else if (action === 'remediate') parts.push(`Trigger remediation on non-compliant devices for policy ${(input.policyId as string)?.slice(0, 8)}...`);
-      else parts.push(`Policy ${action}: ${(input.policyId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+    case 'manage_configuration_policy':
+      if (action === 'create') parts.push(`Create configuration policy "${input.name}"`);
+      else if (action === 'delete') parts.push(`Delete configuration policy ${(input.policyId as string)?.slice(0, 8)}...`);
+      else parts.push(`Config policy ${action}: ${(input.policyId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
 
     case 'manage_deployments':
@@ -512,6 +632,38 @@ function buildApprovalDescription(
       if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
       break;
     }
+
+    case 'manage_scheduled_tasks':
+      parts.push(`${action?.toUpperCase()} scheduled task "${input.taskName}"`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'manage_processes':
+      if (action === 'kill') {
+        parts.push(`Kill process PID ${input.processId}`);
+      } else {
+        parts.push('List processes');
+      }
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'manage_tags':
+      parts.push(`${action?.toUpperCase()} tags`);
+      if (Array.isArray(input.tags)) parts.push(`[${(input.tags as string[]).join(', ')}]`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'registry_operations':
+      parts.push(`Registry ${action}: ${input.keyPath}`);
+      if (input.valueName) parts.push(`\\${input.valueName}`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'manage_monitors':
+      if (action === 'create') parts.push(`Create monitor "${input.name}" (${input.monitorType})`);
+      else if (action === 'delete') parts.push(`Delete monitor ${(input.monitorId as string)?.slice(0, 8)}...`);
+      else parts.push(`Monitor ${action}: ${(input.monitorId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
+      break;
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

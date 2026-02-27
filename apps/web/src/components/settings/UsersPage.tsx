@@ -196,7 +196,7 @@ export default function UsersPage() {
     setSubmitting(true);
     try {
       const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
-        method: 'PUT',
+        method: 'PATCH',
         body: JSON.stringify(values)
       });
 

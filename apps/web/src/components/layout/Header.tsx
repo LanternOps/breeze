@@ -16,6 +16,7 @@ import CommandPalette from './CommandPalette';
 import { useAuthStore, apiLogout } from '../../stores/auth';
 
 export default function Header() {
+  const [mounted, setMounted] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -23,8 +24,9 @@ export default function Header() {
 
   const { user, isAuthenticated } = useAuthStore();
 
-  // Initialize dark mode from document class
+  // Mark as mounted after hydration to avoid SSR/client mismatch
   useEffect(() => {
+    setMounted(true);
     setDarkMode(document.documentElement.classList.contains('dark'));
   }, []);
 
@@ -80,7 +82,7 @@ export default function Header() {
 
       <div className="flex items-center gap-2">
         {/* Notifications */}
-        {isAuthenticated && <NotificationCenter />}
+        {mounted && isAuthenticated && <NotificationCenter />}
 
         {/* Dark Mode Toggle */}
         <button
@@ -89,7 +91,7 @@ export default function Header() {
           className="rounded-md p-2 hover:bg-muted"
           title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
         >
-          {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+          {mounted ? (darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />) : <Moon className="h-5 w-5" />}
         </button>
 
         {/* User Menu */}
@@ -101,7 +103,7 @@ export default function Header() {
             aria-expanded={showUserMenu}
             aria-haspopup="true"
           >
-            {user?.avatarUrl ? (
+            {mounted && user?.avatarUrl ? (
               <img
                 src={user.avatarUrl}
                 alt={user.name}
@@ -109,7 +111,7 @@ export default function Header() {
               />
             ) : (
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">
-                {isAuthenticated ? getUserInitials() : <User className="h-4 w-4" />}
+                {mounted && isAuthenticated ? getUserInitials() : <User className="h-4 w-4" />}
               </div>
             )}
             <ChevronDown className={`h-4 w-4 transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />

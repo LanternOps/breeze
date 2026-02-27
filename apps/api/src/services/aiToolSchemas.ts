@@ -236,6 +236,23 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     { message: 'threatId is required for quarantine/remove/restore actions' }
   ),
 
+  manage_processes: z.object({
+    action: z.enum(['list', 'kill']),
+    deviceId: uuid,
+    processId: z.string().max(20).optional(),
+    search: z.string().max(255).optional(),
+    sortBy: z.enum(['cpu', 'memory', 'name', 'pid']).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }).refine(
+    (data) => {
+      if (data.action === 'kill' && !data.processId) {
+        return false;
+      }
+      return true;
+    },
+    { message: 'processId is required for kill action' }
+  ),
+
   get_security_posture: z.object({
     deviceId: uuid.optional(),
     orgId: uuid.optional(),
@@ -589,6 +606,23 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  // Script library tools
+  search_script_library: z.object({
+    search: z.string().max(200).optional(),
+    category: z.string().max(100).optional(),
+    language: z.enum(['powershell', 'bash', 'python', 'cmd', 'zsh']).optional(),
+    osType: z.enum(['windows', 'macos', 'linux']).optional(),
+    includeTemplates: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_script_details: z.object({
+    scriptId: uuid,
+    includeContent: z.boolean().optional(),
+    includeVersionHistory: z.boolean().optional(),
+    includeExecutionStats: z.boolean().optional(),
+  }),
+
   // Fleet orchestration tools
   ...fleetToolInputSchemas,
 };
@@ -603,8 +637,8 @@ export function validateToolInput(
 ): { success: true } | { success: false; error: string } {
   const schema = toolInputSchemas[toolName];
   if (!schema) {
-    console.warn(`[AI] No input schema defined for tool "${toolName}" — input bypasses validation`);
-    return { success: true };
+    console.warn(`[AI] No input schema defined for tool "${toolName}" — rejecting input`);
+    return { success: false, error: `No input schema registered for tool "${toolName}"` };
   }
 
   const result = schema.safeParse(input);

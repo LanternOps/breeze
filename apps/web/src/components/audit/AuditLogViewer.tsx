@@ -9,17 +9,32 @@ import {
   List,
   Server,
   ShieldCheck,
-  User
+  User,
+  X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import AuditLogDetail, { type AuditLogEntry } from './AuditLogDetail';
+import AuditFilters from './AuditFilters';
 
 type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAddress';
 
 type SortConfig = {
   key: SortKey;
   direction: 'asc' | 'desc';
+};
+
+type DatePreset = 'today' | '7d' | '30d' | 'custom';
+
+type ActiveFilters = {
+  datePreset: DatePreset;
+  startDate?: string;
+  endDate?: string;
+  userId?: string;
+  userEmail?: string;
+  actions: string[];
+  resources: string[];
+  search: string;
 };
 
 const actionStyles: Record<string, string> = {
@@ -59,6 +74,50 @@ const getSortValue = (entry: AuditLogEntry, key: SortKey) => {
   }
 };
 
+function computeDateRange(filters: ActiveFilters): { from?: string; to?: string } {
+  const now = new Date();
+  const to = now.toISOString();
+  switch (filters.datePreset) {
+    case 'today': {
+      const start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      return { from: start.toISOString(), to };
+    }
+    case '7d': {
+      const start = new Date(now);
+      start.setDate(start.getDate() - 7);
+      return { from: start.toISOString(), to };
+    }
+    case '30d': {
+      const start = new Date(now);
+      start.setDate(start.getDate() - 30);
+      return { from: start.toISOString(), to };
+    }
+    case 'custom': {
+      const result: { from?: string; to?: string } = {};
+      if (filters.startDate) result.from = new Date(filters.startDate).toISOString();
+      if (filters.endDate) {
+        const end = new Date(filters.endDate);
+        end.setHours(23, 59, 59, 999);
+        result.to = end.toISOString();
+      }
+      return result;
+    }
+    default:
+      return {};
+  }
+}
+
+function hasActiveFilters(filters: ActiveFilters | null): boolean {
+  if (!filters) return false;
+  return !!(
+    filters.userEmail ||
+    filters.actions.length > 0 ||
+    filters.resources.length > 0 ||
+    filters.search
+  );
+}
+
 interface AuditLogViewerProps {
   timezone?: string;
 }
@@ -70,19 +129,38 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
     direction: 'desc'
   });
   const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [selectedEntry, setSelectedEntry] = useState<AuditLogEntry | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [activeFilters, setActiveFilters] = useState<ActiveFilters | null>(null);
 
-  const pageSize = 6;
+  const pageSize = 25;
 
-  const fetchAuditLogs = useCallback(async () => {
+  const fetchAuditLogs = useCallback(async (page: number, filters: ActiveFilters | null) => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await fetchWithAuth('/audit-logs');
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(pageSize));
+
+      if (filters) {
+        const { from, to } = computeDateRange(filters);
+        if (from) params.set('from', from);
+        if (to) params.set('to', to);
+        if (filters.userEmail) params.set('user', filters.userEmail);
+        if (filters.actions.length > 0) params.set('action', filters.actions.join(','));
+        if (filters.resources.length > 0) params.set('resource', filters.resources.join(','));
+        if (filters.search) params.set('q', filters.search);
+      }
+
+      const endpoint = params.has('q') ? '/audit-logs/search' : '/audit-logs';
+      const response = await fetchWithAuth(`${endpoint}?${params.toString()}`);
 
       if (response.status === 401) {
         window.location.href = '/login';
@@ -94,7 +172,11 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       }
 
       const data = await response.json();
-      setEntries(data.entries || data.logs || []);
+      setEntries(data.entries || data.data || data.logs || []);
+      if (data.pagination) {
+        setTotalPages(data.pagination.totalPages || 1);
+        setTotalCount(data.pagination.total || 0);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load audit logs');
     } finally {
@@ -103,8 +185,8 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
   }, []);
 
   useEffect(() => {
-    fetchAuditLogs();
-  }, [fetchAuditLogs]);
+    fetchAuditLogs(currentPage, activeFilters);
+  }, [fetchAuditLogs, currentPage, activeFilters]);
 
   const sortedEntries = useMemo(() => {
     const sorted = [...entries];
@@ -118,12 +200,6 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
     return sorted;
   }, [entries, sortConfig]);
 
-  const totalPages = Math.ceil(sortedEntries.length / pageSize);
-  const paginatedEntries = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return sortedEntries.slice(start, start + pageSize);
-  }, [currentPage, sortedEntries]);
-
   const handleSort = (key: SortKey) => {
     setSortConfig(prev => {
       if (prev.key === key) {
@@ -131,6 +207,17 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       }
       return { key, direction: 'asc' };
     });
+  };
+
+  const handleApplyFilters = (filters: ActiveFilters) => {
+    setActiveFilters(filters);
+    setCurrentPage(1);
+    setShowFilters(false);
+  };
+
+  const handleClearFilters = () => {
+    setActiveFilters(null);
+    setCurrentPage(1);
   };
 
   const toggleExpanded = (id: string) => {
@@ -215,7 +302,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
             <p>{error}</p>
             <button
               type="button"
-              onClick={fetchAuditLogs}
+              onClick={() => fetchAuditLogs(currentPage, activeFilters)}
               className="text-sm text-primary hover:underline"
             >
               Try again
@@ -238,11 +325,35 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            className="inline-flex h-10 items-center gap-2 rounded-md border bg-background px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
+            onClick={() => setShowFilters(prev => !prev)}
+            className={cn(
+              'inline-flex h-10 items-center gap-2 rounded-md border px-4 text-sm font-medium',
+              showFilters || hasActiveFilters(activeFilters)
+                ? 'border-primary bg-primary/10 text-primary'
+                : 'bg-background text-muted-foreground hover:text-foreground'
+            )}
           >
             <Filter className="h-4 w-4" />
             Filters
+            {hasActiveFilters(activeFilters) && (
+              <span className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground">
+                {(activeFilters!.actions.length > 0 ? 1 : 0) +
+                  (activeFilters!.resources.length > 0 ? 1 : 0) +
+                  (activeFilters!.userEmail ? 1 : 0) +
+                  (activeFilters!.search ? 1 : 0)}
+              </span>
+            )}
           </button>
+          {hasActiveFilters(activeFilters) && (
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              className="inline-flex h-10 items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-medium text-rose-600 hover:bg-rose-100"
+            >
+              <X className="h-3.5 w-3.5" />
+              Clear
+            </button>
+          )}
           <button
             type="button"
             onClick={handleExportLogs}
@@ -253,6 +364,13 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
           </button>
         </div>
       </div>
+
+      {showFilters && (
+        <AuditFilters
+          onApply={handleApplyFilters}
+          onClear={handleClearFilters}
+        />
+      )}
 
       <div className="overflow-hidden rounded-lg border bg-card">
         <table className="min-w-full divide-y">
@@ -273,14 +391,14 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {paginatedEntries.length === 0 ? (
+            {sortedEntries.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   No audit logs found.
                 </td>
               </tr>
             ) : (
-              paginatedEntries.map(entry => {
+              sortedEntries.map(entry => {
                 const isExpanded = expandedRows.has(entry.id);
                 const badgeClass = actionStyles[entry.action] ?? actionStyles.access;
                 return (
@@ -402,11 +520,11 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
         </table>
       </div>
 
-      {sortedEntries.length > 0 && (
+      {totalCount > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="text-sm text-muted-foreground">
-            Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, sortedEntries.length)} of{' '}
-            {sortedEntries.length}
+            Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalCount)} of{' '}
+            {totalCount}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -417,21 +535,33 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
             >
               Previous
             </button>
-            {Array.from({ length: totalPages }, (_, index) => (
-              <button
-                key={index}
-                type="button"
-                onClick={() => setCurrentPage(index + 1)}
-                className={cn(
-                  'h-9 w-9 rounded-md border text-sm font-medium',
-                  currentPage === index + 1
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {index + 1}
-              </button>
-            ))}
+            {Array.from({ length: Math.min(totalPages, 7) }, (_, index) => {
+              let page: number;
+              if (totalPages <= 7) {
+                page = index + 1;
+              } else if (currentPage <= 4) {
+                page = index + 1;
+              } else if (currentPage >= totalPages - 3) {
+                page = totalPages - 6 + index;
+              } else {
+                page = currentPage - 3 + index;
+              }
+              return (
+                <button
+                  key={page}
+                  type="button"
+                  onClick={() => setCurrentPage(page)}
+                  className={cn(
+                    'h-9 w-9 rounded-md border text-sm font-medium',
+                    currentPage === page
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {page}
+                </button>
+              );
+            })}
             <button
               type="button"
               onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}

@@ -14,7 +14,8 @@
     "db:seed": "turbo run db:seed --filter=@breeze/api",
     "db:studio": "turbo run db:studio --filter=@breeze/api",
     "clean": "turbo run clean && rm -rf node_modules",
-    "check:migrations": "./scripts/check-migration-coverage.sh"
+    "check:migrations": "./scripts/check-migration-coverage.sh",
+    "check:schema-drift": "pnpm --filter @breeze/api exec tsx ../../scripts/check-schema-drift.ts"
   },
   "devDependencies": {
     "turbo": "^2.8.7",
