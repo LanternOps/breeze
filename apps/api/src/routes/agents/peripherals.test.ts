@@ -82,7 +82,7 @@ describe('agent peripheral ingest', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     app = new Hono();
-    app.use('*', async (c, next) => {
+    app.use('*', async (c: any, next: any) => {
       c.set('agent', { orgId: 'org-1', agentId: 'agent-1' });
       await next();
     });
@@ -186,7 +186,7 @@ describe('agent peripheral ingest', () => {
   it('returns 403 on organization mismatch', async () => {
     // Agent has orgId 'org-A' but device belongs to 'org-B'
     const orgMismatchApp = new Hono();
-    orgMismatchApp.use('*', async (c, next) => {
+    orgMismatchApp.use('*', async (c: any, next: any) => {
       c.set('agent', { orgId: 'org-A', agentId: 'agent-1' });
       await next();
     });
@@ -275,7 +275,7 @@ describe('agent peripheral ingest', () => {
 
     expect(res.status).toBe(200);
     expect(writeAuditEvent).toHaveBeenCalledTimes(1);
-    const [, auditPayload] = vi.mocked(writeAuditEvent).mock.calls[0];
+    const [, auditPayload] = vi.mocked(writeAuditEvent).mock.calls[0]!;
     expect(auditPayload).toMatchObject({
       orgId: 'org-1',
       actorType: 'agent',

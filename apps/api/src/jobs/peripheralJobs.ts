@@ -69,7 +69,7 @@ export function getPeripheralPolicyDistributionQueue(): Queue<PolicyDistribution
   return policyDistributionQueue;
 }
 
-async function processAnomalyScan(_data: AnomalyScanJobData): Promise<{ alerts: number }> {
+async function processAnomalyScan(_data: AnomalyScanJobData): Promise<{ alerts: number; failed: number }> {
   const threshold = getBlockedThreshold();
   const since = new Date(Date.now() - ANOMALY_LOOKBACK_MINUTES * 60 * 1000);
 
