@@ -335,8 +335,9 @@ func DeleteFile(payload map[string]any) CommandResult {
 		}
 	}
 
-	// Lazily purge items older than trashMaxAgeDays
-	go lazyPurgeOldTrash()
+	// Lazily purge items older than trashMaxAgeDays (pass trashDir to avoid
+	// racing with test code that swaps getTrashDirFunc).
+	go lazyPurgeOldTrash(trashDir)
 
 	return NewSuccessResult(map[string]any{
 		"path":    cleanPath,
@@ -519,13 +520,9 @@ func TrashPurge(payload map[string]any) CommandResult {
 }
 
 // lazyPurgeOldTrash removes trash items older than trashMaxAgeDays.
-func lazyPurgeOldTrash() {
-	trashDir, err := getTrashDirFunc()
-	if err != nil {
-		log.Printf("[WARN] lazyPurgeOldTrash: failed to get trash dir: %v", err)
-		return
-	}
-
+// trashDir is passed in so the goroutine doesn't read the package-level
+// getTrashDirFunc (which tests swap out).
+func lazyPurgeOldTrash(trashDir string) {
 	entries, err := os.ReadDir(trashDir)
 	if err != nil {
 		log.Printf("[WARN] lazyPurgeOldTrash: failed to read trash dir: %v", err)
