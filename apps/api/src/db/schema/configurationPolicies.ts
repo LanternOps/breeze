@@ -36,6 +36,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'event_log',
   'software_policy',
   'sensitive_data',
+  'peripheral_control',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [

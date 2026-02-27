@@ -1,4 +1,4 @@
-export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data';
+export type FeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control';
 
 export type FeatureLink = {
   id: string;
@@ -35,4 +35,5 @@ export const FEATURE_META: Record<FeatureType, {
   event_log:    { label: 'Event Logs',   fetchUrl: null,                   description: 'Event log collection and retention' },
   software_policy: { label: 'Software Policy', fetchUrl: '/software-policies', description: 'Allowlist/blocklist software rules' },
   sensitive_data: { label: 'Data Discovery', fetchUrl: '/sensitive-data/policies', description: 'Sensitive data scanning configuration' },
+  peripheral_control: { label: 'Peripheral Control', fetchUrl: '/peripherals/policies', description: 'USB, Bluetooth, and Thunderbolt device policies' },
 };
