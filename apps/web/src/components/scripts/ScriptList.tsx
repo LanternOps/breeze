@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Search, ChevronLeft, ChevronRight, Play, Pencil, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
-export type OSType = 'windows' | 'macos' | 'linux';
+import type { ScriptLanguage, OSType, ScriptRunAs } from '@breeze/shared';
+export type { ScriptLanguage, OSType } from '@breeze/shared';
 export type ScriptStatus = 'active' | 'draft' | 'archived';
 
 export type Script = {
@@ -12,7 +12,7 @@ export type Script = {
   language: ScriptLanguage;
   category: string;
   osTypes: OSType[];
-  runAs?: 'system' | 'user' | 'elevated';
+  runAs?: ScriptRunAs;
   lastRun?: string;
   status?: ScriptStatus;
   createdAt: string;

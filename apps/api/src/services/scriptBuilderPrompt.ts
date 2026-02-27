@@ -37,8 +37,8 @@ IMPORTANT: Always use apply_script_code to deliver code to the editor, not just 
   const parts = [base, '\n--- Current Editor State ---'];
 
   if (snap.name) parts.push(`Name: ${snap.name}`);
-  if (context.language) parts.push(`Language: ${context.language}`);
-  if (context.osTypes?.length) parts.push(`OS Targets: ${context.osTypes.join(', ')}`);
+  if (snap.language) parts.push(`Language: ${snap.language}`);
+  if (snap.osTypes?.length) parts.push(`OS Targets: ${snap.osTypes.join(', ')}`);
   if (snap.category) parts.push(`Category: ${snap.category}`);
   if (snap.runAs) parts.push(`Run As: ${snap.runAs}`);
   if (snap.timeoutSeconds) parts.push(`Timeout: ${snap.timeoutSeconds}s`);

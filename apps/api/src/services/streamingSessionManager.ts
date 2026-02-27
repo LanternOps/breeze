@@ -22,6 +22,7 @@ import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { recordUsageFromSdkResult } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
+import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
@@ -293,6 +294,7 @@ export class StreamingSessionManager {
         approvalMode = budget.approvalMode as AiApprovalMode;
       }
     } catch (err) {
+      captureException(err);
       console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
     }
 
@@ -390,6 +392,7 @@ export class StreamingSessionManager {
       // Start background processor (inherits the clean context)
       (session as { processorPromise: Promise<void> }).processorPromise = this.runBackgroundProcessor(session);
       session.processorPromise.catch((err) => {
+        captureException(err);
         console.error('[StreamingSessionManager] Background processor error:', err);
       });
     });
@@ -420,10 +423,10 @@ export class StreamingSessionManager {
       session.turnTimeoutId = null;
     }
     try { session.inputController.close(); } catch (err) {
-      console.error('[StreamingSessionManager] Failed to close input controller:', sessionId, err);
+      captureException(err); console.error('[StreamingSessionManager] Failed to close input controller:', sessionId, err);
     }
     try { session.query.close(); } catch (err) {
-      console.error('[StreamingSessionManager] Failed to close SDK query:', sessionId, err);
+      captureException(err); console.error('[StreamingSessionManager] Failed to close SDK query:', sessionId, err);
     }
     session.eventBus.closeAll();
     session.state = 'closed';
@@ -444,6 +447,7 @@ export class StreamingSessionManager {
       await session.query.interrupt();
       return { interrupted: true };
     } catch (err) {
+      captureException(err);
       console.error('[StreamingSessionManager] Interrupt failed:', err);
       return { interrupted: false, reason: 'Failed to interrupt SDK query' };
     }
@@ -509,7 +513,7 @@ export class StreamingSessionManager {
                 db.update(aiSessions)
                   .set({ sdkSessionId: sid })
                   .where(eq(aiSessions.id, session.breezeSessionId))
-              ).catch((err) => console.error('[StreamingSessionManager] Failed to store SDK session ID:', err));
+              ).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to store SDK session ID:', err); });
             }
 
             if (session.state === 'initializing') {
@@ -578,6 +582,7 @@ export class StreamingSessionManager {
                 })
               );
             } catch (err) {
+              captureException(err);
               console.error('[StreamingSessionManager] Failed to save assistant message:', err);
             }
 
@@ -598,6 +603,7 @@ export class StreamingSessionManager {
                     })
                   );
                 } catch (err) {
+                  captureException(err);
                   console.error('[StreamingSessionManager] Failed to save tool_use message:', err);
                 }
               }
@@ -637,6 +643,7 @@ export class StreamingSessionManager {
                   })
                 );
               } catch (err) {
+                captureException(err);
                 console.error('[StreamingSessionManager] Failed to record SDK usage:', err);
               }
             } else {
@@ -663,6 +670,7 @@ export class StreamingSessionManager {
                   })
                 );
               } catch (err) {
+                captureException(err);
                 console.error('[StreamingSessionManager] Failed to record SDK usage on error:', err);
               }
             }
@@ -679,6 +687,7 @@ export class StreamingSessionManager {
         }
       }
     } catch (err) {
+      captureException(err);
       console.error('[StreamingSessionManager] Query error:', err);
       session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
       session.eventBus.publish({ type: 'done' });
@@ -721,7 +730,7 @@ export class StreamingSessionManager {
             db.update(aiSessions)
               .set({ status: 'expired', updatedAt: new Date() })
               .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')))
-          ).catch((err) => console.error('[StreamingSessionManager] Failed to expire session:', err));
+          ).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to expire session:', err); });
         }
       }
     }

@@ -74,6 +74,7 @@ scriptAiRoutes.post(
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Organization context required') return c.json({ error: message }, 400);
+      captureException(err, c);
       return c.json({ error: message }, 500);
     }
   }
@@ -85,11 +86,17 @@ scriptAiRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth');
-    const session = await getScriptBuilderSession(c.req.param('id'), auth);
-    if (!session) return c.json({ error: 'Session not found' }, 404);
+    try {
+      const session = await getScriptBuilderSession(c.req.param('id'), auth);
+      if (!session) return c.json({ error: 'Session not found' }, 404);
 
-    const messages = await getScriptBuilderMessages(session.id);
-    return c.json({ session, messages });
+      const messages = await getScriptBuilderMessages(session.id);
+      return c.json({ session, messages });
+    } catch (err) {
+      captureException(err, c);
+      console.error('[ScriptAI] Failed to get session:', err);
+      return c.json({ error: 'Failed to load session' }, 500);
+    }
   }
 );
 
@@ -115,7 +122,9 @@ scriptAiRoutes.delete(
       return c.json({ success: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to close session';
-      return c.json({ error: message }, 404);
+      if (message === 'Session not found') return c.json({ error: message }, 404);
+      captureException(err, c);
+      return c.json({ error: message }, 500);
     }
   }
 );
@@ -158,8 +167,9 @@ scriptAiRoutes.post(
     let updatedSystemPrompt: string | undefined;
     if (editorContext) {
       try {
-        updatedSystemPrompt = await updateEditorContext(sessionId, editorContext);
+        updatedSystemPrompt = await updateEditorContext(sessionId, editorContext, auth);
       } catch (err) {
+        captureException(err, c);
         console.error('[ScriptAI] Failed to update editor context:', err);
       }
     }
@@ -209,6 +219,7 @@ scriptAiRoutes.post(
         content: sanitizedContent,
       });
     } catch (err) {
+      captureException(err, c);
       console.error('[ScriptAI] Failed to save user message to DB:', err);
       activeSession.state = 'idle';
       return c.json({ error: 'Failed to save message' }, 500);
@@ -223,6 +234,7 @@ scriptAiRoutes.post(
           .where(eq(aiSessions.id, sessionId));
         activeSession.eventBus.publish({ type: 'title_updated', title });
       } catch (err) {
+        captureException(err, c);
         console.error('[ScriptAI] Failed to auto-set session title:', err);
       }
     }
@@ -245,15 +257,19 @@ scriptAiRoutes.post(
           if (event.type === 'done') break;
         }
       } catch (err) {
-        captureException(err);
+        captureException(err, c);
         console.error('[ScriptAI] Stream error:', err);
-        await stream.writeSSE({
-          event: 'error',
-          data: JSON.stringify({
-            type: 'error',
-            message: err instanceof Error ? err.message : 'Stream failed',
-          }),
-        });
+        try {
+          await stream.writeSSE({
+            event: 'error',
+            data: JSON.stringify({
+              type: 'error',
+              message: err instanceof Error ? err.message : 'Stream failed',
+            }),
+          });
+        } catch (writeErr) {
+          console.warn('[ScriptAI] Could not write SSE error event (client likely disconnected):', writeErr);
+        }
       } finally {
         activeSession.eventBus.unsubscribe(subscriptionId);
       }
@@ -283,6 +299,7 @@ scriptAiRoutes.post(
     try {
       result = await streamingSessionManager.interrupt(sessionId);
     } catch (err) {
+      captureException(err, c);
       console.error('[ScriptAI] Interrupt failed:', err);
       return c.json({ error: 'Failed to interrupt session' }, 500);
     }
