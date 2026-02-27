@@ -71,3 +71,33 @@ export const aiSessionQuerySchema = z.object({
   limit: z.string().optional(),
   status: z.enum(['active', 'closed', 'expired']).optional()
 });
+
+// ============================================
+// Script Builder Validators
+// ============================================
+
+export const scriptBuilderContextSchema = z.object({
+  scriptId: z.string().uuid().optional(),
+  editorSnapshot: z.object({
+    name: z.string().max(255).optional(),
+    content: z.string().max(500_000).optional(),
+    description: z.string().max(2000).optional(),
+    language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
+    osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
+    category: z.string().max(100).optional(),
+    parameters: z.array(z.object({
+      name: z.string(),
+      type: z.enum(['string', 'number', 'boolean', 'select']),
+      defaultValue: z.string().optional(),
+      required: z.boolean().optional(),
+      options: z.string().max(1000).optional(),
+    })).max(50).optional(),
+    runAs: z.enum(['system', 'user', 'elevated']).optional(),
+    timeoutSeconds: z.number().min(1).max(86400).optional(),
+  }).optional(),
+});
+
+export const createScriptBuilderSessionSchema = z.object({
+  context: scriptBuilderContextSchema.optional(),
+  title: z.string().max(255).optional(),
+});

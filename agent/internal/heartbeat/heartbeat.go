@@ -1827,8 +1827,9 @@ func (h *Heartbeat) markCommandSeen(id string) bool {
 
 	h.seenCommands[id] = time.Now()
 
-	// Evict entries older than 2 minutes when map grows past 100
-	if len(h.seenCommands) > 100 {
+	// Always evict stale entries to prevent unbounded growth.
+	// Previously only ran when >100 entries, but the map should stay small.
+	if len(h.seenCommands) > 50 {
 		cutoff := time.Now().Add(-2 * time.Minute)
 		for k, t := range h.seenCommands {
 			if t.Before(cutoff) {

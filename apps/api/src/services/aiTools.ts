@@ -6300,6 +6300,193 @@ registerTool({
 });
 
 // ============================================
+// list_scripts - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'list_scripts',
+    description: 'Search and filter scripts in the organization library. Returns a list of matching scripts including name, description, language, OS targets, and category.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        search: { type: 'string', description: 'Search by script name (partial match)' },
+        category: { type: 'string', description: 'Filter by script category' },
+        language: { type: 'string', enum: ['powershell', 'bash', 'python', 'cmd'], description: 'Filter by script language' },
+        osType: { type: 'string', enum: ['windows', 'macos', 'linux'], description: 'Filter by OS type (scripts targeting this OS)' },
+        limit: { type: 'number', description: 'Max results to return (default 20, max 50)' },
+      },
+    },
+  },
+  handler: async (input, auth) => {
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(scripts.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    if (input.search) {
+      const searchPattern = '%' + escapeLike(input.search as string) + '%';
+      conditions.push(sql`${scripts.name} ILIKE ${searchPattern}`);
+    }
+    if (input.category) conditions.push(eq(scripts.category, input.category as string));
+    if (input.language) conditions.push(eq(scripts.language, input.language as typeof scripts.language.enumValues[number]));
+    if (input.osType) conditions.push(sql`${scripts.osTypes} @> ARRAY[${input.osType}]::text[]`);
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 20), 50);
+
+    const results = await db
+      .select({
+        id: scripts.id,
+        name: scripts.name,
+        description: scripts.description,
+        language: scripts.language,
+        osTypes: scripts.osTypes,
+        category: scripts.category,
+        createdAt: scripts.createdAt,
+      })
+      .from(scripts)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(scripts.updatedAt))
+      .limit(limit);
+
+    return JSON.stringify({ scripts: results, count: results.length });
+  },
+});
+
+// ============================================
+// get_script_details - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_script_details',
+    description: 'Get full details of a specific script including its code, parameters, and execution settings.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        scriptId: { type: 'string', description: 'UUID of the script to retrieve' },
+      },
+      required: ['scriptId'],
+    },
+  },
+  handler: async (input, auth) => {
+    const conditions: SQL[] = [eq(scripts.id, input.scriptId as string)];
+    const orgCondition = auth.orgCondition(scripts.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+
+    const [script] = await db
+      .select()
+      .from(scripts)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!script) return JSON.stringify({ error: 'Script not found' });
+    return JSON.stringify(script);
+  },
+});
+
+// ============================================
+// list_script_templates - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'list_script_templates',
+    description: 'Browse available script templates for common tasks. Templates are pre-built scripts that can be used as starting points.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        search: { type: 'string', description: 'Search by template name (partial match)' },
+        category: { type: 'string', description: 'Filter by template category' },
+        limit: { type: 'number', description: 'Max results to return (default 20, max 50)' },
+      },
+    },
+  },
+  handler: async (input, _auth) => {
+    const conditions: SQL[] = [];
+
+    if (input.search) {
+      const searchPattern = '%' + escapeLike(input.search as string) + '%';
+      conditions.push(sql`${scriptTemplates.name} ILIKE ${searchPattern}`);
+    }
+    if (input.category) conditions.push(eq(scriptTemplates.category, input.category as string));
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 20), 50);
+
+    const results = await db
+      .select({
+        id: scriptTemplates.id,
+        name: scriptTemplates.name,
+        description: scriptTemplates.description,
+        language: scriptTemplates.language,
+        category: scriptTemplates.category,
+        rating: scriptTemplates.rating,
+      })
+      .from(scriptTemplates)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(scriptTemplates.rating))
+      .limit(limit);
+
+    return JSON.stringify({ templates: results, count: results.length });
+  },
+});
+
+// ============================================
+// get_script_execution_history - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_script_execution_history',
+    description: 'Get past execution results for a script. Shows status, exit codes, stdout/stderr, and timing information.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        scriptId: { type: 'string', description: 'UUID of the script to get execution history for' },
+        limit: { type: 'number', description: 'Max results to return (default 10, max 50)' },
+      },
+      required: ['scriptId'],
+    },
+  },
+  handler: async (input, auth) => {
+    // Verify the script belongs to the user's org before returning execution data
+    const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string)];
+    const orgCondition = auth.orgCondition(scripts.orgId);
+    if (orgCondition) scriptConditions.push(orgCondition);
+
+    const [script] = await db
+      .select({ id: scripts.id })
+      .from(scripts)
+      .where(and(...scriptConditions))
+      .limit(1);
+
+    if (!script) return JSON.stringify({ error: 'Script not found' });
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 10), 50);
+
+    const results = await db
+      .select({
+        id: scriptExecutions.id,
+        status: scriptExecutions.status,
+        exitCode: scriptExecutions.exitCode,
+        stdout: scriptExecutions.stdout,
+        stderr: scriptExecutions.stderr,
+        createdAt: scriptExecutions.createdAt,
+        completedAt: scriptExecutions.completedAt,
+      })
+      .from(scriptExecutions)
+      .where(eq(scriptExecutions.scriptId, input.scriptId as string))
+      .orderBy(desc(scriptExecutions.createdAt))
+      .limit(limit);
+
+    return JSON.stringify({ executions: results, count: results.length });
+  },
+});
+
+// ============================================
 // Helper Functions
 // ============================================
 

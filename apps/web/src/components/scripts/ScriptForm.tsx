@@ -1,12 +1,15 @@
-import { useMemo, useState, lazy, Suspense } from 'react';
+import { useMemo, useState, useEffect, lazy, Suspense } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, Trash2, GripVertical } from 'lucide-react';
+import { Plus, Trash2, GripVertical, Sparkles } from 'lucide-react';
 
 // Dynamic import for Monaco Editor to avoid SSR issues
 const Editor = lazy(() => import('@monaco-editor/react'));
+import ScriptAiPanel from './ScriptAiPanel';
 import { cn } from '@/lib/utils';
+import { useScriptAiStore } from '@/stores/scriptAiStore';
+import type { ScriptFormBridge } from '@/stores/scriptAiStore';
 import type { ScriptLanguage, OSType } from './ScriptList';
 
 const parameterSchema = z.object({
@@ -90,6 +93,7 @@ export default function ScriptForm({
     handleSubmit,
     control,
     watch,
+    getValues,
     setValue,
     formState: { errors, isSubmitting }
   } = useForm<ScriptFormValues>({
@@ -112,6 +116,41 @@ export default function ScriptForm({
     control,
     name: 'parameters'
   });
+
+  const { panelOpen, togglePanel } = useScriptAiStore();
+
+  const bridge: ScriptFormBridge = useMemo(() => ({
+    getFormValues: () => getValues() as ScriptFormValues,
+    setFormValues: (partial) => {
+      Object.entries(partial).forEach(([key, value]) => {
+        if (value !== undefined) {
+          setValue(key as keyof ScriptFormValues, value as never, { shouldDirty: true });
+        }
+      });
+    },
+    takeSnapshot: () => {
+      return structuredClone(getValues() as ScriptFormValues);
+    },
+    restoreSnapshot: (snapshot) => {
+      if (snapshot) {
+        Object.entries(snapshot).forEach(([key, value]) => {
+          setValue(key as keyof ScriptFormValues, value as never, { shouldDirty: true });
+        });
+      }
+    },
+  }), [getValues, setValue]);
+
+  // Keyboard shortcut: Cmd+Shift+I to toggle AI panel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'i') {
+        e.preventDefault();
+        togglePanel();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [togglePanel]);
 
   const watchLanguage = watch('language');
   const watchOsTypes = watch('osTypes');
@@ -238,43 +277,62 @@ export default function ScriptForm({
         </div>
       </div>
 
-      {/* Script Content */}
+      {/* Script Content + AI Panel */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Script Content</label>
-        <div className="rounded-md border overflow-hidden">
-          <Controller
-            name="content"
-            control={control}
-            render={({ field }) => (
-              <Suspense fallback={
-                <div className="flex items-center justify-center h-[400px] bg-[#1e1e1e]">
-                  <div className="text-center text-white/60">
-                    <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
-                    <p className="mt-2 text-sm">Loading editor...</p>
-                  </div>
-                </div>
-              }>
-                <Editor
-                  height="400px"
-                  language={monacoLanguage}
-                  value={field.value}
-                  onChange={(value) => field.onChange(value || '')}
-                  onMount={() => setEditorMounted(true)}
-                  theme="vs-dark"
-                  options={{
-                    minimap: { enabled: false },
-                    fontSize: 14,
-                    lineNumbers: 'on',
-                    scrollBeyondLastLine: false,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                    tabSize: 2,
-                    padding: { top: 12, bottom: 12 }
-                  }}
-                />
-              </Suspense>
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium">Script Content</label>
+          <button
+            type="button"
+            onClick={togglePanel}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition',
+              panelOpen
+                ? 'bg-primary text-primary-foreground'
+                : 'border hover:bg-muted'
             )}
-          />
+            title="Toggle AI Script Assistant (⌘⇧I)"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            AI Assistant
+          </button>
+        </div>
+        <div className="flex rounded-md border">
+          <div className="min-w-0 flex-1">
+            <Controller
+              name="content"
+              control={control}
+              render={({ field }) => (
+                <Suspense fallback={
+                  <div className="flex items-center justify-center h-[600px] bg-[#1e1e1e]">
+                    <div className="text-center text-white/60">
+                      <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
+                      <p className="mt-2 text-sm">Loading editor...</p>
+                    </div>
+                  </div>
+                }>
+                  <Editor
+                    height="600px"
+                    language={monacoLanguage}
+                    value={field.value}
+                    onChange={(value) => field.onChange(value || '')}
+                    onMount={() => setEditorMounted(true)}
+                    theme="vs-dark"
+                    options={{
+                      minimap: { enabled: false },
+                      fontSize: 14,
+                      lineNumbers: 'on',
+                      scrollBeyondLastLine: false,
+                      wordWrap: 'on',
+                      automaticLayout: true,
+                      tabSize: 2,
+                      padding: { top: 12, bottom: 12 }
+                    }}
+                  />
+                </Suspense>
+              )}
+            />
+          </div>
+          {panelOpen && <ScriptAiPanel bridge={bridge} />}
         </div>
         {errors.content && <p className="text-sm text-destructive">{errors.content.message}</p>}
       </div>

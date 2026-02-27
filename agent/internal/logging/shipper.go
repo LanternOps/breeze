@@ -19,7 +19,7 @@ import (
 const (
 	defaultBatchInterval = 60 * time.Second
 	defaultMaxBatchSize  = 500
-	defaultBufferSize    = 1000
+	defaultBufferSize    = 500
 )
 
 // LogEntry represents a single log entry to be shipped remotely.

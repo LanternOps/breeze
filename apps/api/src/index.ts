@@ -76,6 +76,7 @@ import { createDesktopWsRoutes } from './routes/desktopWs';
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
+import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
@@ -335,6 +336,8 @@ const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
   /^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/,
   // AI chat streaming is high-volume — exclude from fallback audit
   /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages$/,
+  // Script builder AI streaming — already audited by route handler
+  /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages$/,
 ];
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -649,6 +652,7 @@ api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
 api.route('/ai', aiRoutes);
+api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
 api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);

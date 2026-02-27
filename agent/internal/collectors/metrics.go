@@ -213,6 +213,13 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 				delete(c.speedCache, name)
 			}
 		}
+		// Also prune speedCache entries that outlived their interface —
+		// catches entries added via getCachedLinkSpeed but never cleaned.
+		for name := range c.speedCache {
+			if !seen[name] {
+				delete(c.speedCache, name)
+			}
+		}
 	}
 
 	c.lastTime = now

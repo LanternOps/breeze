@@ -171,3 +171,34 @@ export interface AiToolDefinition {
   tier: AiToolTier;
   inputSchema: Record<string, unknown>;
 }
+
+// ============================================
+// Script Builder Types
+// ============================================
+
+// Re-export canonical types from index (avoid duplication)
+import type { ScriptLanguage, OSType, ScriptRunAs } from './index';
+export type { ScriptLanguage, OSType } from './index';
+/** @deprecated Use `ScriptRunAs` from `@breeze/shared` directly */
+export type RunAs = ScriptRunAs;
+
+export interface ScriptBuilderContext {
+  scriptId?: string;
+  editorSnapshot?: {
+    name?: string;
+    content?: string;
+    description?: string;
+    language?: ScriptLanguage;
+    osTypes?: OSType[];
+    category?: string;
+    parameters?: Array<{
+      name: string;
+      type: 'string' | 'number' | 'boolean' | 'select';
+      defaultValue?: string;
+      required?: boolean;
+      options?: string;
+    }>;
+    runAs?: ScriptRunAs;
+    timeoutSeconds?: number;
+  };
+}
