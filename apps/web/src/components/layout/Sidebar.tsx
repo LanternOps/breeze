@@ -61,7 +61,8 @@ const operationsNav = [
   { name: 'Updates', href: '/patches', icon: Download },
   { name: 'Backup', href: '/backup', icon: HardDrive },
   { name: 'Audit Logs', href: '/audit', icon: FileText },
-  { name: 'Event Logs', href: '/logs', icon: ScrollText }
+  { name: 'Event Logs', href: '/logs', icon: ScrollText },
+  { name: 'Audit Baselines', href: '/audit-baselines', icon: ListChecks }
 ];
 
 const managementNav = [

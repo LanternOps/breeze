@@ -56,6 +56,10 @@ const (
 	CmdManageStartupItem         = "manage_startup_item"
 	CmdCollectReliabilityMetrics = "collect_reliability_metrics"
 
+	// Audit policy compliance
+	CmdCollectAuditPolicy       = "collect_audit_policy"
+	CmdApplyAuditPolicyBaseline = "apply_audit_policy_baseline"
+
 	// File transfer
 	CmdFileTransfer   = "file_transfer"
 	CmdCancelTransfer = "cancel_transfer"

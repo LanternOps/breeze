@@ -28,6 +28,9 @@ export type EventType =
   | 'policy.violation'
   | 'policy.compliant'
   | 'policy.remediation.triggered'
+  // Audit baseline compliance events
+  | 'compliance.audit_deviation'
+  | 'compliance.audit_remediated'
   // Patch events
   | 'patch.available'
   | 'patch.approved'
@@ -283,13 +286,22 @@ class EventBus {
   ): Promise<void> {
     // Parse event from fields
     const eventJson = fields[1]; // fields = ['event', '{...}']
-    if (!eventJson) return;
+    if (!eventJson) {
+      console.error(`[EventBus] Missing event JSON in message: ${messageId}`);
+      // Acknowledge and push to DLQ to prevent blocking
+      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
+      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, error: 'missing event JSON' }));
+      return;
+    }
 
     let event: BreezeEvent;
     try {
       event = JSON.parse(eventJson);
     } catch {
       console.error(`[EventBus] Failed to parse event: ${messageId}`);
+      // Acknowledge and push to DLQ to prevent blocking
+      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
+      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, raw: eventJson, error: 'JSON parse failure' }));
       return;
     }
 
@@ -350,10 +362,17 @@ class EventBus {
 
     const results = await redis.xrange(streamKey, fromId, toId, 'COUNT', '1000');
 
-    return results.map(([, fields]) => {
-      const eventJson = fields[1] || '{}';
-      return JSON.parse(eventJson) as BreezeEvent;
-    });
+    const events: BreezeEvent[] = [];
+    for (const [, fields] of results) {
+      const eventJson = fields[1];
+      if (!eventJson) continue;
+      try {
+        events.push(JSON.parse(eventJson) as BreezeEvent);
+      } catch {
+        // Skip malformed entries during replay
+      }
+    }
+    return events;
   }
 
   /**
@@ -477,5 +496,8 @@ export const EVENT_TYPES = {
   USER_MFA_ENABLED: 'user.mfa.enabled' as const,
   // Device sessions
   SESSION_LOGIN: 'session.login' as const,
-  SESSION_LOGOUT: 'session.logout' as const
+  SESSION_LOGOUT: 'session.logout' as const,
+  // Compliance
+  COMPLIANCE_AUDIT_DEVIATION: 'compliance.audit_deviation' as const,
+  COMPLIANCE_AUDIT_REMEDIATED: 'compliance.audit_remediated' as const,
 };

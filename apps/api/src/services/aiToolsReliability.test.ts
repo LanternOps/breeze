@@ -8,6 +8,9 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  dnsActionEnum: { enumValues: ['allow', 'block', 'log'] },
+  dnsThreatCategoryEnum: { enumValues: ['malware', 'phishing', 'botnet', 'cryptomining'] },
+  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
   devices: {},
   deviceHardware: {},
   deviceNetwork: {},
@@ -21,9 +24,6 @@ vi.mock('../db/schema', () => ({
   deviceCommands: {},
   deviceFilesystemCleanupRuns: {},
   deviceSessions: {},
-  dnsActionEnum: { enumValues: ['allow', 'block', 'log'] },
-  dnsThreatCategoryEnum: { enumValues: ['malware', 'phishing', 'botnet', 'cryptomining'] },
-  discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
 }));
 
 vi.mock('./aiToolSchemas', () => ({

@@ -180,8 +180,11 @@ Mutating commands sent to agents are logged to the audit trail:
 - Registry modifications (`REGISTRY_DELETE`, `REGISTRY_KEY_DELETE`)
 - File operations (`FILE_DELETE`)
 - Patch operations (`PATCH_SCAN`, `INSTALL_PATCHES`, `ROLLBACK_PATCHES`)
+- Audit baseline remediation (`APPLY_AUDIT_POLICY_BASELINE`)
 
 Each audit entry captures: command type, target device, exit code, stderr output, and the actor who initiated the command.
+
+Audit baseline remediation additionally uses explicit approval requests with separation of duties: the requester cannot self-approve, and approvals are single-use with expiration.
 
 ---
 
@@ -325,6 +328,19 @@ Every security-relevant operation is recorded in the `audit_logs` table:
 
 - **Synchronous**: `createAuditLog()` — blocks until written (critical operations)
 - **Asynchronous**: `createAuditLogAsync()` — fire-and-forget (non-critical operations)
+
+### Audit Baseline Controls
+
+Breeze enforces event-log audit-policy baselines with continuous drift detection:
+
+- Baseline definitions are stored per-org and per-OS (`audit_baselines`)
+- Endpoint policy snapshots are ingested as evidence (`audit_policy_states`)
+- Compliance evaluations persist score + deviations (`audit_baseline_results`)
+- Security events are emitted for deviations and remediations:
+  - `compliance.audit_deviation`
+  - `compliance.audit_remediated`
+
+Baseline remediation commands (`apply_audit_policy_baseline`) are treated as privileged operations and must pass RBAC checks (`devices:write`) before execution.
 
 ---
 

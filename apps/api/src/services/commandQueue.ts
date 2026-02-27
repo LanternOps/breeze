@@ -2,6 +2,7 @@ import { eq, and } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { captureException } from './sentry';
 
 // Command types for system tools
 export const CommandTypes = {
@@ -90,6 +91,10 @@ export const CommandTypes = {
   // Boot performance
   COLLECT_BOOT_PERFORMANCE: 'collect_boot_performance',
   MANAGE_STARTUP_ITEM: 'manage_startup_item',
+
+  // Audit policy compliance
+  COLLECT_AUDIT_POLICY: 'collect_audit_policy',
+  APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
 } as const;
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
@@ -159,6 +164,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.TAKE_SCREENSHOT,
   CommandTypes.COMPUTER_ACTION,
   CommandTypes.MANAGE_STARTUP_ITEM,
+  CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
 ]);
 
 /**
@@ -203,12 +209,15 @@ export async function queueCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log', {
-          commandId: command.id,
-          deviceId,
-          type,
-          error: err,
-        }));
+        .catch((err) => {
+          console.error('Failed to write audit log', {
+            commandId: command.id,
+            deviceId,
+            type,
+            error: err,
+          });
+          captureException(err);
+        });
     }
   }
 
@@ -410,13 +419,16 @@ export async function executeCommand(
           result: 'success',
         })
         .execute()
-        .catch((err) => console.error('Failed to write audit log', {
-          commandId: command.id,
-          deviceId,
-          type,
-          orgId: device.orgId,
-          error: err,
-        }));
+        .catch((err) => {
+          console.error('Failed to write audit log', {
+            commandId: command.id,
+            deviceId,
+            type,
+            orgId: device.orgId,
+            error: err,
+          });
+          captureException(err);
+        });
     }
 
     // Dispatch via WebSocket

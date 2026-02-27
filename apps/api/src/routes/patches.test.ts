@@ -37,9 +37,9 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
+    execute: vi.fn().mockResolvedValue(undefined),
     update: vi.fn(),
     delete: vi.fn(),
-    execute: vi.fn().mockResolvedValue(undefined),
   }
 }));
 
@@ -178,6 +178,7 @@ describe('patch routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.execute).mockResolvedValue(undefined as any);
     mockAuthState.scope = 'organization';
     mockAuthState.orgId = ACCESSIBLE_ORG_ID;
     mockAuthState.partnerId = null;

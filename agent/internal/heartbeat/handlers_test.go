@@ -24,6 +24,7 @@ var allCommandTypes = []string{
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall,
 	tools.CmdCollectBootPerformance, tools.CmdManageStartupItem,
 	tools.CmdCollectReliabilityMetrics,
+	tools.CmdCollectAuditPolicy, tools.CmdApplyAuditPolicyBaseline,
 	tools.CmdFileList, tools.CmdFileRead, tools.CmdFileWrite,
 	tools.CmdFileDelete, tools.CmdFileMkdir, tools.CmdFileRename,
 	tools.CmdFileCopy, tools.CmdFileListDrives,
