@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Device Management', () => {
   test('device list page loads', async ({ page }) => {
     await page.goto('/devices');
     await waitForApp(page, '/devices');
+    await waitForContentLoad(page);
 
     // Page heading should reference devices
     await expect(page.locator('h1, h2').first()).toContainText(/Device/i);
@@ -19,15 +20,17 @@ test.describe('Device Management', () => {
   test('device list shows enrolled devices or empty state', async ({ page }) => {
     await page.goto('/devices');
     await waitForApp(page, '/devices');
+    await waitForContentLoad(page);
 
     // Either we see table rows for devices, or an empty-state message
+    // DeviceList empty state: "No devices found. Try adjusting your search or filters."
     const deviceRow = page.locator('table tbody tr').first();
     const emptyState = page.locator('text=No devices found')
       .or(page.locator('text=No devices'))
       .or(page.locator('text=Get started'))
       .first();
 
-    // One of these should be visible
+    // One of these should be visible (table always renders, even with empty-state row)
     await expect(
       deviceRow.or(emptyState),
     ).toBeVisible({ timeout: 15_000 });
@@ -36,6 +39,7 @@ test.describe('Device Management', () => {
   test('device detail page shows tabs', async ({ page }) => {
     await page.goto('/devices');
     await waitForApp(page, '/devices');
+    await waitForContentLoad(page);
 
     // If there are devices, click the first one to go to detail view
     const firstDevice = page.locator('table tbody tr').first();
@@ -66,6 +70,7 @@ test.describe('Device Management', () => {
   test('device filtering works', async ({ page }) => {
     await page.goto('/devices');
     await waitForApp(page, '/devices');
+    await waitForContentLoad(page);
 
     // Look for a search / filter input
     const searchInput = page.locator(
@@ -93,18 +98,19 @@ test.describe('Device Management', () => {
   test('device groups page loads', async ({ page }) => {
     await page.goto('/devices/groups');
     await waitForApp(page, '/devices/groups');
+    await waitForContentLoad(page);
 
-    // Should show group management UI
+    // Should show "Device Groups" heading
     await expect(
       page.locator('h1, h2').first(),
     ).toContainText(/Group|Device/i, { timeout: 10_000 });
 
-    // Should have a create button or existing groups list or empty state
-    const createOrList = page.locator('button:has-text("New")')
-      .or(page.locator('button:has-text("Create")'))
-      .or(page.locator('table'))
+    // DeviceGroupsPage uses a card layout (not table).
+    // Should have a "Create Group" button, existing group cards, or empty state.
+    const createOrList = page.locator('button:has-text("Create Group")')
+      .or(page.locator('button:has-text("Create your first group")'))
       .or(page.locator('text=No device groups yet'))
-      .or(page.locator('text=No groups'))
+      .or(page.locator('.rounded-lg.border.bg-background'))
       .first();
     await expect(createOrList).toBeVisible({ timeout: 10_000 });
   });

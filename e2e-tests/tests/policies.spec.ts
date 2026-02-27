@@ -1,26 +1,30 @@
 import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Policies', () => {
   test('policies page loads', async ({ page }) => {
     await page.goto('/policies');
     await waitForApp(page, '/policies');
+    await waitForContentLoad(page);
 
-    // Page heading should say "Policies"
+    // Page heading should say "Policies" (rendered after loading completes)
     await expect(page.locator('h1').first()).toContainText('Policies', { timeout: 10_000 });
 
-    // Should show a policy list, table, or empty state
+    // Should show a policy list table or empty state
+    // PolicyList empty state: "No policies found. Try adjusting your search or filters."
     const content = page.locator('table').first()
-      .or(page.getByText('No policies').first());
+      .or(page.locator('text=No policies').first());
     await expect(content).toBeVisible({ timeout: 15_000 });
   });
 
   test('new policy page loads', async ({ page }) => {
     await page.goto('/policies/new');
     await waitForApp(page, '/policies/new');
+    await waitForContentLoad(page);
 
-    // Should show a form for creating a new policy
+    // PolicyEditPage renders h1 "Create Policy" and a PolicyForm with <form>
     const formOrHeading = page.locator('form').first()
+      .or(page.locator('h1:has-text("Create Policy")').first())
       .or(page.locator('h1').first());
     await expect(formOrHeading).toBeVisible({ timeout: 10_000 });
   });
@@ -28,14 +32,16 @@ test.describe('Policies', () => {
   test('configuration policies page loads', async ({ page }) => {
     await page.goto('/configuration-policies');
     await waitForApp(page, '/configuration-policies');
+    await waitForContentLoad(page);
 
     // Page heading should say "Configuration Policies"
     await expect(page.locator('h1').first()).toContainText('Configuration Policies', { timeout: 10_000 });
 
-    // Should show a list, table, or empty state
+    // Should show a list table or empty state
+    // ConfigPolicyList empty state: "No policies found. Try adjusting your search."
     const content = page.locator('table').first()
-      .or(page.getByText('No policies').first())
-      .or(page.getByText('No configuration').first());
+      .or(page.locator('text=No policies').first())
+      .or(page.locator('text=No configuration').first());
     await expect(content).toBeVisible({ timeout: 15_000 });
   });
 });

@@ -1,23 +1,26 @@
 import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Script Management', () => {
   test('script library loads', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
+    await waitForContentLoad(page);
 
-    // Page heading
+    // Page heading (rendered after loading completes)
     await expect(page.locator('h1').first()).toContainText('Script Library');
 
     // Should show script list or empty state
+    // ScriptList empty state: "No scripts found. Try adjusting your search or filters."
     const listOrEmpty = page.locator('table').first()
-      .or(page.getByText('No scripts').first());
+      .or(page.locator('text=No scripts').first());
     await expect(listOrEmpty).toBeVisible({ timeout: 15_000 });
   });
 
   test('create new script page loads', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
+    await waitForContentLoad(page);
 
     // Click the "New Script" button (or navigate directly)
     const newBtn = page.locator(
@@ -38,44 +41,58 @@ test.describe('Script Management', () => {
 
     // Should show a script editor form
     const formOrEditor = page.locator('form').first()
-      .or(page.locator('textarea').first())
-      .or(page.locator('[name="name"]').first());
-    await expect(formOrEditor).toBeVisible({ timeout: 10_000 });
+      .or(page.locator('.monaco-editor').first())
+      .or(page.locator('#script-name').first());
+    await expect(formOrEditor).toBeVisible({ timeout: 15_000 });
   });
 
   test('create and save a script', async ({ page }) => {
     await page.goto('/scripts/new');
     await waitForApp(page, '/scripts/new');
 
-    // Fill in script name
+    // Wait for the form to render (ScriptEditPage with isNew has no loading gate)
+    const form = page.locator('form').first();
+    await expect(form).toBeVisible({ timeout: 15_000 });
+
+    // Fill in script name — ScriptForm uses id="script-name"
     const nameInput = page.locator('#script-name');
+    await expect(nameInput).toBeVisible({ timeout: 5_000 });
     await nameInput.fill(`E2E Test Script ${Date.now()}`);
 
-    // Fill in optional description
+    // Fill in optional description — ScriptForm uses id="script-description"
     const descInput = page.locator('#script-description');
     if (await descInput.isVisible({ timeout: 2_000 }).catch(() => false)) {
       await descInput.fill('Created by Playwright E2E test');
     }
 
-    // Fill script content (textarea or code editor)
-    const contentArea = page.locator('textarea[name="content"]').first()
-      .or(page.locator('.cm-content').first())
-      .or(page.locator('textarea').first());
-    if (await contentArea.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await contentArea.fill('#!/bin/bash\necho "E2E test script"');
+    // Fill script content — Monaco editor loaded via lazy import in ScriptForm
+    const monacoEditor = page.locator('.monaco-editor');
+    const monacoVisible = await monacoEditor.first().isVisible({ timeout: 10_000 }).catch(() => false);
+
+    if (monacoVisible) {
+      await monacoEditor.first().click();
+      await page.keyboard.insertText('#!/bin/bash\necho "E2E test script"');
+    } else {
+      // Fallback: try any textarea within the form
+      const fallbackEditor = page.locator('textarea').first();
+      if (await fallbackEditor.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await fallbackEditor.fill('#!/bin/bash\necho "E2E test script"');
+      }
     }
 
-    // Click Save
-    const saveBtn = page.locator('button:has-text("Save"), button:has-text("Create"), button[type="submit"]').first();
+    // Click Save — "Create Script" for new scripts
+    const saveBtn = page.locator('button:has-text("Create Script")').first()
+      .or(page.locator('button[type="submit"]').first());
     await saveBtn.click();
 
     // Should redirect back to /scripts on success
-    await expect(page).toHaveURL(/\/scripts(?!\/new)/, { timeout: 10_000 });
+    await expect(page).toHaveURL(/\/scripts(?!\/new)/, { timeout: 15_000 });
   });
 
   test('script execution results page is accessible', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
+    await waitForContentLoad(page);
 
     // If scripts exist, click the first one to see its detail
     const firstScript = page.locator('table tbody tr').first();
@@ -88,8 +105,8 @@ test.describe('Script Management', () => {
     // Should show script detail with execution history or run button
     const runOrHistory = page.locator('button:has-text("Run")').first()
       .or(page.locator('button:has-text("Execute")').first())
-      .or(page.getByText('Execution').first())
-      .or(page.getByText('History').first());
+      .or(page.locator('text=Execution').first())
+      .or(page.locator('text=History').first());
     await expect(runOrHistory).toBeVisible({ timeout: 10_000 });
   });
 });

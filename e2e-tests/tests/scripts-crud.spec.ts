@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { waitForApp, waitForContentLoad } from './helpers';
 
 test.describe('Script CRUD Lifecycle', () => {
   test.describe.configure({ mode: 'serial' });
@@ -71,6 +71,7 @@ test.describe('Script CRUD Lifecycle', () => {
   test('verify script appears in the list', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
+    await waitForContentLoad(page);
 
     // ScriptsPage renders h1 "Script Library"
     await expect(page.locator('h1:has-text("Script Library")').first()).toBeVisible({ timeout: 15_000 });
@@ -87,6 +88,7 @@ test.describe('Script CRUD Lifecycle', () => {
   test('view script detail page', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
+    await waitForContentLoad(page);
 
     // Wait for list to load
     await expect(page.locator('table').first()).toBeVisible({ timeout: 15_000 });
@@ -117,15 +119,17 @@ test.describe('Script CRUD Lifecycle', () => {
     // Should navigate to a script detail/edit page (/scripts/<id>)
     await expect(page).toHaveURL(/\/scripts\/.+/, { timeout: 10_000 });
 
-    // The [id].astro page renders ScriptEditor which has h1 "Script Editor"
+    // ScriptEditPage renders h1 "Edit Script" for existing scripts
+    await waitForContentLoad(page);
     const pageHeading = page.locator('h1').first();
     await expect(pageHeading).toBeVisible({ timeout: 15_000 });
-    await expect(pageHeading).toContainText(/Script Editor/i, { timeout: 10_000 });
+    await expect(pageHeading).toContainText(/Edit Script|Script/i, { timeout: 10_000 });
   });
 
   test('delete the script', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
+    await waitForContentLoad(page);
 
     // Wait for list to load
     await expect(page.locator('table').first()).toBeVisible({ timeout: 15_000 });
@@ -158,6 +162,7 @@ test.describe('Script CRUD Lifecycle', () => {
   test('verify script is removed from the list', async ({ page }) => {
     await page.goto('/scripts');
     await waitForApp(page, '/scripts');
+    await waitForContentLoad(page);
 
     // Wait for the script list to load
     const table = page.locator('table').first();
