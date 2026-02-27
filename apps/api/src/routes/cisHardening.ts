@@ -10,7 +10,8 @@ import {
   cisRemediationActions,
   devices,
 } from '../db/schema';
-import { scheduleCisRemediation, scheduleCisScan } from '../jobs/cisJobs';
+import { scheduleCisRemediation, scheduleCisRemediationWithResult, scheduleCisScan } from '../jobs/cisJobs';
+import { captureException } from '../services/sentry';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { extractFailedCheckIds, normalizeCisSchedule } from '../services/cisHardening';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -755,7 +756,40 @@ cisHardeningRoutes.post(
         })
         .where(inArray(cisRemediationActions.id, pendingIds));
 
-      const queued = await scheduleCisRemediation(pendingIds);
+      let queueResult;
+      try {
+        queueResult = await scheduleCisRemediationWithResult(pendingIds);
+      } catch (error) {
+        captureException(error);
+        // Rollback approval status on total queue failure
+        await db
+          .update(cisRemediationActions)
+          .set({
+            status: 'pending_approval',
+            approvalStatus: 'pending',
+            approvedBy: null,
+            approvedAt: null,
+            approvalNote: null,
+          })
+          .where(inArray(cisRemediationActions.id, pendingIds));
+        return c.json({ error: 'Failed to queue remediation actions, approval rolled back' }, 500);
+      }
+
+      // Mark any individually failed actions back to pending
+      if (queueResult.failedActionIds.length > 0) {
+        await db
+          .update(cisRemediationActions)
+          .set({
+            status: 'pending_approval',
+            approvalStatus: 'pending',
+            approvedBy: null,
+            approvedAt: null,
+            approvalNote: null,
+          })
+          .where(inArray(cisRemediationActions.id, queueResult.failedActionIds));
+      }
+
+      const queued = queueResult.queuedActionIds.length;
       const orgIds = Array.from(new Set(actions.map((action) => action.orgId)));
       for (const orgId of orgIds) {
         writeRouteAudit(c, {
@@ -767,6 +801,7 @@ cisHardeningRoutes.post(
             queued,
             actionIds: pendingIds,
             skippedIds,
+            failedActionIds: queueResult.failedActionIds,
           },
         });
       }
@@ -774,8 +809,9 @@ cisHardeningRoutes.post(
       return c.json({
         approved: true,
         queued,
-        actionIds: pendingIds,
+        actionIds: queueResult.queuedActionIds,
         skippedIds,
+        failedActionIds: queueResult.failedActionIds.length > 0 ? queueResult.failedActionIds : undefined,
       });
     }
 
@@ -809,6 +845,84 @@ cisHardeningRoutes.post(
       rejected: pendingIds.length,
       actionIds: pendingIds,
       skippedIds,
+    });
+  }
+);
+
+const listRemediationsQuerySchema = z.object({
+  orgId: z.string().uuid().optional(),
+  status: z.enum(['pending_approval', 'queued', 'in_progress', 'completed', 'failed', 'cancelled']).optional(),
+  approvalStatus: z.enum(['pending', 'approved', 'rejected']).optional(),
+  deviceId: z.string().uuid().optional(),
+  baselineId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().positive().max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+cisHardeningRoutes.get(
+  '/remediations',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
+  zValidator('query', listRemediationsQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) {
+      return c.json({ error: orgResult.error }, orgResult.status);
+    }
+
+    const conditions: SQL[] = [];
+    if (orgResult.orgId) {
+      conditions.push(eq(cisRemediationActions.orgId, orgResult.orgId));
+    } else {
+      const orgCondition = auth.orgCondition(cisRemediationActions.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+    }
+    if (query.status) conditions.push(eq(cisRemediationActions.status, query.status));
+    if (query.approvalStatus) conditions.push(eq(cisRemediationActions.approvalStatus, query.approvalStatus));
+    if (query.deviceId) conditions.push(eq(cisRemediationActions.deviceId, query.deviceId));
+    if (query.baselineId) conditions.push(eq(cisRemediationActions.baselineId, query.baselineId));
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const limit = query.limit ?? 100;
+    const offset = query.offset ?? 0;
+
+    const [countRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(cisRemediationActions)
+      .innerJoin(devices, eq(cisRemediationActions.deviceId, devices.id))
+      .where(where);
+
+    const rows = await db
+      .select({
+        action: cisRemediationActions,
+        deviceHostname: devices.hostname,
+        baselineName: cisBaselines.name,
+      })
+      .from(cisRemediationActions)
+      .innerJoin(devices, eq(cisRemediationActions.deviceId, devices.id))
+      .leftJoin(cisBaselines, eq(cisRemediationActions.baselineId, cisBaselines.id))
+      .where(where)
+      .orderBy(desc(cisRemediationActions.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({
+      data: rows.map((row) => ({
+        ...row.action,
+        createdAt: row.action.createdAt.toISOString(),
+        executedAt: row.action.executedAt?.toISOString() ?? null,
+        approvedAt: row.action.approvedAt?.toISOString() ?? null,
+        deviceHostname: row.deviceHostname,
+        baselineName: row.baselineName,
+      })),
+      pagination: {
+        limit,
+        offset,
+        total: Number(countRow?.count ?? 0),
+      },
     });
   }
 );
