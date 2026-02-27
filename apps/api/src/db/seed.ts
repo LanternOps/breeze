@@ -733,14 +733,15 @@ export async function seedDefaultAdmin() {
   // Hash the password
   const passwordHash = await hashPassword(adminPassword);
 
-  // Create the admin user
+  // Create the admin user (setupCompletedAt set so the setup wizard is skipped)
   const [adminUser] = await db
     .insert(users)
     .values({
       email: adminEmail,
       name: 'Breeze Admin',
       passwordHash,
-      status: 'active'
+      status: 'active',
+      setupCompletedAt: new Date(),
     })
     .returning();
 
