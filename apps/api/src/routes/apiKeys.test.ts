@@ -26,7 +26,9 @@ vi.mock('../db', () => ({
         }))
       }))
     }))
-  }
+  },
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

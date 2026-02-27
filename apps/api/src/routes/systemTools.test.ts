@@ -48,13 +48,14 @@ vi.mock('../services/auditService', () => ({
 }));
 
 vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn()
-  }
+  },
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -199,7 +200,7 @@ describe('system tools routes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.message).toContain('chrome.exe');
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('lists services via agent command', async () => {
@@ -261,7 +262,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('stops a service via agent command', async () => {
@@ -278,7 +279,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('restarts a service via agent command', async () => {
@@ -295,7 +296,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('lists registry keys', async () => {
@@ -386,7 +387,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('deletes a registry value and logs audit', async () => {
@@ -404,7 +405,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('creates a registry key and logs audit', async () => {
@@ -426,7 +427,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('deletes a registry key and logs audit', async () => {
@@ -444,7 +445,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('lists event logs via agent command', async () => {
@@ -611,7 +612,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('enables task via agent command', async () => {
@@ -629,7 +630,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('disables task via agent command', async () => {
@@ -647,7 +648,7 @@ describe('system tools routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(vi.mocked(createAuditLog)).toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalled();
   });
 
   it('gets scheduled task history via agent command', async () => {
@@ -750,6 +751,7 @@ describe('system tools routes', () => {
         })
       });
 
+      // All items failed, so the route returns 502
       expect(res.status).toBe(502);
       const body = await res.json();
       expect(body.results).toHaveLength(1);
