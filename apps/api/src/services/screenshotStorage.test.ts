@@ -52,7 +52,8 @@ vi.mock('../db', () => {
         deleteWhere,
       },
     },
-    runOutsideDbContext: vi.fn((fn) => fn()),
+    runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
   };
 });
 
@@ -315,14 +316,14 @@ describe('screenshotStorage', () => {
       };
 
       mocks.selectWhere.mockResolvedValueOnce([expired1, expired2]);
-      const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      const enoentErr = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
       vi.mocked(unlink)
-        .mockRejectedValueOnce(enoentError)
+        .mockRejectedValueOnce(enoentErr)
         .mockResolvedValueOnce(undefined);
 
       const count = await deleteExpiredScreenshots();
 
-      // Both records should be deleted from DB even if file delete fails
+      // Both records should be deleted from DB even if file delete fails with ENOENT
       expect(count).toBe(2);
       expect(db.delete).toHaveBeenCalledTimes(2);
     });
