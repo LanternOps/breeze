@@ -1,5 +1,6 @@
 import { db } from '../db';
 import { auditLogs } from '../db/schema';
+import { captureException } from './sentry';
 
 export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'schedule' | 'agent' | 'integration';
 
@@ -31,5 +32,6 @@ export function createAuditLogAsync(params: CreateAuditLogParams): void {
       return;
     }
     console.error('[audit] Failed to write audit log:', err);
+    captureException(err);
   });
 }

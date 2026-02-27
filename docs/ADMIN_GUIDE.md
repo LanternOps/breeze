@@ -1116,6 +1116,56 @@ For compliance audits, generate reports covering:
    - Policy modifications
    - User account changes
 
+### 6.10 Event Log Audit Baselines
+
+Breeze supports audit-policy baselines for Windows, macOS, and Linux to continuously verify endpoint audit controls.
+
+#### Baseline APIs
+
+```bash
+GET  /api/v1/audit-baselines
+POST /api/v1/audit-baselines
+GET  /api/v1/audit-baselines/compliance
+GET  /api/v1/audit-baselines/devices/{deviceId}
+POST /api/v1/audit-baselines/apply-requests
+POST /api/v1/audit-baselines/apply-requests/{approvalId}/decision
+POST /api/v1/audit-baselines/apply
+```
+
+#### Baseline Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `cis_l1` | CIS-aligned Level 1 defaults |
+| `cis_l2` | CIS-aligned Level 2 defaults |
+| `custom` | Organization-defined setting map |
+
+#### Continuous Evaluation
+
+- `collect_audit_policy` jobs collect endpoint audit-policy state daily
+- Drift evaluator jobs score devices hourly against active org baselines
+- Compliance results are stored in `audit_baseline_results` with deviation evidence
+
+#### Remediation Workflow
+
+Baseline apply is currently Windows-only and approval-gated:
+
+1. Run `POST /api/v1/audit-baselines/apply` with `dryRun: true` to validate scope.
+2. Create an apply request via `POST /api/v1/audit-baselines/apply-requests`.
+3. A different user approves or rejects via `POST /api/v1/audit-baselines/apply-requests/{approvalId}/decision`.
+4. Execute `POST /api/v1/audit-baselines/apply` with `approvalRequestId`.
+
+When a device's agent reports successful completion of the apply command, a follow-up `collect_audit_policy` verification command is queued for that device.
+
+#### Audit Evidence
+
+For assessments, export:
+
+1. Baseline definition (name/profile/settings)
+2. Latest per-device compliance scores
+3. Device deviation details and check timestamps
+4. Baseline apply command history and outcomes
+
 ---
 
 ## 7. System Settings

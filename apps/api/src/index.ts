@@ -54,6 +54,7 @@ import { reliabilityRoutes } from './routes/reliability';
 import { snmpRoutes } from './routes/snmp';
 import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
+import { auditBaselineRoutes } from './routes/auditBaselines';
 import { softwareRoutes } from './routes/software';
 import { softwarePoliciesRoutes } from './routes/softwarePolicies';
 import { systemRoutes } from './routes/system';
@@ -79,6 +80,7 @@ import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
+import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
@@ -106,6 +108,7 @@ import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/r
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
+import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
@@ -611,6 +614,7 @@ api.route('/reliability', reliabilityRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
+api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
 api.route('/system', systemRoutes);
@@ -822,6 +826,7 @@ async function initializeWorkers(): Promise<void> {
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
     ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
     ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
+    ['auditBaselineJobs', initializeAuditBaselineJobs],
     ['automationWorker', initializeAutomationWorker],
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['reliabilityWorker', initializeReliabilityWorker],
@@ -948,6 +953,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAutomationWorker,
     shutdownSoftwareRemediationWorker,
     shutdownSoftwareComplianceWorker,
+    shutdownAuditBaselineJobs,
     shutdownPolicyEvaluationWorker,
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
@@ -1017,6 +1023,17 @@ async function bootstrap(): Promise<void> {
     } else {
       console.error('[startup] Failed to seed built-in playbooks:', err);
     }
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      const seeded = await seedDefaultAuditBaselines();
+      if (seeded.created > 0) {
+        console.log(`[startup] Seeded ${seeded.created} audit baseline template(s)`);
+      }
+    });
+  } catch (err) {
+    console.error('[startup] Failed to seed audit baseline templates:', err);
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

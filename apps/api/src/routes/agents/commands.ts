@@ -77,6 +77,7 @@ commandsRoutes.post(
         await handleSecurityCommandResult(command, data);
       } catch (err) {
         console.error(`[agents] security command post-processing failed for ${commandId}:`, err);
+        captureException(err);
       }
     }
 
@@ -85,6 +86,7 @@ commandsRoutes.post(
         await handleFilesystemAnalysisCommandResult(command, data);
       } catch (err) {
         console.error(`[agents] filesystem analysis post-processing failed for ${commandId}:`, err);
+        captureException(err);
       }
     }
 
@@ -128,10 +130,9 @@ commandsRoutes.post(
           )
         );
         if (!collectResult.command) {
-          console.error(
-            `[agents] failed to enqueue post-apply audit policy collection for ${commandId}:`,
-            collectResult.error ?? 'unknown error'
-          );
+          const errMsg = `failed to enqueue post-apply audit policy collection for ${commandId}: ${collectResult.error ?? 'unknown error'}`;
+          console.error(`[agents] ${errMsg}`);
+          captureException(new Error(errMsg));
         }
       } catch (err) {
         console.error(`[agents] post-apply verification enqueue failed for ${commandId}:`, err);
