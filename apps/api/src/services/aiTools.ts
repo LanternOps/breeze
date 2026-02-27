@@ -4875,10 +4875,10 @@ registerTool({
     if (orgCond) conditions.push(orgCond);
 
     if (input.status) {
-      conditions.push(eq(remoteSessions.status, input.status as string));
+      conditions.push(eq(remoteSessions.status, input.status as typeof remoteSessions.status.enumValues[number]));
     }
     if (input.type) {
-      conditions.push(eq(remoteSessions.type, input.type as string));
+      conditions.push(eq(remoteSessions.type, input.type as typeof remoteSessions.type.enumValues[number]));
     }
     if (input.deviceId) {
       conditions.push(eq(remoteSessions.deviceId, input.deviceId as string));
