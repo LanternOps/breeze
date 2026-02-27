@@ -133,7 +133,7 @@ export default function SitesPage() {
       const url = modalMode === 'edit' && selectedSite
         ? `/orgs/sites/${selectedSite.id}`
         : '/orgs/sites';
-      const method = modalMode === 'edit' ? 'PUT' : 'POST';
+      const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
       const response = await fetchWithAuth(url, {
         method,

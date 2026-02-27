@@ -140,7 +140,7 @@ export default function OrganizationsPage() {
       const url = modalMode === 'edit' && selectedOrg
         ? `/orgs/organizations/${selectedOrg.id}`
         : '/orgs/organizations';
-      const method = modalMode === 'edit' ? 'PUT' : 'POST';
+      const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
       const response = await fetchWithAuth(url, {
         method,
