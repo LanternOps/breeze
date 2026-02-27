@@ -87,7 +87,9 @@ interface ScriptAiState {
   pendingApproval: PendingApproval | null;
   panelOpen: boolean;
   hasApplied: boolean;
+  hasReverted: boolean;
   formSnapshot: ScriptFormValues | null;
+  appliedSnapshot: ScriptFormValues | null;
   isInterrupting: boolean;
 
   // Internal (not serialized)
@@ -101,8 +103,9 @@ interface ScriptAiState {
   // Actions — bridge
   setBridge: (bridge: ScriptFormBridge | null) => void;
 
-  // Actions — revert
+  // Actions — revert / redo
   revert: () => void;
+  redo: () => void;
 
   // Actions — session lifecycle
   createSession: (context?: ScriptBuilderContext) => Promise<void>;
@@ -145,7 +148,9 @@ export const useScriptAiStore = create<ScriptAiState>()(
     pendingApproval: null,
     panelOpen: false,
     hasApplied: false,
+    hasReverted: false,
     formSnapshot: null,
+    appliedSnapshot: null,
     isInterrupting: false,
     _bridge: null,
 
@@ -157,12 +162,22 @@ export const useScriptAiStore = create<ScriptAiState>()(
     // Bridge
     setBridge: (bridge) => set({ _bridge: bridge }),
 
-    // Revert — restore the last snapshot
+    // Revert — restore the last snapshot, save current state for redo
     revert: () => {
       const { _bridge, formSnapshot } = get();
       if (!_bridge || !formSnapshot) return;
+      const currentState = _bridge.takeSnapshot();
       _bridge.restoreSnapshot(formSnapshot);
-      set({ hasApplied: false, formSnapshot: null });
+      set({ hasApplied: false, hasReverted: true, appliedSnapshot: currentState });
+    },
+
+    // Redo — re-apply the reverted changes
+    redo: () => {
+      const { _bridge, appliedSnapshot } = get();
+      if (!_bridge || !appliedSnapshot) return;
+      const currentState = _bridge.takeSnapshot();
+      _bridge.restoreSnapshot(appliedSnapshot);
+      set({ hasApplied: true, hasReverted: false, formSnapshot: currentState, appliedSnapshot: null });
     },
 
     clearError: () => set({ error: null }),
@@ -188,7 +203,9 @@ export const useScriptAiStore = create<ScriptAiState>()(
           messages: [],
           isLoading: false,
           hasApplied: false,
+          hasReverted: false,
           formSnapshot: null,
+          appliedSnapshot: null,
           pendingApproval: null,
         });
       } catch (err) {
@@ -384,7 +401,9 @@ export const useScriptAiStore = create<ScriptAiState>()(
           sessionId: null,
           messages: [],
           hasApplied: false,
+          hasReverted: false,
           formSnapshot: null,
+          appliedSnapshot: null,
           pendingApproval: null,
         });
       } catch (err) {
@@ -509,7 +528,7 @@ function processScriptStreamEvent(
               bridge.setFormValues(values);
             }
 
-            set(() => ({ hasApplied: true }));
+            set(() => ({ hasApplied: true, hasReverted: false, appliedSnapshot: null }));
           } catch (applyErr) {
             console.error('[ScriptAI] Failed to apply tool result to form:', applyErr);
           }

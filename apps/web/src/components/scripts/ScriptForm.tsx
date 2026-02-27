@@ -6,7 +6,7 @@ import { Plus, Trash2, GripVertical, Sparkles } from 'lucide-react';
 
 // Dynamic import for Monaco Editor to avoid SSR issues
 const Editor = lazy(() => import('@monaco-editor/react'));
-const ScriptAiPanel = lazy(() => import('./ScriptAiPanel'));
+import ScriptAiPanel from './ScriptAiPanel';
 import { cn } from '@/lib/utils';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
 import type { ScriptFormBridge } from '@/stores/scriptAiStore';
@@ -296,14 +296,14 @@ export default function ScriptForm({
             AI Assistant
           </button>
         </div>
-        <div className="flex rounded-md border overflow-hidden">
-          <div className="flex-1">
+        <div className="flex rounded-md border">
+          <div className="min-w-0 flex-1">
             <Controller
               name="content"
               control={control}
               render={({ field }) => (
                 <Suspense fallback={
-                  <div className="flex items-center justify-center h-[400px] bg-[#1e1e1e]">
+                  <div className="flex items-center justify-center h-[600px] bg-[#1e1e1e]">
                     <div className="text-center text-white/60">
                       <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
                       <p className="mt-2 text-sm">Loading editor...</p>
@@ -311,7 +311,7 @@ export default function ScriptForm({
                   </div>
                 }>
                   <Editor
-                    height="400px"
+                    height="600px"
                     language={monacoLanguage}
                     value={field.value}
                     onChange={(value) => field.onChange(value || '')}
@@ -332,9 +332,7 @@ export default function ScriptForm({
               )}
             />
           </div>
-          <Suspense fallback={null}>
-            <ScriptAiPanel bridge={bridge} />
-          </Suspense>
+          {panelOpen && <ScriptAiPanel bridge={bridge} />}
         </div>
         {errors.content && <p className="text-sm text-destructive">{errors.content.message}</p>}
       </div>
