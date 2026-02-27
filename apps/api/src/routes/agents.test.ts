@@ -108,7 +108,11 @@ vi.mock('../services/eventBus', () => ({
 }));
 
 vi.mock('../services/commandQueue', () => ({
-  queueCommandForExecution: vi.fn()
+  queueCommandForExecution: vi.fn(),
+  CommandTypes: {
+    COLLECT_AUDIT_POLICY: 'collect_audit_policy',
+    APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
+  }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -129,8 +133,9 @@ vi.mock('../middleware/agentAuth', () => ({
   })
 }));
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { saveFilesystemSnapshot } from '../services/filesystemAnalysis';
+import { queueCommandForExecution } from '../services/commandQueue';
 
 describe('agent routes', () => {
   let app: Hono;
@@ -694,6 +699,63 @@ describe('agent routes', () => {
         'device-123',
         'on_demand',
         expect.any(Object)
+      );
+    });
+
+    it('queues post-apply audit policy collection outside request transaction', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '77777777-7777-4777-8777-777777777777',
+              type: 'apply_audit_policy_baseline',
+              deviceId: 'device-123',
+              createdAt: new Date()
+            }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      vi.mocked(queueCommandForExecution).mockResolvedValue({
+        command: {
+          id: '88888888-8888-4888-8888-888888888888',
+          deviceId: 'device-123',
+          type: 'collect_audit_policy',
+          payload: {},
+          status: 'pending',
+          createdBy: null,
+          createdAt: new Date(),
+          executedAt: null,
+          completedAt: null,
+          result: null
+        }
+      } as any);
+
+      const res = await app.request('/agents/agent-123/commands/77777777-7777-4777-8777-777777777777/result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'completed',
+          exitCode: 0,
+          stdout: '{"applied":1}',
+          durationMs: 900
+        })
+      });
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(queueCommandForExecution)).toHaveBeenCalledWith(
+        'device-123',
+        'collect_audit_policy',
+        {},
+        { preferHeartbeat: false }
       );
     });
   });

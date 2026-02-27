@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import BaselineDetailPage from '../../components/auditBaselines/BaselineDetailPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Audit Baseline">
+  <BaselineDetailPage baselineId={id} client:load />
+</DashboardLayout>

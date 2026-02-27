@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceCommands } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { commandResultSchema, securityCommandTypes, filesystemAnalysisCommandType, uuidRegex } from './schemas';
@@ -11,6 +11,8 @@ import {
   handleSoftwareRemediationCommandResult,
 } from './helpers';
 import { captureException } from '../../services/sentry';
+import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
+import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 
 export const commandsRoutes = new Hono();
 
@@ -75,6 +77,7 @@ commandsRoutes.post(
         await handleSecurityCommandResult(command, data);
       } catch (err) {
         console.error(`[agents] security command post-processing failed for ${commandId}:`, err);
+        captureException(err);
       }
     }
 
@@ -83,6 +86,7 @@ commandsRoutes.post(
         await handleFilesystemAnalysisCommandResult(command, data);
       } catch (err) {
         console.error(`[agents] filesystem analysis post-processing failed for ${commandId}:`, err);
+        captureException(err);
       }
     }
 
@@ -98,6 +102,40 @@ commandsRoutes.post(
           `(device ${command.deviceId}, policy ${policyId}) — device may be stuck in_progress:`,
           err
         );
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'collect_audit_policy' && data.status === 'completed') {
+      try {
+        await processCollectedAuditPolicyCommandResult(command.deviceId, data.stdout);
+      } catch (err) {
+        console.error(`[agents] audit policy command post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === CommandTypes.APPLY_AUDIT_POLICY_BASELINE && data.status === 'completed') {
+      try {
+        // Break out of the request-scoped transaction so the follow-up command
+        // row is committed before the agent can submit its result.
+        const collectResult = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            queueCommandForExecution(
+              command.deviceId,
+              CommandTypes.COLLECT_AUDIT_POLICY,
+              {},
+              { preferHeartbeat: false }
+            )
+          )
+        );
+        if (!collectResult.command) {
+          const errMsg = `failed to enqueue post-apply audit policy collection for ${commandId}: ${collectResult.error ?? 'unknown error'}`;
+          console.error(`[agents] ${errMsg}`);
+          captureException(new Error(errMsg));
+        }
+      } catch (err) {
+        console.error(`[agents] post-apply verification enqueue failed for ${commandId}:`, err);
         captureException(err);
       }
     }

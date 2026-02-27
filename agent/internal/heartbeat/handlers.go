@@ -63,6 +63,10 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdManageStartupItem:         handleManageStartupItem,
 	tools.CmdCollectReliabilityMetrics: handleCollectReliabilityMetrics,
 
+	// Audit policy compliance
+	tools.CmdCollectAuditPolicy:       handleCollectAuditPolicy,
+	tools.CmdApplyAuditPolicyBaseline: handleApplyAuditPolicyBaseline,
+
 	// File operations
 	tools.CmdFileList:           handleFileList,
 	tools.CmdFileRead:           handleFileRead,

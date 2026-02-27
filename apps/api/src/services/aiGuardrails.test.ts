@@ -229,9 +229,9 @@ describe('checkGuardrails — fleet approval descriptions', () => {
 describe('checkToolPermission — reliability and posture read tools', () => {
   const auth = {
     user: { id: 'user-1' },
+    token: { roleId: 'viewer', scope: 'organization' },
     orgId: 'org-1',
     partnerId: null,
-    token: { roleId: 'viewer', scope: 'organization' },
   } as any;
 
   it('enforces devices.read for get_fleet_health', async () => {
