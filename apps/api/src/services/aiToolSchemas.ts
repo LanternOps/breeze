@@ -191,6 +191,40 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reason: z.string().max(2000).optional(),
   }),
 
+  get_s1_status: z.object({
+    orgId: uuid.optional(),
+  }),
+
+  get_s1_threats: z.object({
+    orgId: uuid.optional(),
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'unknown']).optional(),
+    status: z.enum(['active', 'in_progress', 'quarantined', 'resolved']).optional(),
+    deviceId: uuid.optional(),
+    search: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }),
+
+  s1_isolate_device: z.object({
+    orgId: uuid.optional(),
+    deviceId: uuid.optional(),
+    deviceIds: z.array(uuid).min(1).max(200).optional(),
+    isolate: z.boolean().optional(),
+  }).superRefine((data, ctx) => {
+    const count = (data.deviceId ? 1 : 0) + (data.deviceIds?.length ?? 0);
+    if (count === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'deviceId or deviceIds is required',
+      });
+    }
+  }),
+
+  s1_threat_action: z.object({
+    orgId: uuid.optional(),
+    action: z.enum(['kill', 'quarantine', 'rollback']),
+    threatIds: z.array(z.string().min(1).max(128)).min(1).max(200),
+  }),
+
   execute_command: z.object({
     deviceId: uuid,
     commandType: z.enum([

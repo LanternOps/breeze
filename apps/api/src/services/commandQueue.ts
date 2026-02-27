@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../db';
+import { db } from '../db';
 import { deviceCommands, devices, auditLogs } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
@@ -127,6 +127,11 @@ export interface QueuedCommand {
   completedAt: Date | null;
   result: CommandResult | null;
 }
+
+const runOutsideDbContextSafe = <T>(fn: () => T): T => {
+  const runner = (db as { runOutsideDbContext?: <U>(task: () => U) => U }).runOutsideDbContext;
+  return typeof runner === 'function' ? runner(fn) : fn();
+};
 
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
@@ -385,7 +390,7 @@ export async function executeCommand(
 
   // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
   //    INSERT commits immediately and is visible to the WS handler.
-  return runOutsideDbContext(async () => {
+  return runOutsideDbContextSafe(async () => {
     // Validate userId for FK constraint: device_commands.created_by references users.id.
     // Helper sessions use a synthetic auth where auth.user.id is actually the device ID
     // (no real user record exists). Detect this by checking if userId equals deviceId.
