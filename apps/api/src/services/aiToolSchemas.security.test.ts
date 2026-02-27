@@ -282,9 +282,12 @@ describe('validateToolInput with file_operations (safePath integration)', () => 
 });
 
 describe('validateToolInput with unknown tools', () => {
-  it('returns success for unknown tool names (no schema registered)', () => {
+  it('rejects unknown tool names (fail-closed — no schema registered)', () => {
     const result = validateToolInput('nonexistent_tool', { anything: 'goes' });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('No input schema registered');
+    }
   });
 });
 

@@ -614,6 +614,8 @@ async function processResults(data: ProcessResultsJobData): Promise<{
               : null,
             currentState: { macAddress: host.mac, hostname: host.hostname, assetType: host.assetType }
           });
+        } else {
+          console.warn(`[DiscoveryWorker] No baseline found for org=${data.orgId} site=${data.siteId} — skipping ${decision.eventType} event for ${host.ip}`);
         }
       } catch (changeErr) {
         console.warn(
@@ -655,6 +657,8 @@ async function processResults(data: ProcessResultsJobData): Promise<{
                 previousState: { approvalStatus: asset.approvalStatus, isOnline: true },
                 currentState: { isOnline: false }
               });
+            } else {
+              console.warn(`[DiscoveryWorker] No baseline found for org=${data.orgId} site=${data.siteId} — skipping device_disappeared event for ${asset.ipAddress}`);
             }
           } catch (disappearedErr) {
             console.warn(

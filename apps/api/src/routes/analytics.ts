@@ -92,7 +92,7 @@ function aggregationSql(col: any, agg: string) {
     case 'count': return sql<number>`count(${col})`;
     case 'p95': return sql<number>`percentile_cont(0.95) within group (order by ${col})`;
     case 'p99': return sql<number>`percentile_cont(0.99) within group (order by ${col})`;
-    default: return sql<number>`avg(${col})`;
+    default: throw new Error(`Unsupported aggregation type: ${agg}`);
   }
 }
 
@@ -231,11 +231,26 @@ analyticsRoutes.post(
       const metricColumn =
         metricMap[normalizedMetricType] ?? metricMap[normalizedMetricType.toLowerCase()];
       if (!metricColumn) {
+        series.push({
+          metricType,
+          aggregation: data.aggregation,
+          interval: data.interval,
+          data: [],
+          warning: `Unknown metric type "${metricType}". Valid types: ${Object.keys(metricMap).join(', ')}`
+        } as any);
         continue;
       }
 
       const bucket = sql<Date>`date_trunc(${interval}, ${deviceMetrics.timestamp})`;
       const value = aggregationSql(metricColumn, data.aggregation);
+
+      // Org-scope: join devices table to ensure deviceIds belong to the user's org
+      const orgCondition =
+        typeof auth?.orgCondition === 'function'
+          ? auth.orgCondition(devices.orgId)
+          : auth?.orgId
+            ? eq(devices.orgId, auth.orgId)
+            : undefined;
 
       const rows = await db
         .select({
@@ -243,9 +258,11 @@ analyticsRoutes.post(
           value
         })
         .from(deviceMetrics)
+        .innerJoin(devices, eq(deviceMetrics.deviceId, devices.id))
         .where(
           and(
             inArray(deviceMetrics.deviceId, data.deviceIds),
+            ...(orgCondition ? [orgCondition] : []),
             gte(deviceMetrics.timestamp, startTime),
             lte(deviceMetrics.timestamp, endTime)
           )

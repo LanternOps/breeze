@@ -19,8 +19,6 @@ import { eq, and, desc, sql, gte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
-type AiToolTier = 1 | 2 | 3 | 4;
-
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
 // ============================================

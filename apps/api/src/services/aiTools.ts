@@ -4026,7 +4026,7 @@ registerTool({
   tier: 1,
   definition: {
     name: 'manage_scheduled_tasks',
-    description: 'List, create, run, disable, or delete Windows scheduled tasks on a device.',
+    description: 'List, run, enable, disable, or delete Windows scheduled tasks on a device.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -4188,11 +4188,11 @@ registerTool({
 
       const tagRows = await db.execute<{ tag: string }>(
         search
-          ? sql`SELECT DISTINCT unnest(tags) AS tag FROM devices WHERE ${whereClause} AND unnest(tags) ILIKE ${'%' + escapeLike(search) + '%'} ORDER BY tag`
+          ? sql`SELECT DISTINCT tag FROM (SELECT unnest(tags) AS tag FROM devices WHERE ${whereClause}) t WHERE tag ILIKE ${'%' + escapeLike(search) + '%'} ORDER BY tag`
           : sql`SELECT DISTINCT unnest(tags) AS tag FROM devices WHERE ${whereClause} ORDER BY tag`
       );
 
-      const tags = tagRows.rows.map((r: { tag: string }) => r.tag);
+      const tags = (tagRows as unknown as { tag: string }[]).map((r) => r.tag);
       return JSON.stringify({ tags, total: tags.length });
     }
 
@@ -5217,7 +5217,7 @@ registerTool({
       // Return channel details for testing (actual delivery is handled by the notification service)
       return JSON.stringify({
         success: true,
-        message: `Test event queued for channel "${channel.name}" (${channel.type})`,
+        message: `Channel "${channel.name}" (${channel.type}) verified — use the notification API to send a test message`,
         channel: {
           id: channel.id,
           name: channel.name,

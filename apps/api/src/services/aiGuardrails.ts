@@ -47,6 +47,7 @@ const TIER2_ACTIONS: Record<string, string[]> = {
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
 const TIER1_ACTIONS: Record<string, string[]> = {
   security_scan: ['vulnerabilities'],
+  manage_tags: ['list'],
 };
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
@@ -452,7 +453,7 @@ export async function checkToolPermission(
   if (auth.token.roleId === null) return null;
 
   const permDef = TOOL_PERMISSIONS[toolName];
-  if (!permDef) return null; // No permission mapping — allow
+  if (!permDef) return `No RBAC permission mapping for tool "${toolName}"`;
 
   // Resolve the required permission (may be action-dependent)
   let required: { resource: string; action: string };
