@@ -45,3 +45,53 @@ SentinelOne is available through `/api/v1/s1/*` with an encrypted per-org connec
 - Agent sync: every 15 minutes.
 - Threat sync: every 5 minutes.
 - Action status poller: every 1 minute.
+
+## Huntress
+
+### Overview
+Breeze supports a per-organization Huntress connector that syncs endpoint agent and incident intelligence into unified incident workflows.
+
+### API Endpoints
+- `GET /api/v1/huntress/integration`
+- `POST /api/v1/huntress/integration`
+- `POST /api/v1/huntress/sync`
+- `GET /api/v1/huntress/status`
+- `GET /api/v1/huntress/incidents`
+- `POST /api/v1/huntress/webhook`
+
+### Setup
+1. Create or update the integration via `POST /api/v1/huntress/integration` with:
+   - `name`
+   - `apiKey`
+   - optional `accountId`
+   - optional `apiBaseUrl` (must be HTTPS on `*.huntress.io`)
+   - `webhookSecret` (required for webhook ingestion)
+2. If webhook delivery is enabled in Huntress, configure the Breeze webhook endpoint:
+   - `POST /api/v1/huntress/webhook`
+   - include either integration id or account id in webhook routing metadata
+   - if multiple active integrations use the same account id, include an explicit integration id
+3. Trigger an initial sync with `POST /api/v1/huntress/sync`.
+
+### Sync Model
+- Scheduled sync runs every 15 minutes (see `DEFAULT_SYNC_INTERVAL_MINUTES` in `huntressSync.ts`).
+- Manual sync can be queued via API.
+- Incident deduplication is based on `(integration_id, huntress_incident_id)`.
+- Agent deduplication is based on `(integration_id, huntress_agent_id)`.
+
+### Correlation Behavior
+- Huntress agents are mapped to Breeze devices by normalized hostname.
+- Huntress incidents are mapped to devices via:
+  1. The Huntress agent's pre-established device mapping (itself based on hostname).
+  2. Direct hostname fallback when no agent link exists.
+
+### Troubleshooting
+- `lastSyncStatus = error`: inspect `lastSyncError` from the integration record.
+- Missing incidents after sync:
+  - verify integration is active,
+  - verify API key and account scope,
+  - run manual sync and inspect queue/job logs.
+- Webhook rejected:
+  - confirm `webhookSecret` is configured and matches the Huntress signature key,
+  - confirm the webhook includes both signature and timestamp headers,
+  - confirm request timestamp is within the replay window (default 10 minutes),
+  - confirm integration/account routing metadata is present.

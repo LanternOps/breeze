@@ -184,6 +184,28 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     }
   }),
 
+  get_huntress_status: z.object({
+    orgId: uuid.optional(),
+    integrationId: uuid.optional(),
+  }),
+
+  get_huntress_incidents: z.object({
+    orgId: uuid.optional(),
+    integrationId: uuid.optional(),
+    status: z.enum(['open', 'in_progress', 'resolved', 'dismissed']).optional(),
+    severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+    deviceId: uuid.optional(),
+    search: z.string().max(200).optional(),
+    includeResolved: z.boolean().optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+    offset: z.number().int().min(0).max(100000).optional(),
+  }),
+
+  sync_huntress_data: z.object({
+    orgId: uuid.optional(),
+    integrationId: uuid.optional(),
+  }),
+
   manage_dns_policy: z.object({
     integrationId: uuid,
     action: z.enum(['add_block', 'remove_block', 'add_allow', 'remove_allow']),

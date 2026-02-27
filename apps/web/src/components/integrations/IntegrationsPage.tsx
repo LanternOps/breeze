@@ -169,6 +169,14 @@ const integrationCatalog: IntegrationCategory[] = [
         status: 'disconnected',
         lastChecked: '—',
         connectedAccounts: 0
+      },
+      {
+        id: 'sec-huntress',
+        name: 'Huntress',
+        description: 'Managed EDR with agent sync and incident detection.',
+        status: 'disconnected',
+        lastChecked: '—',
+        connectedAccounts: 0
       }
     ]
   }

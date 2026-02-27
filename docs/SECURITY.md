@@ -24,3 +24,41 @@ SentinelOne containment/remediation APIs are treated as high-risk operations.
 - `s1.threat_detected` — emitted during threat sync for new active threats.
 - `s1.device_isolated` — emitted only when an `isolate` action completes (not unisolate).
 - `s1.threat_action_completed` — emitted for completed threat remediation actions (threat_kill, threat_quarantine, threat_rollback) and unisolate.
+
+## Huntress Incident Correlation Workflow
+
+### Data Protection
+- Huntress API keys and webhook secrets are encrypted at rest.
+- Integration-scoped data is protected with tenant RLS policies on:
+  - `huntress_integrations`
+  - `huntress_agents`
+  - `huntress_incidents`
+
+### Ingestion Paths
+- Scheduled polling (every 15 minutes, see `DEFAULT_SYNC_INTERVAL_MINUTES` in `huntressSync.ts`) through the Huntress sync worker.
+- Signed webhook ingestion through `POST /api/v1/huntress/webhook`.
+
+### Webhook Authenticity Controls
+- Webhooks require HMAC-SHA256 signature validation. If `webhookSecret` is not configured on the integration, webhook ingestion is rejected with a 403 error.
+- When webhook signing is enabled, signed payloads must include a timestamp header and replay window enforcement is applied (default 10 minutes).
+- When webhook signing is enabled, invalid or stale signatures are rejected before persistence.
+- If account-level routing is ambiguous, webhook ingestion requires an explicit integration id.
+
+### Event Lifecycle
+The integration emits normalized events on the Breeze event bus:
+- `huntress.incident_created`
+- `huntress.incident_updated`
+- `huntress.agent_offline`
+
+### Correlation and Triage
+1. Ingest Huntress agents and incidents.
+2. Correlate Huntress entities to Breeze devices by hostname matching.
+3. Normalize severity and status fields.
+4. Persist incident state transitions.
+5. Emit integration events for downstream automation and response.
+
+### Operational Guardrails
+- Integration management and manual sync endpoints require authenticated org write access and MFA.
+- Webhook ingestion is unauthenticated by user session but cryptographically validated via HMAC-SHA256 signature.
+- Integration health and incident read APIs remain org-scoped for partner/system contexts.
+- The `apiBaseUrl` field is restricted to HTTPS URLs on `*.huntress.io` to prevent SSRF.

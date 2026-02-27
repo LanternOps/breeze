@@ -47,6 +47,9 @@ export type EventType =
   | 's1.threat_detected'
   | 's1.device_isolated'
   | 's1.threat_action_completed'
+  | 'huntress.incident_created'
+  | 'huntress.incident_updated'
+  | 'huntress.agent_offline'
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
@@ -500,6 +503,9 @@ export const EVENT_TYPES = {
   S1_THREAT_DETECTED: 's1.threat_detected' as const,
   S1_DEVICE_ISOLATED: 's1.device_isolated' as const,
   S1_THREAT_ACTION_COMPLETED: 's1.threat_action_completed' as const,
+  HUNTRESS_INCIDENT_CREATED: 'huntress.incident_created' as const,
+  HUNTRESS_INCIDENT_UPDATED: 'huntress.incident_updated' as const,
+  HUNTRESS_AGENT_OFFLINE: 'huntress.agent_offline' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,

@@ -242,6 +242,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
+<<<<<<< HEAD
   // Tags, custom fields, and registry tools
   manage_tags: {
     list: { resource: 'devices', action: 'read' },
@@ -301,6 +302,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_cis_compliance: { resource: 'devices', action: 'read' },
   get_cis_device_report: { resource: 'devices', action: 'read' },
   apply_cis_remediation: { resource: 'devices', action: 'execute' },
+  get_huntress_status: { resource: 'devices', action: 'read' },
+  get_huntress_incidents: { resource: 'devices', action: 'read' },
+  sync_huntress_data: { resource: 'organizations', action: 'write' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -345,6 +349,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
   // Playbook tools
   execute_playbook: { limit: 5, windowSeconds: 600 },
+<<<<<<< HEAD
   manage_processes: { limit: 15, windowSeconds: 300 },
   // Tags and registry tools
   manage_tags: { limit: 20, windowSeconds: 300 },
@@ -366,6 +371,8 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   get_cis_compliance: { limit: 30, windowSeconds: 300 },
   get_cis_device_report: { limit: 30, windowSeconds: 300 },
   apply_cis_remediation: { limit: 10, windowSeconds: 600 },
+  // Huntress integration tools
+  sync_huntress_data: { limit: 10, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {
@@ -464,7 +471,13 @@ export async function checkToolPermission(
 ): Promise<string | null> {
   // Helper sessions use a synthetic auth with no roleId — tool access is
   // governed by the helper whitelist (helperToolFilter), not user RBAC.
-  if (auth.token?.roleId === null) return null;
+  // Helper sessions use a synthetic auth with no roleId — tool access is
+  // governed by the helper whitelist, not user RBAC.
+  if (!auth.token) {
+    console.warn(`[aiGuardrails] checkToolPermission called without auth.token for tool ${toolName}`);
+    return null;
+  }
+  if (auth.token.roleId === null) return null;
 
   const permDef = TOOL_PERMISSIONS[toolName];
   if (!permDef) return `No RBAC permission mapping for tool "${toolName}"`;
