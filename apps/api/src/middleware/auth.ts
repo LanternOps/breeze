@@ -401,23 +401,27 @@ export function requirePermission(resource: string, action: string) {
  */
 export function requireMfa() {
   return async (c: Context, next: Next) => {
-    if (!ENABLE_2FA) {
-      await next();
-      return;
-    }
-
     const auth = c.get('auth');
 
     if (!auth) {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
-    if (!auth.token.mfa) {
+    if (!hasSatisfiedMfa(auth)) {
       throw new HTTPException(403, { message: 'MFA required' });
     }
 
     await next();
   };
+}
+
+/**
+ * Returns true when MFA is either disabled globally or has been satisfied
+ * in the caller's authenticated token context.
+ */
+export function hasSatisfiedMfa(auth: Pick<AuthContext, 'token'>): boolean {
+  if (!ENABLE_2FA) return true;
+  return auth.token.mfa === true;
 }
 
 // Check if user can access a specific organization
