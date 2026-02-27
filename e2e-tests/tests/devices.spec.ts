@@ -102,15 +102,14 @@ test.describe('Device Management', () => {
 
     // Should show "Device Groups" heading
     await expect(
-      page.locator('h1, h2').first(),
-    ).toContainText(/Group|Device/i, { timeout: 10_000 });
+      page.locator('h1').first(),
+    ).toContainText(/Device Groups/i, { timeout: 10_000 });
 
     // DeviceGroupsPage uses a card layout (not table).
     // Should have a "Create Group" button, existing group cards, or empty state.
     const createOrList = page.locator('button:has-text("Create Group")')
       .or(page.locator('button:has-text("Create your first group")'))
       .or(page.locator('text=No device groups yet'))
-      .or(page.locator('.rounded-lg.border.bg-background'))
       .first();
     await expect(createOrList).toBeVisible({ timeout: 10_000 });
   });

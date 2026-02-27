@@ -13,14 +13,14 @@ import type { Page } from '@playwright/test';
 export async function waitForContentLoad(page: Page, timeout = 20_000): Promise<void> {
   const spinner = page.locator('.animate-spin').first();
   try {
-    // If a spinner is visible, wait for it to disappear
-    const isSpinning = await spinner.isVisible({ timeout: 2_000 }).catch(() => false);
-    if (isSpinning) {
-      await spinner.waitFor({ state: 'hidden', timeout });
-    }
+    // Wait briefly for the spinner to appear; if it never appears, content loaded fast
+    await spinner.waitFor({ state: 'visible', timeout: 2_000 });
   } catch {
-    // Spinner may have already disappeared or never appeared — that's fine
+    // Spinner never appeared — content loaded without a loading state
+    return;
   }
+  // Spinner is visible — wait for it to disappear (do NOT catch; surface stuck-spinner errors)
+  await spinner.waitFor({ state: 'hidden', timeout });
 }
 
 /**

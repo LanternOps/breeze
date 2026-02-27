@@ -24,8 +24,7 @@ test.describe('Policies', () => {
 
     // PolicyEditPage renders h1 "Create Policy" and a PolicyForm with <form>
     const formOrHeading = page.locator('form').first()
-      .or(page.locator('h1:has-text("Create Policy")').first())
-      .or(page.locator('h1').first());
+      .or(page.locator('h1:has-text("Create Policy")').first());
     await expect(formOrHeading).toBeVisible({ timeout: 10_000 });
   });
 

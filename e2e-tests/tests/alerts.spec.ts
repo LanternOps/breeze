@@ -24,13 +24,8 @@ test.describe('Alert Lifecycle', () => {
 
   test('create alert rule page redirects to configuration policies', async ({ page }) => {
     // /alerts/rules/new also redirects to /configuration-policies
-    try {
-      await page.goto('/alerts/rules/new');
-      await waitForApp(page);
-    } catch {
-      test.skip(true, 'Navigation to /alerts/rules/new failed — skipping');
-      return;
-    }
+    await page.goto('/alerts/rules/new');
+    await waitForApp(page);
 
     await expect(page).toHaveURL(/\/configuration-policies/, { timeout: 10_000 });
 

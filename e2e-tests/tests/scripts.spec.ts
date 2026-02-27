@@ -67,7 +67,7 @@ test.describe('Script Management', () => {
 
     // Fill script content — Monaco editor loaded via lazy import in ScriptForm
     const monacoEditor = page.locator('.monaco-editor');
-    const monacoVisible = await monacoEditor.first().isVisible({ timeout: 10_000 }).catch(() => false);
+    const monacoVisible = await monacoEditor.first().waitFor({ state: 'visible', timeout: 10_000 }).then(() => true).catch(() => false);
 
     if (monacoVisible) {
       await monacoEditor.first().click();
@@ -75,9 +75,9 @@ test.describe('Script Management', () => {
     } else {
       // Fallback: try any textarea within the form
       const fallbackEditor = page.locator('textarea').first();
-      if (await fallbackEditor.isVisible({ timeout: 3_000 }).catch(() => false)) {
-        await fallbackEditor.fill('#!/bin/bash\necho "E2E test script"');
-      }
+      const fallbackVisible = await fallbackEditor.isVisible({ timeout: 3_000 }).catch(() => false);
+      expect(fallbackVisible, 'No script content editor found (Monaco or textarea)').toBe(true);
+      await fallbackEditor.fill('#!/bin/bash\necho "E2E test script"');
     }
 
     // Click Save — "Create Script" for new scripts
