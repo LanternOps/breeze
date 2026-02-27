@@ -120,6 +120,7 @@ import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
 import { listReliabilityDevices } from './reliabilityScoring';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
+import { assignSecurityTraining, getUserRiskDetail, listUserRiskScores } from './userRiskScoring';
 import {
   mergeBootRecords,
   parseCollectorBootMetricsFromCommandResult,
@@ -4063,6 +4064,165 @@ registerTool({
       const message = err instanceof Error ? err.message : 'Internal error';
       console.error('[fleet:get_fleet_health]', message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
+    }
+  }
+});
+
+// ============================================
+// get_user_risk_scores - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_user_risk_scores',
+    description: 'Return ranked user risk scores with factor breakdowns and trend direction for accessible organizations.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        orgId: { type: 'string', description: 'Optional org UUID (must be accessible)' },
+        siteId: { type: 'string', description: 'Optional site UUID filter' },
+        minScore: { type: 'number', description: 'Minimum score filter (0-100)' },
+        maxScore: { type: 'number', description: 'Maximum score filter (0-100)' },
+        trendDirection: { type: 'string', enum: ['up', 'down', 'stable'], description: 'Trend filter' },
+        search: { type: 'string', description: 'Match user name/email' },
+        limit: { type: 'number', description: 'Maximum rows (default 25, max 200)' }
+      }
+    }
+  },
+  handler: async (input, auth) => {
+    if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
+      return JSON.stringify({ error: 'Access denied to this organization' });
+    }
+
+    const orgIds = typeof input.orgId === 'string' && input.orgId
+      ? [input.orgId]
+      : auth.orgId
+        ? [auth.orgId]
+        : (auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0 ? auth.accessibleOrgIds : undefined);
+
+    if (!orgIds && auth.scope !== 'system') {
+      return JSON.stringify({ error: 'Organization context required' });
+    }
+
+    const limit = Math.min(Math.max(1, Number(input.limit) || 25), 200);
+    const result = await listUserRiskScores({
+      orgIds,
+      siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
+      minScore: typeof input.minScore === 'number' ? input.minScore : undefined,
+      maxScore: typeof input.maxScore === 'number' ? input.maxScore : undefined,
+      trendDirection: (typeof input.trendDirection === 'string'
+        && ['up', 'down', 'stable'].includes(input.trendDirection))
+        ? input.trendDirection as 'up' | 'down' | 'stable'
+        : undefined,
+      search: typeof input.search === 'string' ? input.search : undefined,
+      limit,
+      offset: 0
+    });
+
+    const rows = result.rows;
+    return JSON.stringify({
+      total: result.total,
+      users: rows,
+      summary: {
+        averageScore: rows.length ? Math.round(rows.reduce((sum, row) => sum + row.score, 0) / rows.length) : 0,
+        highRiskUsers: rows.filter((row) => row.score >= 70).length,
+        criticalRiskUsers: rows.filter((row) => row.score >= 85).length
+      }
+    });
+  }
+});
+
+// ============================================
+// get_user_risk_detail - Tier 1 (read-only)
+// ============================================
+
+registerTool({
+  tier: 1,
+  definition: {
+    name: 'get_user_risk_detail',
+    description: 'Fetch a single user risk profile including latest score, factors, trend history, and risk-impacting events.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        userId: { type: 'string', description: 'User UUID' },
+        orgId: { type: 'string', description: 'Organization UUID for disambiguation' }
+      },
+      required: ['userId']
+    }
+  },
+  handler: async (input, auth) => {
+    if (typeof input.userId !== 'string' || !input.userId) {
+      return JSON.stringify({ error: 'userId is required' });
+    }
+
+    const resolved = resolveWritableToolOrgId(
+      auth,
+      typeof input.orgId === 'string' ? input.orgId : undefined
+    );
+    if (resolved.error || !resolved.orgId) {
+      return JSON.stringify({ error: resolved.error ?? 'orgId is required for this operation' });
+    }
+
+    const detail = await getUserRiskDetail(resolved.orgId, input.userId);
+    if (!detail) {
+      return JSON.stringify({ error: 'No user risk data available for this user' });
+    }
+
+    return JSON.stringify({ userRisk: detail });
+  }
+});
+
+// ============================================
+// assign_security_training - Tier 2 (write)
+// ============================================
+
+registerTool({
+  tier: 2,
+  definition: {
+    name: 'assign_security_training',
+    description: 'Assign security awareness training to a user and emit auditable events.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        userId: { type: 'string', description: 'User UUID' },
+        orgId: { type: 'string', description: 'Organization UUID (required for partner/system contexts with multiple orgs)' },
+        moduleId: { type: 'string', description: 'Training module key (optional)' },
+        reason: { type: 'string', description: 'Optional assignment reason' }
+      },
+      required: ['userId']
+    }
+  },
+  handler: async (input, auth) => {
+    if (typeof input.userId !== 'string' || !input.userId) {
+      return JSON.stringify({ error: 'userId is required' });
+    }
+
+    const resolved = resolveWritableToolOrgId(
+      auth,
+      typeof input.orgId === 'string' ? input.orgId : undefined
+    );
+    if (resolved.error || !resolved.orgId) {
+      return JSON.stringify({ error: resolved.error ?? 'orgId is required for this operation' });
+    }
+
+    try {
+      const result = await assignSecurityTraining({
+        orgId: resolved.orgId,
+        userId: input.userId,
+        moduleId: typeof input.moduleId === 'string' ? input.moduleId : undefined,
+        reason: typeof input.reason === 'string' ? input.reason : undefined,
+        assignedBy: auth.user.id
+      });
+
+      return JSON.stringify({
+        success: true,
+        ...result
+      });
+    } catch (error) {
+      return JSON.stringify({
+        error: error instanceof Error ? error.message : 'Failed to assign security training'
+      });
     }
   }
 });

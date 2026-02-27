@@ -52,6 +52,7 @@ import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
 import { cisHardeningRoutes } from './routes/cisHardening';
 import { reliabilityRoutes } from './routes/reliability';
+import { userRiskRoutes } from './routes/userRisk';
 import { snmpRoutes } from './routes/snmp';
 import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
@@ -112,6 +113,8 @@ import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
 import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/reliabilityWorker';
+import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
+import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
@@ -629,6 +632,7 @@ api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
 api.route('/cis', cisHardeningRoutes);
 api.route('/reliability', reliabilityRoutes);
+api.route('/user-risk', userRiskRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
@@ -855,6 +859,8 @@ async function initializeWorkers(): Promise<void> {
     ['automationWorker', initializeAutomationWorker],
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['reliabilityWorker', initializeReliabilityWorker],
+    ['userRiskWorker', initializeUserRiskJobs],
+    ['userRiskRetention', initializeUserRiskRetention],
     ['policyAlertBridge', initializePolicyAlertBridge],
     ['eventLogRetention', initializeEventLogRetention],
     ['logCorrelationWorker', initializeLogCorrelationWorker],
@@ -987,6 +993,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
+    shutdownUserRiskJobs,
+    shutdownUserRiskRetention,
     shutdownAutomationWorker,
     shutdownSoftwareRemediationWorker,
     shutdownSoftwareComplianceWorker,

@@ -484,6 +484,28 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  get_user_risk_scores: z.object({
+    orgId: uuid.optional(),
+    siteId: uuid.optional(),
+    minScore: z.number().int().min(0).max(100).optional(),
+    maxScore: z.number().int().min(0).max(100).optional(),
+    trendDirection: z.enum(['up', 'down', 'stable']).optional(),
+    search: z.string().max(255).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  get_user_risk_detail: z.object({
+    userId: uuid,
+    orgId: uuid.optional(),
+  }),
+
+  assign_security_training: z.object({
+    userId: uuid,
+    orgId: uuid.optional(),
+    moduleId: z.string().min(1).max(120).optional(),
+    reason: z.string().min(1).max(500).optional(),
+  }),
+
   file_operations: z.object({
     deviceId: uuid,
     action: z.enum(['list', 'read', 'write', 'delete', 'mkdir', 'rename']),

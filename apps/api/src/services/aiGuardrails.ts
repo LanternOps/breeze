@@ -242,7 +242,6 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
-<<<<<<< HEAD
   // Tags, custom fields, and registry tools
   manage_tags: {
     list: { resource: 'devices', action: 'read' },
@@ -305,6 +304,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_huntress_status: { resource: 'devices', action: 'read' },
   get_huntress_incidents: { resource: 'devices', action: 'read' },
   sync_huntress_data: { resource: 'organizations', action: 'write' },
+  // User risk scoring tools
+  get_user_risk_scores: { resource: 'users', action: 'read' },
+  get_user_risk_detail: { resource: 'users', action: 'read' },
+  assign_security_training: { resource: 'users', action: 'write' },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -349,7 +352,6 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   remove_configuration_policy_assignment: { limit: 10, windowSeconds: 300 },
   // Playbook tools
   execute_playbook: { limit: 5, windowSeconds: 600 },
-<<<<<<< HEAD
   manage_processes: { limit: 15, windowSeconds: 300 },
   // Tags and registry tools
   manage_tags: { limit: 20, windowSeconds: 300 },
@@ -373,6 +375,8 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   apply_cis_remediation: { limit: 10, windowSeconds: 600 },
   // Huntress integration tools
   sync_huntress_data: { limit: 10, windowSeconds: 300 },
+  // User risk tools
+  assign_security_training: { limit: 10, windowSeconds: 300 },
 };
 
 export interface GuardrailCheck {
