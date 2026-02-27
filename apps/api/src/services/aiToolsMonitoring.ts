@@ -5,18 +5,15 @@
  * Each tool wraps existing DB schema with org-scoped isolation.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
 import {
   networkMonitors,
   networkMonitorResults,
   networkMonitorAlertRules,
 } from '../db/schema/monitors';
-import { eq, and, desc, sql, gte, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-
-type AiToolTier = 1 | 2 | 3 | 4;
 
 type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 

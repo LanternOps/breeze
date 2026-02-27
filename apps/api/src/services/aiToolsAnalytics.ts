@@ -6,7 +6,6 @@
  * Each tool wraps existing DB schema with org-scoped isolation.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
 import {
   slaCompliance,
@@ -17,8 +16,6 @@ import {
 import { eq, and, desc, asc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-
-type AiToolTier = 1 | 2 | 3 | 4;
 
 type AnalyticsHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 

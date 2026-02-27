@@ -47,7 +47,9 @@ function loadSqlContent(): string {
         parts.push(readFileSync(path.join(DRIZZLE_DIR, f), 'utf8'));
       }
     }
-  } catch { /* no drizzle dir */ }
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') console.warn('⚠  Error reading drizzle dir:', err.message);
+  }
 
   // Manual SQL migrations
   try {
@@ -56,7 +58,9 @@ function loadSqlContent(): string {
         parts.push(readFileSync(path.join(MANUAL_DIR, f), 'utf8'));
       }
     }
-  } catch { /* no manual dir */ }
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') console.warn('⚠  Error reading manual dir:', err.message);
+  }
 
   return parts.join('\n');
 }
@@ -98,7 +102,9 @@ function findSchemaFile(tableName: string): string | null {
         return `apps/api/src/db/schema/${f}`;
       }
     }
-  } catch { /* ignore */ }
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') console.warn('⚠  Error scanning schema dir:', err.message);
+  }
   return null;
 }
 

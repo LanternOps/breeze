@@ -236,69 +236,85 @@ alertsRoutes.post(
     const auth = c.get('auth');
     const { action, alertIds } = c.req.valid('json');
 
-    // Fetch all requested alerts
-    const matchedAlerts = await db
+    // Fetch alerts scoped to user's org access
+    const orgCondition =
+      auth.scope === 'organization' && auth.orgId
+        ? eq(alerts.orgId, auth.orgId)
+        : auth.scope === 'partner' && auth.accessibleOrgIds?.length
+          ? inArray(alerts.orgId, auth.accessibleOrgIds)
+          : undefined;
+
+    const accessible = await db
       .select()
       .from(alerts)
-      .where(inArray(alerts.id, alertIds));
-
-    // Filter to only alerts the user can access
-    const accessible = matchedAlerts.filter(a => auth.canAccessOrg(a.orgId));
+      .where(
+        orgCondition
+          ? and(inArray(alerts.id, alertIds), orgCondition)
+          : inArray(alerts.id, alertIds)
+      );
 
     if (accessible.length === 0) {
       return c.json({ error: 'No accessible alerts found' }, 404);
     }
 
     const now = new Date();
-    const results = { updated: 0, skipped: 0 };
+    const results = { updated: 0, skipped: 0, failed: 0 };
 
     for (const alert of accessible) {
-      if (action === 'acknowledge') {
-        if (alert.status !== 'active') {
-          results.skipped++;
-          continue;
-        }
-        await db
-          .update(alerts)
-          .set({
-            status: 'acknowledged',
-            acknowledgedAt: now,
-            acknowledgedBy: auth.user.id,
-          })
-          .where(eq(alerts.id, alert.id));
-      } else {
-        if (alert.status === 'resolved') {
-          results.skipped++;
-          continue;
-        }
-        await db
-          .update(alerts)
-          .set({
-            status: 'resolved',
-            resolvedAt: now,
-            resolvedBy: auth.user.id,
-          })
-          .where(eq(alerts.id, alert.id));
-      }
-      results.updated++;
-
       try {
-        await publishEvent(
-          action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
-          alert.orgId,
-          {
-            alertId: alert.id,
-            ruleId: alert.ruleId,
-            deviceId: alert.deviceId,
-            ...(action === 'acknowledge'
-              ? { acknowledgedBy: auth.user.id }
-              : { resolvedBy: auth.user.id }),
-          },
-          'alerts-route',
-          { userId: auth.user.id }
-        );
-      } catch {
-        // Non-critical — don't fail the bulk operation
+        if (action === 'acknowledge') {
+          if (alert.status !== 'active') {
+            results.skipped++;
+            continue;
+          }
+          await db
+            .update(alerts)
+            .set({
+              status: 'acknowledged',
+              acknowledgedAt: now,
+              acknowledgedBy: auth.user.id,
+            })
+            .where(eq(alerts.id, alert.id));
+        } else {
+          if (alert.status === 'resolved') {
+            results.skipped++;
+            continue;
+          }
+          await db
+            .update(alerts)
+            .set({
+              status: 'resolved',
+              resolvedAt: now,
+              resolvedBy: auth.user.id,
+            })
+            .where(eq(alerts.id, alert.id));
+        }
+        results.updated++;
+
+        try {
+          await publishEvent(
+            action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
+            alert.orgId,
+            {
+              alertId: alert.id,
+              ruleId: alert.ruleId,
+              deviceId: alert.deviceId,
+              ...(action === 'acknowledge'
+                ? { acknowledgedBy: auth.user.id }
+                : { resolvedBy: auth.user.id }),
+            },
+            'alerts-route',
+            { userId: auth.user.id }
+          );
+        } catch (eventErr) {
+          console.error(
+            `[alerts/bulk] Failed to publish ${action} event for alert ${alert.id}:`,
+            eventErr instanceof Error ? eventErr.message : eventErr
+          );
+        }
+      } catch (dbErr) {
+        console.error(`[alerts/bulk] Failed to ${action} alert ${alert.id}:`, dbErr instanceof Error ? dbErr.message : dbErr);
+        results.failed++;
       }
     }
 

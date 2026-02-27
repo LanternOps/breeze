@@ -250,13 +250,15 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: webhookDeliveries.id, createdAt: webhookDeliveries.createdAt });
 
+      if (!delivery) return JSON.stringify({ error: 'Failed to create test delivery record' });
+
       return JSON.stringify({
         success: true,
         message: `Test delivery queued for webhook "${webhook.name}"`,
-        deliveryId: delivery!.id,
+        deliveryId: delivery.id,
         webhookId: webhook.id,
         webhookUrl: webhook.url,
-        createdAt: delivery!.createdAt,
+        createdAt: delivery.createdAt,
       });
     }),
   });

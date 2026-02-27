@@ -637,8 +637,8 @@ export function validateToolInput(
 ): { success: true } | { success: false; error: string } {
   const schema = toolInputSchemas[toolName];
   if (!schema) {
-    console.warn(`[AI] No input schema defined for tool "${toolName}" — input bypasses validation`);
-    return { success: true };
+    console.warn(`[AI] No input schema defined for tool "${toolName}" — rejecting input`);
+    return { success: false, error: `No input schema registered for tool "${toolName}"` };
   }
 
   const result = schema.safeParse(input);
