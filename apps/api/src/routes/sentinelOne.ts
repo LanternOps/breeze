@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { devices, s1Actions, s1Agents, s1Integrations, s1Threats } from '../db/schema';
+import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1SiteMappings, s1Threats } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   isThreatAction,
@@ -103,6 +103,12 @@ const syncSchema = z.object({
 
 const integrationQuerySchema = z.object({
   orgId: z.string().uuid().optional()
+});
+
+const siteMapSchema = z.object({
+  integrationId: z.string().uuid(),
+  siteName: z.string().min(1).max(200),
+  orgId: z.string().uuid().nullable()
 });
 
 sentinelOneRoutes.get(
@@ -556,5 +562,142 @@ sentinelOneRoutes.post(
     });
 
     return c.json({ data: { integrationId, jobId } });
+  }
+);
+
+sentinelOneRoutes.get(
+  '/sites',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', integrationQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const orgResult = resolveOrgId(auth, query.orgId);
+    if ('error' in orgResult) {
+      return c.json({ error: orgResult.error }, orgResult.status);
+    }
+
+    const [integration] = await db
+      .select({ id: s1Integrations.id })
+      .from(s1Integrations)
+      .where(eq(s1Integrations.orgId, orgResult.orgId))
+      .limit(1);
+
+    if (!integration) {
+      return c.json({ data: [] });
+    }
+
+    const siteRows = await db
+      .select({
+        siteName: sql<string>`metadata->>'siteName'`,
+        agentCount: sql<number>`count(*)::int`
+      })
+      .from(s1Agents)
+      .where(
+        and(
+          eq(s1Agents.integrationId, integration.id),
+          sql`metadata->>'siteName' IS NOT NULL`,
+          sql`metadata->>'siteName' != ''`
+        )
+      )
+      .groupBy(sql`metadata->>'siteName'`)
+      .orderBy(sql`metadata->>'siteName'`);
+
+    const mappings = await db
+      .select({
+        siteName: s1SiteMappings.siteName,
+        orgId: s1SiteMappings.orgId,
+        orgName: organizations.name
+      })
+      .from(s1SiteMappings)
+      .leftJoin(organizations, eq(s1SiteMappings.orgId, organizations.id))
+      .where(eq(s1SiteMappings.integrationId, integration.id));
+
+    const mappingBySite = new Map(mappings.map((m) => [m.siteName, { orgId: m.orgId, orgName: m.orgName }]));
+
+    const data = siteRows.map((row) => {
+      const mapping = mappingBySite.get(row.siteName);
+      return {
+        siteName: row.siteName,
+        agentCount: row.agentCount,
+        mappedOrgId: mapping?.orgId ?? null,
+        mappedOrgName: mapping?.orgName ?? null
+      };
+    });
+
+    return c.json({ data, integrationId: integration.id });
+  }
+);
+
+sentinelOneRoutes.post(
+  '/sites/map',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  zValidator('json', siteMapSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+
+    const [integration] = await db
+      .select({ id: s1Integrations.id, orgId: s1Integrations.orgId })
+      .from(s1Integrations)
+      .where(eq(s1Integrations.id, body.integrationId))
+      .limit(1);
+
+    if (!integration || !auth.canAccessOrg(integration.orgId)) {
+      return c.json({ error: 'Integration not found or access denied' }, 404);
+    }
+
+    if (body.orgId === null) {
+      await db
+        .delete(s1SiteMappings)
+        .where(
+          and(
+            eq(s1SiteMappings.integrationId, body.integrationId),
+            eq(s1SiteMappings.siteName, body.siteName)
+          )
+        );
+
+      writeRouteAudit(c, {
+        orgId: integration.orgId,
+        action: 's1.site.unmap',
+        resourceType: 's1_site_mapping',
+        resourceName: body.siteName,
+        details: { integrationId: body.integrationId }
+      });
+
+      return c.json({ data: { siteName: body.siteName, mappedOrgId: null } });
+    }
+
+    if (!auth.canAccessOrg(body.orgId)) {
+      return c.json({ error: 'Access to target organization denied' }, 403);
+    }
+
+    const now = new Date();
+    await db
+      .insert(s1SiteMappings)
+      .values({
+        integrationId: body.integrationId,
+        siteName: body.siteName,
+        orgId: body.orgId,
+        updatedAt: now
+      })
+      .onConflictDoUpdate({
+        target: [s1SiteMappings.integrationId, s1SiteMappings.siteName],
+        set: {
+          orgId: sql`excluded.org_id`,
+          updatedAt: now
+        }
+      });
+
+    writeRouteAudit(c, {
+      orgId: integration.orgId,
+      action: 's1.site.map',
+      resourceType: 's1_site_mapping',
+      resourceName: body.siteName,
+      details: { integrationId: body.integrationId, targetOrgId: body.orgId }
+    });
+
+    return c.json({ data: { siteName: body.siteName, mappedOrgId: body.orgId } });
   }
 );
