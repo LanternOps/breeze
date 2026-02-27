@@ -454,7 +454,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     minScore: z.number().int().min(0).max(100).optional(),
     maxScore: z.number().int().min(0).max(100).optional(),
     limit: z.number().int().min(1).max(500).optional(),
-  }),
+  }).refine(
+    (data) => data.minScore == null || data.maxScore == null || data.minScore <= data.maxScore,
+    { message: 'minScore must be <= maxScore' },
+  ),
 
   get_cis_device_report: z.object({
     deviceId: uuid,
@@ -467,7 +470,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     baselineId: uuid.optional(),
     baselineResultId: uuid.optional(),
     checkIds: z.array(z.string().min(1).max(120)).min(1).max(100),
-    action: z.enum(['apply', 'rollback']).optional(),
+    action: z.enum(['apply', 'rollback']).default('apply'),
     reason: z.string().max(1000).optional(),
   }),
 

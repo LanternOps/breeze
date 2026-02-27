@@ -17,12 +17,18 @@ const { db } = dbModule;
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof withSystem === 'function') {
+    return withSystem(fn);
+  }
+  console.warn('[CisJobs] withSystemDbAccessContext not available, running without system context');
+  return fn();
 };
 
 const CIS_QUEUE = 'cis-hardening';
 const CIS_SCAN_COMMAND = 'cis_benchmark';
 const CIS_REMEDIATION_COMMAND = 'apply_cis_remediation';
+// Devices with score below this threshold are considered non-compliant for aggregation
+const CIS_COMPLIANCE_THRESHOLD = 80;
 
 type ScheduleScansJobData = {
   type: 'schedule-scans';
@@ -84,38 +90,44 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
   }
 
   const queue = getCisQueue();
+  // Hourly slot used as jobId suffix to deduplicate scans within the same scheduling window
   const slot = Math.floor(Date.now() / (60 * 60 * 1000));
   let enqueued = 0;
 
   for (const baseline of dueBaselines) {
-    await queue.add(
-      'run-baseline-scan',
-      {
-        type: 'run-baseline-scan',
-        baselineId: baseline.id,
-        origin: 'scheduled',
-      },
-      {
-        jobId: `cis-scan-${baseline.id}-${slot}`,
-        removeOnComplete: { count: 100 },
-        removeOnFail: { count: 200 },
-        attempts: 2,
-        backoff: { type: 'exponential', delay: 5000 },
-      }
-    );
-    enqueued++;
-
-    const schedule = normalizeCisSchedule(baseline.scanSchedule);
-    await db
-      .update(cisBaselines)
-      .set({
-        scanSchedule: {
-          ...schedule,
-          nextScanAt: new Date(now.getTime() + schedule.intervalHours * 60 * 60 * 1000).toISOString(),
+    try {
+      await queue.add(
+        'run-baseline-scan',
+        {
+          type: 'run-baseline-scan',
+          baselineId: baseline.id,
+          origin: 'scheduled',
         },
-        updatedAt: new Date(),
-      })
-      .where(eq(cisBaselines.id, baseline.id));
+        {
+          jobId: `cis-scan-${baseline.id}-${slot}`,
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 200 },
+          attempts: 2,
+          backoff: { type: 'exponential', delay: 5000 },
+        }
+      );
+      enqueued++;
+
+      const schedule = normalizeCisSchedule(baseline.scanSchedule);
+      await db
+        .update(cisBaselines)
+        .set({
+          scanSchedule: {
+            ...schedule,
+            nextScanAt: new Date(now.getTime() + schedule.intervalHours * 60 * 60 * 1000).toISOString(),
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(cisBaselines.id, baseline.id));
+    } catch (error) {
+      console.error(`[CisJobs] processScheduleScans: failed to enqueue baseline ${baseline.id}:`, error);
+      captureException(error);
+    }
   }
 
   return { enqueued };
@@ -136,6 +148,9 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
     .limit(1);
 
   if (!baseline) {
+    console.warn(
+      `[CisJobs] processRunBaselineScan: baseline ${data.baselineId} not found or inactive (origin: ${data.origin ?? 'unknown'})`,
+    );
     return {
       baselineId: data.baselineId,
       devicesTargeted: 0,
@@ -161,20 +176,25 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
   let commandsQueued = 0;
   const uniqueDeviceIds = Array.from(new Set(rows.map((row) => row.id)));
   for (const deviceId of uniqueDeviceIds) {
-    await queueCommand(
-      deviceId,
-      CIS_SCAN_COMMAND,
-      {
-        source: 'cis_hardening',
-        baselineId: baseline.id,
-        orgId: baseline.orgId,
-        benchmarkVersion: baseline.benchmarkVersion,
-        level: baseline.level,
-        customExclusions: baseline.customExclusions ?? [],
-      },
-      data.requestedBy ?? undefined
-    );
-    commandsQueued++;
+    try {
+      await queueCommand(
+        deviceId,
+        CIS_SCAN_COMMAND,
+        {
+          source: 'cis_hardening',
+          baselineId: baseline.id,
+          orgId: baseline.orgId,
+          benchmarkVersion: baseline.benchmarkVersion,
+          level: baseline.level,
+          customExclusions: baseline.customExclusions ?? [],
+        },
+        data.requestedBy ?? undefined
+      );
+      commandsQueued++;
+    } catch (error) {
+      console.error(`[CisJobs] processRunBaselineScan: failed to queue command for device ${deviceId}:`, error);
+      captureException(error);
+    }
   }
 
   return {
@@ -197,7 +217,7 @@ async function processAggregateScores(): Promise<{ orgsProcessed: number }> {
         org_id,
         device_id,
         score,
-        row_number() OVER (PARTITION BY org_id, device_id ORDER BY checked_at DESC) AS rn
+        row_number() OVER (PARTITION BY org_id, device_id, baseline_id ORDER BY checked_at DESC) AS rn
       FROM cis_baseline_results
     ),
     aggregated AS (
@@ -206,7 +226,7 @@ async function processAggregateScores(): Promise<{ orgsProcessed: number }> {
         AVG(CASE WHEN rn = 1 THEN score END)::numeric(6,2) AS current_average_score,
         AVG(CASE WHEN rn = 2 THEN score END)::numeric(6,2) AS previous_average_score,
         COUNT(*) FILTER (WHERE rn = 1)::int AS devices_audited,
-        SUM(CASE WHEN rn = 1 AND score < 80 THEN 1 ELSE 0 END)::int AS non_compliant_devices
+        SUM(CASE WHEN rn = 1 AND score < ${CIS_COMPLIANCE_THRESHOLD} THEN 1 ELSE 0 END)::int AS non_compliant_devices
       FROM ranked
       WHERE rn <= 2
       GROUP BY org_id
@@ -272,28 +292,49 @@ async function processRemediationAction(data: RemediateActionJobData): Promise<{
     .where(eq(cisRemediationActions.id, data.actionId))
     .limit(1);
 
-  if (!action || action.status !== 'queued' || action.approvalStatus !== 'approved') {
-    return {
-      actionId: data.actionId,
-      queued: false,
-      commandId: null,
-    };
+  if (!action) {
+    console.warn(`[CisJobs] processRemediationAction: action ${data.actionId} not found`);
+    return { actionId: data.actionId, queued: false, commandId: null };
+  }
+  if (action.status !== 'queued' || action.approvalStatus !== 'approved') {
+    console.warn(
+      `[CisJobs] processRemediationAction: action ${data.actionId} not eligible (status=${action.status}, approvalStatus=${action.approvalStatus})`,
+    );
+    return { actionId: data.actionId, queued: false, commandId: null };
   }
 
-  const command = await queueCommand(
-    action.deviceId,
-    CIS_REMEDIATION_COMMAND,
-    {
-      source: 'cis_hardening',
-      actionId: action.id,
-      baselineId: action.baselineId,
-      baselineResultId: action.baselineResultId,
-      checkId: action.checkId,
-      action: action.action,
-      details: action.details ?? {},
-    },
-    action.requestedBy ?? undefined
-  );
+  let command;
+  try {
+    command = await queueCommand(
+      action.deviceId,
+      CIS_REMEDIATION_COMMAND,
+      {
+        source: 'cis_hardening',
+        actionId: action.id,
+        baselineId: action.baselineId,
+        baselineResultId: action.baselineResultId,
+        checkId: action.checkId,
+        action: action.action,
+        details: action.details ?? {},
+      },
+      action.requestedBy ?? undefined
+    );
+  } catch (error) {
+    console.error(`[CisJobs] processRemediationAction: failed to queue command for action ${action.id}:`, error);
+    captureException(error);
+    await db
+      .update(cisRemediationActions)
+      .set({
+        status: 'failed',
+        details: {
+          ...(action.details ?? {}),
+          queueError: error instanceof Error ? error.message : 'Queue unavailable',
+          queueFailedAt: new Date().toISOString(),
+        },
+      })
+      .where(eq(cisRemediationActions.id, action.id));
+    return { actionId: action.id, queued: false, commandId: null };
+  }
 
   await db
     .update(cisRemediationActions)
@@ -435,7 +476,6 @@ export async function scheduleCisScan(
 }
 
 export type CisRemediationScheduleResult = {
-  queued: number;
   queuedActionIds: string[];
   failedActionIds: string[];
 };
@@ -473,7 +513,6 @@ export async function scheduleCisRemediationWithResult(
   }
 
   return {
-    queued: queuedActionIds.length,
     queuedActionIds,
     failedActionIds,
   };
@@ -484,5 +523,5 @@ export async function scheduleCisRemediation(actionIds: string[]): Promise<numbe
   if (result.failedActionIds.length > 0) {
     throw new Error(`Failed to queue ${result.failedActionIds.length} CIS remediation action(s)`);
   }
-  return result.queued;
+  return result.queuedActionIds.length;
 }

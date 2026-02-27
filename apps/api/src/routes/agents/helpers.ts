@@ -40,6 +40,7 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import {
   type SecurityProviderValue,
@@ -758,9 +759,24 @@ export async function handleCisCommandResult(
       .limit(1);
 
     if (!baseline) {
+      console.warn(`[agents/helpers] cis_benchmark command ${command.id}: baseline ${baselineId} not found`);
       return;
     }
 
+    // Defense-in-depth: verify baseline org matches device org
+    const [deviceRow] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, command.deviceId))
+      .limit(1);
+    if (!deviceRow || deviceRow.orgId !== baseline.orgId) {
+      console.warn(
+        `[agents/helpers] cis_benchmark command ${command.id}: org mismatch baseline.orgId=${baseline.orgId} device.orgId=${deviceRow?.orgId}`,
+      );
+      return;
+    }
+
+    // Idempotency guard: prevent duplicate result rows if the agent delivers the same command result more than once
     const [existingForCommand] = await db
       .select({ id: cisBaselineResults.id })
       .from(cisBaselineResults)
@@ -772,6 +788,7 @@ export async function handleCisCommandResult(
       .limit(1);
 
     if (existingForCommand) {
+      console.debug(`[agents/helpers] cis_benchmark command ${command.id}: duplicate result skipped (idempotency)`);
       return;
     }
 
@@ -840,6 +857,9 @@ export async function handleCisCommandResult(
       });
 
     if (!inserted) {
+      console.error(
+        `[agents/helpers] cis_benchmark command ${command.id}: failed to insert baseline result (baseline=${baseline.id}, device=${command.deviceId})`,
+      );
       return;
     }
 
@@ -858,6 +878,7 @@ export async function handleCisCommandResult(
         'agent-command-result'
       ).catch((error) => {
         console.error('[agents/helpers] Failed to publish compliance.cis_deviation:', error);
+        captureException(error);
       });
     }
 
@@ -879,6 +900,7 @@ export async function handleCisCommandResult(
         'agent-command-result'
       ).catch((error) => {
         console.error('[agents/helpers] Failed to publish compliance.cis_score_changed:', error);
+        captureException(error);
       });
     }
 
@@ -909,6 +931,7 @@ export async function handleCisCommandResult(
     .limit(1);
 
   if (!action) {
+    console.warn(`[agents/helpers] apply_cis_remediation command ${command.id}: remediation action ${actionId} not found`);
     return;
   }
 
@@ -978,6 +1001,7 @@ export async function handleCisCommandResult(
       'agent-command-result'
     ).catch((error) => {
       console.error('[agents/helpers] Failed to publish compliance.cis_remediation_applied:', error);
+      captureException(error);
     });
   }
 }

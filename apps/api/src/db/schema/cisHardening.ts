@@ -1,5 +1,6 @@
 import {
   pgTable,
+  pgEnum,
   uuid,
   varchar,
   timestamp,
@@ -10,37 +11,46 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { z } from 'zod';
 import { organizations } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 
-export type CisBaselineLevel = 'l1' | 'l2' | 'custom';
-export type CisOsType = 'windows' | 'macos' | 'linux';
-export type CisCheckStatus = 'pass' | 'fail' | 'not_applicable' | 'error';
-export type CisCheckSeverity = 'low' | 'medium' | 'high' | 'critical';
-export type CisRemediationStatus =
-  | 'pending_approval'
-  | 'queued'
-  | 'in_progress'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
-export type CisRemediationApprovalStatus = 'pending' | 'approved' | 'rejected';
+export const cisBaselineLevelEnum = pgEnum('cis_baseline_level', ['l1', 'l2', 'custom']);
+export const cisOsTypeEnum = pgEnum('cis_os_type', ['windows', 'macos', 'linux']);
+export const cisCheckStatusEnum = pgEnum('cis_check_status', ['pass', 'fail', 'not_applicable', 'error']);
+export const cisCheckSeverityEnum = pgEnum('cis_check_severity', ['low', 'medium', 'high', 'critical']);
+export const cisRemediationStatusEnum = pgEnum('cis_remediation_status', [
+  'pending_approval', 'queued', 'in_progress', 'completed', 'failed', 'cancelled',
+]);
+export const cisRemediationApprovalStatusEnum = pgEnum('cis_remediation_approval_status', [
+  'pending', 'approved', 'rejected',
+]);
 
-export type CisFinding = {
-  checkId: string;
-  title: string;
-  severity: CisCheckSeverity;
-  status: CisCheckStatus;
-  evidence?: Record<string, unknown> | null;
-  remediation?: {
-    action?: string;
-    commandType?: string;
-    payload?: Record<string, unknown>;
-    rollbackHint?: string;
-  } | null;
-  message?: string | null;
-};
+export type CisBaselineLevel = (typeof cisBaselineLevelEnum.enumValues)[number];
+export type CisOsType = (typeof cisOsTypeEnum.enumValues)[number];
+export type CisCheckStatus = (typeof cisCheckStatusEnum.enumValues)[number];
+export type CisCheckSeverity = (typeof cisCheckSeverityEnum.enumValues)[number];
+export type CisRemediationStatus = (typeof cisRemediationStatusEnum.enumValues)[number];
+export type CisRemediationApprovalStatus = (typeof cisRemediationApprovalStatusEnum.enumValues)[number];
+export type CisCatalogLevel = Exclude<CisBaselineLevel, 'custom'>;
+
+export const cisFindingSchema = z.object({
+  checkId: z.string().min(1).max(120),
+  title: z.string(),
+  severity: z.enum(['low', 'medium', 'high', 'critical']),
+  status: z.enum(['pass', 'fail', 'not_applicable', 'error']),
+  evidence: z.record(z.unknown()).nullable().optional(),
+  remediation: z.object({
+    action: z.string().optional(),
+    commandType: z.string().optional(),
+    payload: z.record(z.unknown()).optional(),
+    rollbackHint: z.string().optional(),
+  }).nullable().optional(),
+  message: z.string().nullable().optional(),
+});
+
+export type CisFinding = z.infer<typeof cisFindingSchema>;
 
 export type CisScanSchedule = {
   enabled: boolean;
@@ -52,9 +62,9 @@ export const cisBaselines = pgTable('cis_baselines', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
-  osType: varchar('os_type', { length: 20 }).$type<CisOsType>().notNull(),
+  osType: cisOsTypeEnum('os_type').notNull(),
   benchmarkVersion: varchar('benchmark_version', { length: 40 }).notNull(),
-  level: varchar('level', { length: 20 }).$type<CisBaselineLevel>().notNull(),
+  level: cisBaselineLevelEnum('level').notNull(),
   customExclusions: jsonb('custom_exclusions').$type<string[]>().notNull().default([]),
   scanSchedule: jsonb('scan_schedule').$type<CisScanSchedule>(),
   isActive: boolean('is_active').notNull().default(true),
@@ -87,12 +97,12 @@ export const cisBaselineResults = pgTable('cis_baseline_results', {
 
 export const cisCheckCatalog = pgTable('cis_check_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
-  osType: varchar('os_type', { length: 20 }).$type<CisOsType>().notNull(),
+  osType: cisOsTypeEnum('os_type').notNull(),
   benchmarkVersion: varchar('benchmark_version', { length: 40 }).notNull(),
-  level: varchar('level', { length: 20 }).$type<'l1' | 'l2'>().notNull(),
+  level: cisBaselineLevelEnum('level').notNull(),
   checkId: varchar('check_id', { length: 120 }).notNull(),
   title: varchar('title', { length: 400 }).notNull(),
-  severity: varchar('severity', { length: 20 }).$type<CisCheckSeverity>().notNull(),
+  severity: cisCheckSeverityEnum('severity').notNull(),
   defaultAction: varchar('default_action', { length: 80 }).notNull(),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -111,8 +121,8 @@ export const cisRemediationActions = pgTable('cis_remediation_actions', {
   baselineResultId: uuid('baseline_result_id').references(() => cisBaselineResults.id, { onDelete: 'set null' }),
   checkId: varchar('check_id', { length: 120 }).notNull(),
   action: varchar('action', { length: 40 }).notNull(),
-  status: varchar('status', { length: 20 }).$type<CisRemediationStatus>().notNull().default('pending_approval'),
-  approvalStatus: varchar('approval_status', { length: 20 }).$type<CisRemediationApprovalStatus>().notNull().default('pending'),
+  status: cisRemediationStatusEnum('status').notNull().default('pending_approval'),
+  approvalStatus: cisRemediationApprovalStatusEnum('approval_status').notNull().default('pending'),
   approvedBy: uuid('approved_by').references(() => users.id),
   approvedAt: timestamp('approved_at'),
   approvalNote: text('approval_note'),

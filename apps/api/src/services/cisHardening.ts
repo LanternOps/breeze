@@ -1,12 +1,55 @@
-import type { CisFinding, CisScanSchedule } from '../db/schema';
+import type {
+  CisCatalogLevel,
+  CisCheckSeverity,
+  CisFinding,
+  CisOsType,
+  CisRemediationApprovalStatus,
+  CisRemediationStatus,
+  CisScanSchedule,
+} from '../db/schema';
+
+// Valid remediation state transitions: [currentStatus, currentApproval] -> [newStatus, newApproval]
+const VALID_TRANSITIONS: ReadonlyArray<{
+  from: { status: CisRemediationStatus; approval: CisRemediationApprovalStatus };
+  to: { status: CisRemediationStatus; approval: CisRemediationApprovalStatus };
+}> = [
+  // Approval flow
+  { from: { status: 'pending_approval', approval: 'pending' }, to: { status: 'queued', approval: 'approved' } },
+  { from: { status: 'pending_approval', approval: 'pending' }, to: { status: 'cancelled', approval: 'rejected' } },
+  // Execution flow
+  { from: { status: 'queued', approval: 'approved' }, to: { status: 'in_progress', approval: 'approved' } },
+  { from: { status: 'queued', approval: 'approved' }, to: { status: 'failed', approval: 'approved' } },
+  { from: { status: 'in_progress', approval: 'approved' }, to: { status: 'completed', approval: 'approved' } },
+  { from: { status: 'in_progress', approval: 'approved' }, to: { status: 'failed', approval: 'approved' } },
+];
+
+export function validateRemediationTransition(
+  currentStatus: CisRemediationStatus,
+  currentApproval: CisRemediationApprovalStatus,
+  newStatus: CisRemediationStatus,
+  newApproval: CisRemediationApprovalStatus,
+): void {
+  const valid = VALID_TRANSITIONS.some(
+    (t) =>
+      t.from.status === currentStatus &&
+      t.from.approval === currentApproval &&
+      t.to.status === newStatus &&
+      t.to.approval === newApproval,
+  );
+  if (!valid) {
+    throw new Error(
+      `Invalid remediation state transition: (${currentStatus}, ${currentApproval}) -> (${newStatus}, ${newApproval})`,
+    );
+  }
+}
 
 export type CisCatalogEntry = {
   checkId: string;
   title: string;
-  osType: 'windows' | 'macos' | 'linux';
+  osType: CisOsType;
   benchmarkVersion: string;
-  level: 'l1' | 'l2';
-  severity: 'low' | 'medium' | 'high' | 'critical';
+  level: CisCatalogLevel;
+  severity: CisCheckSeverity;
   defaultAction: string;
 };
 
@@ -238,8 +281,9 @@ export function parseCisCollectorOutput(stdout: string | undefined): {
       } else {
         parseError = 'Collector output JSON must be an object';
       }
-    } catch {
-      parseError = 'Collector output was not valid JSON';
+    } catch (err) {
+      const detail = err instanceof SyntaxError ? err.message : 'unknown parse error';
+      parseError = `Collector output was not valid JSON: ${detail}`;
     }
   } else {
     parseError = 'Collector output was empty';

@@ -30,8 +30,8 @@ Breeze supports CIS benchmark posture tracking and controlled remediation throug
 - Scan trigger requires `devices.write`
 - Reporting requires `devices.read`
 - All CIS tables are protected by org-scoped row-level security policies
-- Remediation actions are asynchronously tracked with immutable status transitions
-- Remediation execution requires explicit approval (`pending_approval` -> `queued`)
+- Remediation actions are asynchronously tracked with defined status transitions (`pending_approval` -> `queued` -> `in_progress` -> `completed`/`failed`, or `cancelled` on rejection)
+- Remediation execution via the REST API requires explicit approval (`pending_approval` -> `queued`). AI tool-initiated remediations (tier 3, guardrail-gated) are auto-approved and bypass the `pending_approval` step.
 
 ### Event Types
 

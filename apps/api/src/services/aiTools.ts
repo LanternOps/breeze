@@ -3401,7 +3401,7 @@ registerTool({
 });
 
 // ============================================
-// apply_cis_remediation - Tier 3 (requires approval)
+// apply_cis_remediation - Tier 3 (guardrail-gated, auto-approves remediation actions)
 // ============================================
 
 registerTool({
@@ -3585,7 +3585,7 @@ registerTool({
         .where(inArray(cisRemediationActions.id, queueResult.failedActionIds));
     }
 
-    if (queueResult.queued === 0) {
+    if (queueResult.queuedActionIds.length === 0) {
       return JSON.stringify({
         error: 'Failed to queue CIS remediation actions',
         deviceId,
@@ -3596,12 +3596,12 @@ registerTool({
     }
 
     return JSON.stringify({
-      message: `Queued ${queueResult.queued} CIS remediation action(s)`,
+      message: `Queued ${queueResult.queuedActionIds.length} CIS remediation action(s)`,
       deviceId,
       baselineId,
       baseline: baseline.name,
       baselineResultId,
-      queued: queueResult.queued,
+      queued: queueResult.queuedActionIds.length,
       actionIds: queueResult.queuedActionIds,
       checks: queueResult.queuedActionIds
         .map((actionId) => checkByActionId.get(actionId))

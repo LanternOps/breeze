@@ -159,6 +159,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,
   CommandTypes.SOFTWARE_UNINSTALL,
+  CommandTypes.CIS_BENCHMARK,
   CommandTypes.APPLY_CIS_REMEDIATION,
   CommandTypes.SECURITY_SCAN,
   CommandTypes.SECURITY_THREAT_QUARANTINE,
