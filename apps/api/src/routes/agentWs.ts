@@ -590,6 +590,41 @@ async function processCommandResult(
         console.error(`[AgentWs] Failed to process script result for ${agentId}:`, err);
       }
     }
+
+    // Sensitive data scan / remediation post-processing
+    const sensitiveTypes = new Set(['sensitive_data_scan', 'encrypt_file', 'secure_delete_file', 'quarantine_file']);
+    if (sensitiveTypes.has(command.type)) {
+      try {
+        const { handleSensitiveDataCommandResult } = await import('./agents/helpers');
+        await handleSensitiveDataCommandResult(command, {
+          status: result.status,
+          exitCode: result.exitCode,
+          stdout,
+          stderr: result.stderr,
+          durationMs: result.durationMs,
+          error: result.error,
+        } as any);
+      } catch (err) {
+        console.error(`[AgentWs] Failed to process sensitive data result for ${agentId}:`, err);
+      }
+    }
+
+    // CIS benchmark / remediation post-processing
+    if (command.type === 'cis_benchmark' || command.type === 'apply_cis_remediation') {
+      try {
+        const { handleCisCommandResult } = await import('./agents/helpers');
+        await handleCisCommandResult(command, {
+          status: result.status,
+          exitCode: result.exitCode,
+          stdout,
+          stderr: result.stderr,
+          durationMs: result.durationMs,
+          error: result.error,
+        } as any);
+      } catch (err) {
+        console.error(`[AgentWs] Failed to process CIS result for ${agentId}:`, err);
+      }
+    }
   } catch (error) {
     console.error(`[AgentWs] Failed to process command result for ${agentId}:`, error);
   }

@@ -351,6 +351,56 @@ sensitiveDataRoutes.post(
   }
 );
 
+// List recent scans (newest first, default 50)
+sensitiveDataRoutes.get(
+  '/scans',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('query', z.object({ limit: z.coerce.number().int().min(1).max(200).optional() }).strict().optional()),
+  async (c) => {
+    const auth = c.get('auth');
+    const limit = Number(c.req.query('limit') ?? 50);
+
+    const conditions: SQL[] = [];
+    const orgCondition = auth.orgCondition(sensitiveDataScans.orgId);
+    if (orgCondition) conditions.push(orgCondition);
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rows = await db
+      .select({
+        id: sensitiveDataScans.id,
+        orgId: sensitiveDataScans.orgId,
+        deviceId: sensitiveDataScans.deviceId,
+        policyId: sensitiveDataScans.policyId,
+        status: sensitiveDataScans.status,
+        startedAt: sensitiveDataScans.startedAt,
+        completedAt: sensitiveDataScans.completedAt,
+        summary: sensitiveDataScans.summary,
+        createdAt: sensitiveDataScans.createdAt,
+        deviceName: devices.hostname,
+      })
+      .from(sensitiveDataScans)
+      .innerJoin(devices, eq(devices.id, sensitiveDataScans.deviceId))
+      .where(whereClause)
+      .orderBy(desc(sensitiveDataScans.createdAt))
+      .limit(limit);
+
+    return c.json({
+      data: rows.map((s) => ({
+        id: s.id,
+        orgId: s.orgId,
+        deviceId: s.deviceId,
+        deviceName: s.deviceName,
+        policyId: s.policyId,
+        status: s.status,
+        startedAt: asIso(s.startedAt),
+        completedAt: asIso(s.completedAt),
+        createdAt: asIso(s.createdAt),
+        summary: s.summary ?? {},
+      })),
+    });
+  }
+);
+
 sensitiveDataRoutes.get(
   '/scans/:id',
   requireScope('organization', 'partner', 'system'),

@@ -31,6 +31,60 @@ Use the `feature-testing` skill to run structured verification and record result
 
 -->
 
+## Data Discovery / Sensitive Data (Kit/Windows) — 2026-02-28
+
+**Branch:** `fix/integration-testing-502s`
+**Commit:** `6703cc2` (pre-fix) + uncommitted changes
+**Tested by:** Claude
+**Result:** PASS (with 3 bugs found & fixed)
+
+### What was tested
+- [x] UI: Data Discovery page loads at `/sensitive-data` with 4 tabs (Dashboard, Findings, Scans, Policies)
+- [x] UI: Dashboard summary cards render (Total Findings, Critical Open, Remediated 24h, Open Findings)
+- [x] UI: Dashboard charts (Findings by Data Type, Risk Distribution) render with "No data yet" placeholder
+- [x] UI: Scans tab lists all scans with correct status, device name, timestamps, and durations
+- [x] UI: Scans tab Refresh button fetches latest data from API
+- [x] UI: New Scan modal creates scan targeting Kit device successfully
+- [x] UI: Policies tab renders
+- [x] API: `POST /sensitive-data/scan` — 202, creates and queues scan
+- [x] API: `GET /sensitive-data/scans` — 200, returns all scans (NEW endpoint added during testing)
+- [x] API: `GET /sensitive-data/scans/:id` — 200, returns scan detail with findings summary
+- [x] API: `GET /sensitive-data/dashboard` — 200, returns aggregate counts
+- [x] API: `GET /sensitive-data/report` — 200, returns paginated findings
+- [x] Agent (Kit/Windows `dev-1772316104`): Received `sensitive_data_scan` command, executed scan, returned results
+- [x] Agent: Scan completed with 0 findings (default scan paths on Kit have no sensitive files)
+- [x] BullMQ: Scan job dispatched and completed through queue
+
+### Bugs Found & Fixed
+
+**Bug 1: Scans stuck in "running" forever**
+- **Symptom**: `POST /sensitive-data/scan` queued scan, agent executed and returned results, but scan record stayed `status: running`
+- **Root cause**: `processCommandResult()` in `agentWs.ts` (WebSocket handler) did NOT call `handleSensitiveDataCommandResult` — that handler only existed in the HTTP POST route (`commands.ts`), but agents send results via WebSocket
+- **Fix**: Added sensitive data and CIS post-processing blocks to `processCommandResult()` in `agentWs.ts`
+
+**Bug 2: No list-scans API endpoint**
+- **Symptom**: Scans tab showed stale data from in-memory React state — Refresh button fetched `/dashboard` instead of actual scans list
+- **Root cause**: Comment in ScansTab.tsx: "There is no list-scans endpoint yet"
+- **Fix**: Added `GET /sensitive-data/scans` endpoint to `sensitiveData.ts` returning recent scans ordered by creation date. Updated `ScansTab.tsx` to fetch from the new endpoint.
+
+**Bug 3: UI never updated scan statuses**
+- **Symptom**: Even after scans completed in DB, UI continued showing "running" with "Running..." duration
+- **Root cause**: Frontend `ScansTab` stored scans in an in-memory `detailCache` populated only at creation time. Refresh just re-rendered the same stale cache.
+- **Fix**: Replaced cache-based approach with direct API fetch from new `/scans` endpoint on every load and refresh.
+
+### Evidence
+- Screenshot: `e2e-tests/snapshots/sensitive-data-scans-completed.png` — 3 scans all showing "Completed" with durations
+- API: `GET /sensitive-data/scans` returns 3 scans, all `status: completed`, Kit device
+- API: Scan summary shows `filesScanned: 0, findingsCount: 0` (expected — Kit default paths empty)
+- Agent: Command completed via WebSocket with `sensitive_data_scan` type processed correctly
+
+### Notes
+- Kit's default scan paths have no sensitive files, so 0 findings is expected
+- macOS agent (v0.5.0) does NOT have `sensitive_data_scan` handler — needs rebuild
+- The `agentWs.ts` fix also added CIS post-processing (same pattern — was missing from WS handler)
+
+---
+
 ## CIS Benchmarking (Kit/Windows) — 2026-02-28
 
 **Branch:** `fix/integration-testing-502s`
