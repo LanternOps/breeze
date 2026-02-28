@@ -11,7 +11,7 @@ import {
   sensitiveDataPolicies,
   sensitiveDataScans
 } from '../db/schema';
-import { requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope } from '../middleware/auth';
 import { getPagination } from '../utils/pagination';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { enqueueSensitiveDataScan } from '../jobs/sensitiveDataJobs';
@@ -23,6 +23,8 @@ import {
 } from './metrics';
 
 export const sensitiveDataRoutes = new Hono();
+
+sensitiveDataRoutes.use('*', authMiddleware);
 
 const dataTypeValues = ['pii', 'pci', 'phi', 'credential', 'financial'] as const;
 const riskValues = ['low', 'medium', 'high', 'critical'] as const;
