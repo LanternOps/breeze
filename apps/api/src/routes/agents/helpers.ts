@@ -36,7 +36,6 @@ import {
 } from '../metrics';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
-import { publishEvent } from '../../services/eventBus';
 import {
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,

@@ -341,6 +341,24 @@ export function recordSoftwarePolicyViolation(
   softwarePolicyViolationsCount += safeCount;
 }
 
+export function recordSensitiveDataFinding(dataType: string, risk: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  // Placeholder — wire up a Counter when prom-client dashboards need it
+}
+
+export function recordSensitiveDataRemediationDecision(decision: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  // Placeholder — wire up a Counter when prom-client dashboards need it
+}
+
+export function recordSensitiveDataScanQueued(count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  // Placeholder — wire up a Counter when prom-client dashboards need it
+}
+
 export function recordSoftwareRemediationDecision(decision: string, count = 1): void {
   const normalizedDecision = decision.trim().toLowerCase() || 'unknown';
   const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;

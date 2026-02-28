@@ -1081,7 +1081,7 @@ export async function getUserRiskDetail(orgId: string, userId: string): Promise<
 
   if (history.length === 0) return null;
 
-  const latest = history[0];
+  const latest = history[0]!;
   const previous = history[1] ?? null;
   const deltaFromPrevious = previous ? latest.score - previous.score : 0;
 

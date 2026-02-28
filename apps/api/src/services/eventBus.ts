@@ -53,6 +53,8 @@ export type EventType =
   | 'compliance.sensitive_data_found'
   | 'compliance.credential_exposed'
   | 'compliance.sensitive_data_remediated'
+  // Browser security events
+  | 'compliance.browser_policy_applied'
   // Peripheral control events
   | 'peripheral.unauthorized_device'
   | 'peripheral.blocked'

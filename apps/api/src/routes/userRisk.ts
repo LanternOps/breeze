@@ -184,7 +184,7 @@ userRiskRoutes.get(
         return c.json({ error: 'orgId is required for users mapped to multiple organizations' }, 400);
       }
 
-      const detail = await getUserRiskDetail(matches[0], userId);
+      const detail = await getUserRiskDetail(matches[0]!, userId);
       if (!detail) return c.json({ error: 'No user risk data available for this user' }, 404);
       return c.json({ data: detail });
     }
