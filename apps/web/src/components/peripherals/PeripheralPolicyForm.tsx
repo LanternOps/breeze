@@ -16,8 +16,6 @@ type PeripheralPolicy = {
   name: string;
   deviceClass: string;
   action: string;
-  targetType: string;
-  targetIds?: { siteIds?: string[]; groupIds?: string[]; deviceIds?: string[] };
   isActive: boolean;
   exceptions?: Array<Record<string, unknown>>;
 };
@@ -44,14 +42,6 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
   const [name, setName] = useState(policy?.name ?? '');
   const [deviceClass, setDeviceClass] = useState(policy?.deviceClass ?? 'storage');
   const [action, setAction] = useState(policy?.action ?? 'block');
-  const [targetType, setTargetType] = useState(policy?.targetType ?? 'organization');
-  const [targetIdsInput, setTargetIdsInput] = useState(() => {
-    if (!policy?.targetIds) return '';
-    if (policy.targetType === 'site') return (policy.targetIds.siteIds ?? []).join(', ');
-    if (policy.targetType === 'group') return (policy.targetIds.groupIds ?? []).join(', ');
-    if (policy.targetType === 'device') return (policy.targetIds.deviceIds ?? []).join(', ');
-    return '';
-  });
   const [isActive, setIsActive] = useState(policy?.isActive ?? true);
   const [exceptions, setExceptions] = useState<ExceptionRule[]>(() => {
     if (!policy?.exceptions?.length) return [];
@@ -65,15 +55,6 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
     }));
   });
 
-  const parseTargetIds = () => {
-    const ids = targetIdsInput.split(',').map((s) => s.trim()).filter(Boolean);
-    if (targetType === 'organization') return {};
-    if (targetType === 'site') return { siteIds: ids };
-    if (targetType === 'group') return { groupIds: ids };
-    if (targetType === 'device') return { deviceIds: ids };
-    return {};
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -83,8 +64,8 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
       name,
       deviceClass,
       action,
-      targetType,
-      targetIds: parseTargetIds(),
+      targetType: 'organization',
+      targetIds: {},
       isActive,
       exceptions: exceptions
         .filter((ex) => ex.vendor || ex.product || ex.serialNumber)
@@ -186,35 +167,6 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
                 <option value="alert">Alert</option>
               </select>
             </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="text-sm font-medium">Target Type</label>
-              <select
-                value={targetType}
-                onChange={(e) => { setTargetType(e.target.value); setTargetIdsInput(''); }}
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="organization">Organization</option>
-                <option value="site">Site</option>
-                <option value="group">Group</option>
-                <option value="device">Device</option>
-              </select>
-            </div>
-            {targetType !== 'organization' && (
-              <div>
-                <label className="text-sm font-medium">
-                  {targetType === 'site' ? 'Site IDs' : targetType === 'group' ? 'Group IDs' : 'Device IDs'}
-                </label>
-                <input
-                  value={targetIdsInput}
-                  onChange={(e) => setTargetIdsInput(e.target.value)}
-                  placeholder="Comma-separated UUIDs"
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-            )}
           </div>
 
           <div className="flex items-center gap-3">

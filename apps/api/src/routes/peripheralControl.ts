@@ -31,12 +31,12 @@ const policySchema = z.object({
   name: z.string().min(1).max(200),
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues),
   action: z.enum(peripheralPolicyActionEnum.enumValues),
-  targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues),
+  targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional().default('organization'),
   targetIds: z.object({
     siteIds: z.array(z.string().uuid()).max(1000).optional(),
     groupIds: z.array(z.string().uuid()).max(1000).optional(),
     deviceIds: z.array(z.string().uuid()).max(5000).optional(),
-  }).optional(),
+  }).optional().default({}),
   exceptions: z.array(z.object({
     vendor: z.string().min(1).max(255).optional(),
     product: z.string().min(1).max(255).optional(),
@@ -53,36 +53,6 @@ const policySchema = z.object({
     }
   })).max(2000).optional(),
   isActive: z.boolean().optional(),
-}).superRefine((data, ctx) => {
-  if (data.targetType === 'organization' && data.targetIds &&
-      (data.targetIds.siteIds?.length || data.targetIds.groupIds?.length || data.targetIds.deviceIds?.length)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'targetIds should be empty when targetType is organization',
-      path: ['targetIds'],
-    });
-  }
-  if (data.targetType === 'site' && !data.targetIds?.siteIds?.length) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'siteIds required when targetType is site',
-      path: ['targetIds', 'siteIds'],
-    });
-  }
-  if (data.targetType === 'group' && !data.targetIds?.groupIds?.length) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'groupIds required when targetType is group',
-      path: ['targetIds', 'groupIds'],
-    });
-  }
-  if (data.targetType === 'device' && !data.targetIds?.deviceIds?.length) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'deviceIds required when targetType is device',
-      path: ['targetIds', 'deviceIds'],
-    });
-  }
 });
 
 const listPoliciesQuerySchema = z.object({
@@ -90,7 +60,6 @@ const listPoliciesQuerySchema = z.object({
   isActive: z.enum(['true', 'false']).optional(),
   action: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
-  targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
@@ -333,7 +302,6 @@ peripheralControlRoutes.get(
     if (query.isActive !== undefined) conditions.push(eq(peripheralPolicies.isActive, query.isActive === 'true'));
     if (query.action) conditions.push(eq(peripheralPolicies.action, query.action));
     if (query.deviceClass) conditions.push(eq(peripheralPolicies.deviceClass, query.deviceClass));
-    if (query.targetType) conditions.push(eq(peripheralPolicies.targetType, query.targetType));
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = query.limit ?? 100;
