@@ -157,6 +157,10 @@ const (
 
 	// Session management
 	CmdListSessions = "list_sessions"
+
+	// CIS benchmark compliance
+	CmdCisBenchmark        = "cis_benchmark"
+	CmdApplyCisRemediation = "apply_cis_remediation"
 )
 
 // CommandResult represents the result of a command execution

@@ -1280,6 +1280,21 @@ func hasCommand(name string) bool {
 	return err == nil
 }
 
+// CollectPasswordPolicySummary returns a map of password-policy settings for the current OS.
+func CollectPasswordPolicySummary() (map[string]any, error) {
+	return collectPasswordPolicySummary()
+}
+
+// GetEncryptionStatus reports whether disk encryption is enabled on the OS drive.
+func GetEncryptionStatus() (bool, error) {
+	return getEncryptionStatus()
+}
+
+// RunCommand executes a command with a timeout and returns its combined output.
+func RunCommand(timeout time.Duration, name string, args ...string) (string, error) {
+	return runCommand(timeout, name, args...)
+}
+
 func runCommand(timeout time.Duration, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
