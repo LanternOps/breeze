@@ -455,6 +455,9 @@ cisHardeningRoutes.get(
     const averageScore = Number(summaryRow?.averageScore ?? 100);
     const failingDevices = Number(summaryRow?.failingDevices ?? 0);
 
+    const toISO = (v: unknown): string =>
+      v instanceof Date ? v.toISOString() : String(v ?? '');
+
     return c.json({
       data: rows.map((row) => ({
         result: {
@@ -462,14 +465,14 @@ cisHardeningRoutes.get(
           orgId: row.orgId,
           deviceId: row.deviceId,
           baselineId: row.baselineId,
-          checkedAt: row.checkedAt.toISOString(),
+          checkedAt: toISO(row.checkedAt),
           totalChecks: row.totalChecks,
           passedChecks: row.passedChecks,
           failedChecks: row.failedChecks,
           score: row.score,
           findings: row.findings ?? [],
           summary: row.summary ?? {},
-          createdAt: row.resultCreatedAt.toISOString(),
+          createdAt: toISO(row.resultCreatedAt),
         },
         baseline: {
           id: row.baselineId,
@@ -481,8 +484,8 @@ cisHardeningRoutes.get(
           customExclusions: row.baselineCustomExclusions ?? [],
           scanSchedule: row.baselineScanSchedule,
           isActive: row.baselineIsActive,
-          createdAt: row.baselineCreatedAt.toISOString(),
-          updatedAt: row.baselineUpdatedAt.toISOString(),
+          createdAt: toISO(row.baselineCreatedAt),
+          updatedAt: toISO(row.baselineUpdatedAt),
         },
         device: {
           id: row.deviceId,
