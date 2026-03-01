@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, type DragEvent, type FormEvent } from 'react';
 import { Plus, Pencil, Trash2, Shield, Play, X } from 'lucide-react';
+import { fetchWithAuth } from '@/stores/auth';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
@@ -253,7 +254,7 @@ export default function DeviceGroupsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetch('/api/device-groups');
+      const response = await fetchWithAuth('/device-groups');
       if (!response.ok) {
         throw new Error('Failed to fetch device groups');
       }
@@ -269,7 +270,7 @@ export default function DeviceGroupsPage() {
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
         setDevices(data.devices ?? data ?? []);
@@ -281,7 +282,7 @@ export default function DeviceGroupsPage() {
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetch('/api/sites');
+      const response = await fetchWithAuth('/sites');
       if (response.ok) {
         const data = await response.json();
         setSites(data.sites ?? data ?? []);
@@ -293,7 +294,7 @@ export default function DeviceGroupsPage() {
 
   const fetchPolicies = useCallback(async () => {
     try {
-      const response = await fetch('/api/policies');
+      const response = await fetchWithAuth('/policies');
       if (response.ok) {
         const data = await response.json();
         setPolicies(data.policies ?? data ?? []);
@@ -305,7 +306,7 @@ export default function DeviceGroupsPage() {
 
   const fetchScripts = useCallback(async () => {
     try {
-      const response = await fetch('/api/scripts');
+      const response = await fetchWithAuth('/scripts');
       if (response.ok) {
         const data = await response.json();
         setScripts(data.scripts ?? data ?? []);
@@ -483,9 +484,8 @@ export default function DeviceGroupsPage() {
       policyId: nextGroup.policyId || null
     };
 
-    const response = await fetch(`/api/device-groups/${nextGroup.id}`, {
+    const response = await fetchWithAuth(`/device-groups/${nextGroup.id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
@@ -527,13 +527,12 @@ export default function DeviceGroupsPage() {
       };
 
       const url = modalMode === 'edit' && selectedGroup
-        ? `/api/device-groups/${selectedGroup.id}`
-        : '/api/device-groups';
+        ? `/device-groups/${selectedGroup.id}`
+        : '/device-groups';
       const method = modalMode === 'edit' ? 'PUT' : 'POST';
 
-      const response = await fetch(url, {
+      const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
@@ -555,9 +554,8 @@ export default function DeviceGroupsPage() {
     setSubmitting(true);
     setFormError(undefined);
     try {
-      const response = await fetch(`/api/device-groups/${selectedGroup.id}`, {
+      const response = await fetchWithAuth(`/device-groups/${selectedGroup.id}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reassignGroupId: deleteReassignGroupId || null
         })
@@ -580,9 +578,8 @@ export default function DeviceGroupsPage() {
     if (!bulkScriptId || selectedGroupIds.size === 0) return;
     setSubmitting(true);
     try {
-      const response = await fetch('/api/device-groups/bulk', {
+      const response = await fetchWithAuth('/device-groups/bulk', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'run-script',
           scriptId: bulkScriptId,
@@ -608,9 +605,8 @@ export default function DeviceGroupsPage() {
     if (!bulkPolicyId || selectedGroupIds.size === 0) return;
     setSubmitting(true);
     try {
-      const response = await fetch('/api/device-groups/bulk', {
+      const response = await fetchWithAuth('/device-groups/bulk', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'apply-policy',
           policyId: bulkPolicyId,

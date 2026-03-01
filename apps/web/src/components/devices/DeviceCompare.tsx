@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { fetchWithAuth } from '@/stores/auth';
 import {
   Search,
   X,
@@ -556,7 +557,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     try {
       setLoadingDevices(true);
       setListError(undefined);
-      const response = await fetch('/api/devices');
+      const response = await fetchWithAuth('/devices');
       if (!response.ok) {
         throw new Error('Failed to fetch devices');
       }
@@ -584,7 +585,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         ids.map(async id => {
           const fallback = deviceMap.get(id);
           try {
-            const response = await fetch(`/api/devices/${id}`);
+            const response = await fetchWithAuth(`/devices/${id}`);
             if (!response.ok) throw new Error('Failed to fetch device');
             const data = await response.json();
             const baseFallback: Device = fallback ?? {
