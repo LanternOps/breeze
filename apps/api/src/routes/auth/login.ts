@@ -116,7 +116,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     // Create a temporary token for MFA verification
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
-    await getRedis().setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
+    await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
       userId: user.id,
       mfaMethod
     }));
