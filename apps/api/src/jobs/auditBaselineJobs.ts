@@ -53,7 +53,7 @@ async function processCollectAuditPolicy(
     .from(devices)
     .innerJoin(auditBaselines, and(
       eq(auditBaselines.orgId, devices.orgId),
-      eq(auditBaselines.osType, devices.osType),
+      sql`${auditBaselines.osType} = ${devices.osType}::text`,
       eq(auditBaselines.isActive, true),
     ))
     .where(where);
@@ -213,7 +213,7 @@ export async function getOnlineDeviceCountForAuditCollection(orgId?: string): Pr
     .from(devices)
     .innerJoin(auditBaselines, and(
       eq(auditBaselines.orgId, devices.orgId),
-      eq(auditBaselines.osType, devices.osType),
+      sql`${auditBaselines.osType} = ${devices.osType}::text`,
       eq(auditBaselines.isActive, true),
     ))
     .where(deviceStatusFilter);
