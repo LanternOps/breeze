@@ -122,8 +122,9 @@ func parseSensitiveScope(payload map[string]any) sensitiveScopeConfig {
 		if includes := toStringSlice(rawScope["includePaths"]); len(includes) > 0 {
 			scope.includePaths = normalizePaths(includes)
 		}
-		if excludes := toStringSlice(rawScope["excludePaths"]); len(excludes) > 0 {
-			scope.excludePaths = append(scope.excludePaths, normalizePaths(excludes)...)
+		if _, hasExcludes := rawScope["excludePaths"]; hasExcludes {
+			excludes := toStringSlice(rawScope["excludePaths"])
+			scope.excludePaths = normalizePaths(excludes)
 		}
 		if suppressPaths := toStringSlice(rawScope["suppressPaths"]); len(suppressPaths) > 0 {
 			scope.suppressPaths = normalizePaths(suppressPaths)

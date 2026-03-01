@@ -24,6 +24,7 @@ vi.mock('../db/schema', () => ({
   deviceCommands: {},
   deviceFilesystemCleanupRuns: {},
   deviceSessions: {},
+  peripheralEventTypeEnum: { enumValues: ['connected', 'disconnected', 'blocked', 'allowed'] },
 }));
 
 vi.mock('./aiToolSchemas', () => ({
