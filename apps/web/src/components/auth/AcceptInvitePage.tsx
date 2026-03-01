@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import ResetPasswordForm from './ResetPasswordForm';
-import { apiAcceptInvite, useAuthStore } from '../../stores/auth';
+import { apiAcceptInvite, useAuthStore, fetchAndApplyPreferences } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 
 export default function AcceptInvitePage() {
@@ -31,6 +31,7 @@ export default function AcceptInvitePage() {
 
       if (result.user && result.tokens) {
         useAuthStore.getState().login(result.user, result.tokens);
+        fetchAndApplyPreferences();
         await navigateTo('/');
         return;
       } else {

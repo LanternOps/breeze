@@ -22,6 +22,7 @@ export const users = pgTable('users', {
   lastLoginAt: timestamp('last_login_at'),
   passwordChangedAt: timestamp('password_changed_at'),
   setupCompletedAt: timestamp('setup_completed_at'),
+  preferences: jsonb('preferences'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

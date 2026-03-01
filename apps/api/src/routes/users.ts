@@ -312,7 +312,8 @@ userRoutes.get('/me', async (c) => {
       createdAt: users.createdAt,
       lastLoginAt: users.lastLoginAt,
       setupCompletedAt: users.setupCompletedAt,
-      passwordChangedAt: users.passwordChangedAt
+      passwordChangedAt: users.passwordChangedAt,
+      preferences: users.preferences
     })
     .from(users)
     .where(eq(users.id, auth.user.id))
@@ -338,7 +339,7 @@ userRoutes.patch('/me', async (c) => {
   const auth = c.get('auth');
   const body = await c.req.json();
 
-  const updates: { name?: string; email?: string; avatarUrl?: string; updatedAt: Date } = {
+  const updates: { name?: string; email?: string; avatarUrl?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
     updatedAt: new Date()
   };
 
@@ -348,6 +349,18 @@ userRoutes.patch('/me', async (c) => {
 
   if (body.avatarUrl !== undefined) {
     updates.avatarUrl = body.avatarUrl;
+  }
+
+  if (body.preferences !== undefined) {
+    if (body.preferences !== null && typeof body.preferences === 'object') {
+      const validThemes = ['light', 'dark', 'system'];
+      if (body.preferences.theme && !validThemes.includes(body.preferences.theme)) {
+        return c.json({ error: 'Invalid theme value. Must be light, dark, or system.' }, 400);
+      }
+      updates.preferences = body.preferences;
+    } else if (body.preferences === null) {
+      updates.preferences = undefined;
+    }
   }
 
   if (body.email && typeof body.email === 'string') {
@@ -382,7 +395,8 @@ userRoutes.patch('/me', async (c) => {
       name: users.name,
       avatarUrl: users.avatarUrl,
       status: users.status,
-      mfaEnabled: users.mfaEnabled
+      mfaEnabled: users.mfaEnabled,
+      preferences: users.preferences
     });
 
   if (!updated) {

@@ -13,7 +13,7 @@ import {
 import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
 import CommandPalette from './CommandPalette';
-import { useAuthStore, apiLogout } from '../../stores/auth';
+import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 
 export default function Header() {
@@ -44,10 +44,17 @@ export default function Header() {
   }, []);
 
   const toggleDarkMode = () => {
+    const newTheme = !darkMode ? 'dark' : 'light';
     setDarkMode(!darkMode);
     document.documentElement.classList.toggle('dark');
-    // Persist preference
-    localStorage.setItem('theme', !darkMode ? 'dark' : 'light');
+    localStorage.setItem('theme', newTheme);
+
+    if (isAuthenticated) {
+      fetchWithAuth('/users/me', {
+        method: 'PATCH',
+        body: JSON.stringify({ preferences: { theme: newTheme } })
+      }).catch(() => {});
+    }
   };
 
   const handleSignOut = async () => {

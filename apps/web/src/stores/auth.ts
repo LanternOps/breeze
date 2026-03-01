@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+export interface UserPreferences {
+  theme?: 'light' | 'dark' | 'system';
+}
+
 export interface User {
   id: string;
   email: string;
@@ -8,6 +12,7 @@ export interface User {
   mfaEnabled: boolean;
   avatarUrl?: string;
   requiresSetup?: boolean;
+  preferences?: UserPreferences;
 }
 
 export interface Tokens {
@@ -477,6 +482,36 @@ export async function apiLogout(): Promise<void> {
     localStorage.removeItem('breeze-ai-chat');
   } catch {
     // localStorage may be unavailable
+  }
+}
+
+function applyThemePreference(theme: string | undefined): void {
+  if (!theme || typeof document === 'undefined') return;
+
+  const resolved = theme === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : theme;
+
+  if (resolved === 'dark') {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
+  localStorage.setItem('theme', theme);
+}
+
+export async function fetchAndApplyPreferences(): Promise<void> {
+  try {
+    const response = await fetchWithAuth('/users/me');
+    if (!response.ok) return;
+
+    const data = await response.json();
+    if (data.preferences) {
+      useAuthStore.getState().updateUser({ preferences: data.preferences });
+      applyThemePreference(data.preferences.theme);
+    }
+  } catch {
+    // Non-critical — localStorage still has the cached theme
   }
 }
 
