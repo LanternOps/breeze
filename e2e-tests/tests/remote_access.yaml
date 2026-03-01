@@ -1,0 +1,309 @@
+# Remote Access E2E Tests
+# Tests the Remote Access hub page, terminal/file launcher pages, session history, and remote tools.
+# Active terminal/desktop sessions require a live agent and are marked with the `remote` action.
+# Page structure and navigation tests use the `ui` action; API verification uses `api`.
+
+tests:
+  - id: remote_hub_page_loads
+    name: "Remote Access Hub Page Loads"
+    description: "Verify the Remote Access landing page renders its heading and the three navigation cards (Start Terminal, File Transfer, Session History)"
+    tags: [remote, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_remote
+        action: ui
+        description: "Navigate to the Remote Access hub page"
+        playwright:
+          - goto: "/remote"
+          - waitFor: "text=Remote Access"
+            timeout: 15000
+          - waitFor: "text=Launch remote tools for online devices."
+            timeout: 5000
+
+      - id: verify_nav_cards
+        action: ui
+        description: "Confirm the three navigation cards are rendered"
+        playwright:
+          - waitFor: "text=Start Terminal"
+            timeout: 5000
+          - waitFor: "text=Select a device to connect"
+            timeout: 5000
+          - waitFor: "text=File Transfer"
+            timeout: 5000
+          - waitFor: "text=Transfer files to/from devices"
+            timeout: 5000
+          - waitFor: "text=Session History"
+            timeout: 5000
+          - waitFor: "text=View past sessions"
+            timeout: 5000
+
+      - id: verify_card_links
+        action: ui
+        description: "Confirm each card links to the correct sub-page"
+        playwright:
+          - waitFor: "a[href='/remote/terminal']"
+            timeout: 5000
+          - waitFor: "a[href='/remote/files']"
+            timeout: 5000
+          - waitFor: "a[href='/remote/sessions']"
+            timeout: 5000
+
+  - id: remote_terminal_launcher_page
+    name: "Remote Terminal Launcher Page Loads"
+    description: "Navigate to /remote/terminal, verify the device list table renders with the back-navigation link and the search/refresh controls"
+    tags: [remote, terminal]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_terminal_launcher
+        action: ui
+        description: "Navigate to the terminal launcher page"
+        playwright:
+          - goto: "/remote/terminal"
+          - waitFor: "text=Start Terminal Session"
+            timeout: 15000
+          - waitFor: "text=Choose an online device to open a remote terminal."
+            timeout: 5000
+
+      - id: verify_back_link
+        action: ui
+        description: "Verify the back arrow link to /remote is present"
+        playwright:
+          - waitFor: "a[aria-label='Back to Remote Access']"
+            timeout: 5000
+
+      - id: verify_search_and_refresh
+        action: ui
+        description: "Verify the search input and Refresh button are present"
+        playwright:
+          - waitFor: "input[placeholder='Search online devices...']"
+            timeout: 5000
+          - waitFor: "button:has-text('Refresh')"
+            timeout: 5000
+
+      - id: verify_device_table_columns
+        action: ui
+        description: "Verify the device table column headers render"
+        playwright:
+          - waitFor: "text=Device"
+            timeout: 5000
+          - waitFor: "text=OS"
+            timeout: 5000
+          - waitFor: "text=Status"
+            timeout: 5000
+          - waitFor: "text=Last Seen"
+            timeout: 5000
+
+      - id: verify_devices_api
+        action: api
+        description: "Confirm the devices endpoint returns online devices"
+        request:
+          method: GET
+          path: "/api/v1/devices"
+          query:
+            status: online
+            limit: "10"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: remote_files_launcher_page
+    name: "Remote File Transfer Launcher Page Loads"
+    description: "Navigate to /remote/files, verify the device list table renders with Open Files action buttons"
+    tags: [remote, files]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_files_launcher
+        action: ui
+        description: "Navigate to the file transfer launcher page"
+        playwright:
+          - goto: "/remote/files"
+          - waitFor: "text=Start File Transfer"
+            timeout: 15000
+          - waitFor: "text=Choose an online device to open the remote file manager."
+            timeout: 5000
+
+      - id: verify_back_link
+        action: ui
+        description: "Verify back link to /remote"
+        playwright:
+          - waitFor: "a[aria-label='Back to Remote Access']"
+            timeout: 5000
+
+      - id: verify_search_field
+        action: ui
+        description: "Search input present"
+        playwright:
+          - waitFor: "input[placeholder='Search online devices...']"
+            timeout: 5000
+
+  - id: remote_session_history_page
+    name: "Session History Page Loads and Shows Audit Log"
+    description: "Navigate to /remote/sessions, verify the Session History heading, the four stat cards (Total Sessions, Total Duration, Avg Duration, Data Transferred), and the filter controls"
+    tags: [remote, sessions, audit]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sessions
+        action: ui
+        description: "Navigate to Session History page"
+        playwright:
+          - goto: "/remote/sessions"
+          - waitFor: "text=Session History"
+            timeout: 15000
+          - waitFor: "text=View and audit remote access sessions"
+            timeout: 5000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify the four stat cards at the top of the history panel"
+        playwright:
+          - waitFor: "text=Total Sessions"
+            timeout: 10000
+          - waitFor: "text=Total Duration"
+            timeout: 5000
+          - waitFor: "text=Avg Duration"
+            timeout: 5000
+          - waitFor: "text=Data Transferred"
+            timeout: 5000
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Verify the search input and type/user/date filter dropdowns"
+        playwright:
+          - waitFor: "input[placeholder='Search by device or user...']"
+            timeout: 5000
+          - waitFor: "select:has(option[value='all'])"
+            timeout: 5000
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify the sessions table column headers"
+        playwright:
+          - waitFor: "text=Type"
+            timeout: 5000
+          - waitFor: "text=Device"
+            timeout: 5000
+          - waitFor: "text=User"
+            timeout: 5000
+          - waitFor: "text=Started"
+            timeout: 5000
+          - waitFor: "text=Duration"
+            timeout: 5000
+          - waitFor: "text=Status"
+            timeout: 5000
+
+      - id: verify_export_button
+        action: ui
+        description: "Verify the Export button is present"
+        playwright:
+          - waitFor: "button:has-text('Export')"
+            timeout: 5000
+
+      - id: verify_sessions_api
+        action: api
+        description: "Confirm the session history endpoint responds"
+        request:
+          method: GET
+          path: "/api/v1/remote/sessions/history"
+          query:
+            limit: "10"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+          stats: {}
+
+  - id: remote_session_filter_by_type
+    name: "Session History Filter by Session Type"
+    description: "Use the Type filter dropdown to select Terminal and confirm the filter is applied"
+    tags: [remote, sessions, filter]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_sessions
+        action: ui
+        description: "Navigate to Session History"
+        playwright:
+          - goto: "/remote/sessions"
+          - waitFor: "text=Session History"
+            timeout: 15000
+
+      - id: apply_terminal_filter
+        action: ui
+        description: "Select Terminal from the type filter"
+        playwright:
+          - waitFor: "text=Total Sessions"
+            timeout: 10000
+          - select: "select:has(option[value='terminal'])"
+            value: "terminal"
+          - waitFor: "text=Session History"
+            timeout: 5000

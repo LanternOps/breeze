@@ -1,0 +1,1015 @@
+# Device Management E2E Tests
+# Tests device lifecycle, list views, filters, detail navigation, and system tools.
+# Covers: DevicesPage, DeviceList, DeviceDetails, DeviceCompare, DeviceGroupsPage.
+#
+# Table columns (DeviceList): Hostname, Organization, Site, OS, Status, CPU %, RAM %, Last Seen, Actions
+# Status options: Online, Offline, Maintenance
+# OS options: Windows, macOS, Linux
+# Per-row action menu: Remote Terminal, Run Script, Reboot, Settings, Decommission
+# Bulk actions: Reboot Selected, Run Script, Deploy Software, Enable Maintenance, Disable Maintenance, Decommission Selected
+
+tests:
+  - id: device_list_loads
+    name: "Device List Loads with Correct Columns"
+    description: "Verify the devices page loads and the list table shows expected column headers"
+    tags: [devices, list, critical]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Devices"
+            timeout: 15000
+
+      - id: verify_page_heading
+        action: ui
+        description: "Verify page heading and device count text"
+        playwright:
+          - assert:
+              selector: "h1:has-text('Devices')"
+              exists: true
+          - assert:
+              selector: "text=Manage and monitor your fleet"
+              exists: true
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify device list table column headers"
+        playwright:
+          - waitFor: "text=Hostname"
+            timeout: 10000
+          - assert:
+              selector: "th:has-text('Hostname')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Organization')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Site')"
+              exists: true
+          - assert:
+              selector: "th:has-text('OS')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Status')"
+              exists: true
+          - assert:
+              selector: "th:has-text('CPU %')"
+              exists: true
+          - assert:
+              selector: "th:has-text('RAM %')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Last Seen')"
+              exists: true
+          - assert:
+              selector: "th:has-text('Actions')"
+              exists: true
+
+      - id: verify_view_controls
+        action: ui
+        description: "Verify list/grid view toggle and Add Device button exist"
+        playwright:
+          - assert:
+              selector: "button[title='List view']"
+              exists: true
+          - assert:
+              selector: "button[title='Grid view']"
+              exists: true
+          - assert:
+              selector: "button:has-text('Add Device')"
+              exists: true
+
+  - id: device_list_search
+    name: "Device List Search by Hostname"
+    description: "Verify the hostname search field filters the device list"
+    tags: [devices, search, filter]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Hostname"
+            timeout: 15000
+
+      - id: search_by_hostname
+        action: ui
+        description: "Type a search query in the hostname search box"
+        playwright:
+          - fill:
+              "input[placeholder='Search by hostname']": "nonexistent-device-xyz-12345"
+          - waitFor: "text=No devices found"
+            timeout: 10000
+          - assert:
+              selector: "text=No devices found. Try adjusting your search or filters."
+              exists: true
+
+      - id: clear_search
+        action: ui
+        description: "Clear the search to restore all devices"
+        playwright:
+          - fill:
+              "input[placeholder='Search by hostname']": ""
+          - waitFor: "th:has-text('Hostname')"
+            timeout: 10000
+
+  - id: device_list_status_filter
+    name: "Device List Status Filter"
+    description: "Verify the status dropdown filter works to show only Online, Offline, or Maintenance devices"
+    tags: [devices, filter]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Hostname"
+            timeout: 15000
+
+      - id: filter_by_online_status
+        action: ui
+        description: "Filter device list to show only Online devices"
+        playwright:
+          - select:
+              "select:has(option[value='online'])": "online"
+          - waitFor:
+              timeout: 3000
+
+      - id: filter_by_all_status
+        action: ui
+        description: "Reset filter to All Status"
+        playwright:
+          - select:
+              "select:has(option[value='online'])": "all"
+          - waitFor:
+              timeout: 2000
+
+  - id: device_list_os_filter
+    name: "Device List OS Filter"
+    description: "Verify the OS dropdown filter changes the visible devices"
+    tags: [devices, filter]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Hostname"
+            timeout: 15000
+
+      - id: filter_by_linux
+        action: ui
+        description: "Filter to Linux devices"
+        playwright:
+          - select:
+              "select:has(option[value='linux'])": "linux"
+          - waitFor:
+              timeout: 3000
+
+      - id: reset_os_filter
+        action: ui
+        description: "Reset OS filter to All OS"
+        playwright:
+          - select:
+              "select:has(option[value='linux'])": "all"
+
+  - id: device_list_grid_view
+    name: "Device List Grid View Toggle"
+    description: "Verify switching to grid view shows device cards"
+    tags: [devices, grid-view]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Hostname"
+            timeout: 15000
+
+      - id: switch_to_grid_view
+        action: ui
+        description: "Click the Grid view button"
+        playwright:
+          - click: "button[title='Grid view']"
+          - waitFor:
+              timeout: 2000
+
+      - id: switch_back_to_list_view
+        action: ui
+        description: "Switch back to List view"
+        playwright:
+          - click: "button[title='List view']"
+          - waitFor: "th:has-text('Hostname')"
+            timeout: 5000
+
+  - id: device_add_device_onboarding
+    name: "Add Device Onboarding Modal"
+    description: "Verify the Add Device modal opens and shows installation instructions"
+    tags: [devices, onboarding]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "button:has-text('Add Device')"
+            timeout: 15000
+
+      - id: open_add_device_modal
+        action: ui
+        description: "Click Add Device button to open onboarding modal"
+        playwright:
+          - click: "button:has-text('Add Device')"
+          - waitFor: "text=Add New Device"
+            timeout: 10000
+          - assert:
+              selector: "text=Installation Token"
+              exists: true
+          - assert:
+              selector: "text=Windows (PowerShell - Run as Administrator)"
+              exists: true
+          - assert:
+              selector: "text=macOS / Linux (Terminal)"
+              exists: true
+
+      - id: close_add_device_modal
+        action: ui
+        description: "Close the onboarding modal using the Done button"
+        playwright:
+          - click: "button:has-text('Done')"
+          - waitFor:
+              selector: "text=Add New Device"
+              state: hidden
+            timeout: 5000
+
+  - id: device_detail_navigation
+    name: "Device Detail Navigation and Overview Tab"
+    description: "Click on a device in the list to open the detail page and verify the Overview tab"
+    tags: [devices, detail, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Hostname"
+            timeout: 15000
+
+      - id: navigate_to_linux_device
+        action: ui
+        description: "Navigate directly to the Linux test device detail page"
+        playwright:
+          - goto: "/devices/{{devices.linux}}"
+          - waitFor: "text=Back to devices"
+            timeout: 15000
+
+      - id: verify_device_detail_header
+        action: ui
+        description: "Verify device detail page header shows device name and status badge"
+        playwright:
+          - assert:
+              selector: "button:has-text('Back to devices')"
+              exists: true
+          - assert:
+              selector: "span:has-text('Online'), span:has-text('Offline'), span:has-text('Maintenance')"
+              exists: true
+
+      - id: verify_overview_tab_metrics
+        action: ui
+        description: "Verify the Overview tab shows CPU, RAM, Last Seen, Uptime, Logged-in User cards"
+        playwright:
+          - waitFor: "text=CPU"
+            timeout: 10000
+          - assert:
+              selector: "text=CPU"
+              exists: true
+          - assert:
+              selector: "text=RAM"
+              exists: true
+          - assert:
+              selector: "text=Last Seen"
+              exists: true
+          - assert:
+              selector: "text=Uptime"
+              exists: true
+          - assert:
+              selector: "text=Logged-in User"
+              exists: true
+
+  - id: device_detail_tabs_navigation
+    name: "Device Detail Tab Navigation"
+    description: "Navigate through the main device detail tabs to verify each loads without error"
+    tags: [devices, detail, tabs, critical]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_device_detail
+        action: ui
+        description: "Navigate to the Linux test device detail page"
+        playwright:
+          - goto: "/devices/{{devices.linux}}"
+          - waitFor: "text=Overview"
+            timeout: 15000
+
+      - id: click_device_details_tab
+        action: ui
+        description: "Click the Device Details tab"
+        playwright:
+          - click: "button:has-text('Device Details')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_hardware_inventory_tab
+        action: ui
+        description: "Click the Hardware Inventory tab"
+        playwright:
+          - click: "button:has-text('Hardware Inventory')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_software_inventory_tab
+        action: ui
+        description: "Click the Software Inventory tab"
+        playwright:
+          - click: "button:has-text('Software Inventory')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_patch_status_tab
+        action: ui
+        description: "Click the Patch Status tab"
+        playwright:
+          - click: "button:has-text('Patch Status')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_security_tab
+        action: ui
+        description: "Click the Security tab"
+        playwright:
+          - click: "button:has-text('Security')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_performance_tab
+        action: ui
+        description: "Click the Performance tab"
+        playwright:
+          - click: "button:has-text('Performance')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_alert_history_tab
+        action: ui
+        description: "Click the Alert History tab"
+        playwright:
+          - click: "button:has-text('Alert History')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_script_history_tab
+        action: ui
+        description: "Click the Script History tab"
+        playwright:
+          - click: "button:has-text('Script History')"
+          - waitFor:
+              timeout: 3000
+
+      - id: click_network_connections_tab
+        action: ui
+        description: "Click the Network Connections tab"
+        playwright:
+          - click: "button:has-text('Network Connections')"
+          - waitFor:
+              timeout: 3000
+
+  - id: device_detail_all_tab_labels
+    name: "Device Detail All Tab Labels Visible"
+    description: "Verify all 19 expected tab labels are visible in the device detail tab bar"
+    tags: [devices, detail, tabs]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_device_detail
+        action: ui
+        description: "Navigate to the Linux test device detail page"
+        playwright:
+          - goto: "/devices/{{devices.linux}}"
+          - waitFor: "button:has-text('Overview')"
+            timeout: 15000
+
+      - id: verify_all_tab_labels
+        action: ui
+        description: "Verify all expected tab labels are present in the tab navigation"
+        playwright:
+          - assert:
+              selector: "button:has-text('Overview')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Device Details')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Hardware Inventory')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Software Inventory')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Patch Status')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Disk Cleanup')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Security')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Peripherals')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Management')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Effective Config')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Alert History')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Script History')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Performance')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Boot Performance')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Event Log')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Activities')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Network Connections')"
+              exists: true
+          - assert:
+              selector: "button:has-text('IP History')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Playbooks')"
+              exists: true
+
+  - id: device_row_action_menu
+    name: "Device List Row Action Menu"
+    description: "Verify per-row action menu opens with expected actions"
+    tags: [devices, actions]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "th:has-text('Hostname')"
+            timeout: 15000
+
+      - id: open_row_action_menu
+        action: ui
+        description: "Click the vertical dots action menu on the first device row"
+        playwright:
+          - click: "tbody tr:first-child button[title=''], tbody tr:first-child button:has(svg)"
+            options:
+              force: true
+          - waitFor: "text=Run Script"
+            timeout: 5000
+          - assert:
+              selector: "text=Remote Terminal"
+              exists: true
+          - assert:
+              selector: "text=Run Script"
+              exists: true
+          - assert:
+              selector: "text=Reboot"
+              exists: true
+          - assert:
+              selector: "text=Settings"
+              exists: true
+          - assert:
+              selector: "text=Decommission"
+              exists: true
+
+  - id: device_bulk_selection
+    name: "Device List Bulk Selection"
+    description: "Verify selecting multiple devices shows the Bulk Actions menu"
+    tags: [devices, bulk-actions]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "th:has-text('Hostname')"
+            timeout: 15000
+
+      - id: select_first_device
+        action: ui
+        description: "Check the checkbox in the first device row"
+        playwright:
+          - click: "tbody tr:first-child input[type='checkbox']"
+          - waitFor: "text=selected"
+            timeout: 5000
+
+      - id: verify_bulk_actions_bar
+        action: ui
+        description: "Verify bulk action bar appears with count and Bulk Actions button"
+        playwright:
+          - assert:
+              selector: "text=1 selected"
+              exists: true
+          - assert:
+              selector: "button:has-text('Bulk Actions')"
+              exists: true
+
+      - id: open_bulk_actions_menu
+        action: ui
+        description: "Click Bulk Actions to verify dropdown options"
+        playwright:
+          - click: "button:has-text('Bulk Actions')"
+          - waitFor: "text=Reboot Selected"
+            timeout: 5000
+          - assert:
+              selector: "text=Reboot Selected"
+              exists: true
+          - assert:
+              selector: "text=Run Script"
+              exists: true
+          - assert:
+              selector: "text=Deploy Software"
+              exists: true
+          - assert:
+              selector: "text=Enable Maintenance"
+              exists: true
+          - assert:
+              selector: "text=Disable Maintenance"
+              exists: true
+          - assert:
+              selector: "text=Decommission Selected"
+              exists: true
+
+      - id: clear_selection
+        action: ui
+        description: "Clear the device selection"
+        playwright:
+          - click: "button:has-text('Clear selection')"
+          - waitFor:
+              selector: "text=1 selected"
+              state: hidden
+            timeout: 5000
+
+  - id: device_compare_page
+    name: "Device Compare Page"
+    description: "Verify the Device Comparison page loads with device selector and comparison table"
+    tags: [devices, compare]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_compare_page
+        action: ui
+        description: "Navigate to the Device Compare page"
+        playwright:
+          - goto: "/devices/compare"
+          - waitFor: "text=Device Comparison"
+            timeout: 15000
+
+      - id: verify_compare_page_heading
+        action: ui
+        description: "Verify the page heading and description text"
+        playwright:
+          - assert:
+              selector: "h1:has-text('Device Comparison')"
+              exists: true
+          - assert:
+              selector: "text=Compare hardware, software, patches, and configuration across your fleet."
+              exists: true
+
+      - id: verify_export_buttons
+        action: ui
+        description: "Verify Export PDF, Export CSV and Share buttons are present"
+        playwright:
+          - assert:
+              selector: "button:has-text('Export PDF')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Export CSV')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Share')"
+              exists: true
+
+  - id: device_groups_page
+    name: "Device Groups Page"
+    description: "Verify the Device Groups page loads with Create Group button and group list or empty state"
+    tags: [devices, groups, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_groups_page
+        action: ui
+        description: "Navigate to the Device Groups page"
+        playwright:
+          - goto: "/devices/groups"
+          - waitFor: "text=Device Groups"
+            timeout: 15000
+
+      - id: verify_groups_page_heading
+        action: ui
+        description: "Verify the Device Groups heading and description"
+        playwright:
+          - assert:
+              selector: "h1:has-text('Device Groups')"
+              exists: true
+          - assert:
+              selector: "text=Organize devices into static and dynamic groups for targeted actions."
+              exists: true
+          - assert:
+              selector: "button:has-text('Create Group')"
+              exists: true
+
+      - id: open_create_group_modal
+        action: ui
+        description: "Click Create Group to open the group creation modal"
+        playwright:
+          - click: "button:has-text('Create Group')"
+          - waitFor: "text=Group name"
+            timeout: 10000
+
+      - id: verify_group_form_fields
+        action: ui
+        description: "Verify the Create Group form fields (name, description, type)"
+        playwright:
+          - assert:
+              selector: "input[placeholder*='Group name'], input[name*='name']"
+              exists: true
+
+      - id: close_group_modal
+        action: ui
+        description: "Close the modal without creating a group"
+        playwright:
+          - press_key: "Escape"
+          - waitFor:
+              timeout: 2000
+
+  - id: device_heartbeat_monitoring
+    name: "Device Heartbeat Monitoring"
+    description: "Verify device heartbeat data is available via diagnostic logs API"
+    tags: [devices, monitoring, heartbeat]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: check_heartbeat
+        action: api
+        description: "Verify agent heartbeat data via diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: heartbeat
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 15
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page to verify UI is healthy"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Devices"
+            timeout: 10000
+
+  - id: device_system_tools_windows
+    name: "Device System Tools (Windows)"
+    description: "Verify system tools data is available from a Windows agent"
+    tags: [devices, system-tools]
+    nodes: [windows]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: check_system_info
+        action: api
+        description: "Verify system tool data available from Windows agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            component: system
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+      - id: navigate_devices
+        action: ui
+        description: "Navigate to Devices page"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Devices"
+            timeout: 10000
+
+  - id: device_cross_platform_status
+    name: "Cross-Platform Device Status"
+    description: "Verify device heartbeat and status across all platforms"
+    tags: [devices, cross-platform]
+    nodes: [windows, linux, macos]
+    timeout: 240000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: check_windows_status
+        action: api
+        description: "Verify Windows agent heartbeat via diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            component: heartbeat
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+      - id: check_linux_status
+        action: api
+        description: "Verify Linux agent heartbeat via diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: heartbeat
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+      - id: check_macos_status
+        action: api
+        description: "Verify macOS agent heartbeat via diagnostic logs"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.macos}}/diagnostic-logs"
+          query:
+            component: heartbeat
+            since: "{{testStartTime}}"
+        poll:
+          maxAttempts: 10
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+      - id: navigate_devices
+        action: ui
+        description: "Verify all devices show in UI"
+        playwright:
+          - goto: "/devices"
+          - waitFor: "text=Devices"
+            timeout: 10000

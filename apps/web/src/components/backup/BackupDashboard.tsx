@@ -129,6 +129,11 @@ const attentionIconMap: Record<string, typeof AlertTriangle> = {
   success: CheckCircle2
 };
 
+function resolveProviderColor(name: string) {
+  const key = name.toLowerCase();
+  return providerColorMap[key] ?? 'bg-primary';
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 }
@@ -435,11 +440,6 @@ export default function BackupDashboard() {
       return 'failed';
     }
     return 'warning';
-  };
-
-  const resolveProviderColor = (name: string) => {
-    const key = name.toLowerCase();
-    return providerColorMap[key] ?? 'bg-primary';
   };
 
   const resolveProviderPercent = (provider: StorageProvider) => {

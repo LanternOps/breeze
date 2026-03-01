@@ -75,6 +75,9 @@ var allCommandTypes = []string{
 
 	// handlers_desktop.go init() — session management
 	tools.CmdListSessions,
+
+	// handlers_peripheral.go init()
+	tools.CmdPeripheralPolicySync,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

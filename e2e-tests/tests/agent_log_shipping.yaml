@@ -1,0 +1,113 @@
+# Agent Log Shipping E2E Test
+# Verifies that the Breeze agent is actively shipping diagnostic logs to the API.
+# The agent sends log batches every ~60 seconds via POST /agents/:id/logs.
+# We query them back via GET /devices/:id/diagnostic-logs.
+#
+# Requires: E2E_MACOS_DEVICE_ID set to an enrolled, online device.
+
+tests:
+  - id: agent_log_shipping_verified
+    name: "Agent Diagnostic Log Shipping"
+    description: >
+      Login, query the diagnostic logs API for a known device, verify logs
+      exist, filter by component and time range, then confirm the device
+      detail page loads and shows the agent online.
+    tags: [agent, logs, api, critical, comprehensive]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      # ── Step 1: Login ──────────────────────────────────────────
+      - id: login
+        action: ui
+        description: "Login with admin credentials"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      # ── Step 2: Query all diagnostic logs for the device ───────
+      - id: query_all_logs
+        action: api
+        description: "Query diagnostic logs — verify agent has shipped at least one batch"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.macos}}/diagnostic-logs"
+          query:
+            limit: "10"
+        expect:
+          total: "> 0"
+
+      # ── Step 3: Filter logs by heartbeat component ─────────────
+      - id: filter_by_component
+        action: api
+        description: "Filter diagnostic logs by heartbeat component"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.macos}}/diagnostic-logs"
+          query:
+            component: heartbeat
+            limit: "5"
+        expect:
+          total: "> 0"
+
+      # ── Step 4: Filter logs by recent time range ───────────────
+      - id: filter_by_time_range
+        action: api
+        description: "Query logs from the last 2 hours to verify freshness"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.macos}}/diagnostic-logs"
+          query:
+            since: "{{twoHoursAgo}}"
+            limit: "5"
+        expect:
+          total: "> 0"
+
+      # ── Step 5: Query the Windows device logs too ──────────────
+      - id: query_windows_logs
+        action: api
+        description: "Query diagnostic logs for the Windows device"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            limit: "5"
+
+      # ── Step 6: Navigate to device detail via UI ───────────────
+      - id: navigate_device_detail
+        action: ui
+        description: "Navigate to the macOS device detail page"
+        playwright:
+          - goto: "/devices/{{devices.macos}}"
+          - waitFor: "text=MacBook-Pro"
+            timeout: 15000
+
+      # ── Step 7: Verify device shows online ─────────────────────
+      - id: verify_device_online
+        action: ui
+        description: "Verify the device detail page shows Online status"
+        playwright:
+          - assert:
+              selector: "text=Online"
+              exists: true
+          - assert:
+              selector: "text=macOS"
+              exists: true
+
+      # ── Step 8: Verify device API returns correct data ─────────
+      - id: verify_device_api
+        action: api
+        description: "Verify the device API returns details for the macOS device"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.macos}}"
+        expect:
+          status: online
+          osType: macos

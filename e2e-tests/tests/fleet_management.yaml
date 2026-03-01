@@ -1,0 +1,217 @@
+# Fleet Management E2E Tests
+# Tests the Fleet Orchestration page: stat cards, quick action buttons, status overview panels.
+# The FleetOrchestrationPage aggregates data from policies, deployments, patches, alerts,
+# automations, maintenance windows, device groups, and reports.
+
+tests:
+  - id: fleet_page_loads
+    name: "Fleet Orchestration Page Loads"
+    description: "Verify the Fleet Orchestration page renders its heading, subtitle, Refresh button, and the eight stat cards"
+    tags: [fleet, smoke, critical]
+    nodes: [linux]
+    timeout: 90000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_fleet
+        action: ui
+        description: "Navigate to Fleet Orchestration page"
+        playwright:
+          - goto: "/fleet"
+          - waitFor: "text=Fleet Orchestration"
+            timeout: 15000
+          - waitFor: "text=Manage policies, deployments, patches, and automations across your fleet"
+            timeout: 5000
+
+      - id: verify_refresh_button
+        action: ui
+        description: "Verify the Refresh button is present"
+        playwright:
+          - waitFor: "button:has-text('Refresh')"
+            timeout: 5000
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify key stat card titles are rendered"
+        playwright:
+          - waitFor: "text=Policies"
+            timeout: 10000
+          - waitFor: "text=Deployments"
+            timeout: 5000
+          - waitFor: "text=Patches"
+            timeout: 5000
+          - waitFor: "text=Alerts"
+            timeout: 5000
+          - waitFor: "text=Groups"
+            timeout: 5000
+          - waitFor: "text=Automations"
+            timeout: 5000
+          - waitFor: "text=Maintenance"
+            timeout: 5000
+          - waitFor: "text=Reports"
+            timeout: 5000
+
+  - id: fleet_ai_quick_actions
+    name: "Fleet AI Quick Actions Panel Renders"
+    description: "Verify the AI Fleet Actions panel and all eight quick action chip buttons are rendered"
+    tags: [fleet, ai, quick-actions]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_fleet
+        action: ui
+        description: "Navigate to Fleet page and wait for full load"
+        playwright:
+          - goto: "/fleet"
+          - waitFor: "text=AI Fleet Actions"
+            timeout: 15000
+
+      - id: verify_quick_action_buttons
+        action: ui
+        description: "Confirm all eight quick-action chip buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Check compliance')"
+            timeout: 5000
+          - waitFor: "button:has-text('Active deployments')"
+            timeout: 5000
+          - waitFor: "button:has-text('Critical patches')"
+            timeout: 5000
+          - waitFor: "button:has-text('Alert overview')"
+            timeout: 5000
+          - waitFor: "button:has-text('Maintenance windows')"
+            timeout: 5000
+          - waitFor: "button:has-text('Run automations')"
+            timeout: 5000
+          - waitFor: "button:has-text('Device groups')"
+            timeout: 5000
+          - waitFor: "button:has-text('Generate report')"
+            timeout: 5000
+
+  - id: fleet_status_overview_panels
+    name: "Fleet Status Overview Panels Render"
+    description: "Verify the four status overview panels (Deployment Status, Alert Breakdown, Patch Posture, Policy Compliance) are rendered with their bar/stat labels"
+    tags: [fleet, status, panels]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_fleet
+        action: ui
+        description: "Navigate to Fleet page"
+        playwright:
+          - goto: "/fleet"
+          - waitFor: "text=Fleet Orchestration"
+            timeout: 15000
+
+      - id: verify_overview_panels
+        action: ui
+        description: "Verify Deployment Status, Alert Breakdown, Patch Posture, and Policy Compliance panels"
+        playwright:
+          - waitFor: "text=Deployment Status"
+            timeout: 10000
+          - waitFor: "text=Alert Breakdown"
+            timeout: 5000
+          - waitFor: "text=Patch Posture"
+            timeout: 5000
+          - waitFor: "text=Policy Compliance"
+            timeout: 5000
+
+      - id: verify_deployment_status_bars
+        action: ui
+        description: "Verify the deployment status bar labels"
+        playwright:
+          - waitFor: "text=Active"
+            timeout: 5000
+          - waitFor: "text=Pending"
+            timeout: 5000
+          - waitFor: "text=Completed"
+            timeout: 5000
+          - waitFor: "text=Failed"
+            timeout: 5000
+
+  - id: fleet_refresh_reloads_stats
+    name: "Fleet Refresh Button Reloads Stats"
+    description: "Click the Refresh button and verify the page re-renders stat cards without an error state"
+    tags: [fleet, refresh]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_fleet
+        action: ui
+        description: "Navigate to Fleet page and wait for initial load"
+        playwright:
+          - goto: "/fleet"
+          - waitFor: "text=Fleet Orchestration"
+            timeout: 15000
+          - waitFor: "button:has-text('Refresh')"
+            timeout: 5000
+
+      - id: click_refresh
+        action: ui
+        description: "Click the Refresh button and wait for stat cards to reappear"
+        playwright:
+          - click: "button:has-text('Refresh')"
+          - waitFor: "text=Policies"
+            timeout: 15000
+
+      - id: verify_fleet_api
+        action: api
+        description: "Confirm the configuration policies endpoint is available"
+        request:
+          method: GET
+          path: "/api/v1/configuration-policies"
+        assert:
+          status: 200
+        expect:
+          pagination:
+            page: 1
+            limit: 25

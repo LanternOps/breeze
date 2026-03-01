@@ -1,0 +1,1122 @@
+- generic [ref=e1]:
+  - generic [ref=e8]:
+    - complementary [ref=e10]:
+      - generic [ref=e11]:
+        - generic [ref=e12]: Breeze
+        - button [ref=e13] [cursor=pointer]:
+          - img [ref=e14]
+      - navigation [ref=e16]:
+        - link "Dashboard" [ref=e17] [cursor=pointer]:
+          - /url: /
+          - img [ref=e18]
+          - generic [ref=e23]: Dashboard
+        - link "Devices" [ref=e24] [cursor=pointer]:
+          - /url: /devices
+          - img [ref=e25]
+          - generic [ref=e27]: Devices
+        - link "Discovery" [ref=e28] [cursor=pointer]:
+          - /url: /discovery
+          - img [ref=e29]
+          - generic [ref=e34]: Discovery
+        - link "Scripts" [ref=e35] [cursor=pointer]:
+          - /url: /scripts
+          - img [ref=e36]
+          - generic [ref=e41]: Scripts
+        - link "Alerts" [ref=e42] [cursor=pointer]:
+          - /url: /alerts
+          - img [ref=e43]
+          - generic [ref=e46]: Alerts
+        - link "Reports" [ref=e47] [cursor=pointer]:
+          - /url: /reports
+          - img [ref=e48]
+          - generic [ref=e51]: Reports
+        - link "Analytics" [ref=e52] [cursor=pointer]:
+          - /url: /analytics
+          - img [ref=e53]
+          - generic [ref=e55]: Analytics
+        - link "Fleet" [ref=e56] [cursor=pointer]:
+          - /url: /fleet
+          - img [ref=e57]
+          - generic [ref=e69]: Fleet
+        - link "Remote Access" [ref=e70] [cursor=pointer]:
+          - /url: /remote
+          - img [ref=e71]
+          - generic [ref=e73]: Remote Access
+        - text: Monitoring
+        - link "Monitoring" [ref=e75] [cursor=pointer]:
+          - /url: /monitoring
+          - img [ref=e76]
+          - generic [ref=e78]: Monitoring
+        - link "Security" [ref=e79] [cursor=pointer]:
+          - /url: /security
+          - img [ref=e80]
+          - generic [ref=e83]: Security
+        - link "Data Discovery" [ref=e84] [cursor=pointer]:
+          - /url: /sensitive-data
+          - img [ref=e85]
+          - generic [ref=e92]: Data Discovery
+        - link "Peripherals" [ref=e93] [cursor=pointer]:
+          - /url: /peripherals
+          - img [ref=e94]
+          - generic [ref=e102]: Peripherals
+        - link "AI Risk Engine" [ref=e103] [cursor=pointer]:
+          - /url: /ai-risk
+          - img [ref=e104]
+          - generic [ref=e116]: AI Risk Engine
+        - link "CIS Benchmarks" [ref=e117] [cursor=pointer]:
+          - /url: /cis-hardening
+          - img [ref=e118]
+          - generic [ref=e122]: CIS Benchmarks
+        - text: Operations
+        - link "Updates" [ref=e124] [cursor=pointer]:
+          - /url: /patches
+          - img [ref=e125]
+          - generic [ref=e128]: Updates
+        - link "Backup" [ref=e129] [cursor=pointer]:
+          - /url: /backup
+          - img [ref=e130]
+          - generic [ref=e132]: Backup
+        - link "Audit Logs" [ref=e133] [cursor=pointer]:
+          - /url: /audit
+          - img [ref=e134]
+          - generic [ref=e137]: Audit Logs
+        - link "Event Logs" [ref=e138] [cursor=pointer]:
+          - /url: /logs
+          - img [ref=e139]
+          - generic [ref=e142]: Event Logs
+        - link "Audit Baselines" [ref=e143] [cursor=pointer]:
+          - /url: /audit-baselines
+          - img [ref=e144]
+          - generic [ref=e147]: Audit Baselines
+        - text: Integrations
+        - link "Webhooks" [ref=e149] [cursor=pointer]:
+          - /url: /integrations/webhooks
+          - img [ref=e150]
+          - generic [ref=e154]: Webhooks
+        - link "PSA Connections" [ref=e155] [cursor=pointer]:
+          - /url: /integrations/psa
+          - img [ref=e156]
+          - generic [ref=e158]: PSA Connections
+        - text: Management
+        - link "App Library" [ref=e160] [cursor=pointer]:
+          - /url: /software
+          - img [ref=e161]
+          - generic [ref=e165]: App Library
+        - link "App Policies" [ref=e166] [cursor=pointer]:
+          - /url: /software-inventory
+          - img [ref=e167]
+          - generic [ref=e171]: App Policies
+        - link "Config Policies" [ref=e172] [cursor=pointer]:
+          - /url: /configuration-policies
+          - img [ref=e173]
+          - generic [ref=e177]: Config Policies
+        - link "Organizations" [ref=e178] [cursor=pointer]:
+          - /url: /settings/organizations
+          - img [ref=e179]
+          - generic [ref=e183]: Organizations
+        - link "Users" [ref=e184] [cursor=pointer]:
+          - /url: /settings/users
+          - img [ref=e185]
+          - generic [ref=e190]: Users
+        - link "Roles" [ref=e191] [cursor=pointer]:
+          - /url: /settings/roles
+          - img [ref=e192]
+          - generic [ref=e195]: Roles
+        - link "Settings" [ref=e196] [cursor=pointer]:
+          - /url: /settings
+          - img [ref=e197]
+          - generic [ref=e200]: Settings
+        - text: Settings
+        - link "Organization" [ref=e202] [cursor=pointer]:
+          - /url: /settings/organization
+          - img [ref=e203]
+          - generic [ref=e206]: Organization
+        - link "Custom Fields" [ref=e207] [cursor=pointer]:
+          - /url: /settings/custom-fields
+          - img [ref=e208]
+          - generic [ref=e211]: Custom Fields
+        - link "Saved Filters" [ref=e212] [cursor=pointer]:
+          - /url: /settings/filters
+          - img [ref=e213]
+          - generic [ref=e215]: Saved Filters
+        - link "Integrations" [ref=e216] [cursor=pointer]:
+          - /url: /integrations/webhooks
+          - img [ref=e217]
+          - generic [ref=e219]: Integrations
+    - generic [ref=e220]:
+      - banner [ref=e222]:
+        - generic [ref=e223]:
+          - button "Default Organization active" [ref=e298] [cursor=pointer]:
+            - img [ref=e299]
+            - generic [ref=e230]: Default Organization
+            - generic [ref=e303]: active
+            - img [ref=e231]
+          - button "Search devices, scripts, alerts, users, settings Cmd+K" [ref=e304] [cursor=pointer]:
+            - img [ref=e234]
+            - generic [ref=e237]: Search devices, scripts, alerts, users, settings
+            - generic [ref=e238]: Cmd+K
+        - generic [ref=e239]:
+          - button "Notifications" [ref=e306] [cursor=pointer]:
+            - img [ref=e307]
+          - button "Switch to dark mode" [ref=e240] [cursor=pointer]:
+            - img [ref=e241]
+          - button "T" [ref=e310] [cursor=pointer]:
+            - generic [ref=e245]: T
+            - img [ref=e249]
+      - main [ref=e251]:
+        - generic [ref=e253]:
+          - button "Back to devices" [ref=e311] [cursor=pointer]:
+            - img [ref=e312]
+            - text: Back to devices
+          - generic [ref=e314]:
+            - generic [ref=e316]:
+              - generic [ref=e317]:
+                - img [ref=e319]
+                - generic [ref=e321]:
+                  - generic [ref=e322]:
+                    - heading "KIT" [level=1] [ref=e323]
+                    - generic [ref=e324]: Online
+                  - generic [ref=e325]:
+                    - generic [ref=e326]: Windows 11 Pro
+                    - generic [ref=e327]: Agent vdev-1772322641
+                    - generic [ref=e328]: Default Site
+              - generic [ref=e329]:
+                - button "Run Script" [ref=e330] [cursor=pointer]:
+                  - img [ref=e331]
+                  - text: Run Script
+                - button "Connect Desktop" [ref=e334] [cursor=pointer]:
+                  - img [ref=e335]
+                  - text: Connect Desktop
+                  - img [ref=e337]
+                - button "Remote Tools" [ref=e341] [cursor=pointer]:
+                  - img [ref=e342]
+                  - text: Remote Tools
+                - button "Reboot" [ref=e344] [cursor=pointer]:
+                  - img [ref=e345]
+                  - text: Reboot
+                - button [ref=e349] [cursor=pointer]:
+                  - img [ref=e350]
+            - navigation [ref=e355]:
+              - button "Overview" [ref=e356] [cursor=pointer]:
+                - img [ref=e357]
+                - text: Overview
+              - button "Device Details" [ref=e359] [cursor=pointer]:
+                - img [ref=e360]
+                - text: Device Details
+              - button "Hardware Inventory" [ref=e362] [cursor=pointer]:
+                - img [ref=e363]
+                - text: Hardware Inventory
+              - button "Software Inventory" [ref=e366] [cursor=pointer]:
+                - img [ref=e367]
+                - text: Software Inventory
+              - button "Patch Status" [ref=e371] [cursor=pointer]:
+                - img [ref=e372]
+                - text: Patch Status
+              - button "Disk Cleanup" [ref=e375] [cursor=pointer]:
+                - img [ref=e376]
+                - text: Disk Cleanup
+              - button "Security" [ref=e378] [cursor=pointer]:
+                - img [ref=e379]
+                - text: Security
+              - button "Peripherals" [ref=e381] [cursor=pointer]:
+                - img [ref=e382]
+                - text: Peripherals
+              - button "Management" [ref=e390] [cursor=pointer]:
+                - img [ref=e391]
+                - text: Management
+              - button "Effective Config" [ref=e394] [cursor=pointer]:
+                - img [ref=e395]
+                - text: Effective Config
+              - button "Alert History" [ref=e399] [cursor=pointer]:
+                - img [ref=e400]
+                - text: Alert History
+              - button "Script History" [ref=e402] [cursor=pointer]:
+                - img [ref=e403]
+                - text: Script History
+              - button "Performance" [ref=e405] [cursor=pointer]:
+                - img [ref=e406]
+                - text: Performance
+              - button "Boot Performance" [active] [ref=e408] [cursor=pointer]:
+                - img [ref=e409]
+                - text: Boot Performance
+              - button "Event Log" [ref=e412] [cursor=pointer]:
+                - img [ref=e413]
+                - text: Event Log
+              - button "Activities" [ref=e416] [cursor=pointer]:
+                - img [ref=e417]
+                - text: Activities
+              - button "Network Connections" [ref=e420] [cursor=pointer]:
+                - img [ref=e421]
+                - text: Network Connections
+              - button "IP History" [ref=e426] [cursor=pointer]:
+                - img [ref=e427]
+                - text: IP History
+              - button "Playbooks" [ref=e432] [cursor=pointer]:
+                - img [ref=e433]
+                - text: Playbooks
+            - generic [ref=e646]:
+              - generic [ref=e648]:
+                - generic [ref=e649]:
+                  - heading "Boot Performance" [level=3] [ref=e650]
+                  - paragraph [ref=e651]: Boot time trends, phase breakdown, and startup item analysis.
+                - generic [ref=e652]:
+                  - button "Refresh" [ref=e653] [cursor=pointer]:
+                    - img [ref=e654]
+                    - text: Refresh
+                  - button "Collect Now" [ref=e659] [cursor=pointer]:
+                    - img [ref=e660]
+                    - text: Collect Now
+              - generic [ref=e662]:
+                - generic [ref=e663]:
+                  - generic [ref=e664]:
+                    - img [ref=e665]
+                    - text: Avg Boot Time
+                  - paragraph [ref=e668]: 1m 22s
+                - generic [ref=e669]:
+                  - generic [ref=e670]:
+                    - img [ref=e671]
+                    - text: Fastest Boot
+                  - paragraph [ref=e673]: 42.8s
+                - generic [ref=e674]:
+                  - generic [ref=e675]:
+                    - img [ref=e676]
+                    - text: Slowest Boot
+                  - paragraph [ref=e678]: 1m 41s
+                - generic [ref=e679]:
+                  - generic [ref=e680]:
+                    - img [ref=e681]
+                    - text: Boots Tracked
+                  - paragraph [ref=e683]: "3"
+              - generic [ref=e684]:
+                - heading "Boot Time Trend" [level=3] [ref=e685]
+                - generic [ref=e688]:
+                  - img [ref=e689]:
+                    - generic [ref=e695]:
+                      - generic [ref=e697]: Feb 24
+                      - generic [ref=e699]: Feb 24
+                      - generic [ref=e701]: Feb 24
+                    - generic [ref=e703]:
+                      - generic [ref=e705]: 0s
+                      - generic [ref=e707]: 30s
+                      - generic [ref=e709]: 60s
+                      - generic [ref=e711]: 90s
+                      - generic [ref=e713]: 120s
+                  - list [ref=e730]:
+                    - listitem [ref=e731]:
+                      - img [ref=e732]
+                      - text: BIOS
+                    - listitem [ref=e734]:
+                      - img [ref=e735]
+                      - text: OS Loader
+                    - listitem [ref=e737]:
+                      - img [ref=e738]
+                      - text: Desktop Ready
+              - generic [ref=e740]:
+                - heading "Startup Items (Latest Boot)" [level=3] [ref=e741]
+                - table [ref=e743]:
+                  - rowgroup [ref=e744]:
+                    - row "Name Type Status CPU Time Disk I/O Impact" [ref=e745]:
+                      - columnheader "Name" [ref=e746]:
+                        - button "Name" [ref=e747] [cursor=pointer]
+                      - columnheader "Type" [ref=e748]
+                      - columnheader "Status" [ref=e749]
+                      - columnheader "CPU Time" [ref=e750]:
+                        - button "CPU Time" [ref=e751] [cursor=pointer]
+                      - columnheader "Disk I/O" [ref=e752]:
+                        - button "Disk I/O" [ref=e753] [cursor=pointer]
+                      - columnheader "Impact" [ref=e754]:
+                        - button "Impact" [ref=e755] [cursor=pointer]:
+                          - text: Impact
+                          - img [ref=e756]
+                  - rowgroup [ref=e758]:
+                    - row "Breeze RMM Agent D:\\Claude\\breeze\\breeze-agent-dev.exe run Service Enabled 20844ms 0 Bytes 50" [ref=e759]:
+                      - cell "Breeze RMM Agent D:\\Claude\\breeze\\breeze-agent-dev.exe run" [ref=e760]:
+                        - paragraph [ref=e761]: Breeze RMM Agent
+                        - paragraph [ref=e762]: D:\Claude\breeze\breeze-agent-dev.exe run
+                      - cell "Service" [ref=e763]
+                      - cell "Enabled" [ref=e764]:
+                        - generic [ref=e765]: Enabled
+                      - cell "20844ms" [ref=e766]
+                      - cell "0 Bytes" [ref=e767]
+                      - cell "50" [ref=e768]:
+                        - generic [ref=e769]: "50"
+                    - row "Huntress Rio Service \"C:\\Program Files\\Huntress\\Rio\\Rio.exe\" Service Enabled 15172ms 0 Bytes 50" [ref=e770]:
+                      - cell "Huntress Rio Service \"C:\\Program Files\\Huntress\\Rio\\Rio.exe\"" [ref=e771]:
+                        - paragraph [ref=e772]: Huntress Rio Service
+                        - paragraph [ref=e773]: "\"C:\\Program Files\\Huntress\\Rio\\Rio.exe\""
+                      - cell "Service" [ref=e774]
+                      - cell "Enabled" [ref=e775]:
+                        - generic [ref=e776]: Enabled
+                      - cell "15172ms" [ref=e777]
+                      - cell "0 Bytes" [ref=e778]
+                      - cell "50" [ref=e779]:
+                        - generic [ref=e780]: "50"
+                    - row "Microsoft Defender Antivirus Service \"C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26010.5-0\\MsMpEng.exe\" Service Enabled 59297ms 0 Bytes 50" [ref=e781]:
+                      - cell "Microsoft Defender Antivirus Service \"C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26010.5-0\\MsMpEng.exe\"" [ref=e782]:
+                        - paragraph [ref=e783]: Microsoft Defender Antivirus Service
+                        - paragraph [ref=e784]: "\"C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26010.5-0\\MsMpEng.exe\""
+                      - cell "Service" [ref=e785]
+                      - cell "Enabled" [ref=e786]:
+                        - generic [ref=e787]: Enabled
+                      - cell "59297ms" [ref=e788]
+                      - cell "0 Bytes" [ref=e789]
+                      - cell "50" [ref=e790]:
+                        - generic [ref=e791]: "50"
+                    - row "MongoDB Server (MongoDB) \"C:\\Program Files\\MongoDB\\Server\\8.0\\bin\\mongod.exe\" --config \"C:\\Program Files\\MongoDB\\Server\\8.0\\bin\\mongod.cfg\" --service Service Enabled 4734ms 0 Bytes 23.7" [ref=e792]:
+                      - cell "MongoDB Server (MongoDB) \"C:\\Program Files\\MongoDB\\Server\\8.0\\bin\\mongod.exe\" --config \"C:\\Program Files\\MongoDB\\Server\\8.0\\bin\\mongod.cfg\" --service" [ref=e793]:
+                        - paragraph [ref=e794]: MongoDB Server (MongoDB)
+                        - paragraph [ref=e795]: "\"C:\\Program Files\\MongoDB\\Server\\8.0\\bin\\mongod.exe\" --config \"C:\\Program Files\\MongoDB\\Server\\8.0\\bin\\mongod.cfg\" --service"
+                      - cell "Service" [ref=e796]
+                      - cell "Enabled" [ref=e797]:
+                        - generic [ref=e798]: Enabled
+                      - cell "4734ms" [ref=e799]
+                      - cell "0 Bytes" [ref=e800]
+                      - cell "23.7" [ref=e801]:
+                        - generic [ref=e802]: "23.7"
+                    - row "Backblaze Service \"C:\\Program Files (x86)\\Backblaze\\bzserv.exe\" Service Enabled 2828ms 0 Bytes 14.1" [ref=e803]:
+                      - cell "Backblaze Service \"C:\\Program Files (x86)\\Backblaze\\bzserv.exe\"" [ref=e804]:
+                        - paragraph [ref=e805]: Backblaze Service
+                        - paragraph [ref=e806]: "\"C:\\Program Files (x86)\\Backblaze\\bzserv.exe\""
+                      - cell "Service" [ref=e807]
+                      - cell "Enabled" [ref=e808]:
+                        - generic [ref=e809]: Enabled
+                      - cell "2828ms" [ref=e810]
+                      - cell "0 Bytes" [ref=e811]
+                      - cell "14.1" [ref=e812]:
+                        - generic [ref=e813]: "14.1"
+                    - row "Security Accounts Manager C:\\WINDOWS\\system32\\lsass.exe Service Enabled 1797ms 0 Bytes 9" [ref=e814]:
+                      - cell "Security Accounts Manager C:\\WINDOWS\\system32\\lsass.exe" [ref=e815]:
+                        - paragraph [ref=e816]: Security Accounts Manager
+                        - paragraph [ref=e817]: C:\WINDOWS\system32\lsass.exe
+                      - cell "Service" [ref=e818]
+                      - cell "Enabled" [ref=e819]:
+                        - generic [ref=e820]: Enabled
+                      - cell "1797ms" [ref=e821]
+                      - cell "0 Bytes" [ref=e822]
+                      - cell "9" [ref=e823]:
+                        - generic [ref=e824]: "9"
+                    - row "Tailscale \"C:\\Program Files\\Tailscale\\tailscaled.exe\" Service Enabled 1062ms 0 Bytes 5.3" [ref=e825]:
+                      - cell "Tailscale \"C:\\Program Files\\Tailscale\\tailscaled.exe\"" [ref=e826]:
+                        - paragraph [ref=e827]: Tailscale
+                        - paragraph [ref=e828]: "\"C:\\Program Files\\Tailscale\\tailscaled.exe\""
+                      - cell "Service" [ref=e829]
+                      - cell "Enabled" [ref=e830]:
+                        - generic [ref=e831]: Enabled
+                      - cell "1062ms" [ref=e832]
+                      - cell "0 Bytes" [ref=e833]
+                      - cell "5.3" [ref=e834]:
+                        - generic [ref=e835]: "5.3"
+                    - row "NinjaRMM Agent \"C:\\Program Files (x86)\\NinjaOne\\NinjaRMMAgentPatcher.exe\" Service Enabled 797ms 0 Bytes 4" [ref=e836]:
+                      - cell "NinjaRMM Agent \"C:\\Program Files (x86)\\NinjaOne\\NinjaRMMAgentPatcher.exe\"" [ref=e837]:
+                        - paragraph [ref=e838]: NinjaRMM Agent
+                        - paragraph [ref=e839]: "\"C:\\Program Files (x86)\\NinjaOne\\NinjaRMMAgentPatcher.exe\""
+                      - cell "Service" [ref=e840]
+                      - cell "Enabled" [ref=e841]:
+                        - generic [ref=e842]: Enabled
+                      - cell "797ms" [ref=e843]
+                      - cell "0 Bytes" [ref=e844]
+                      - cell "4" [ref=e845]:
+                        - generic [ref=e846]: "4"
+                    - row "Logi Options+ \"C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_updater.exe\" --run-as-service Service Enabled 766ms 0 Bytes 3.8" [ref=e847]:
+                      - cell "Logi Options+ \"C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_updater.exe\" --run-as-service" [ref=e848]:
+                        - paragraph [ref=e849]: Logi Options+
+                        - paragraph [ref=e850]: "\"C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_updater.exe\" --run-as-service"
+                      - cell "Service" [ref=e851]
+                      - cell "Enabled" [ref=e852]:
+                        - generic [ref=e853]: Enabled
+                      - cell "766ms" [ref=e854]
+                      - cell "0 Bytes" [ref=e855]
+                      - cell "3.8" [ref=e856]:
+                        - generic [ref=e857]: "3.8"
+                    - row "Microsoft Office Click-to-Run Service \"C:\\Program Files\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe\" /service Service Enabled 625ms 0 Bytes 3.1" [ref=e858]:
+                      - cell "Microsoft Office Click-to-Run Service \"C:\\Program Files\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe\" /service" [ref=e859]:
+                        - paragraph [ref=e860]: Microsoft Office Click-to-Run Service
+                        - paragraph [ref=e861]: "\"C:\\Program Files\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe\" /service"
+                      - cell "Service" [ref=e862]
+                      - cell "Enabled" [ref=e863]:
+                        - generic [ref=e864]: Enabled
+                      - cell "625ms" [ref=e865]
+                      - cell "0 Bytes" [ref=e866]
+                      - cell "3.1" [ref=e867]:
+                        - generic [ref=e868]: "3.1"
+                    - row "Microsoft Defender Core Service \"C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26010.5-0\\MpDefenderCoreService.exe\" Service Enabled 531ms 0 Bytes 2.7" [ref=e869]:
+                      - cell "Microsoft Defender Core Service \"C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26010.5-0\\MpDefenderCoreService.exe\"" [ref=e870]:
+                        - paragraph [ref=e871]: Microsoft Defender Core Service
+                        - paragraph [ref=e872]: "\"C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26010.5-0\\MpDefenderCoreService.exe\""
+                      - cell "Service" [ref=e873]
+                      - cell "Enabled" [ref=e874]:
+                        - generic [ref=e875]: Enabled
+                      - cell "531ms" [ref=e876]
+                      - cell "0 Bytes" [ref=e877]
+                      - cell "2.7" [ref=e878]:
+                        - generic [ref=e879]: "2.7"
+                    - row "Logitech LampArray Service C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\logi_lamparray_usb.inf_amd64_e7cd8faef8863187\\logi_lamparray_service.exe Service Enabled 406ms 0 Bytes 2" [ref=e880]:
+                      - cell "Logitech LampArray Service C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\logi_lamparray_usb.inf_amd64_e7cd8faef8863187\\logi_lamparray_service.exe" [ref=e881]:
+                        - paragraph [ref=e882]: Logitech LampArray Service
+                        - paragraph [ref=e883]: C:\WINDOWS\System32\DriverStore\FileRepository\logi_lamparray_usb.inf_amd64_e7cd8faef8863187\logi_lamparray_service.exe
+                      - cell "Service" [ref=e884]
+                      - cell "Enabled" [ref=e885]:
+                        - generic [ref=e886]: Enabled
+                      - cell "406ms" [ref=e887]
+                      - cell "0 Bytes" [ref=e888]
+                      - cell "2" [ref=e889]:
+                        - generic [ref=e890]: "2"
+                    - row "LGHUB Updater Service \"C:\\Program Files\\LGHUB\\lghub_updater.exe\" --run-as-service Service Enabled 359ms 0 Bytes 1.8" [ref=e891]:
+                      - cell "LGHUB Updater Service \"C:\\Program Files\\LGHUB\\lghub_updater.exe\" --run-as-service" [ref=e892]:
+                        - paragraph [ref=e893]: LGHUB Updater Service
+                        - paragraph [ref=e894]: "\"C:\\Program Files\\LGHUB\\lghub_updater.exe\" --run-as-service"
+                      - cell "Service" [ref=e895]
+                      - cell "Enabled" [ref=e896]:
+                        - generic [ref=e897]: Enabled
+                      - cell "359ms" [ref=e898]
+                      - cell "0 Bytes" [ref=e899]
+                      - cell "1.8" [ref=e900]:
+                        - generic [ref=e901]: "1.8"
+                    - row "Print Spooler C:\\WINDOWS\\System32\\spoolsv.exe Service Enabled 312ms 0 Bytes 1.6" [ref=e902]:
+                      - cell "Print Spooler C:\\WINDOWS\\System32\\spoolsv.exe" [ref=e903]:
+                        - paragraph [ref=e904]: Print Spooler
+                        - paragraph [ref=e905]: C:\WINDOWS\System32\spoolsv.exe
+                      - cell "Service" [ref=e906]
+                      - cell "Enabled" [ref=e907]:
+                        - generic [ref=e908]: Enabled
+                      - cell "312ms" [ref=e909]
+                      - cell "0 Bytes" [ref=e910]
+                      - cell "1.6" [ref=e911]:
+                        - generic [ref=e912]: "1.6"
+                    - row "Hyper-V Virtual Machine Management C:\\WINDOWS\\system32\\vmms.exe Service Enabled 234ms 0 Bytes 1.2" [ref=e913]:
+                      - cell "Hyper-V Virtual Machine Management C:\\WINDOWS\\system32\\vmms.exe" [ref=e914]:
+                        - paragraph [ref=e915]: Hyper-V Virtual Machine Management
+                        - paragraph [ref=e916]: C:\WINDOWS\system32\vmms.exe
+                      - cell "Service" [ref=e917]
+                      - cell "Enabled" [ref=e918]:
+                        - generic [ref=e919]: Enabled
+                      - cell "234ms" [ref=e920]
+                      - cell "0 Bytes" [ref=e921]
+                      - cell "1.2" [ref=e922]:
+                        - generic [ref=e923]: "1.2"
+                    - row "NinjaRemote supervisor \"C:\\Program Files\\NinjaRemote\\ncstreamer.exe\" -j Service Enabled 203ms 0 Bytes 1" [ref=e924]:
+                      - cell "NinjaRemote supervisor \"C:\\Program Files\\NinjaRemote\\ncstreamer.exe\" -j" [ref=e925]:
+                        - paragraph [ref=e926]: NinjaRemote supervisor
+                        - paragraph [ref=e927]: "\"C:\\Program Files\\NinjaRemote\\ncstreamer.exe\" -j"
+                      - cell "Service" [ref=e928]
+                      - cell "Enabled" [ref=e929]:
+                        - generic [ref=e930]: Enabled
+                      - cell "203ms" [ref=e931]
+                      - cell "0 Bytes" [ref=e932]
+                      - cell "1" [ref=e933]:
+                        - generic [ref=e934]: "1"
+                    - row "NextDNS DNS53 to DoH proxy. \"C:\\Program Files (x86)\\NextDNS\\NextDNSService.exe\" Service Enabled 188ms 0 Bytes 0.9" [ref=e935]:
+                      - cell "NextDNS DNS53 to DoH proxy. \"C:\\Program Files (x86)\\NextDNS\\NextDNSService.exe\"" [ref=e936]:
+                        - paragraph [ref=e937]: NextDNS DNS53 to DoH proxy.
+                        - paragraph [ref=e938]: "\"C:\\Program Files (x86)\\NextDNS\\NextDNSService.exe\""
+                      - cell "Service" [ref=e939]
+                      - cell "Enabled" [ref=e940]:
+                        - generic [ref=e941]: Enabled
+                      - cell "188ms" [ref=e942]
+                      - cell "0 Bytes" [ref=e943]
+                      - cell "0.9" [ref=e944]:
+                        - generic [ref=e945]: "0.9"
+                    - row "WSL Service \"C:\\Program Files\\WSL\\wslservice.exe\" Service Enabled 156ms 0 Bytes 0.8" [ref=e946]:
+                      - cell "WSL Service \"C:\\Program Files\\WSL\\wslservice.exe\"" [ref=e947]:
+                        - paragraph [ref=e948]: WSL Service
+                        - paragraph [ref=e949]: "\"C:\\Program Files\\WSL\\wslservice.exe\""
+                      - cell "Service" [ref=e950]
+                      - cell "Enabled" [ref=e951]:
+                        - generic [ref=e952]: Enabled
+                      - cell "156ms" [ref=e953]
+                      - cell "0 Bytes" [ref=e954]
+                      - cell "0.8" [ref=e955]:
+                        - generic [ref=e956]: "0.8"
+                    - row "Recovery Console Service \"C:\\Program Files\\RecoveryConsole\\ProcessController.exe\" serve Service Enabled 141ms 0 Bytes 0.7" [ref=e957]:
+                      - cell "Recovery Console Service \"C:\\Program Files\\RecoveryConsole\\ProcessController.exe\" serve" [ref=e958]:
+                        - paragraph [ref=e959]: Recovery Console Service
+                        - paragraph [ref=e960]: "\"C:\\Program Files\\RecoveryConsole\\ProcessController.exe\" serve"
+                      - cell "Service" [ref=e961]
+                      - cell "Enabled" [ref=e962]:
+                        - generic [ref=e963]: Enabled
+                      - cell "141ms" [ref=e964]
+                      - cell "0 Bytes" [ref=e965]
+                      - cell "0.7" [ref=e966]:
+                        - generic [ref=e967]: "0.7"
+                    - row "AMD External Events Utility C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\u0390451.inf_amd64_39377efdd62734d1\\B390182\\atiesrxx.exe Service Enabled 62ms 0 Bytes 0.3" [ref=e968]:
+                      - cell "AMD External Events Utility C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\u0390451.inf_amd64_39377efdd62734d1\\B390182\\atiesrxx.exe" [ref=e969]:
+                        - paragraph [ref=e970]: AMD External Events Utility
+                        - paragraph [ref=e971]: C:\WINDOWS\System32\DriverStore\FileRepository\u0390451.inf_amd64_39377efdd62734d1\B390182\atiesrxx.exe
+                      - cell "Service" [ref=e972]
+                      - cell "Enabled" [ref=e973]:
+                        - generic [ref=e974]: Enabled
+                      - cell "62ms" [ref=e975]
+                      - cell "0 Bytes" [ref=e976]
+                      - cell "0.3" [ref=e977]:
+                        - generic [ref=e978]: "0.3"
+                    - row "Adobe Acrobat Update Service \"C:\\Program Files (x86)\\Common Files\\Adobe\\ARM\\1.0\\armsvc.exe\" Service Enabled 47ms 0 Bytes 0.2" [ref=e979]:
+                      - cell "Adobe Acrobat Update Service \"C:\\Program Files (x86)\\Common Files\\Adobe\\ARM\\1.0\\armsvc.exe\"" [ref=e980]:
+                        - paragraph [ref=e981]: Adobe Acrobat Update Service
+                        - paragraph [ref=e982]: "\"C:\\Program Files (x86)\\Common Files\\Adobe\\ARM\\1.0\\armsvc.exe\""
+                      - cell "Service" [ref=e983]
+                      - cell "Enabled" [ref=e984]:
+                        - generic [ref=e985]: Enabled
+                      - cell "47ms" [ref=e986]
+                      - cell "0 Bytes" [ref=e987]
+                      - cell "0.2" [ref=e988]:
+                        - generic [ref=e989]: "0.2"
+                    - row "AdobeUpdateService \"C:\\Program Files (x86)\\Common Files\\Adobe\\Adobe Desktop Common\\ElevationManager\\AdobeUpdateService.exe\" Service Enabled 47ms 0 Bytes 0.2" [ref=e990]:
+                      - cell "AdobeUpdateService \"C:\\Program Files (x86)\\Common Files\\Adobe\\Adobe Desktop Common\\ElevationManager\\AdobeUpdateService.exe\"" [ref=e991]:
+                        - paragraph [ref=e992]: AdobeUpdateService
+                        - paragraph [ref=e993]: "\"C:\\Program Files (x86)\\Common Files\\Adobe\\Adobe Desktop Common\\ElevationManager\\AdobeUpdateService.exe\""
+                      - cell "Service" [ref=e994]
+                      - cell "Enabled" [ref=e995]:
+                        - generic [ref=e996]: Enabled
+                      - cell "47ms" [ref=e997]
+                      - cell "0 Bytes" [ref=e998]
+                      - cell "0.2" [ref=e999]:
+                        - generic [ref=e1000]: "0.2"
+                    - row "AppX Deployment Service (AppXSVC) C:\\WINDOWS\\system32\\svchost.exe -k wsappx -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1001]:
+                      - cell "AppX Deployment Service (AppXSVC) C:\\WINDOWS\\system32\\svchost.exe -k wsappx -p" [ref=e1002]:
+                        - paragraph [ref=e1003]: AppX Deployment Service (AppXSVC)
+                        - paragraph [ref=e1004]: C:\WINDOWS\system32\svchost.exe -k wsappx -p
+                      - cell "Service" [ref=e1005]
+                      - cell "Enabled" [ref=e1006]:
+                        - generic [ref=e1007]: Enabled
+                      - cell "31ms" [ref=e1008]
+                      - cell "0 Bytes" [ref=e1009]
+                      - cell "0.2" [ref=e1010]:
+                        - generic [ref=e1011]: "0.2"
+                    - row "Windows Audio Endpoint Builder C:\\WINDOWS\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1012]:
+                      - cell "Windows Audio Endpoint Builder C:\\WINDOWS\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p" [ref=e1013]:
+                        - paragraph [ref=e1014]: Windows Audio Endpoint Builder
+                        - paragraph [ref=e1015]: C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p
+                      - cell "Service" [ref=e1016]
+                      - cell "Enabled" [ref=e1017]:
+                        - generic [ref=e1018]: Enabled
+                      - cell "31ms" [ref=e1019]
+                      - cell "0 Bytes" [ref=e1020]
+                      - cell "0.2" [ref=e1021]:
+                        - generic [ref=e1022]: "0.2"
+                    - row "Windows Audio C:\\WINDOWS\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1023]:
+                      - cell "Windows Audio C:\\WINDOWS\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p" [ref=e1024]:
+                        - paragraph [ref=e1025]: Windows Audio
+                        - paragraph [ref=e1026]: C:\WINDOWS\System32\svchost.exe -k LocalServiceNetworkRestricted -p
+                      - cell "Service" [ref=e1027]
+                      - cell "Enabled" [ref=e1028]:
+                        - generic [ref=e1029]: Enabled
+                      - cell "31ms" [ref=e1030]
+                      - cell "0 Bytes" [ref=e1031]
+                      - cell "0.2" [ref=e1032]:
+                        - generic [ref=e1033]: "0.2"
+                    - row "Base Filtering Engine C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceNoNetworkFirewall -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1034]:
+                      - cell "Base Filtering Engine C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceNoNetworkFirewall -p" [ref=e1035]:
+                        - paragraph [ref=e1036]: Base Filtering Engine
+                        - paragraph [ref=e1037]: C:\WINDOWS\system32\svchost.exe -k LocalServiceNoNetworkFirewall -p
+                      - cell "Service" [ref=e1038]
+                      - cell "Enabled" [ref=e1039]:
+                        - generic [ref=e1040]: Enabled
+                      - cell "31ms" [ref=e1041]
+                      - cell "0 Bytes" [ref=e1042]
+                      - cell "0.2" [ref=e1043]:
+                        - generic [ref=e1044]: "0.2"
+                    - row "Background Tasks Infrastructure Service C:\\WINDOWS\\system32\\svchost.exe -k DcomLaunch -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1045]:
+                      - cell "Background Tasks Infrastructure Service C:\\WINDOWS\\system32\\svchost.exe -k DcomLaunch -p" [ref=e1046]:
+                        - paragraph [ref=e1047]: Background Tasks Infrastructure Service
+                        - paragraph [ref=e1048]: C:\WINDOWS\system32\svchost.exe -k DcomLaunch -p
+                      - cell "Service" [ref=e1049]
+                      - cell "Enabled" [ref=e1050]:
+                        - generic [ref=e1051]: Enabled
+                      - cell "31ms" [ref=e1052]
+                      - cell "0 Bytes" [ref=e1053]
+                      - cell "0.2" [ref=e1054]:
+                        - generic [ref=e1055]: "0.2"
+                    - row "Capability Access Manager Service C:\\WINDOWS\\system32\\svchost.exe -k osprivacy -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1056]:
+                      - cell "Capability Access Manager Service C:\\WINDOWS\\system32\\svchost.exe -k osprivacy -p" [ref=e1057]:
+                        - paragraph [ref=e1058]: Capability Access Manager Service
+                        - paragraph [ref=e1059]: C:\WINDOWS\system32\svchost.exe -k osprivacy -p
+                      - cell "Service" [ref=e1060]
+                      - cell "Enabled" [ref=e1061]:
+                        - generic [ref=e1062]: Enabled
+                      - cell "31ms" [ref=e1063]
+                      - cell "0 Bytes" [ref=e1064]
+                      - cell "0.2" [ref=e1065]:
+                        - generic [ref=e1066]: "0.2"
+                    - row "Connected Devices Platform Service C:\\WINDOWS\\system32\\svchost.exe -k LocalService -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1067]:
+                      - cell "Connected Devices Platform Service C:\\WINDOWS\\system32\\svchost.exe -k LocalService -p" [ref=e1068]:
+                        - paragraph [ref=e1069]: Connected Devices Platform Service
+                        - paragraph [ref=e1070]: C:\WINDOWS\system32\svchost.exe -k LocalService -p
+                      - cell "Service" [ref=e1071]
+                      - cell "Enabled" [ref=e1072]:
+                        - generic [ref=e1073]: Enabled
+                      - cell "31ms" [ref=e1074]
+                      - cell "0 Bytes" [ref=e1075]
+                      - cell "0.2" [ref=e1076]:
+                        - generic [ref=e1077]: "0.2"
+                    - row "CoreMessaging C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceNoNetwork -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1078]:
+                      - cell "CoreMessaging C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceNoNetwork -p" [ref=e1079]:
+                        - paragraph [ref=e1080]: CoreMessaging
+                        - paragraph [ref=e1081]: C:\WINDOWS\system32\svchost.exe -k LocalServiceNoNetwork -p
+                      - cell "Service" [ref=e1082]
+                      - cell "Enabled" [ref=e1083]:
+                        - generic [ref=e1084]: Enabled
+                      - cell "31ms" [ref=e1085]
+                      - cell "0 Bytes" [ref=e1086]
+                      - cell "0.2" [ref=e1087]:
+                        - generic [ref=e1088]: "0.2"
+                    - row "Cryptographic Services C:\\WINDOWS\\system32\\svchost.exe -k NetworkService -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1089]:
+                      - cell "Cryptographic Services C:\\WINDOWS\\system32\\svchost.exe -k NetworkService -p" [ref=e1090]:
+                        - paragraph [ref=e1091]: Cryptographic Services
+                        - paragraph [ref=e1092]: C:\WINDOWS\system32\svchost.exe -k NetworkService -p
+                      - cell "Service" [ref=e1093]
+                      - cell "Enabled" [ref=e1094]:
+                        - generic [ref=e1095]: Enabled
+                      - cell "31ms" [ref=e1096]
+                      - cell "0 Bytes" [ref=e1097]
+                      - cell "0.2" [ref=e1098]:
+                        - generic [ref=e1099]: "0.2"
+                    - row "Connected User Experiences and Telemetry C:\\WINDOWS\\System32\\svchost.exe -k utcsvc -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1100]:
+                      - cell "Connected User Experiences and Telemetry C:\\WINDOWS\\System32\\svchost.exe -k utcsvc -p" [ref=e1101]:
+                        - paragraph [ref=e1102]: Connected User Experiences and Telemetry
+                        - paragraph [ref=e1103]: C:\WINDOWS\System32\svchost.exe -k utcsvc -p
+                      - cell "Service" [ref=e1104]
+                      - cell "Enabled" [ref=e1105]:
+                        - generic [ref=e1106]: Enabled
+                      - cell "31ms" [ref=e1107]
+                      - cell "0 Bytes" [ref=e1108]
+                      - cell "0.2" [ref=e1109]:
+                        - generic [ref=e1110]: "0.2"
+                    - row "Device Management Wireless Application Protocol (WAP) Push message Routing Service C:\\WINDOWS\\system32\\svchost.exe -k netsvcs -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1111]:
+                      - cell "Device Management Wireless Application Protocol (WAP) Push message Routing Service C:\\WINDOWS\\system32\\svchost.exe -k netsvcs -p" [ref=e1112]:
+                        - paragraph [ref=e1113]: Device Management Wireless Application Protocol (WAP) Push message Routing Service
+                        - paragraph [ref=e1114]: C:\WINDOWS\system32\svchost.exe -k netsvcs -p
+                      - cell "Service" [ref=e1115]
+                      - cell "Enabled" [ref=e1116]:
+                        - generic [ref=e1117]: Enabled
+                      - cell "31ms" [ref=e1118]
+                      - cell "0 Bytes" [ref=e1119]
+                      - cell "0.2" [ref=e1120]:
+                        - generic [ref=e1121]: "0.2"
+                    - row "Data Usage C:\\WINDOWS\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p -s DusmSvc Service Enabled 31ms 0 Bytes 0.2" [ref=e1122]:
+                      - cell "Data Usage C:\\WINDOWS\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p -s DusmSvc" [ref=e1123]:
+                        - paragraph [ref=e1124]: Data Usage
+                        - paragraph [ref=e1125]: C:\WINDOWS\System32\svchost.exe -k LocalServiceNetworkRestricted -p -s DusmSvc
+                      - cell "Service" [ref=e1126]
+                      - cell "Enabled" [ref=e1127]:
+                        - generic [ref=e1128]: Enabled
+                      - cell "31ms" [ref=e1129]
+                      - cell "0 Bytes" [ref=e1130]
+                      - cell "0.2" [ref=e1131]:
+                        - generic [ref=e1132]: "0.2"
+                    - row "COM+ Event System C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceRedirectionGuard -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1133]:
+                      - cell "COM+ Event System C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceRedirectionGuard -p" [ref=e1134]:
+                        - paragraph [ref=e1135]: COM+ Event System
+                        - paragraph [ref=e1136]: C:\WINDOWS\system32\svchost.exe -k LocalServiceRedirectionGuard -p
+                      - cell "Service" [ref=e1137]
+                      - cell "Enabled" [ref=e1138]:
+                        - generic [ref=e1139]: Enabled
+                      - cell "31ms" [ref=e1140]
+                      - cell "0 Bytes" [ref=e1141]
+                      - cell "0.2" [ref=e1142]:
+                        - generic [ref=e1143]: "0.2"
+                    - row "Group Policy Client C:\\WINDOWS\\system32\\svchost.exe -k GPSvcGroup Service Enabled 31ms 0 Bytes 0.2" [ref=e1144]:
+                      - cell "Group Policy Client C:\\WINDOWS\\system32\\svchost.exe -k GPSvcGroup" [ref=e1145]:
+                        - paragraph [ref=e1146]: Group Policy Client
+                        - paragraph [ref=e1147]: C:\WINDOWS\system32\svchost.exe -k GPSvcGroup
+                      - cell "Service" [ref=e1148]
+                      - cell "Enabled" [ref=e1149]:
+                        - generic [ref=e1150]: Enabled
+                      - cell "31ms" [ref=e1151]
+                      - cell "0 Bytes" [ref=e1152]
+                      - cell "0.2" [ref=e1153]:
+                        - generic [ref=e1154]: "0.2"
+                    - row "Inventory and Compatibility Appraisal service C:\\WINDOWS\\system32\\svchost.exe -k InvSvcGroup -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1155]:
+                      - cell "Inventory and Compatibility Appraisal service C:\\WINDOWS\\system32\\svchost.exe -k InvSvcGroup -p" [ref=e1156]:
+                        - paragraph [ref=e1157]: Inventory and Compatibility Appraisal service
+                        - paragraph [ref=e1158]: C:\WINDOWS\system32\svchost.exe -k InvSvcGroup -p
+                      - cell "Service" [ref=e1159]
+                      - cell "Enabled" [ref=e1160]:
+                        - generic [ref=e1161]: Enabled
+                      - cell "31ms" [ref=e1162]
+                      - cell "0 Bytes" [ref=e1163]
+                      - cell "0.2" [ref=e1164]:
+                        - generic [ref=e1165]: "0.2"
+                    - row "postgresql-x64-17 - PostgreSQL Server 17 \"C:\\Program Files\\PostgreSQL\\17\\bin\\pg_ctl.exe\" runservice -N \"postgresql-x64-17\" -D \"C:\\Program Files\\PostgreSQL\\17\\data\" -w Service Enabled 47ms 0 Bytes 0.2" [ref=e1166]:
+                      - cell "postgresql-x64-17 - PostgreSQL Server 17 \"C:\\Program Files\\PostgreSQL\\17\\bin\\pg_ctl.exe\" runservice -N \"postgresql-x64-17\" -D \"C:\\Program Files\\PostgreSQL\\17\\data\" -w" [ref=e1167]:
+                        - paragraph [ref=e1168]: postgresql-x64-17 - PostgreSQL Server 17
+                        - paragraph [ref=e1169]: "\"C:\\Program Files\\PostgreSQL\\17\\bin\\pg_ctl.exe\" runservice -N \"postgresql-x64-17\" -D \"C:\\Program Files\\PostgreSQL\\17\\data\" -w"
+                      - cell "Service" [ref=e1170]
+                      - cell "Enabled" [ref=e1171]:
+                        - generic [ref=e1172]: Enabled
+                      - cell "47ms" [ref=e1173]
+                      - cell "0 Bytes" [ref=e1174]
+                      - cell "0.2" [ref=e1175]:
+                        - generic [ref=e1176]: "0.2"
+                    - row "User Profile Service C:\\WINDOWS\\system32\\svchost.exe -k UserProfileService -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1177]:
+                      - cell "User Profile Service C:\\WINDOWS\\system32\\svchost.exe -k UserProfileService -p" [ref=e1178]:
+                        - paragraph [ref=e1179]: User Profile Service
+                        - paragraph [ref=e1180]: C:\WINDOWS\system32\svchost.exe -k UserProfileService -p
+                      - cell "Service" [ref=e1181]
+                      - cell "Enabled" [ref=e1182]:
+                        - generic [ref=e1183]: Enabled
+                      - cell "31ms" [ref=e1184]
+                      - cell "0 Bytes" [ref=e1185]
+                      - cell "0.2" [ref=e1186]:
+                        - generic [ref=e1187]: "0.2"
+                    - row "RPC Endpoint Mapper C:\\WINDOWS\\system32\\svchost.exe -k RPCSS -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1188]:
+                      - cell "RPC Endpoint Mapper C:\\WINDOWS\\system32\\svchost.exe -k RPCSS -p" [ref=e1189]:
+                        - paragraph [ref=e1190]: RPC Endpoint Mapper
+                        - paragraph [ref=e1191]: C:\WINDOWS\system32\svchost.exe -k RPCSS -p
+                      - cell "Service" [ref=e1192]
+                      - cell "Enabled" [ref=e1193]:
+                        - generic [ref=e1194]: Enabled
+                      - cell "31ms" [ref=e1195]
+                      - cell "0 Bytes" [ref=e1196]
+                      - cell "0.2" [ref=e1197]:
+                        - generic [ref=e1198]: "0.2"
+                    - row "System Event Notification Service C:\\WINDOWS\\system32\\svchost.exe -k netsvcsRedirectionGuard -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1199]:
+                      - cell "System Event Notification Service C:\\WINDOWS\\system32\\svchost.exe -k netsvcsRedirectionGuard -p" [ref=e1200]:
+                        - paragraph [ref=e1201]: System Event Notification Service
+                        - paragraph [ref=e1202]: C:\WINDOWS\system32\svchost.exe -k netsvcsRedirectionGuard -p
+                      - cell "Service" [ref=e1203]
+                      - cell "Enabled" [ref=e1204]:
+                        - generic [ref=e1205]: Enabled
+                      - cell "31ms" [ref=e1206]
+                      - cell "0 Bytes" [ref=e1207]
+                      - cell "0.2" [ref=e1208]:
+                        - generic [ref=e1209]: "0.2"
+                    - row "OpenSSH SSH Server C:\\WINDOWS\\System32\\OpenSSH\\sshd.exe Service Enabled 31ms 0 Bytes 0.2" [ref=e1210]:
+                      - cell "OpenSSH SSH Server C:\\WINDOWS\\System32\\OpenSSH\\sshd.exe" [ref=e1211]:
+                        - paragraph [ref=e1212]: OpenSSH SSH Server
+                        - paragraph [ref=e1213]: C:\WINDOWS\System32\OpenSSH\sshd.exe
+                      - cell "Service" [ref=e1214]
+                      - cell "Enabled" [ref=e1215]:
+                        - generic [ref=e1216]: Enabled
+                      - cell "31ms" [ref=e1217]
+                      - cell "0 Bytes" [ref=e1218]
+                      - cell "0.2" [ref=e1219]:
+                        - generic [ref=e1220]: "0.2"
+                    - row "ScanSnap Home WIA restart service \"C:\\Program Files (x86)\\PFU\\ScanSnap\\Home\\SSDriver\\fi5110\\SsWiaRestartSvc.exe\" Service Enabled 47ms 0 Bytes 0.2" [ref=e1221]:
+                      - cell "ScanSnap Home WIA restart service \"C:\\Program Files (x86)\\PFU\\ScanSnap\\Home\\SSDriver\\fi5110\\SsWiaRestartSvc.exe\"" [ref=e1222]:
+                        - paragraph [ref=e1223]: ScanSnap Home WIA restart service
+                        - paragraph [ref=e1224]: "\"C:\\Program Files (x86)\\PFU\\ScanSnap\\Home\\SSDriver\\fi5110\\SsWiaRestartSvc.exe\""
+                      - cell "Service" [ref=e1225]
+                      - cell "Enabled" [ref=e1226]:
+                        - generic [ref=e1227]: Enabled
+                      - cell "47ms" [ref=e1228]
+                      - cell "0 Bytes" [ref=e1229]
+                      - cell "0.2" [ref=e1230]:
+                        - generic [ref=e1231]: "0.2"
+                    - row "State Repository Service C:\\WINDOWS\\system32\\svchost.exe -k appmodel -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1232]:
+                      - cell "State Repository Service C:\\WINDOWS\\system32\\svchost.exe -k appmodel -p" [ref=e1233]:
+                        - paragraph [ref=e1234]: State Repository Service
+                        - paragraph [ref=e1235]: C:\WINDOWS\system32\svchost.exe -k appmodel -p
+                      - cell "Service" [ref=e1236]
+                      - cell "Enabled" [ref=e1237]:
+                        - generic [ref=e1238]: Enabled
+                      - cell "31ms" [ref=e1239]
+                      - cell "0 Bytes" [ref=e1240]
+                      - cell "0.2" [ref=e1241]:
+                        - generic [ref=e1242]: "0.2"
+                    - row "Windows Biometric Service C:\\WINDOWS\\system32\\svchost.exe -k WbioSvcGroup Service Enabled 31ms 0 Bytes 0.2" [ref=e1243]:
+                      - cell "Windows Biometric Service C:\\WINDOWS\\system32\\svchost.exe -k WbioSvcGroup" [ref=e1244]:
+                        - paragraph [ref=e1245]: Windows Biometric Service
+                        - paragraph [ref=e1246]: C:\WINDOWS\system32\svchost.exe -k WbioSvcGroup
+                      - cell "Service" [ref=e1247]
+                      - cell "Enabled" [ref=e1248]:
+                        - generic [ref=e1249]: Enabled
+                      - cell "31ms" [ref=e1250]
+                      - cell "0 Bytes" [ref=e1251]
+                      - cell "0.2" [ref=e1252]:
+                        - generic [ref=e1253]: "0.2"
+                    - row "Windows Connection Manager C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p -s Wcmsvc Service Enabled 31ms 0 Bytes 0.2" [ref=e1254]:
+                      - cell "Windows Connection Manager C:\\WINDOWS\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p -s Wcmsvc" [ref=e1255]:
+                        - paragraph [ref=e1256]: Windows Connection Manager
+                        - paragraph [ref=e1257]: C:\WINDOWS\system32\svchost.exe -k LocalServiceNetworkRestricted -p -s Wcmsvc
+                      - cell "Service" [ref=e1258]
+                      - cell "Enabled" [ref=e1259]:
+                        - generic [ref=e1260]: Enabled
+                      - cell "31ms" [ref=e1261]
+                      - cell "0 Bytes" [ref=e1262]
+                      - cell "0.2" [ref=e1263]:
+                        - generic [ref=e1264]: "0.2"
+                    - row "Windows Health and Optimized Experiences C:\\WINDOWS\\system32\\svchost.exe -k whesvc -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1265]:
+                      - cell "Windows Health and Optimized Experiences C:\\WINDOWS\\system32\\svchost.exe -k whesvc -p" [ref=e1266]:
+                        - paragraph [ref=e1267]: Windows Health and Optimized Experiences
+                        - paragraph [ref=e1268]: C:\WINDOWS\system32\svchost.exe -k whesvc -p
+                      - cell "Service" [ref=e1269]
+                      - cell "Enabled" [ref=e1270]:
+                        - generic [ref=e1271]: Enabled
+                      - cell "31ms" [ref=e1272]
+                      - cell "0 Bytes" [ref=e1273]
+                      - cell "0.2" [ref=e1274]:
+                        - generic [ref=e1275]: "0.2"
+                    - row "WSAIFabricSvc C:\\WINDOWS\\system32\\svchost.exe -k WSAIFabricSvcGroup -p Service Enabled 31ms 0 Bytes 0.2" [ref=e1276]:
+                      - cell "WSAIFabricSvc C:\\WINDOWS\\system32\\svchost.exe -k WSAIFabricSvcGroup -p" [ref=e1277]:
+                        - paragraph [ref=e1278]: WSAIFabricSvc
+                        - paragraph [ref=e1279]: C:\WINDOWS\system32\svchost.exe -k WSAIFabricSvcGroup -p
+                      - cell "Service" [ref=e1280]
+                      - cell "Enabled" [ref=e1281]:
+                        - generic [ref=e1282]: Enabled
+                      - cell "31ms" [ref=e1283]
+                      - cell "0 Bytes" [ref=e1284]
+                      - cell "0.2" [ref=e1285]:
+                        - generic [ref=e1286]: "0.2"
+                    - row "AMD Crash Defender Service C:\\WINDOWS\\System32\\amdfendrsr.exe Service Enabled 16ms 0 Bytes 0.1" [ref=e1287]:
+                      - cell "AMD Crash Defender Service C:\\WINDOWS\\System32\\amdfendrsr.exe" [ref=e1288]:
+                        - paragraph [ref=e1289]: AMD Crash Defender Service
+                        - paragraph [ref=e1290]: C:\WINDOWS\System32\amdfendrsr.exe
+                      - cell "Service" [ref=e1291]
+                      - cell "Enabled" [ref=e1292]:
+                        - generic [ref=e1293]: Enabled
+                      - cell "16ms" [ref=e1294]
+                      - cell "0 Bytes" [ref=e1295]
+                      - cell "0.1" [ref=e1296]:
+                        - generic [ref=e1297]: "0.1"
+                    - row "SecurityHealth C:\\WINDOWS\\system32\\SecurityHealthSystray.exe run_key Enabled 0ms 0 Bytes 0" [ref=e1298]:
+                      - cell "SecurityHealth C:\\WINDOWS\\system32\\SecurityHealthSystray.exe" [ref=e1299]:
+                        - paragraph [ref=e1300]: SecurityHealth
+                        - paragraph [ref=e1301]: C:\WINDOWS\system32\SecurityHealthSystray.exe
+                      - cell "run_key" [ref=e1302]
+                      - cell "Enabled" [ref=e1303]:
+                        - generic [ref=e1304]: Enabled
+                      - cell "0ms" [ref=e1305]
+                      - cell "0 Bytes" [ref=e1306]
+                      - cell "0" [ref=e1307]:
+                        - generic [ref=e1308]: "0"
+                    - row "RTHDVCPL \"C:\\Program Files\\Realtek\\Audio\\HDA\\RtkNGUI64.exe\" -s run_key Enabled 0ms 0 Bytes 0" [ref=e1309]:
+                      - cell "RTHDVCPL \"C:\\Program Files\\Realtek\\Audio\\HDA\\RtkNGUI64.exe\" -s" [ref=e1310]:
+                        - paragraph [ref=e1311]: RTHDVCPL
+                        - paragraph [ref=e1312]: "\"C:\\Program Files\\Realtek\\Audio\\HDA\\RtkNGUI64.exe\" -s"
+                      - cell "run_key" [ref=e1313]
+                      - cell "Enabled" [ref=e1314]:
+                        - generic [ref=e1315]: Enabled
+                      - cell "0ms" [ref=e1316]
+                      - cell "0 Bytes" [ref=e1317]
+                      - cell "0" [ref=e1318]:
+                        - generic [ref=e1319]: "0"
+                    - row "Logitech Download Assistant C:\\Windows\\system32\\rundll32.exe C:\\Windows\\System32\\LogiLDA.dll,LogiFetch run_key Enabled 0ms 0 Bytes 0" [ref=e1320]:
+                      - cell "Logitech Download Assistant C:\\Windows\\system32\\rundll32.exe C:\\Windows\\System32\\LogiLDA.dll,LogiFetch" [ref=e1321]:
+                        - paragraph [ref=e1322]: Logitech Download Assistant
+                        - paragraph [ref=e1323]: C:\Windows\system32\rundll32.exe C:\Windows\System32\LogiLDA.dll,LogiFetch
+                      - cell "run_key" [ref=e1324]
+                      - cell "Enabled" [ref=e1325]:
+                        - generic [ref=e1326]: Enabled
+                      - cell "0ms" [ref=e1327]
+                      - cell "0 Bytes" [ref=e1328]
+                      - cell "0" [ref=e1329]:
+                        - generic [ref=e1330]: "0"
+                    - row "Backblaze C:\\PROGRA~2\\BACKBL~1\\bzbui.exe -quiet run_key Enabled 0ms 0 Bytes 0" [ref=e1331]:
+                      - cell "Backblaze C:\\PROGRA~2\\BACKBL~1\\bzbui.exe -quiet" [ref=e1332]:
+                        - paragraph [ref=e1333]: Backblaze
+                        - paragraph [ref=e1334]: C:\PROGRA~2\BACKBL~1\bzbui.exe -quiet
+                      - cell "run_key" [ref=e1335]
+                      - cell "Enabled" [ref=e1336]:
+                        - generic [ref=e1337]: Enabled
+                      - cell "0ms" [ref=e1338]
+                      - cell "0 Bytes" [ref=e1339]
+                      - cell "0" [ref=e1340]:
+                        - generic [ref=e1341]: "0"
+                    - row "desktop C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\desktop.ini startup_folder Enabled 0ms 0 Bytes 0" [ref=e1342]:
+                      - cell "desktop C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\desktop.ini" [ref=e1343]:
+                        - paragraph [ref=e1344]: desktop
+                        - paragraph [ref=e1345]: C:\WINDOWS\system32\config\systemprofile\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\desktop.ini
+                      - cell "startup_folder" [ref=e1346]
+                      - cell "Enabled" [ref=e1347]:
+                        - generic [ref=e1348]: Enabled
+                      - cell "0ms" [ref=e1349]
+                      - cell "0 Bytes" [ref=e1350]
+                      - cell "0" [ref=e1351]:
+                        - generic [ref=e1352]: "0"
+                    - row "GitHub Actions Runner (ToddHebebrand-LanternOps.KIT) \"D:\\actions-runner\\bin\\RunnerService.exe\" Service Enabled 0ms 0 Bytes 0" [ref=e1353]:
+                      - cell "GitHub Actions Runner (ToddHebebrand-LanternOps.KIT) \"D:\\actions-runner\\bin\\RunnerService.exe\"" [ref=e1354]:
+                        - paragraph [ref=e1355]: GitHub Actions Runner (ToddHebebrand-LanternOps.KIT)
+                        - paragraph [ref=e1356]: "\"D:\\actions-runner\\bin\\RunnerService.exe\""
+                      - cell "Service" [ref=e1357]
+                      - cell "Enabled" [ref=e1358]:
+                        - generic [ref=e1359]: Enabled
+                      - cell "0ms" [ref=e1360]
+                      - cell "0 Bytes" [ref=e1361]
+                      - cell "0" [ref=e1362]:
+                        - generic [ref=e1363]: "0"
+                    - row "Microsoft Edge Update Service (edgeupdate) \"C:\\Program Files (x86)\\Microsoft\\EdgeUpdate\\MicrosoftEdgeUpdate.exe\" /svc Service Enabled 0ms 0 Bytes 0" [ref=e1364]:
+                      - cell "Microsoft Edge Update Service (edgeupdate) \"C:\\Program Files (x86)\\Microsoft\\EdgeUpdate\\MicrosoftEdgeUpdate.exe\" /svc" [ref=e1365]:
+                        - paragraph [ref=e1366]: Microsoft Edge Update Service (edgeupdate)
+                        - paragraph [ref=e1367]: "\"C:\\Program Files (x86)\\Microsoft\\EdgeUpdate\\MicrosoftEdgeUpdate.exe\" /svc"
+                      - cell "Service" [ref=e1368]
+                      - cell "Enabled" [ref=e1369]:
+                        - generic [ref=e1370]: Enabled
+                      - cell "0ms" [ref=e1371]
+                      - cell "0 Bytes" [ref=e1372]
+                      - cell "0" [ref=e1373]:
+                        - generic [ref=e1374]: "0"
+                    - row "FedEx Print & Integration Service \"C:\\Program Files\\FedEx Print & Integration app\\bin\\FedEx-Print-&-Integration-Service.exe\" Service Enabled 0ms 0 Bytes 0" [ref=e1375]:
+                      - cell "FedEx Print & Integration Service \"C:\\Program Files\\FedEx Print & Integration app\\bin\\FedEx-Print-&-Integration-Service.exe\"" [ref=e1376]:
+                        - paragraph [ref=e1377]: FedEx Print & Integration Service
+                        - paragraph [ref=e1378]: "\"C:\\Program Files\\FedEx Print & Integration app\\bin\\FedEx-Print-&-Integration-Service.exe\""
+                      - cell "Service" [ref=e1379]
+                      - cell "Enabled" [ref=e1380]:
+                        - generic [ref=e1381]: Enabled
+                      - cell "0ms" [ref=e1382]
+                      - cell "0 Bytes" [ref=e1383]
+                      - cell "0" [ref=e1384]:
+                        - generic [ref=e1385]: "0"
+                    - row "Google Updater Internal Service (GoogleUpdaterInternalService144.0.7547.0) \"C:\\Program Files (x86)\\Google\\GoogleUpdater\\144.0.7547.0\\updater.exe\" --system --windows-service --service=update-internal Service Enabled 0ms 0 Bytes 0" [ref=e1386]:
+                      - cell "Google Updater Internal Service (GoogleUpdaterInternalService144.0.7547.0) \"C:\\Program Files (x86)\\Google\\GoogleUpdater\\144.0.7547.0\\updater.exe\" --system --windows-service --service=update-internal" [ref=e1387]:
+                        - paragraph [ref=e1388]: Google Updater Internal Service (GoogleUpdaterInternalService144.0.7547.0)
+                        - paragraph [ref=e1389]: "\"C:\\Program Files (x86)\\Google\\GoogleUpdater\\144.0.7547.0\\updater.exe\" --system --windows-service --service=update-internal"
+                      - cell "Service" [ref=e1390]
+                      - cell "Enabled" [ref=e1391]:
+                        - generic [ref=e1392]: Enabled
+                      - cell "0ms" [ref=e1393]
+                      - cell "0 Bytes" [ref=e1394]
+                      - cell "0" [ref=e1395]:
+                        - generic [ref=e1396]: "0"
+                    - row "Google Updater Service (GoogleUpdaterService144.0.7547.0) \"C:\\Program Files (x86)\\Google\\GoogleUpdater\\144.0.7547.0\\updater.exe\" --system --windows-service --service=update Service Enabled 0ms 0 Bytes 0" [ref=e1397]:
+                      - cell "Google Updater Service (GoogleUpdaterService144.0.7547.0) \"C:\\Program Files (x86)\\Google\\GoogleUpdater\\144.0.7547.0\\updater.exe\" --system --windows-service --service=update" [ref=e1398]:
+                        - paragraph [ref=e1399]: Google Updater Service (GoogleUpdaterService144.0.7547.0)
+                        - paragraph [ref=e1400]: "\"C:\\Program Files (x86)\\Google\\GoogleUpdater\\144.0.7547.0\\updater.exe\" --system --windows-service --service=update"
+                      - cell "Service" [ref=e1401]
+                      - cell "Enabled" [ref=e1402]:
+                        - generic [ref=e1403]: Enabled
+                      - cell "0ms" [ref=e1404]
+                      - cell "0 Bytes" [ref=e1405]
+                      - cell "0" [ref=e1406]:
+                        - generic [ref=e1407]: "0"
+                    - row "Huntress Agent Service \"C:\\Program Files\\Huntress\\HuntressAgent.exe\" Service Enabled 0ms 0 Bytes 0" [ref=e1408]:
+                      - cell "Huntress Agent Service \"C:\\Program Files\\Huntress\\HuntressAgent.exe\"" [ref=e1409]:
+                        - paragraph [ref=e1410]: Huntress Agent Service
+                        - paragraph [ref=e1411]: "\"C:\\Program Files\\Huntress\\HuntressAgent.exe\""
+                      - cell "Service" [ref=e1412]
+                      - cell "Enabled" [ref=e1413]:
+                        - generic [ref=e1414]: Enabled
+                      - cell "0ms" [ref=e1415]
+                      - cell "0 Bytes" [ref=e1416]
+                      - cell "0" [ref=e1417]:
+                        - generic [ref=e1418]: "0"
+                    - row "Huntress Updater Service \"C:\\Program Files\\Huntress\\HuntressUpdater.exe\" Service Enabled 0ms 0 Bytes 0" [ref=e1419]:
+                      - cell "Huntress Updater Service \"C:\\Program Files\\Huntress\\HuntressUpdater.exe\"" [ref=e1420]:
+                        - paragraph [ref=e1421]: Huntress Updater Service
+                        - paragraph [ref=e1422]: "\"C:\\Program Files\\Huntress\\HuntressUpdater.exe\""
+                      - cell "Service" [ref=e1423]
+                      - cell "Enabled" [ref=e1424]:
+                        - generic [ref=e1425]: Enabled
+                      - cell "0ms" [ref=e1426]
+                      - cell "0 Bytes" [ref=e1427]
+                      - cell "0" [ref=e1428]:
+                        - generic [ref=e1429]: "0"
+                    - row "Microsoft Intune Management Extension \"C:\\Program Files (x86)\\Microsoft Intune Management Extension\\Microsoft.Management.Services.IntuneWindowsAgent.exe\" Service Enabled 0ms 0 Bytes 0" [ref=e1430]:
+                      - cell "Microsoft Intune Management Extension \"C:\\Program Files (x86)\\Microsoft Intune Management Extension\\Microsoft.Management.Services.IntuneWindowsAgent.exe\"" [ref=e1431]:
+                        - paragraph [ref=e1432]: Microsoft Intune Management Extension
+                        - paragraph [ref=e1433]: "\"C:\\Program Files (x86)\\Microsoft Intune Management Extension\\Microsoft.Management.Services.IntuneWindowsAgent.exe\""
+                      - cell "Service" [ref=e1434]
+                      - cell "Enabled" [ref=e1435]:
+                        - generic [ref=e1436]: Enabled
+                      - cell "0ms" [ref=e1437]
+                      - cell "0 Bytes" [ref=e1438]
+                      - cell "0" [ref=e1439]:
+                        - generic [ref=e1440]: "0"
+                    - row "Software Protection C:\\WINDOWS\\system32\\sppsvc.exe Service Enabled 0ms 0 Bytes 0" [ref=e1441]:
+                      - cell "Software Protection C:\\WINDOWS\\system32\\sppsvc.exe" [ref=e1442]:
+                        - paragraph [ref=e1443]: Software Protection
+                        - paragraph [ref=e1444]: C:\WINDOWS\system32\sppsvc.exe
+                      - cell "Service" [ref=e1445]
+                      - cell "Enabled" [ref=e1446]:
+                        - generic [ref=e1447]: Enabled
+                      - cell "0ms" [ref=e1448]
+                      - cell "0 Bytes" [ref=e1449]
+                      - cell "0" [ref=e1450]:
+                        - generic [ref=e1451]: "0"
+                    - row "Windows Search C:\\WINDOWS\\system32\\SearchIndexer.exe /Embedding Service Enabled 0ms 0 Bytes 0" [ref=e1452]:
+                      - cell "Windows Search C:\\WINDOWS\\system32\\SearchIndexer.exe /Embedding" [ref=e1453]:
+                        - paragraph [ref=e1454]: Windows Search
+                        - paragraph [ref=e1455]: C:\WINDOWS\system32\SearchIndexer.exe /Embedding
+                      - cell "Service" [ref=e1456]
+                      - cell "Enabled" [ref=e1457]:
+                        - generic [ref=e1458]: Enabled
+                      - cell "0ms" [ref=e1459]
+                      - cell "0 Bytes" [ref=e1460]
+                      - cell "0" [ref=e1461]:
+                        - generic [ref=e1462]: "0"
+                    - row "Windows Subsystem for Linux \"C:\\Program Files\\WindowsApps\\MicrosoftCorporationII.WindowsSubsystemForLinux_2.4.12.0_x64__8wekyb3d8bbwe\\wslinstaller.exe\" Service Enabled 0ms 0 Bytes 0" [ref=e1463]:
+                      - cell "Windows Subsystem for Linux \"C:\\Program Files\\WindowsApps\\MicrosoftCorporationII.WindowsSubsystemForLinux_2.4.12.0_x64__8wekyb3d8bbwe\\wslinstaller.exe\"" [ref=e1464]:
+                        - paragraph [ref=e1465]: Windows Subsystem for Linux
+                        - paragraph [ref=e1466]: "\"C:\\Program Files\\WindowsApps\\MicrosoftCorporationII.WindowsSubsystemForLinux_2.4.12.0_x64__8wekyb3d8bbwe\\wslinstaller.exe\""
+                      - cell "Service" [ref=e1467]
+                      - cell "Enabled" [ref=e1468]:
+                        - generic [ref=e1469]: Enabled
+                      - cell "0ms" [ref=e1470]
+                      - cell "0 Bytes" [ref=e1471]
+                      - cell "0" [ref=e1472]:
+                        - generic [ref=e1473]: "0"
+              - generic [ref=e1474]:
+                - heading "Boot History" [level=3] [ref=e1475]
+                - table [ref=e1477]:
+                  - rowgroup [ref=e1478]:
+                    - row "Timestamp Total Time BIOS OS Loader Desktop Ready Startup Items" [ref=e1479]:
+                      - columnheader "Timestamp" [ref=e1480]
+                      - columnheader "Total Time" [ref=e1481]
+                      - columnheader "BIOS" [ref=e1482]
+                      - columnheader "OS Loader" [ref=e1483]
+                      - columnheader "Desktop Ready" [ref=e1484]
+                      - columnheader "Startup Items" [ref=e1485]
+                  - rowgroup [ref=e1486]:
+                    - row "2/24/2026, 8:49:04 PM 1m 41s 0.0s 13.8s 1m 27s 65" [ref=e1487] [cursor=pointer]:
+                      - cell "2/24/2026, 8:49:04 PM" [ref=e1488]:
+                        - generic [ref=e1489]:
+                          - img [ref=e1490]
+                          - text: 2/24/2026, 8:49:04 PM
+                      - cell "1m 41s" [ref=e1492]
+                      - cell "0.0s" [ref=e1493]
+                      - cell "13.8s" [ref=e1494]
+                      - cell "1m 27s" [ref=e1495]
+                      - cell "65" [ref=e1496]
+                    - row "2/24/2026, 5:44:13 PM 1m 41s 0.0s 14.1s 1m 27s 64" [ref=e1497] [cursor=pointer]:
+                      - cell "2/24/2026, 5:44:13 PM" [ref=e1498]:
+                        - generic [ref=e1499]:
+                          - img [ref=e1500]
+                          - text: 2/24/2026, 5:44:13 PM
+                      - cell "1m 41s" [ref=e1502]
+                      - cell "0.0s" [ref=e1503]
+                      - cell "14.1s" [ref=e1504]
+                      - cell "1m 27s" [ref=e1505]
+                      - cell "64" [ref=e1506]
+                    - row "2/24/2026, 1:54:43 PM 42.8s 0.0s 13.8s 29.0s 64" [ref=e1507] [cursor=pointer]:
+                      - cell "2/24/2026, 1:54:43 PM" [ref=e1508]:
+                        - generic [ref=e1509]:
+                          - img [ref=e1510]
+                          - text: 2/24/2026, 1:54:43 PM
+                      - cell "42.8s" [ref=e1512]
+                      - cell "0.0s" [ref=e1513]
+                      - cell "13.8s" [ref=e1514]
+                      - cell "29.0s" [ref=e1515]
+                      - cell "64" [ref=e1516]
+  - generic [ref=e257]:
+    - button "Open AI Assistant (Cmd+Shift+A)" [ref=e258] [cursor=pointer]:
+      - img [ref=e259]
+    - generic [ref=e261]:
+      - generic [ref=e262]:
+        - generic [ref=e263]:
+          - img [ref=e264]
+          - generic [ref=e266]: Breeze AI
+        - generic [ref=e267]:
+          - button "Conversation history" [ref=e268] [cursor=pointer]:
+            - img [ref=e269]
+          - button "Close (Cmd+Shift+A)" [ref=e273] [cursor=pointer]:
+            - img [ref=e274]
+      - generic [ref=e641]:
+        - img [ref=e642]
+        - generic [ref=e644]: KIT
+      - generic [ref=e277]:
+        - img [ref=e278]
+        - heading "Breeze AI Assistant" [level=3] [ref=e281]
+        - paragraph [ref=e282]: Ask about your devices, alerts, metrics, or troubleshoot issues.
+        - generic [ref=e283]:
+          - button "Check server health" [ref=e284] [cursor=pointer]
+          - button "Show critical alerts" [ref=e285] [cursor=pointer]
+          - button "Find offline devices" [ref=e286] [cursor=pointer]
+          - button "Security overview" [ref=e287] [cursor=pointer]
+          - button "Disk space report" [ref=e288] [cursor=pointer]
+          - button "Recent activity" [ref=e289] [cursor=pointer]
+      - generic [ref=e290]:
+        - generic [ref=e291]:
+          - textbox "Ask about your devices..." [ref=e292]
+          - button [disabled] [ref=e293]:
+            - img [ref=e294]
+        - paragraph [ref=e297]: Cmd+Enter to send
+  - generic [ref=e645]: 0s

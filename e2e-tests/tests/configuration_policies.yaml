@@ -1,0 +1,345 @@
+# Configuration Policies E2E Tests
+# Tests the Config Policies list page, policy creation wizard (two-step: mode select then form),
+# policy detail/edit, and policy deletion via modal.
+# No permanent state mutations — create flows are cancelled or cleaned up.
+
+tests:
+  - id: config_policies_page_loads
+    name: "Configuration Policies Page Loads"
+    description: "Verify the Config Policies page renders the list with summary stats and New Policy button"
+    tags: [config-policies, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_config_policies
+        action: ui
+        description: "Navigate to /configuration-policies"
+        playwright:
+          - goto: "/configuration-policies"
+          - waitFor: "h1:has-text('Configuration Policies')"
+            timeout: 15000
+
+      - id: verify_page_elements
+        action: ui
+        description: "Verify subtitle, New Policy link, and optional stats panel"
+        playwright:
+          - waitFor: "text=Bundle feature settings into reusable policies"
+            timeout: 10000
+          - waitFor: "a:has-text('New Policy')"
+            timeout: 5000
+
+      - id: verify_api_returns_policies
+        action: api
+        description: "Verify configuration policies API returns data"
+        request:
+          method: GET
+          path: "/api/v1/configuration-policies"
+        assert:
+          status: 200
+        expect:
+          pagination: {}
+
+  - id: config_policies_new_policy_mode_select
+    name: "New Config Policy - Mode Selection Step"
+    description: "Navigate to /configuration-policies/new and verify the mode selection screen (Configure New vs Link to Existing)"
+    tags: [config-policies, create]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_new_policy
+        action: ui
+        description: "Navigate to /configuration-policies/new"
+        playwright:
+          - goto: "/configuration-policies/new"
+          - waitFor: "h1:has-text('New Configuration Policy')"
+            timeout: 15000
+
+      - id: verify_mode_selection
+        action: ui
+        description: "Verify the two mode selection cards are shown"
+        playwright:
+          - waitFor: "text=How would you like to configure this policy?"
+            timeout: 10000
+          - waitFor: "text=Configure New"
+            timeout: 5000
+          - waitFor: "text=Link to Existing"
+            timeout: 5000
+          - waitFor: "text=Start fresh with custom settings"
+            timeout: 5000
+          - waitFor: "text=Use another policy as the master baseline"
+            timeout: 5000
+
+      - id: verify_cancel_link
+        action: ui
+        description: "Verify the Cancel link goes back to the policies list"
+        playwright:
+          - waitFor: "a:has-text('Cancel')"
+            timeout: 5000
+
+  - id: config_policies_create_new_flow
+    name: "New Config Policy - Configure New Form"
+    description: "Select Configure New mode, fill the policy details form, then cancel before submission"
+    tags: [config-policies, create, forms]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_new_policy
+        action: ui
+        description: "Navigate to /configuration-policies/new"
+        playwright:
+          - goto: "/configuration-policies/new"
+          - waitFor: "h1:has-text('New Configuration Policy')"
+            timeout: 15000
+
+      - id: select_configure_new_mode
+        action: ui
+        description: "Click the Configure New mode card"
+        playwright:
+          - click: "button:has-text('Configure New')"
+          - waitFor: "text=Policy Details"
+            timeout: 10000
+
+      - id: verify_policy_details_form
+        action: ui
+        description: "Verify Name, Description, Status fields and Back/Cancel/Create buttons"
+        playwright:
+          - waitFor: "label:has-text('Name')"
+            timeout: 5000
+          - waitFor: "label:has-text('Description')"
+            timeout: 5000
+          - waitFor: "label:has-text('Status')"
+            timeout: 5000
+          - waitFor: "input[placeholder*='Standard Workstation Policy']"
+            timeout: 5000
+          - waitFor: "button:has-text('Create Policy')"
+            timeout: 5000
+          - waitFor: "button:has-text('Back')"
+            timeout: 5000
+
+      - id: fill_policy_name
+        action: ui
+        description: "Fill in a policy name to test validation"
+        playwright:
+          - fill:
+              "input[placeholder*='Standard Workstation Policy']": "E2E Test Policy"
+
+      - id: verify_status_options
+        action: ui
+        description: "Verify Status dropdown has Active and Inactive options"
+        playwright:
+          - waitFor: "select"
+            timeout: 5000
+
+      - id: go_back_to_mode_select
+        action: ui
+        description: "Click Back to return to mode selection"
+        playwright:
+          - click: "button:has-text('Back')"
+          - waitFor: "text=Configure New"
+            timeout: 10000
+
+      - id: cancel_to_policies_list
+        action: ui
+        description: "Click Cancel to return to the policies list without creating"
+        optional: true
+        playwright:
+          - click: "a:has-text('Cancel')"
+          - waitFor: "h1:has-text('Configuration Policies')"
+            timeout: 10000
+
+  - id: config_policies_create_linked_flow
+    name: "New Config Policy - Link to Existing Form"
+    description: "Select Link to Existing mode and verify the master policy selector appears"
+    tags: [config-policies, create, forms]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_new_policy
+        action: ui
+        description: "Navigate to /configuration-policies/new"
+        playwright:
+          - goto: "/configuration-policies/new"
+          - waitFor: "h1:has-text('New Configuration Policy')"
+            timeout: 15000
+
+      - id: select_linked_mode
+        action: ui
+        description: "Click the Link to Existing mode card"
+        playwright:
+          - click: "button:has-text('Link to Existing')"
+          - waitFor: "text=Master Policy"
+            timeout: 10000
+
+      - id: verify_linked_form_sections
+        action: ui
+        description: "Verify Master Policy selector and Policy Details form are both shown"
+        playwright:
+          - waitFor: "text=Master Policy"
+            timeout: 5000
+          - waitFor: "text=Select the configuration policy to use as the baseline"
+            timeout: 5000
+          - waitFor: "text=Policy Details"
+            timeout: 5000
+          - waitFor: "button:has-text('Create Policy')"
+            timeout: 5000
+
+      - id: cancel_to_policies_list
+        action: ui
+        description: "Cancel back to policies list"
+        optional: true
+        playwright:
+          - click: "a:has-text('Cancel')"
+
+  - id: config_policies_delete_modal
+    name: "Config Policy Delete Modal"
+    description: "If policies exist, open the delete confirmation modal and verify its content, then cancel"
+    tags: [config-policies, delete]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_config_policies
+        action: ui
+        description: "Navigate to /configuration-policies"
+        playwright:
+          - goto: "/configuration-policies"
+          - waitFor: "h1:has-text('Configuration Policies')"
+            timeout: 15000
+
+      - id: check_for_policies_and_delete
+        action: ui
+        description: "If a Delete button is visible for a policy, click it to open the confirmation modal"
+        optional: true
+        playwright:
+          - click: "button:has-text('Delete')"
+          - waitFor: "text=Delete Policy"
+            timeout: 10000
+
+      - id: verify_delete_modal_content
+        action: ui
+        description: "Verify the modal shows a warning about feature links and a Delete/Cancel button pair"
+        optional: true
+        playwright:
+          - waitFor: "text=This will also remove all"
+            timeout: 5000
+          - waitFor: "button:has-text('Delete')"
+            timeout: 5000
+          - waitFor: "button:has-text('Cancel')"
+            timeout: 5000
+
+      - id: cancel_delete_modal
+        action: ui
+        description: "Cancel the delete modal to avoid destructive action"
+        optional: true
+        playwright:
+          - click: "button:has-text('Cancel')"
+
+  - id: config_policies_summary_stats
+    name: "Config Policy Summary Stats Panel"
+    description: "Verify Total, Active, and Inactive summary stat cards appear when policies exist"
+    tags: [config-policies]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_config_policies
+        action: ui
+        description: "Navigate to /configuration-policies"
+        playwright:
+          - goto: "/configuration-policies"
+          - waitFor: "h1:has-text('Configuration Policies')"
+            timeout: 15000
+
+      - id: verify_policies_load
+        action: ui
+        description: "Verify the page content loads (stat cards appear only if policies exist)"
+        playwright:
+          - waitFor: "text=Configuration Policies"
+            timeout: 10000
+
+      - id: verify_via_api_count
+        action: api
+        description: "Verify configuration policies count via API"
+        request:
+          method: GET
+          path: "/api/v1/configuration-policies"
+        assert:
+          status: 200
+        expect:
+          pagination: {}

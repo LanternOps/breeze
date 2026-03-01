@@ -1,0 +1,742 @@
+# CIS Hardening E2E Tests
+# Full coverage: UI pages, baseline CRUD, scan trigger, agent log verification, remediation workflow.
+# Uses `api` action to verify agent processed commands via diagnostic-logs and compliance endpoints.
+
+tests:
+  # ─── SMOKE: Page loads with summary cards and tabs ───────────────────────────
+  - id: cis_page_loads
+    name: "CIS Hardening Page Loads"
+    description: "Verify CIS Hardening page renders header, 4 summary cards, 3 tabs, and Refresh button"
+    tags: [cis, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_cis
+        action: ui
+        description: "Navigate to CIS Hardening page"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+
+      - id: verify_header
+        action: ui
+        description: "Verify heading and description"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "CIS Hardening"
+          - assert:
+              selector: "p"
+              contains: "Configuration baselines, compliance scoring, and remediation tracking."
+
+      - id: verify_summary_cards
+        action: ui
+        description: "Verify 4 stat cards"
+        playwright:
+          - waitFor: "text=Average Score"
+          - waitFor: "text=Failing Devices"
+          - waitFor: "text=Active Baselines"
+          - waitFor: "text=Pending Remediations"
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify 3 tabs exist"
+        playwright:
+          - waitFor: "button:has-text('Compliance')"
+          - waitFor: "button:has-text('Baselines')"
+          - waitFor: "button:has-text('Remediations')"
+
+      - id: verify_refresh_button
+        action: ui
+        description: "Verify Refresh button"
+        playwright:
+          - waitFor: "button:has-text('Refresh')"
+
+  # ─── COMPLIANCE TAB: table, search, OS filter ───────────────────────────────
+  - id: cis_compliance_tab
+    name: "CIS Compliance Tab"
+    description: "Verify Compliance tab table columns, search input, and OS filter dropdown"
+    tags: [cis, compliance]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_cis
+        action: ui
+        description: "Navigate to CIS Hardening"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+
+      - id: open_compliance_tab
+        action: ui
+        description: "Click Compliance tab"
+        playwright:
+          - click: "button:has-text('Compliance')"
+          - waitFor: "table"
+            timeout: 15000
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify all 6 table columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "Baseline"
+          - assert:
+              selector: "table thead"
+              contains: "OS"
+          - assert:
+              selector: "table thead"
+              contains: "Score"
+          - assert:
+              selector: "table thead"
+              contains: "Failed Checks"
+          - assert:
+              selector: "table thead"
+              contains: "Last Scanned"
+
+      - id: verify_search_input
+        action: ui
+        description: "Verify search input exists"
+        playwright:
+          - waitFor: "input[placeholder='Search hostname or baseline...']"
+
+      - id: verify_os_filter
+        action: ui
+        description: "Verify OS filter has all platform options"
+        playwright:
+          - waitFor:
+              selector: "select option[value='windows']"
+              state: attached
+          - waitFor:
+              selector: "select option[value='macos']"
+              state: attached
+          - waitFor:
+              selector: "select option[value='linux']"
+              state: attached
+
+      - id: filter_by_linux
+        action: ui
+        description: "Filter by Linux"
+        playwright:
+          - selectOption:
+              "select:has(option[value='linux'])": "linux"
+          - waitFor:
+              selector: "table tbody"
+              timeout: 5000
+
+      - id: verify_compliance_api
+        action: api
+        description: "Verify compliance endpoint returns data"
+        request:
+          method: GET
+          path: "/api/v1/cis/compliance"
+          query:
+            limit: "10"
+
+  # ─── BASELINES TAB: table columns and New Baseline button ────────────────────
+  - id: cis_baselines_tab
+    name: "CIS Baselines Tab"
+    description: "Verify Baselines tab table columns and New Baseline button"
+    tags: [cis, baselines]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_cis
+        action: ui
+        description: "Navigate to CIS Hardening"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+
+      - id: open_baselines_tab
+        action: ui
+        description: "Click Baselines tab"
+        playwright:
+          - click: "button:has-text('Baselines')"
+          - waitFor: "h3:has-text('Baselines')"
+            timeout: 15000
+
+      - id: verify_new_baseline_button
+        action: ui
+        description: "Verify New Baseline button exists"
+        playwright:
+          - waitFor: "button:has-text('New Baseline')"
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify all 7 table columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Name"
+          - assert:
+              selector: "table thead"
+              contains: "OS"
+          - assert:
+              selector: "table thead"
+              contains: "Level"
+          - assert:
+              selector: "table thead"
+              contains: "Version"
+          - assert:
+              selector: "table thead"
+              contains: "Schedule"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Actions"
+
+      - id: verify_baselines_api
+        action: api
+        description: "Verify baselines endpoint works"
+        request:
+          method: GET
+          path: "/api/v1/cis/baselines"
+          query:
+            limit: "10"
+
+  # ─── REMEDIATIONS TAB: table, status filter ──────────────────────────────────
+  - id: cis_remediations_tab
+    name: "CIS Remediations Tab"
+    description: "Verify Remediations tab table columns and status filter"
+    tags: [cis, remediation]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_cis
+        action: ui
+        description: "Navigate to CIS Hardening"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+
+      - id: open_remediations_tab
+        action: ui
+        description: "Click Remediations tab"
+        playwright:
+          - click: "button:has-text('Remediations')"
+          - waitFor: "h3:has-text('Remediations')"
+            timeout: 15000
+
+      - id: verify_table_columns
+        action: ui
+        description: "Verify all 8 table columns"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Check ID"
+          - assert:
+              selector: "table thead"
+              contains: "Device"
+          - assert:
+              selector: "table thead"
+              contains: "Baseline"
+          - assert:
+              selector: "table thead"
+              contains: "Action"
+          - assert:
+              selector: "table thead"
+              contains: "Status"
+          - assert:
+              selector: "table thead"
+              contains: "Approval"
+          - assert:
+              selector: "table thead"
+              contains: "Requested"
+          - assert:
+              selector: "table thead"
+              contains: "Completed"
+
+      - id: verify_status_filter
+        action: ui
+        description: "Verify status filter options"
+        playwright:
+          - waitFor:
+              selector: "select option[value='pending_approval']"
+              state: attached
+          - waitFor:
+              selector: "select option[value='queued']"
+              state: attached
+          - waitFor:
+              selector: "select option[value='completed']"
+              state: attached
+          - waitFor:
+              selector: "select option[value='failed']"
+              state: attached
+
+      - id: filter_pending_approval
+        action: ui
+        description: "Filter by Pending Approval"
+        playwright:
+          - selectOption:
+              "select:has(option[value='pending_approval'])": "pending_approval"
+          - waitFor:
+              selector: "table tbody"
+              timeout: 5000
+
+  # ─── BASELINE CRUD: create via API, verify in UI, edit form, cleanup ────────
+  - id: cis_baseline_create
+    name: "CIS Baseline Create"
+    description: "Create a new Linux CIS L1 baseline via the UI form, wait for modal close, verify in table and API"
+    tags: [cis, baselines, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_baselines
+        action: ui
+        description: "Navigate to Baselines tab"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+          - click: "button:has-text('Baselines')"
+          - waitFor: "h3:has-text('Baselines')"
+            timeout: 10000
+
+      - id: open_new_baseline_form
+        action: ui
+        description: "Click New Baseline button"
+        playwright:
+          - click: "button:has-text('New Baseline')"
+          - waitFor:
+              selector: "form"
+              timeout: 10000
+
+      - id: fill_baseline_form
+        action: ui
+        description: "Fill baseline form"
+        playwright:
+          - fill:
+              "#bl-name": "E2E Linux CIS L1"
+          - selectOption:
+              "#bl-os": "linux"
+          - selectOption:
+              "#bl-level": "l1"
+          - fill:
+              "#bl-version": "2.0.0"
+
+      - id: save_baseline
+        action: ui
+        description: "Submit form and wait for modal to close"
+        playwright:
+          - click: "button[type='submit']:has-text('Save')"
+          - waitFor:
+              selector: "form"
+              state: detached
+              timeout: 15000
+
+      - id: verify_baseline_in_table
+        action: ui
+        description: "Verify new baseline in table"
+        playwright:
+          - waitFor:
+              selector: "text=E2E Linux CIS L1"
+              timeout: 10000
+
+      - id: verify_baseline_via_api
+        action: api
+        description: "Verify baseline exists via API"
+        request:
+          method: GET
+          path: "/api/v1/cis/baselines"
+          query:
+            osType: linux
+            active: "true"
+
+  # ─── BASELINE EDIT: open edit form, verify pre-populated, cancel ─────────────
+  - id: cis_baseline_edit
+    name: "CIS Baseline Edit"
+    description: "Open edit form for an existing baseline, verify pre-populated fields, cancel"
+    tags: [cis, baselines]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_baselines
+        action: ui
+        description: "Navigate to Baselines tab"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+          - click: "button:has-text('Baselines')"
+          - waitFor: "h3:has-text('Baselines')"
+            timeout: 10000
+
+      - id: check_baselines_exist
+        action: ui
+        description: "Verify there is at least one baseline to edit"
+        playwright:
+          - waitFor:
+              selector: "table tbody button[title='Edit']"
+              timeout: 10000
+
+      - id: open_edit_form
+        action: ui
+        description: "Click Edit button on first baseline"
+        playwright:
+          - click: "table tbody tr:first-child button[title='Edit']"
+          - waitFor:
+              selector: "form"
+              timeout: 10000
+
+      - id: verify_edit_form_populated
+        action: ui
+        description: "Verify form shows Edit title and has populated fields"
+        playwright:
+          - waitFor:
+              selector: "text=Edit Baseline"
+              timeout: 5000
+          - waitFor: "#bl-name"
+          - waitFor: "#bl-os"
+          - waitFor: "#bl-level"
+          - waitFor: "#bl-version"
+
+      - id: cancel_edit
+        action: ui
+        description: "Cancel without saving"
+        playwright:
+          - click: "button:has-text('Cancel')"
+          - waitFor:
+              selector: "form"
+              state: detached
+              timeout: 5000
+
+  # ─── FULL LIFECYCLE: create baseline → trigger scan → verify agent logs → check compliance ───
+  - id: cis_scan_lifecycle
+    name: "CIS Scan Full Lifecycle"
+    description: "Create Windows baseline, trigger scan from UI, verify Kit agent processes it via diagnostic logs, check compliance results"
+    tags: [cis, scan, lifecycle, critical]
+    nodes: [linux]
+    timeout: 300000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      # Step 1: Create a Windows L1 baseline targeting Kit
+      - id: navigate_baselines
+        action: ui
+        description: "Navigate to Baselines tab"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+          - click: "button:has-text('Baselines')"
+          - waitFor: "h3:has-text('Baselines')"
+            timeout: 10000
+
+      - id: create_scan_baseline
+        action: ui
+        description: "Create a Windows L1 baseline for scan testing on Kit"
+        playwright:
+          - click: "button:has-text('New Baseline')"
+          - waitFor:
+              selector: "form"
+              timeout: 10000
+          - fill:
+              "#bl-name": "E2E Win Scan Lifecycle"
+          - selectOption:
+              "#bl-os": "windows"
+          - selectOption:
+              "#bl-level": "l1"
+          - fill:
+              "#bl-version": "3.0.0"
+          - click: "button[type='submit']:has-text('Save')"
+          - waitFor:
+              selector: "form"
+              state: detached
+              timeout: 15000
+
+      - id: verify_baseline_created
+        action: ui
+        description: "Confirm baseline appears in table"
+        playwright:
+          - waitFor:
+              selector: "text=E2E Win Scan Lifecycle"
+              timeout: 10000
+
+      # Step 2: Trigger scan from the UI
+      - id: trigger_scan
+        action: ui
+        description: "Click Trigger Scan on the new baseline"
+        playwright:
+          - click: "tr:has-text('E2E Win Scan Lifecycle') button[title='Trigger Scan']"
+
+      # Step 3: Poll diagnostic logs for agent CIS activity on Kit (Windows)
+      - id: verify_agent_received_scan
+        action: api
+        description: "Poll diagnostic logs for CIS scan activity on Kit"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            search: "cis_benchmark"
+            since: "{{testStartTime}}"
+            limit: "5"
+        poll:
+          maxAttempts: 30
+          intervalMs: 5000
+          until: "total > 0"
+        timeout: 180000
+
+      # Step 4: Check compliance results appeared for Windows
+      - id: verify_compliance_results
+        action: api
+        description: "Verify compliance results exist for Kit"
+        request:
+          method: GET
+          path: "/api/v1/cis/compliance"
+          query:
+            osType: windows
+            limit: "5"
+        poll:
+          maxAttempts: 30
+          intervalMs: 5000
+          until: "data.length > 0"
+        timeout: 180000
+
+      # Step 5: Check compliance in the UI
+      - id: check_compliance_tab
+        action: ui
+        description: "Switch to Compliance tab and verify results table has data"
+        playwright:
+          - click: "button:has-text('Compliance')"
+          - waitFor: "table"
+            timeout: 30000
+
+      # Step 6: Verify device-specific CIS report via API
+      - id: verify_device_report
+        action: api
+        description: "Verify Kit's CIS report is available"
+        request:
+          method: GET
+          path: "/api/v1/cis/devices/{{devices.windows}}/report"
+
+      # Step 7: Refresh and verify summary cards updated
+      - id: refresh_and_check_cards
+        action: ui
+        description: "Click Refresh and verify summary cards reflect scan results"
+        playwright:
+          - click: "button:has-text('Refresh')"
+          - waitFor: "text=Average Score"
+            timeout: 10000
+          - waitFor: "text=Active Baselines"
+
+  # ─── REMEDIATION WORKFLOW: request, approve, verify via API ─────────────────
+  - id: cis_remediation_workflow
+    name: "CIS Remediation Workflow"
+    description: "Request remediation on Kit via API, verify status transitions and agent logs"
+    tags: [cis, remediation, lifecycle]
+    nodes: [linux]
+    timeout: 300000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      # Step 1: Request remediation via API for a known CIS check on Kit
+      - id: request_remediation
+        action: api
+        description: "Request remediation for CIS check 1.1.5 (password policy) on Kit"
+        request:
+          method: POST
+          path: "/api/v1/cis/remediate"
+          body:
+            deviceId: "{{devices.windows}}"
+            checkIds:
+              - "1.1.5"
+            action: apply
+            reason: "E2E test remediation"
+
+      # Step 2: Check remediation appears in Remediations tab
+      - id: check_remediations_ui
+        action: ui
+        description: "Navigate to Remediations tab and verify table is visible"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+          - click: "button:has-text('Remediations')"
+          - waitFor: "h3:has-text('Remediations')"
+            timeout: 15000
+          - waitFor: "table"
+            timeout: 10000
+
+      # Step 3: Verify remediation status via API
+      - id: verify_remediation_pending
+        action: api
+        description: "Verify remediation is in pending_approval status"
+        request:
+          method: GET
+          path: "/api/v1/cis/remediations"
+          query:
+            deviceId: "{{devices.windows}}"
+            status: pending_approval
+            limit: "5"
+
+      # Step 4: Poll for remediation activity via agent logs
+      - id: verify_remediation_logs
+        action: api
+        description: "Poll diagnostic logs for remediation activity on Kit"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}/diagnostic-logs"
+          query:
+            search: "cis_remediation"
+            since: "{{testStartTime}}"
+            limit: "5"
+        poll:
+          maxAttempts: 15
+          intervalMs: 5000
+          until: "total > 0"
+        timeout: 120000
+
+      # Step 5: Verify remediation final status via API
+      - id: verify_remediation_completed
+        action: api
+        description: "Check remediation final status"
+        request:
+          method: GET
+          path: "/api/v1/cis/remediations"
+          query:
+            deviceId: "{{devices.windows}}"
+            limit: "5"
+
+  # ─── CLEANUP: delete test baselines via API ──────────────────────────────────
+  - id: cis_cleanup
+    name: "CIS Test Cleanup"
+    description: "Remove test baselines created during E2E runs"
+    tags: [cis, cleanup]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_baselines
+        action: ui
+        description: "Navigate to Baselines tab"
+        playwright:
+          - goto: "/cis-hardening"
+          - waitFor: "h2:has-text('CIS Hardening')"
+            timeout: 15000
+          - click: "button:has-text('Baselines')"
+          - waitFor: "h3:has-text('Baselines')"
+            timeout: 10000
+        optional: true

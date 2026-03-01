@@ -1,0 +1,295 @@
+# User Profile E2E Tests
+# Tests for the profile settings page at /settings/profile.
+# Requires a valid authenticated session via TEST_USER_EMAIL / TEST_USER_PASSWORD.
+# Note: /profile redirects 301 to /settings/profile.
+
+tests:
+  - id: profile_redirects_from_short_url
+    name: "/profile Redirects to /settings/profile"
+    description: "Verify that navigating to /profile performs a redirect to /settings/profile"
+    tags: [profile, redirect]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Log in to get an authenticated session"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_profile_short_url
+        action: ui
+        description: "Navigate to /profile and expect redirect to /settings/profile"
+        playwright:
+          - goto: "/profile"
+          - waitFor:
+              url: "**/settings/profile**"
+              timeout: 10000
+
+  - id: profile_page_loads
+    name: "Profile Settings Page Loads"
+    description: "Verify the profile settings page renders with all sections when authenticated"
+    tags: [profile, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Log in to get an authenticated session"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_profile
+        action: ui
+        description: "Navigate to profile settings page"
+        playwright:
+          - goto: "/settings/profile"
+          - waitFor: "text=Profile settings"
+            timeout: 15000
+
+      - id: verify_page_heading
+        action: ui
+        description: "Verify the page title and description"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Profile settings"
+          - assert:
+              selector: "p.text-sm"
+              contains: "Manage your account settings"
+
+      - id: verify_profile_info_section
+        action: ui
+        description: "Verify the profile information form section is present"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Profile information"
+          - waitFor: "input#name"
+            timeout: 10000
+          - assert:
+              selector: "label[for='avatarUrl']"
+              contains: "Avatar image URL"
+          - assert:
+              selector: "label[for='name']"
+              contains: "Name"
+          - assert:
+              selector: "label[for='email']"
+              contains: "Email"
+
+      - id: verify_change_password_section
+        action: ui
+        description: "Verify the change password form section is present"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Change password"
+          - assert:
+              selector: "input#currentPassword"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "input#newPassword"
+              attribute: "type"
+              equals: "password"
+          - assert:
+              selector: "input#confirmPassword"
+              attribute: "type"
+              equals: "password"
+
+  - id: profile_email_field_disabled
+    name: "Profile Email Field Is Read-Only"
+    description: "Verify that the email field on the profile page is disabled and cannot be edited"
+    tags: [profile]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Log in to get an authenticated session"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_profile
+        action: ui
+        description: "Navigate to profile settings page"
+        playwright:
+          - goto: "/settings/profile"
+          - waitFor: "input#name"
+            timeout: 15000
+
+      - id: verify_email_disabled
+        action: ui
+        description: "Verify the email input is disabled"
+        playwright:
+          - assert:
+              selector: "input#email"
+              attribute: "disabled"
+          - assert:
+              selector: "p.text-xs"
+              contains: "Email cannot be changed"
+
+  - id: profile_name_validation
+    name: "Profile Name Field Validation"
+    description: "Verify that the profile form validates a name that is too short"
+    tags: [profile, validation]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Log in to get an authenticated session"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_profile
+        action: ui
+        description: "Navigate to profile settings page"
+        playwright:
+          - goto: "/settings/profile"
+          - waitFor: "input#name"
+            timeout: 15000
+
+      - id: enter_short_name_and_submit
+        action: ui
+        description: "Clear the name field, enter a single character, and submit"
+        playwright:
+          - fill:
+              "input#name": "X"
+          - click: "button[type='submit']:has-text('Save changes')"
+          - waitFor: "text=Name must be at least 2 characters"
+            timeout: 5000
+
+  - id: profile_avatar_url_validation
+    name: "Profile Avatar URL Validation"
+    description: "Verify that a non-HTTP avatar URL triggers a validation error"
+    tags: [profile, validation]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Log in to get an authenticated session"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_profile
+        action: ui
+        description: "Navigate to profile settings page"
+        playwright:
+          - goto: "/settings/profile"
+          - waitFor: "input#avatarUrl"
+            timeout: 15000
+
+      - id: enter_invalid_avatar_url
+        action: ui
+        description: "Enter a non-HTTP avatar URL and submit to trigger validation"
+        playwright:
+          - fill:
+              "input#avatarUrl": "ftp://invalid-protocol.com/avatar.png"
+          - click: "button[type='submit']:has-text('Save changes')"
+          - waitFor: "text=Avatar URL must start with http"
+            timeout: 5000
+
+  - id: profile_change_password_validation
+    name: "Change Password Section Validates Mismatch"
+    description: "Verify that the change password form shows an error when new passwords do not match"
+    tags: [profile, password, validation]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Log in to get an authenticated session"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_to_profile
+        action: ui
+        description: "Navigate to profile settings page"
+        playwright:
+          - goto: "/settings/profile"
+          - waitFor: "input#currentPassword"
+            timeout: 15000
+
+      - id: fill_mismatched_passwords
+        action: ui
+        description: "Fill current password and mismatched new passwords then submit"
+        playwright:
+          - fill:
+              "input#currentPassword": "OldPassword123!"
+              "input#newPassword": "NewPassword123!"
+              "input#confirmPassword": "TotallyDifferent456!"
+          - click: "button[type='submit']:has-text('Change password')"
+          - waitFor: "text=Passwords do not match"
+            timeout: 5000
+
+  - id: setup_wizard_redirects_unauthenticated
+    name: "Setup Wizard Redirects Unauthenticated Users to Login"
+    description: "Verify that an unauthenticated user visiting /setup is redirected to /login"
+    tags: [setup, auth, redirect]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: navigate_setup_unauthenticated
+        action: ui
+        description: "Navigate to /setup without being authenticated"
+        playwright:
+          - goto: "/setup"
+          - waitFor:
+              url: "**/login**"
+              timeout: 15000

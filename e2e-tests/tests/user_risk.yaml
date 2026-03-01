@@ -1,0 +1,669 @@
+# User Risk / AI Risk Engine E2E Tests (BE-31)
+# Tests AI Risk Engine dashboard: guardrail tier matrix, tool execution analytics,
+# approval history, rate limits, denial log, and audit baselines.
+# Verification uses API log queries instead of remote MCP calls.
+
+tests:
+  - id: ai_risk_dashboard_loads
+    name: "AI Risk Dashboard Loads"
+    description: "Verify AI Risk Engine page loads with the five tabs and header elements"
+    tags: [security, risk, dashboard, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_risk
+        action: ui
+        description: "Navigate to AI Risk Engine page"
+        playwright:
+          - goto: "/ai-risk"
+          - waitFor: "h1:has-text('AI Risk Engine')"
+            timeout: 15000
+
+      - id: verify_header
+        action: ui
+        description: "Verify page heading and subtitle"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "AI Risk Engine"
+          - assert:
+              selector: "p"
+              contains: "Tool execution guardrails, approval history, and analytics"
+
+      - id: verify_all_tabs
+        action: ui
+        description: "Verify all 5 tabs are present: Guardrails, Analytics, Approvals, Rate Limits, Denials"
+        playwright:
+          - assert:
+              selector: "nav button"
+              contains: "Guardrails"
+          - assert:
+              selector: "nav button"
+              contains: "Analytics"
+          - assert:
+              selector: "nav button"
+              contains: "Approvals"
+          - assert:
+              selector: "nav button"
+              contains: "Rate Limits"
+          - assert:
+              selector: "nav button"
+              contains: "Denials"
+
+  - id: ai_risk_guardrails_tab
+    name: "AI Risk Guardrails Tab"
+    description: "Verify the Guardrails tab shows the Tier Matrix with search and tier cards"
+    tags: [security, risk, guardrails, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_risk
+        action: ui
+        description: "Navigate to AI Risk Engine"
+        playwright:
+          - goto: "/ai-risk"
+          - waitFor: "h1:has-text('AI Risk Engine')"
+            timeout: 15000
+
+      - id: verify_guardrails_active_by_default
+        action: ui
+        description: "Verify Guardrails tab is active by default and shows the tier matrix"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Guardrail Tier Matrix"
+
+      - id: verify_tier_cards
+        action: ui
+        description: "Verify tier cards are present with Tier labels"
+        playwright:
+          - assert:
+              selector: "span"
+              contains: "Tier"
+
+      - id: verify_filter_tools_input
+        action: ui
+        description: "Verify tool filter search input is present"
+        playwright:
+          - assert:
+              selector: "input[placeholder='Filter tools...']"
+              visible: true
+
+      - id: filter_tools
+        action: ui
+        description: "Type a search term to filter tools in the tier matrix"
+        playwright:
+          - fill:
+              "input[placeholder='Filter tools...']": "browser"
+          - waitFor:
+              selector: "div"
+              timeout: 3000
+          - fill:
+              "input[placeholder='Filter tools...']": ""
+
+      - id: expand_category_group
+        action: ui
+        description: "Click a category group heading to expand its tool list"
+        playwright:
+          - click: "div.border-b button"
+          - waitFor:
+              selector: "div"
+              timeout: 3000
+
+  - id: ai_risk_analytics_tab
+    name: "AI Risk Analytics Tab"
+    description: "Verify Analytics tab shows execution summary with time range controls and a data table"
+    tags: [security, risk, analytics]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_risk
+        action: ui
+        description: "Navigate to AI Risk Engine"
+        playwright:
+          - goto: "/ai-risk"
+          - waitFor: "h1:has-text('AI Risk Engine')"
+            timeout: 15000
+
+      - id: open_analytics_tab
+        action: ui
+        description: "Click the Analytics tab"
+        playwright:
+          - click: "nav button:has-text('Analytics')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: verify_time_range_controls
+        action: ui
+        description: "Verify time range buttons 24h, 7d, 30d appear when on data-driven tabs"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "24h"
+          - assert:
+              selector: "button"
+              contains: "7d"
+          - assert:
+              selector: "button"
+              contains: "30d"
+
+      - id: verify_refresh_button
+        action: ui
+        description: "Verify Refresh button is available on the Analytics tab"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Refresh"
+
+      - id: switch_time_range
+        action: ui
+        description: "Switch to 24h time range and verify data reloads"
+        playwright:
+          - click: "button:has-text('24h')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: switch_to_30d
+        action: ui
+        description: "Switch to 30d time range for broader data view"
+        playwright:
+          - click: "button:has-text('30d')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+  - id: ai_risk_approvals_tab
+    name: "AI Risk Approval History Feed"
+    description: "Verify Approvals tab loads with tool execution history and approval status data"
+    tags: [security, risk, approvals]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_risk
+        action: ui
+        description: "Navigate to AI Risk Engine"
+        playwright:
+          - goto: "/ai-risk"
+          - waitFor: "h1:has-text('AI Risk Engine')"
+            timeout: 15000
+
+      - id: open_approvals_tab
+        action: ui
+        description: "Click the Approvals tab"
+        playwright:
+          - click: "nav button:has-text('Approvals')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: verify_time_range_controls
+        action: ui
+        description: "Verify time range selector is available on Approvals tab"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "7d"
+
+      - id: filter_7d
+        action: ui
+        description: "Select 7-day time range for approval history"
+        playwright:
+          - click: "button:has-text('7d')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: verify_risk_events_via_api
+        action: api
+        description: "Verify risk event data collected by agent"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.linux}}/diagnostic-logs"
+          query:
+            component: risk
+            since: "{{testStartTime}}"
+            search: "risk"
+        poll:
+          maxAttempts: 15
+          intervalMs: 3000
+          until: "logs.length > 0"
+        expect:
+          offset: 0
+
+  - id: ai_risk_rate_limits_tab
+    name: "AI Risk Rate Limits Status"
+    description: "Verify Rate Limits tab loads and shows rate limit status content without time range controls"
+    tags: [security, risk, rate-limits]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_risk
+        action: ui
+        description: "Navigate to AI Risk Engine"
+        playwright:
+          - goto: "/ai-risk"
+          - waitFor: "h1:has-text('AI Risk Engine')"
+            timeout: 15000
+
+      - id: open_rate_limits_tab
+        action: ui
+        description: "Click the Rate Limits tab"
+        playwright:
+          - click: "nav button:has-text('Rate Limits')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: verify_no_time_range_on_static_tab
+        action: ui
+        description: "Verify time range buttons are not shown on static Rate Limits tab"
+        playwright:
+          - waitFor:
+              selector: "div"
+              timeout: 3000
+
+  - id: ai_risk_denials_tab
+    name: "AI Risk Denial Log"
+    description: "Verify Denials tab shows rejection and denial log with security events"
+    tags: [security, risk, denials]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_risk
+        action: ui
+        description: "Navigate to AI Risk Engine"
+        playwright:
+          - goto: "/ai-risk"
+          - waitFor: "h1:has-text('AI Risk Engine')"
+            timeout: 15000
+
+      - id: open_denials_tab
+        action: ui
+        description: "Click the Denials tab"
+        playwright:
+          - click: "nav button:has-text('Denials')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: verify_time_range_controls
+        action: ui
+        description: "Verify time range controls are available on Denials tab"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "7d"
+          - assert:
+              selector: "button"
+              contains: "30d"
+
+      - id: switch_to_7d_view
+        action: ui
+        description: "View denial log for last 7 days"
+        playwright:
+          - click: "button:has-text('7d')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+  - id: audit_baselines_page_loads
+    name: "Audit Baselines Page Loads"
+    description: "Verify Audit Baselines page loads with Dashboard, Baselines, and Approvals tabs"
+    tags: [security, audit-baselines, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit_baselines
+        action: ui
+        description: "Navigate to Audit Baselines page"
+        playwright:
+          - goto: "/audit-baselines"
+          - waitFor: "h1:has-text('Audit Baselines')"
+            timeout: 15000
+
+      - id: verify_header
+        action: ui
+        description: "Verify page heading and description"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Audit Baselines"
+          - assert:
+              selector: "p"
+              contains: "Define compliance baselines, evaluate device drift"
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify Dashboard, Baselines, and Approvals tabs are visible"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Dashboard"
+          - assert:
+              selector: "button"
+              contains: "Baselines"
+          - assert:
+              selector: "button"
+              contains: "Approvals"
+
+      - id: verify_dashboard_tab_active
+        action: ui
+        description: "Verify Dashboard tab is active by default and shows compliance summary"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Devices Evaluated"
+
+  - id: audit_baselines_compliance_dashboard
+    name: "Audit Baselines Compliance Dashboard"
+    description: "Verify compliance dashboard tab shows stat cards: Devices Evaluated, Compliant, Non-Compliant, Average Score"
+    tags: [security, audit-baselines, compliance]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit_baselines
+        action: ui
+        description: "Navigate to Audit Baselines and click Dashboard tab"
+        playwright:
+          - goto: "/audit-baselines"
+          - waitFor: "h1:has-text('Audit Baselines')"
+            timeout: 15000
+          - click: "button:has-text('Dashboard')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: verify_compliance_stat_cards
+        action: ui
+        description: "Verify all 4 stat cards: Devices Evaluated, Compliant, Non-Compliant, Average Score"
+        playwright:
+          - assert:
+              selector: "p"
+              contains: "Devices Evaluated"
+          - assert:
+              selector: "p"
+              contains: "Compliant"
+          - assert:
+              selector: "p"
+              contains: "Non-Compliant"
+          - assert:
+              selector: "p"
+              contains: "Average Score"
+
+  - id: audit_baselines_list
+    name: "Audit Baselines List"
+    description: "Verify Baselines tab shows table with Name, OS, Profile, Active, Updated, Actions columns and New Baseline button"
+    tags: [security, audit-baselines, baselines]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit_baselines
+        action: ui
+        description: "Navigate to Audit Baselines and open Baselines tab"
+        playwright:
+          - goto: "/audit-baselines"
+          - waitFor: "h1:has-text('Audit Baselines')"
+            timeout: 15000
+          - click: "button:has-text('Baselines')"
+          - waitFor:
+              selector: "button:has-text('New Baseline')"
+              timeout: 10000
+
+      - id: verify_new_baseline_button
+        action: ui
+        description: "Verify New Baseline button is present"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "New Baseline"
+
+      - id: verify_baselines_table
+        action: ui
+        description: "Verify table columns: Name, OS, Profile, Active, Updated, Actions"
+        playwright:
+          - assert:
+              selector: "table thead"
+              contains: "Name"
+          - assert:
+              selector: "table thead"
+              contains: "OS"
+          - assert:
+              selector: "table thead"
+              contains: "Profile"
+          - assert:
+              selector: "table thead"
+              contains: "Active"
+          - assert:
+              selector: "table thead"
+              contains: "Updated"
+          - assert:
+              selector: "table thead"
+              contains: "Actions"
+
+      - id: open_new_baseline_modal
+        action: ui
+        description: "Click New Baseline to open the form modal"
+        playwright:
+          - click: "button:has-text('New Baseline')"
+          - waitFor: "h2"
+            timeout: 10000
+          - assert:
+              selector: "h2"
+              contains: "Baseline"
+
+      - id: close_modal
+        action: ui
+        description: "Close the form modal without saving"
+        playwright:
+          - click: "button:has-text('Cancel')"
+          - waitFor:
+              selector: "button:has-text('New Baseline')"
+              timeout: 5000
+
+  - id: audit_baseline_detail_page
+    name: "Audit Baseline Detail Page"
+    description: "Verify a baseline detail page loads with Overview, Compliance, and Apply tabs when navigating from the list"
+    tags: [security, audit-baselines, detail]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_audit_baselines_list
+        action: ui
+        description: "Navigate to Audit Baselines Baselines tab"
+        playwright:
+          - goto: "/audit-baselines"
+          - waitFor: "h1:has-text('Audit Baselines')"
+            timeout: 15000
+          - click: "button:has-text('Baselines')"
+          - waitFor:
+              selector: "table"
+              timeout: 10000
+
+      - id: click_first_baseline_link
+        action: ui
+        description: "Click the first baseline name link to open the detail page"
+        playwright:
+          - click: "table tbody tr:first-child td:first-child a"
+          - waitFor:
+              url: "**/audit-baselines/**"
+              timeout: 15000
+
+      - id: verify_detail_page_breadcrumb
+        action: ui
+        description: "Verify breadcrumb shows Audit Baselines / baseline name"
+        playwright:
+          - assert:
+              selector: "a"
+              contains: "Audit Baselines"
+
+      - id: verify_detail_page_tabs
+        action: ui
+        description: "Verify Overview, Compliance, and Apply tabs are present on the detail page"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Overview"
+          - assert:
+              selector: "button"
+              contains: "Compliance"
+          - assert:
+              selector: "button"
+              contains: "Apply"
+
+      - id: navigate_to_compliance_tab
+        action: ui
+        description: "Click Compliance tab on baseline detail page"
+        playwright:
+          - click: "button:has-text('Compliance')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: navigate_to_apply_tab
+        action: ui
+        description: "Click Apply tab on baseline detail page"
+        playwright:
+          - click: "button:has-text('Apply')"
+          - waitFor:
+              selector: "div"
+              timeout: 10000
+
+      - id: navigate_back_to_list
+        action: ui
+        description: "Navigate back to Audit Baselines list via breadcrumb link"
+        playwright:
+          - click: "a:has-text('Audit Baselines')"
+          - waitFor: "h1:has-text('Audit Baselines')"
+            timeout: 15000

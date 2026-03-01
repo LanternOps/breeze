@@ -1,0 +1,397 @@
+# Dashboard E2E Tests
+# Tests the main Breeze dashboard at / (index.astro)
+# Covers: DashboardStats, DeviceStatusChart, RecentAlerts, RecentActivity components
+# Dashboard renders stat cards (Total Devices, Online, Warnings, Critical),
+# a device status pie chart, recent alerts panel, and recent activity table.
+
+tests:
+  - id: dashboard_loads_with_stats
+    name: "Dashboard Loads with Device Stats"
+    description: "Verify the dashboard page renders all four stat cards with proper headings"
+    tags: [dashboard, stats, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_dashboard_heading
+        action: ui
+        description: "Verify main Dashboard heading renders"
+        playwright:
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+          - assert:
+              selector: "h1"
+              contains: "Dashboard"
+
+      - id: verify_stat_cards
+        action: ui
+        description: "Verify all four dashboard stat cards are visible"
+        playwright:
+          - waitFor: "text=Total Devices"
+            timeout: 15000
+          - assert:
+              selector: "text=Total Devices"
+              exists: true
+          - assert:
+              selector: "text=Online"
+              exists: true
+          - assert:
+              selector: "text=Warnings"
+              exists: true
+          - assert:
+              selector: "text=Critical"
+              exists: true
+
+      - id: verify_subheading
+        action: ui
+        description: "Verify dashboard subheading text is visible"
+        playwright:
+          - assert:
+              selector: "text=Overview of your managed devices and alerts"
+              exists: true
+
+  - id: dashboard_device_status_chart
+    name: "Dashboard Device Status Chart"
+    description: "Verify the Device Status pie chart section renders"
+    tags: [dashboard, chart]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_device_status_chart
+        action: ui
+        description: "Verify the Device Status chart heading is visible"
+        playwright:
+          - waitFor: "text=Device Status"
+            timeout: 15000
+          - assert:
+              selector: "text=Device Status"
+              exists: true
+
+  - id: dashboard_recent_alerts_panel
+    name: "Dashboard Recent Alerts Panel"
+    description: "Verify the Recent Alerts panel renders with a View all link"
+    tags: [dashboard, alerts]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_recent_alerts_heading
+        action: ui
+        description: "Verify the Recent Alerts section heading and View all link"
+        playwright:
+          - waitFor: "text=Recent Alerts"
+            timeout: 15000
+          - assert:
+              selector: "text=Recent Alerts"
+              exists: true
+          - assert:
+              selector: "a[href='/alerts']:has-text('View all')"
+              exists: true
+
+  - id: dashboard_recent_activity_table
+    name: "Dashboard Recent Activity Table"
+    description: "Verify the Recent Activity table renders with audit log link"
+    tags: [dashboard, activity]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_recent_activity_heading
+        action: ui
+        description: "Verify the Recent Activity section and audit log link"
+        playwright:
+          - waitFor: "text=Recent Activity"
+            timeout: 15000
+          - assert:
+              selector: "text=Recent Activity"
+              exists: true
+          - assert:
+              selector: "a[href='/audit']:has-text('View audit log')"
+              exists: true
+
+  - id: dashboard_sidebar_navigation
+    name: "Dashboard Sidebar Navigation"
+    description: "Verify sidebar nav links render and lead to correct pages"
+    tags: [dashboard, navigation, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_sidebar_links
+        action: ui
+        description: "Verify core sidebar navigation links are visible"
+        playwright:
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+          - assert:
+              selector: "a[href='/']:has-text('Dashboard')"
+              exists: true
+          - assert:
+              selector: "a[href='/devices']:has-text('Devices')"
+              exists: true
+          - assert:
+              selector: "a[href='/scripts']:has-text('Scripts')"
+              exists: true
+          - assert:
+              selector: "a[href='/alerts']:has-text('Alerts')"
+              exists: true
+          - assert:
+              selector: "a[href='/remote']:has-text('Remote Access')"
+              exists: true
+
+      - id: navigate_to_devices_from_sidebar
+        action: ui
+        description: "Click Devices in sidebar and verify navigation"
+        playwright:
+          - click: "a[href='/devices']:has-text('Devices')"
+          - waitFor: "text=Devices"
+            timeout: 10000
+
+      - id: return_to_dashboard
+        action: ui
+        description: "Return to dashboard via sidebar link"
+        playwright:
+          - click: "a[href='/']:has-text('Dashboard')"
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+
+  - id: dashboard_command_palette_opens
+    name: "Dashboard Command Palette (Search)"
+    description: "Verify the command palette search button is visible and opens on click"
+    tags: [dashboard, search]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_search_button_visible
+        action: ui
+        description: "Verify the global search button is visible in the header"
+        playwright:
+          - waitFor: "text=Search devices, scripts, alerts, users, settings"
+            timeout: 10000
+          - assert:
+              selector: "text=Search devices, scripts, alerts, users, settings"
+              exists: true
+
+      - id: open_command_palette
+        action: ui
+        description: "Click search button to open command palette"
+        playwright:
+          - click: "button:has-text('Search devices, scripts, alerts, users, settings')"
+          - waitFor: "[role='dialog']"
+            timeout: 5000
+          - assert:
+              selector: "input[placeholder='Search devices, scripts, alerts, users, settings...']"
+              exists: true
+
+      - id: close_command_palette
+        action: ui
+        description: "Close command palette with Escape key"
+        playwright:
+          - press_key: "Escape"
+          - waitFor:
+              selector: "[role='dialog']"
+              state: hidden
+            timeout: 5000
+
+  - id: dashboard_user_menu
+    name: "Dashboard User Menu"
+    description: "Verify user menu opens with profile, settings, and sign out options"
+    tags: [dashboard, user-menu]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: open_user_menu
+        action: ui
+        description: "Click user avatar button to open user menu"
+        playwright:
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+          - click: "button[aria-haspopup='true']"
+          - waitFor: "text=Profile"
+            timeout: 5000
+
+      - id: verify_user_menu_items
+        action: ui
+        description: "Verify Profile, Settings, and Sign out links exist in user menu"
+        playwright:
+          - assert:
+              selector: "a[href='/settings/profile']:has-text('Profile')"
+              exists: true
+          - assert:
+              selector: "a[href='/settings']:has-text('Settings')"
+              exists: true
+          - assert:
+              selector: "button:has-text('Sign out')"
+              exists: true
+
+  - id: dashboard_dark_mode_toggle
+    name: "Dashboard Dark Mode Toggle"
+    description: "Verify the dark mode toggle button is functional in the header"
+    tags: [dashboard, theme]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_and_toggle_dark_mode
+        action: ui
+        description: "Verify dark mode toggle button is visible and clickable"
+        playwright:
+          - waitFor: "text=Dashboard"
+            timeout: 10000
+          - assert:
+              selector: "button[title='Switch to dark mode'], button[title='Switch to light mode']"
+              exists: true
+          - click: "button[title='Switch to dark mode'], button[title='Switch to light mode']"
+
+  - id: dashboard_api_stats_consistency
+    name: "Dashboard Stats API Consistency"
+    description: "Verify the devices API returns data consistent with dashboard display"
+    tags: [dashboard, api]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: verify_devices_api
+        action: api
+        description: "Verify devices API endpoint is accessible"
+        request:
+          method: GET
+          path: "/api/v1/devices"
+        poll:
+          maxAttempts: 5
+          intervalMs: 2000
+          until: "response.ok"
+        expect:
+          pagination:
+            page: 1
+            limit: 50
+
+      - id: verify_alerts_api
+        action: api
+        description: "Verify alerts API endpoint is accessible"
+        request:
+          method: GET
+          path: "/api/v1/alerts"
+          query:
+            status: active
+        poll:
+          maxAttempts: 5
+          intervalMs: 2000
+          until: "response.ok"
+        expect:
+          pagination:
+            page: 1
+            limit: 50

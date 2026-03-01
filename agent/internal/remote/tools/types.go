@@ -161,6 +161,9 @@ const (
 	// CIS benchmark compliance
 	CmdCisBenchmark        = "cis_benchmark"
 	CmdApplyCisRemediation = "apply_cis_remediation"
+
+	// Peripheral control
+	CmdPeripheralPolicySync = "peripheral_policy_sync"
 )
 
 // CommandResult represents the result of a command execution

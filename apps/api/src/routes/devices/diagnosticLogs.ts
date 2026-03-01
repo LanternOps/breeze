@@ -59,9 +59,12 @@ diagnosticLogsRoutes.get(
       conditions.push(lte(agentLogs.timestamp, d));
     }
 
-    // Message text search: ?search=keyword
+    // Message + fields text search: ?search=keyword
     if (query.search) {
-      conditions.push(ilike(agentLogs.message, `%${escapeLike(query.search)}%`));
+      const pattern = `%${escapeLike(query.search)}%`;
+      conditions.push(
+        sql`(${agentLogs.message} ILIKE ${pattern} OR ${agentLogs.fields}::text ILIKE ${pattern})`
+      );
     }
 
     const { limit, offset } = getPagination(

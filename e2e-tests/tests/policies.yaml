@@ -1,0 +1,611 @@
+# Policies Module E2E Tests
+# Tests the Policies module (compliance-rule policies, distinct from Config Policies).
+# Covers the policies list, create new policy, policy edit, compliance dashboard,
+# and delete/cleanup flows.
+
+tests:
+  - id: policies_list_page_loads
+    name: "Policies List Page Loads"
+    description: "Verify the /policies page loads with heading, stat cards, action buttons, and the policy table"
+    tags: [policies, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_policies
+        action: ui
+        description: "Navigate to /policies and wait for heading"
+        playwright:
+          - goto: "/policies"
+          - waitFor: "h1:has-text('Policies')"
+            timeout: 15000
+
+      - id: verify_heading_and_description
+        action: ui
+        description: "Verify main heading and subtitle text"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Policies"
+          - assert:
+              selector: "p"
+              contains: "Define and enforce compliance policies"
+
+      - id: verify_action_buttons
+        action: ui
+        description: "Verify Compliance Dashboard and New Policy action buttons are present"
+        playwright:
+          - assert:
+              selector: "a[href='/policies/compliance']"
+              contains: "Compliance Dashboard"
+          - assert:
+              selector: "a[href='/policies/new']"
+              contains: "New Policy"
+
+      - id: verify_policy_table_columns
+        action: ui
+        description: "Verify the policy table header columns: Name, Enforcement, Compliance, Last Evaluated, Enabled, Actions"
+        playwright:
+          - waitFor: "table"
+            timeout: 10000
+          - assert:
+              selector: "table thead"
+              contains: "Name"
+          - assert:
+              selector: "table thead"
+              contains: "Enforcement"
+          - assert:
+              selector: "table thead"
+              contains: "Compliance"
+          - assert:
+              selector: "table thead"
+              contains: "Last Evaluated"
+          - assert:
+              selector: "table thead"
+              contains: "Enabled"
+          - assert:
+              selector: "table thead"
+              contains: "Actions"
+
+      - id: verify_filter_controls
+        action: ui
+        description: "Verify the search input and enforcement/status filter dropdowns"
+        playwright:
+          - assert:
+              selector: "input[placeholder='Search policies...']"
+              visible: true
+          - assert:
+              selector: "select option[value='monitor']"
+              visible: true
+          - assert:
+              selector: "select option[value='warn']"
+              visible: true
+          - assert:
+              selector: "select option[value='enforce']"
+              visible: true
+          - assert:
+              selector: "select option[value='enabled']"
+              visible: true
+          - assert:
+              selector: "select option[value='disabled']"
+              visible: true
+
+      - id: verify_via_api
+        action: api
+        description: "Verify policies list endpoint returns a valid response"
+        request:
+          method: GET
+          path: "/api/v1/policies"
+        expect:
+          status: 200
+
+  - id: create_new_policy
+    name: "Create New Policy"
+    description: "Navigate to /policies/new, fill the form with a required-software rule in monitor mode, and save"
+    tags: [policies, critical]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_new_policy
+        action: ui
+        description: "Navigate to /policies/new and verify the Create Policy form loads"
+        playwright:
+          - goto: "/policies/new"
+          - waitFor: "h1:has-text('Create Policy')"
+            timeout: 15000
+
+      - id: verify_form_heading
+        action: ui
+        description: "Verify page heading and sub-description on the create policy page"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Create Policy"
+          - assert:
+              selector: "p"
+              contains: "Define compliance rules and enforcement behavior."
+
+      - id: fill_policy_name_and_description
+        action: ui
+        description: "Fill in policy name and description fields"
+        playwright:
+          - fill:
+              "#policy-name": "E2E Test Security Baseline"
+          - fill:
+              "#policy-description": "Automated E2E test policy for required software checks"
+
+      - id: verify_target_section
+        action: ui
+        description: "Verify the Target Devices section with target type selector is visible"
+        playwright:
+          - assert:
+              selector: "h3"
+              contains: "Target Devices"
+          - assert:
+              selector: "select option[value='all']"
+              visible: true
+          - assert:
+              selector: "select option[value='sites']"
+              visible: true
+          - assert:
+              selector: "select option[value='groups']"
+              visible: true
+          - assert:
+              selector: "select option[value='tags']"
+              visible: true
+
+      - id: verify_rules_section
+        action: ui
+        description: "Verify Policy Rules section and the default rule row"
+        playwright:
+          - assert:
+              selector: "h3"
+              contains: "Policy Rules"
+          - assert:
+              selector: "select option[value='required_software']"
+              visible: true
+          - assert:
+              selector: "select option[value='prohibited_software']"
+              visible: true
+          - assert:
+              selector: "select option[value='disk_space_minimum']"
+              visible: true
+          - assert:
+              selector: "select option[value='os_version']"
+              visible: true
+          - assert:
+              selector: "select option[value='registry_check']"
+              visible: true
+          - assert:
+              selector: "select option[value='config_check']"
+              visible: true
+
+      - id: fill_software_name_for_rule
+        action: ui
+        description: "Fill the software name field in the default required_software rule"
+        playwright:
+          - fill:
+              "input[placeholder='e.g., Google Chrome']": "E2E Test Software"
+
+      - id: verify_enforcement_level_options
+        action: ui
+        description: "Verify Monitor, Warn, and Enforce enforcement level buttons are present"
+        playwright:
+          - assert:
+              selector: "button"
+              contains: "Monitor"
+          - assert:
+              selector: "button"
+              contains: "Warn"
+          - assert:
+              selector: "button"
+              contains: "Enforce"
+
+      - id: verify_check_interval
+        action: ui
+        description: "Verify the Check Interval section and input is visible"
+        playwright:
+          - assert:
+              selector: "h3"
+              contains: "Check Interval"
+          - assert:
+              selector: "#check-interval"
+              visible: true
+
+      - id: submit_new_policy
+        action: ui
+        description: "Submit the form to create the policy and wait for redirect to /policies"
+        playwright:
+          - click: "button[type='submit']:has-text('Create Policy')"
+          - waitFor:
+              url: "**/policies"
+              timeout: 20000
+
+      - id: verify_policy_created
+        action: ui
+        description: "Verify the new policy appears in the policies list"
+        playwright:
+          - waitFor: "table"
+            timeout: 10000
+          - assert:
+              selector: "table tbody"
+              contains: "E2E Test Security Baseline"
+
+  - id: edit_existing_policy
+    name: "Edit Existing Policy"
+    description: "Open the edit page for an existing policy, verify form is pre-populated, update the name, and save"
+    tags: [policies]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_policies
+        action: ui
+        description: "Navigate to /policies list"
+        playwright:
+          - goto: "/policies"
+          - waitFor: "h1:has-text('Policies')"
+            timeout: 15000
+
+      - id: click_edit_first_policy
+        action: ui
+        description: "Click the Edit (pencil) button for the first policy in the table"
+        playwright:
+          - waitFor: "table tbody tr"
+            timeout: 10000
+          - click: "table tbody tr:first-child button[title='Edit']"
+          - waitFor: "h1:has-text('Edit Policy')"
+            timeout: 15000
+
+      - id: verify_edit_form_prepopulated
+        action: ui
+        description: "Verify the Edit Policy heading and that the form fields are pre-populated"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Edit Policy"
+          - assert:
+              selector: "p"
+              contains: "Modify the policy configuration."
+          - assert:
+              selector: "#policy-name"
+              visible: true
+
+      - id: verify_back_link
+        action: ui
+        description: "Verify the back arrow link to /policies is present"
+        playwright:
+          - assert:
+              selector: "a[href='/policies']"
+              visible: true
+
+      - id: clear_and_update_name
+        action: ui
+        description: "Clear the policy name field and type a new name"
+        playwright:
+          - fill:
+              "#policy-name": "E2E Test Security Baseline (Updated)"
+
+      - id: save_changes
+        action: ui
+        description: "Click Save Changes and wait for redirect back to policies list"
+        playwright:
+          - click: "button[type='submit']:has-text('Save Changes')"
+          - waitFor:
+              url: "**/policies"
+              timeout: 20000
+
+      - id: verify_updated_name_in_list
+        action: ui
+        description: "Verify the updated policy name appears in the policies table"
+        playwright:
+          - waitFor: "table"
+            timeout: 10000
+          - assert:
+              selector: "table tbody"
+              contains: "E2E Test Security Baseline (Updated)"
+
+  - id: policy_compliance_dashboard
+    name: "Policy Compliance Dashboard"
+    description: "Navigate to /policies/compliance and verify the overview stat cards, charts, and policy breakdown table"
+    tags: [policies, compliance, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_compliance_dashboard
+        action: ui
+        description: "Navigate to /policies/compliance page"
+        playwright:
+          - goto: "/policies/compliance"
+          - waitFor: "h1:has-text('Compliance Dashboard')"
+            timeout: 15000
+
+      - id: verify_compliance_heading
+        action: ui
+        description: "Verify Compliance Dashboard heading and subtitle"
+        playwright:
+          - assert:
+              selector: "h1"
+              contains: "Compliance Dashboard"
+          - assert:
+              selector: "p"
+              contains: "Overview of policy compliance across all devices."
+
+      - id: verify_back_link
+        action: ui
+        description: "Verify the back arrow link to /policies is present"
+        playwright:
+          - assert:
+              selector: "a[href='/policies']"
+              visible: true
+
+      - id: verify_overview_stat_cards
+        action: ui
+        description: "Verify the 4 overview stat cards: Overall Compliance, Compliant, Non-Compliant, Unknown"
+        playwright:
+          - assert:
+              selector: "div"
+              contains: "Overall Compliance"
+          - assert:
+              selector: "div"
+              contains: "Compliant"
+          - assert:
+              selector: "div"
+              contains: "Non-Compliant"
+          - assert:
+              selector: "div"
+              contains: "Unknown"
+
+      - id: verify_chart_sections
+        action: ui
+        description: "Verify Compliance by Status and Compliance Trend chart sections"
+        playwright:
+          - assert:
+              selector: "h3"
+              contains: "Compliance by Status"
+          - assert:
+              selector: "h3"
+              contains: "Compliance Trend"
+
+      - id: verify_policy_breakdown_section
+        action: ui
+        description: "Verify Policy Breakdown and Non-Compliant Devices sections are present"
+        playwright:
+          - assert:
+              selector: "h3"
+              contains: "Policy Breakdown"
+          - assert:
+              selector: "h3"
+              contains: "Non-Compliant Devices"
+
+      - id: verify_device_search_input
+        action: ui
+        description: "Verify the device search input in the Non-Compliant Devices section"
+        playwright:
+          - assert:
+              selector: "input[placeholder='Search devices...']"
+              visible: true
+
+      - id: verify_via_api
+        action: api
+        description: "Verify the compliance summary endpoint returns a valid response"
+        request:
+          method: GET
+          path: "/api/v1/policies/compliance/summary"
+        expect:
+          status: 200
+
+  - id: policies_add_rule_types
+    name: "Policy Form Rule Type Switching"
+    description: "Verify the policy form dynamically shows the correct fields when different rule types are selected"
+    tags: [policies]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_new_policy
+        action: ui
+        description: "Navigate to /policies/new"
+        playwright:
+          - goto: "/policies/new"
+          - waitFor: "h1:has-text('Create Policy')"
+            timeout: 15000
+
+      - id: switch_rule_to_disk_space
+        action: ui
+        description: "Change rule type to Minimum Disk Space and verify the disk space fields appear"
+        playwright:
+          - selectOption:
+              "select:has(option[value='disk_space_minimum'])": "disk_space_minimum"
+          - waitFor:
+              selector: "input[placeholder='10']"
+              timeout: 5000
+          - assert:
+              selector: "label"
+              contains: "Minimum Free Space (GB)"
+
+      - id: switch_rule_to_prohibited_software
+        action: ui
+        description: "Change rule type to Prohibited Software and verify the software name field with violation hint"
+        playwright:
+          - selectOption:
+              "select:has(option[value='prohibited_software'])": "prohibited_software"
+          - waitFor:
+              selector: "input[placeholder='e.g., BitTorrent']"
+              timeout: 5000
+          - assert:
+              selector: "p"
+              contains: "Violation if this software is found installed"
+
+      - id: switch_rule_to_os_version
+        action: ui
+        description: "Change rule type to OS Version Requirement and verify OS type and minimum version fields"
+        playwright:
+          - selectOption:
+              "select:has(option[value='os_version'])": "os_version"
+          - waitFor:
+              selector: "select option[value='windows']"
+              timeout: 5000
+          - assert:
+              selector: "label"
+              contains: "Operating System"
+          - assert:
+              selector: "label"
+              contains: "Minimum Version"
+
+      - id: add_second_rule
+        action: ui
+        description: "Click Add Rule button and verify a second rule row appears"
+        playwright:
+          - click: "button:has-text('Add Rule')"
+          - waitFor:
+              selector: "div.rounded-md.border.bg-muted\\/20"
+              timeout: 5000
+
+      - id: verify_cancel_navigates_back
+        action: ui
+        description: "Click Cancel and verify redirect back to /policies"
+        playwright:
+          - click: "button:has-text('Cancel')"
+          - waitFor:
+              url: "**/policies"
+              timeout: 10000
+
+  - id: delete_policy
+    name: "Delete Policy"
+    description: "Delete the E2E test policy created in earlier tests using the delete button and confirmation modal"
+    tags: [policies, cleanup]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_policies
+        action: ui
+        description: "Navigate to /policies list"
+        playwright:
+          - goto: "/policies"
+          - waitFor: "h1:has-text('Policies')"
+            timeout: 15000
+
+      - id: find_and_delete_test_policy
+        action: ui
+        description: "Search for the E2E test policy and click the delete button"
+        playwright:
+          - fill:
+              "input[placeholder='Search policies...']": "E2E Test Security Baseline"
+          - waitFor:
+              selector: "table tbody"
+              timeout: 5000
+          - click: "table tbody tr:first-child button[title='Delete']"
+          - waitFor: "h2:has-text('Delete Policy')"
+            timeout: 10000
+
+      - id: verify_delete_modal
+        action: ui
+        description: "Verify the delete confirmation modal content"
+        playwright:
+          - assert:
+              selector: "h2"
+              contains: "Delete Policy"
+          - assert:
+              selector: "p"
+              contains: "This action cannot be undone."
+          - assert:
+              selector: "button"
+              contains: "Cancel"
+          - assert:
+              selector: "button"
+              contains: "Delete"
+
+      - id: cancel_delete
+        action: ui
+        description: "Cancel the delete to verify the modal closes without deleting"
+        playwright:
+          - click: "button:has-text('Cancel')"
+          - waitFor: "h1:has-text('Policies')"
+            timeout: 5000
+
+      - id: click_delete_again_and_confirm
+        action: ui
+        description: "Click delete button again and confirm deletion"
+        playwright:
+          - click: "table tbody tr:first-child button[title='Delete']"
+          - waitFor: "h2:has-text('Delete Policy')"
+            timeout: 10000
+          - click: "button:has-text('Delete'):not(:has-text('Delete Policy'))"
+          - waitFor:
+              timeout: 10000

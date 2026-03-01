@@ -9,7 +9,7 @@ environment:
   apiUrl: "${E2E_API_URL:-http://localhost:3001}"
 
   # Timeout for individual test steps (ms)
-  defaultTimeout: 30000
+  defaultTimeout: 10000
 
   # Timeout for entire test (ms)
   testTimeout: 300000
@@ -20,7 +20,21 @@ environment:
   # Reports directory
   reportsDir: "./reports"
 
-# Test node definitions
+# API authentication for log/command verification steps
+api:
+  # Option A: API key (takes precedence)
+  apiKey: "${E2E_API_KEY}"
+  # Option B: Login credentials (runner POSTs /auth/login to get JWT)
+  email: "${E2E_ADMIN_EMAIL:-admin@breeze.local}"
+  password: "${E2E_ADMIN_PASSWORD:-BreezeAdmin123!}"
+
+# Device IDs for API-based verification (looked up by platform)
+devices:
+  windows: "${E2E_WINDOWS_DEVICE_ID}"
+  linux: "${E2E_LINUX_DEVICE_ID}"
+  macos: "${E2E_MACOS_DEVICE_ID}"
+
+# Test node definitions (deprecated — kept for backward compat with 'remote' steps)
 nodes:
   windows:
     name: "Windows Test Node"
@@ -84,8 +98,8 @@ execution:
 # Playwright browser settings
 playwright:
   browser: chromium
-  headless: false
-  slowMo: 100
+  headless: true
+  slowMo: 0
   viewport:
     width: 1920
     height: 1080

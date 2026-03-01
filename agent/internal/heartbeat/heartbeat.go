@@ -33,6 +33,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/patching"
+	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -651,6 +652,34 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
 	}
+}
+
+// submitPeripheralEvents sends detected peripheral events to the server.
+func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) error {
+	body, err := json.Marshal(peripheral.EventSubmission{Events: events})
+	if err != nil {
+		return fmt.Errorf("marshal peripheral events: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/peripherals/events", h.config.ServerURL, h.config.AgentID)
+	headers := http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {h.authHeader()},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := httputil.Do(ctx, h.client, "PUT", url, body, headers, h.retryCfg)
+	if err != nil {
+		return fmt.Errorf("PUT peripheral events: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("peripheral events submission failed: HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (h *Heartbeat) sendHardwareInventory() {

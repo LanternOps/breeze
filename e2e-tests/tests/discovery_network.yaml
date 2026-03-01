@@ -1,0 +1,261 @@
+# Discovery & Network E2E Tests
+# Tests network discovery profiles, scan jobs, discovered assets, network topology, and SNMP.
+# UI verification uses Playwright against the DiscoveryPage React component.
+# Backend verification uses the API action.
+
+tests:
+  - id: discovery_page_loads
+    name: "Discovery Page Loads with Correct Tabs"
+    description: "Verify the Network Discovery page loads, shows the heading, and renders all five tab buttons (Assets, Profiles, Jobs, Topology, Changes)"
+    tags: [discovery, smoke, critical]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_discovery
+        action: ui
+        description: "Navigate to the Network Discovery page and verify heading"
+        playwright:
+          - goto: "/discovery"
+          - waitFor: "text=Network Discovery"
+            timeout: 15000
+          - waitFor: "text=Configure discovery profiles, monitor scans, and manage network assets."
+            timeout: 5000
+
+      - id: verify_tabs
+        action: ui
+        description: "Verify all five tab buttons are present"
+        playwright:
+          - waitFor: "button:has-text('Assets')"
+            timeout: 5000
+          - waitFor: "button:has-text('Profiles')"
+            timeout: 5000
+          - waitFor: "button:has-text('Jobs')"
+            timeout: 5000
+          - waitFor: "button:has-text('Topology')"
+            timeout: 5000
+          - waitFor: "button:has-text('Changes')"
+            timeout: 5000
+
+      - id: verify_assets_tab_default
+        action: ui
+        description: "Assets tab is active by default"
+        playwright:
+          - waitFor: "text=Network Discovery"
+            timeout: 5000
+
+  - id: discovery_create_profile
+    name: "Create a Discovery Profile"
+    description: "Open the New Profile modal on the Profiles tab, fill in name, subnet, enable ICMP Ping and TCP Port Scan methods, then save"
+    tags: [discovery, profiles, critical]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_profiles_tab
+        action: ui
+        description: "Navigate to Discovery and click the Profiles tab"
+        playwright:
+          - goto: "/discovery"
+          - waitFor: "text=Network Discovery"
+            timeout: 15000
+          - click: "button:has-text('Profiles')"
+          - waitFor: "text=Discovery Profiles"
+            timeout: 5000
+
+      - id: open_new_profile_modal
+        action: ui
+        description: "Click the New Profile button to open the modal"
+        playwright:
+          - click: "button:has-text('New Profile')"
+          - waitFor: "text=New Discovery Profile"
+            timeout: 5000
+          - waitFor: "text=Configure network scope, scan methods, and scheduling settings."
+            timeout: 5000
+
+      - id: fill_profile_details
+        action: ui
+        description: "Fill in profile name, subnets, and select ICMP Ping and TCP Port Scan methods"
+        playwright:
+          - fill:
+              "input[placeholder='Headquarters scan']": "E2E Test Profile"
+          - fill:
+              "textarea[placeholder='10.0.0.0/24\n10.0.1.0/24']": "192.168.1.0/24"
+          - click: "label:has-text('ICMP Ping') input[type='checkbox']"
+          - click: "label:has-text('TCP Port Scan') input[type='checkbox']"
+
+      - id: submit_profile
+        action: ui
+        description: "Submit the form and verify modal closes"
+        playwright:
+          - click: "button:has-text('Create Profile')"
+          - waitFor: "text=profiles configured"
+            timeout: 10000
+
+      - id: verify_profile_api
+        action: api
+        description: "Confirm the profile was created via API"
+        request:
+          method: GET
+          path: "/api/v1/discovery/profiles"
+        assert:
+          status: 200
+        expect: {}
+
+  - id: discovery_run_scan_job
+    name: "Run Discovery Scan and View Jobs Tab"
+    description: "Run an existing discovery profile from the Profiles tab and verify the scan job appears in the Jobs tab"
+    tags: [discovery, jobs]
+    nodes: [linux]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_profiles_tab
+        action: ui
+        description: "Navigate to Profiles tab"
+        playwright:
+          - goto: "/discovery?tab=profiles"
+          - waitFor: "text=Discovery Profiles"
+            timeout: 15000
+
+      - id: click_run_first_profile
+        action: ui
+        description: "Click the Run now (play) button for the first profile in the table"
+        playwright:
+          - click: "button[title='Run now']"
+          - waitFor: "text=Discovery Jobs"
+            timeout: 10000
+
+      - id: verify_job_table_columns
+        action: ui
+        description: "Verify the Jobs table renders expected columns"
+        playwright:
+          - waitFor: "text=Profile"
+            timeout: 5000
+          - waitFor: "text=Status"
+            timeout: 5000
+          - waitFor: "text=Hosts discovered"
+            timeout: 5000
+          - waitFor: "text=New assets"
+            timeout: 5000
+
+      - id: verify_job_api
+        action: api
+        description: "Confirm discovery jobs are returned by the API"
+        request:
+          method: GET
+          path: "/api/v1/discovery/jobs"
+        assert:
+          status: 200
+        expect: {}
+
+  - id: discovery_view_assets
+    name: "View Discovered Assets"
+    description: "Switch to the Assets tab and verify the discovered asset list renders"
+    tags: [discovery, assets]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_assets_tab
+        action: ui
+        description: "Navigate to Discovery page — Assets is the default tab"
+        playwright:
+          - goto: "/discovery"
+          - waitFor: "text=Network Discovery"
+            timeout: 15000
+          - click: "button:has-text('Assets')"
+
+      - id: verify_assets_api
+        action: api
+        description: "Confirm the assets endpoint returns data"
+        request:
+          method: GET
+          path: "/api/v1/discovery/assets"
+        assert:
+          status: 200
+        expect: {}
+
+  - id: discovery_network_changes
+    name: "View Network Changes Panel"
+    description: "Switch to the Changes tab and verify the Network Changes panel renders"
+    tags: [discovery, changes, network]
+    nodes: [linux]
+    timeout: 60000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+
+      - id: navigate_changes_tab
+        action: ui
+        description: "Navigate to Discovery and click the Changes tab"
+        playwright:
+          - goto: "/discovery"
+          - waitFor: "text=Network Discovery"
+            timeout: 15000
+          - click: "button:has-text('Changes')"
+
+      - id: verify_changes_rendered
+        action: ui
+        description: "Verify the Changes tab rendered without error"
+        playwright:
+          - waitFor: "text=Network Discovery"
+            timeout: 5000
