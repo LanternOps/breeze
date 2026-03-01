@@ -28,6 +28,19 @@ const { title } = Astro.props;
         }
       })();
     </script>
+    <script is:inline>
+      document.addEventListener('astro:after-swap', function() {
+        // Re-apply theme after View Transition swaps the DOM
+        var t = localStorage.getItem('theme');
+        if (t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+        var main = document.querySelector('main');
+        if (main) main.scrollTop = 0;
+      });
+    </script>
     <slot />
   </body>
 </html>

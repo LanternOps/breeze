@@ -505,7 +505,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c)
   return c.json(organization);
 });
 
-orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c) => {
+const updateOrgHandler = [requireScope('partner', 'system'), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id');
   const data = c.req.valid('json');
@@ -556,7 +556,10 @@ orgRoutes.patch('/organizations/:id', requireScope('partner', 'system'), zValida
   });
 
   return c.json(organization);
-});
+}] as const;
+
+orgRoutes.patch('/organizations/:id', ...updateOrgHandler);
+orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
