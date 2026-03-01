@@ -35,7 +35,7 @@ function resolveOrgId(
   if (auth.scope === 'partner') {
     const accessibleOrgIds = auth.accessibleOrgIds ?? [];
     if (!requireForNonOrg && accessibleOrgIds.length === 1) return { orgId: accessibleOrgIds[0] } as const;
-    return { error: 'orgId is required for partner scope', status: 400 } as const;
+    return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
   }
 
   if (auth.scope === 'system' && !requestedOrgId) return { error: 'orgId is required for system scope', status: 400 } as const;
@@ -50,7 +50,7 @@ async function resolveOrgIdForAsset(auth: AuthContext, assetId: string, requeste
   if (!('error' in orgResult)) return orgResult;
 
   const needsAssetResolution = (
-    orgResult.error === 'orgId is required for partner scope'
+    orgResult.error === 'orgId is required when partner has multiple organizations'
     || orgResult.error === 'orgId is required for system scope'
     || orgResult.error === 'orgId is required'
   );
