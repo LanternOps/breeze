@@ -4,6 +4,42 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## GitHub Issues #183, #182, #168 Bug Fixes — 2026-03-01
+
+**Branch:** `fix/integration-testing-502s`
+**Commit:** `212ff79`
+**Tested by:** Claude
+**Result:** PASS
+
+### What was tested
+
+- [x] API: #183 — POST /scripts without orgId for partner-scoped user → 201 Created (auto-selected single org)
+- [x] API: #182b — JWT now has `mfa: true` for users without MFA enrolled (vacuously satisfied)
+- [x] API: #182b — GET /api-keys returns `isAdmin: true` for partner/system scope
+- [x] API: #182b — POST /api-keys succeeds without MFA enrollment → 201 Created
+- [x] API: #168 — PATCH /orgs/organizations/:id → 200 OK (existing behavior)
+- [x] API: #168 — PUT /orgs/organizations/:id → 200 OK (new alias)
+- [x] UI: #182a — Dark mode persists across View Transition navigations (Dashboard → Devices → Scripts)
+- [x] UI: #182a — `document.documentElement.classList.contains('dark')` stays true after navigation
+
+### Evidence
+- Screenshot: `e2e-tests/snapshots/theme-persistence-dark-scripts.png` — dark mode active on /scripts after navigating from /devices
+- JWT decoded: `"mfa": true` for admin user without MFA enrollment
+- Script creation response: `201` with auto-assigned `orgId: cc841fdb-...`
+- API key creation response: `201` with `brz_` prefixed key returned
+- Org update via PUT: `200` with correct org data returned
+- Audit trail shows both `api.patch.orgs.organizations.:id` and `api.put.orgs.organizations.:id` entries
+
+### Issues Found
+- None — all fixes verified
+
+### Notes
+- Test data (script + API key) cleaned up after verification
+- Web and API containers required restart to pick up code changes (dev hot-reload didn't catch Layout.astro or login.ts changes automatically)
+- The same "orgId required for partner scope" pattern exists in ~20 other route files — only scripts.ts was fixed per the reported issue
+
+---
+
 <!-- TEMPLATE — copy below this line for new entries
 
 ## [Feature Name] — YYYY-MM-DD
