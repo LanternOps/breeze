@@ -72,6 +72,8 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
     notes: '',
     silentInstallArgs: '',
     silentUninstallArgs: '',
+    downloadUrl: '',
+    supportedOs: [] as string[],
     file: null as File | null,
     fileName: ''
   });
@@ -174,6 +176,8 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         if (formState.notes) formData.append('releaseNotes', formState.notes);
         if (formState.silentInstallArgs) formData.append('silentInstallArgs', formState.silentInstallArgs);
         if (formState.silentUninstallArgs) formData.append('silentUninstallArgs', formState.silentUninstallArgs);
+        if (formState.downloadUrl) formData.append('downloadUrl', formState.downloadUrl);
+        if (formState.supportedOs.length > 0) formData.append('supportedOs', JSON.stringify(formState.supportedOs));
 
         setUploadProgress(10);
 
@@ -207,6 +211,8 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
             architecture: formState.architecture,
             silentInstallArgs: formState.silentInstallArgs || undefined,
             silentUninstallArgs: formState.silentUninstallArgs || undefined,
+            downloadUrl: formState.downloadUrl || undefined,
+            supportedOs: formState.supportedOs.length > 0 ? formState.supportedOs : undefined,
           })
         });
 
@@ -220,7 +226,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         setSelectedVersionId(newVersion.id);
       }
 
-      setFormState({ version: '', architecture: 'x64', notes: '', silentInstallArgs: '', silentUninstallArgs: '', file: null, fileName: '' });
+      setFormState({ version: '', architecture: 'x64', notes: '', silentInstallArgs: '', silentUninstallArgs: '', downloadUrl: '', supportedOs: [], file: null, fileName: '' });
       if (fileInputRef.current) fileInputRef.current.value = '';
       setIsFormOpen(false);
     } catch (err) {
@@ -306,6 +312,43 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
                 <option value="arm64">arm64</option>
                 <option value="x86">x86</option>
               </select>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <label className="text-xs font-semibold uppercase text-muted-foreground">Download URL</label>
+            <input
+              type="url"
+              value={formState.downloadUrl}
+              onChange={event => setFormState(prev => ({ ...prev, downloadUrl: event.target.value }))}
+              placeholder="https://example.com/package-v1.0.0.msi"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">Provide a direct download URL or upload a file below</p>
+          </div>
+
+          <div className="mt-4">
+            <label className="text-xs font-semibold uppercase text-muted-foreground">Supported OS</label>
+            <div className="mt-2 flex items-center gap-4">
+              {['Windows', 'macOS', 'Linux'].map(os => (
+                <label key={os} className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={formState.supportedOs.includes(os.toLowerCase())}
+                    onChange={event => {
+                      const value = os.toLowerCase();
+                      setFormState(prev => ({
+                        ...prev,
+                        supportedOs: event.target.checked
+                          ? [...prev.supportedOs, value]
+                          : prev.supportedOs.filter(o => o !== value),
+                      }));
+                    }}
+                    className="h-4 w-4 rounded border"
+                  />
+                  {os}
+                </label>
+              ))}
             </div>
           </div>
 
