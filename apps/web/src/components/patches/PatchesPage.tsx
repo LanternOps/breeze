@@ -385,7 +385,6 @@ export default function PatchesPage() {
             onChange={setDeviceFilter}
             collapsible
             defaultExpanded={false}
-            showPreview
           />
         </div>
       )}

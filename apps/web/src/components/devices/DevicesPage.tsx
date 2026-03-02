@@ -506,7 +506,6 @@ export default function DevicesPage() {
       <DeviceFilterBar
         value={advancedFilter}
         onChange={setAdvancedFilter}
-        showPreview={true}
         showSavedFilters={true}
         collapsible={true}
       />
